@@ -574,7 +574,7 @@ mergeable y útil por separado.
 | Hito | Dónde | Contenido | Verificación |
 | --- | --- | --- | --- |
 | **A1** ✅ | framework | **F5** cancelación + `sd_notify`; **F2** TLS y apagado grácil | hecho — ver §8.1 |
-| **A2** | framework | **F3** `wabot-feature-sqlite` + `wabot-addon-async-sqlite` | la suite de `wabot-feature-pg` re-ejecutada contra SQLite; `AsyncHarness` sin Postgres. Cierra con la extracción del dialecto |
+| **A2** ✅ | framework | **F3** `wabot-feature-sqlite` + `wabot-addon-async-sqlite` | hecho — ver §8.2 |
 | **A3** | framework | **F1** `#[max_body]` y endpoints `#[raw]` | `RestHarness`: subida de 10 MB, respuesta en streaming, SSE, y un guard corriendo sobre una ruta `raw` |
 | **M0** | deploy | CLI, config, BD, `ProjectRunner`, `/healthz` | `cargo run -- serve` |
 | **M1** | deploy | Edge: :443 con autofirmado, tabla de rutas, consola y API in-process, :80 con redirect, proxy con upgrade | `curl -k https://localhost/healthz`; WebSocket contra un upstream de prueba |
@@ -582,8 +582,7 @@ mergeable y útil por separado.
 | **M3** | deploy | Bootstrap completo: preflight, containerd + crun, unit, ledger | VM limpia Ubuntu 24.04 |
 | **M4** | deploy | Endurecimiento | idempotencia, reanudación tras fallo, RSS |
 
-A2 y A3 no dependen entre sí y se pueden paralelizar. M0 puede empezar en
-cuanto A2 esté verde; M1 ya tiene lo que necesita.
+A3 es lo único que queda de framework. **M0 ya está desbloqueado.**
 
 ### 8.1 A1 — hecho
 
@@ -644,6 +643,63 @@ tocados y sus dependientes; `cargo check --workspace --all-features` limpio).
   un test que manda texto plano al puerto TLS y comprueba que el siguiente
   cliente real sigue siendo atendido.
 - `ring` en vez del `aws-lc-rs` por defecto: sin cmake ni nasm.
+
+### 8.2 A2 — hecho
+
+`wabot-feature-sqlite` + `wabot-addon-async-sqlite` en el framework. 51
+tests nuevos; **564 tests verdes en los 35 crates** del workspace y
+`cargo check --workspace --all-features` limpio.
+
+**Lo que hay**
+
+- `SqliteDatabase` / `SqliteConfig` — un escritor tras un mutex y una
+  free-list de lectores, WAL, y las pragmas del plan.
+- `SqliteJsonbStore` — mismo layout que el Postgres
+  (`id` / `created_at` / `data` + columnas promovidas), tabla creada al
+  primer uso, implementa `CrudRepository`.
+- `MigrationRunner` con checksums y detección de drift.
+- `SqliteJobRepository` / `SqliteCronJobRepository` — los jobs de
+  despliegue ya sobreviven a un reinicio.
+- Features `sqlite` y `addon-async-sqlite` en el paraguas.
+
+**Tres cosas que salieron distintas de lo previsto**
+
+1. **`created_at` es INTEGER de epoch-millis**, no un timestamp. SQLite
+   no tiene tipo fecha; una cadena ISO ordena bien pero cuesta más por
+   fila, y la paginación keyset compara esa columna constantemente.
+
+2. **El `PRAGMA case_sensitive_like=ON` no es cosmético.** El `LIKE` de
+   SQLite es *insensible* a mayúsculas por defecto y sensible en todo lo
+   demás donde corre el framework, incluido el evaluador en memoria.
+   Sin la pragma, el mismo `Query` significaría cosas distintas según el
+   backend — que es justo el fallo que un AST agnóstico existe para
+   evitar. Hay un test que lo fija.
+
+3. **Donde SQLite gana:** su `->>` preserva tipos, así que un filtro de
+   rango sobre un campo del documento compara numéricamente sin ningún
+   cast. Postgres necesita `::numeric` o `"9" > "10"` sale verdadero.
+   Lo que sí hubo que hacer a mano es expandir `In` a un placeholder por
+   elemento (no existe `= ANY`), y ahí `bind_values` tiene que aplanar
+   el array o todos los valores posteriores caen en la condición
+   equivocada.
+
+**Un hallazgo colateral que valía el desvío.** `libsqlite3-sys` declara
+`links = "sqlite3"`, y cargo solo admite una versión de un crate con
+`links` — regla que aplica en la resolución de *versiones*, antes que
+las features. Al añadir rusqlite saltó el conflicto, y al tirar del hilo:
+la feature `macros` de sqlx arrastra `sqlx-macros-core`, que depende de
+`sqlx-sqlite`. **Todas las builds solo-Postgres venían compilando un
+driver de SQLite.** Nadie usa `query!`/`query_as!` en el workspace — el
+propio comentario del manifiesto ya lo decía. Quitada la feature, y
+`rusqlite` queda fijado a 0.32 para casar con el `libsqlite3-sys 0.30`
+de sqlx 0.8. No se pierde nada: 0.30 empaqueta SQLite 3.46, muy por
+encima del 3.38 que introdujo `->>`.
+
+**Lo que no está** (y no bloquea M0): `SqliteColumnsStore`, projections,
+y la extracción del `SqlDialect` compartido con Postgres. Esto último
+ahora sí procede — ya hay dos implementaciones de las que derivarlo, y
+las diferencias reales son visibles y pocas. Queda anotado al final de
+`query_sql.rs` para hacerlo antes de que aparezca un tercer backend.
 
 **Una corrección al plan:** el camino sin TLS sigue usando `axum::serve` +
 `with_graceful_shutdown`. Solo el camino TLS conduce
