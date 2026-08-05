@@ -1,0 +1,4 @@
+[toolchain]
+# Pinned so everyone on the project — and CI — compiles with the same
+# compiler. Raise it deliberately, not by drifting.
+channel = "stable"
