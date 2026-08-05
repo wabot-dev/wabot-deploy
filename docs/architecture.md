@@ -575,14 +575,15 @@ mergeable y útil por separado.
 | --- | --- | --- | --- |
 | **A1** ✅ | framework | **F5** cancelación + `sd_notify`; **F2** TLS y apagado grácil | hecho — ver §8.1 |
 | **A2** ✅ | framework | **F3** `wabot-feature-sqlite` + `wabot-addon-async-sqlite` | hecho — ver §8.2 |
-| **A3** | framework | **F1** `#[max_body]` y endpoints `#[raw]` | `RestHarness`: subida de 10 MB, respuesta en streaming, SSE, y un guard corriendo sobre una ruta `raw` |
+| **A3** ✅ | framework | **F1** `#[max_body]` y endpoints `#[raw]` | hecho — ver §8.3 |
 | **M0** | deploy | CLI, config, BD, `ProjectRunner`, `/healthz` | `cargo run -- serve` |
 | **M1** | deploy | Edge: :443 con autofirmado, tabla de rutas, consola y API in-process, :80 con redirect, proxy con upgrade | `curl -k https://localhost/healthz`; WebSocket contra un upstream de prueba |
 | **M2** | deploy | ACME real, `certificate`/`acme_account`, bucle de renovación | dominio real contra el directorio **staging** de Let's Encrypt |
 | **M3** | deploy | Bootstrap completo: preflight, containerd + crun, unit, ledger | VM limpia Ubuntu 24.04 |
 | **M4** | deploy | Endurecimiento | idempotencia, reanudación tras fallo, RSS |
 
-A3 es lo único que queda de framework. **M0 ya está desbloqueado.**
+**El framework ya no bloquea nada**: A1, A2 y A3 cerrados. Todo lo que
+queda es producto.
 
 ### 8.1 A1 — hecho
 
@@ -706,6 +707,44 @@ las diferencias reales son visibles y pocas. Queda anotado al final de
 `hyper_util::server::conn::auto` a mano, porque `axum::serve` de axum 0.7
 enlaza un `TcpListener` pelado y no acepta un acceptor. El caso común se
 queda en la vía trillada.
+
+### 8.3 A3 — hecho
+
+`#[max_body(N)]` y endpoints `#[raw]` en el macro. Con esto **el
+framework ya no bloquea nada**: A1, A2 y A3 cerrados.
+
+- **`#[max_body(N)]` salió casi gratis**, como preveía el plan:
+  `decompose_request` ya recibía el límite como parámetro y el macro le
+  pasaba una constante. Acepta una expresión, así que
+  `#[max_body(64 * 1024 * 1024)]` se lee como se dice.
+- **`#[raw]` es un atributo hermano**, no un flag dentro de
+  `#[get(...)]` como proponía el documento. Cambié de idea: así la
+  gramática del atributo de ruta sigue siendo "una ruta, o nada", y el
+  nuevo encaja con `#[middleware]` y `#[max_body]`.
+
+Lo que importa del wrapper generado es el **orden**: parte la petición,
+corre los middlewares sobre las `Parts`, y la reensambla con
+`Request::from_parts`. De ahí salen las tres garantías que hacen que
+`#[raw]` sea parte del framework y no un agujero en él — los guards
+siguen corriendo, las extensiones sobreviven (así que los extractores de
+axum funcionan dentro del handler), y un `RestError` sigue renderizando
+el cuerpo de error del framework. Solo se saltan el buffering y la
+serialización JSON.
+
+Los path params van en las extensiones (`path_param(&req, "digest")`),
+porque un handler crudo nunca ve la descomposición y
+`/v2/:name/blobs/:digest` no sirve de nada si no puedes leer `digest`.
+
+**Dos errores de compilación deliberados**, ambos verificados
+compilándolos de verdad, no leyendo el código: `#[raw]` + `#[max_body]`
+juntos (un endpoint crudo no bufferiza, así que un límite de bytes es
+una creencia falsa sobre el código), y cualquiera de los dos sin
+atributo de ruta — son `proc_macro_attribute` inertes por su cuenta, así
+que el método compilaría y no se montaría nunca, en silencio.
+
+**Lo que esto desbloquea en la Fase 2:** los blobs OCI en streaming
+(push y pull), y SSE para logs de contenedor en vivo, sin salir del
+sistema de controllers ni perder DI, middlewares y el harness de tests.
 
 **Verificación end-to-end de M3/M4** — en VM efímera, no en la máquina de
 desarrollo:
