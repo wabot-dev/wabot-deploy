@@ -81,6 +81,8 @@ pub struct Deployer {
     /// The live table the listener reads, when there is one. `None` in
     /// a test and in `install`, where nothing is serving.
     routes: Option<Arc<crate::edge::routes::RouteTable>>,
+    /// How to tell the certificate loop that a hostname appeared.
+    certificates: Option<Arc<crate::edge::acme::Wake>>,
 }
 
 impl Deployer {
@@ -90,6 +92,7 @@ impl Deployer {
             resolv_conf: config.node.data_dir.join("resolv.conf"),
             node_domain: config.node.domain.clone(),
             routes: None,
+            certificates: None,
         }
     }
 
@@ -97,6 +100,14 @@ impl Deployer {
     /// deployment takes effect without a restart.
     pub fn with_routes(mut self, routes: Arc<crate::edge::routes::RouteTable>) -> Self {
         self.routes = Some(routes);
+        self
+    }
+
+    /// Hand the deployer the certificate loop's doorbell, so a service
+    /// given a hostname does not wait out the renewal interval for a
+    /// certificate nobody asked for on its behalf.
+    pub fn with_certificates(mut self, wake: Arc<crate::edge::acme::Wake>) -> Self {
+        self.certificates = Some(wake);
         self
     }
 
@@ -111,6 +122,12 @@ impl Deployer {
         .await
         {
             tracing::error!(%error, "could not update the routes");
+        }
+
+        // The routes and the certificates answer for the same names, so
+        // whatever changed one has to let the other look again.
+        if let Some(wake) = &self.certificates {
+            wake.now();
         }
     }
 

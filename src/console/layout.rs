@@ -154,6 +154,20 @@ pub const CSS: &str = r#"
 }
 .actions { display: flex; gap: var(--sp-3); align-items: center; margin-top: var(--sp-5); }
 
+/* A checkbox and its words are one control, and they were touching:
+   the box is `flex-shrink: 0` and the label had no gap, so the text
+   started where the box ended. The label is also what makes the words
+   clickable, which is most of the target. */
+.check {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  cursor: pointer;
+  font-weight: 500;
+  margin-top: var(--sp-2);
+}
+.check input[type="checkbox"] { width: 1.05rem; }
+
 /* The memory breakdown. One bar in parts, and a table under it whose
    swatches are the same colours — the bar says the proportions, the
    table says the numbers, and neither needs a legend. */

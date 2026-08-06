@@ -22,10 +22,20 @@ pub async fn run(config: Config) -> anyhow::Result<i32> {
     // whole after a deployment. Two tables would mean a deployment
     // that changes nothing until the next restart.
     let routes = Arc::new(crate::edge::routes::RouteTable::new());
+    // How a deployment tells the certificate loop that a hostname
+    // appeared. Created here because both halves need it and neither
+    // owns the other.
+    let wake = Arc::new(crate::edge::acme::Wake::default());
 
     let container = Container::new();
     crate::api::register(&container, database.clone());
-    crate::console::register(&container, database.clone(), config.clone(), routes.clone());
+    crate::console::register(
+        &container,
+        database.clone(),
+        config.clone(),
+        routes.clone(),
+        wake.clone(),
+    );
 
     // One router: the console's pages and the API's endpoints answer on
     // the same hostname, because they are the same thing to whoever is
@@ -44,7 +54,9 @@ pub async fn run(config: Config) -> anyhow::Result<i32> {
     // Never fatal: a node that cannot reach containerd must still
     // serve the console, which is where somebody would go to find out
     // why it cannot.
-    let deployer = crate::deploy::Deployer::new(database.clone(), &config).with_routes(routes);
+    let deployer = crate::deploy::Deployer::new(database.clone(), &config)
+        .with_routes(routes)
+        .with_certificates(wake.clone());
     match deployer.reconcile().await {
         Ok(0) => {}
         Ok(started) => tracing::info!(started, "services restored"),
@@ -65,6 +77,7 @@ pub async fn run(config: Config) -> anyhow::Result<i32> {
     let acme_database = database.clone();
     let acme_config = config.clone();
     let acme_resolver = resolver.clone();
+    let acme_wake = wake.clone();
     let http_database = database.clone();
     let https_port = config.edge.https_port;
 
@@ -80,7 +93,13 @@ pub async fn run(config: Config) -> anyhow::Result<i32> {
         // to answer, so ordering issuance ahead of the listener would
         // deadlock on itself.
         .service_with_cancel("acme", move |cancel| {
-            crate::edge::acme::renewal_loop(acme_database, acme_config, acme_resolver, cancel)
+            crate::edge::acme::renewal_loop(
+                acme_database,
+                acme_config,
+                acme_resolver,
+                acme_wake,
+                cancel,
+            )
         })
         // Close phase, after the drain: checkpointing the WAL while a
         // request might still write to it leaves work for the next

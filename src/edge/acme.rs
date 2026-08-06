@@ -390,6 +390,7 @@ pub async fn renewal_loop(
     database: Arc<SqliteDatabase>,
     config: Config,
     resolver: Arc<certs::CertResolver>,
+    wake: Arc<Wake>,
     cancel: wabot::lifecycle::Cancel,
 ) -> Result<(), std::convert::Infallible> {
     if config.acme.disabled || config.node.domain.is_none() {
@@ -432,7 +433,40 @@ pub async fn renewal_loop(
         tokio::select! {
             _ = cancel.cancelled() => return Ok(()),
             _ = tokio::time::sleep(delay) => {}
+            // Somebody gave a service a hostname. Waiting out the
+            // twelve-hour settled delay would leave that name without a
+            // certificate for half a day, with the route already
+            // pointing at it — the console would show it configured and
+            // no browser could open it.
+            _ = wake.notified() => {
+                tracing::info!("certificates: something changed, checking now");
+                // Back to the short delay: a name added a second ago is
+                // exactly the case where DNS might still be settling,
+                // and the backoff should start from the bottom again.
+                delay = std::time::Duration::from_secs(60);
+            }
         }
+    }
+}
+
+/// How the rest of the node asks for a certificate check now.
+///
+/// A notification rather than a direct call: issuance belongs in the
+/// loop, which owns the retries and the backoff. A console request
+/// that issued inline would either block for the round trip to the
+/// authority or invent a second retry policy beside this one.
+#[derive(Debug, Default)]
+pub struct Wake(tokio::sync::Notify);
+
+impl Wake {
+    /// Ask the loop to look now. Never blocks; a wake with nothing to
+    /// do costs one cheap pass over the stored certificates.
+    pub fn now(&self) {
+        self.0.notify_one();
+    }
+
+    async fn notified(&self) {
+        self.0.notified().await
     }
 }
 

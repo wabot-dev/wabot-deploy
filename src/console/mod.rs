@@ -53,9 +53,13 @@ impl ConsoleState {
         database: Arc<SqliteDatabase>,
         config: Config,
         routes: Arc<crate::edge::routes::RouteTable>,
+        certificates: Arc<crate::edge::acme::Wake>,
     ) -> Self {
-        let deployer =
-            Arc::new(crate::deploy::Deployer::new(database.clone(), &config).with_routes(routes));
+        let deployer = Arc::new(
+            crate::deploy::Deployer::new(database.clone(), &config)
+                .with_routes(routes)
+                .with_certificates(certificates),
+        );
         Self {
             database,
             config,
@@ -180,9 +184,14 @@ pub fn register(
     database: Arc<SqliteDatabase>,
     config: Config,
     routes: Arc<crate::edge::routes::RouteTable>,
+    certificates: Arc<crate::edge::acme::Wake>,
 ) {
-    container
-        .register_instance::<ConsoleState>(Arc::new(ConsoleState::new(database, config, routes)));
+    container.register_instance::<ConsoleState>(Arc::new(ConsoleState::new(
+        database,
+        config,
+        routes,
+        certificates,
+    )));
     // No guard addon runs here, so nothing else would register `Auth`
     // and every controller holding one would fail to resolve.
     Auth::register_default(container);
@@ -249,6 +258,7 @@ pub(crate) mod tests {
                 database.clone(),
                 Config::default(),
                 Arc::new(crate::edge::routes::RouteTable::new()),
+                Arc::new(crate::edge::acme::Wake::default()),
             );
             Self {
                 harness: RestHarness::new(routes(&container)),

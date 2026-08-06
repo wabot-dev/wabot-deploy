@@ -122,6 +122,25 @@ impl ServicePages {
         };
 
         let ports = ports::of_service(&self.state.database, &service.id).await?;
+
+        // Whether each HTTPS name has a certificate yet. Asked here
+        // rather than assumed: the certificate arrives seconds after
+        // the route does, and a page that showed the name as ready
+        // would be wrong for exactly the window somebody is looking at
+        // it.
+        let mut secured = std::collections::BTreeSet::new();
+        for port in &ports {
+            if let Some(hostname) = &port.hostname {
+                if crate::edge::certs::load(&self.state.database, hostname)
+                    .await
+                    .ok()
+                    .flatten()
+                    .is_some_and(|certificate| certificate.issuer != "self-signed")
+                {
+                    secured.insert(hostname.clone());
+                }
+            }
+        }
         let observed = self.state.deployer.observe(&project, &service).await;
         let back = format!("/projects/{}", project.slug);
         let add = format!("/projects/{}/services/{}/ports", project.slug, service.slug);
@@ -202,7 +221,16 @@ impl ServicePages {
                                 @for port in &ports {
                                     <tr>
                                         <td class="mono">(port.container_port)</td>
-                                        <td class="mono">(reachable_at(port, domain.as_deref()))</td>
+                                        <td class="mono">
+                                            (reachable_at(port, domain.as_deref()))
+                                            @if port.hostname.as_ref()
+                                                .is_some_and(|host| !secured.contains(host)) {
+                                                <span class="badge badge-info">
+                                                    <span class="dot dot-info dot-pulse"></span>
+                                                    ("Certificate on the way")
+                                                </span>
+                                            }
+                                        </td>
                                         <td>
                                             <form method="post" action=(format!("{add}/{}/delete", port.id))>
                                                 <button class="btn btn-ghost btn-sm" type="submit">
@@ -995,6 +1023,44 @@ mod tests {
                 .is_empty(),
             "nothing was written"
         );
+    }
+
+    /// A hostname without a certificate yet has to say so: the route
+    /// exists the moment the port does, and the certificate follows a
+    /// few seconds later. A page that claimed it was ready would be
+    /// wrong for exactly the window somebody is watching.
+    #[tokio::test]
+    async fn a_hostname_says_when_its_certificate_has_not_arrived() {
+        let console = Console::new().await;
+        let cookie = console.signed_in().await;
+        let page = service(&console, &cookie).await;
+
+        // Written straight in: the DNS check would refuse a name that
+        // does not resolve, and this test is about what the page says
+        // afterwards.
+        let stored = services::all(&console.database, None)
+            .await
+            .expect("query")
+            .pop()
+            .expect("one service");
+        ports::create(
+            &console.database,
+            &stored.id,
+            80,
+            false,
+            Some("api.example.com"),
+        )
+        .await
+        .expect("port");
+
+        let body = console
+            .harness
+            .get(&page)
+            .header("cookie", &cookie)
+            .send()
+            .await
+            .body;
+        assert!(body.contains("Certificate on the way"), "{body}");
     }
 
     /// Ticking HTTPS with no hostname must not silently create a port

@@ -1385,3 +1385,35 @@ página.
 containerd 20 MB, shim 7,8 MB, contenedor 376 kB en reposo — y 3,1 MB
 tras 40 peticiones, que es la lectura siguiendo a la realidad. El stream
 responde 401 sin sesión.
+
+**Un fallo que solo aparece al cambiar un servicio en caliente**
+
+Dar un hostname a un servicio creaba la ruta y **nadie pedía el
+certificado**. El bucle ACME duerme 12 h una vez asentado, así que el
+nombre quedaba enrutado y sin TLS durante medio día: la consola lo
+mostraba configurado y ningún navegador podía abrirlo.
+
+La corrección es un timbre —`Wake`, un `Notify` compartido— en vez de
+emitir en línea desde el handler: la emisión pertenece al bucle, que es
+quien tiene los reintentos y el backoff, y hacerlo en la petición
+significaría o bloquear el ida y vuelta con la autoridad o inventar una
+segunda política de reintentos al lado de la que ya hay. Al despertarse,
+el backoff vuelve al mínimo, porque un nombre añadido hace un segundo es
+justo el caso donde el DNS puede estar aún asentándose.
+
+Y la página dice cuál es el estado: un puerto HTTPS cuyo certificado
+todavía no está lleva "Certificate on the way". Se pregunta, no se
+supone — el certificado llega segundos después de la ruta, y esa ventana
+es exactamente cuando alguien está mirando.
+
+**Verificado, cambio a cambio, contra el nodo:**
+
+| cambio | qué debe pasar | resultado |
+| --- | --- | --- |
+| añadir puerto HTTPS con nombre nuevo | certificado y ruta | challenge y certificado en **7 s**, `TLS 0` |
+| añadir un segundo puerto | el contenedor se redespliega y **las rutas anteriores siguen** | `.17 → .18` en las tres rutas, HTTPS 200 |
+| publicar TCP | una regla DNAT, a la dirección actual | una sola, `20000 → 10.42.1.18:8081` |
+| quitar el puerto publicado | la regla desaparece | 0 reglas |
+| quitar un puerto HTTPS | su nombre deja de responder, los demás no | 404 el retirado, 200 los otros |
+| parar el servicio | sin rutas, sin netns, sin tareas | 0/0/0, el nombre da 404 |
+| arrancarlo otra vez | todo vuelve | 200 |
