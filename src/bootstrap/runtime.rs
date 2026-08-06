@@ -42,6 +42,7 @@ use std::process::Command;
 /// distribution, until someone raises it deliberately.
 pub const CONTAINERD_VERSION: &str = "2.3.3";
 pub const CRUN_VERSION: &str = "1.28";
+pub const CNI_VERSION: &str = "1.9.1";
 
 /// The containerd socket. The default path, which is what a
 /// pre-existing installation will be using too.
@@ -51,6 +52,21 @@ pub const SOCKET: &str = "/run/containerd/containerd.sock";
 /// not the distribution's, and a package manager should never find it
 /// in a directory it owns.
 pub const CRUN_PATH: &str = "/usr/local/bin/crun";
+
+/// Where the CNI plugins land. Not a choice: `/opt/cni/bin` is the
+/// path the whole ecosystem defaults to, and a container runtime
+/// looking for them looks there.
+pub const CNI_BIN_DIR: &str = "/opt/cni/bin";
+
+/// The plugins a project network actually needs.
+///
+/// `bridge` builds the network, `host-local` hands out addresses in
+/// it, `loopback` brings up `lo` inside the namespace — a container
+/// without it cannot talk to itself, which surprises everything that
+/// binds `127.0.0.1`. `portmap` and `firewall` are not used yet; they
+/// come in the same tarball and listing only what we invoke keeps the
+/// check honest.
+pub const CNI_PLUGINS: &[&str] = &["bridge", "host-local", "loopback"];
 
 /// SHA-256 of each release artifact.
 ///
@@ -78,6 +94,19 @@ const CHECKSUMS: &[(&str, &str, &str)] = &[
         "crun",
         "aarch64",
         "cc1e8ec89aef1422e0741be196f9ed099e2e09d2f48f30f27cd44a22ef1f0342",
+    ),
+    // These two are the project's own published `.sha256` files, not
+    // ones computed here — containernetworking publishes them beside
+    // the tarballs, so the guarantee comes from upstream.
+    (
+        "cni-plugins",
+        "x86_64",
+        "b98f74a0f8522f0a83867178729c1aa70f2158f90c45a2ca8fa791db1c76b303",
+    ),
+    (
+        "cni-plugins",
+        "aarch64",
+        "56171987d3947707c3563db2f4001bccaf50fd63468611b9f3cbecb1375ee7ec",
     ),
 ];
 
@@ -107,11 +136,13 @@ pub struct Status {
     pub containerd: Option<String>,
     pub crun: Option<String>,
     pub socket: bool,
+    /// Every plugin in [`CNI_PLUGINS`] is present.
+    pub cni: bool,
 }
 
 impl Status {
     pub fn ready(&self) -> bool {
-        self.containerd.is_some() && self.crun.is_some() && self.socket
+        self.containerd.is_some() && self.crun.is_some() && self.socket && self.cni
     }
 }
 
@@ -120,7 +151,18 @@ pub fn status() -> Status {
         containerd: version_of("containerd", &["--version"]),
         crun: version_of(CRUN_PATH, &["--version"]).or_else(|| version_of("crun", &["--version"])),
         socket: Path::new(SOCKET).exists(),
+        cni: cni_installed(),
     }
+}
+
+/// Are the plugins we invoke all there?
+///
+/// Checked by name rather than by directory: a half-extracted tarball
+/// leaves a `/opt/cni/bin` that exists and cannot build a network.
+fn cni_installed() -> bool {
+    CNI_PLUGINS
+        .iter()
+        .all(|plugin| Path::new(CNI_BIN_DIR).join(plugin).exists())
 }
 
 /// First line of `<program> --version`, or `None` if it is not there.
@@ -150,6 +192,17 @@ pub fn ensure() -> RuntimeResult<String> {
     if status().crun.is_none() {
         install_crun()?;
         done.push(format!("crun {CRUN_VERSION}"));
+    }
+    if !cni_installed() {
+        install_cni()?;
+        done.push(format!("cni plugins {CNI_VERSION}"));
+    }
+    // Asked of the machine, not of this run: a node that was rebooted
+    // without the sysctl file, or one where somebody turned it off,
+    // needs it turned back on.
+    if !forwarding_enabled() {
+        enable_forwarding()?;
+        done.push("ip forwarding".into());
     }
 
     // Each of these asks about the *thing*, not about whether this run
@@ -259,6 +312,54 @@ fn install_crun() -> RuntimeResult<()> {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(CRUN_PATH, std::fs::Permissions::from_mode(0o755))?;
     }
+    Ok(())
+}
+
+fn install_cni() -> RuntimeResult<()> {
+    let arch = arch()?;
+    let url = format!(
+        "https://github.com/containernetworking/plugins/releases/download/v{CNI_VERSION}\
+         /cni-plugins-linux-{}-v{CNI_VERSION}.tgz",
+        release_arch(arch)
+    );
+
+    let tarball = download("cni-plugins", &url, checksum_for("cni-plugins", arch)?)?;
+    tracing::info!(version = CNI_VERSION, "installing cni plugins");
+
+    // The tarball is flat: the binaries sit at its root.
+    std::fs::create_dir_all(CNI_BIN_DIR)?;
+    run(
+        "tar",
+        &["-xzf", &tarball.to_string_lossy(), "-C", CNI_BIN_DIR],
+    )?;
+    let _ = std::fs::remove_file(&tarball);
+    Ok(())
+}
+
+/// Where the sysctl lives, so it survives a reboot.
+pub const SYSCTL_PATH: &str = "/etc/sysctl.d/99-wabot-deploy.conf";
+
+fn forwarding_enabled() -> bool {
+    std::fs::read_to_string("/proc/sys/net/ipv4/ip_forward")
+        .map(|value| value.trim() == "1")
+        .unwrap_or(false)
+}
+
+/// Let packets cross between the project bridges and the outside.
+///
+/// Without it a container gets an address, reaches its own bridge, and
+/// nothing else — which looks like a broken image rather than a
+/// missing kernel flag. Written to `/etc/sysctl.d` as well as applied,
+/// because a reboot would otherwise take the network away again.
+fn enable_forwarding() -> RuntimeResult<()> {
+    std::fs::create_dir_all("/etc/sysctl.d")?;
+    std::fs::write(
+        SYSCTL_PATH,
+        "# Written by wabot-deploy. Containers live on per-project\n\
+         # bridges, and reaching anything past them is forwarding.\n\
+         net.ipv4.ip_forward = 1\n",
+    )?;
+    run("sysctl", &["-q", "-w", "net.ipv4.ip_forward=1"])?;
     Ok(())
 }
 

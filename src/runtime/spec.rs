@@ -19,15 +19,17 @@
 //! runtime error with no context. That is why this file is explicit
 //! rather than clever.
 //!
-//! ## Network namespace, deliberately shared
+//! ## Network namespace, when there is one
 //!
-//! The container joins the host's network namespace, so it listens on
-//! a host port and the edge proxies to `127.0.0.1:port`. The
-//! alternative — a veth pair per container, an address to allocate,
-//! iptables rules — is a network stack this node does not need yet.
-//! The cost is real and worth naming: containers see each other's
-//! ports, and two that want the same port cannot both have it. Port
-//! allocation is the node's job because of this.
+//! A deployed service gets its own, prepared by CNI before the
+//! container is created, and the spec joins it by path. Then the port
+//! inside the container is the port the image chose, and the proxy
+//! reaches it at the container's address.
+//!
+//! Without one the container shares the host's network, which is what
+//! `containerd --run` does for a throwaway check: no address to
+//! allocate and no namespace to clean up, at the price of every
+//! container seeing the host's ports.
 
 use oci_spec::runtime::{
     Capability, LinuxBuilder, LinuxCapabilitiesBuilder, LinuxNamespace, LinuxNamespaceBuilder,
@@ -59,6 +61,16 @@ pub struct ContainerRequest {
     /// `PORT`. Most runtimes read it, and the ones that do not are
     /// configured with it anyway.
     pub port: Option<u16>,
+    /// The network namespace to join, if any. `None` shares the
+    /// host's.
+    pub network_ns: Option<std::path::PathBuf>,
+    /// A file to bind over `/etc/resolv.conf`.
+    ///
+    /// Needed exactly when `network_ns` is set: inside its own
+    /// namespace the container cannot reach a resolver listening on
+    /// the host's loopback, which is what `/etc/resolv.conf` names on
+    /// any machine running systemd-resolved.
+    pub resolv_conf: Option<std::path::PathBuf>,
 }
 
 /// Build the spec for one container.
@@ -95,7 +107,7 @@ pub fn build(image: &ImageConfig, request: &ContainerRequest) -> SpecResult<Spec
         .map_err(|error| SpecError::Build(error.to_string()))?;
 
     let linux = LinuxBuilder::default()
-        .namespaces(namespaces()?)
+        .namespaces(namespaces(request.network_ns.as_deref())?)
         .masked_paths(masked_paths())
         .readonly_paths(readonly_paths())
         .build()
@@ -114,7 +126,7 @@ pub fn build(image: &ImageConfig, request: &ContainerRequest) -> SpecResult<Spec
                 .map_err(|error| SpecError::Build(error.to_string()))?,
         )
         .hostname("wabot")
-        .mounts(mounts())
+        .mounts(mounts(request.resolv_conf.as_deref()))
         .linux(linux)
         .build()
         .map_err(|error| SpecError::Build(error.to_string()))
@@ -191,7 +203,7 @@ fn user(image: &ImageConfig) -> SpecResult<oci_spec::runtime::User> {
 ///
 /// Not a preference — `/proc` alone is the difference between a
 /// container that runs and one that exits before its first instruction.
-fn mounts() -> Vec<Mount> {
+fn mounts(resolv_conf: Option<&std::path::Path>) -> Vec<Mount> {
     let mount = |destination: &str, kind: &str, source: &str, options: &[&str]| {
         MountBuilder::default()
             .destination(destination)
@@ -202,7 +214,7 @@ fn mounts() -> Vec<Mount> {
             .expect("a constant mount is well-formed")
     };
 
-    vec![
+    let mut mounts = vec![
         mount("/proc", "proc", "proc", &["nosuid", "noexec", "nodev"]),
         mount(
             "/dev",
@@ -244,16 +256,30 @@ fn mounts() -> Vec<Mount> {
             "sysfs",
             &["nosuid", "noexec", "nodev", "ro"],
         ),
-    ]
+    ];
+
+    // Read-only: the file is the node's, shared by every container,
+    // and one of them rewriting it would change every other's DNS.
+    if let Some(path) = resolv_conf {
+        mounts.push(mount(
+            "/etc/resolv.conf",
+            "bind",
+            &path.to_string_lossy(),
+            &["rbind", "ro", "nosuid", "noexec", "nodev"],
+        ));
+    }
+    mounts
 }
 
 /// The namespaces that make this a container.
 ///
-/// **No network namespace.** The container shares the host's, so it
-/// listens on a host port the edge can reach at `127.0.0.1`. See the
-/// module docs for what that costs.
-fn namespaces() -> SpecResult<Vec<LinuxNamespace>> {
-    [
+/// The network one is listed only when there is a path to join. A
+/// `Network` namespace with no path means "make a fresh one", which
+/// would be an isolated container with no route anywhere — the CNI
+/// plugins have to have set it up beforehand for the address in it to
+/// exist.
+fn namespaces(network_ns: Option<&std::path::Path>) -> SpecResult<Vec<LinuxNamespace>> {
+    let mut namespaces: Vec<LinuxNamespace> = [
         LinuxNamespaceType::Pid,
         LinuxNamespaceType::Ipc,
         LinuxNamespaceType::Uts,
@@ -266,7 +292,18 @@ fn namespaces() -> SpecResult<Vec<LinuxNamespace>> {
             .build()
             .map_err(|error| SpecError::Build(error.to_string()))
     })
-    .collect()
+    .collect::<SpecResult<Vec<_>>>()?;
+
+    if let Some(path) = network_ns {
+        namespaces.push(
+            LinuxNamespaceBuilder::default()
+                .typ(LinuxNamespaceType::Network)
+                .path(path)
+                .build()
+                .map_err(|error| SpecError::Build(error.to_string()))?,
+        );
+    }
+    Ok(namespaces)
 }
 
 /// What a process inside gets to do.

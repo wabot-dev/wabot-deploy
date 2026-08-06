@@ -108,6 +108,81 @@ pub async fn find(database: &SqliteDatabase, id: &str) -> PlatformResult<Option<
         .await?)
 }
 
+/// The project's slot in the address space, allocating one if it has
+/// none.
+///
+/// Allocated here rather than at creation: a project that never runs
+/// anything should not be holding one of the 254 subnets. The unique
+/// index is what makes it safe when two deploys race — the loser sees
+/// a constraint failure and reads back the winner's value, which is
+/// the correct outcome rather than two projects on one bridge.
+pub async fn ensure_network_index(database: &SqliteDatabase, id: &str) -> PlatformResult<u8> {
+    if let Some(index) = network_index(database, id).await? {
+        return Ok(index);
+    }
+
+    let project = id.to_string();
+    let taken: Vec<i64> = database
+        .read(|connection| {
+            connection
+                .prepare(
+                    "SELECT \"network_index\" FROM project \
+                     WHERE \"network_index\" IS NOT NULL ORDER BY 1",
+                )?
+                .query_map([], |row| row.get(0))?
+                .collect()
+        })
+        .await?;
+
+    // The lowest free slot, so deleting a project makes its subnet
+    // available again rather than walking the space until it runs out.
+    let next = (1i64..=254)
+        .find(|candidate| !taken.contains(candidate))
+        .ok_or_else(|| {
+            PlatformError::Refused(
+                "every subnet in 10.42.0.0/16 is allocated — that is 254 projects with \
+                 something deployed"
+                    .into(),
+            )
+        })?;
+
+    let claimed = database
+        .write(move |connection| {
+            connection.execute(
+                "UPDATE project SET \"network_index\" = ?2 \
+                 WHERE \"id\" = ?1 AND \"network_index\" IS NULL",
+                (project, next),
+            )
+        })
+        .await;
+
+    match claimed {
+        Ok(1) => Ok(next as u8),
+        // Either somebody else claimed this project's slot first, or
+        // the index was taken between the read and the write. Both are
+        // answered by looking again.
+        _ => network_index(database, id)
+            .await?
+            .ok_or_else(|| PlatformError::Refused("could not allocate a subnet".into())),
+    }
+}
+
+async fn network_index(database: &SqliteDatabase, id: &str) -> PlatformResult<Option<u8>> {
+    let id = id.to_string();
+    let value: Option<Option<i64>> = database
+        .read(move |connection| {
+            connection
+                .query_row(
+                    "SELECT \"network_index\" FROM project WHERE \"id\" = ?1",
+                    [id],
+                    |row| row.get(0),
+                )
+                .optional()
+        })
+        .await?;
+    Ok(value.flatten().map(|index| index as u8))
+}
+
 /// Remove a project and every service under it.
 ///
 /// The caller stops the containers first — this only removes rows, and

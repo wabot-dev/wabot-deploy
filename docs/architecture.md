@@ -1115,3 +1115,94 @@ el certificado real de Let's Encrypt y sin `-k`:
 | sign-out | cookie caducada y la sesión revocada en el servidor |
 | segundo `install` | "already running this binary", token intacto |
 | RSS | 14,4 MB |
+
+### 8.8 M5 — los contenedores corren de verdad
+
+De una fila a un contenedor: red CNI por proyecto, despliegue al crear,
+parar/arrancar, y reconciliación al arrancar el nodo. 210 tests, `fmt` y
+`clippy -D warnings` limpios.
+
+**Por qué la red llegó ahora y no después**
+
+El plan era servicios primero, CNI después. Pero con el netns del host
+compartido, `container_port` no significa nada: el proceso escucha en un
+puerto *del nodo*, así que dos proyectos no pueden usar el 8080 y
+`nginx:alpine` —que escucha en el 80 porque lo dice su config— choca con
+el edge. Un contenedor que hay que modificar para poder desplegarlo no es
+una plataforma de despliegue. Así que la red vino con el despliegue, no
+después.
+
+Un bridge por proyecto (`wd-<n>`) y un `/24` dentro de `10.42.0.0/16`.
+Contenedores del mismo proyecto se ven entre sí; de proyectos distintos
+no, porque son dominios L2 separados y nada rutea entre ellos. El índice
+se asigna en el primer despliegue, no al crear el proyecto: hay 254, y un
+proyecto que no corre nada no debería tener uno.
+
+Invocamos los plugins directamente en vez de usar una librería CNI: el
+protocolo es "ejecuta este binario con cinco variables de entorno y el
+config por stdin", y una librería para eso es más dependencia que código.
+
+**Observado, no recordado**
+
+El badge sale de preguntarle a containerd, no de una columna que alguien
+escribió al pulsar un botón. Un nodo que reporta lo que le dijeron es un
+nodo que miente después del primer crash. `Unknown` es un estado propio y
+distinto de `Not deployed`: "el runtime no contesta" y "esto no está
+desplegado" son problemas distintos, y confundirlos manda a alguien a
+redesplegar un servicio sano.
+
+Reconciliar usa el mismo código que desplegar. Arrancar no tiene camino
+propio: pregunta, por cada servicio que debería estar corriendo, si lo
+está, y despliega los que no. Solo arranca cosas — un contenedor que
+ninguna fila reclama se deja en paz y se reporta, porque borrar lo que el
+nodo no entiende es como un reconciliador destruye datos.
+
+**Cuatro fallos, todos en el nodo, ninguno reproducible en local**
+
+1. **El ledger otra vez, y por tercera vez.** `Step::Runtime` estaba
+   marcado hecho, así que un nodo que ya tenía containerd nunca recibió
+   los plugins CNI que se añadieron a ese mismo paso. La corrección no es
+   otro parche: **el ledger registra, no decide**. Todos estos pasos son
+   convergentes por dentro —cada uno pregunta por la cosa— así que
+   saltárselos porque una ejecución anterior dijo "hecho" solo produce
+   respuestas viejas.
+
+2. **`project--service` no es un id que containerd acepte.** Su regex
+   —`^[A-Za-z0-9]+(?:[._-][A-Za-z0-9]+)*$`— permite separadores simples.
+   Ahora es `project.service`: un punto no puede aparecer dentro de un
+   slug, así que el id además se parte de vuelta sin ambigüedad, cosa que
+   con `-` no pasaría.
+
+3. **`setns: Invalid argument`, que no nombra ni a systemd ni a la
+   propagación.** `PrivateTmp`, `ProtectHome` y `ProtectSystem` ponen la
+   unidad en su propio mount namespace, y systemd lo deja **esclavo** del
+   host: los montajes entran, no salen. El bind mount de `/run/netns/<id>`
+   se quedaba dentro, y el shim de containerd —en otra unidad— veía solo
+   el fichero vacío que `ip netns` deja debajo. `MountFlags=shared` no lo
+   arregla; sigue siendo esclavo. Un demonio cuyo trabajo es construir
+   namespaces y montajes para la máquina no puede estar escondido del
+   árbol de montajes de la máquina. Hay un test que impide que vuelvan.
+
+4. **DNS que funciona para `wget` y no para `nslookup`.** El host daba
+   cuatro resolvers, los dos primeros IPv6, y el bridge del proyecto es
+   solo IPv4. `wget` recorre la lista y cae en los IPv4; `nslookup` prueba
+   el primero y dice "Network unreachable". Una lista de resolvers donde
+   el DNS funciona para unos programas y no para otros es peor que una
+   más corta.
+
+**Verificado en el nodo:**
+
+| | |
+| --- | --- |
+| `install` | descarga los plugins CNI 1.9.1 (checksum publicado) y activa `ip_forward` |
+| reconciliar | levanta el servicio al arrancar: `attached 10.42.1.7 bridge=wd-1`, `deployed pid=…` |
+| HTTP al contenedor | `200` en 1,5 ms desde el host |
+| DNS dentro | `nslookup github.com` → `140.82.114.3` |
+| salida a internet | `wget https://example.com` desde el contenedor |
+| reinicio del nodo | el contenedor **no** se reinicia: reconcile lo ve corriendo y lo deja |
+| fugas | 1 netns, 1 reserva de IP, 1 snapshot activo — nada de los despliegues fallidos |
+| RSS | nodo 11,7 MB + shim 11,1 MB por contenedor |
+
+**Lo que todavía no hay:** ruta pública a un servicio. El contenedor se
+alcanza desde el nodo, no desde fuera — falta decidir el esquema de
+hostname y emitir certificado por ruta, que es el siguiente corte.

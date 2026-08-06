@@ -204,18 +204,24 @@ async fn setup_token(database: &SqliteDatabase, config: &Config) {
     }
 }
 
-/// Run one step, unless it is already done, and record how it went.
+/// Run one step and record how it went.
 ///
 /// A failure is recorded and returned rather than swallowed: the point
 /// of the ledger is that the next run knows where this one stopped.
+///
+/// **The ledger records; it does not gate.** Every step here is
+/// convergent on its own — each asks the machine about the thing and
+/// does nothing when the thing is already true — so skipping it
+/// because a previous run said "done" only makes the answer stale.
+/// That went wrong twice: a ledgered `Start` left the old binary
+/// running after an upgrade, and a ledgered `Runtime` meant a node
+/// that had containerd never got the CNI plugins added to that same
+/// step later. Both times the install printed success and the node
+/// was missing something.
 async fn step<F>(database: &SqliteDatabase, which: Step, what: &str, work: F) -> anyhow::Result<()>
 where
     F: FnOnce() -> anyhow::Result<String>,
 {
-    if ledger::is_done(database, which).await? {
-        return Ok(());
-    }
-
     println!("  {what}…");
     ledger::record(database, which, Status::Running, None).await?;
 

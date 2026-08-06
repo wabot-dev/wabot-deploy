@@ -26,6 +26,18 @@ pub async fn run(config: Config) -> anyhow::Result<i32> {
     // looking at the node.
     let control_plane = crate::api::routes(&container).merge(crate::console::routes(&container));
 
+    // Before the listeners: a node coming back up should have its
+    // containers back before it starts taking traffic for them.
+    // Never fatal — a node that cannot reach containerd must still
+    // serve the console, which is where somebody would go to find out
+    // why.
+    let deployer = crate::deploy::Deployer::new(database.clone(), &config.node.data_dir);
+    match deployer.reconcile().await {
+        Ok(0) => {}
+        Ok(started) => tracing::info!(started, "services restored"),
+        Err(error) => tracing::warn!(%error, "could not reconcile services"),
+    }
+
     let (edge, resolver) = crate::edge::build(&database, control_plane, &config).await?;
 
     let https: SocketAddr = (bind_address(&config), config.edge.https_port).into();

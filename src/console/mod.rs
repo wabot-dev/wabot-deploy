@@ -43,11 +43,20 @@ use crate::edge::certs;
 pub struct ConsoleState {
     pub(crate) database: Arc<SqliteDatabase>,
     pub(crate) config: Config,
+    pub(crate) deployer: Arc<crate::deploy::Deployer>,
 }
 
 impl ConsoleState {
     pub fn new(database: Arc<SqliteDatabase>, config: Config) -> Self {
-        Self { database, config }
+        let deployer = Arc::new(crate::deploy::Deployer::new(
+            database.clone(),
+            &config.node.data_dir,
+        ));
+        Self {
+            database,
+            config,
+            deployer,
+        }
     }
 }
 

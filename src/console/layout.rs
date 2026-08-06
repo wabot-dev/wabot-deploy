@@ -127,6 +127,17 @@ pub const CSS: &str = r#"
 .tile-name { margin: 0 0 var(--sp-2); font-weight: 600; }
 .tile-detail { margin: 0; color: rgb(var(--c-fg-muted)); font-size: var(--fs-sm); }
 
+/* The reason a service is not running, under the service it is about.
+   Full width because a containerd error is a paragraph, not a word. */
+.failure {
+  color: rgb(var(--c-danger-fg));
+  background: rgb(var(--c-danger-bg));
+  font-family: var(--font-mono);
+  font-size: var(--fs-sm);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
 .empty {
   padding: var(--sp-10) 0;
   color: rgb(var(--c-fg-muted));

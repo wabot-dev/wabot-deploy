@@ -146,47 +146,119 @@ impl ServiceApi {
         )
         .await
         {
-            Ok(_) => Ok(see_other(&format!("/projects/{}", project.slug))),
+            Ok(service) => {
+                // Deployed on creation. The alternative — create, then
+                // press Deploy — makes the common case two steps and
+                // leaves a row that describes nothing.
+                let _ = self.state.deployer.deploy(&project, &service).await;
+                Ok(see_other(&format!("/projects/{}", project.slug)))
+            }
             Err(error) => Ok(back_with_error(&form_url, &error.to_string())),
         }
     }
 
-    /// Remove a service.
-    ///
-    /// The row only. Nothing runs containers yet; once something does,
-    /// this stops it first — and the button already says so on the
-    /// project page.
+    /// Start (or restart) a service's container.
+    #[post("/projects/:project/services/:service/deploy")]
+    #[raw]
+    #[middleware(SessionMiddleware)]
+    async fn deploy(&self, request: Request) -> RestResult<Response> {
+        let Some((project, service, back)) = self.locate(request.uri().path()).await? else {
+            return Ok(see_other("/?error=no+such+service"));
+        };
+
+        // The failure is already on the row by the time this returns —
+        // `deploy` records it — so the page shows the reason under the
+        // service rather than in a redirect that the next click loses.
+        let _ = self.state.deployer.deploy(&project, &service).await;
+        Ok(see_other(&back))
+    }
+
+    /// Stop a service and take it off its project's network.
+    #[post("/projects/:project/services/:service/stop")]
+    #[raw]
+    #[middleware(SessionMiddleware)]
+    async fn stop(&self, request: Request) -> RestResult<Response> {
+        let Some((project, service, back)) = self.locate(request.uri().path()).await? else {
+            return Ok(see_other("/?error=no+such+service"));
+        };
+
+        match self.state.deployer.stop(&project, &service).await {
+            Ok(()) => Ok(see_other(&back)),
+            Err(error) => Ok(back_with_error(&back, &error.to_string())),
+        }
+    }
+
+    /// Remove a service, and the container behind it.
     #[post("/projects/:project/services/:service/delete")]
     #[raw]
     #[middleware(SessionMiddleware)]
     async fn delete(&self, request: Request) -> RestResult<Response> {
+        let Some((project, service, back)) = self.locate(request.uri().path()).await? else {
+            // Already gone is the outcome they asked for.
+            return Ok(see_other("/"));
+        };
+
+        // The container first. A row deleted while its container runs
+        // is a container nothing will ever clean up: the id is derived
+        // from the row, so losing the row loses the handle.
+        self.state.deployer.tear_down(&project, &service).await;
+        services::delete(&self.state.database, &service.id).await?;
+        Ok(see_other(&back))
+    }
+}
+
+impl ServiceApi {
+    /// The project and service this request is about, and where to send
+    /// the browser afterwards.
+    ///
+    /// `None` when the session is missing or either slug names nothing
+    /// — the caller turns that into a redirect, because at this point
+    /// there is no page to render an error onto.
+    ///
+    /// Takes the path rather than the request: holding a `&Request`
+    /// across an `await` would need `Body: Sync`, which it is not, and
+    /// the handler quietly stops being one axum will accept.
+    async fn locate(
+        &self,
+        path: &str,
+    ) -> RestResult<
+        Option<(
+            crate::platform::projects::Project,
+            services::Service,
+            String,
+        )>,
+    > {
         if signed_in(&self.auth).is_none() {
-            return Ok(see_other("/sign-in"));
+            return Ok(None);
         }
-
-        let path = request.uri().path().to_string();
-        let segments = super::auth::segments(&path);
-        let ["projects", project_slug, "services", service_slug, "delete"] = segments.as_slice()
-        else {
-            return Ok(see_other("/?error=no+such+service"));
+        let Some((project_slug, service_slug)) = service_path(path) else {
+            return Ok(None);
         };
-
         let Some(project) = projects::find(&self.state.database, project_slug).await? else {
-            return Ok(see_other("/?error=no+such+project"));
+            return Ok(None);
         };
-        let back = format!("/projects/{}", project.slug);
-
         let found = services::all(&self.state.database, Some(&project.id))
             .await?
             .into_iter()
-            .find(|service| service.slug == *service_slug);
+            .find(|service| service.slug == service_slug);
 
-        // Already gone is the outcome they asked for, so it is not an
-        // error to report.
-        if let Some(service) = found {
-            services::delete(&self.state.database, &service.id).await?;
+        let back = format!("/projects/{}", project.slug);
+        Ok(found.map(|service| (project, service, back)))
+    }
+}
+
+/// The project and service a `/projects/…/services/…/…` path names.
+///
+/// `#[raw]` hands over the whole request and no extracted parameters,
+/// so both slugs come out of the URI here.
+fn service_path(path: &str) -> Option<(&str, &str)> {
+    match super::auth::segments(path).as_slice() {
+        ["projects", project, "services", service, _action]
+            if !project.is_empty() && !service.is_empty() =>
+        {
+            Some((project, service))
         }
-        Ok(see_other(&back))
+        _ => None,
     }
 }
 
@@ -314,6 +386,48 @@ mod tests {
             stored.env.get("DSN").map(String::as_str),
             Some("postgres://a=b")
         );
+    }
+
+    /// A deployment that could not happen has to say so on the page,
+    /// not just in a log. This runs where containerd is not — a
+    /// developer's machine — which is exactly the failure an operator
+    /// meets when the socket is down.
+    #[tokio::test]
+    async fn a_deployment_that_fails_says_why_on_the_page() {
+        let console = Console::new().await;
+        let cookie = console.signed_in().await;
+        let slug = project(&console, &cookie).await;
+
+        console
+            .harness
+            .post(&format!("/projects/{slug}/services"))
+            .header("cookie", &cookie)
+            .form(&[("name", "web"), ("image", "docker.io/library/nginx:alpine")])
+            .send()
+            .await
+            .assert_status(StatusCode::SEE_OTHER);
+
+        let stored = services::all(&console.database, None)
+            .await
+            .expect("query")
+            .pop()
+            .expect("one service");
+        let failure = stored.last_error.expect("the reason was recorded");
+        assert!(
+            failure.contains("containerd"),
+            "the reason names the runtime: {failure}"
+        );
+        assert!(stored.address.is_none(), "nothing to route to");
+
+        let body = console
+            .harness
+            .get("/projects/my-api")
+            .header("cookie", &cookie)
+            .send()
+            .await
+            .body;
+        assert!(body.contains("class=\"failure\""), "the row is rendered");
+        assert!(body.contains("containerd"), "with the reason in it");
     }
 
     #[tokio::test]

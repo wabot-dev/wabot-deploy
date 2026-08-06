@@ -10,6 +10,7 @@ use wabot::rest::axum::response::Response;
 use wabot::rest::RestResult;
 use wabot::ui::hypertext::IntoView;
 
+use crate::deploy::Observed;
 use crate::platform::{projects, services};
 
 use super::auth::{
@@ -132,6 +133,16 @@ impl ProjectPages {
         let services = services::all(&self.state.database, Some(&project.id)).await?;
         let new_service = format!("/projects/{}/services/new", project.slug);
 
+        // Asked of containerd, one service at a time. Sequential
+        // because a project has a handful of services and each answer
+        // is a round trip to a local socket — a fan-out here would buy
+        // milliseconds and cost the ability to read the code.
+        let mut rows = Vec::with_capacity(services.len());
+        for service in services {
+            let observed = self.state.deployer.observe(&project, &service).await;
+            rows.push((service, observed));
+        }
+
         layout::head(&project.name);
         Ok(rsx! {
             (layout::style_tag())
@@ -148,7 +159,7 @@ impl ProjectPages {
                     (layout::error_note(message))
                 }
 
-                @if services.is_empty() {
+                @if rows.is_empty() {
                     <section class="empty">
                         <p>("No services yet.")</p>
                         <a class="btn" href=(&new_service)>("Create service")</a>
@@ -159,7 +170,7 @@ impl ProjectPages {
                             <tr>
                                 <th>("Service")</th>
                                 <th>("Image")</th>
-                                <th>("Port")</th>
+                                <th>("Address")</th>
                                 <th>("State")</th>
                                 // The delete column. Headed by nothing,
                                 // because "Delete" over a column of
@@ -169,17 +180,41 @@ impl ProjectPages {
                             </tr>
                         </thead>
                         <tbody>
-                            @for service in &services {
+                            @for (service, observed) in &rows {
                                 <tr>
                                     <td>(&service.name)</td>
                                     <td class="mono">(&service.image)</td>
                                     <td class="mono">(
-                                        service.container_port
-                                            .map(|port| port.to_string())
-                                            .unwrap_or_else(|| "—".into())
+                                        match (&service.address, service.container_port) {
+                                            (Some(address), Some(port)) => format!("{address}:{port}"),
+                                            (Some(address), None) => address.clone(),
+                                            (None, Some(port)) => format!("(:{port})"),
+                                            (None, None) => "—".into(),
+                                        }
                                     )</td>
-                                    <td>(state_badge(service))</td>
-                                    <td>
+                                    <td>(state_badge(observed))</td>
+                                    <td class="row">
+                                        @if matches!(observed, Observed::Running { .. }) {
+                                            <form method="post"
+                                                  action=(format!(
+                                                      "/projects/{}/services/{}/stop",
+                                                      project.slug, service.slug
+                                                  ))>
+                                                <button class="btn btn-secondary btn-sm" type="submit">
+                                                    ("Stop")
+                                                </button>
+                                            </form>
+                                        } @else {
+                                            <form method="post"
+                                                  action=(format!(
+                                                      "/projects/{}/services/{}/deploy",
+                                                      project.slug, service.slug
+                                                  ))>
+                                                <button class="btn btn-sm" type="submit">
+                                                    ("Deploy")
+                                                </button>
+                                            </form>
+                                        }
                                         <form method="post"
                                               action=(format!(
                                                   "/projects/{}/services/{}/delete",
@@ -191,6 +226,11 @@ impl ProjectPages {
                                         </form>
                                     </td>
                                 </tr>
+                                @if let Some(failure) = &service.last_error {
+                                    <tr>
+                                        <td colspan="5" class="failure">(failure)</td>
+                                    </tr>
+                                }
                             }
                         </tbody>
                     </table>
@@ -214,31 +254,35 @@ impl ProjectPages {
     }
 }
 
-/// What a service is doing, in the three words that fit in a cell.
+/// What a service is doing, from containerd rather than from a column.
 ///
-/// `last_error` wins over the desired state: a service that is meant to
-/// be running and is not is the thing somebody opened this page to
-/// find out about.
-fn state_badge(service: &services::Service) -> impl Renderable + '_ {
-    let failed = service.last_error.is_some();
-    let running = service.desired_state == services::DesiredState::Running;
-
+/// The distinction the badge exists to make: "Running" is a task with a
+/// pid, and everything else says which kind of not-running it is. A
+/// runtime that cannot be reached is its own answer, because
+/// redeploying is the wrong response to it.
+fn state_badge(observed: &Observed) -> impl Renderable + '_ {
     rsx! {
-        @if failed {
-            <span class="badge badge-danger">
-                <span class="dot dot-danger"></span>("Failed")
-            </span>
-        } @else if running {
-            // Nothing starts containers yet, so "running" is a stated
-            // intention rather than an observation, and the badge says
-            // which of the two it is.
-            <span class="badge badge-info">
-                <span class="dot dot-info dot-pulse"></span>("Pending")
-            </span>
-        } @else {
-            <span class="badge badge-warning">
-                <span class="dot dot-warning"></span>("Stopped")
-            </span>
+        @match observed {
+            Observed::Running { pid, .. } => {
+                <span class="badge badge-success" title=(format!("pid {pid}"))>
+                    <span class="dot dot-success"></span>("Running")
+                </span>
+            }
+            Observed::Stopped { exit_code } => {
+                <span class="badge badge-danger">
+                    <span class="dot dot-danger"></span>("Exited ")(exit_code)
+                </span>
+            }
+            Observed::Absent => {
+                <span class="badge badge-warning">
+                    <span class="dot dot-warning"></span>("Not deployed")
+                </span>
+            }
+            Observed::Unknown(_) => {
+                <span class="badge badge-info">
+                    <span class="dot dot-info"></span>("Unknown")
+                </span>
+            }
         }
     }
 }

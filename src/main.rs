@@ -17,6 +17,7 @@ mod commands;
 mod config;
 mod console;
 mod db;
+mod deploy;
 mod edge;
 mod ledger;
 mod platform;

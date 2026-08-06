@@ -59,6 +59,9 @@ pub struct Service {
     pub env: BTreeMap<String, String>,
     pub desired_state: DesiredState,
     pub last_error: Option<String>,
+    /// The container's address on its project's bridge, while it is
+    /// running. `None` means nothing to proxy to.
+    pub address: Option<String>,
 }
 
 impl Service {
@@ -68,11 +71,15 @@ impl Service {
     /// Derived rather than stored: it has to be reconstructible from
     /// the row alone, because reconciliation on boot starts from rows
     /// and asks containerd what it has.
-    // See the note above `allocate_port`: called by the deploy path,
-    // which lands next.
-    #[allow(dead_code)]
+    ///
+    /// A dot joins them, for two reasons that agree. containerd
+    /// validates ids against `^[A-Za-z0-9]+(?:[._-][A-Za-z0-9]+)*$`,
+    /// which allows single separators only — `project--service` is
+    /// refused outright, as this found out on a real node. And a slug
+    /// is `[a-z0-9-]`, so a dot cannot occur inside either half: the
+    /// id parses back apart unambiguously, which `-` would not.
     pub fn container_id(&self, project_slug: &str) -> String {
-        format!("{project_slug}--{}", self.slug)
+        format!("{project_slug}.{}", self.slug)
     }
 }
 
@@ -112,6 +119,7 @@ pub async fn create(
         env: env.iter().cloned().collect(),
         desired_state: DesiredState::Running,
         last_error: None,
+        address: None,
     };
 
     let row = service.clone();
@@ -188,7 +196,7 @@ pub async fn all(
         .read(move |connection| {
             let sql = "SELECT \"id\", \"project_id\", \"name\", \"slug\", \"image\", \
                        \"container_port\", \"host_port\", \"env\", \"desired_state\", \
-                       \"last_error\" FROM service";
+                       \"last_error\", \"address\" FROM service";
             match filter {
                 Some(project) => connection
                     .prepare(&format!(
@@ -213,7 +221,7 @@ pub async fn find(database: &SqliteDatabase, id: &str) -> PlatformResult<Option<
                 .query_row(
                     "SELECT \"id\", \"project_id\", \"name\", \"slug\", \"image\", \
                      \"container_port\", \"host_port\", \"env\", \"desired_state\", \
-                     \"last_error\" FROM service WHERE \"id\" = ?1",
+                     \"last_error\", \"address\" FROM service WHERE \"id\" = ?1",
                     [id],
                     decode,
                 )
@@ -237,6 +245,7 @@ fn decode(row: &wabot::sqlite::rusqlite::Row<'_>) -> wabot::sqlite::rusqlite::Re
         env: serde_json::from_str(&env).unwrap_or_default(),
         desired_state: DesiredState::parse(&row.get::<_, String>(8)?),
         last_error: row.get(9)?,
+        address: row.get(10)?,
     })
 }
 
@@ -345,6 +354,26 @@ pub async fn set_last_error(
     Ok(())
 }
 
+/// Where the proxy reaches this service, or `None` because it is not
+/// running.
+pub async fn set_address(
+    database: &SqliteDatabase,
+    service_id: &str,
+    address: Option<&str>,
+) -> PlatformResult<()> {
+    let (id, address) = (service_id.to_string(), address.map(str::to_string));
+    database
+        .write(move |connection| {
+            connection.execute(
+                "UPDATE service SET \"address\" = ?2, \"updated_at\" = ?3 WHERE \"id\" = ?1",
+                (id, address, now_ms()),
+            )?;
+            Ok(())
+        })
+        .await?;
+    Ok(())
+}
+
 pub async fn delete(database: &SqliteDatabase, service_id: &str) -> PlatformResult<()> {
     let id = service_id.to_string();
     database
@@ -358,6 +387,46 @@ pub async fn delete(database: &SqliteDatabase, service_id: &str) -> PlatformResu
 
 #[cfg(test)]
 mod tests {
+    /// containerd's own rule, copied from the error it answers with.
+    /// A container id it refuses is a deployment that fails after the
+    /// network is already built.
+    #[test]
+    fn a_container_id_is_one_containerd_accepts() {
+        let service = Service {
+            id: "svc-1".into(),
+            project_id: "prj-1".into(),
+            name: "nginx".into(),
+            slug: "nginx".into(),
+            image: "docker.io/library/nginx:alpine".into(),
+            container_port: Some(80),
+            host_port: None,
+            env: Default::default(),
+            desired_state: DesiredState::Running,
+            last_error: None,
+            address: None,
+        };
+
+        let id = service.container_id("first-project");
+        assert_eq!(id, "first-project.nginx");
+
+        assert!(containerd_accepts(&id), "containerd would refuse {id}");
+        // The shape that broke it: a doubled separator.
+        assert!(!containerd_accepts("first-project--nginx"));
+        assert!(!containerd_accepts("-leading"));
+        assert!(!containerd_accepts("trailing-"));
+    }
+
+    /// containerd's rule — `^[A-Za-z0-9]+(?:[._-][A-Za-z0-9]+)*$` —
+    /// spelled out rather than pulled in as a regex engine: runs of
+    /// alphanumerics, joined by single separators, starting and ending
+    /// with a run.
+    fn containerd_accepts(id: &str) -> bool {
+        !id.is_empty()
+            && id
+                .split(['.', '_', '-'])
+                .all(|part| !part.is_empty() && part.chars().all(|c| c.is_ascii_alphanumeric()))
+    }
+
     use super::*;
 
     async fn project() -> (SqliteDatabase, String) {
@@ -534,7 +603,7 @@ mod tests {
         let service = create(&database, &project_id, "My API", "nginx:alpine", None, &[])
             .await
             .expect("created");
-        assert_eq!(service.container_id("demo"), "demo--my-api");
+        assert_eq!(service.container_id("demo"), "demo.my-api");
     }
 
     /// A row with unreadable JSON should list without its environment

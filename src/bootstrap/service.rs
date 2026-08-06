@@ -220,9 +220,22 @@ TimeoutStopSec=45
 # fails in ways that are hard to diagnose.
 LimitNOFILE=65535
 NoNewPrivileges=yes
-ProtectHome=yes
-ProtectSystem=full
-PrivateTmp=yes
+
+# No PrivateTmp, ProtectHome or ProtectSystem, and the reason is not
+# an oversight.
+#
+# Each of those puts the unit in its own mount namespace, and systemd
+# makes that namespace a *slave* of the host's: mounts propagate in,
+# never out. This node creates network namespaces — `/run/netns/<id>`,
+# which is a bind mount — and containerd's shim, in a different unit,
+# has to open them. From a slave namespace the shim sees only the empty
+# placeholder file `ip netns` leaves behind, and refuses the container
+# with `setns: Invalid argument`. `MountFlags=shared` does not fix it;
+# the namespace stays slave to the host either way.
+#
+# So the trade is stated rather than discovered: a daemon whose job is
+# building namespaces and mounts for the machine cannot be hidden from
+# the machine's own mount tree.
 
 [Install]
 WantedBy=multi-user.target
@@ -279,6 +292,41 @@ mod tests {
         assert!(unit.contains("TimeoutStopSec=45"));
     }
 
+    /// The hardening that had to go, and must not come back.
+    ///
+    /// Each of these puts the unit in its own mount namespace, which
+    /// systemd makes a slave of the host's: mounts propagate in, never
+    /// out. The network namespaces this node builds then never reach
+    /// containerd's shim, and every container is refused with `setns:
+    /// Invalid argument` — an error that names neither systemd nor
+    /// propagation, and cost two deploys to trace.
+    #[test]
+    fn the_unit_lets_network_namespaces_reach_containerd() {
+        // Directives only: the comment in the unit names each of these
+        // to explain their absence, and a plain `contains` would match
+        // the explanation.
+        let unit = unit();
+        let directives: Vec<&str> = unit
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.starts_with('#'))
+            .collect();
+
+        for isolating in [
+            "PrivateTmp=",
+            "ProtectHome=",
+            "ProtectSystem=",
+            "PrivateMounts=",
+        ] {
+            assert!(
+                !directives.iter().any(|line| line.starts_with(isolating)),
+                "{isolating} puts the unit in a mount namespace that is slave to the \
+                 host, so the network namespaces it creates never reach containerd's \
+                 shim — which then refuses every container with `setns: Invalid argument`"
+            );
+        }
+    }
+
     /// The node cannot start before containerd, and must come back
     /// after a crash.
     #[test]
@@ -329,13 +377,12 @@ mod tests {
         assert!(same_contents(&a, &c).expect("compare"));
     }
 
+    /// What hardening is left after the mount-namespace ones had to
+    /// go — see the test above for why they did.
     #[test]
-    fn the_unit_hardening_is_present_but_not_absurd() {
+    fn the_unit_keeps_the_hardening_that_costs_nothing() {
         let unit = unit();
         assert!(unit.contains("NoNewPrivileges=yes"));
-        assert!(unit.contains("ProtectHome=yes"));
-        // Not `ProtectSystem=strict`: the node writes /etc and
-        // /usr/local/bin during an in-place upgrade.
-        assert!(unit.contains("ProtectSystem=full"));
+        assert!(unit.contains("LimitNOFILE=65535"));
     }
 }
