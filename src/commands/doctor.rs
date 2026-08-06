@@ -105,8 +105,9 @@ pub async fn run(config: Config, config_path: &Path) -> anyhow::Result<i32> {
                     format!("{days}d left")
                 };
                 println!(
-                    "  {:<28} {:<14} {state}",
-                    certificate.domain, certificate.issuer
+                    "  {:<38} {:<14} {state}",
+                    certificate.domain,
+                    short_issuer(&certificate.issuer)
                 );
                 println!("    covers: {}", certificate.names.join(", "));
             }
@@ -180,6 +181,20 @@ pub async fn run(config: Config, config_path: &Path) -> anyhow::Result<i32> {
 
     database.close().await?;
     finish(problems)
+}
+
+/// A directory URL is what gets stored, and it is unreadable in a
+/// column. The well-known ones get a name; anything else keeps its
+/// host, which is the part that identifies it.
+fn short_issuer(issuer: &str) -> String {
+    match issuer {
+        "self-signed" => "self-signed".to_string(),
+        url if url.contains("acme-staging-v02.api.letsencrypt.org") => {
+            "letsencrypt-staging".to_string()
+        }
+        url if url.contains("acme-v02.api.letsencrypt.org") => "letsencrypt".to_string(),
+        url => url.split('/').nth(2).unwrap_or(url).to_string(),
+    }
 }
 
 fn now_ms() -> i64 {

@@ -897,6 +897,25 @@ background. 63 tests, `fmt` y `clippy -D warnings` limpios.
    `default-features = false` + feature `ring`, que propaga también a
    hyper-rustls: un solo backend criptográfico en el binario.
 
+**Un bug que solo apareció en el nodo real, y era del tipo peor**
+
+Probé contra staging (funcionó), cambié a producción, reinicié — y el
+nodo **siguió sirviendo el certificado de staging**. Sin error, sin
+aviso, sin nada en el log. Todo parecía bien y ningún navegador
+confiaba en el sitio.
+
+La causa era mía: `existing.issuer.starts_with("acme")` matcheaba tanto
+`acme` como `acme-staging`, así que el certificado de staging pasaba
+por "ya tenemos uno de una autoridad ACME y no ha caducado". La
+corrección es guardar **la URL del directorio** como emisor y comparar
+exacto — que además es la representación honesta: "este certificado
+vino de esta autoridad".
+
+Lo que ningún test local habría cazado, porque el escenario es un
+cambio de configuración entre dos ejecuciones. El test de regresión que
+añadí sí lo caza: verifiqué que **falla con el bug reintroducido**
+(`Ok(false)`, el síntoma silencioso exacto) y pasa con la corrección.
+
 **Decisiones**
 
 - **Producción por defecto**, `--acme-staging` para probar. Un default
@@ -922,11 +941,31 @@ background. 63 tests, `fmt` y `clippy -D warnings` limpios.
   del certificado — para que la razón esté donde el operador mira, no
   en el journal.
 
-**Herramienta nueva:** `scripts/build-linux.sh` compila el binario Linux
-desde macOS con Docker. Las fuentes se pasan por stdin en un tar en vez
-de montarse: Docker Desktop solo comparte unos pocos directorios del
-host, y un proyecto fuera de ellos se monta vacío — fallando con un
-"could not find Cargo.toml" que no dice nada del problema real.
+**Verificado contra Let's Encrypt de verdad**, en una VM Ubuntu 26.04
+con `wabot-deploy-testing.dev.tobaw.shop`:
+
+| | |
+| --- | --- |
+| `install` sin listener | orden `Invalid`, aviso claro, **exit 0** — no aborta |
+| `serve` | obtiene el certificado y lo instala **sin reiniciar** |
+| staging → producción | detecta el cambio de autoridad y reemite |
+| `curl` sin `-k` | `HTTP 200 · TLS 0` — cadena válida, emisor `CN=YE2` |
+| reinicio | **0 llamadas ACME** — el rate limit protegido |
+| SNI | el dominio recibe el de Let's Encrypt; `localhost` y sin-SNI, el local |
+| RSS | 12 MB |
+
+**Herramientas nuevas:** `scripts/deploy.sh` compila en el nodo por SSH
+—más rápido que emular la arquitectura en local, y elimina la clase
+entera de "el binario no corre allí"—, y `scripts/build-linux.sh` usa
+Docker para un objetivo sin toolchain. Este último resultó impráctico
+en Apple Silicon: 30 min emulando amd64 y un error de E/S de Docker
+Desktop.
+
+**Dos cosas del entorno que anotar para M3.** La VM tiene 843 MB sin
+swap, y compilar Rust con LTO allí muere por OOM: hay 2 GB de swap
+añadida a mano, sin persistir en `/etc/fstab`. Y el `drain_timeout` por
+defecto es de 3 s porque `NODE_ENV` no dice `production` — la unit de
+systemd debería fijarlo.
 
 **Verificación end-to-end de M3/M4** — en VM efímera, no en la máquina de
 desarrollo:

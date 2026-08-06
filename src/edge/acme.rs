@@ -275,12 +275,11 @@ pub async fn obtain(
             .unwrap_or_else(now_ms),
         cert_pem: chain_pem,
         key_pem,
-        issuer: if config.acme.is_staging() {
-            "acme-staging"
-        } else {
-            "acme"
-        }
-        .to_string(),
+        // The directory URL itself, not a tag. Storing "acme" would
+        // make a staging certificate and a production one look alike,
+        // and then switching between them would silently keep serving
+        // the old one — see `ensure`.
+        issuer: config.acme.directory_url().to_string(),
     };
     certs::save(database, &stored).await?;
 
@@ -307,11 +306,27 @@ pub async fn ensure(
         return Ok(false);
     };
 
+    let directory = config.acme.directory_url();
     if let Some(existing) = certs::load(database, &domain).await? {
-        let acme_issued = existing.issuer.starts_with("acme");
+        // The authority has to match, not merely be *an* authority.
+        //
+        // Found the hard way: a node tested against staging and then
+        // switched to production kept serving the staging certificate,
+        // because both were "acme" and it had not expired. Nothing
+        // errored, nothing logged, and every browser rejected the site.
+        // Comparing the directory URL makes the switch do what the
+        // operator asked.
+        let same_authority = existing.issuer == directory;
         let fresh = existing.not_after > now_ms() + RENEW_WITHIN_DAYS * 86_400_000;
-        if acme_issued && fresh {
+        if same_authority && fresh {
             return Ok(false);
+        }
+        if !same_authority && existing.issuer != "self-signed" {
+            tracing::info!(
+                from = %existing.issuer,
+                to = %directory,
+                "the configured authority changed; reissuing"
+            );
         }
     }
 
@@ -528,22 +543,75 @@ mod tests {
         let mut config = Config::default();
         config.node.domain = Some("node.example.com".into());
 
-        // A stored certificate that looks like ACME's and is not close
-        // to expiring. `ensure` must return without talking to anyone —
-        // if it tried, this test would hang or fail on the network.
-        certs::save(
-            &database,
-            &StoredCert {
-                domain: "node.example.com".into(),
-                names: vec!["node.example.com".into()],
-                cert_pem: "-----BEGIN CERTIFICATE-----\nQUJD\n-----END CERTIFICATE-----\n".into(),
-                key_pem: String::new(),
-                issuer: "acme".into(),
-                not_after: now_ms() + 60 * 86_400_000,
-            },
-        )
-        .await
-        .expect("save");
+        // A stored certificate from the configured authority, not
+        // close to expiring. `ensure` must return without talking to
+        // anyone — if it tried, this test would hang or fail on the
+        // network.
+        certs::save(&database, &stored_from(config.acme.directory_url(), 60))
+            .await
+            .expect("save");
+
+        assert!(!ensure(&database, &config, &resolver).await.expect("ensure"));
+    }
+
+    fn stored_from(issuer: &str, days_left: i64) -> StoredCert {
+        StoredCert {
+            domain: "node.example.com".into(),
+            names: vec!["node.example.com".into()],
+            cert_pem: "-----BEGIN CERTIFICATE-----\nQUJD\n-----END CERTIFICATE-----\n".into(),
+            key_pem: String::new(),
+            issuer: issuer.to_string(),
+            not_after: now_ms() + days_left * 86_400_000,
+        }
+    }
+
+    /// The bug this test exists for, found on a real node: a node
+    /// tested against staging and then switched to production kept
+    /// serving the staging certificate, because both were tagged
+    /// "acme" and it had not expired. Nothing errored and nothing
+    /// logged; every browser rejected the site.
+    ///
+    /// `ensure` has to notice the authority changed. It cannot reach
+    /// the network here, so "noticed" is observed as an error from the
+    /// attempt rather than a silent `Ok(false)`.
+    #[tokio::test]
+    async fn switching_authority_does_not_keep_the_old_certificate() {
+        let database = database().await;
+        let resolver = certs::CertResolver::new();
+        let mut config = Config::default();
+        config.node.domain = Some("node.example.com".into());
+        config.acme.directory = "production".into();
+
+        let staging = "https://acme-staging-v02.api.letsencrypt.org/directory";
+        certs::save(&database, &stored_from(staging, 60))
+            .await
+            .expect("save");
+
+        // Production is configured and a *staging* certificate is
+        // stored, so this must try to reissue. It fails — there is no
+        // network in a test — and that failure is the evidence: the
+        // early return would have been `Ok(false)`.
+        let outcome = ensure(&database, &config, &resolver).await;
+        assert!(
+            outcome.is_err(),
+            "a certificate from a different authority must not be kept: {outcome:?}"
+        );
+    }
+
+    /// The same check must not reissue on every pass when nothing
+    /// changed — that is what keeps the renewal loop off the rate
+    /// limit.
+    #[tokio::test]
+    async fn the_same_authority_is_left_alone() {
+        let database = database().await;
+        let resolver = certs::CertResolver::new();
+        let mut config = Config::default();
+        config.node.domain = Some("node.example.com".into());
+        config.acme.directory = "staging".into();
+
+        certs::save(&database, &stored_from(config.acme.directory_url(), 60))
+            .await
+            .expect("save");
 
         assert!(!ensure(&database, &config, &resolver).await.expect("ensure"));
     }
