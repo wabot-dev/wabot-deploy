@@ -11,8 +11,9 @@ reasoning behind it.
 
 ## Status
 
-**M1** — the node installs, serves over TLS, and can proxy a hostname
-to a container. It cannot yet *start* one: containerd arrives in M3.
+**M2** — the node installs, serves over TLS with a real certificate,
+and can proxy a hostname to a container. It cannot yet *start* one:
+containerd arrives in M3.
 
 | | |
 | --- | --- |
@@ -20,7 +21,7 @@ to a container. It cannot yet *start* one: containerd arrives in M3.
 | ✅ `serve` | control plane, graceful shutdown |
 | ✅ `doctor` | what is set up and what is not |
 | ✅ edge | TLS, host routing, reverse proxy with upgrades, HTTP redirect |
-| ⏳ M2 | ACME |
+| ✅ ACME | Let's Encrypt over HTTP-01, renewed in the background |
 | ⏳ M3 | containerd + crun, the systemd unit, the rest of the bootstrap |
 
 `doctor` lists the install steps that have not shipped as
@@ -52,8 +53,25 @@ curl -si http://localhost:8080/  # 308 to HTTPS
 ```
 
 Until a domain is configured the node serves a certificate from a local
-authority, written to `<data_dir>/certs/local-ca.crt`. Trust that once
-and the warnings stop; ACME replaces it in M2.
+authority, written to `<data_dir>/certs/local-ca.crt` — trust that once
+and the warnings stop.
+
+With `node.domain` set and port 80 reachable from the internet, the
+node obtains a Let's Encrypt certificate and swaps it in without a
+restart:
+
+```sh
+sudo wabot-deploy install --domain node.example.com --email you@example.com
+```
+
+`install` asks once and reports what happened; `serve` retries in the
+background and renews at 30 days. A failure is never fatal — the local
+certificate keeps serving, and `doctor` shows the reason.
+
+Add `--acme-staging` while testing. Production refuses more than five
+failed orders per account per hour, so debugging a DNS problem against
+it locks you out for the rest of the hour; staging certificates are
+untrusted by design, which is the trade.
 
 With no routes configured every hostname reaches the control plane, so
 a fresh node is usable at whatever address you can reach it on.
@@ -101,11 +119,15 @@ Environment overrides, for a container or a one-off run:
 | `src/db.rs` | opening the database, applying migrations |
 | `src/ledger.rs` | which install steps have run |
 | `src/api.rs` | the control-plane HTTP surface |
-| `src/edge/` | TLS, certificates, host routing, the reverse proxy |
+| `src/edge/` | TLS, certificates, ACME, host routing, the reverse proxy |
 | `src/commands/` | one module per verb |
 | `migrations/` | embedded with `include_str!`, so the binary stands alone |
 
 ## Building
+
+`scripts/build-linux.sh` produces the Linux binary from a Mac, via
+Docker — the project builds natively on macOS too, but the thing you
+deploy should be built for where it runs.
 
 Needs a sibling checkout of the framework at
 `../../framework/wabot-rust` — see `[patch.crates-io]` in

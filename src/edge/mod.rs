@@ -21,6 +21,7 @@
 //! connection would otherwise have both served by whichever it
 //! happened to dial first.
 
+pub mod acme;
 pub mod certs;
 pub mod proxy;
 pub mod routes;
@@ -114,13 +115,39 @@ pub async fn serve_https(
     .await
 }
 
-/// The plain HTTP listener: ACME challenges will land here in M2, and
-/// everything else is redirected.
-pub async fn serve_http(https_port: u16, bind: SocketAddr, cancel: Cancel) -> std::io::Result<()> {
+/// What the plain HTTP listener needs: where to redirect, and what to
+/// answer a certificate authority with.
+#[derive(Clone)]
+pub struct HttpState {
+    https_port: u16,
+    database: Arc<SqliteDatabase>,
+}
+
+/// The plain HTTP listener: ACME challenges land here, everything else
+/// is redirected.
+///
+/// Port 80 has to stay open even on an all-HTTPS node, and this is
+/// why: HTTP-01 validation is a plaintext fetch, and a redirect to
+/// HTTPS would send the authority to a certificate that does not exist
+/// yet. The challenge route is therefore matched *before* the
+/// redirecting fallback.
+pub async fn serve_http(
+    https_port: u16,
+    database: Arc<SqliteDatabase>,
+    bind: SocketAddr,
+    cancel: Cancel,
+) -> std::io::Result<()> {
     let listener = tokio::net::TcpListener::bind(bind).await?;
     let router = Router::new()
+        .route(
+            &format!("{}:token", acme::CHALLENGE_PREFIX),
+            wabot::rest::axum::routing::get(acme_challenge),
+        )
         .fallback(redirect_to_https)
-        .with_state(https_port);
+        .with_state(HttpState {
+            https_port,
+            database,
+        });
 
     serve_on(
         listener,
@@ -128,6 +155,33 @@ pub async fn serve_http(https_port: u16, bind: SocketAddr, cancel: Cancel) -> st
         RestServerConfig::new(bind).with_shutdown(cancel),
     )
     .await
+}
+
+/// Answer one HTTP-01 challenge.
+///
+/// Plain text, exactly the key authorization and nothing else: the
+/// authority compares the body byte for byte, so a trailing newline or
+/// a JSON wrapper fails the order.
+async fn acme_challenge(
+    State(state): State<HttpState>,
+    wabot::rest::axum::extract::Path(token): wabot::rest::axum::extract::Path<String>,
+) -> Response {
+    match acme::challenge_response(&state.database, &token).await {
+        Ok(Some(response)) => (
+            StatusCode::OK,
+            [(header::CONTENT_TYPE, "text/plain")],
+            response,
+        )
+            .into_response(),
+        Ok(None) => {
+            tracing::debug!(%token, "challenge asked for but not held");
+            (StatusCode::NOT_FOUND, "unknown challenge").into_response()
+        }
+        Err(error) => {
+            tracing::warn!(%error, "could not read the challenge");
+            (StatusCode::INTERNAL_SERVER_ERROR, "storage error").into_response()
+        }
+    }
 }
 
 /// Per-request routing.
@@ -179,7 +233,8 @@ fn host_of(request: &Request) -> Option<String> {
         })
 }
 
-async fn redirect_to_https(State(https_port): State<u16>, request: Request) -> Response {
+async fn redirect_to_https(State(state): State<HttpState>, request: Request) -> Response {
+    let https_port = state.https_port;
     let Some(host) = host_of(&request) else {
         return (StatusCode::BAD_REQUEST, "missing Host").into_response();
     };
@@ -300,12 +355,19 @@ mod tests {
         response.assert_status(StatusCode::BAD_GATEWAY);
     }
 
+    async fn http_state(https_port: u16) -> HttpState {
+        HttpState {
+            https_port,
+            database: Arc::new(crate::db::open_in_memory().await.expect("open")),
+        }
+    }
+
     #[tokio::test]
     async fn the_redirect_preserves_the_path_and_uses_308() {
         let harness = RestHarness::new(
             Router::new()
                 .fallback(redirect_to_https)
-                .with_state(8443u16),
+                .with_state(http_state(8443).await),
         );
 
         let response = harness
@@ -326,8 +388,11 @@ mod tests {
     /// `https://host:443` is legal but reads as broken.
     #[tokio::test]
     async fn the_default_https_port_is_implicit() {
-        let harness =
-            RestHarness::new(Router::new().fallback(redirect_to_https).with_state(443u16));
+        let harness = RestHarness::new(
+            Router::new()
+                .fallback(redirect_to_https)
+                .with_state(http_state(443).await),
+        );
         let response = harness
             .get("/")
             .header("host", "node.example.com")
@@ -337,6 +402,73 @@ mod tests {
             response.header("location"),
             Some("https://node.example.com/")
         );
+    }
+
+    /// The route the whole of ACME rests on. It must be matched
+    /// *before* the redirecting fallback: HTTP-01 validation is a
+    /// plaintext fetch, and a 308 to HTTPS would send the authority at
+    /// a certificate that does not exist yet.
+    #[tokio::test]
+    async fn an_acme_challenge_is_answered_in_plain_http() {
+        let database = Arc::new(crate::db::open_in_memory().await.expect("open"));
+        let state = HttpState {
+            https_port: 8443,
+            database: database.clone(),
+        };
+
+        // Stage a challenge the way an order would.
+        database
+            .write(|connection| {
+                connection.execute(
+                    "INSERT INTO acme_challenge \
+                       (\"token\", \"response\", \"domain\", \"expires_at\") \
+                     VALUES ('tok-123', 'tok-123.keyauth', 'node.example.com', 99999999999999)",
+                    [],
+                )?;
+                Ok(())
+            })
+            .await
+            .expect("stage");
+
+        let harness = RestHarness::new(
+            Router::new()
+                .route(
+                    &format!("{}:token", acme::CHALLENGE_PREFIX),
+                    wabot::rest::axum::routing::get(acme_challenge),
+                )
+                .fallback(redirect_to_https)
+                .with_state(state),
+        );
+
+        let response = harness
+            .get("/.well-known/acme-challenge/tok-123")
+            .header("host", "node.example.com")
+            .send()
+            .await;
+
+        response.assert_ok();
+        assert_eq!(
+            response.body, "tok-123.keyauth",
+            "the authority compares this byte for byte"
+        );
+
+        // An unknown token is a 404, not a redirect: a redirect would
+        // read to the authority as a broken challenge rather than an
+        // absent one.
+        let response = harness
+            .get("/.well-known/acme-challenge/nope")
+            .header("host", "node.example.com")
+            .send()
+            .await;
+        response.assert_status(StatusCode::NOT_FOUND);
+
+        // And everything else still redirects.
+        let response = harness
+            .get("/anything")
+            .header("host", "node.example.com")
+            .send()
+            .await;
+        response.assert_status(StatusCode::PERMANENT_REDIRECT);
     }
 
     // ---- the upgrade path, end to end ------------------------------

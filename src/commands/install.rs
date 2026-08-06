@@ -19,10 +19,11 @@ pub async fn run(mut config: Config, config_path: &Path, args: InstallArgs) -> a
     if let Some(domain) = args.domain {
         config.node.domain = Some(domain);
     }
-    if args.email.is_some() {
-        // Recorded rather than acted on: ACME arrives with the edge,
-        // and storing an address now would imply it does something.
-        tracing::warn!("--email is accepted but not used yet; it lands with ACME");
+    if let Some(email) = args.email {
+        config.acme.email = Some(email);
+    }
+    if args.acme_staging {
+        config.acme.directory = "staging".into();
     }
 
     // Layout first, because the config file and the database both need
@@ -58,6 +59,19 @@ pub async fn run(mut config: Config, config_path: &Path, args: InstallArgs) -> a
     }
 
     report(&config, config_path, wrote_config, &database).await?;
+
+    // Attempted here so a DNS or firewall problem surfaces while the
+    // operator is still looking at a terminal — but never fatal: the
+    // node serves on the local authority's certificate either way, and
+    // `serve` retries in the background. An install that failed
+    // because a DNS record had not propagated yet would be a bad
+    // reason to have no node.
+    if let Err(error) = try_certificate(&config, &database).await {
+        println!();
+        println!("  certificate: not obtained yet — {error}");
+        println!("  the node will serve its local certificate and keep retrying.");
+    }
+
     database.close().await?;
     Ok(0)
 }
@@ -141,6 +155,34 @@ async fn report(
     Ok(())
 }
 
+/// Ask the certificate authority, once, synchronously.
+async fn try_certificate(config: &Config, database: &SqliteDatabase) -> anyhow::Result<()> {
+    if config.acme.disabled {
+        return Ok(());
+    }
+    let Some(domain) = config.node.domain.clone() else {
+        // Nothing a public authority could validate. Not a failure.
+        return Ok(());
+    };
+
+    println!();
+    println!("  requesting a certificate for {domain}…");
+    let resolver = crate::edge::certs::CertResolver::new();
+    match crate::edge::acme::ensure(database, config, &resolver).await? {
+        true => {
+            println!(
+                "  certificate obtained from {}",
+                config.acme.directory_url()
+            );
+            if config.acme.is_staging() {
+                println!("  (staging — browsers will not trust it; that is expected)");
+            }
+        }
+        false => println!("  the existing certificate is current"),
+    }
+    Ok(())
+}
+
 /// Export the CA to a file the operator can hand to a trust store.
 ///
 /// Written rather than printed: a PEM block in terminal scrollback is
@@ -157,9 +199,17 @@ async fn write_ca_bundle(config: &Config, database: &SqliteDatabase) -> anyhow::
 mod tests {
     use super::*;
 
+    /// A node under a temporary directory, with ACME off.
+    ///
+    /// Off is not incidental: a test that reaches a certificate
+    /// authority is slow, flaky, and — for a domain nobody here owns —
+    /// spends somebody's rate limit to be told no. The ACME path is
+    /// exercised against a real domain by hand, and by the unit tests
+    /// in `edge::acme` that stop short of the network.
     fn config_in(dir: &Path) -> Config {
         let mut config = Config::default();
         config.node.data_dir = dir.join("data");
+        config.acme.disabled = true;
         config
     }
 
@@ -173,10 +223,7 @@ mod tests {
         let code = run(
             config,
             &config_path,
-            InstallArgs {
-                domain: Some("node.example.com".into()),
-                email: None,
-            },
+            InstallArgs::with_domain("node.example.com"),
         )
         .await
         .expect("install");
@@ -198,16 +245,9 @@ mod tests {
         let config_path = dir.path().join("config.toml");
 
         for _ in 0..2 {
-            run(
-                config_in(dir.path()),
-                &config_path,
-                InstallArgs {
-                    domain: None,
-                    email: None,
-                },
-            )
-            .await
-            .expect("install");
+            run(config_in(dir.path()), &config_path, InstallArgs::none())
+                .await
+                .expect("install");
         }
 
         let database = crate::db::open(&config_in(dir.path()).database_path())
@@ -232,10 +272,7 @@ mod tests {
         run(
             config_in(dir.path()),
             &config_path,
-            InstallArgs {
-                domain: Some("first.example.com".into()),
-                email: None,
-            },
+            InstallArgs::with_domain("first.example.com"),
         )
         .await
         .expect("install");
@@ -243,10 +280,7 @@ mod tests {
         run(
             config_in(dir.path()),
             &config_path,
-            InstallArgs {
-                domain: Some("second.example.com".into()),
-                email: None,
-            },
+            InstallArgs::with_domain("second.example.com"),
         )
         .await
         .expect("install");
@@ -272,16 +306,9 @@ mod tests {
         let data_dir = config.node.data_dir.clone();
         let certs = config.certificates_dir();
 
-        run(
-            config,
-            &dir.path().join("config.toml"),
-            InstallArgs {
-                domain: None,
-                email: None,
-            },
-        )
-        .await
-        .expect("install");
+        run(config, &dir.path().join("config.toml"), InstallArgs::none())
+            .await
+            .expect("install");
 
         for path in [data_dir, certs] {
             let mode = std::fs::metadata(&path)

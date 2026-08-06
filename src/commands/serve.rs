@@ -34,12 +34,25 @@ pub async fn run(config: Config) -> anyhow::Result<i32> {
     );
 
     let closing = database.clone();
+    let acme_database = database.clone();
+    let acme_config = config.clone();
+    let acme_resolver = resolver.clone();
+    let http_database = database.clone();
+    let https_port = config.edge.https_port;
+
     let outcome = ProjectRunner::new(container.clone())
         .service_with_cancel("edge-https", move |cancel| {
             crate::edge::serve_https(edge, resolver, https, cancel)
         })
         .service_with_cancel("edge-http", move |cancel| {
-            crate::edge::serve_http(config.edge.https_port, http, cancel)
+            crate::edge::serve_http(https_port, http_database, http, cancel)
+        })
+        // Certificates are obtained *beside* the listeners, never
+        // before them: the HTTP-01 challenge is a request this node has
+        // to answer, so ordering issuance ahead of the listener would
+        // deadlock on itself.
+        .service_with_cancel("acme", move |cancel| {
+            crate::edge::acme::renewal_loop(acme_database, acme_config, acme_resolver, cancel)
         })
         // Close phase, after the drain: checkpointing the WAL while a
         // request might still write to it leaves work for the next

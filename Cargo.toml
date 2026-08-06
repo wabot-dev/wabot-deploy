@@ -57,6 +57,25 @@ time = { version = "0.3", default-features = false, features = ["std"] }
 # The route table: read on every request, replaced whole on the rare
 # change. A lock would put every request behind the one writer.
 arc-swap = "1"
+
+# ACME.
+#
+# `default-features = false` is load-bearing: the default is
+# `aws-lc-rs`, and with the framework on `ring` both crypto providers
+# end up enabled on rustls — which then refuses to pick one and
+# **panics on first use**, in production as well as in tests. It would
+# also drag in cmake, losing the "builds on a bare machine" property
+# the framework chose `ring` for.
+#
+# `ring` here propagates to hyper-rustls too, so there is one crypto
+# backend in the binary and no runtime choice to get wrong.
+instant-acme = { version = "0.8", default-features = false, features = [
+    "hyper-rustls",
+    "ring",
+] }
+# Reading a certificate's expiry. Already in the tree through rcgen's
+# `x509-parser` feature, so this names it rather than adding it.
+x509-parser = "0.16"
 # `oneshot`, for calling the control-plane router in-process.
 tower = { version = "0.5", features = ["util"] }
 

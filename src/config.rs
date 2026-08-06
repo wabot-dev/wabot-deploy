@@ -59,6 +59,8 @@ pub struct Config {
     #[serde(default)]
     pub edge: EdgeConfig,
     #[serde(default)]
+    pub acme: AcmeConfig,
+    #[serde(default)]
     pub log: LogConfig,
 }
 
@@ -89,6 +91,50 @@ pub struct EdgeConfig {
     pub http_port: u16,
 }
 
+/// Which certificate authority to ask, and as whom.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AcmeConfig {
+    /// `production` (the default), `staging`, or a directory URL.
+    ///
+    /// Production is the default because that is what a real node
+    /// wants and a wrong default here means a certificate no browser
+    /// trusts. Staging exists for testing, and matters: production
+    /// refuses more than five failed orders per account per hour, so
+    /// debugging a DNS problem against it locks you out for the rest
+    /// of the hour.
+    #[serde(default = "default_acme_directory")]
+    pub directory: String,
+    /// Contact address. The CA mails it before a certificate expires,
+    /// which is the last warning before an outage.
+    #[serde(default)]
+    pub email: Option<String>,
+    /// Turn ACME off and keep serving the local authority's
+    /// certificate — for a node reachable only on a private network,
+    /// where no public CA can validate anything.
+    #[serde(default)]
+    pub disabled: bool,
+}
+
+impl AcmeConfig {
+    /// The directory URL to talk to.
+    pub fn directory_url(&self) -> &str {
+        match self.directory.as_str() {
+            "production" | "prod" => "https://acme-v02.api.letsencrypt.org/directory",
+            "staging" | "test" => "https://acme-staging-v02.api.letsencrypt.org/directory",
+            url => url,
+        }
+    }
+
+    /// Whether this is Let's Encrypt's staging environment, whose
+    /// certificates are untrusted by design — worth saying out loud
+    /// rather than leaving somebody to wonder why the browser still
+    /// complains.
+    pub fn is_staging(&self) -> bool {
+        self.directory_url().contains("staging")
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct LogConfig {
@@ -109,6 +155,9 @@ fn default_http_port() -> u16 {
 fn default_log_filter() -> String {
     "info".to_string()
 }
+fn default_acme_directory() -> String {
+    "production".to_string()
+}
 
 impl Default for NodeConfig {
     fn default() -> Self {
@@ -124,6 +173,16 @@ impl Default for EdgeConfig {
         Self {
             https_port: default_https_port(),
             http_port: default_http_port(),
+        }
+    }
+}
+
+impl Default for AcmeConfig {
+    fn default() -> Self {
+        Self {
+            directory: default_acme_directory(),
+            email: None,
+            disabled: false,
         }
     }
 }
@@ -176,6 +235,12 @@ impl Config {
         }
         if let Some(port) = env_port("WABOT_DEPLOY_HTTP_PORT")? {
             self.edge.http_port = port;
+        }
+        if let Some(directory) = env_string("WABOT_DEPLOY_ACME_DIRECTORY") {
+            self.acme.directory = directory;
+        }
+        if let Some(email) = env_string("WABOT_DEPLOY_ACME_EMAIL") {
+            self.acme.email = Some(email);
         }
         // `RUST_LOG` too, because every Rust operator reaches for it
         // first and a daemon that ignored it would be quietly annoying.

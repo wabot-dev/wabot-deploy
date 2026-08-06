@@ -430,7 +430,25 @@ pub async fn load_all(database: &SqliteDatabase) -> CertResult<Vec<StoredCert>> 
         .await?)
 }
 
-async fn save(database: &SqliteDatabase, stored: &StoredCert) -> CertResult<()> {
+/// Why the last attempt to obtain this certificate failed, if it did.
+pub async fn last_error(database: &SqliteDatabase, domain: &str) -> CertResult<Option<String>> {
+    let domain = domain.to_string();
+    Ok(database
+        .read(move |connection| {
+            connection
+                .query_row(
+                    "SELECT \"last_error\" FROM certificate WHERE \"domain\" = ?1",
+                    [domain],
+                    |row| row.get::<_, Option<String>>(0),
+                )
+                .optional()
+        })
+        .await?
+        .flatten())
+}
+
+/// Store a certificate, whoever issued it.
+pub async fn save(database: &SqliteDatabase, stored: &StoredCert) -> CertResult<()> {
     let stored = stored.clone();
     database
         .write(move |connection| {
@@ -460,6 +478,21 @@ async fn save(database: &SqliteDatabase, stored: &StoredCert) -> CertResult<()> 
         })
         .await?;
     Ok(())
+}
+
+/// When a certificate expires, in epoch millis.
+///
+/// Read from the leaf rather than assumed, because an ACME certificate
+/// is issued for whatever window the authority chose — Let's Encrypt
+/// says 90 days today and has said it will shorten that. A renewal
+/// schedule built on a guess is one that stops renewing in time.
+///
+/// `None` when the certificate cannot be parsed, which the caller
+/// treats as "renew soon" rather than "never expires".
+pub fn not_after(cert_pem: &str) -> Option<i64> {
+    let der = pem_blocks(cert_pem, "CERTIFICATE").into_iter().next()?;
+    let (_, parsed) = x509_parser::parse_x509_certificate(&der).ok()?;
+    Some(parsed.validity().not_after.timestamp() * 1000)
 }
 
 fn split_names(joined: &str) -> Vec<String> {

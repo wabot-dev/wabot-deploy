@@ -49,9 +49,43 @@ pub struct InstallArgs {
     #[arg(long, value_name = "HOST")]
     pub domain: Option<String>,
 
-    /// Contact address for the certificate authority.
+    /// Contact address for the certificate authority. It mails this
+    /// before a certificate expires, which is the last warning before
+    /// an outage.
     #[arg(long, value_name = "EMAIL")]
     pub email: Option<String>,
+
+    /// Use Let's Encrypt's staging environment.
+    ///
+    /// Its certificates are untrusted by design, but production
+    /// refuses more than five failed orders per hour — so debugging a
+    /// DNS problem against production locks you out for the rest of
+    /// the hour.
+    #[arg(long)]
+    pub acme_staging: bool,
+}
+
+impl InstallArgs {
+    /// Nothing set — what a bare `install` means.
+    ///
+    /// For tests, so that adding a flag does not mean editing every
+    /// one of them to say "and not that either".
+    #[cfg(test)]
+    pub fn none() -> Self {
+        Self {
+            domain: None,
+            email: None,
+            acme_staging: false,
+        }
+    }
+
+    #[cfg(test)]
+    pub fn with_domain(domain: &str) -> Self {
+        Self {
+            domain: Some(domain.to_string()),
+            ..Self::none()
+        }
+    }
 }
 
 #[cfg(test)]

@@ -85,6 +85,70 @@ pub async fn run(config: Config, config_path: &Path) -> anyhow::Result<i32> {
     }
 
     println!();
+    println!("certificates");
+    match crate::edge::certs::load_all(&database).await {
+        Ok(certificates) if certificates.is_empty() => {
+            println!("  none yet — `serve` issues one on first start");
+        }
+        Ok(certificates) => {
+            for certificate in &certificates {
+                let days = (certificate.not_after - now_ms()) / 86_400_000;
+                let state = if days < 0 {
+                    problems += 1;
+                    "EXPIRED".to_string()
+                } else if days < 15 {
+                    // Not yet a problem: the renewal loop has a
+                    // fortnight and several attempts. Worth saying,
+                    // because if it is still here next week it is.
+                    format!("{days}d left")
+                } else {
+                    format!("{days}d left")
+                };
+                println!(
+                    "  {:<28} {:<14} {state}",
+                    certificate.domain, certificate.issuer
+                );
+                println!("    covers: {}", certificate.names.join(", "));
+            }
+        }
+        Err(error) => {
+            println!("  unreadable: {error}");
+            problems += 1;
+        }
+    }
+
+    // The reason a certificate is missing lives on its row, so an
+    // operator sees it here rather than in the journal.
+    if let Some(domain) = &config.node.domain {
+        match crate::edge::certs::last_error(&database, domain).await {
+            Ok(Some(error)) => {
+                println!("  last ACME failure for {domain}:");
+                println!("    {error}");
+                problems += 1;
+            }
+            Ok(None) => {}
+            Err(error) => println!("  (could not read the last error: {error})"),
+        }
+    }
+
+    println!();
+    println!("acme");
+    if config.acme.disabled {
+        println!("  disabled — the local authority's certificate is served");
+    } else if config.node.domain.is_none() {
+        println!("  no node.domain configured; nothing a public authority could validate");
+    } else {
+        println!("  directory  {}", config.acme.directory_url());
+        if config.acme.is_staging() {
+            println!("  (staging — its certificates are untrusted by design)");
+        }
+        match &config.acme.email {
+            Some(email) => println!("  contact    {email}"),
+            None => println!("  contact    (none — the authority cannot warn you before expiry)"),
+        }
+    }
+
+    println!();
     println!("install steps");
     let entries = ledger::all(&database).await.unwrap_or_default();
     for step in Step::ALL {
@@ -118,6 +182,13 @@ pub async fn run(config: Config, config_path: &Path) -> anyhow::Result<i32> {
     finish(problems)
 }
 
+fn now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or_default()
+}
+
 fn describe(exists: bool, path: &Path) -> String {
     if exists {
         path.display().to_string()
@@ -144,9 +215,17 @@ mod tests {
     use super::*;
     use crate::cli::InstallArgs;
 
+    /// A node under a temporary directory, with ACME off.
+    ///
+    /// Off is not incidental: a test that reaches a certificate
+    /// authority is slow, flaky, and — for a domain nobody here owns —
+    /// spends somebody's rate limit to be told no. The ACME path is
+    /// exercised against a real domain by hand, and by the unit tests
+    /// in `edge::acme` that stop short of the network.
     fn config_in(dir: &Path) -> Config {
         let mut config = Config::default();
         config.node.data_dir = dir.join("data");
+        config.acme.disabled = true;
         config
     }
 
@@ -164,16 +243,9 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let config_path = dir.path().join("config.toml");
 
-        crate::commands::install::run(
-            config_in(dir.path()),
-            &config_path,
-            InstallArgs {
-                domain: None,
-                email: None,
-            },
-        )
-        .await
-        .expect("install");
+        crate::commands::install::run(config_in(dir.path()), &config_path, InstallArgs::none())
+            .await
+            .expect("install");
 
         let code = run(config_in(dir.path()), &config_path)
             .await
@@ -192,16 +264,9 @@ mod tests {
         let config_path = dir.path().join("config.toml");
         let config = config_in(dir.path());
 
-        crate::commands::install::run(
-            config.clone(),
-            &config_path,
-            InstallArgs {
-                domain: None,
-                email: None,
-            },
-        )
-        .await
-        .expect("install");
+        crate::commands::install::run(config.clone(), &config_path, InstallArgs::none())
+            .await
+            .expect("install");
 
         let database = crate::db::open(&config.database_path())
             .await

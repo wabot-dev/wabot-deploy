@@ -578,7 +578,7 @@ mergeable y útil por separado.
 | **A3** ✅ | framework | **F1** `#[max_body]` y endpoints `#[raw]` | hecho — ver §8.3 |
 | **M0** ✅ | deploy | CLI, config, BD, `ProjectRunner`, `/healthz` | hecho — ver §8.4 |
 | **M1** ✅ | deploy | Edge completo | hecho — ver §8.5 |
-| **M2** | deploy | ACME real, `certificate`/`acme_account`, bucle de renovación | dominio real contra el directorio **staging** de Let's Encrypt |
+| **M2** ✅ | deploy | ACME real, bucle de renovación | hecho — ver §8.6 |
 | **M3** | deploy | Bootstrap completo: preflight, containerd + crun, unit, ledger | VM limpia Ubuntu 24.04 |
 | **M4** | deploy | Endurecimiento | idempotencia, reanudación tras fallo, RSS |
 
@@ -873,6 +873,60 @@ M3.
 —reconstruir los parámetros de la CA de memoria— produce un certificado
 distinto del guardado, y discutir si la cadena sigue validando es peor
 que una dependencia.
+
+### 8.6 M2 — ACME
+
+Certificados reales de Let's Encrypt por HTTP-01, renovados en
+background. 63 tests, `fmt` y `clippy -D warnings` limpios.
+
+**Dos bugs que encontraron los tests, y el segundo era de producción**
+
+1. **Los tests hablaban con Let's Encrypt.** Al cablear ACME en
+   `install`, los tests de instalación empezaron a pedir certificados
+   para `node.example.com` — un dominio que no es nuestro — contra
+   producción. Lento, inestable, y gastando el rate limit de alguien
+   para que le digan que no. El helper `config_in` de los tests ahora
+   pone `acme.disabled = true`, con el porqué escrito al lado.
+
+2. **`instant-acme` trae `aws-lc-rs` por defecto; el framework fija
+   `ring`.** Con los dos providers activos, rustls se niega a elegir y
+   **panica en el primer uso** — o sea, `install --domain` habría
+   reventado en un nodo real, no solo en tests. Además aws-lc-rs
+   necesita cmake, lo que rompería la propiedad de "compila en una
+   máquina pelada" por la que el framework eligió `ring`. Resuelto con
+   `default-features = false` + feature `ring`, que propaga también a
+   hyper-rustls: un solo backend criptográfico en el binario.
+
+**Decisiones**
+
+- **Producción por defecto**, `--acme-staging` para probar. Un default
+  equivocado aquí es un certificado que ningún navegador confía.
+- **El challenge vive en la BD, no en memoria.** Una orden puede estar
+  en vuelo cuando el nodo se actualiza, y un 404 después de eso la
+  falla por una razón que ningún log explica.
+- **La ruta del challenge se resuelve antes del fallback que
+  redirige.** La validación HTTP-01 es una petición en texto plano; un
+  308 a HTTPS mandaría a la autoridad contra un certificado que todavía
+  no existe. Hay un test que lo fija.
+- **`install` intenta y avisa; nunca aborta.** Un DNS que aún no
+  propagó es mala razón para quedarse sin nodo. `serve` reintenta con
+  backoff de 1 min a 6 h, y una vez obtenido comprueba cada 12 h.
+- **La caducidad se lee del certificado**, no se asume. Let's Encrypt
+  emite a 90 días hoy y ha dicho que lo acortará; un calendario de
+  renovación construido sobre una suposición es uno que deja de renovar
+  a tiempo.
+- **La cuenta se guarda por directory URL**, así que staging y
+  producción conviven y cambiar entre ellos es configuración, no una
+  pérdida.
+- **`doctor` muestra el último fallo de ACME**, que se guarda en la fila
+  del certificado — para que la razón esté donde el operador mira, no
+  en el journal.
+
+**Herramienta nueva:** `scripts/build-linux.sh` compila el binario Linux
+desde macOS con Docker. Las fuentes se pasan por stdin en un tar en vez
+de montarse: Docker Desktop solo comparte unos pocos directorios del
+host, y un proyecto fuera de ellos se monta vacío — fallando con un
+"could not find Cargo.toml" que no dice nada del problema real.
 
 **Verificación end-to-end de M3/M4** — en VM efímera, no en la máquina de
 desarrollo:
