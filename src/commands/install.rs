@@ -367,7 +367,7 @@ async fn try_certificate(config: &Config, database: &SqliteDatabase) -> anyhow::
     println!();
     println!("  requesting a certificate for {domain}…");
     let resolver = crate::edge::certs::CertResolver::new();
-    match crate::edge::acme::ensure(database, config, &resolver).await? {
+    match crate::edge::acme::ensure_all(database, config, &resolver).await? {
         true => {
             println!(
                 "  certificate obtained from {}",

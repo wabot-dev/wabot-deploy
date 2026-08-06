@@ -182,15 +182,15 @@ impl ProjectPages {
                         <tbody>
                             @for (service, observed) in &rows {
                                 <tr>
-                                    <td>(&service.name)</td>
+                                    <td>
+                                        <a href=(format!(
+                                            "/projects/{}/services/{}",
+                                            project.slug, service.slug
+                                        ))>(&service.name)</a>
+                                    </td>
                                     <td class="mono">(&service.image)</td>
                                     <td class="mono">(
-                                        match (&service.address, service.container_port) {
-                                            (Some(address), Some(port)) => format!("{address}:{port}"),
-                                            (Some(address), None) => address.clone(),
-                                            (None, Some(port)) => format!("(:{port})"),
-                                            (None, None) => "—".into(),
-                                        }
+                                        service.address.clone().unwrap_or_else(|| "—".into())
                                     )</td>
                                     <td>(state_badge(observed))</td>
                                     <td class="row">
@@ -260,7 +260,7 @@ impl ProjectPages {
 /// pid, and everything else says which kind of not-running it is. A
 /// runtime that cannot be reached is its own answer, because
 /// redeploying is the wrong response to it.
-fn state_badge(observed: &Observed) -> impl Renderable + '_ {
+pub(crate) fn state_badge(observed: &Observed) -> impl Renderable + '_ {
     rsx! {
         @match observed {
             Observed::Running { pid, .. } => {

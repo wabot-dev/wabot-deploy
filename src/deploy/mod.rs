@@ -18,18 +18,22 @@
 //! not. So the recovery after a reboot is the operation that was
 //! tested by every deployment before it.
 
+pub mod dns;
+pub mod routing;
+
 use std::net::Ipv4Addr;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use wabot::sqlite::SqliteDatabase;
 
+use crate::platform::ports::{self, Port};
 use crate::platform::projects::Project;
 use crate::platform::services::{self, DesiredState, Service};
 use crate::platform::{projects, PlatformError};
 use crate::runtime::client::Containerd;
 use crate::runtime::containers::{self, TaskStatus};
-use crate::runtime::network::{self, ProjectNetwork};
+use crate::runtime::network::{self, PortMapping, ProjectNetwork};
 use crate::runtime::spec::ContainerRequest;
 
 #[derive(Debug, thiserror::Error)]
@@ -73,13 +77,40 @@ pub struct Deployer {
     database: Arc<SqliteDatabase>,
     /// Written once at startup and bind-mounted into every container.
     resolv_conf: PathBuf,
+    node_domain: Option<String>,
+    /// The live table the listener reads, when there is one. `None` in
+    /// a test and in `install`, where nothing is serving.
+    routes: Option<Arc<crate::edge::routes::RouteTable>>,
 }
 
 impl Deployer {
-    pub fn new(database: Arc<SqliteDatabase>, data_dir: &Path) -> Self {
+    pub fn new(database: Arc<SqliteDatabase>, config: &crate::config::Config) -> Self {
         Self {
             database,
-            resolv_conf: data_dir.join("resolv.conf"),
+            resolv_conf: config.node.data_dir.join("resolv.conf"),
+            node_domain: config.node.domain.clone(),
+            routes: None,
+        }
+    }
+
+    /// Hand the deployer the table the edge is serving from, so a
+    /// deployment takes effect without a restart.
+    pub fn with_routes(mut self, routes: Arc<crate::edge::routes::RouteTable>) -> Self {
+        self.routes = Some(routes);
+        self
+    }
+
+    /// Recompute the routes. Called after anything that can change
+    /// where a hostname points.
+    async fn sync_routes(&self) {
+        if let Err(error) = routing::sync(
+            &self.database,
+            self.node_domain.as_deref(),
+            self.routes.as_ref(),
+        )
+        .await
+        {
+            tracing::error!(%error, "could not update the routes");
         }
     }
 
@@ -98,12 +129,16 @@ impl Deployer {
                 services::set_last_error(&self.database, &service.id, None).await?;
                 services::set_desired_state(&self.database, &service.id, DesiredState::Running)
                     .await?;
+                self.sync_routes().await;
             }
             Err(error) => {
                 let message = error.to_string();
                 tracing::error!(service = %service.slug, %message, "deploy failed");
                 services::set_address(&self.database, &service.id, None).await?;
                 services::set_last_error(&self.database, &service.id, Some(&message)).await?;
+                // The route goes with the address. A name pointing at a
+                // container that failed to start is a hung request.
+                self.sync_routes().await;
             }
         }
         result
@@ -120,7 +155,19 @@ impl Deployer {
         // the address is allocated would leak the reservation, and the
         // teardown below is what stops that from accumulating.
         containers::remove(&client, &id).await?;
-        let address = network::attach(&net, &id).await?;
+
+        let ports = ports::of_service(&self.database, &service.id).await?;
+        let published: Vec<PortMapping> = ports
+            .iter()
+            .filter_map(|port| {
+                Some(PortMapping {
+                    host_port: port.host_port?,
+                    container_port: port.container_port,
+                })
+            })
+            .collect();
+
+        let address = network::attach(&net, &id, &published).await?;
 
         self.write_resolv_conf()?;
         let request = ContainerRequest {
@@ -130,7 +177,7 @@ impl Deployer {
                 .iter()
                 .map(|(key, value)| (key.clone(), value.clone()))
                 .collect(),
-            port: service.container_port,
+            port: primary_port(&ports),
             network_ns: Some(network::netns_path(&id)),
             resolv_conf: Some(self.resolv_conf.clone()),
         };
@@ -175,6 +222,7 @@ impl Deployer {
         }
         services::set_address(&self.database, &service.id, None).await?;
         services::set_last_error(&self.database, &service.id, None).await?;
+        self.sync_routes().await;
 
         tracing::info!(service = %service.slug, project = %project.slug, "stopped");
         Ok(())
@@ -246,6 +294,11 @@ impl Deployer {
             }
         }
 
+        // Always, not only when something started: a node whose
+        // containers all survived still needs its routes built, and
+        // the control-plane rows are written here too.
+        self.sync_routes().await;
+
         if started > 0 {
             tracing::info!(started, "reconciled");
         }
@@ -309,6 +362,23 @@ impl Deployer {
     }
 }
 
+/// The port handed to the container as `PORT`.
+///
+/// A service can declare several; the one an application should bind
+/// by default is the one that serves the site, and failing that the
+/// lowest it declared. Guessing wrong is harmless — `PORT` is a hint
+/// most runtimes read and none require — but guessing the *admin*
+/// port of a service that also serves a site would be the one wrong
+/// answer that looks right.
+fn primary_port(ports: &[Port]) -> Option<u16> {
+    let with_hostname = ports
+        .iter()
+        .filter(|port| port.hostname.is_some())
+        .map(|port| port.container_port)
+        .min();
+    with_hostname.or_else(|| ports.iter().map(|port| port.container_port).min())
+}
+
 /// How long a container gets to exit before it is killed.
 const STOP_GRACE: std::time::Duration = std::time::Duration::from_secs(10);
 
@@ -340,6 +410,31 @@ fn usable_nameservers(contents: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn port(container_port: u16, hostname: Option<&str>) -> Port {
+        Port {
+            id: format!("prt-{container_port}"),
+            service_id: "svc-1".into(),
+            container_port,
+            host_port: None,
+            hostname: hostname.map(str::to_string),
+        }
+    }
+
+    /// The site's port, not the admin one — and the lowest declared
+    /// when nothing serves a site.
+    #[test]
+    fn the_port_a_container_is_told_to_bind_is_the_one_that_serves() {
+        assert_eq!(
+            primary_port(&[port(9000, None), port(3000, Some("app.example.com"))]),
+            Some(3000)
+        );
+        assert_eq!(
+            primary_port(&[port(9000, None), port(3000, None)]),
+            Some(3000)
+        );
+        assert_eq!(primary_port(&[]), None);
+    }
 
     #[test]
     fn a_loopback_stub_is_not_a_nameserver_a_container_can_use() {

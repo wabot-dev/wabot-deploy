@@ -17,11 +17,6 @@ use super::{now_ms, slugify, PlatformError, PlatformResult};
 
 /// Where the node allocates host ports from.
 ///
-/// Above the registered range and below the ephemeral one Linux hands
-/// out for outgoing connections, so an allocation cannot collide with
-/// a socket the kernel opened while nobody was looking.
-const PORT_RANGE: std::ops::Range<u16> = 20000..29000;
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DesiredState {
@@ -54,8 +49,6 @@ pub struct Service {
     pub name: String,
     pub slug: String,
     pub image: String,
-    pub container_port: Option<u16>,
-    pub host_port: Option<u16>,
     pub env: BTreeMap<String, String>,
     pub desired_state: DesiredState,
     pub last_error: Option<String>,
@@ -89,7 +82,6 @@ pub async fn create(
     project_id: &str,
     name: &str,
     image: &str,
-    container_port: Option<u16>,
     env: &[(String, String)],
 ) -> PlatformResult<Service> {
     let name = name.trim();
@@ -112,10 +104,6 @@ pub async fn create(
         name: name.to_string(),
         slug,
         image: image.trim().to_string(),
-        container_port,
-        // Allocated at deploy, not at create: a service that never
-        // runs should not be holding a port.
-        host_port: None,
         env: env.iter().cloned().collect(),
         desired_state: DesiredState::Running,
         last_error: None,
@@ -128,16 +116,15 @@ pub async fn create(
         .write(move |connection| {
             connection.execute(
                 "INSERT INTO service \
-                   (\"id\", \"project_id\", \"name\", \"slug\", \"image\", \"container_port\", \
+                   (\"id\", \"project_id\", \"name\", \"slug\", \"image\", \
                     \"env\", \"desired_state\", \"created_at\", \"updated_at\") \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?9)",
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?8)",
                 (
                     row.id,
                     row.project_id,
                     row.name,
                     row.slug,
                     row.image,
-                    row.container_port,
                     env_json,
                     row.desired_state.as_str(),
                     now_ms(),
@@ -187,6 +174,32 @@ fn validate_image(image: &str) -> PlatformResult<()> {
     Ok(())
 }
 
+/// One service by its slug inside a project.
+///
+/// Slugs are unique per project, not per node — which is the point of
+/// projects — so the lookup needs both halves. This is what every
+/// console page has: a URL with the two of them in it.
+pub async fn in_project(
+    database: &SqliteDatabase,
+    project_id: &str,
+    slug: &str,
+) -> PlatformResult<Option<Service>> {
+    let (project_id, slug) = (project_id.to_string(), slug.to_string());
+    Ok(database
+        .read(move |connection| {
+            connection
+                .query_row(
+                    "SELECT \"id\", \"project_id\", \"name\", \"slug\", \"image\", \
+                     \"env\", \"desired_state\", \"last_error\", \"address\" \
+                     FROM service WHERE \"project_id\" = ?1 AND \"slug\" = ?2",
+                    (project_id, slug),
+                    decode,
+                )
+                .optional()
+        })
+        .await?)
+}
+
 pub async fn all(
     database: &SqliteDatabase,
     project_id: Option<&str>,
@@ -195,8 +208,7 @@ pub async fn all(
     Ok(database
         .read(move |connection| {
             let sql = "SELECT \"id\", \"project_id\", \"name\", \"slug\", \"image\", \
-                       \"container_port\", \"host_port\", \"env\", \"desired_state\", \
-                       \"last_error\", \"address\" FROM service";
+                       \"env\", \"desired_state\", \"last_error\", \"address\" FROM service";
             match filter {
                 Some(project) => connection
                     .prepare(&format!(
@@ -213,103 +225,23 @@ pub async fn all(
         .await?)
 }
 
-pub async fn find(database: &SqliteDatabase, id: &str) -> PlatformResult<Option<Service>> {
-    let id = id.to_string();
-    Ok(database
-        .read(move |connection| {
-            connection
-                .query_row(
-                    "SELECT \"id\", \"project_id\", \"name\", \"slug\", \"image\", \
-                     \"container_port\", \"host_port\", \"env\", \"desired_state\", \
-                     \"last_error\", \"address\" FROM service WHERE \"id\" = ?1",
-                    [id],
-                    decode,
-                )
-                .optional()
-        })
-        .await?)
-}
-
 fn decode(row: &wabot::sqlite::rusqlite::Row<'_>) -> wabot::sqlite::rusqlite::Result<Service> {
-    let env: String = row.get(7)?;
+    let env: String = row.get(5)?;
     Ok(Service {
         id: row.get(0)?,
         project_id: row.get(1)?,
         name: row.get(2)?,
         slug: row.get(3)?,
         image: row.get(4)?,
-        container_port: row.get::<_, Option<i64>>(5)?.map(|port| port as u16),
-        host_port: row.get::<_, Option<i64>>(6)?.map(|port| port as u16),
         // A row we cannot parse should still list, without its
         // environment, rather than take the whole page down.
         env: serde_json::from_str(&env).unwrap_or_default(),
-        desired_state: DesiredState::parse(&row.get::<_, String>(8)?),
-        last_error: row.get(9)?,
-        address: row.get(10)?,
+        desired_state: DesiredState::parse(&row.get::<_, String>(6)?),
+        last_error: row.get(7)?,
+        address: row.get(8)?,
     })
 }
 
-/// Give this service a host port, if it has none.
-///
-/// Containers share the host's network, so a port is a node-wide
-/// resource and two services cannot hold the same one. The unique
-/// index is what makes this safe rather than the check: two concurrent
-/// allocations both see a free port and one insert loses, which is the
-/// correct outcome and the reason to retry.
-// Exercised by this module's tests, but nothing in the running binary
-// calls it yet: the deploy path is what will, and it is the next
-// milestone. `allow` rather than `expect` because the two builds
-// disagree — under `--all-targets` the tests fulfil it and the
-// expectation itself becomes the warning.
-#[allow(dead_code)]
-pub async fn allocate_port(database: &SqliteDatabase, service_id: &str) -> PlatformResult<u16> {
-    if let Some(service) = find(database, service_id).await? {
-        if let Some(port) = service.host_port {
-            return Ok(port);
-        }
-    }
-
-    let taken: Vec<u16> = database
-        .read(|connection| {
-            connection
-                .prepare("SELECT \"host_port\" FROM service WHERE \"host_port\" IS NOT NULL")?
-                .query_map([], |row| row.get::<_, i64>(0))?
-                .map(|port| port.map(|port| port as u16))
-                .collect()
-        })
-        .await?;
-
-    let port = PORT_RANGE
-        .clone()
-        .find(|port| !taken.contains(port))
-        .ok_or_else(|| {
-            PlatformError::Refused(format!(
-                "every port in {}..{} is taken — that is {} services on one node",
-                PORT_RANGE.start,
-                PORT_RANGE.end,
-                taken.len()
-            ))
-        })?;
-
-    let id = service_id.to_string();
-    database
-        .write(move |connection| {
-            connection.execute(
-                "UPDATE service SET \"host_port\" = ?2, \"updated_at\" = ?3 WHERE \"id\" = ?1",
-                (id, port as i64, now_ms()),
-            )?;
-            Ok(())
-        })
-        .await?;
-
-    Ok(port)
-}
-
-// Exercised by this module's tests, but nothing in the running binary
-// calls it yet: the deploy path is what will, and it is the next
-// milestone. `allow` rather than `expect` because the two builds
-// disagree — under `--all-targets` the tests fulfil it and the
-// expectation itself becomes the warning.
 #[allow(dead_code)]
 pub async fn set_desired_state(
     database: &SqliteDatabase,
@@ -398,8 +330,6 @@ mod tests {
             name: "nginx".into(),
             slug: "nginx".into(),
             image: "docker.io/library/nginx:alpine".into(),
-            container_port: Some(80),
-            host_port: None,
             env: Default::default(),
             desired_state: DesiredState::Running,
             last_error: None,
@@ -445,14 +375,13 @@ mod tests {
             &project_id,
             "My API",
             "docker.io/library/nginx:alpine",
-            Some(80),
             &[("LOG_LEVEL".into(), "debug".into())],
         )
         .await
         .expect("created");
 
         assert_eq!(service.slug, "my-api");
-        let found = find(&database, &service.id)
+        let found = in_project(&database, &project_id, &service.slug)
             .await
             .expect("find")
             .expect("present");
@@ -460,7 +389,6 @@ mod tests {
             found.env.get("LOG_LEVEL").map(String::as_str),
             Some("debug")
         );
-        assert_eq!(found.container_port, Some(80));
         assert_eq!(found.desired_state, DesiredState::Running);
     }
 
@@ -475,12 +403,12 @@ mod tests {
             .id;
 
         for project_id in [&first, &second] {
-            create(&database, project_id, "api", "nginx:alpine", None, &[])
+            create(&database, project_id, "api", "nginx:alpine", &[])
                 .await
                 .expect("created");
         }
 
-        let error = create(&database, &first, "api", "nginx:alpine", None, &[])
+        let error = create(&database, &first, "api", "nginx:alpine", &[])
             .await
             .expect_err("refused");
         assert!(
@@ -499,7 +427,6 @@ mod tests {
             &project_id,
             "api",
             "https://docker.io/library/nginx",
-            None,
             &[],
         )
         .await
@@ -507,45 +434,12 @@ mod tests {
         assert!(error.to_string().contains("not a URL"), "{error}");
     }
 
-    /// Containers share the host's network, so a port is node-wide and
-    /// two services holding one would be one service that never starts.
-    #[tokio::test]
-    async fn every_service_gets_a_different_port() {
-        let (database, project_id) = project().await;
-        let mut ports = Vec::new();
-
-        for name in ["a", "b", "c"] {
-            let service = create(&database, &project_id, name, "nginx:alpine", None, &[])
-                .await
-                .expect("created");
-            ports.push(allocate_port(&database, &service.id).await.expect("port"));
-        }
-
-        let unique: std::collections::HashSet<u16> = ports.iter().copied().collect();
-        assert_eq!(unique.len(), 3, "three services, three ports: {ports:?}");
-        assert!(ports.iter().all(|port| PORT_RANGE.contains(port)));
-    }
-
-    /// Allocation is idempotent: a redeploy must not move a service to
-    /// a new port and leave the route pointing at the old one.
-    #[tokio::test]
-    async fn a_service_keeps_the_port_it_was_given() {
-        let (database, project_id) = project().await;
-        let service = create(&database, &project_id, "api", "nginx:alpine", None, &[])
-            .await
-            .expect("created");
-
-        let first = allocate_port(&database, &service.id).await.expect("port");
-        let second = allocate_port(&database, &service.id).await.expect("port");
-        assert_eq!(first, second);
-    }
-
     /// The distinction the console rests on: what was asked for is not
     /// what is happening.
     #[tokio::test]
     async fn desired_state_is_recorded_separately() {
         let (database, project_id) = project().await;
-        let service = create(&database, &project_id, "api", "nginx:alpine", None, &[])
+        let service = create(&database, &project_id, "api", "nginx:alpine", &[])
             .await
             .expect("created");
         assert_eq!(service.desired_state, DesiredState::Running);
@@ -554,7 +448,7 @@ mod tests {
             .await
             .expect("stop");
         assert_eq!(
-            find(&database, &service.id)
+            in_project(&database, &project_id, &service.slug)
                 .await
                 .expect("find")
                 .expect("present")
@@ -566,7 +460,7 @@ mod tests {
     #[tokio::test]
     async fn a_failure_is_recorded_and_cleared() {
         let (database, project_id) = project().await;
-        let service = create(&database, &project_id, "api", "nginx:alpine", None, &[])
+        let service = create(&database, &project_id, "api", "nginx:alpine", &[])
             .await
             .expect("created");
 
@@ -574,7 +468,7 @@ mod tests {
             .await
             .expect("record");
         assert_eq!(
-            find(&database, &service.id)
+            in_project(&database, &project_id, &service.slug)
                 .await
                 .unwrap()
                 .unwrap()
@@ -586,7 +480,7 @@ mod tests {
             .await
             .expect("clear");
         assert_eq!(
-            find(&database, &service.id)
+            in_project(&database, &project_id, &service.slug)
                 .await
                 .unwrap()
                 .unwrap()
@@ -600,7 +494,7 @@ mod tests {
     #[tokio::test]
     async fn the_container_id_names_its_project_and_service() {
         let (database, project_id) = project().await;
-        let service = create(&database, &project_id, "My API", "nginx:alpine", None, &[])
+        let service = create(&database, &project_id, "My API", "nginx:alpine", &[])
             .await
             .expect("created");
         assert_eq!(service.container_id("demo"), "demo.my-api");
@@ -611,7 +505,7 @@ mod tests {
     #[tokio::test]
     async fn a_corrupt_environment_does_not_break_the_listing() {
         let (database, project_id) = project().await;
-        let service = create(&database, &project_id, "api", "nginx:alpine", None, &[])
+        let service = create(&database, &project_id, "api", "nginx:alpine", &[])
             .await
             .expect("created");
 
@@ -627,7 +521,7 @@ mod tests {
             .await
             .expect("corrupt it");
 
-        let found = find(&database, &service.id)
+        let found = in_project(&database, &project_id, &service.slug)
             .await
             .expect("find")
             .expect("present");

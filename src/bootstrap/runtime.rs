@@ -63,10 +63,13 @@ pub const CNI_BIN_DIR: &str = "/opt/cni/bin";
 /// `bridge` builds the network, `host-local` hands out addresses in
 /// it, `loopback` brings up `lo` inside the namespace — a container
 /// without it cannot talk to itself, which surprises everything that
-/// binds `127.0.0.1`. `portmap` and `firewall` are not used yet; they
-/// come in the same tarball and listing only what we invoke keeps the
-/// check honest.
-pub const CNI_PLUGINS: &[&str] = &["bridge", "host-local", "loopback"];
+/// binds `127.0.0.1`. `portmap` forwards a node port to one inside the
+/// container, for a service published as raw TCP.
+///
+/// Listed by name rather than trusting the directory: a half-extracted
+/// tarball leaves a `/opt/cni/bin` that exists and cannot build a
+/// network.
+pub const CNI_PLUGINS: &[&str] = &["bridge", "host-local", "loopback", "portmap"];
 
 /// SHA-256 of each release artifact.
 ///

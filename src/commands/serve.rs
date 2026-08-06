@@ -17,28 +17,39 @@ pub async fn run(config: Config) -> anyhow::Result<i32> {
     let database = Arc::new(crate::db::open(&config.database_path()).await?);
     database.ping().await?;
 
+    // One route table, created before either half that uses it: the
+    // edge reads it on every request and the deployer replaces it
+    // whole after a deployment. Two tables would mean a deployment
+    // that changes nothing until the next restart.
+    let routes = Arc::new(crate::edge::routes::RouteTable::new());
+
     let container = Container::new();
     crate::api::register(&container, database.clone());
-    crate::console::register(&container, database.clone(), config.clone());
+    crate::console::register(&container, database.clone(), config.clone(), routes.clone());
 
     // One router: the console's pages and the API's endpoints answer on
     // the same hostname, because they are the same thing to whoever is
     // looking at the node.
     let control_plane = crate::api::routes(&container).merge(crate::console::routes(&container));
 
-    // Before the listeners: a node coming back up should have its
-    // containers back before it starts taking traffic for them.
-    // Never fatal — a node that cannot reach containerd must still
+    let (edge, resolver) =
+        crate::edge::build(&database, control_plane, &config, routes.clone()).await?;
+
+    // After the edge is built, so the deployer holds the same route
+    // table the listener reads — a deployment then takes effect
+    // without a restart. Before the listener *starts*, so a node
+    // coming back up has its containers before it takes traffic for
+    // them.
+    //
+    // Never fatal: a node that cannot reach containerd must still
     // serve the console, which is where somebody would go to find out
-    // why.
-    let deployer = crate::deploy::Deployer::new(database.clone(), &config.node.data_dir);
+    // why it cannot.
+    let deployer = crate::deploy::Deployer::new(database.clone(), &config).with_routes(routes);
     match deployer.reconcile().await {
         Ok(0) => {}
         Ok(started) => tracing::info!(started, "services restored"),
         Err(error) => tracing::warn!(%error, "could not reconcile services"),
     }
-
-    let (edge, resolver) = crate::edge::build(&database, control_plane, &config).await?;
 
     let https: SocketAddr = (bind_address(&config), config.edge.https_port).into();
     let http: SocketAddr = (bind_address(&config), config.edge.http_port).into();

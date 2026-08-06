@@ -1206,3 +1206,102 @@ nodo no entiende es como un reconciliador destruye datos.
 **Lo que todavía no hay:** ruta pública a un servicio. El contenedor se
 alcanza desde el nodo, no desde fuera — falta decidir el esquema de
 hostname y emitir certificado por ruta, que es el siguiente corte.
+
+### 8.9 M6 — puertos, dominios y HTTPS por servicio
+
+Un servicio ya no tiene "un puerto": tiene los que declare, y cada uno
+dice si sale al exterior como TCP crudo, si sirve HTTPS en un hostname,
+las dos cosas o ninguna. 240 tests, `fmt` y `clippy -D warnings` limpios.
+
+**El modelo: una fila por puerto, dos columnas nullable**
+
+`container_port` es lo que el proceso escucha dentro. `host_port` no
+nulo significa publicado en la IP del nodo; `hostname` no nulo significa
+que responde HTTPS ahí. Las cuatro combinaciones salen sin casos
+especiales, y la respuesta común a las dos últimas es "no": la mayoría
+de los servicios no exponen nada, y eso debía ser el estado por defecto
+en vez de una columna que había que dejar vacía.
+
+La columna `container_port` del servicio conflacionaba tres preguntas
+distintas. La migración la mueve a una fila y la borra.
+
+**El dominio: comprobar antes de aceptar, no después**
+
+Un hostname se verifica contra DNS *antes* de escribirse. La
+alternativa —guardarlo y enterarse al pedir el certificado— es un
+servicio que parece configurado, no responde, y la razón está en un log
+que nadie mira.
+
+La comparación es contra el **dominio del nodo**, no contra su IP: el
+nodo no sabe de forma fiable su dirección pública —detrás de NAT ve una
+privada, y preguntárselo a un tercero es depender del uptime de otro—
+pero su propio dominio ya resuelve a donde el mundo lo alcanza. Dos
+lookups y ninguna suposición. Se intersecan los conjuntos en vez de
+compararlos enteros: un nombre con dos registros A sigue llegando aquí
+si alguno coincide.
+
+El wildcard se detecta sondeando una etiqueta aleatoria, porque un
+registro comodín es invisible a una consulta directa: solo responde por
+nombres que nada más define. Si `wd-probe-xxxx.<dominio>` resuelve donde
+resuelve el dominio, hay comodín y se propone
+`<servicio>.<proyecto>.<dominio>` ya rellenado. Si no, el formulario
+explica qué falta y pide un hostname, que se comprueba igual.
+
+**Las rutas se derivan, no se editan**
+
+Son función de los puertos, los servicios y sus direcciones. Cualquier
+otra cosa deriva: un servicio redesplegado a otra dirección deja una
+ruta apuntando a la anterior, y el fallo es una página que no carga sin
+nada en ningún log. Así que el conjunto entero se recalcula tras cada
+despliegue.
+
+Una trampa que el test fija: el edge sirve el control plane en todos los
+hostnames **solo mientras la tabla está vacía**, así que la primera ruta
+de servicio habría dejado la consola inalcanzable —en el dominio del
+nodo, que es justo donde alguien iría a deshacerlo—. La sincronización
+escribe siempre las filas del control plane.
+
+**Un certificado por hostname**, no uno con muchos nombres: HTTP-01 no
+emite comodines, y un certificado multi-nombre habría que reemitirlo
+—y podría fallar entero— cada vez que un servicio cambia de dominio. Un
+fallo en un nombre no impide los demás.
+
+**Tres fallos, los tres en el nodo**
+
+1. **El proxy hablaba HTTP/2 a un contenedor que solo sabe HTTP/1.1.**
+   El navegador negocia h2 con el edge y la versión de la petición se
+   reenviaba tal cual: `client error (UserUnsupportedVersion)`, que no
+   nombra ninguno de los dos extremos. Los dos saltos son negociaciones
+   separadas — eso es justo lo que permite terminar HTTP/2 delante de
+   una aplicación que nunca aprendió más que HTTP/1.1.
+
+2. **`portmap DEL` con lista vacía no borra nada.** El plugin elimina la
+   cadena entera del contenedor —indexa por id y por red, no por lo que
+   diga la lista— pero valida el config antes de llegar ahí, y una lista
+   vacía es un no-op. El caso que más necesita limpieza es justo el que
+   la deja vacía: un servicio que dejaba de publicar un puerto conservaba
+   la regla DNAT mandando el puerto del nodo a la dirección que el
+   contenedor tuvo la última vez. Comprobado en el nodo que un DEL
+   nombrando un mapping que nunca existió borra la cadena igual.
+
+3. **Y el puerto de relleno era `0`**, que no es un puerto: el plugin
+   parsea el config antes de tocar nada y lo rechazaba. Fallo silencioso
+   de la especie habitual — un warning en el journal, una regla de más, y
+   un puerto del nodo respondiendo por un contenedor que ya se había
+   movido.
+
+**Verificado en el nodo, de fuera hacia dentro:**
+
+| | |
+| --- | --- |
+| wildcard | `wd-probe-*.<dominio>` resuelve a la IP del nodo |
+| certificado del servicio | emitido en 3 s e instalado **sin reiniciar** |
+| `https://nginx.first-project.<dominio>` | `200`, TLS válido, `server: nginx/1.31.3` |
+| TCP publicado | `http://<ip>:20001` → `200` desde fuera |
+| consola | sigue respondiendo en el dominio del nodo |
+| quitar el puerto | la regla DNAT desaparece; 0 reglas residuales |
+
+**Límite conocido:** reconciliar solo mira si el contenedor corre, no si
+sus mappings coinciden con las filas. Un cambio de puertos que falló al
+desplegarse y luego un reinicio dejan el contenedor con la configuración
+anterior hasta el siguiente despliegue explícito.

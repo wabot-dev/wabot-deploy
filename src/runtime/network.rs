@@ -155,6 +155,45 @@ impl ProjectNetwork {
         )
     }
 
+    /// The config handed to the `portmap` plugin.
+    ///
+    /// `portmap` is a *chained* plugin: it does its work against the
+    /// result of the one before it, which arrives as `prevResult`. The
+    /// mappings themselves come through `runtimeConfig`, which is how
+    /// the CNI spec passes per-container values into a config that is
+    /// otherwise per-network.
+    ///
+    /// On `DEL` the plugin only needs to find and flush its own
+    /// chains, so an empty mapping list and an empty previous result
+    /// are enough.
+    fn portmap_config(&self, mappings: &[PortMapping], prev_result: &str) -> String {
+        let ports: Vec<String> = mappings
+            .iter()
+            .map(|mapping| {
+                format!(
+                    r#"{{ "hostPort": {}, "containerPort": {}, "protocol": "tcp" }}"#,
+                    mapping.host_port, mapping.container_port
+                )
+            })
+            .collect();
+
+        let prev: serde_json::Value = serde_json::from_str(prev_result)
+            .unwrap_or(serde_json::Value::Object(serde_json::Map::new()));
+
+        format!(
+            r#"{{
+  "cniVersion": "{CNI_SPEC_VERSION}",
+  "name": "{name}",
+  "type": "portmap",
+  "capabilities": {{ "portMappings": true }},
+  "runtimeConfig": {{ "portMappings": [{ports}] }},
+  "prevResult": {prev}
+}}"#,
+            name = self.name(),
+            ports = ports.join(", "),
+        )
+    }
+
     fn loopback_config(&self) -> String {
         format!(
             r#"{{ "cniVersion": "{CNI_SPEC_VERSION}", "name": "{}-lo", "type": "loopback" }}"#,
@@ -163,18 +202,61 @@ impl ProjectNetwork {
     }
 }
 
+/// The mapping named when tearing a container's port forwarding down.
+///
+/// `portmap`'s DEL removes the container's *whole* chain — it keys on
+/// the container id and the network name, not on what this list says.
+/// But it validates the config first, and an empty list makes the call
+/// a no-op that leaves every rule in place.
+///
+/// So the teardown always names one. *Which* one does not matter, and
+/// that is not a guess: on a real node, a DEL naming a mapping that
+/// had never existed still removed the chain. It has to be this way
+/// round, because the case that needs cleaning most is a service that
+/// used to publish a port and no longer does — there, the current
+/// mappings are empty and the stale DNAT rule is the one still sending
+/// the node's port at whatever address the container had last time.
+///
+/// Port 1 rather than 0: the plugin parses the config before it gets
+/// anywhere near the chain, and `0` is not a port. That failure was
+/// silent in the way these are — a warning in the journal, a rule left
+/// behind, and a node port still answering for a container that had
+/// moved.
+const TEARDOWN_MAPPING: PortMapping = PortMapping {
+    host_port: 1,
+    container_port: 1,
+};
+
 /// The path of a container's network namespace.
 pub fn netns_path(container_id: &str) -> PathBuf {
     Path::new(NETNS_DIR).join(container_id)
 }
 
+/// One published port: a port on the node, forwarded to one inside
+/// the container.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PortMapping {
+    pub host_port: u16,
+    pub container_port: u16,
+}
+
 /// Create the namespace, put the container on the project's bridge,
 /// and return the address it was given.
+///
+/// `published` is forwarded by the `portmap` plugin, which chains onto
+/// the bridge's result — that is why this is one call rather than two:
+/// the chaining needs the bridge's answer, and handing that back for a
+/// caller to pass in again would make the CNI protocol somebody else's
+/// problem.
 ///
 /// Idempotent by demolition: an existing namespace under this id is
 /// torn down first. The reason to attach again is that the previous
 /// deployment should stop being the one on the network.
-pub async fn attach(network: &ProjectNetwork, container_id: &str) -> NetworkResult<Ipv4Addr> {
+pub async fn attach(
+    network: &ProjectNetwork,
+    container_id: &str,
+    published: &[PortMapping],
+) -> NetworkResult<Ipv4Addr> {
     detach(network, container_id).await;
 
     create_netns(container_id)?;
@@ -197,7 +279,24 @@ pub async fn attach(network: &ProjectNetwork, container_id: &str) -> NetworkResu
         detail: format!("no address in {output}"),
     })?;
 
-    tracing::info!(container = container_id, %address, bridge = %network.bridge, "attached");
+    if !published.is_empty() {
+        plugin(
+            "portmap",
+            "ADD",
+            &network.portmap_config(published, &output),
+            container_id,
+            IFNAME,
+        )
+        .await?;
+    }
+
+    tracing::info!(
+        container = container_id,
+        %address,
+        bridge = %network.bridge,
+        published = published.len(),
+        "attached"
+    );
     Ok(address)
 }
 
@@ -213,6 +312,9 @@ pub async fn detach(network: &ProjectNetwork, container_id: &str) {
         // address reservation and removes the host end of the veth,
         // and it needs the namespace to find its way there.
         for (name, config) in [
+            // portmap first, so its rules go before the interface they
+            // point at disappears.
+            ("portmap", network.portmap_config(&[TEARDOWN_MAPPING], "{}")),
             ("bridge", network.config()),
             ("loopback", network.loopback_config()),
         ] {
@@ -465,6 +567,47 @@ mod tests {
         let message = plugin_error(stdout).expect("parsed");
         assert!(message.contains("failed to allocate"), "{message}");
         assert!(message.contains("no IP addresses available"), "{message}");
+    }
+
+    /// The teardown call has to name a mapping or the plugin does
+    /// nothing — and doing nothing leaves a node port pointing at an
+    /// address that is no longer there.
+    #[test]
+    fn the_teardown_config_is_never_an_empty_mapping_list() {
+        let config = ProjectNetwork::new(1)
+            .expect("valid")
+            .portmap_config(&[TEARDOWN_MAPPING], "{}");
+
+        let parsed: serde_json::Value = serde_json::from_str(&config).expect("valid JSON");
+        assert_eq!(parsed["type"], "portmap");
+        assert_eq!(
+            parsed["runtimeConfig"]["portMappings"]
+                .as_array()
+                .map(Vec::len),
+            Some(1),
+            "an empty list makes DEL a no-op"
+        );
+    }
+
+    #[test]
+    fn a_published_port_becomes_a_mapping_the_plugin_understands() {
+        let config = ProjectNetwork::new(1).expect("valid").portmap_config(
+            &[PortMapping {
+                host_port: 20001,
+                container_port: 80,
+            }],
+            r#"{"cniVersion":"1.0.0","ips":[{"address":"10.42.1.7/24"}]}"#,
+        );
+
+        let parsed: serde_json::Value = serde_json::from_str(&config).expect("valid JSON");
+        let mapping = &parsed["runtimeConfig"]["portMappings"][0];
+        assert_eq!(mapping["hostPort"], 20001);
+        assert_eq!(mapping["containerPort"], 80);
+        assert_eq!(mapping["protocol"], "tcp");
+        // Chained: without the previous result the plugin does not know
+        // which address to forward to.
+        assert_eq!(parsed["prevResult"]["ips"][0]["address"], "10.42.1.7/24");
+        assert_eq!(parsed["capabilities"]["portMappings"], true);
     }
 
     #[test]

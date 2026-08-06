@@ -104,6 +104,33 @@ fn normalize(host: &str) -> String {
 
 // ---------- storage ---------------------------------------------------
 
+/// Drop every proxy route not in `keep`.
+///
+/// Control-plane rows are never touched: they are what makes the
+/// console reachable, and a sync that removed them because no service
+/// claimed the node's own domain would lock the operator out of the
+/// thing they would fix it from.
+pub async fn retain_proxies(database: &SqliteDatabase, keep: &[String]) -> SqliteResult<usize> {
+    let keep: Vec<String> = keep.iter().map(|host| normalize(host)).collect();
+    database
+        .write(move |connection| {
+            let mut removed = 0;
+            let hosts: Vec<String> = connection
+                .prepare("SELECT \"host\" FROM route WHERE \"upstream_kind\" = 'proxy'")?
+                .query_map([], |row| row.get(0))?
+                .collect::<Result<_, _>>()?;
+
+            for host in hosts {
+                if !keep.contains(&host) {
+                    connection.execute("DELETE FROM route WHERE \"host\" = ?1", [&host])?;
+                    removed += 1;
+                }
+            }
+            Ok(removed)
+        })
+        .await
+}
+
 /// Load every enabled route.
 ///
 /// A row whose upstream cannot be parsed is skipped with a warning
@@ -145,10 +172,11 @@ pub async fn load_all(database: &SqliteDatabase) -> SqliteResult<Vec<(String, Up
         .collect())
 }
 
-/// Nothing writes routes yet — deployments will, in M3. Until then
-/// the table is populated only by tests, which insert directly, and a
-/// writer with no caller would be an API designed against a guess.
-#[cfg(test)]
+/// Write a route, replacing whatever held that hostname.
+///
+/// Keyed on the hostname rather than the service: a name points at one
+/// upstream, and a service that took over a name should take it over
+/// rather than add a second row that the load order decides between.
 pub async fn upsert(
     database: &SqliteDatabase,
     host: &str,

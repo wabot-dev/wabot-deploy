@@ -47,11 +47,13 @@ pub struct ConsoleState {
 }
 
 impl ConsoleState {
-    pub fn new(database: Arc<SqliteDatabase>, config: Config) -> Self {
-        let deployer = Arc::new(crate::deploy::Deployer::new(
-            database.clone(),
-            &config.node.data_dir,
-        ));
+    pub fn new(
+        database: Arc<SqliteDatabase>,
+        config: Config,
+        routes: Arc<crate::edge::routes::RouteTable>,
+    ) -> Self {
+        let deployer =
+            Arc::new(crate::deploy::Deployer::new(database.clone(), &config).with_routes(routes));
         Self {
             database,
             config,
@@ -171,8 +173,14 @@ pub(crate) fn now_ms() -> i64 {
         .unwrap_or_default()
 }
 
-pub fn register(container: &Container, database: Arc<SqliteDatabase>, config: Config) {
-    container.register_instance::<ConsoleState>(Arc::new(ConsoleState::new(database, config)));
+pub fn register(
+    container: &Container,
+    database: Arc<SqliteDatabase>,
+    config: Config,
+    routes: Arc<crate::edge::routes::RouteTable>,
+) {
+    container
+        .register_instance::<ConsoleState>(Arc::new(ConsoleState::new(database, config, routes)));
     // No guard addon runs here, so nothing else would register `Auth`
     // and every controller holding one would fail to resolve.
     Auth::register_default(container);
@@ -230,7 +238,12 @@ pub(crate) mod tests {
                 .expect("token");
 
             let container = Container::new();
-            register(&container, database.clone(), Config::default());
+            register(
+                &container,
+                database.clone(),
+                Config::default(),
+                Arc::new(crate::edge::routes::RouteTable::new()),
+            );
             Self {
                 harness: RestHarness::new(routes(&container)),
                 database,

@@ -259,7 +259,6 @@ mod tests {
             &project.id,
             "api",
             "docker.io/library/nginx:alpine",
-            None,
             &[],
         )
         .await

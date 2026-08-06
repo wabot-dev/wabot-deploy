@@ -292,19 +292,61 @@ pub async fn obtain(
 /// Returns whether anything changed. Idempotent and cheap when the
 /// certificate is current, so it is safe to call on every start and on
 /// every pass of the renewal loop.
-pub async fn ensure(
+/// Obtain or renew every certificate this node needs.
+///
+/// That is the node's own domain plus every hostname a service serves
+/// HTTPS on. One certificate each rather than one with many names:
+/// HTTP-01 cannot issue a wildcard, and a single multi-name
+/// certificate would have to be reissued — and could fail entirely —
+/// every time one service changes hostname.
+///
+/// Returns whether anything changed. A failure on one name does not
+/// stop the others: a service with a broken DNS record must not keep
+/// the node's own certificate from renewing.
+pub async fn ensure_all(
     database: &SqliteDatabase,
     config: &Config,
     resolver: &certs::CertResolver,
 ) -> AcmeResult<bool> {
+    let mut changed = false;
+    let mut failure: Option<AcmeError> = None;
+
+    let mut names: Vec<String> = config.node.domain.iter().cloned().collect();
+    match crate::platform::ports::all(database).await {
+        Ok(ports) => names.extend(ports.into_iter().filter_map(|port| port.hostname)),
+        Err(error) => tracing::warn!(%error, "could not read the service hostnames"),
+    }
+    names.dedup();
+
+    for name in names {
+        match ensure(database, config, resolver, &name).await {
+            Ok(true) => changed = true,
+            Ok(false) => {}
+            Err(error) => {
+                tracing::warn!(%name, %error, "could not obtain a certificate");
+                failure.get_or_insert(error);
+            }
+        }
+    }
+
+    match failure {
+        // Reported only after everything that could work has been
+        // tried, so one bad hostname costs the others nothing.
+        Some(error) if !changed => Err(error),
+        _ => Ok(changed),
+    }
+}
+
+pub async fn ensure(
+    database: &SqliteDatabase,
+    config: &Config,
+    resolver: &certs::CertResolver,
+    domain: &str,
+) -> AcmeResult<bool> {
     if config.acme.disabled {
         return Ok(false);
     }
-    let Some(domain) = config.node.domain.clone() else {
-        // No domain, nothing a public CA could validate. The local
-        // authority's certificate stands.
-        return Ok(false);
-    };
+    let domain = domain.to_string();
 
     let directory = config.acme.directory_url();
     if let Some(existing) = certs::load(database, &domain).await? {
@@ -368,7 +410,7 @@ pub async fn renewal_loop(
     const SETTLED_DELAY: std::time::Duration = std::time::Duration::from_secs(12 * 3600);
 
     loop {
-        match ensure(&database, &config, &resolver).await {
+        match ensure_all(&database, &config, &resolver).await {
             Ok(changed) => {
                 if changed {
                     tracing::info!(
@@ -520,7 +562,9 @@ mod tests {
         let resolver = certs::CertResolver::new();
         let config = Config::default();
 
-        assert!(!ensure(&database, &config, &resolver).await.expect("ensure"));
+        assert!(!ensure_all(&database, &config, &resolver)
+            .await
+            .expect("ensure"));
     }
 
     #[tokio::test]
@@ -531,7 +575,9 @@ mod tests {
         config.node.domain = Some("node.example.com".into());
         config.acme.disabled = true;
 
-        assert!(!ensure(&database, &config, &resolver).await.expect("ensure"));
+        assert!(!ensure_all(&database, &config, &resolver)
+            .await
+            .expect("ensure"));
     }
 
     /// A current ACME certificate must not trigger an order — that is
@@ -551,7 +597,9 @@ mod tests {
             .await
             .expect("save");
 
-        assert!(!ensure(&database, &config, &resolver).await.expect("ensure"));
+        assert!(!ensure_all(&database, &config, &resolver)
+            .await
+            .expect("ensure"));
     }
 
     fn stored_from(issuer: &str, days_left: i64) -> StoredCert {
@@ -591,7 +639,7 @@ mod tests {
         // stored, so this must try to reissue. It fails — there is no
         // network in a test — and that failure is the evidence: the
         // early return would have been `Ok(false)`.
-        let outcome = ensure(&database, &config, &resolver).await;
+        let outcome = ensure_all(&database, &config, &resolver).await;
         assert!(
             outcome.is_err(),
             "a certificate from a different authority must not be kept: {outcome:?}"
@@ -613,7 +661,9 @@ mod tests {
             .await
             .expect("save");
 
-        assert!(!ensure(&database, &config, &resolver).await.expect("ensure"));
+        assert!(!ensure_all(&database, &config, &resolver)
+            .await
+            .expect("ensure"));
     }
 
     #[test]

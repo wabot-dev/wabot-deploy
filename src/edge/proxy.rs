@@ -193,6 +193,17 @@ fn rewrite(upstream: SocketAddr, request: Request<Body>) -> Option<Request<Body>
     };
     parts.uri = uri;
 
+    // The version is the *client's*, and it does not carry over. A
+    // browser reaching the edge over TLS negotiates HTTP/2, and
+    // forwarding that verbatim asks the container to speak a protocol
+    // it never agreed to — the connection fails with
+    // `UserUnsupportedVersion`, which names neither end.
+    //
+    // The two hops are separate protocol negotiations, which is what
+    // lets a node terminate HTTP/2 in front of an application that
+    // only ever learned HTTP/1.1.
+    parts.version = hyper::Version::HTTP_11;
+
     strip_hop_by_hop(&mut parts.headers);
     // The original Host is preserved: an application routing on it —
     // and many do — must see what the client asked for, not the
@@ -274,6 +285,19 @@ mod tests {
             "and neither is Connection alone"
         );
         assert!(upgrade_target(&request(&[])).is_none());
+    }
+
+    /// A browser speaks HTTP/2 to the edge; most containers only speak
+    /// HTTP/1.1. Forwarding the client's version asks the upstream for
+    /// a protocol it never negotiated, and the request fails with an
+    /// error that names neither end.
+    #[test]
+    fn the_upstream_hop_is_http_1_whatever_the_client_spoke() {
+        let mut request = request(&[("host", "example.com")]);
+        *request.version_mut() = hyper::Version::HTTP_2;
+
+        let rewritten = rewrite("10.42.1.7:80".parse().unwrap(), request).expect("rewritten");
+        assert_eq!(rewritten.version(), hyper::Version::HTTP_11);
     }
 
     #[test]

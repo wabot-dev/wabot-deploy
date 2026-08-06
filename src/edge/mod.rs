@@ -58,6 +58,7 @@ pub async fn build(
     database: &SqliteDatabase,
     control_plane: Router,
     config: &crate::config::Config,
+    table: Arc<RouteTable>,
 ) -> anyhow::Result<(EdgeState, Arc<CertResolver>)> {
     // Every name this node can be reached by before ACME. `localhost`
     // is always present so a local `curl` works on a node with no DNS.
@@ -70,7 +71,6 @@ pub async fn build(
     let resolver = Arc::new(CertResolver::new());
     resolver.replace(&certs::load_all(database).await?)?;
 
-    let table = Arc::new(RouteTable::new());
     table.replace(routes::load_all(database).await?);
 
     // With no routes configured, every hostname reaches the control
