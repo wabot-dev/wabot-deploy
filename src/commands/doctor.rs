@@ -85,6 +85,73 @@ pub async fn run(config: Config, config_path: &Path) -> anyhow::Result<i32> {
     }
 
     println!();
+    println!("machine");
+    // Ports are skipped when the node holds them: a running node
+    // failing its own port check would be a healthy node reading as
+    // broken.
+    let node_running = crate::bootstrap::service::is_active();
+    for check in crate::bootstrap::preflight::run(
+        config.edge.https_port,
+        config.edge.http_port,
+        !node_running,
+    ) {
+        if check.blocks() {
+            problems += 1;
+        }
+        println!("  {check}");
+    }
+    if node_running {
+        println!("  ok    ports          held by the running node");
+    }
+
+    println!();
+    println!("runtime");
+    let runtime = crate::bootstrap::runtime::status();
+    println!(
+        "  containerd  {}",
+        runtime
+            .containerd
+            .clone()
+            .unwrap_or_else(|| "absent".into())
+    );
+    println!(
+        "  crun        {}",
+        runtime.crun.clone().unwrap_or_else(|| "absent".into())
+    );
+    println!(
+        "  socket      {}",
+        if runtime.socket {
+            crate::bootstrap::runtime::SOCKET.to_string()
+        } else {
+            format!("{} (absent)", crate::bootstrap::runtime::SOCKET)
+        }
+    );
+    if !runtime.ready() {
+        // Not counted as a problem: nothing deploys containers yet, so
+        // a node without containerd is incomplete rather than broken.
+        println!("  (no containers can run until all three are present)");
+    }
+
+    println!();
+    println!("service");
+    if crate::bootstrap::service::systemd_available() {
+        println!(
+            "  unit        {}",
+            crate::bootstrap::service::unit_path().display()
+        );
+        println!(
+            "  state       {}",
+            if node_running {
+                "active"
+            } else {
+                "not running"
+            }
+        );
+    } else {
+        println!("  systemd is not here; the node has to be run in the foreground");
+    }
+
+    println!();
     println!("certificates");
     match crate::edge::certs::load_all(&database).await {
         Ok(certificates) if certificates.is_empty() => {
@@ -152,35 +219,49 @@ pub async fn run(config: Config, config_path: &Path) -> anyhow::Result<i32> {
     println!();
     println!("install steps");
     let entries = ledger::all(&database).await.unwrap_or_default();
-    for step in Step::ALL {
-        let entry = entries.iter().find(|e| e.step == step.as_str());
-        let state = match (entry.map(|e| e.status), Step::IMPLEMENTED.contains(step)) {
-            (Some(Status::Done), _) => "done".to_string(),
-            (Some(Status::Running), _) => {
-                problems += 1;
-                "INTERRUPTED — re-run install".to_string()
-            }
-            (Some(Status::Failed), _) => {
-                problems += 1;
-                match entry.and_then(|e| e.detail.clone()) {
-                    Some(detail) => format!("FAILED — {detail}"),
-                    None => "FAILED".to_string(),
-                }
-            }
-            (None, true) => {
-                problems += 1;
-                "pending — run install".to_string()
-            }
-            // Not a problem: the step exists in the plan and its
-            // milestone has not shipped. Counting it would make a
-            // healthy node look broken.
-            (None, false) => "not implemented yet".to_string(),
-        };
-        println!("  {:<12} {}", step.as_str(), state);
+    for (step, state, is_problem) in step_states(&entries) {
+        if is_problem {
+            problems += 1;
+        }
+        println!("  {step:<12} {state}");
     }
 
     database.close().await?;
     finish(problems)
+}
+
+/// One line per step: what it is, how it reads, and whether it counts
+/// against the node.
+///
+/// Pure, and separated from the printing for exactly one reason: the
+/// decisions here — an interrupted step is a problem, an unshipped one
+/// is not — are worth testing without a machine that happens to be
+/// Linux and happens to be root.
+fn step_states(entries: &[ledger::Entry]) -> Vec<(&'static str, String, bool)> {
+    Step::ALL
+        .iter()
+        .map(|step| {
+            let entry = entries.iter().find(|entry| entry.step == step.as_str());
+            let (state, problem) = match (entry.map(|e| e.status), Step::IMPLEMENTED.contains(step))
+            {
+                (Some(Status::Done), _) => ("done".to_string(), false),
+                (Some(Status::Running), _) => ("INTERRUPTED — re-run install".to_string(), true),
+                (Some(Status::Failed), _) => (
+                    match entry.and_then(|e| e.detail.clone()) {
+                        Some(detail) => format!("FAILED — {detail}"),
+                        None => "FAILED".to_string(),
+                    },
+                    true,
+                ),
+                (None, true) => ("pending — run install".to_string(), true),
+                // The step exists in the plan and its milestone has
+                // not shipped. Counting it would make a healthy node
+                // look broken.
+                (None, false) => ("not implemented yet".to_string(), false),
+            };
+            (step.as_str(), state, problem)
+        })
+        .collect()
 }
 
 /// A directory URL is what gets stored, and it is unreadable in a
@@ -253,21 +334,79 @@ mod tests {
         assert_eq!(code, 1, "no database means something to fix");
     }
 
-    #[tokio::test]
-    async fn an_installed_node_is_clean() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let config_path = dir.path().join("config.toml");
+    /// The decisions `doctor` makes about a step, tested without
+    /// needing the machine underneath to be a Linux node running as
+    /// root — which the preflight section correctly refuses on a
+    /// developer's laptop.
+    #[test]
+    fn a_missing_implemented_step_is_a_problem_and_an_unshipped_one_is_not() {
+        let states = step_states(&[]);
 
-        crate::commands::install::run(config_in(dir.path()), &config_path, InstallArgs::none())
-            .await
-            .expect("install");
-
-        let code = run(config_in(dir.path()), &config_path)
-            .await
-            .expect("doctor");
+        let problems: Vec<&str> = states
+            .iter()
+            .filter(|(_, _, problem)| *problem)
+            .map(|(step, _, _)| *step)
+            .collect();
+        let implemented: Vec<&str> = Step::IMPLEMENTED.iter().map(|step| step.as_str()).collect();
         assert_eq!(
-            code, 0,
-            "the steps that are not implemented yet must not count as problems"
+            problems, implemented,
+            "nothing run: exactly the shipped steps are missing"
+        );
+
+        // And the rest say so rather than reading as broken.
+        assert!(states
+            .iter()
+            .filter(|(step, _, _)| !implemented.contains(step))
+            .all(|(_, state, problem)| !problem && state.contains("not implemented")));
+    }
+
+    #[test]
+    fn an_interrupted_step_outranks_a_missing_one() {
+        let entries = vec![ledger::Entry {
+            step: "database".into(),
+            status: Status::Running,
+            detail: None,
+            updated_at: 0,
+        }];
+        let (_, state, problem) = step_states(&entries)
+            .into_iter()
+            .find(|(step, _, _)| *step == "database")
+            .expect("database is a step");
+        assert!(problem);
+        assert!(state.contains("INTERRUPTED"), "{state}");
+    }
+
+    #[test]
+    fn a_failed_step_carries_its_reason_into_the_report() {
+        let entries = vec![ledger::Entry {
+            step: "runtime".into(),
+            status: Status::Failed,
+            detail: Some("checksum mismatch".into()),
+            updated_at: 0,
+        }];
+        let (_, state, problem) = step_states(&entries)
+            .into_iter()
+            .find(|(step, _, _)| *step == "runtime")
+            .expect("runtime is a step");
+        assert!(problem);
+        assert!(state.contains("checksum mismatch"), "{state}");
+    }
+
+    /// A finished install has nothing to report about its steps.
+    #[test]
+    fn a_complete_ledger_is_clean() {
+        let entries: Vec<ledger::Entry> = Step::IMPLEMENTED
+            .iter()
+            .map(|step| ledger::Entry {
+                step: step.as_str().to_string(),
+                status: Status::Done,
+                detail: None,
+                updated_at: 0,
+            })
+            .collect();
+        assert!(
+            step_states(&entries).iter().all(|(_, _, problem)| !problem),
+            "a finished install is clean, and unshipped steps are not problems"
         );
     }
 

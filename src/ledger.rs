@@ -47,7 +47,20 @@ impl Step {
     /// What `install` runs today. The rest are declared because the
     /// ledger is also a plan, and `doctor` listing them as pending is
     /// more useful than pretending they do not exist.
-    pub const IMPLEMENTED: &'static [Step] = &[Step::Layout, Step::Config, Step::Database];
+    ///
+    /// `Preflight` is absent on purpose: it changes nothing, so there
+    /// is no state for it to record. `Certificate` is absent because
+    /// it is attempted and allowed to fail — a node with no public
+    /// certificate is still installed.
+    pub const IMPLEMENTED: &'static [Step] = &[
+        Step::Layout,
+        Step::Config,
+        Step::Database,
+        Step::Runtime,
+        Step::Binary,
+        Step::Service,
+        Step::Start,
+    ];
 
     pub const ALL: &'static [Step] = &[
         Step::Preflight,

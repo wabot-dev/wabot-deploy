@@ -26,7 +26,13 @@ pub async fn run(mut config: Config, config_path: &Path, args: InstallArgs) -> a
         config.acme.directory = "staging".into();
     }
 
-    // Layout first, because the config file and the database both need
+    // Preflight before anything is written. A machine that cannot run
+    // the node should be told so while nothing has changed on it.
+    if !preflight(&config, args.skip_preflight)? {
+        return Ok(1);
+    }
+
+    // Layout next, because the config file and the database both need
     // somewhere to live. Not ledgered until the database exists — the
     // ledger is *in* the database — so this step records itself last.
     let layout = layout(&config)?;
@@ -58,6 +64,43 @@ pub async fn run(mut config: Config, config_path: &Path, args: InstallArgs) -> a
         ledger::record(&database, step, Status::Done, Some(detail)).await?;
     }
 
+    // The steps that change the machine rather than the data
+    // directory. Each records itself, so a run that dies part-way
+    // resumes rather than repeating what already worked.
+    if args.no_system {
+        println!("  --no-system: containerd, the binary, the unit and the start were skipped.");
+    }
+
+    if !args.no_runtime && !args.no_system {
+        step(&database, Step::Runtime, "containerd and crun", || {
+            crate::bootstrap::runtime::ensure().map_err(anyhow::Error::from)
+        })
+        .await?;
+    }
+
+    if !args.no_system {
+        step(&database, Step::Binary, "the binary", || {
+            Ok(match crate::bootstrap::service::install_binary()? {
+                true => format!("installed to {}", crate::bootstrap::service::BINARY_PATH),
+                false => "already current".to_string(),
+            })
+        })
+        .await?;
+    }
+
+    if !args.no_system && crate::bootstrap::service::systemd_available() {
+        let unit_path = config_path.to_path_buf();
+        step(&database, Step::Service, "the systemd unit", move || {
+            Ok(match crate::bootstrap::service::install_unit(&unit_path)? {
+                true => format!("written to {}", crate::bootstrap::service::UNIT_PATH),
+                false => "already current".to_string(),
+            })
+        })
+        .await?;
+    } else if !args.no_system {
+        println!("  systemd is not here, so no service was registered.");
+    }
+
     report(&config, config_path, wrote_config, &database).await?;
 
     // Attempted here so a DNS or firewall problem surfaces while the
@@ -72,8 +115,86 @@ pub async fn run(mut config: Config, config_path: &Path, args: InstallArgs) -> a
         println!("  the node will serve its local certificate and keep retrying.");
     }
 
+    // Last, because it is the step that makes everything before it
+    // true: the node comes up holding the ports, the certificate and
+    // the configuration the earlier steps put in place.
+    if !args.no_system && !args.no_start && crate::bootstrap::service::systemd_available() {
+        step(&database, Step::Start, "the node", || {
+            crate::bootstrap::service::start()?;
+            Ok("running".to_string())
+        })
+        .await?;
+        println!();
+        println!("  the node is running. `systemctl status wabot-deploy`");
+    }
+
     database.close().await?;
     Ok(0)
+}
+
+/// Run one step, unless it is already done, and record how it went.
+///
+/// A failure is recorded and returned rather than swallowed: the point
+/// of the ledger is that the next run knows where this one stopped.
+async fn step<F>(database: &SqliteDatabase, which: Step, what: &str, work: F) -> anyhow::Result<()>
+where
+    F: FnOnce() -> anyhow::Result<String>,
+{
+    if ledger::is_done(database, which).await? {
+        return Ok(());
+    }
+
+    println!("  {what}…");
+    ledger::record(database, which, Status::Running, None).await?;
+
+    match work() {
+        Ok(detail) => {
+            println!("    {detail}");
+            ledger::record(database, which, Status::Done, Some(detail)).await?;
+            Ok(())
+        }
+        Err(error) => {
+            let message = format!("{error:#}");
+            ledger::record(database, which, Status::Failed, Some(message.clone())).await?;
+            println!("    failed: {message}");
+            Err(error)
+        }
+    }
+}
+
+/// Check the machine, and say whether to continue.
+fn preflight(config: &Config, skip: bool) -> anyhow::Result<bool> {
+    use crate::bootstrap::preflight;
+
+    if skip {
+        println!("  preflight skipped (--skip-preflight)");
+        return Ok(true);
+    }
+
+    // Ports are checked only when this install will start the node.
+    // On a machine already running one, its own ports would read as
+    // taken — a healthy node failing its own preflight.
+    let check_ports = !crate::bootstrap::service::is_active();
+    let checks = preflight::run(config.edge.https_port, config.edge.http_port, check_ports);
+
+    println!("checking this machine");
+    for check in &checks {
+        println!("  {check}");
+    }
+
+    let blocking: Vec<&preflight::Check> = checks.iter().filter(|check| check.blocks()).collect();
+    if blocking.is_empty() {
+        println!();
+        return Ok(true);
+    }
+
+    println!();
+    println!(
+        "  {} check(s) say this machine cannot run the node. Nothing has been changed.",
+        blocking.len()
+    );
+    println!("  Fix them, or re-run with --skip-preflight if you know better.");
+    Ok(false)
 }
 
 /// Create the directories, owner-only.
@@ -253,10 +374,13 @@ mod tests {
         let database = crate::db::open(&config_in(dir.path()).database_path())
             .await
             .expect("open");
+        // `--no-system` (what `InstallArgs::none` sets, so tests do
+        // not write to /usr/local) runs the three steps that only
+        // touch the data directory.
         let entries = ledger::all(&database).await.expect("ledger");
         assert_eq!(
             entries.len(),
-            Step::IMPLEMENTED.len(),
+            3,
             "one row per step, not one per run: {entries:?}"
         );
         assert!(entries.iter().all(|e| e.status == Status::Done));

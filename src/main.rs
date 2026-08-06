@@ -10,6 +10,7 @@
 use clap::Parser;
 
 mod api;
+mod bootstrap;
 mod cli;
 mod commands;
 mod config;

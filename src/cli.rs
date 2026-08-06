@@ -63,6 +63,36 @@ pub struct InstallArgs {
     /// the hour.
     #[arg(long)]
     pub acme_staging: bool,
+
+    /// Install the node but leave containerd alone.
+    ///
+    /// For a machine where containerd is managed by something else, or
+    /// where you want the control plane up before the runtime.
+    #[arg(long)]
+    pub no_runtime: bool,
+
+    /// Change nothing outside the data directory and the config file.
+    ///
+    /// No containerd, no `/usr/local/bin`, no systemd unit, nothing
+    /// started. What is left is a configured node you can run in the
+    /// foreground — which is what a container image wants, and what a
+    /// test can afford to do on somebody's laptop.
+    #[arg(long)]
+    pub no_system: bool,
+
+    /// Do everything except start the service.
+    ///
+    /// For an install that should take effect on the next boot rather
+    /// than now.
+    #[arg(long)]
+    pub no_start: bool,
+
+    /// Skip the machine checks.
+    ///
+    /// They exist because each one becomes a confusing failure later.
+    /// Skipping is for when you know something the check does not.
+    #[arg(long)]
+    pub skip_preflight: bool,
 }
 
 impl InstallArgs {
@@ -76,6 +106,14 @@ impl InstallArgs {
             domain: None,
             email: None,
             acme_staging: false,
+            no_runtime: false,
+            // Tests must not touch containerd, systemd, or
+            // /usr/local on whoever's machine is running them.
+            no_system: true,
+            no_start: false,
+            // And they run as an ordinary user, which the real
+            // preflight correctly refuses.
+            skip_preflight: true,
         }
     }
 

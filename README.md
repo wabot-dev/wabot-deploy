@@ -11,9 +11,10 @@ reasoning behind it.
 
 ## Status
 
-**M2** — the node installs, serves over TLS with a real certificate,
-and can proxy a hostname to a container. It cannot yet *start* one:
-containerd arrives in M3.
+**M3** — `install` sets up the whole machine: it checks it can run the
+node, installs containerd and crun, registers a systemd service and
+starts it. What is left is deployments — the node can route a hostname
+to a container but cannot yet start one.
 
 | | |
 | --- | --- |
@@ -23,7 +24,8 @@ containerd arrives in M3.
 | ✅ edge | TLS, host routing, reverse proxy with upgrades, HTTP redirect |
 | ✅ ACME | Let's Encrypt over HTTP-01, renewed in the background |
 | ✅ console | a status page at `/`, server-rendered, no JavaScript |
-| ⏳ M3 | containerd + crun, the systemd unit, the rest of the bootstrap |
+| ✅ bootstrap | preflight, containerd + crun, the systemd unit, a service that starts |
+| ⏳ next | deployments: containers this node starts, not just routes to |
 
 `doctor` lists the install steps that have not shipped as
 `not implemented yet` rather than hiding them.
@@ -78,7 +80,22 @@ With no routes configured every hostname reaches the control plane, so
 a fresh node is usable at whatever address you can reach it on.
 
 On a real node the defaults are the answer — `/etc/wabot-deploy/config.toml`,
-`/var/lib/wabot-deploy`, port 443 — and `install` runs as root.
+`/var/lib/wabot-deploy`, port 443 — and `install` runs as root:
+
+```sh
+sudo wabot-deploy install --domain node.example.com
+```
+
+That checks the machine, installs containerd and crun, writes a systemd
+unit, obtains a certificate and starts the service. It converges: run
+it again and it does only what is missing.
+
+| flag | |
+| --- | --- |
+| `--no-runtime` | leave containerd alone; something else manages it |
+| `--no-system` | change nothing outside the data directory — for a container image, or a dry run |
+| `--no-start` | install everything, start on the next boot |
+| `--skip-preflight` | when you know something the checks do not |
 
 The listeners bind `0.0.0.0` only on privileged ports — that is a real
 node, where the edge terminating TLS is the point. On a high port,
@@ -122,6 +139,7 @@ Environment overrides, for a container or a one-off run:
 | `src/api.rs` | the control-plane HTTP surface |
 | `src/edge/` | TLS, certificates, ACME, host routing, the reverse proxy |
 | `src/console/` | the web console |
+| `src/bootstrap/` | preflight, containerd + crun, the systemd unit |
 | `assets/` | the design system, vendored — a node must not need a CDN |
 | `src/commands/` | one module per verb |
 | `migrations/` | embedded with `include_str!`, so the binary stands alone |
