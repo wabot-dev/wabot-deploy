@@ -9,6 +9,7 @@ edition = "2021"
 # turned on "for later" is a dependency tree paid for now.
 wabot = { version = "0.1", default-features = false, features = [
     "rest",
+    "rest-tls",
     "sqlite",
     "tracing-format",
 ] }
@@ -33,6 +34,31 @@ clap = { version = "4", default-features = false, features = [
     "usage",
     "error-context",
 ] }
+
+# The proxy leg. rustls itself comes through `wabot::rest::rustls`, so
+# there is exactly one copy of it in the binary.
+hyper = { version = "1", features = ["client", "http1", "http2"] }
+hyper-util = { version = "0.1", features = ["client", "client-legacy", "http1", "http2", "tokio"] }
+http-body-util = "0.1"
+
+# Self-signed certificates for the pre-DNS node, and later the CSRs
+# ACME needs.
+# `x509-parser` is what `CertificateParams::from_ca_cert_pem` needs:
+# the local CA is stored as PEM and loaded back to sign each new leaf.
+# The alternative — rebuilding the CA's parameters from memory and
+# re-signing — would produce a *different* certificate than the one
+# stored, and arguing about whether the chain still validates is worse
+# than one dependency.
+rcgen = { version = "0.13", features = ["x509-parser"] }
+# Certificate validity windows. Pinned to what rcgen uses, so the
+# `OffsetDateTime` handed to `CertificateParams` is the same type.
+time = { version = "0.3", default-features = false, features = ["std"] }
+
+# The route table: read on every request, replaced whole on the rare
+# change. A lock would put every request behind the one writer.
+arc-swap = "1"
+# `oneshot`, for calling the control-plane router in-process.
+tower = { version = "0.5", features = ["util"] }
 
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

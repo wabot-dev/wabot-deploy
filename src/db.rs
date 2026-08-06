@@ -11,10 +11,10 @@ use wabot::sqlite::{Migration, MigrationRunner, SqliteConfig, SqliteDatabase, Sq
 
 /// Applied in id order, once each, checksummed. Add to the end.
 fn migrations() -> Vec<Migration> {
-    vec![Migration::new(
-        "0001_node",
-        include_str!("../migrations/0001_node.sql"),
-    )]
+    vec![
+        Migration::new("0001_node", include_str!("../migrations/0001_node.sql")),
+        Migration::new("0002_edge", include_str!("../migrations/0002_edge.sql")),
+    ]
 }
 
 /// Open `path` and bring the schema up to date.

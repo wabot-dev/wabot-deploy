@@ -577,7 +577,7 @@ mergeable y útil por separado.
 | **A2** ✅ | framework | **F3** `wabot-feature-sqlite` + `wabot-addon-async-sqlite` | hecho — ver §8.2 |
 | **A3** ✅ | framework | **F1** `#[max_body]` y endpoints `#[raw]` | hecho — ver §8.3 |
 | **M0** ✅ | deploy | CLI, config, BD, `ProjectRunner`, `/healthz` | hecho — ver §8.4 |
-| **M1** | deploy | Edge: :443 con autofirmado, tabla de rutas, consola y API in-process, :80 con redirect, proxy con upgrade | `curl -k https://localhost/healthz`; WebSocket contra un upstream de prueba |
+| **M1** ✅ | deploy | Edge completo | hecho — ver §8.5 |
 | **M2** | deploy | ACME real, `certificate`/`acme_account`, bucle de renovación | dominio real contra el directorio **staging** de Let's Encrypt |
 | **M3** | deploy | Bootstrap completo: preflight, containerd + crun, unit, ledger | VM limpia Ubuntu 24.04 |
 | **M4** | deploy | Endurecimiento | idempotencia, reanudación tras fallo, RSS |
@@ -804,6 +804,75 @@ pero su API pública lo exige. Corregido allí.
 **Nota para M1:** `serve` escucha en `edge.https_port` en texto plano.
 En desarrollo se baja con `WABOT_DEPLOY_HTTPS_PORT=3000`; en producción
 443 necesita root. El listener lo reemplaza el edge.
+
+### 8.5 M1 — hecho
+
+El edge. 55 tests, `fmt` y `clippy -D warnings` limpios, verificado con
+TLS real: `curl` sin `-k`, confiando solo en la CA exportada, valida la
+cadena. RSS release **8,7 MB**.
+
+**La simplificación que cambió el diseño.** El §4 planteaba escribir el
+accept loop a mano con `hyper::server::conn::auto`. No hace falta: F2 ya
+termina TLS con resolver dinámico, maneja upgrades y drena. Así que el
+edge es **un `axum::Router` cuyo fallback despacha por `Host`**. Eso
+borra de este crate un accept loop, una implementación de apagado
+grácil y un rastreador de conexiones — y garantiza que el edge no se
+desvíe del framework en cómo se sirve una conexión.
+
+**Un bug real que cazó un test.** Las firmas ECDSA son aleatorizadas, así
+que reconstruir la CA con `from_ca_cert_pem(...).self_signed()`
+**re-firma** y produce bytes distintos en cada arranque: mismo TBS,
+firma nueva. El fingerprint que el operador confía habría cambiado en
+cada reinicio. `LocalCa` ahora lleva el PEM almacenado (lo que se
+entrega) separado del `Certificate` reconstruido (solo para firmar
+hojas).
+
+**Decisiones que importan**
+
+- **Despacho por `Host`, no por SNI** — y leyendo `:authority` *y* el
+  header, porque HTTP/2 usa el primero y HTTP/1.1 el segundo. Leer solo
+  uno da un edge que funciona en una versión del protocolo y da 404 en
+  la otra.
+- **Sin rutas configuradas, todo llega al plano de control.** Un nodo
+  recién instalado tiene que ser alcanzable en la dirección que sea; que
+  la primera petición tras `install` fuera un 404 sería absurdo.
+- **La CA se exporta a `certs/local-ca.crt`**, no se imprime. Un PEM en
+  el scrollback es algo que copiar con cuidado; una ruta es algo que se
+  le pasa a `security add-trusted-cert` o `update-ca-certificates`.
+- **Los nombres del certificado se guardan en columna**, no se decodifican
+  del DER. Decidir si reemitir es una comparación de conjuntos, y un SAN
+  de IP nunca aparecería como el texto que se pidió.
+- **Redirect 308, no 302** — el método y el cuerpo tienen que sobrevivir,
+  o un POST se convierte en GET camino de HTTPS. Y el puerto se
+  reconstruye: arrastrar el de origen crea un bucle.
+- **`bind_address` es `0.0.0.0` solo en puertos privilegiados.** En
+  puertos altos —o sea, un desarrollador— escucha en loopback: una
+  consola sin autenticación no debe aparecer en la red del portátil
+  donde se arrancó.
+
+**El proxy y los upgrades.** Un proxy que solo reenvía cuerpos parece
+terminado y rompe todos los WebSockets. Hay `hyper::upgrade::on` en las
+**dos** patas y `copy_bidirectional` entre ellas. El test
+`an_upgraded_connection_is_proxied_both_ways` levanta sockets de verdad
+(el `RestHarness` no sirve: usa `oneshot`, y un upgrade es justo lo que
+sobrevive a la respuesta) y comprueba que los bytes vuelven. Sin
+librería de WebSocket: al proxy le da igual el protocolo destino, lo que
+importa es relevar el 101 y unir los streams.
+
+También se limpian las cabeceras hop-by-hop **incluidas las que liste
+`Connection`** — un proxy que solo quita el conjunto fijo filtra el
+resto — y se preserva el `Host` del cliente, porque muchas apps enrutan
+con él.
+
+**Lo que quité por no tener usuario:** `routes::upsert` quedó
+`#[cfg(test)]`. Nada escribe rutas hasta que existan los despliegues en
+M3.
+
+**Una dependencia que no estaba prevista:** `rcgen` con feature
+`x509-parser`, necesaria para `from_ca_cert_pem`. La alternativa
+—reconstruir los parámetros de la CA de memoria— produce un certificado
+distinto del guardado, y discutir si la cadena sigue validando es peor
+que una dependencia.
 
 **Verificación end-to-end de M3/M4** — en VM efímera, no en la máquina de
 desarrollo:

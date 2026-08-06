@@ -113,6 +113,19 @@ async fn report(
         None => println!("  domain    (none — the node will serve a self-signed certificate)"),
     }
 
+    // The certificate authority the node signs with until ACME. An
+    // operator trusts this once; printing it here is what makes that
+    // possible without them going looking in the database.
+    println!();
+    println!("  local certificate authority — trust this to reach the node without warnings:");
+    println!(
+        "  {}",
+        crate::edge::certs::ca_certificate_path(config).display()
+    );
+    if let Err(error) = write_ca_bundle(config, database).await {
+        println!("  (could not write it: {error})");
+    }
+
     let pending: Vec<&str> = Step::ALL
         .iter()
         .filter(|step| !Step::IMPLEMENTED.contains(step))
@@ -125,6 +138,18 @@ async fn report(
     }
 
     let _ = ledger::all(database).await?;
+    Ok(())
+}
+
+/// Export the CA to a file the operator can hand to a trust store.
+///
+/// Written rather than printed: a PEM block in terminal scrollback is
+/// something to copy carefully, and a path is something to pass to
+/// `security add-trusted-cert` or `update-ca-certificates`.
+async fn write_ca_bundle(config: &Config, database: &SqliteDatabase) -> anyhow::Result<()> {
+    let pem = crate::edge::certs::ca_certificate_pem(database).await?;
+    let path = crate::edge::certs::ca_certificate_path(config);
+    std::fs::write(&path, pem)?;
     Ok(())
 }
 

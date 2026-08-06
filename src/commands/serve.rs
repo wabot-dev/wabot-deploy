@@ -1,14 +1,14 @@
 //! `wabot-deploy serve` — the daemon.
 //!
-//! For now this is the control plane on a plain HTTP port. The edge
-//! (TLS on 443, host routing, the proxy) lands next and replaces the
-//! listener; the composition here is the shape it plugs into.
+//! Two listeners and one shutdown. The edge owns both ports; the
+//! control plane is reached through it rather than beside it, so
+//! there is no second address where the API answers without TLS.
 
+use std::net::SocketAddr;
 use std::sync::Arc;
 
 use wabot::lifecycle::{ShutdownPhase, ShutdownTask};
 use wabot::prelude::Container;
-use wabot::rest::{run_rest_controllers, RestServerConfig};
 use wabot::ProjectRunner;
 
 use crate::config::Config;
@@ -19,24 +19,31 @@ pub async fn run(config: Config) -> anyhow::Result<i32> {
 
     let container = Container::new();
     crate::api::register(&container, database.clone());
-    let router = crate::api::routes(&container);
+    let control_plane = crate::api::routes(&container);
 
-    // Deliberately not 443 yet: the control plane binds a plain port
-    // until the edge exists, and pretending otherwise by listening on
-    // 443 without TLS would be worse than being obviously incomplete.
-    let bind = format!("127.0.0.1:{}", control_plane_port(&config)).parse()?;
-    tracing::info!(%bind, version = crate::api::VERSION, "starting");
+    let (edge, resolver) = crate::edge::build(&database, control_plane, &config).await?;
 
-    let runner = ProjectRunner::new(container.clone());
+    let https: SocketAddr = (bind_address(&config), config.edge.https_port).into();
+    let http: SocketAddr = (bind_address(&config), config.edge.http_port).into();
+    tracing::info!(
+        %https,
+        %http,
+        version = crate::api::VERSION,
+        certificates = resolver.names().join(", "),
+        "starting"
+    );
+
     let closing = database.clone();
-
-    let outcome = runner
-        .service_with_cancel("rest", move |cancel| {
-            run_rest_controllers(router, RestServerConfig::new(bind).with_shutdown(cancel))
+    let outcome = ProjectRunner::new(container.clone())
+        .service_with_cancel("edge-https", move |cancel| {
+            crate::edge::serve_https(edge, resolver, https, cancel)
+        })
+        .service_with_cancel("edge-http", move |cancel| {
+            crate::edge::serve_http(config.edge.https_port, http, cancel)
         })
         // Close phase, after the drain: checkpointing the WAL while a
-        // request might still write it would leave work behind for the
-        // next start, which is the thing this avoids.
+        // request might still write to it leaves work for the next
+        // start, which is the thing this avoids.
         .on_shutdown(ShutdownTask::new(
             "database",
             ShutdownPhase::Close,
@@ -55,9 +62,17 @@ pub async fn run(config: Config) -> anyhow::Result<i32> {
     Ok(outcome.exit_code())
 }
 
-/// Until the edge arrives, `edge.https_port` names the port the
-/// control plane answers on — one number for an operator to think
-/// about rather than two that will merge later.
-fn control_plane_port(config: &Config) -> u16 {
-    config.edge.https_port
+/// Where to listen.
+///
+/// `0.0.0.0` on a real node — the edge terminates TLS, so this is the
+/// address the world is meant to reach. Loopback only when the ports
+/// are unprivileged, which in practice means a developer running it by
+/// hand: an unauthenticated console should not appear on the network
+/// of whatever laptop it was started on.
+fn bind_address(config: &Config) -> std::net::IpAddr {
+    if config.edge.https_port < 1024 {
+        std::net::Ipv4Addr::UNSPECIFIED.into()
+    } else {
+        std::net::Ipv4Addr::LOCALHOST.into()
+    }
 }

@@ -11,16 +11,15 @@ reasoning behind it.
 
 ## Status
 
-**M0** — the CLI, configuration, the database and the health
-endpoints. The node installs, reports its state and serves; it does
-not deploy anything yet.
+**M1** — the node installs, serves over TLS, and can proxy a hostname
+to a container. It cannot yet *start* one: containerd arrives in M3.
 
 | | |
 | --- | --- |
 | ✅ `install` | layout, config, database |
 | ✅ `serve` | control plane, graceful shutdown |
 | ✅ `doctor` | what is set up and what is not |
-| ⏳ M1 | the edge: TLS on 443, host routing, reverse proxy |
+| ✅ edge | TLS, host routing, reverse proxy with upgrades, HTTP redirect |
 | ⏳ M2 | ACME |
 | ⏳ M3 | containerd + crun, the systemd unit, the rest of the bootstrap |
 
@@ -34,7 +33,8 @@ cargo build --release
 
 # A node under /tmp on an unprivileged port — no root needed.
 export WABOT_DEPLOY_DATA_DIR=/tmp/wd/data
-export WABOT_DEPLOY_HTTPS_PORT=3000
+export WABOT_DEPLOY_HTTPS_PORT=8443
+export WABOT_DEPLOY_HTTP_PORT=8080
 
 ./target/release/wabot-deploy --config /tmp/wd/config.toml install
 ./target/release/wabot-deploy --config /tmp/wd/config.toml doctor
@@ -42,16 +42,30 @@ export WABOT_DEPLOY_HTTPS_PORT=3000
 ```
 
 ```sh
-curl -s localhost:3000/healthz   # liveness: the process answers
-curl -s localhost:3000/readyz    # readiness: the database answers too
+curl -sk https://localhost:8443/healthz   # liveness: the process answers
+curl -sk https://localhost:8443/readyz    # readiness: the database answers too
+
+# Or without -k, trusting the CA that `install` exported:
+curl -s --cacert /tmp/wd/data/certs/local-ca.crt https://localhost:8443/healthz
+
+curl -si http://localhost:8080/  # 308 to HTTPS
 ```
+
+Until a domain is configured the node serves a certificate from a local
+authority, written to `<data_dir>/certs/local-ca.crt`. Trust that once
+and the warnings stop; ACME replaces it in M2.
+
+With no routes configured every hostname reaches the control plane, so
+a fresh node is usable at whatever address you can reach it on.
 
 On a real node the defaults are the answer — `/etc/wabot-deploy/config.toml`,
 `/var/lib/wabot-deploy`, port 443 — and `install` runs as root.
 
-The control plane binds **127.0.0.1** until the edge lands. There is no
-authentication yet, and an unauthenticated API on `0.0.0.0` is not a
-default worth having for one milestone's convenience.
+The listeners bind `0.0.0.0` only on privileged ports — that is a real
+node, where the edge terminating TLS is the point. On a high port,
+which in practice means a developer, they bind loopback: there is no
+authentication yet, and an unauthenticated console should not appear on
+the network of whatever laptop it was started on.
 
 ## Configuration
 
@@ -87,6 +101,7 @@ Environment overrides, for a container or a one-off run:
 | `src/db.rs` | opening the database, applying migrations |
 | `src/ledger.rs` | which install steps have run |
 | `src/api.rs` | the control-plane HTTP surface |
+| `src/edge/` | TLS, certificates, host routing, the reverse proxy |
 | `src/commands/` | one module per verb |
 | `migrations/` | embedded with `include_str!`, so the binary stands alone |
 

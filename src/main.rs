@@ -14,6 +14,7 @@ mod cli;
 mod commands;
 mod config;
 mod db;
+mod edge;
 mod ledger;
 
 use cli::{Cli, Command};
