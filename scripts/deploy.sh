@@ -1,0 +1,79 @@
+#!/usr/bin/env bash
+#
+# Build on the target machine and install there.
+#
+#   scripts/deploy.sh root@node.example.com
+#   scripts/deploy.sh root@node.example.com --domain node.example.com --email you@example.com
+#   DEPLOY_SSH_OPTS="-i ~/.ssh/id_node -p 2222" scripts/deploy.sh ...
+#
+# Builds *on* the node rather than cross-compiling to it. That is
+# usually faster than emulating the target architecture locally, and it
+# removes an entire class of "the binary does not run there" — the
+# libc, the linker and the SQLite are the ones it will actually use.
+#
+# Everything after the host is passed to `install`, so this is the same
+# thing you would type by hand, minus the copying.
+
+set -euo pipefail
+cd "$(dirname "$0")/.."
+
+HOST="${1:-}"
+if [[ -z "$HOST" ]]; then
+  echo "usage: scripts/deploy.sh user@host [install flags…]" >&2
+  exit 2
+fi
+shift
+
+SSH_OPTS="${DEPLOY_SSH_OPTS:-}"
+REMOTE_DIR="/opt/wabot-deploy-src"
+FRAMEWORK="$(cd ../../framework/wabot-rust && pwd)"
+
+# shellcheck disable=SC2086
+ssh_run() { ssh $SSH_OPTS "$HOST" "$@"; }
+
+echo "==> preparing $HOST"
+ssh_run 'set -e
+  if ! command -v cargo >/dev/null 2>&1; then
+    echo "    installing rust…"
+    curl --proto "=https" --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal >/dev/null
+  fi
+  # `bundled` rusqlite compiles SQLite from C, so a compiler has to be
+  # there. Everything else the build needs is pure Rust.
+  if ! command -v cc >/dev/null 2>&1; then
+    echo "    installing a C compiler…"
+    (apt-get update -qq && apt-get install -y -qq build-essential) >/dev/null 2>&1 \
+      || (dnf install -y -q gcc make) >/dev/null 2>&1 \
+      || { echo "    could not install a C compiler; do it by hand"; exit 1; }
+  fi
+  mkdir -p '"$REMOTE_DIR"
+
+echo "==> copying sources"
+# `target/` is excluded: it is host artifacts for the wrong platform.
+# shellcheck disable=SC2086
+tar czf - \
+    --exclude="wabot-deploy/target" --exclude="wabot-rust/target" \
+    --exclude=".git" \
+    -C "$(dirname "$(pwd)")" "$(basename "$(pwd)")" \
+    -C "$(dirname "$FRAMEWORK")" "$(basename "$FRAMEWORK")" \
+  | ssh $SSH_OPTS "$HOST" "tar xzf - -C $REMOTE_DIR"
+
+echo "==> building on the node"
+ssh_run "set -e
+  . \"\$HOME/.cargo/env\" 2>/dev/null || true
+  cd $REMOTE_DIR/wabot-deploy
+  # The layout [patch.crates-io] expects: ../../framework/wabot-rust.
+  mkdir -p ../../framework
+  ln -sfn $REMOTE_DIR/wabot-rust ../../framework/wabot-rust 2>/dev/null || true
+  cargo build --release
+  install -m 0755 target/release/wabot-deploy /usr/local/bin/wabot-deploy
+  wabot-deploy --version"
+
+if [[ $# -gt 0 ]]; then
+  echo "==> installing"
+  ssh_run "wabot-deploy install $*"
+fi
+
+echo
+echo "done. Useful next:"
+echo "  ssh $HOST 'wabot-deploy doctor'"
+echo "  ssh $HOST 'wabot-deploy serve'"

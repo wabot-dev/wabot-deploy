@@ -5,6 +5,12 @@
 #   scripts/build-linux.sh              # x86_64
 #   scripts/build-linux.sh aarch64      # arm64
 #
+# Slow on Apple Silicon: an x86_64 build runs under emulation, which
+# turns a one-minute compile into half an hour. Building on the target
+# machine is usually faster and always simpler — see `scripts/deploy.sh`,
+# which does that over SSH. Reach for this one when the target has no
+# toolchain and you would rather not add one.
+#
 # Cross-compiling from macOS needs a Linux linker and a cross-built
 # libsqlite3; a Linux container has both, and building *in* the target
 # environment removes a class of "works here, not there" from the
