@@ -6,8 +6,6 @@
 use hypertext::prelude::*;
 use hypertext::Raw;
 
-use crate::accounts::Account;
-
 use super::assets;
 
 /// Declare the head every console page needs.
@@ -35,28 +33,6 @@ pub fn head(title_text: &str) {
         ("type", "image/png"),
         ("href", &format!("{}/favicon.png", assets::MOUNT)),
     ]);
-}
-
-/// The bar across the top of a signed-in page.
-pub fn header(account: &Account) -> impl Renderable + '_ {
-    rsx! {
-        <header class="topbar">
-            <a class="brand" href="/">
-                <img
-                    src=(format!("{}/wabot-logo.png", assets::MOUNT))
-                    alt="Wabot" width="24" height="24">
-                <span>("wabot-deploy")</span>
-            </a>
-            <div class="row">
-                <span class="who">(&account.username)</span>
-                // A form, not a link: signing out changes state, and a
-                // GET that changes state is one a prefetcher can fire.
-                <form method="post" action="/sign-out">
-                    <button class="btn btn-ghost btn-sm" type="submit">("Sign out")</button>
-                </form>
-            </div>
-        </header>
-    }
 }
 
 /// The error strip a form shows when the node refused it.
@@ -178,6 +154,37 @@ pub const CSS: &str = r#"
 }
 .actions { display: flex; gap: var(--sp-3); align-items: center; margin-top: var(--sp-5); }
 
+/* The memory breakdown. One bar in parts, and a table under it whose
+   swatches are the same colours — the bar says the proportions, the
+   table says the numbers, and neither needs a legend. */
+.meter {
+  display: flex;
+  height: 0.75rem;
+  border-radius: var(--r-pill);
+  overflow: hidden;
+  background: rgb(var(--c-bg-contrast));
+}
+.meter-part { display: block; height: 100%; transition: width var(--motion-base); }
+.meter-node       { background: rgb(var(--c-brand)); }
+.meter-runtime    { background: rgb(var(--c-fg-muted)); }
+.meter-containers { background: rgb(var(--c-success-fg)); }
+.meter-rest       { background: rgb(var(--c-fg-faint) / 0.45); }
+
+.mem { width: 100%; }
+.mem td { vertical-align: baseline; }
+.mem td:nth-child(2) { text-align: right; white-space: nowrap; }
+.mem-key { display: flex; align-items: center; gap: var(--sp-2); white-space: nowrap; }
+.swatch {
+  width: 0.6rem;
+  height: 0.6rem;
+  border-radius: var(--r-sm);
+  flex-shrink: 0;
+}
+.swatch.meter-node       { background: rgb(var(--c-brand)); }
+.swatch.meter-runtime    { background: rgb(var(--c-fg-muted)); }
+.swatch.meter-containers { background: rgb(var(--c-success-fg)); }
+.swatch.meter-rest       { background: rgb(var(--c-fg-faint) / 0.45); }
+
 .foot {
   display: flex;
   justify-content: space-between;
@@ -193,7 +200,15 @@ pub const CSS: &str = r#"
 "#;
 
 /// The page CSS as a `<style>` element.
+///
+/// The shell's layout comes with it: every page that renders inside
+/// the frame needs both, and one tag means they can never arrive
+/// half-applied.
 pub fn style_tag() -> impl Renderable {
-    // XSS SAFETY: a `const` in this file, never a value from a request.
-    rsx! { <style>(Raw::dangerously_create(CSS))</style> }
+    // XSS SAFETY: two `const`s in this crate, never a value from a
+    // request.
+    rsx! {
+        <style>(Raw::dangerously_create(CSS))</style>
+        <style>(Raw::dangerously_create(super::shell::CSS))</style>
+    }
 }

@@ -240,6 +240,36 @@ impl Deployer {
         }
     }
 
+    /// A memory reading for this node, with the containers named.
+    ///
+    /// The container pids come from containerd rather than from the
+    /// process table: a pid alone cannot say which service it is, and
+    /// the console's whole point here is attribution.
+    pub async fn memory(&self) -> crate::node::memory::Snapshot {
+        let mut pids = std::collections::BTreeMap::new();
+
+        if let Ok(client) = Containerd::connect().await {
+            let services = services::all(&self.database, None)
+                .await
+                .unwrap_or_default();
+            let projects = projects::all(&self.database).await.unwrap_or_default();
+
+            for service in services {
+                let Some(project) = projects.iter().find(|p| p.id == service.project_id) else {
+                    continue;
+                };
+                let id = service.container_id(&project.slug);
+                if let Ok(Some(status)) = containers::status(&client, &id).await {
+                    if status.running() {
+                        pids.insert(id, status.pid);
+                    }
+                }
+            }
+        }
+
+        crate::node::memory::read(&pids)
+    }
+
     /// What containerd says about this service right now.
     pub async fn observe(&self, project: &Project, service: &Service) -> Observed {
         let client = match Containerd::connect().await {

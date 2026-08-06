@@ -20,6 +20,7 @@ mod db;
 mod deploy;
 mod edge;
 mod ledger;
+mod node;
 mod platform;
 mod runtime;
 

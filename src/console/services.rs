@@ -14,6 +14,7 @@ use crate::deploy::dns;
 use crate::platform::{ports, projects, services};
 
 use super::auth::{back_with_error, field, read_form, see_other, signed_in, SessionMiddleware};
+use super::shell::{Area, Frame};
 use super::{layout, ConsoleState};
 
 #[derive(Debug, Deserialize, Validate)]
@@ -53,12 +54,18 @@ impl ServicePages {
 
         let action = format!("/projects/{}/services", project.slug);
         let back = format!("/projects/{}", project.slug);
+        let all_projects = projects::all(&self.state.database).await?;
+        let frame = Frame::new(
+            &account,
+            Area::Projects,
+            &all_projects,
+            Some(&project),
+            format!("/projects/{}/services/new", project.slug),
+        );
 
         layout::head("Create service");
-        Ok(rsx! {
+        let body = rsx! {
             (layout::style_tag())
-            (layout::header(&account))
-            <main class="shell narrow">
                 <div class="stack-sm">
                     <h1>("Create service")</h1>
                     <p class="slug-preview">(&project.slug)</p>
@@ -91,10 +98,11 @@ impl ServicePages {
                         <a class="btn btn-ghost" href=(&back)>("Cancel")</a>
                     </div>
                 </form>
-            </main>
         }
-        .into_view()
-        .into())
+        .render()
+        .into_inner();
+
+        Ok(frame.render(body).into_view().into())
     }
 
     /// One service: what it exposes, and what it is doing.
@@ -131,11 +139,18 @@ impl ServicePages {
             None => None,
         };
 
+        let all_projects = projects::all(&self.state.database).await?;
+        let frame = Frame::new(
+            &account,
+            Area::Projects,
+            &all_projects,
+            Some(&project),
+            format!("/projects/{}/services/{}", project.slug, service.slug),
+        );
+
         layout::head(&service.name);
-        Ok(rsx! {
+        let body = rsx! {
             (layout::style_tag())
-            (layout::header(&account))
-            <main class="shell">
                 <div class="split">
                     <div class="stack-sm">
                         <h1>(&service.name)</h1>
@@ -259,10 +274,11 @@ impl ServicePages {
                         </div>
                     </form>
                 </section>
-            </main>
         }
-        .into_view()
-        .into())
+        .render()
+        .into_inner();
+
+        Ok(frame.render(body).into_view().into())
     }
 }
 

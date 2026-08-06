@@ -16,6 +16,7 @@ use crate::platform::{projects, services};
 use super::auth::{
     back_with_error, field, read_form, see_other, signed_in, PageQuery, SessionMiddleware,
 };
+use super::shell::{Area, Frame};
 use super::{layout, ConsoleState};
 
 #[derive(Debug, Deserialize, Validate)]
@@ -46,10 +47,9 @@ impl ProjectPages {
         let facts = super::certificate_facts(&self.state).await;
 
         layout::head("Projects");
-        Ok(rsx! {
-            (layout::style_tag())
-            (layout::header(&account))
-            <main class="shell">
+        let frame = Frame::new(&account, Area::Projects, &projects, None, "/");
+        let body = rsx! {
+                (layout::style_tag())
                 <div class="split">
                     <h1>("Projects")</h1>
                     <a class="btn" href="/projects/new">("Create project")</a>
@@ -75,10 +75,11 @@ impl ProjectPages {
                 }
 
                 (super::node_card(&facts))
-            </main>
         }
-        .into_view()
-        .into())
+        .render()
+        .into_inner();
+
+        Ok(frame.render(body).into_view().into())
     }
 
     #[view("/projects/new")]
@@ -88,11 +89,12 @@ impl ProjectPages {
             return Ok(Redirect::found("/sign-in").into());
         };
 
+        let projects = projects::all(&self.state.database).await?;
+
         layout::head("Create project");
-        Ok(rsx! {
-            (layout::style_tag())
-            (layout::header(&account))
-            <main class="shell narrow">
+        let frame = Frame::new(&account, Area::Projects, &projects, None, "/projects/new");
+        let body = rsx! {
+                (layout::style_tag())
                 <h1>("Create project")</h1>
                 @if let Some(message) = &query.error {
                     (layout::error_note(message))
@@ -110,10 +112,11 @@ impl ProjectPages {
                         <a class="btn btn-ghost" href="/">("Cancel")</a>
                     </div>
                 </form>
-            </main>
         }
-        .into_view()
-        .into())
+        .render()
+        .into_inner();
+
+        Ok(frame.render(body).into_view().into())
     }
 
     /// One project: its services, and what each of them is doing.
@@ -143,11 +146,19 @@ impl ProjectPages {
             rows.push((service, observed));
         }
 
+        let all_projects = projects::all(&self.state.database).await?;
+        let path = format!("/projects/{}", project.slug);
+
         layout::head(&project.name);
-        Ok(rsx! {
-            (layout::style_tag())
-            (layout::header(&account))
-            <main class="shell">
+        let frame = Frame::new(
+            &account,
+            Area::Projects,
+            &all_projects,
+            Some(&project),
+            path,
+        );
+        let body = rsx! {
+                (layout::style_tag())
                 <div class="split">
                     <div class="stack-sm">
                         <h1>(&project.name)</h1>
@@ -247,10 +258,11 @@ impl ProjectPages {
                         <button class="btn btn-danger" type="submit">("Delete project")</button>
                     </form>
                 </section>
-            </main>
         }
-        .into_view()
-        .into())
+        .render()
+        .into_inner();
+
+        Ok(frame.render(body).into_view().into())
     }
 }
 
@@ -315,6 +327,32 @@ impl ProjectApi {
         match projects::create(&self.state.database, name).await {
             Ok(project) => Ok(see_other(&format!("/projects/{}", project.slug))),
             Err(error) => Ok(back_with_error("/projects/new", &error.to_string())),
+        }
+    }
+
+    /// The side nav's project selector.
+    ///
+    /// A POST because it is a form, and a redirect because what the
+    /// operator asked for is to *be* on that project's page. There is
+    /// no stored selection: the URL is the selection, which is what
+    /// makes a link to a project mean the same thing for everyone.
+    #[post("/select-project")]
+    #[raw]
+    #[middleware(SessionMiddleware)]
+    async fn select(&self, request: Request) -> RestResult<Response> {
+        if signed_in(&self.auth).is_none() {
+            return Ok(see_other("/sign-in"));
+        }
+
+        let form = match read_form(request).await {
+            Ok(form) => form,
+            Err(response) => return Ok(response),
+        };
+        let slug = field(&form, "project");
+
+        match projects::find(&self.state.database, slug).await? {
+            Some(project) => Ok(see_other(&format!("/projects/{}", project.slug))),
+            None => Ok(see_other("/?error=no+such+project")),
         }
     }
 

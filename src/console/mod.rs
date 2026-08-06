@@ -24,8 +24,10 @@
 pub mod assets;
 pub mod auth;
 pub mod layout;
+pub mod nodes;
 pub mod projects;
 pub mod services;
+pub mod shell;
 
 use std::sync::Arc;
 
@@ -193,6 +195,8 @@ pub fn register(
         container,
         auth::AuthPages,
         auth::AuthApi,
+        nodes::NodePages,
+        nodes::NodeApi,
         projects::ProjectPages,
         projects::ProjectApi,
         services::ServicePages,
@@ -203,11 +207,13 @@ pub fn register(
 pub fn routes(container: &Container) -> Router {
     let pages = wabot::ui::ui_router();
     let pages = auth::AuthPages::register_ui_routes(container, pages);
+    let pages = nodes::NodePages::register_ui_routes(container, pages);
     let pages = projects::ProjectPages::register_ui_routes(container, pages);
     let pages = services::ServicePages::register_ui_routes(container, pages);
 
     let forms = Router::new();
     let forms = auth::AuthApi::register_routes(container, forms);
+    let forms = nodes::NodeApi::register_routes(container, forms);
     let forms = projects::ProjectApi::register_routes(container, forms);
     let forms = services::ServiceApi::register_routes(container, forms);
 

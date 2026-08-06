@@ -1305,3 +1305,83 @@ fallo en un nombre no impide los demás.
 sus mappings coinciden con las filas. Un cambio de puertos que falló al
 desplegarse y luego un reinicio dejan el contenedor con la configuración
 anterior hasta el siguiente despliegue explícito.
+
+### 8.10 M7 — la consola con marco, y el nodo con cifras
+
+Topbar, side nav y selector de proyecto con la misma forma que wabot
+console, más una página de nodos con el desglose de memoria en vivo.
+259 tests, `fmt` y `clippy -D warnings` limpios.
+
+**El marco lleva datos propios, no prestados**
+
+`Frame` copia lo que necesita —usuario, la lista de proyectos como
+(slug, nombre), el proyecto actual, la ruta— en vez de tomarlos
+prestados. El motivo es concreto: el marco nombra el proyecto actual en
+la navegación mientras la página dibuja ese mismo proyecto, y el cierre
+que construye `rsx!` captura por movimiento. Dos préstamos del mismo
+valor es una pelea que gana el compilador; para un puñado de cadenas
+cortas, copiar sale más barato que el lifetime.
+
+El cuerpo se renderiza antes que el marco por la misma razón: así el
+préstamo de la página termina antes de que el marco tome el suyo.
+
+**El selector es un formulario, no un desplegable que navega**
+
+Un `<select>` que enruta al cambiar necesita JavaScript. Dentro de un
+formulario con botón funciona sin nada. Y no hay "proyecto
+seleccionado" guardado en ninguna parte: **la URL es la selección**, que
+es lo que hace que un enlace a un proyecto signifique lo mismo para
+todos.
+
+**Un nodo, en plural**
+
+Hay exactamente uno —este— y la consola lo lista como una lista de uno.
+No es decoración: la forma de la página y la de los datos son las que
+recibiría un segundo nodo, y una lista que empieza siendo una página de
+detalle no se convierte en lista sin romper todos los enlaces que
+apuntaban a ella.
+
+**La memoria, atribuida en vez de sumada**
+
+"Usada" es un número que muestra cualquier herramienta y sobre el que
+nadie puede actuar. Lo que necesita quien opera *este* nodo es qué parte
+es la plataforma y qué parte es lo que desplegó — porque la parte de la
+plataforma es justo el número que este producto intenta mantener
+pequeño.
+
+Cinco líneas: wabot-deploy, containerd, los shims (uno por contenedor
+corriendo), los contenedores, y todo lo demás. Los shims van aparte y no
+metidos en ninguno de los dos lados: existen *porque* hay un contenedor,
+pero son coste del runtime, no de la imagen, y esconderlos en cualquiera
+de las dos columnas respondería a una pregunta que nadie hizo.
+
+**Las partes no cuadran, y decirlo es el punto.** El `memory.current` de
+un contenedor incluye su page cache, que también cuenta en el `Cached`
+del sistema; el RSS de dos procesos cuenta dos veces las páginas que
+comparten. Así que "todo lo demás" es un resto, no una medida. La
+alternativa es un número que cuadra exacto y no significa nada: lo que
+hace falta es el orden de magnitud de cada parte —si la plataforma
+cuesta 30 MB o 300— y para eso el solape en la tercera cifra no es el
+problema. La página lo dice en voz alta debajo de la tabla.
+
+Se lee de `/proc` y del árbol de cgroups, sin crate intermedio: son
+interfaces estables del kernel y parsear las cuatro líneas que hacen
+falta es más corto que la dependencia que parsearía todas. El cgroup de
+un contenedor se encuentra por el pid de su tarea, no adivinando la
+ruta: el layout depende del driver de cgroups y la adivinanza fallaría
+justo en las máquinas configuradas de forma poco habitual.
+
+**El primer JavaScript del producto**, y es todo el que hay: un
+`EventSource` que sustituye las cifras en su sitio cada dos segundos. La
+página renderiza completa y correcta sin él —el script solo reemplaza
+texto que ya está— así que la consola sigue sirviendo en la máquina
+donde el stream no se puede abrir, que es justo la máquina desde la que
+alguien mira esta página. Las cifras las formatea el servidor en los dos
+casos, así que la primera pintura y cada actualización no pueden
+discrepar; hay un test que fija que cada celda del stream existe en la
+página.
+
+**Comprobado en el nodo**: 843 MB totales, wabot-deploy 13 MB,
+containerd 20 MB, shim 7,8 MB, contenedor 376 kB en reposo — y 3,1 MB
+tras 40 peticiones, que es la lectura siguiendo a la realidad. El stream
+responde 401 sin sesión.
