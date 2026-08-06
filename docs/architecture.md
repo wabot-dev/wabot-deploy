@@ -576,7 +576,7 @@ mergeable y útil por separado.
 | **A1** ✅ | framework | **F5** cancelación + `sd_notify`; **F2** TLS y apagado grácil | hecho — ver §8.1 |
 | **A2** ✅ | framework | **F3** `wabot-feature-sqlite` + `wabot-addon-async-sqlite` | hecho — ver §8.2 |
 | **A3** ✅ | framework | **F1** `#[max_body]` y endpoints `#[raw]` | hecho — ver §8.3 |
-| **M0** | deploy | CLI, config, BD, `ProjectRunner`, `/healthz` | `cargo run -- serve` |
+| **M0** ✅ | deploy | CLI, config, BD, `ProjectRunner`, `/healthz` | hecho — ver §8.4 |
 | **M1** | deploy | Edge: :443 con autofirmado, tabla de rutas, consola y API in-process, :80 con redirect, proxy con upgrade | `curl -k https://localhost/healthz`; WebSocket contra un upstream de prueba |
 | **M2** | deploy | ACME real, `certificate`/`acme_account`, bucle de renovación | dominio real contra el directorio **staging** de Let's Encrypt |
 | **M3** | deploy | Bootstrap completo: preflight, containerd + crun, unit, ledger | VM limpia Ubuntu 24.04 |
@@ -745,6 +745,65 @@ que el método compilaría y no se montaría nunca, en silencio.
 **Lo que esto desbloquea en la Fase 2:** los blobs OCI en streaming
 (push y pull), y SSE para logs de contenedor en vivo, sin salir del
 sistema de controllers ni perder DI, middlewares y el harness de tests.
+
+### 8.4 M0 — hecho
+
+El esqueleto del producto. 29 tests, `fmt` y `clippy -D warnings`
+limpios, y verificado ejecutando el binario de verdad, no solo en tests.
+
+| | |
+| --- | --- |
+| `install` | layout (0700), `config.toml`, BD + migraciones, ledger |
+| `serve` | plano de control sobre `ProjectRunner`, apagado grácil |
+| `doctor` | configuración, esquema, y los 9 pasos del ledger con su estado |
+
+**Medido en release:** binario de **4,2 MB**, **7 MB de RSS** tras 50
+peticiones. El presupuesto del §1 era < 40 MB, así que hay holgura de
+sobra para lo que viene.
+
+**Cuatro decisiones que no estaban en el plan**
+
+1. **El plano de control escucha en `127.0.0.1`, no en `0.0.0.0`.**
+   Todavía no hay autenticación, y un API sin auth expuesto a la red
+   no es un default aceptable por la comodidad de un hito. Cambia
+   cuando llegue el edge, que sí termina TLS y autentica.
+
+2. **`deny_unknown_fields` en todo el `config.toml`.** Una errata deja
+   al operador creyendo que cambió algo — el peor fallo posible, porque
+   todo *parece* bien. El coste es que una sección de una feature que
+   aún no existe se rechaza, lo cual es honesto: se iba a ignorar
+   igualmente.
+
+3. **`/healthz` y `/readyz` separados.** El primero no toca nada; el
+   segundo hace round-trip a la BD. Juntarlos es cómo un nodo con la
+   base de datos inalcanzable sigue recibiendo tráfico: la pregunta que
+   se le hace es "¿estás vivo?" y lo está.
+
+4. **El ledger existe desde M0 con los 9 pasos declarados**, aunque
+   solo 3 estén implementados. `doctor` lista los demás como
+   `not implemented yet` y **no los cuenta como problemas** — un plan
+   que se ve vale más que uno que hay que inferir, y un nodo sano no
+   debe parecer roto.
+
+**Dos cosas que quité por especulativas.** Escribí una tabla `setting`
+con sus helpers y un `open_in_memory` público, y nada los usaba: los
+warnings de dead code lo dijeron antes que yo. La tabla vuelve en la
+migración que añada lo primero que la necesite. Escribir el schema
+completo del §4 de una vez habría sido escribir código sin usuario.
+
+**Un hueco que dejé abierto a propósito**, anotado en `api.rs`: no hay
+test de que `/readyz` devuelva 503 con la BD caída. SQLite sigue
+respondiendo desde un handle abierto aunque borres el fichero, así que
+montarlo exige inyección de fallos — más maquinaria que las tres líneas
+que cubriría. Un test que asserte "200 o 503" sería cobertura falsa.
+
+**Y una cosa que le faltaba al framework**, encontrada al escribir el
+primer consumidor: `wabot-feature-sqlite` no reexportaba `rusqlite`,
+pero su API pública lo exige. Corregido allí.
+
+**Nota para M1:** `serve` escucha en `edge.https_port` en texto plano.
+En desarrollo se baja con `WABOT_DEPLOY_HTTPS_PORT=3000`; en producción
+443 necesita root. El listener lo reemplaza el edge.
 
 **Verificación end-to-end de M3/M4** — en VM efímera, no en la máquina de
 desarrollo:

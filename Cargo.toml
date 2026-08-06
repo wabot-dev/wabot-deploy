@@ -4,29 +4,56 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-# Features decide what you pay for. Adding one later is a one-line change;
-# the umbrella re-exports everything under `wabot::<area>`.
-wabot = { version = "0.1", features = [
+# Only what this milestone uses. `rest-tls`, `ui` and the job
+# repositories arrive with the milestones that need them — a feature
+# turned on "for later" is a dependency tree paid for now.
+wabot = { version = "0.1", default-features = false, features = [
     "rest",
-    "pg",
-    "async-jobs",
+    "sqlite",
+    "tracing-format",
 ] }
 
-tokio = { version = "1", features = ["full"] }
-# Reads `.env` at startup, so the same binary works in development and
-# under a process manager that sets real environment variables.
-dotenvy = "0.15"
+# Explicit features, not `full`: `full` brings `process`, all of
+# `signal` and utilities this never calls, and being small is the
+# product.
+tokio = { version = "1", features = [
+    "rt-multi-thread",
+    "net",
+    "fs",
+    "signal",
+    "macros",
+    "time",
+    "io-util",
+] }
+
+clap = { version = "4", default-features = false, features = [
+    "std",
+    "derive",
+    "help",
+    "usage",
+    "error-context",
+] }
+
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-async-trait = "0.1"
-parking_lot = "0.12"
+thiserror = "2"
+anyhow = "1"
+toml = "0.8"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 [dev-dependencies]
-# The harnesses are a separate feature so a mock LLM adapter can never
+# The harnesses are a separate feature so a mock adapter can never
 # reach production by accident.
-wabot = { version = "0.1", features = ["testing"] }
+wabot = { version = "0.1", default-features = false, features = ["testing"] }
+tempfile = "3"
+
+[profile.release]
+# The binary is copied to a machine and lives there; a minute of link
+# time buys megabytes back.
+lto = "thin"
+codegen-units = 1
+strip = "symbols"
 
 # Temporary: the framework is not on crates.io yet (5 of 33 crates
 # published). Pointing at the sibling checkout is what lets this build
