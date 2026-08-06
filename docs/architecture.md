@@ -1082,3 +1082,36 @@ ahora `produce` recibe un clon del head real. Test de regresión en
 - **El badge de estado dice "Pending", no "Running".** Todavía nada
   arranca contenedores: el estado deseado es una intención declarada, y
   la interfaz dice cuál de las dos cosas está mirando.
+
+**Dos cosas que solo aparecieron en el nodo**
+
+1. **`install` dejaba corriendo el binario viejo.** El paso `Start`
+   estaba en el ledger, así que tras un despliegue el proceso anterior
+   seguía sirviendo mientras el código nuevo esperaba en disco. Sin
+   error, sin aviso: la consola simplemente no tenía las páginas
+   nuevas. Misma clase que el bug de `runtime::ensure` de M3 —el paso
+   preguntaba por la historia de la ejecución en vez de por la cosa—.
+   Ahora compara el inodo de `/proc/<pid>/exe` con el del binario
+   instalado: `install_binary` renombra encima, así que el proceso
+   viejo se queda con un inodo desvinculado y la diferencia es exacta.
+
+2. **`install` quemaba un token todavía válido.** Ejecutarlo dos veces
+   invalidaba el token que la primera ejecución acababa de imprimir:
+   converger rompiendo justo lo que te habían dado. Ahora solo emite si
+   no hay uno vigente.
+
+**Verificado en vivo** contra `wabot-deploy-testing.dev.tobaw.shop`, con
+el certificado real de Let's Encrypt y sin `-k`:
+
+| | |
+| --- | --- |
+| `/` sin sesión | 302 a `/setup` |
+| setup con token bueno | 303 a `/`, con `Set-Cookie` |
+| `/` con sesión | lista de proyectos, cuenta en la cabecera, emisor `letsencrypt` |
+| crear proyecto / servicio | 303 a la página del proyecto; imagen, puerto y badge correctos |
+| imagen inválida | vuelve al formulario con el motivo en la query |
+| POST sin sesión | 303 a `/sign-in`, y nada creado |
+| borrar servicio | 303, y el proyecto queda vacío |
+| sign-out | cookie caducada y la sesión revocada en el servidor |
+| segundo `install` | "already running this binary", token intacto |
+| RSS | 14,4 MB |

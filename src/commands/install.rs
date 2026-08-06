@@ -118,14 +118,42 @@ pub async fn run(mut config: Config, config_path: &Path, args: InstallArgs) -> a
     // Last, because it is the step that makes everything before it
     // true: the node comes up holding the ports, the certificate and
     // the configuration the earlier steps put in place.
+    //
+    // Not gated on the ledger, unlike every step above it. "Is the node
+    // running the binary that is installed" is not a fact a previous
+    // run can settle — it stops being true the moment somebody upgrades
+    // the binary. A ledgered Start left the *old* process serving with
+    // the new code sitting on disk beside it, and nothing said so.
     if !args.no_system && !args.no_start && crate::bootstrap::service::systemd_available() {
-        step(&database, Step::Start, "the node", || {
-            crate::bootstrap::service::start()?;
-            Ok("running".to_string())
-        })
-        .await?;
-        println!();
-        println!("  the node is running. `systemctl status wabot-deploy`");
+        use crate::bootstrap::service;
+
+        if service::is_active() && service::running_current_binary() {
+            println!();
+            println!("  the node is already running this binary.");
+        } else {
+            println!("  the node…");
+            ledger::record(&database, Step::Start, Status::Running, None).await?;
+            match service::start() {
+                Ok(()) => {
+                    ledger::record(&database, Step::Start, Status::Done, Some("running".into()))
+                        .await?;
+                    println!();
+                    println!("  the node is running. `systemctl status wabot-deploy`");
+                }
+                Err(error) => {
+                    let message = format!("{error:#}");
+                    ledger::record(
+                        &database,
+                        Step::Start,
+                        Status::Failed,
+                        Some(message.clone()),
+                    )
+                    .await?;
+                    println!("    failed: {message}");
+                    return Err(error.into());
+                }
+            }
+        }
     }
 
     // Last of all, because it is the one thing here somebody has to
@@ -148,6 +176,19 @@ async fn setup_token(database: &SqliteDatabase, config: &Config) {
         // mint a token: that would be a way to take over a live node by
         // running the installer again.
         Ok(true) => {}
+        // A token that is still good is not reissued. Re-running
+        // install would otherwise invalidate the one the operator
+        // copied out of the first run's output — converging by
+        // breaking the thing it just handed them.
+        Ok(false)
+            if crate::accounts::setup_token_valid(database)
+                .await
+                .unwrap_or(false) =>
+        {
+            println!();
+            println!("  a setup token from an earlier run is still valid.");
+            println!("  `wabot-deploy setup-token` issues another if it is lost.");
+        }
         Ok(false) => match crate::accounts::issue_setup_token(database).await {
             Ok(token) => crate::commands::setup_token::print(config, &token),
             Err(error) => {

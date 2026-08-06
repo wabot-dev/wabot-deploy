@@ -127,6 +127,56 @@ pub fn start() -> ServiceResult<()> {
     Ok(())
 }
 
+/// Is the running service executing the binary that is installed?
+///
+/// `install_binary` renames a new file over the path, so a service
+/// started before that keeps running the *old* inode — which is now
+/// unlinked. The path resolves to the new file, the process holds the
+/// old one, and nothing about either says so.
+///
+/// Compared by inode rather than by mtime or content: after the rename
+/// there are two distinct files, and identity is exactly the question.
+/// `false` whenever the answer cannot be established — the recovery is
+/// a restart, and restarting a node that did not need it costs a
+/// second.
+pub fn running_current_binary() -> bool {
+    let Some(pid) = main_pid() else {
+        return false;
+    };
+
+    // Follows the symlink. A deleted target fails here, which is the
+    // common case for "the binary was replaced under it".
+    let Ok(running) = std::fs::metadata(format!("/proc/{pid}/exe")) else {
+        return false;
+    };
+    let Ok(installed) = std::fs::metadata(BINARY_PATH) else {
+        return false;
+    };
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        running.dev() == installed.dev() && running.ino() == installed.ino()
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (running, installed);
+        false
+    }
+}
+
+fn main_pid() -> Option<u32> {
+    let output = Command::new("systemctl")
+        .args(["show", "-p", "MainPID", "--value", UNIT_NAME])
+        .output()
+        .ok()?;
+    let pid: u32 = String::from_utf8_lossy(&output.stdout)
+        .trim()
+        .parse()
+        .ok()?;
+    (pid > 0).then_some(pid)
+}
+
 pub fn is_active() -> bool {
     Command::new("systemctl")
         .args(["is-active", "--quiet", UNIT_NAME])
