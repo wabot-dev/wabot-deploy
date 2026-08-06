@@ -25,7 +25,8 @@ to a container but cannot yet start one.
 | ✅ ACME | Let's Encrypt over HTTP-01, renewed in the background |
 | ✅ console | a status page at `/`, server-rendered, no JavaScript |
 | ✅ bootstrap | preflight, containerd + crun, the systemd unit, a service that starts |
-| ⏳ next | deployments: containers this node starts, not just routes to |
+| ✅ runtime | pull, unpack, snapshot, OCI spec, run under crun |
+| ⏳ next | services: the entity, the route, the lifecycle |
 
 `doctor` lists the install steps that have not shipped as
 `not implemented yet` rather than hiding them.
@@ -140,6 +141,7 @@ Environment overrides, for a container or a one-off run:
 | `src/edge/` | TLS, certificates, ACME, host routing, the reverse proxy |
 | `src/console/` | the web console |
 | `src/bootstrap/` | preflight, containerd + crun, the systemd unit |
+| `src/runtime/` | the containerd client: images, snapshots, specs, containers |
 | `assets/` | the design system, vendored — a node must not need a CDN |
 | `src/commands/` | one module per verb |
 | `migrations/` | embedded with `include_str!`, so the binary stands alone |
@@ -150,7 +152,8 @@ Environment overrides, for a container or a one-off run:
 Docker — the project builds natively on macOS too, but the thing you
 deploy should be built for where it runs.
 
-Needs a sibling checkout of the framework at
+Needs `protoc` — `containerd-client` generates its gRPC bindings in a
+build script — and a sibling checkout of the framework at
 `../../framework/wabot-rust` — see `[patch.crates-io]` in
 `Cargo.toml`. That goes away when `wabot 0.1` reaches crates.io.
 

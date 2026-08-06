@@ -37,13 +37,18 @@ ssh_run 'set -e
     echo "    installing rust…"
     curl --proto "=https" --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal >/dev/null
   fi
-  # `bundled` rusqlite compiles SQLite from C, so a compiler has to be
-  # there. Everything else the build needs is pure Rust.
-  if ! command -v cc >/dev/null 2>&1; then
-    echo "    installing a C compiler…"
-    (apt-get update -qq && apt-get install -y -qq build-essential) >/dev/null 2>&1 \
-      || (dnf install -y -q gcc make) >/dev/null 2>&1 \
-      || { echo "    could not install a C compiler; do it by hand"; exit 1; }
+  # Two build-time needs beyond rustc:
+  #   cc      — `bundled` rusqlite compiles SQLite from C.
+  #   protoc  — containerd-client generates its gRPC bindings from
+  #             vendored protos in a build script.
+  missing=""
+  command -v cc     >/dev/null 2>&1 || missing="$missing build-essential"
+  command -v protoc >/dev/null 2>&1 || missing="$missing protobuf-compiler"
+  if [[ -n "$missing" ]]; then
+    echo "    installing:$missing"
+    (apt-get update -qq && apt-get install -y -qq $missing) >/dev/null 2>&1 \
+      || (dnf install -y -q gcc make protobuf-compiler) >/dev/null 2>&1 \
+      || { echo "    could not install$missing; do it by hand"; exit 1; }
   fi
   mkdir -p '"$REMOTE_DIR"
 

@@ -40,6 +40,29 @@ pub enum Command {
     /// Report what is configured, what is installed, and what is
     /// missing. Read-only — safe on a live node.
     Doctor,
+
+    /// Talk to containerd and report what it says.
+    ///
+    /// Not part of running a node: it exists because the containerd
+    /// client is written against generated bindings with no high-level
+    /// API, and "does the connection work" deserves an answer that is
+    /// not a deployment failing.
+    Containerd {
+        /// Pull this image and print what it says about itself.
+        #[arg(long, value_name = "REF")]
+        pull: Option<String>,
+
+        /// Run this image as a container, report it, and remove it.
+        ///
+        /// The end-to-end check for the whole runtime path: pull,
+        /// unpack, snapshot, spec, crun, task. Nothing survives it.
+        #[arg(long, value_name = "REF")]
+        run: Option<String>,
+
+        /// What the container should listen on, handed to it as `PORT`.
+        #[arg(long, value_name = "PORT", default_value_t = 8080)]
+        port: u16,
+    },
 }
 
 #[derive(Debug, clap::Args)]
