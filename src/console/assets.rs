@@ -32,6 +32,40 @@ macro_rules! asset {
     };
 }
 
+/// The faces this page actually renders in, and nothing else.
+///
+/// ## Why preload at all
+///
+/// The stylesheet is render-blocking, so there is no flash of unstyled
+/// *layout* — but the browser only discovers `@font-face` after it has
+/// parsed the CSS, which is one round trip too late. Text paints in the
+/// system fallback and then swaps to Geist, and that swap is the
+/// flicker. A preload starts the font fetch in parallel with the
+/// stylesheet instead of after it, so the real face is usually there
+/// before first paint.
+///
+/// ## Why only five of the six
+///
+/// A preload the page never uses is a wasted high-priority request
+/// competing with the ones that matter, and Chrome says so in the
+/// console. `GeistMono-Medium` is shipped — the stylesheet asks for it,
+/// and something later will use it — but nothing on this page does.
+///
+/// | face | what renders in it |
+/// | --- | --- |
+/// | Regular (400) | body text, the tagline, the notes |
+/// | Medium (500) | badges, card labels, `dl.kv dt` |
+/// | SemiBold (600) | feature names, h2–h6 |
+/// | Bold (700) | the `h1` |
+/// | Mono Regular | `dl.kv dd`, `pre code` |
+pub const PRELOAD_FONTS: &[&str] = &[
+    "fonts/Geist-Regular.woff2",
+    "fonts/Geist-Medium.woff2",
+    "fonts/Geist-SemiBold.woff2",
+    "fonts/Geist-Bold.woff2",
+    "fonts/GeistMono-Regular.woff2",
+];
+
 pub const ASSETS: EmbeddedAssets = &[
     asset!("wabot.css", "text/css; charset=utf-8"),
     asset!("wabot-logo.png", "image/png"),
@@ -47,6 +81,44 @@ pub const ASSETS: EmbeddedAssets = &[
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A preload for a path that is not served costs a request, warns
+    /// in the console, and does not prevent the flicker it was added
+    /// for — worse than not preloading at all.
+    #[test]
+    fn every_preloaded_font_is_shipped() {
+        let shipped: Vec<&str> = ASSETS.iter().map(|asset| asset.path).collect();
+        for font in PRELOAD_FONTS {
+            assert!(
+                shipped.contains(font),
+                "{font} is preloaded but not compiled in"
+            );
+        }
+    }
+
+    /// And a preload has to be a font, or `as="font"` is a lie the
+    /// browser acts on.
+    #[test]
+    fn preloads_are_all_woff2() {
+        for font in PRELOAD_FONTS {
+            let asset = ASSETS
+                .iter()
+                .find(|asset| asset.path == *font)
+                .expect("shipped");
+            assert_eq!(asset.content_type, "font/woff2", "{font}");
+        }
+    }
+
+    /// The one face this page does not render in stays unpreloaded.
+    /// If a later page uses it, this list grows — and this assertion is
+    /// what makes that a deliberate edit rather than an oversight.
+    #[test]
+    fn the_unused_face_is_not_preloaded() {
+        assert!(
+            !PRELOAD_FONTS.contains(&"fonts/GeistMono-Medium.woff2"),
+            "nothing on the home page renders in mono medium"
+        );
+    }
 
     /// The stylesheet asks for `fonts/Geist-Regular.woff2` and friends
     /// by relative path. A missing one is a 404 the browser papers

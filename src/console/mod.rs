@@ -121,6 +121,32 @@ impl HomeController {
         // view that emitted its own `<html>` would produce a second,
         // nested document, which is exactly what happened first.
         title("wabot-deploy");
+
+        // The fonts start downloading in parallel with the stylesheet
+        // rather than after the browser has parsed it and discovered
+        // `@font-face`. That one round trip is the flicker: text paints
+        // in the system fallback and then swaps to Geist.
+        //
+        // The ordering in the document is `render_document`'s, not
+        // this loop's — it emits links before stylesheets whatever
+        // order a view declared them in. Declared here first anyway,
+        // because reading it in the other order would suggest the
+        // fonts come second.
+        for font in assets::PRELOAD_FONTS {
+            link([
+                ("rel", "preload"),
+                ("as", "font"),
+                ("type", "font/woff2"),
+                // Not optional, and the classic way to get this wrong:
+                // font requests are always made in CORS mode, so a
+                // preload without `crossorigin` sits unused in the
+                // cache and the font is fetched a second time. Costs a
+                // request and fixes nothing.
+                ("crossorigin", "anonymous"),
+                ("href", &format!("{}/{font}", assets::MOUNT)),
+            ]);
+        }
+
         style(format!("{}/wabot.css", assets::MOUNT));
         link([
             ("rel", "icon"),
@@ -382,6 +408,69 @@ mod tests {
             body.contains(r#"rel="icon""#),
             "the favicon is linked — the reason `add_link` exists"
         );
+    }
+
+    /// The whole point of the preloads: they have to come *before* the
+    /// stylesheet, or the browser still discovers the fonts late and
+    /// the flicker stays.
+    ///
+    /// The framework's document assembly is what guarantees this —
+    /// links are emitted before stylesheets regardless of declaration
+    /// order — so this test watches an invariant the view does not
+    /// control. Worth having for exactly that reason: if that ordering
+    /// ever changes upstream, the flicker comes back silently and this
+    /// is what says so.
+    #[tokio::test]
+    async fn fonts_are_preloaded_before_the_stylesheet() {
+        let body = harness(None).await.get("/").send().await.body;
+
+        let stylesheet = body
+            .find(r#"rel="stylesheet""#)
+            .expect("the stylesheet is linked");
+
+        for font in assets::PRELOAD_FONTS {
+            let preload = body
+                .find(&format!(r#"href="{}/{font}""#, assets::MOUNT))
+                .unwrap_or_else(|| panic!("{font} is not preloaded:\n{body}"));
+            assert!(
+                preload < stylesheet,
+                "{font} is preloaded after the stylesheet, which defeats it"
+            );
+        }
+    }
+
+    /// A font preload without `crossorigin` is discarded and the font
+    /// fetched again — a wasted request that fixes nothing. The one
+    /// mistake worth a test of its own.
+    #[tokio::test]
+    async fn font_preloads_carry_the_attributes_the_browser_needs() {
+        let body = harness(None).await.get("/").send().await.body;
+
+        let preloads: Vec<&str> = body
+            .match_indices(r#"<link rel="preload""#)
+            .map(|(start, _)| {
+                let rest = &body[start..];
+                &rest[..rest.find('>').map(|end| end + 1).unwrap_or(rest.len())]
+            })
+            .collect();
+
+        assert_eq!(
+            preloads.len(),
+            assets::PRELOAD_FONTS.len(),
+            "one preload per declared font: {preloads:?}"
+        );
+        for preload in preloads {
+            for attribute in [
+                r#"as="font""#,
+                r#"type="font/woff2""#,
+                r#"crossorigin="anonymous""#,
+            ] {
+                assert!(
+                    preload.contains(attribute),
+                    "a font preload needs {attribute}: {preload}"
+                );
+            }
+        }
     }
 
     /// Every asset the page references has to be served, or the node
