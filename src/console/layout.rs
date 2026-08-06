@@ -134,6 +134,27 @@ pub const CSS: &str = r#"
 }
 .empty p { margin: 0 0 var(--sp-4); }
 
+/* The design system gives a field the raised tone — the same tone a
+   card has — because it expects fields to sit on the canvas. Inside a
+   card they vanish: white on white, and no borders to save them. Dark
+   mode already resolves exactly this collision by moving fields to the
+   contrast tone; light mode needs it whenever the surface underneath
+   is raised. */
+.card input,
+.card textarea,
+.card select {
+  background: rgb(var(--c-bg-contrast));
+}
+
+/* A label belongs to the field under it. An even stack gap makes the
+   two read as unrelated rows, so the field is pulled back up against
+   its label and the space falls between pairs instead. */
+.stack label + input,
+.stack label + textarea,
+.stack label + select {
+  margin-top: calc(var(--sp-1) - var(--sp-4));
+}
+
 .slug-preview {
   font-family: var(--font-mono);
   font-size: var(--fs-sm);
