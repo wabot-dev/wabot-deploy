@@ -22,6 +22,7 @@ containerd arrives in M3.
 | ✅ `doctor` | what is set up and what is not |
 | ✅ edge | TLS, host routing, reverse proxy with upgrades, HTTP redirect |
 | ✅ ACME | Let's Encrypt over HTTP-01, renewed in the background |
+| ✅ console | a status page at `/`, server-rendered, no JavaScript |
 | ⏳ M3 | containerd + crun, the systemd unit, the rest of the bootstrap |
 
 `doctor` lists the install steps that have not shipped as
@@ -120,6 +121,8 @@ Environment overrides, for a container or a one-off run:
 | `src/ledger.rs` | which install steps have run |
 | `src/api.rs` | the control-plane HTTP surface |
 | `src/edge/` | TLS, certificates, ACME, host routing, the reverse proxy |
+| `src/console/` | the web console |
+| `assets/` | the design system, vendored — a node must not need a CDN |
 | `src/commands/` | one module per verb |
 | `migrations/` | embedded with `include_str!`, so the binary stands alone |
 

@@ -11,6 +11,17 @@ wabot = { version = "0.1", default-features = false, features = [
     "rest",
     "rest-tls",
     "sqlite",
+    # Server-rendered pages. No Node, no build step, and no client
+    # payload — the console is HTML the node produces, which is the
+    # right shape for something that has to work on a box with no
+    # internet access.
+    #
+    # `ui-hypertext` rather than `ui` (Maud) for one reason: it
+    # validates element *and* attribute names at compile time. Maud
+    # escapes values and typechecks Rust, but happily emits
+    # `<dvi klass="x">` — verified, not assumed. A typo in a template
+    # should be a build error, not malformed HTML nobody notices.
+    "ui-hypertext",
     "tracing-format",
 ] }
 
@@ -57,6 +68,13 @@ time = { version = "0.3", default-features = false, features = ["std"] }
 # The route table: read on every request, replaced whole on the rare
 # change. A lock would put every request behind the one writer.
 arc-swap = "1"
+
+# The renderer. A direct dependency because `rsx!` expands to absolute
+# `::hypertext::…` paths, so re-exporting it from the framework is not
+# enough — see `wabot::ui::hypertext::hypertext`. The version must match
+# what the framework compiled against, or the types the macro produces
+# are not the types its helpers accept.
+hypertext = "0.12"
 
 # ACME.
 #

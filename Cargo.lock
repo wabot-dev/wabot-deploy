@@ -689,6 +689,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "html-escape"
+version = "0.2.15"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c9356095b4b41197bba32173600e1582792cda618f65d12f68e2e77d273413c5"
+
+[[package]]
 name = "http"
 version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -790,6 +796,30 @@ dependencies = [
  "tokio",
  "tower-service",
  "tracing",
+]
+
+[[package]]
+name = "hypertext"
+version = "0.12.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "eb73b82c6a76434fd87a0668ef3ff1a8182512dfb610eef9138169a7e2d3a0ed"
+dependencies = [
+ "html-escape",
+ "hypertext-macros",
+ "itoa",
+ "ryu",
+]
+
+[[package]]
+name = "hypertext-macros"
+version = "0.12.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c120534b9d41bd317a5b111aacc38a34071d15df9462c0e21f6093ade3a03660"
+dependencies = [
+ "html-escape",
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
 ]
 
 [[package]]
@@ -2109,6 +2139,7 @@ dependencies = [
  "parking_lot",
  "tokio",
  "tracing",
+ "wabot-addon-ui-hypertext",
  "wabot-core",
  "wabot-feature-agent",
  "wabot-feature-chat-bot",
@@ -2116,6 +2147,7 @@ dependencies = [
  "wabot-feature-rest-controller",
  "wabot-feature-sqlite",
  "wabot-feature-tool",
+ "wabot-feature-ui-controller",
  "wabot-macros",
  "wabot-testing",
 ]
@@ -2132,6 +2164,16 @@ dependencies = [
  "tracing",
  "wabot-core",
  "wabot-feature-async",
+]
+
+[[package]]
+name = "wabot-addon-ui-hypertext"
+version = "0.1.0"
+dependencies = [
+ "hypertext",
+ "serde",
+ "serde_json",
+ "wabot-feature-ui-controller",
 ]
 
 [[package]]
@@ -2168,6 +2210,7 @@ dependencies = [
  "http-body-util",
  "hyper",
  "hyper-util",
+ "hypertext",
  "instant-acme",
  "rcgen 0.13.2",
  "serde",

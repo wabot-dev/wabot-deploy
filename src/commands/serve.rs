@@ -19,7 +19,12 @@ pub async fn run(config: Config) -> anyhow::Result<i32> {
 
     let container = Container::new();
     crate::api::register(&container, database.clone());
-    let control_plane = crate::api::routes(&container);
+    crate::console::register(&container, database.clone(), config.clone());
+
+    // One router: the console's pages and the API's endpoints answer on
+    // the same hostname, because they are the same thing to whoever is
+    // looking at the node.
+    let control_plane = crate::api::routes(&container).merge(crate::console::routes(&container));
 
     let (edge, resolver) = crate::edge::build(&database, control_plane, &config).await?;
 

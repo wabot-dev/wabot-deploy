@@ -13,6 +13,7 @@ mod api;
 mod cli;
 mod commands;
 mod config;
+mod console;
 mod db;
 mod edge;
 mod ledger;

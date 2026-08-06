@@ -1,0 +1,742 @@
+/* =============================================================
+   Wabot Design System — core tokens + reset + semantic styles
+   -------------------------------------------------------------
+   Single-file design system. Import this and write semantic HTML:
+
+       link rel=stylesheet href=colors_and_type.css
+
+   Principles
+   • No borders. No shadows. No hover state changes.
+   • Sections separate by background-color CONTRAST, not lines.
+   • Flat layouts. Two depth levels max (canvas + raised).
+   • Actions are black. Brand orange is for highlights only.
+   • Variables ship as RGB triplets so any color can be alpha-mixed:
+       color: rgb(var(--c-fg-muted));
+       background: rgb(var(--c-brand) / 0.08);
+   ============================================================ */
+
+
+/* ───────────────────────── 1 · FONTS ─────────────────────────
+   Geist (sans) + Geist Mono (mono) — designed by Vercel for
+   developer interfaces. High x-height, neutral, very readable.
+
+   The woff2 files live in fonts/ next to this CSS. Production
+   apps can drop them in and use this stylesheet as-is.
+
+   For preview cards inside the design system, the fonts are
+   inlined as base64 data URIs (because the preview sandbox
+   doesn't allow sibling-file fetches). The inlined copies live
+   in the rendered HTML, not here.
+   ─────────────────────────────────────────────────────────── */
+
+@font-face {
+  font-family: 'Geist';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url('fonts/Geist-Regular.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'Geist';
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url('fonts/Geist-Medium.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'Geist';
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url('fonts/Geist-SemiBold.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'Geist';
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url('fonts/Geist-Bold.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'Geist Mono';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url('fonts/GeistMono-Regular.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'Geist Mono';
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url('fonts/GeistMono-Medium.woff2') format('woff2');
+}
+
+
+/* ───────────────────────── 2 · TOKENS ────────────────────────
+   RGB triplets only. Compose with rgb()/rgb( / a).
+   ─────────────────────────────────────────────────────────── */
+
+:root {
+  /* — Neutral scale (warm-leaning, near-paper) — */
+  --c-n-0:   255 255 255;     /* paper */
+  --c-n-50:  250 249 247;     /* whisper */
+  --c-n-100: 244 242 238;     /* canvas-raised */
+  --c-n-200: 232 229 223;     /* contrast band */
+  --c-n-300: 212 208 200;     /* divider tone (used as bg, not border) */
+  --c-n-400: 168 163 154;     /* faint text */
+  --c-n-500: 120 115 108;     /* muted text */
+  --c-n-600:  82  78  72;     /* body alt */
+  --c-n-700:  52  50  46;     /* body */
+  --c-n-800:  28  27  25;     /* near-black surface */
+  --c-n-900:  17  16  15;     /* black action */
+
+  /* — Brand: Wabot orange — */
+  --c-brand-50:  255 241 232;
+  --c-brand-100: 255 224 204;
+  --c-brand-300: 248 156  98;
+  --c-brand-500: 238  91  41;   /* primary mark color */
+  --c-brand-600: 214  72  26;
+  --c-brand-700: 173  56  18;
+
+  /* — Semantic state (muted, never neon) — */
+  --c-success-bg:  220 235 222;
+  --c-success-fg:   34  94  52;
+  --c-warning-bg:  248 232 196;
+  --c-warning-fg:  124  84  10;
+  --c-danger-bg:   246 218 213;
+  --c-danger-fg:   148  36  24;
+  --c-info-bg:     219 230 240;
+  --c-info-fg:      36  74 120;
+
+  /* — Semantic aliases (resolved per theme below) — */
+  --c-bg:          var(--c-n-50);   /* page canvas */
+  --c-bg-raised:   var(--c-n-0);    /* raised panel */
+  --c-bg-sunken:   var(--c-n-100);  /* sunken band — section dividers */
+  --c-bg-contrast: var(--c-n-200);  /* heavy contrast band */
+  --c-bg-inverse:  var(--c-n-900);  /* footer / dark island */
+
+  --c-fg:          var(--c-n-900);  /* headings, body */
+  --c-fg-body:     var(--c-n-700);
+  --c-fg-muted:    var(--c-n-500);
+  --c-fg-faint:    var(--c-n-400);
+  --c-fg-inverse:  var(--c-n-0);
+
+  --c-brand:       var(--c-brand-500);
+  --c-brand-ink:   var(--c-brand-700);
+  --c-brand-wash:  var(--c-brand-50);
+
+  --c-action:      var(--c-n-900);  /* primary action bg — black */
+  --c-action-fg:   var(--c-n-0);
+  --c-action-soft: var(--c-n-200);  /* secondary action bg */
+
+  --c-focus:       var(--c-brand-500);
+
+  /* — Type scale — */
+  --font-sans:  'Geist', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --font-mono:  'Geist Mono', ui-monospace, 'JetBrains Mono', 'SF Mono', Menlo, monospace;
+  --font-display: var(--font-sans); /* same family, weight does the work */
+
+  --fs-xs:   0.75rem;    /* 12 — labels, captions */
+  --fs-sm:   0.8125rem;  /* 13 — meta, table small */
+  --fs-base: 0.9375rem;  /* 15 — body */
+  --fs-md:   1rem;       /* 16 — emphasized body */
+  --fs-lg:   1.125rem;   /* 18 — h5 */
+  --fs-xl:   1.375rem;   /* 22 — h4 */
+  --fs-2xl:  1.75rem;    /* 28 — h3 */
+  --fs-3xl:  2.25rem;    /* 36 — h2 */
+  --fs-4xl:  3rem;       /* 48 — h1 */
+  --fs-5xl:  4rem;       /* 64 — display */
+
+  --lh-tight: 1.15;
+  --lh-snug:  1.3;
+  --lh-base:  1.55;
+  --lh-loose: 1.75;
+
+  --tracking-tight:  -0.022em;
+  --tracking-normal:  0;
+  --tracking-wide:    0.04em;
+  --tracking-caps:    0.08em;
+
+  /* — Spacing (4px grid) — */
+  --sp-0:   0;
+  --sp-1:   0.25rem;   /*  4 */
+  --sp-2:   0.5rem;    /*  8 */
+  --sp-3:   0.75rem;   /* 12 */
+  --sp-4:   1rem;      /* 16 */
+  --sp-5:   1.25rem;   /* 20 */
+  --sp-6:   1.5rem;    /* 24 */
+  --sp-8:   2rem;      /* 32 */
+  --sp-10:  2.5rem;    /* 40 */
+  --sp-12:  3rem;      /* 48 */
+  --sp-16:  4rem;      /* 64 */
+  --sp-20:  5rem;      /* 80 */
+  --sp-24:  6rem;      /* 96 */
+
+  /* — Radii — */
+  --r-sm:   4px;
+  --r-md:   8px;
+  --r-lg:   12px;
+  --r-xl:   18px;
+  --r-pill: 999px;
+
+  /* — Motion (used sparingly — color only) — */
+  --motion-fast: 120ms ease-out;
+  --motion-base: 180ms ease-out;
+
+  /* — Layout — */
+  --layout-max:   1200px;
+  --layout-wide:  1320px;
+  --sidebar-w:    248px;
+  --topbar-h:     56px;
+}
+
+
+/* ───────────────────────── 3 · DARK MODE ─────────────────────
+   "Not too dark." A warm charcoal canvas, not pure black.
+   ─────────────────────────────────────────────────────────── */
+
+[data-theme='dark'] {
+  --c-bg:          26 25 24;     /* canvas */
+  --c-bg-raised:   34 33 31;     /* raised */
+  --c-bg-sunken:   21 20 19;     /* sunken — slightly darker for section bands */
+  --c-bg-contrast: 44 42 39;     /* heavy contrast */
+  --c-bg-inverse:  244 242 238;  /* inverse becomes light */
+
+  --c-fg:          240 238 233;
+  --c-fg-body:     214 210 202;
+  --c-fg-muted:    160 154 145;
+  --c-fg-faint:    110 104  96;
+  --c-fg-inverse:   17  16  15;
+
+  --c-brand:       var(--c-brand-500);
+  --c-brand-ink:   var(--c-brand-300);
+  --c-brand-wash:  60  32  18;
+
+  --c-action:      244 242 238;  /* in dark mode actions invert — light pill on dark */
+  --c-action-fg:   17  16  15;
+  --c-action-soft: 44  42  39;
+
+  --c-success-bg:  30  56  38;
+  --c-success-fg:  175 215 180;
+  --c-warning-bg:  68  50  18;
+  --c-warning-fg:  240 198 122;
+  --c-danger-bg:   72  28  24;
+  --c-danger-fg:   238 175 165;
+  --c-info-bg:     28  46  68;
+  --c-info-fg:     176 200 226;
+}
+
+
+/* ───────────────────────── 4 · RESET ─────────────────────────
+   Minimal. Trust the cascade.
+   ─────────────────────────────────────────────────────────── */
+
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+html {
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+  tab-size: 4;
+  font-size: 16px;
+}
+
+body {
+  font-family: var(--font-sans);
+  font-size: var(--fs-base);
+  line-height: var(--lh-base);
+  color: rgb(var(--c-fg-body));
+  background: rgb(var(--c-bg));
+  font-feature-settings: 'cv11', 'ss01', 'ss03';
+  font-optical-sizing: auto;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+}
+
+img, svg, video, canvas, picture { display: block; max-width: 100%; }
+
+button, input, select, textarea { font: inherit; color: inherit; margin: 0; }
+button { cursor: pointer; background: transparent; border: 0; }
+button:disabled { cursor: not-allowed; }
+
+table { border-collapse: collapse; border-spacing: 0; width: 100%; }
+
+a { color: inherit; text-decoration: none; }
+
+ul, ol { list-style: none; }
+
+:focus-visible {
+  outline: 2px solid rgb(var(--c-focus));
+  outline-offset: 2px;
+  border-radius: var(--r-sm);
+}
+
+::selection { background: rgb(var(--c-brand) / 0.22); color: rgb(var(--c-fg)); }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: .01ms !important;
+    transition-duration: .01ms !important;
+  }
+}
+
+
+/* ───────────────────────── 5 · TYPOGRAPHY ────────────────────
+   Semantic. Headings carry the brand voice via weight + tracking.
+   ─────────────────────────────────────────────────────────── */
+
+h1, h2, h3, h4, h5, h6 {
+  font-family: var(--font-display);
+  color: rgb(var(--c-fg));
+  font-weight: 600;
+  line-height: var(--lh-tight);
+  letter-spacing: var(--tracking-tight);
+  text-wrap: balance;
+}
+
+h1 { font-size: var(--fs-4xl); font-weight: 700; }
+h2 { font-size: var(--fs-3xl); font-weight: 700; }
+h3 { font-size: var(--fs-2xl); }
+h4 { font-size: var(--fs-xl); }
+h5 { font-size: var(--fs-lg); }
+h6 { font-size: var(--fs-md); letter-spacing: var(--tracking-caps); color: rgb(var(--c-fg-muted)); font-weight: 600; }
+
+p { font-size: var(--fs-base); line-height: var(--lh-base); text-wrap: pretty; }
+p + p { margin-top: var(--sp-3); }
+
+small { font-size: var(--fs-sm); color: rgb(var(--c-fg-muted)); }
+strong, b { font-weight: 600; color: rgb(var(--c-fg)); }
+em, i { font-style: italic; }
+
+mark {
+  background: rgb(var(--c-brand) / 0.18);
+  color: rgb(var(--c-fg));
+  padding: 0 var(--sp-1);
+  border-radius: var(--r-sm);
+}
+
+abbr[title] { text-decoration: none; cursor: help; border-bottom: 0; }
+
+/* Inline code & blocks — mono is part of the dev identity */
+code, kbd, samp {
+  font-family: var(--font-mono);
+  font-size: 0.92em;
+  font-feature-settings: 'zero', 'ss01';
+}
+
+:not(pre) > code {
+  background: rgb(var(--c-bg-contrast));
+  color: rgb(var(--c-fg));
+  padding: 0.1em 0.4em;
+  border-radius: var(--r-sm);
+}
+
+kbd {
+  background: rgb(var(--c-bg-raised));
+  color: rgb(var(--c-fg));
+  padding: 0.1em 0.5em;
+  border-radius: var(--r-sm);
+  font-size: 0.85em;
+}
+
+pre {
+  background: rgb(var(--c-n-900));
+  color: rgb(var(--c-n-100));
+  padding: var(--sp-5);
+  border-radius: var(--r-lg);
+  overflow-x: auto;
+  font-size: var(--fs-sm);
+  line-height: var(--lh-loose);
+}
+pre code { background: none; padding: 0; color: inherit; font-size: inherit; }
+
+blockquote {
+  font-family: var(--font-display);
+  font-size: var(--fs-lg);
+  line-height: var(--lh-snug);
+  color: rgb(var(--c-fg));
+  padding: var(--sp-4) var(--sp-6);
+  background: rgb(var(--c-bg-sunken));
+  border-radius: var(--r-md);
+}
+
+/* Links — orange ink, no underline by default; underline on focus only */
+a:not([class]) { color: rgb(var(--c-brand-ink)); }
+a:not([class]):focus-visible { text-decoration: underline; text-underline-offset: 3px; }
+
+/* Lists — when explicitly used */
+.prose ul, .prose ol { padding-left: var(--sp-6); }
+.prose ul { list-style: disc; }
+.prose ol { list-style: decimal; }
+.prose li { margin-bottom: var(--sp-2); }
+
+hr {
+  border: 0;
+  height: 1px;
+  background: rgb(var(--c-bg-contrast));
+  margin: var(--sp-8) 0;
+}
+
+
+/* ───────────────────────── 6 · LAYOUT PRIMITIVES ─────────────
+   Sections separate via background contrast, not lines.
+   ─────────────────────────────────────────────────────────── */
+
+main {
+  display: block;
+  max-width: var(--layout-max);
+  margin: 0 auto;
+  padding: var(--sp-10) var(--sp-6);
+}
+
+section { padding: var(--sp-12) 0; }
+
+/* Background utility tones — apply to <section> wrappers to band the page */
+.bg-canvas   { background: rgb(var(--c-bg)); }
+.bg-raised   { background: rgb(var(--c-bg-raised)); }
+.bg-sunken   { background: rgb(var(--c-bg-sunken)); }
+.bg-contrast { background: rgb(var(--c-bg-contrast)); }
+.bg-inverse  { background: rgb(var(--c-bg-inverse)); color: rgb(var(--c-fg-inverse)); }
+.bg-inverse h1, .bg-inverse h2, .bg-inverse h3, .bg-inverse h4 { color: rgb(var(--c-fg-inverse)); }
+.bg-brand    { background: rgb(var(--c-brand)); color: rgb(var(--c-n-0)); }
+.bg-brand h1, .bg-brand h2, .bg-brand h3 { color: rgb(var(--c-n-0)); }
+
+/* Full-bleed band wrapper. Place inside <main> when you want a band
+   that escapes the max-width container. */
+.bleed {
+  width: 100vw;
+  margin-left: calc(50% - 50vw);
+  padding-left: max(var(--sp-6), calc(50vw - var(--layout-max) / 2));
+  padding-right: max(var(--sp-6), calc(50vw - var(--layout-max) / 2));
+}
+
+/* The basic content stack inside a section */
+.container {
+  max-width: var(--layout-max);
+  margin: 0 auto;
+  padding: 0 var(--sp-6);
+}
+
+/* Stack helpers — gap-based, never margin-based */
+.stack    { display: flex; flex-direction: column; gap: var(--sp-4); }
+.stack-sm { display: flex; flex-direction: column; gap: var(--sp-2); }
+.stack-lg { display: flex; flex-direction: column; gap: var(--sp-6); }
+.row      { display: flex; flex-direction: row; gap: var(--sp-3); align-items: center; }
+.row-wrap { display: flex; flex-wrap: wrap; gap: var(--sp-3); align-items: center; }
+.cluster  { display: flex; flex-wrap: wrap; gap: var(--sp-2); }
+.split    { display: flex; justify-content: space-between; align-items: center; gap: var(--sp-4); }
+
+
+/* ───────────────────────── 7 · BUTTONS ────────────────────────
+   Solid black primary. Soft gray secondary. Ghost text-only.
+   No hover. Press = darker rgb-mix; disabled = lower opacity.
+   ─────────────────────────────────────────────────────────── */
+
+.btn,
+button[type='submit'] {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--sp-2);
+  padding: 0.625rem var(--sp-4);
+  font: 500 var(--fs-base)/1 var(--font-sans);
+  letter-spacing: -0.005em;
+  color: rgb(var(--c-action-fg));
+  background: rgb(var(--c-action));
+  border-radius: var(--r-md);
+  white-space: nowrap;
+  transition: background var(--motion-fast), color var(--motion-fast);
+}
+
+.btn:active,
+button[type='submit']:active { background: rgb(var(--c-action) / 0.82); }
+
+.btn:disabled,
+button[type='submit']:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+/* Secondary — soft chip */
+.btn-secondary,
+button[type='button']:not([class]) {
+  background: rgb(var(--c-action-soft));
+  color: rgb(var(--c-fg));
+}
+.btn-secondary:active,
+button[type='button']:not([class]):active { background: rgb(var(--c-action-soft) / 0.7); }
+
+/* Ghost — pure text */
+.btn-ghost {
+  background: transparent;
+  color: rgb(var(--c-fg));
+  padding-inline: var(--sp-3);
+}
+.btn-ghost:active { color: rgb(var(--c-fg-muted)); }
+
+/* Danger — restrained red */
+.btn-danger {
+  background: rgb(var(--c-danger-fg));
+  color: rgb(var(--c-n-0));
+}
+
+/* Brand — orange. Use sparingly: 1 per view. */
+.btn-brand {
+  background: rgb(var(--c-brand));
+  color: rgb(var(--c-n-0));
+}
+.btn-brand:active { background: rgb(var(--c-brand-700)); }
+
+/* Sizes */
+.btn-sm { padding: 0.375rem var(--sp-3); font-size: var(--fs-sm); border-radius: var(--r-sm); }
+.btn-lg { padding: 0.875rem var(--sp-5); font-size: var(--fs-md); border-radius: var(--r-md); }
+.btn-block { width: 100%; }
+
+
+/* ───────────────────────── 8 · FORM CONTROLS ─────────────────
+   Filled, no borders. Focus = brand ring (subtle).
+   ─────────────────────────────────────────────────────────── */
+
+label {
+  display: block;
+  font-size: var(--fs-sm);
+  font-weight: 500;
+  color: rgb(var(--c-fg));
+  margin-bottom: var(--sp-2);
+}
+
+input, textarea, select {
+  width: 100%;
+  padding: 0.625rem var(--sp-3);
+  font-size: var(--fs-base);
+  font-family: inherit;
+  color: rgb(var(--c-fg));
+  background: rgb(var(--c-bg-raised));
+  border: 0;
+  border-radius: var(--r-md);
+  outline: 0;
+  transition: background var(--motion-fast);
+}
+
+[data-theme='dark'] input,
+[data-theme='dark'] textarea,
+[data-theme='dark'] select { background: rgb(var(--c-bg-contrast)); }
+
+input::placeholder, textarea::placeholder { color: rgb(var(--c-fg-faint)); }
+
+input:focus, textarea:focus, select:focus {
+  background: rgb(var(--c-bg));
+  box-shadow: 0 0 0 2px rgb(var(--c-focus) / 0.45);
+}
+
+input:disabled, textarea:disabled, select:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+textarea { resize: vertical; min-height: 6rem; font-family: var(--font-mono); font-size: var(--fs-sm); line-height: var(--lh-loose); }
+
+select {
+  appearance: none;
+  -webkit-appearance: none;
+  cursor: pointer;
+  padding-right: var(--sp-8);
+  background-image: url("data:image/svg+xml,%3Csvg width='10' height='6' viewBox='0 0 10 6' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M1 1l4 4 4-4' stroke='%23787875' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round' fill='none'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right var(--sp-3) center;
+}
+
+input[type='checkbox'], input[type='radio'] {
+  appearance: none;
+  width: 1.05rem; height: 1.05rem;
+  flex-shrink: 0;
+  background: rgb(var(--c-bg-contrast));
+  border-radius: var(--r-sm);
+  display: inline-grid; place-content: center;
+  cursor: pointer;
+  vertical-align: middle;
+  transition: background var(--motion-fast);
+}
+input[type='radio'] { border-radius: 50%; }
+
+input[type='checkbox']::after {
+  content: '';
+  width: 0.55rem; height: 0.55rem;
+  background: rgb(var(--c-n-0));
+  clip-path: polygon(14% 44%, 0 65%, 50% 100%, 100% 16%, 80% 0%, 43% 62%);
+  transform: scale(0);
+  transition: transform var(--motion-fast);
+}
+input[type='radio']::after {
+  content: '';
+  width: 0.45rem; height: 0.45rem; border-radius: 50%;
+  background: rgb(var(--c-n-0));
+  transform: scale(0);
+  transition: transform var(--motion-fast);
+}
+input[type='checkbox']:checked, input[type='radio']:checked { background: rgb(var(--c-fg)); }
+input[type='checkbox']:checked::after, input[type='radio']:checked::after { transform: scale(1); }
+
+fieldset {
+  border: 0;
+  background: rgb(var(--c-bg-raised));
+  padding: var(--sp-6);
+  border-radius: var(--r-lg);
+}
+legend {
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  color: rgb(var(--c-fg-muted));
+  letter-spacing: var(--tracking-caps);
+  padding-bottom: var(--sp-3);
+}
+
+
+/* ───────────────────────── 9 · TABLES ─────────────────────────
+   Zebra'd via background — no borders, no row dividers.
+   ─────────────────────────────────────────────────────────── */
+
+thead th {
+  text-align: left;
+  font: 500 var(--fs-xs)/1 var(--font-sans);
+  letter-spacing: var(--tracking-caps);
+  color: rgb(var(--c-fg-muted));
+  padding: var(--sp-3) var(--sp-4);
+  background: transparent;
+}
+tbody td {
+  padding: var(--sp-3) var(--sp-4);
+  font-size: var(--fs-sm);
+  color: rgb(var(--c-fg));
+  background: rgb(var(--c-bg-raised));
+}
+tbody tr:nth-child(odd) td { background: rgb(var(--c-bg)); }
+tbody td:first-child { border-radius: var(--r-md) 0 0 var(--r-md); }
+tbody td:last-child  { border-radius: 0 var(--r-md) var(--r-md) 0; }
+
+
+/* ───────────────────────── 10 · BADGES & STATUS ──────────────
+   Pill chips with washed backgrounds. No borders.
+   ─────────────────────────────────────────────────────────── */
+
+.badge {
+  display: inline-flex; align-items: center; gap: var(--sp-2);
+  padding: 0.2em 0.65em;
+  font: 500 var(--fs-xs)/1.4 var(--font-sans);
+  letter-spacing: 0.01em;
+  border-radius: var(--r-pill);
+  background: rgb(var(--c-bg-contrast));
+  color: rgb(var(--c-fg));
+}
+
+.badge-success { background: rgb(var(--c-success-bg)); color: rgb(var(--c-success-fg)); }
+.badge-warning { background: rgb(var(--c-warning-bg)); color: rgb(var(--c-warning-fg)); }
+.badge-danger  { background: rgb(var(--c-danger-bg));  color: rgb(var(--c-danger-fg)); }
+.badge-info    { background: rgb(var(--c-info-bg));    color: rgb(var(--c-info-fg)); }
+.badge-brand   { background: rgb(var(--c-brand) / 0.15); color: rgb(var(--c-brand-ink)); }
+.badge-inverse { background: rgb(var(--c-fg)); color: rgb(var(--c-bg)); }
+
+.dot {
+  width: 7px; height: 7px; border-radius: 50%;
+  background: rgb(var(--c-fg-muted));
+  flex-shrink: 0;
+}
+.dot-success { background: rgb(34 160 86); }
+.dot-warning { background: rgb(220 158 18); }
+.dot-danger  { background: rgb(214  72  48); }
+.dot-info    { background: rgb( 56 116 196); }
+.dot-pulse   { animation: dot-pulse 1.6s ease-in-out infinite; }
+
+@keyframes dot-pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.35; } }
+
+
+/* ───────────────────────── 11 · CARDS & SURFACES ─────────────
+   "Card" is just a raised background tone + radius. No border.
+   ─────────────────────────────────────────────────────────── */
+
+.card {
+  background: rgb(var(--c-bg-raised));
+  border-radius: var(--r-lg);
+  padding: var(--sp-6);
+}
+.card-sunken { background: rgb(var(--c-bg-sunken)); }
+.card-flat   { background: transparent; padding: 0; }
+
+.card-label {
+  font: 500 var(--fs-base)/1 var(--font-sans);
+  letter-spacing: var(--tracking-caps);
+  color: rgb(var(--c-fg-muted));
+  margin-bottom: var(--sp-3);
+}
+
+/* Description list pattern (key/value) — table-free metadata */
+dl.kv {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: var(--sp-2) var(--sp-6);
+  font-size: var(--fs-sm);
+}
+dl.kv dt { color: rgb(var(--c-fg-muted)); font-weight: 500; }
+dl.kv dd { color: rgb(var(--c-fg)); font-family: var(--font-mono); }
+
+
+/* ───────────────────────── 12 · NAV / SIDEBAR PATTERN ────────
+   Sidebar uses the sunken band — separates from main by contrast.
+   ─────────────────────────────────────────────────────────── */
+
+.sidebar {
+  width: var(--sidebar-w);
+  background: rgb(var(--c-bg-sunken));
+  padding: var(--sp-5) var(--sp-3);
+  display: flex; flex-direction: column;
+  gap: var(--sp-5);
+}
+.sidebar nav ul { display: flex; flex-direction: column; gap: 2px; }
+.sidebar nav a {
+  display: flex; align-items: center; gap: var(--sp-3);
+  padding: 0.5rem var(--sp-3);
+  border-radius: var(--r-md);
+  color: rgb(var(--c-fg-muted));
+  font-size: var(--fs-sm);
+  font-weight: 500;
+  transition: background var(--motion-fast), color var(--motion-fast);
+}
+.sidebar nav a.active {
+  background: rgb(var(--c-bg-contrast));
+  color: rgb(var(--c-fg));
+}
+.sidebar nav a:active { color: rgb(var(--c-fg)); }
+.sidebar h6 {
+  padding: 0 var(--sp-3);
+  margin-top: var(--sp-3);
+}
+
+
+/* ───────────────────────── 13 · MISC ──────────────────────────
+   Tiny utilities used across components.
+   ─────────────────────────────────────────────────────────── */
+
+.mono { font-family: var(--font-mono); }
+.muted { color: rgb(var(--c-fg-muted)); }
+.faint { color: rgb(var(--c-fg-faint)); }
+.eyebrow {
+  font: 500 var(--fs-xs)/1 var(--font-sans);
+  letter-spacing: var(--tracking-caps);
+  color: rgb(var(--c-fg-muted));
+}
+.numeric { font-variant-numeric: tabular-nums; }
+
+.divider-band {
+  /* one-pixel high contrast band — when you truly need a divider */
+  height: 1px;
+  background: rgb(var(--c-bg-contrast));
+}
+
+/* Skeleton loader — flat shimmer via background pulse */
+.skeleton {
+  background: rgb(var(--c-bg-contrast));
+  border-radius: var(--r-sm);
+  animation: skel 1.4s ease-in-out infinite;
+}
+@keyframes skel { 0%,100% { opacity: 1; } 50% { opacity: 0.55; } }
