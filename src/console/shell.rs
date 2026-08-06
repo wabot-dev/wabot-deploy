@@ -194,6 +194,19 @@ pub const CSS: &str = r#"
   grid-template-columns: 15rem minmax(0, 1fr);
   min-height: calc(100vh - 3.25rem);
 }
+/* A page title is a label, not a headline. The design system's `h1`
+   is `--fs-4xl` — a marketing size — and next to 15px body text it
+   reads as a banner. wabot console uses `--fs-3xl` for the same job,
+   but its titles are words like "Services" while these are hostnames,
+   so this goes one step further down and lets a long one break rather
+   than push the page sideways. */
+.app-body > main h1 {
+  font-size: var(--fs-2xl);
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.app-body > main h2 { font-size: var(--fs-xl); margin: 0; }
+
 .app-body > main {
   padding: var(--sp-8) var(--sp-8) var(--sp-12);
   max-width: 66rem;
