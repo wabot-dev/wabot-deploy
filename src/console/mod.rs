@@ -1,9 +1,5 @@
 //! The console.
 //!
-//! One page today: what this node is, and what state it is in. The
-//! real console — projects, services, logs — arrives with the things
-//! it would list.
-//!
 //! Server-rendered with hypertext's `rsx!`. No JavaScript, no build
 //! step, no client payload: the page is HTML the node produced, which
 //! is the right shape for something that has to work on a box with no
@@ -17,31 +13,36 @@
 //! error. Maud compiles it and emits the malformed HTML — checked,
 //! not assumed. For templates nobody type-checks by reading them,
 //! that difference is the whole point.
+//!
+//! ## Who may see what
+//!
+//! Every page except `/setup` and `/sign-in` needs an account. The
+//! check is per-view rather than per-router because a signed-out
+//! visitor gets a *redirect*, and a router-level guard can only
+//! reject. See [`auth`].
 
 pub mod assets;
+pub mod auth;
+pub mod layout;
+pub mod projects;
+pub mod services;
 
 use std::sync::Arc;
 
+use hypertext::prelude::*;
 use wabot::prelude::*;
 use wabot::rest::axum::Router;
-// The renderer's own prelude — `rsx!` and every element name. It comes
-// from this crate's direct `hypertext` dependency rather than through
-// the framework, because the macro expands to absolute `::hypertext`
-// paths; the framework re-export exists to check the versions agree.
-use hypertext::prelude::*;
-use hypertext::Raw;
 use wabot::sqlite::SqliteDatabase;
-use wabot::ui::hypertext::{link, style, title, IntoView};
-use wabot::ui::{embedded_assets, UiResult, ViewBody};
+use wabot::ui::embedded_assets;
 
 use crate::config::Config;
 use crate::edge::certs;
 
-/// What the page reports. Read once per request — this is a status
-/// page, and a cached status is the thing it exists not to be.
+/// What every console page reads from. Never cached: this is a status
+/// console, and a cached status is the thing it exists not to be.
 pub struct ConsoleState {
-    database: Arc<SqliteDatabase>,
-    config: Config,
+    pub(crate) database: Arc<SqliteDatabase>,
+    pub(crate) config: Config,
 }
 
 impl ConsoleState {
@@ -51,15 +52,15 @@ impl ConsoleState {
 }
 
 /// How the node's TLS is currently answered for.
-struct CertificateFacts {
-    domain: Option<String>,
+pub(crate) struct CertificateFacts {
+    pub domain: Option<String>,
     /// `letsencrypt`, `letsencrypt-staging`, `self-signed`, …
-    issuer: String,
-    days_left: i64,
-    trusted: bool,
+    pub issuer: String,
+    pub days_left: i64,
+    pub trusted: bool,
 }
 
-async fn certificate_facts(state: &ConsoleState) -> CertificateFacts {
+pub(crate) async fn certificate_facts(state: &ConsoleState) -> CertificateFacts {
     let domain = state.config.node.domain.clone();
     let stored = match &domain {
         Some(domain) => certs::load(&state.database, domain).await.ok().flatten(),
@@ -97,154 +98,44 @@ fn short_issuer(issuer: &str) -> String {
     }
 }
 
-#[singleton]
-pub struct HomeController {
-    state: Arc<ConsoleState>,
-}
-
-#[ui_controller("/", app)]
-impl HomeController {
-    #[view("/")]
-    async fn home(&self) -> UiResult<ViewBody> {
-        let facts = certificate_facts(&self.state).await;
-        let version = crate::api::VERSION;
-
-        let hostname = facts
-            .domain
-            .clone()
-            .unwrap_or_else(|| "not configured".into());
-        let renews_in = facts.days_left - RENEW_WINDOW_DAYS;
-
-        // The framework renders the document shell — doctype, html,
-        // head, body — and a view supplies only what goes inside it.
-        // Everything for the head is declared through the scope; a
-        // view that emitted its own `<html>` would produce a second,
-        // nested document, which is exactly what happened first.
-        title("wabot-deploy");
-
-        // The fonts start downloading in parallel with the stylesheet
-        // rather than after the browser has parsed it and discovered
-        // `@font-face`. That one round trip is the flicker: text paints
-        // in the system fallback and then swaps to Geist.
-        //
-        // The ordering in the document is `render_document`'s, not
-        // this loop's — it emits links before stylesheets whatever
-        // order a view declared them in. Declared here first anyway,
-        // because reading it in the other order would suggest the
-        // fonts come second.
-        for font in assets::PRELOAD_FONTS {
-            link([
-                ("rel", "preload"),
-                ("as", "font"),
-                ("type", "font/woff2"),
-                // Not optional, and the classic way to get this wrong:
-                // font requests are always made in CORS mode, so a
-                // preload without `crossorigin` sits unused in the
-                // cache and the font is fetched a second time. Costs a
-                // request and fixes nothing.
-                ("crossorigin", "anonymous"),
-                ("href", &format!("{}/{font}", assets::MOUNT)),
-            ]);
-        }
-
-        style(format!("{}/wabot.css", assets::MOUNT));
-        link([
-            ("rel", "icon"),
-            ("type", "image/png"),
-            ("href", &format!("{}/favicon.png", assets::MOUNT)),
-        ]);
-
-        Ok(rsx! {
-            // XSS SAFETY: a `const` in this file, never a value from a
-            // request.
-            <style>(Raw::dangerously_create(PAGE_CSS))</style>
-            <main class="shell">
-                <header class="mark">
-                    <img
-                        src=(format!("{}/wabot-logo.png", assets::MOUNT))
-                        alt="Wabot" width="44" height="44">
-                    <div class="stack-sm">
-                        <h1>("wabot-deploy")</h1>
-                        <p class="tagline">("Container deployments on a node you own.")</p>
-                    </div>
-                </header>
-
-                <section class="card">
-                    <div class="split">
-                        <p class="card-label">("This node")</p>
-                        <span class="badge badge-success">
-                            <span class="dot dot-success"></span>
-                            ("Serving")
-                        </span>
-                    </div>
-                    <dl class="kv">
-                        <dt>("Version")</dt>
-                        <dd>(version)</dd>
-                        <dt>("Hostname")</dt>
-                        <dd>(hostname)</dd>
-                        <dt>("Certificate")</dt>
-                        <dd>(&facts.issuer)</dd>
-                        @if renews_in > 0 {
-                            <dt>("Renews in")</dt>
-                            <dd>(renews_in)(" days")</dd>
-                        }
-                    </dl>
-                    <p class="note">(certificate_note(&facts))</p>
-                </section>
-
-                <section class="stack">
-                    <p class="card-label">("What works so far")</p>
-                    <div class="grid">
-                        @for (name, detail) in CAPABILITIES {
-                            <div class="card">
-                                <p class="feature-name">(name)</p>
-                                <p class="feature-detail">(detail)</p>
-                            </div>
-                        }
-                    </div>
-                </section>
-
-                <section class="card card-sunken stack">
-                    <p class="card-label">("Next")</p>
-                    <p>(
-                        "containerd and crun, so the node can start the containers \
-                         it already knows how to route to."
-                    )</p>
-                    <pre><code>("wabot-deploy doctor")</code></pre>
-                </section>
-
-                <footer class="foot">
-                    <span>("wabot-deploy ")(version)</span>
-                    <span class="dim">(
-                        "Single node. Two processes. No control plane but this one."
-                    )</span>
-                </footer>
-            </main>
-        }
-        .into_view())
-    }
-}
-
 /// Renewal starts this far before expiry, so "renews in" is the
 /// remaining life minus the window rather than the whole of it.
 const RENEW_WINDOW_DAYS: i64 = 30;
 
-/// What the node can do, in the order somebody would meet it.
-const CAPABILITIES: &[(&str, &str)] = &[
-    ("Install", "Converges. Run it again and nothing repeats."),
-    (
-        "Edge",
-        "One TLS listener. Host routing, WebSockets, HTTP redirect.",
-    ),
-    (
-        "Certificates",
-        "Let's Encrypt over HTTP-01, renewed in the background.",
-    ),
-    (
-        "Storage",
-        "SQLite, compiled in. No database server to operate.",
-    ),
-];
+/// What the node is, as a card at the foot of the projects page.
+///
+/// It stays on the page somebody lands on rather than getting its own
+/// route: the questions it answers — which certificate, how long left
+/// — are the ones asked while looking at something else.
+pub(crate) fn node_card(facts: &CertificateFacts) -> impl Renderable + '_ {
+    let hostname = facts.domain.clone().unwrap_or_else(|| "not set".into());
+    let renews_in = facts.days_left - RENEW_WINDOW_DAYS;
+
+    rsx! {
+        <section class="card card-sunken">
+            <div class="split">
+                <p class="card-label">("This node")</p>
+                <span class="badge badge-success">
+                    <span class="dot dot-success"></span>
+                    ("Serving")
+                </span>
+            </div>
+            <dl class="kv">
+                <dt>("Version")</dt>
+                <dd>(crate::api::VERSION)</dd>
+                <dt>("Hostname")</dt>
+                <dd>(hostname)</dd>
+                <dt>("Certificate")</dt>
+                <dd>(&facts.issuer)</dd>
+                @if renews_in > 0 {
+                    <dt>("Renews in")</dt>
+                    <dd>(renews_in)(" days")</dd>
+                }
+            </dl>
+            <p class="note">(certificate_note(facts))</p>
+        </section>
+    }
+}
 
 /// What to say about the certificate currently being served.
 ///
@@ -264,54 +155,7 @@ fn certificate_note(facts: &CertificateFacts) -> &'static str {
     }
 }
 
-/// Page-specific layout only.
-///
-/// Everything visual — colour, type, radii — comes from the design
-/// system's tokens. What is here is arrangement, which is the page's
-/// own business. No borders, no shadows, no hover states: separation
-/// is background contrast, per the brand rules.
-const PAGE_CSS: &str = r#"
-.shell {
-  max-width: 62rem;
-  margin: 0 auto;
-  padding: var(--sp-16) var(--sp-6) var(--sp-12);
-  display: flex;
-  flex-direction: column;
-  gap: var(--sp-10);
-}
-.mark { display: flex; align-items: center; gap: var(--sp-5); }
-.mark h1 { font-size: var(--fs-4xl); margin: 0; letter-spacing: -0.03em; }
-.tagline { color: rgb(var(--c-fg-muted)); font-size: var(--fs-lg); margin: 0; }
-.status .kv { margin-top: var(--sp-5); }
-.note {
-  margin: var(--sp-5) 0 0;
-  color: rgb(var(--c-fg-muted));
-  font-size: var(--fs-sm);
-  max-width: 46rem;
-}
-.grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr));
-  gap: var(--sp-4);
-}
-.feature-name { margin: 0 0 var(--sp-2); font-weight: 600; }
-.feature-detail { margin: 0; color: rgb(var(--c-fg-muted)); font-size: var(--fs-sm); }
-.foot {
-  display: flex;
-  justify-content: space-between;
-  gap: var(--sp-4);
-  flex-wrap: wrap;
-  font-size: var(--fs-sm);
-  color: rgb(var(--c-fg-muted));
-}
-.foot .dim { color: rgb(var(--c-fg-faint)); }
-@media (max-width: 40rem) {
-  .shell { padding-top: var(--sp-10); gap: var(--sp-8); }
-  .mark h1 { font-size: var(--fs-3xl); }
-}
-"#;
-
-fn now_ms() -> i64 {
+pub(crate) fn now_ms() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as i64)
@@ -320,65 +164,103 @@ fn now_ms() -> i64 {
 
 pub fn register(container: &Container, database: Arc<SqliteDatabase>, config: Config) {
     container.register_instance::<ConsoleState>(Arc::new(ConsoleState::new(database, config)));
-    register_singletons!(container, HomeController);
+    // No guard addon runs here, so nothing else would register `Auth`
+    // and every controller holding one would fail to resolve.
+    Auth::register_default(container);
+
+    register_singletons!(container, auth::SessionMiddleware);
+    // Transient, all of them: each holds an `Arc<Auth>`, and a
+    // singleton controller is built once — its `Auth` would be one
+    // visitor's identity handed to everybody after them.
+    register_transients!(
+        container,
+        auth::AuthPages,
+        auth::AuthApi,
+        projects::ProjectPages,
+        projects::ProjectApi,
+        services::ServicePages,
+        services::ServiceApi
+    );
 }
 
 pub fn routes(container: &Container) -> Router {
-    HomeController::register_ui_routes(container, wabot::ui::ui_router())
+    let pages = wabot::ui::ui_router();
+    let pages = auth::AuthPages::register_ui_routes(container, pages);
+    let pages = projects::ProjectPages::register_ui_routes(container, pages);
+    let pages = services::ServicePages::register_ui_routes(container, pages);
+
+    let forms = Router::new();
+    let forms = auth::AuthApi::register_routes(container, forms);
+    let forms = projects::ProjectApi::register_routes(container, forms);
+    let forms = services::ServiceApi::register_routes(container, forms);
+
+    pages
+        .merge(forms)
         .merge(embedded_assets(assets::MOUNT, assets::ASSETS))
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use wabot::rest::axum::http::StatusCode;
     use wabot::testing::RestHarness;
 
-    async fn harness(domain: Option<&str>) -> RestHarness {
-        let database = Arc::new(crate::db::open_in_memory().await.expect("open"));
-        let mut config = Config::default();
-        config.node.domain = domain.map(str::to_string);
-
-        let container = Container::new();
-        register(&container, database, config);
-        RestHarness::new(routes(&container))
+    /// A console over an empty database, with a setup token already
+    /// issued — what `install` leaves behind.
+    pub(crate) struct Console {
+        pub harness: RestHarness,
+        pub database: Arc<SqliteDatabase>,
+        pub setup_token: String,
     }
 
-    #[tokio::test]
-    async fn the_home_page_renders() {
-        let response = harness(None).await.get("/").send().await;
-        response.assert_ok();
-        assert!(response.body.contains("wabot-deploy"), "{}", response.body);
-        assert!(
-            response
-                .body
-                .contains("Container deployments on a node you own"),
-            "the tagline is there"
-        );
+    impl Console {
+        pub async fn new() -> Self {
+            let database = Arc::new(crate::db::open_in_memory().await.expect("open"));
+            let setup_token = crate::accounts::issue_setup_token(&database)
+                .await
+                .expect("token");
+
+            let container = Container::new();
+            register(&container, database.clone(), Config::default());
+            Self {
+                harness: RestHarness::new(routes(&container)),
+                database,
+                setup_token,
+            }
+        }
+
+        /// Complete setup and return the session cookie, in the form a
+        /// request carries it.
+        pub async fn signed_in(&self) -> String {
+            let response = self
+                .harness
+                .post("/setup")
+                .form(&[
+                    ("username", "jorge"),
+                    ("password", "correct horse battery"),
+                    ("setup_token", &self.setup_token),
+                ])
+                .send()
+                .await;
+            response.assert_status(StatusCode::SEE_OTHER);
+            let cookie = response
+                .header("set-cookie")
+                .expect("setup signs the operator in");
+            cookie
+                .split(';')
+                .next()
+                .expect("a cookie has a value")
+                .to_string()
+        }
     }
 
-    /// The page's job is to say what state the node is in, so the
-    /// certificate line has to reflect reality rather than a default.
+    /// The console the framework assembles has to be one document, not
+    /// a document inside a document — which browsers silently repair,
+    /// so it renders *almost* right and nothing complains.
     #[tokio::test]
-    async fn the_page_reports_a_self_signed_node_honestly() {
-        let response = harness(None).await.get("/").send().await;
-        assert!(
-            response.body.contains("self-signed"),
-            "a node with no domain says so: {}",
-            response.body
-        );
-        assert!(response.body.contains("node.domain"), "and says what to do");
-    }
-
-    /// One document, not two.
-    ///
-    /// The framework renders the shell and the view supplies its body.
-    /// A view that emits its own `<html>` produces a nested document —
-    /// which browsers silently repair, so it renders *almost* right
-    /// and nothing complains. That is what this file did first.
-    #[tokio::test]
-    async fn the_page_is_a_single_document() {
-        let body = harness(None).await.get("/").send().await.body;
+    async fn a_page_is_a_single_document() {
+        let console = Console::new().await;
+        let body = console.harness.get("/setup").send().await.body;
 
         assert_eq!(body.matches("<html").count(), 1, "one <html>:\n{body}");
         assert_eq!(body.matches("<body").count(), 1, "one <body>");
@@ -394,9 +276,10 @@ mod tests {
     /// scope, so a missing helper shows up as a missing tag.
     #[tokio::test]
     async fn the_head_carries_the_title_stylesheet_and_favicon() {
-        let body = harness(None).await.get("/").send().await.body;
+        let console = Console::new().await;
+        let body = console.harness.get("/setup").send().await.body;
 
-        assert!(body.contains("<title>wabot-deploy</title>"), "{body}");
+        assert!(body.contains("<title>"), "{body}");
         assert!(
             body.contains(&format!(
                 r#"<link rel="stylesheet" href="{}/wabot.css">"#,
@@ -422,7 +305,8 @@ mod tests {
     /// is what says so.
     #[tokio::test]
     async fn fonts_are_preloaded_before_the_stylesheet() {
-        let body = harness(None).await.get("/").send().await.body;
+        let console = Console::new().await;
+        let body = console.harness.get("/setup").send().await.body;
 
         let stylesheet = body
             .find(r#"rel="stylesheet""#)
@@ -444,7 +328,8 @@ mod tests {
     /// mistake worth a test of its own.
     #[tokio::test]
     async fn font_preloads_carry_the_attributes_the_browser_needs() {
-        let body = harness(None).await.get("/").send().await.body;
+        let console = Console::new().await;
+        let body = console.harness.get("/setup").send().await.body;
 
         let preloads: Vec<&str> = body
             .match_indices(r#"<link rel="preload""#)
@@ -473,13 +358,13 @@ mod tests {
         }
     }
 
-    /// Every asset the page references has to be served, or the node
+    /// Every asset a page references has to be served, or the node
     /// renders unstyled — which is exactly the failure vendoring them
     /// was supposed to prevent.
     #[tokio::test]
     async fn every_referenced_asset_is_served() {
-        let harness = harness(None).await;
-        let body = harness.get("/").send().await.body;
+        let console = Console::new().await;
+        let body = console.harness.get("/setup").send().await.body;
 
         let mut checked = 0;
         for marker in ["href=\"", "src=\""] {
@@ -491,7 +376,12 @@ mod tests {
                 if !url.starts_with(assets::MOUNT) {
                     continue;
                 }
-                harness.get(url).send().await.assert_status(StatusCode::OK);
+                console
+                    .harness
+                    .get(url)
+                    .send()
+                    .await
+                    .assert_status(StatusCode::OK);
                 checked += 1;
             }
         }
@@ -502,8 +392,9 @@ mod tests {
     /// which looks like a bug in the product rather than in a header.
     #[tokio::test]
     async fn the_stylesheet_is_served_as_css() {
-        let response = harness(None)
-            .await
+        let console = Console::new().await;
+        let response = console
+            .harness
             .get(&format!("{}/wabot.css", assets::MOUNT))
             .send()
             .await;
@@ -515,5 +406,23 @@ mod tests {
             "got {:?}",
             response.header("content-type")
         );
+    }
+
+    /// The node card is what the splash page became, and the honesty
+    /// of the certificate line is the reason it exists.
+    #[tokio::test]
+    async fn the_node_card_reports_a_self_signed_node_honestly() {
+        let console = Console::new().await;
+        let cookie = console.signed_in().await;
+        let body = console
+            .harness
+            .get("/")
+            .header("cookie", &cookie)
+            .send()
+            .await
+            .body;
+
+        assert!(body.contains("self-signed"), "{body}");
+        assert!(body.contains("node.domain"), "and says what to do");
     }
 }

@@ -99,6 +99,11 @@ tower = { version = "0.5", features = ["util"] }
 
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# Reading form bodies. A dependency `url` also brings, but naming it
+# directly is honest about what it is used for.
+form_urlencoded = "1"
+# `#[async_trait]`, which the framework's Middleware trait uses.
+async-trait = "0.1"
 # containerd's native gRPC API. Generated bindings only — there is no
 # high-level client, so pulling, container creation and task lifecycle
 # are ours to write.

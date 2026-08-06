@@ -128,8 +128,39 @@ pub async fn run(mut config: Config, config_path: &Path, args: InstallArgs) -> a
         println!("  the node is running. `systemctl status wabot-deploy`");
     }
 
+    // Last of all, because it is the one thing here somebody has to
+    // read and act on. A node with no administrator serves a console
+    // nobody can get into, and this token is the way in.
+    setup_token(&database, &config).await;
+
     database.close().await?;
     Ok(0)
+}
+
+/// Issue the token that creates the first administrator.
+///
+/// Never fatal. The node is installed either way, and `wabot-deploy
+/// setup-token` issues another — failing the whole install over a
+/// token that can be re-minted would be the wrong trade.
+async fn setup_token(database: &SqliteDatabase, config: &Config) {
+    match crate::accounts::any_account(database).await {
+        // Re-running install on a node somebody already set up must not
+        // mint a token: that would be a way to take over a live node by
+        // running the installer again.
+        Ok(true) => {}
+        Ok(false) => match crate::accounts::issue_setup_token(database).await {
+            Ok(token) => crate::commands::setup_token::print(config, &token),
+            Err(error) => {
+                println!();
+                println!("  could not issue a setup token: {error}");
+                println!("  run `wabot-deploy setup-token` once the node is up.");
+            }
+        },
+        Err(error) => {
+            println!();
+            println!("  could not check for an administrator: {error}");
+        }
+    }
 }
 
 /// Run one step, unless it is already done, and record how it went.

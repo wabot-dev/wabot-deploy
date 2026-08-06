@@ -41,6 +41,13 @@ pub enum Command {
     /// missing. Read-only — safe on a live node.
     Doctor,
 
+    /// Issue a setup token and print it.
+    ///
+    /// `install` prints one already. This is for the token that
+    /// expired, or the terminal buffer that is gone — and for the
+    /// operator who has to hand one to somebody else.
+    SetupToken,
+
     /// Talk to containerd and report what it says.
     ///
     /// Not part of running a node: it exists because the containerd

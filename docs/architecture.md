@@ -984,3 +984,101 @@ curl -v https://<dns>/healthz                            # cadena válida
 Tests de framework con los harnesses existentes (`RestHarness`,
 `AsyncHarness`); tests del edge levantando el listener en un puerto efímero
 con cert autofirmado — sin root y sin containerd.
+
+### 8.7 M4 — cuentas, proyectos y servicios
+
+La consola deja de ser una página de estado: registro del administrador,
+proyectos, servicios y las pantallas para crearlos y borrarlos.
+190 tests, `fmt` y `clippy -D warnings` limpios.
+
+**El registro inicial: token impreso por `install`, no primer-visitante**
+
+La alternativa obvia —el primero que abra la web crea la cuenta— es una
+carrera que pierde el operador: entre que el nodo levanta y él abre el
+navegador, cualquiera que conozca el dominio puede quedárselo. El token
+lo imprime `install` en la terminal donde ya está el operador, se guarda
+**hasheado**, se gasta al usarse y caduca en 24 h. `wabot-deploy
+setup-token` emite otro para el token que expiró o la terminal que se
+cerró; si ya hay administrador, se niega y lo dice.
+
+**Un namespace de containerd, no uno por proyecto**
+
+La separación por proyecto es de *nombres y etiquetas*, no de namespaces.
+Un namespace por proyecto duplica el content store —la misma imagen base
+bajada N veces— que es justo lo que el registry compartido de §7.1 existe
+para evitar. El id de contenedor es `{proyecto}--{servicio}` y las
+etiquetas llevan el proyecto, así que listar, reconciliar y limpiar por
+proyecto siguen siendo una consulta. La red CNI por proyecto llega
+después de que los servicios corran: aislar tráfico entre proyectos que
+todavía no tienen tráfico es orden equivocado.
+
+**Formularios planos, sin JavaScript**
+
+POST y 303. Funciona con el scripting apagado, y la defensa CSRF es
+`SameSite=Lax` en la cookie de sesión en vez de un token que enhebrar por
+cada formulario. Los POST son endpoints `#[raw]` —lo que un formulario
+necesita de vuelta es un 303 con `Set-Cookie`, y el camino JSON no
+expresa ninguna de las dos cosas—. Los errores vuelven en un parámetro de
+query: un formulario rechazado no es secreto, y así no hay estado con
+tiempo de vida.
+
+**El middleware anota, no rechaza**
+
+`Middleware` en el framework es solo-rechazo, y un rechazo es un cuerpo
+JSON. Para un navegador eso es la respuesta equivocada: quien no tiene
+sesión quiere la página de login, no un 401 con `{"error":…}`. Así que
+el middleware siempre tiene éxito —lee la cookie y, si nombra una sesión
+viva, asigna la cuenta a `Auth`— y cada vista decide. La vista puede
+devolver `ViewOutcome::Redirect`; un `RestError` no.
+
+Consecuencia: **el POST es la frontera, no la página**. Cada endpoint que
+muta vuelve a comprobar la sesión, porque un formulario lo envía
+cualquiera. Hay un test por endpoint que lo fija.
+
+**Un bug del framework, y del tipo silencioso**
+
+Con la sesión creada y la cookie correcta, la consola seguía mandando a
+`/sign-in`. El middleware recibía **cero cabeceras**: el macro `#[view]`
+le pasaba a `produce` un head *sintético* reconstruido desde la URI y el
+flag de navegación, guardándose el real solo para la respuesta.
+
+O sea: **cualquier middleware sobre una vista veía una petición sin
+cabeceras**. Un guard de cookie o de bearer no encontraba nada, nunca, y
+como los middlewares son solo-rechazo, la forma de no encontrar nada era
+dejar pasar a todo el mundo. Nada fallaba en voz alta; la página
+renderizaba.
+
+`Parts` implementa `Clone`, así que la copia sintética no hacía falta:
+ahora `produce` recibe un clon del head real. Test de regresión en
+`ui_http.rs`, **validado reintroduciendo el bug** — falla con
+`["<no header>"]` frente a `["jorge"]`.
+
+**Cambios de framework**
+
+| Cambio | Por qué |
+| --- | --- |
+| `#[view]` recibe el head real | lo de arriba: un middleware de UI no veía nada |
+| `ViewOutcome` en el prelude | se exportaba `Redirect` sin el tipo que lo transporta |
+| `RequestBuilder::form()` en el harness | un valor con `&` o espacio tiene que llegar entero, y un cuerpo a mano es donde eso deja de ser cierto |
+
+**Decisiones del dominio**
+
+- **`Account` es también las claims.** Dos structs de la misma forma es
+  un segundo sitio donde divergir; lo cazó el compilador la primera vez
+  que el header de layout recibió el equivocado.
+- **La contraseña no se recorta.** Los espacios al principio y al final
+  son parte de ella, y quitarlos en silencio produce una contraseña que
+  no se puede volver a teclear.
+- **Usuario desconocido y contraseña mala responden igual**, y el camino
+  del desconocido paga el mismo hash. Hay un test que compara las dos
+  respuestas.
+- **El env se parte por el *primer* `=`.** La mayoría de los valores que
+  alguien pega son URLs de conexión o blobs base64 con `=` dentro;
+  partir por todos trunca exactamente los secretos que peor sienta
+  truncar.
+- **Borrar es el par natural de crear.** Sin ello, un servicio mal
+  tecleado es permanente. Zona de peligro, POST, sin diálogo de
+  confirmación —un diálogo necesita JavaScript—.
+- **El badge de estado dice "Pending", no "Running".** Todavía nada
+  arranca contenedores: el estado deseado es una intención declarada, y
+  la interfaz dice cuál de las dos cosas está mirando.

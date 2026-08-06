@@ -9,6 +9,7 @@
 
 use clap::Parser;
 
+mod accounts;
 mod api;
 mod bootstrap;
 mod cli;
@@ -18,6 +19,7 @@ mod console;
 mod db;
 mod edge;
 mod ledger;
+mod platform;
 mod runtime;
 
 use cli::{Cli, Command};
@@ -58,6 +60,7 @@ fn main() -> std::process::ExitCode {
             Command::Install(args) => commands::install::run(config, &cli.config, args).await,
             Command::Serve => commands::serve::run(config).await,
             Command::Doctor => commands::doctor::run(config, &cli.config).await,
+            Command::SetupToken => commands::setup_token::run(config).await,
             Command::Containerd { pull, run, port } => {
                 commands::containerd::run(pull, run, port).await
             }
