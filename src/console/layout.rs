@@ -154,6 +154,20 @@ pub const CSS: &str = r#"
 }
 .actions { display: flex; gap: var(--sp-3); align-items: center; margin-top: var(--sp-5); }
 
+/* Selecting text inside a `<pre>` made it vanish. The design system
+   sets one global `::selection` — brand at 22% over `--c-fg`, which is
+   near-black — and a `<pre>` is near-black with light text. Black on a
+   translucent tint over black is nothing at all.
+
+   A dark surface needs its own: solid brand, white text. Upstream this
+   wants to be part of the system's `pre` rules; here it compensates,
+   like the button variants above. */
+pre::selection,
+pre ::selection {
+  background: rgb(var(--c-brand));
+  color: rgb(var(--c-n-0));
+}
+
 /* A checkbox and its words are one control, and they were touching:
    the box is `flex-shrink: 0` and the label had no gap, so the text
    started where the box ended. The label is also what makes the words
@@ -280,6 +294,16 @@ mod tests {
     /// comes out primary black. Every form button on this console is a
     /// submit, which made almost the whole interface shout. These
     /// overrides are what put that back — losing them is silent.
+    /// A `<pre>` is the one dark surface on the console, and the
+    /// design system's single global `::selection` paints near-black
+    /// text on it. An invitation link nobody can see while selecting
+    /// it is one they cannot copy.
+    #[test]
+    fn a_dark_surface_has_its_own_selection_colour() {
+        assert!(super::CSS.contains("pre ::selection"));
+        assert!(super::CSS.contains("pre::selection"));
+    }
+
     #[test]
     fn every_button_variant_beats_the_submit_default() {
         for variant in ["btn-secondary", "btn-ghost", "btn-danger"] {
