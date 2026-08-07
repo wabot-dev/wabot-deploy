@@ -10,8 +10,9 @@ use wabot::rest::axum::response::Response;
 use wabot::rest::RestResult;
 use wabot::ui::hypertext::IntoView;
 
+use crate::accounts::roles::ProjectRole;
 use crate::deploy::Observed;
-use crate::platform::{projects, services};
+use crate::platform::{access, projects, services};
 
 use super::auth::{
     back_with_error, field, read_form, see_other, signed_in, PageQuery, SessionMiddleware,
@@ -43,7 +44,10 @@ impl ProjectPages {
             );
         };
 
-        let projects = projects::all(&self.state.database).await?;
+        // The filter is the query, not the page: a list built from
+        // everything and narrowed afterwards leaks the first time
+        // somebody adds a page that forgets to narrow.
+        let projects = access::projects_for(&self.state.database, &account).await?;
         let facts = super::certificate_facts(&self.state).await;
 
         layout::head("Projects");
@@ -89,7 +93,7 @@ impl ProjectPages {
             return Ok(Redirect::found("/sign-in").into());
         };
 
-        let projects = projects::all(&self.state.database).await?;
+        let projects = access::projects_for(&self.state.database, &account).await?;
 
         layout::head("Create project");
         let frame = Frame::new(&account, Area::Projects, &projects, None, "/projects/new");
@@ -127,10 +131,12 @@ impl ProjectPages {
             return Ok(Redirect::found("/sign-in").into());
         };
 
-        let Some(project) = projects::find(&self.state.database, &query.project).await? else {
-            // Back to the list saying so, rather than a 404 page. The
-            // only way here is a stale link or a deleted project, and
-            // in both cases the list is what they wanted.
+        // "Not yours" answers exactly like "not there". Telling them
+        // apart turns the project list into something anybody can
+        // enumerate by guessing names.
+        let Some((project, allowed)) =
+            access::find_project(&self.state.database, &account, &query.project).await?
+        else {
             return Ok(Redirect::found("/?error=no+such+project").into());
         };
         let services = services::all(&self.state.database, Some(&project.id)).await?;
@@ -146,7 +152,8 @@ impl ProjectPages {
             rows.push((service, observed));
         }
 
-        let all_projects = projects::all(&self.state.database).await?;
+        let all_projects = access::projects_for(&self.state.database, &account).await?;
+        let members = access::members(&self.state.database, &project.id).await?;
         let path = format!("/projects/{}", project.slug);
 
         layout::head(&project.name);
@@ -156,7 +163,8 @@ impl ProjectPages {
             &all_projects,
             Some(&project),
             path,
-        );
+        )
+        .allowing(allowed);
         let body = rsx! {
                 (layout::style_tag())
                 <div class="split">
@@ -164,7 +172,9 @@ impl ProjectPages {
                         <h1>(&project.name)</h1>
                         <p class="slug-preview">(&project.slug)</p>
                     </div>
-                    <a class="btn" href=(&new_service)>("Create service")</a>
+                    @if allowed.may_deploy() {
+                        <a class="btn" href=(&new_service)>("Create service")</a>
+                    }
                 </div>
                 @if let Some(message) = &query.error {
                     (layout::error_note(message))
@@ -173,7 +183,9 @@ impl ProjectPages {
                 @if rows.is_empty() {
                     <section class="empty">
                         <p>("No services yet.")</p>
-                        <a class="btn" href=(&new_service)>("Create service")</a>
+                        @if allowed.may_deploy() {
+                            <a class="btn" href=(&new_service)>("Create service")</a>
+                        }
                     </section>
                 } @else {
                     <table>
@@ -205,7 +217,13 @@ impl ProjectPages {
                                     )</td>
                                     <td>(state_badge(observed))</td>
                                     <td class="row">
-                                        @if matches!(observed, Observed::Running { .. }) {
+                                        @if !allowed.may_deploy() {
+                                            // A viewer sees the state and
+                                            // nothing to press. The check
+                                            // that matters is on the POST;
+                                            // this is so the page does not
+                                            // offer what it will refuse.
+                                        } @else if matches!(observed, Observed::Running { .. }) {
                                             <form method="post"
                                                   action=(format!(
                                                       "/projects/{}/services/{}/stop",
@@ -227,16 +245,18 @@ impl ProjectPages {
                                                 </button>
                                             </form>
                                         }
-                                        <form method="post"
-                                              action=(format!(
-                                                  "/projects/{}/services/{}/delete",
-                                                  project.slug, service.slug
-                                              ))>
-                                            <button class="btn btn-ghost destructive btn-sm"
-                                                    type="submit">
-                                                ("Delete")
-                                            </button>
-                                        </form>
+                                        @if allowed.may_deploy() {
+                                            <form method="post"
+                                                  action=(format!(
+                                                      "/projects/{}/services/{}/delete",
+                                                      project.slug, service.slug
+                                                  ))>
+                                                <button class="btn btn-ghost destructive btn-sm"
+                                                        type="submit">
+                                                    ("Delete")
+                                                </button>
+                                            </form>
+                                        }
                                     </td>
                                 </tr>
                                 @if let Some(failure) = &service.last_error {
@@ -250,6 +270,63 @@ impl ProjectPages {
                 }
 
                 <section class="card stack">
+                    <div class="split">
+                        <p class="card-label">("People")</p>
+                        <span class="who">("You are: ")(allowed.label())</span>
+                    </div>
+                    <table>
+                        <tbody>
+                            @for member in &members {
+                                <tr>
+                                    <td>(&member.username)</td>
+                                    <td>(member.role.label())</td>
+                                    <td>
+                                        @if allowed.may_administer() {
+                                            <form method="post"
+                                                  action=(format!(
+                                                      "/projects/{}/people/{}/remove",
+                                                      project.slug, member.account_id
+                                                  ))>
+                                                <button class="btn btn-ghost destructive btn-sm"
+                                                        type="submit">
+                                                    ("Remove")
+                                                </button>
+                                            </form>
+                                        }
+                                    </td>
+                                </tr>
+                            }
+                            @if members.is_empty() {
+                                <tr>
+                                    <td class="tile-detail" colspan="3">(
+                                        "Nobody but administrators, who reach every project."
+                                    )</td>
+                                </tr>
+                            }
+                        </tbody>
+                    </table>
+
+                    @if allowed.may_administer() {
+                        <form method="post"
+                              action=(format!("/projects/{}/people", project.slug))
+                              class="row">
+                            <input name="username" type="text" placeholder="username" required>
+                            <select name="role">
+                                @for role in ProjectRole::ALL {
+                                    <option value=(role.as_str())>(role.label())</option>
+                                }
+                            </select>
+                            <button class="btn btn-secondary" type="submit">("Add")</button>
+                        </form>
+                        <p class="field-hint">(
+                            "Somebody who already has an account on this node. To bring \
+                             in a new person, invite them from the people page."
+                        )</p>
+                    }
+                </section>
+
+                @if allowed.may_administer() {
+                <section class="card stack">
                     <p class="card-label">("Danger zone")</p>
                     <p class="tile-detail">(
                         "Deleting a project deletes every service under it. \
@@ -260,11 +337,44 @@ impl ProjectPages {
                         <button class="btn btn-danger" type="submit">("Delete project")</button>
                     </form>
                 </section>
+                }
         }
         .render()
         .into_inner();
 
         Ok(frame.render(body).into_view().into())
+    }
+}
+
+impl ProjectApi {
+    /// The project this request is about, what the caller may do with
+    /// it, and the path split up.
+    ///
+    /// `None` when there is no session, no such project, or it is not
+    /// theirs — the three cases a handler answers identically, which is
+    /// what keeps "not yours" from being distinguishable from "not
+    /// there".
+    #[allow(clippy::type_complexity)]
+    async fn locate<'a>(
+        &self,
+        path: &'a str,
+    ) -> RestResult<
+        Option<(
+            crate::platform::projects::Project,
+            crate::accounts::roles::Access,
+            Vec<&'a str>,
+        )>,
+    > {
+        let Some(account) = signed_in(&self.auth) else {
+            return Ok(None);
+        };
+        let segments = super::auth::segments(path);
+        let Some(slug) = segments.get(1) else {
+            return Ok(None);
+        };
+        Ok(access::find_project(&self.state.database, &account, slug)
+            .await?
+            .map(|(project, allowed)| (project, allowed, segments)))
     }
 }
 
@@ -326,9 +436,90 @@ impl ProjectApi {
         };
         let name = field(&form, "name");
 
+        let Some(account) = signed_in(&self.auth) else {
+            return Ok(see_other("/sign-in"));
+        };
+
         match projects::create(&self.state.database, name).await {
-            Ok(project) => Ok(see_other(&format!("/projects/{}", project.slug))),
+            Ok(project) => {
+                // Whoever made it owns it. Without this a member would
+                // create a project and immediately not be able to see
+                // it, since the list is filtered by membership.
+                access::grant(
+                    &self.state.database,
+                    &account.id,
+                    &project.id,
+                    ProjectRole::Owner,
+                )
+                .await?;
+                Ok(see_other(&format!("/projects/{}", project.slug)))
+            }
             Err(error) => Ok(back_with_error("/projects/new", &error.to_string())),
+        }
+    }
+
+    /// Put somebody who already has an account into this project.
+    #[post("/projects/:project/people")]
+    #[raw]
+    #[middleware(SessionMiddleware)]
+    async fn add_member(&self, request: Request) -> RestResult<Response> {
+        let path = request.uri().path().to_string();
+        let Some((project, allowed, _)) = self.locate(&path).await? else {
+            return Ok(see_other("/?error=no+such+project"));
+        };
+        let here = format!("/projects/{}", project.slug);
+        if !allowed.may_administer() {
+            return Ok(back_with_error(
+                &here,
+                "only an owner can change who is here",
+            ));
+        }
+
+        let form = match read_form(request).await {
+            Ok(form) => form,
+            Err(response) => return Ok(response),
+        };
+        let username = field(&form, "username");
+        let role = ProjectRole::parse(field(&form, "role"));
+
+        let Some(found) = crate::accounts::all(&self.state.database)
+            .await?
+            .into_iter()
+            .find(|candidate| candidate.username.eq_ignore_ascii_case(username))
+        else {
+            return Ok(back_with_error(
+                &here,
+                &format!("nobody on this node is called {username:?} — invite them first"),
+            ));
+        };
+
+        access::grant(&self.state.database, &found.id, &project.id, role).await?;
+        Ok(see_other(&here))
+    }
+
+    /// Take somebody out of this project.
+    #[post("/projects/:project/people/:account/remove")]
+    #[raw]
+    #[middleware(SessionMiddleware)]
+    async fn remove_member(&self, request: Request) -> RestResult<Response> {
+        let path = request.uri().path().to_string();
+        let Some((project, allowed, segments)) = self.locate(&path).await? else {
+            return Ok(see_other("/?error=no+such+project"));
+        };
+        let here = format!("/projects/{}", project.slug);
+        if !allowed.may_administer() {
+            return Ok(back_with_error(
+                &here,
+                "only an owner can change who is here",
+            ));
+        }
+
+        let Some(account_id) = segments.get(3) else {
+            return Ok(see_other(&here));
+        };
+        match access::revoke(&self.state.database, account_id, &project.id).await {
+            Ok(()) => Ok(see_other(&here)),
+            Err(error) => Ok(back_with_error(&here, &error.to_string())),
         }
     }
 
@@ -352,8 +543,11 @@ impl ProjectApi {
         };
         let slug = field(&form, "project");
 
-        match projects::find(&self.state.database, slug).await? {
-            Some(project) => Ok(see_other(&format!("/projects/{}", project.slug))),
+        let Some(account) = signed_in(&self.auth) else {
+            return Ok(see_other("/sign-in"));
+        };
+        match access::find_project(&self.state.database, &account, slug).await? {
+            Some((project, _)) => Ok(see_other(&format!("/projects/{}", project.slug))),
             None => Ok(see_other("/?error=no+such+project")),
         }
     }
@@ -373,14 +567,16 @@ impl ProjectApi {
         }
 
         let path = request.uri().path().to_string();
-        let segments = super::auth::segments(&path);
-        let Some(slug) = segments.get(1) else {
-            return Ok(see_other("/?error=no+such+project"));
-        };
-        let Some(project) = projects::find(&self.state.database, slug).await? else {
-            // Already gone. The operator wanted it gone, and it is.
+        let Some((project, allowed, _)) = self.locate(&path).await? else {
+            // Already gone, or never theirs. Both answer the same.
             return Ok(see_other("/"));
         };
+        if !allowed.may_administer() {
+            return Ok(back_with_error(
+                &format!("/projects/{}", project.slug),
+                "only an owner can delete this project",
+            ));
+        }
 
         projects::delete(&self.state.database, &project.id).await?;
         Ok(see_other("/"))
@@ -392,6 +588,220 @@ mod tests {
     use super::*;
     use crate::console::tests::Console;
     use wabot::rest::axum::http::StatusCode;
+
+    /// The property the whole model rests on: a project you are not in
+    /// is one you cannot see, cannot open, and cannot change.
+    #[tokio::test]
+    async fn a_member_cannot_reach_a_project_they_are_not_in() {
+        let console = Console::new().await;
+        let admin = console.signed_in().await;
+        console
+            .harness
+            .post("/projects")
+            .header("cookie", &admin)
+            .form(&[("name", "not theirs")])
+            .send()
+            .await;
+
+        let member = console.joined_as(&admin, "member").await;
+
+        let list = console
+            .harness
+            .get("/")
+            .header("cookie", &member)
+            .send()
+            .await
+            .body;
+        assert!(
+            list.contains("No projects yet"),
+            "the list is empty:\n{list}"
+        );
+
+        // The page answers exactly as it would for a project that does
+        // not exist.
+        let page = console
+            .harness
+            .get("/projects/not-theirs")
+            .header("cookie", &member)
+            .send()
+            .await;
+        assert_eq!(page.header("location"), Some("/?error=no+such+project"));
+
+        // And so does deleting it.
+        console
+            .harness
+            .post("/projects/not-theirs/delete")
+            .header("cookie", &member)
+            .send()
+            .await;
+        assert_eq!(
+            projects::all(&console.database).await.expect("query").len(),
+            1,
+            "it is still there"
+        );
+    }
+
+    /// Whoever makes a project owns it — otherwise a member would
+    /// create one and immediately not be able to see it.
+    #[tokio::test]
+    async fn creating_a_project_makes_you_its_owner() {
+        let console = Console::new().await;
+        let admin = console.signed_in().await;
+        let member = console.joined_as(&admin, "member").await;
+
+        console
+            .harness
+            .post("/projects")
+            .header("cookie", &member)
+            .form(&[("name", "mine")])
+            .send()
+            .await;
+
+        let body = console
+            .harness
+            .get("/projects/mine")
+            .header("cookie", &member)
+            .send()
+            .await
+            .body;
+        assert!(body.contains("Danger zone"), "an owner sees it: {body}");
+    }
+
+    /// A viewer sees the state and is offered nothing to press — and
+    /// the POST behind each button refuses them anyway, which is the
+    /// check that counts.
+    #[tokio::test]
+    async fn a_viewer_is_offered_nothing_and_refused_everything() {
+        let console = Console::new().await;
+        let admin = console.signed_in().await;
+        console
+            .harness
+            .post("/projects")
+            .header("cookie", &admin)
+            .form(&[("name", "shared")])
+            .send()
+            .await;
+        let member = console.joined_as(&admin, "watcher").await;
+
+        let watcher = crate::accounts::all(&console.database)
+            .await
+            .expect("query")
+            .into_iter()
+            .find(|account| account.username == "watcher")
+            .expect("joined");
+        let project = projects::find(&console.database, "shared")
+            .await
+            .expect("query")
+            .expect("present");
+        access::grant(
+            &console.database,
+            &watcher.id,
+            &project.id,
+            ProjectRole::Viewer,
+        )
+        .await
+        .expect("granted");
+
+        let body = console
+            .harness
+            .get("/projects/shared")
+            .header("cookie", &member)
+            .send()
+            .await
+            .body;
+        assert!(body.contains("shared"), "they can see it");
+        assert!(!body.contains("Create service"), "and press nothing");
+        assert!(!body.contains("Danger zone"));
+
+        console
+            .harness
+            .post("/projects/shared/services")
+            .header("cookie", &member)
+            .form(&[("name", "web"), ("image", "docker.io/library/nginx:alpine")])
+            .send()
+            .await;
+        assert!(
+            services::all(&console.database, None)
+                .await
+                .expect("query")
+                .is_empty(),
+            "a viewer created a service"
+        );
+
+        console
+            .harness
+            .post("/projects/shared/delete")
+            .header("cookie", &member)
+            .send()
+            .await;
+        assert_eq!(
+            projects::all(&console.database).await.expect("query").len(),
+            1,
+            "a viewer deleted the project"
+        );
+    }
+
+    /// A deployer runs things and owns nothing.
+    #[tokio::test]
+    async fn a_deployer_may_change_services_but_not_the_project() {
+        let console = Console::new().await;
+        let admin = console.signed_in().await;
+        console
+            .harness
+            .post("/projects")
+            .header("cookie", &admin)
+            .form(&[("name", "shared")])
+            .send()
+            .await;
+        let member = console.joined_as(&admin, "deployer").await;
+
+        let person = crate::accounts::all(&console.database)
+            .await
+            .expect("query")
+            .into_iter()
+            .find(|account| account.username == "deployer")
+            .expect("joined");
+        let project = projects::find(&console.database, "shared")
+            .await
+            .expect("query")
+            .expect("present");
+        access::grant(
+            &console.database,
+            &person.id,
+            &project.id,
+            ProjectRole::Deployer,
+        )
+        .await
+        .expect("granted");
+
+        console
+            .harness
+            .post("/projects/shared/services")
+            .header("cookie", &member)
+            .form(&[("name", "web"), ("image", "docker.io/library/nginx:alpine")])
+            .send()
+            .await;
+        assert_eq!(
+            services::all(&console.database, None)
+                .await
+                .expect("query")
+                .len(),
+            1,
+            "they may deploy"
+        );
+
+        console
+            .harness
+            .post("/projects/shared/delete")
+            .header("cookie", &member)
+            .send()
+            .await;
+        assert_eq!(
+            projects::all(&console.database).await.expect("query").len(),
+            1,
+            "and may not delete the project"
+        );
+    }
 
     #[tokio::test]
     async fn the_list_starts_empty_and_says_so() {

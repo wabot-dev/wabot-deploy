@@ -26,6 +26,7 @@ use super::assets;
 pub enum Area {
     Projects,
     Nodes,
+    People,
 }
 
 /// Everything the frame needs to draw itself.
@@ -36,6 +37,8 @@ pub enum Area {
 /// short strings, copying is cheaper than the lifetime.
 pub struct Frame {
     pub username: String,
+    /// Whether to offer the node's own pages at all.
+    pub admin: bool,
     pub area: Area,
     /// Every project, as (slug, name), for the selector.
     pub projects: Vec<(String, String)>,
@@ -43,6 +46,10 @@ pub struct Frame {
     pub current: Option<String>,
     /// The request's path, for deciding which link is current.
     pub path: String,
+    /// Whether the current project's own links are worth offering.
+    /// The nav is where somebody looks for what they can do, so
+    /// offering an action they will be refused is the nav lying.
+    pub deploy: bool,
 }
 
 impl Frame {
@@ -56,6 +63,7 @@ impl Frame {
     ) -> Self {
         Self {
             username: account.username.clone(),
+            admin: account.is_admin(),
             area,
             projects: projects
                 .iter()
@@ -63,7 +71,14 @@ impl Frame {
                 .collect(),
             current: current.map(|project| project.slug.clone()),
             path: path.into(),
+            deploy: false,
         }
+    }
+
+    /// What the person may do in the project this page is about.
+    pub fn allowing(mut self, access: crate::accounts::roles::Access) -> Self {
+        self.deploy = access.may_deploy();
+        self
     }
 
     /// The whole frame, with the page's own markup inside it.
@@ -96,7 +111,13 @@ impl Frame {
                 </a>
                 <nav>
                     <a href="/" class=(current(self.area == Area::Projects))>("Projects")</a>
-                    <a href="/nodes" class=(current(self.area == Area::Nodes))>("Nodes")</a>
+                    // The node and its people belong to whoever runs
+                    // the node. A member has projects and nothing else
+                    // to see here.
+                    @if self.admin {
+                        <a href="/nodes" class=(current(self.area == Area::Nodes))>("Nodes")</a>
+                        <a href="/people" class=(current(self.area == Area::People))>("People")</a>
+                    }
                 </nav>
                 <div class="topbar-right">
                     <span class="who">(&self.username)</span>
@@ -124,6 +145,12 @@ impl Frame {
                     <p class="side-label">("Node")</p>
                     <nav>
                         <a href="/nodes" class=(current(self.path == "/nodes"))>("All nodes")</a>
+                    </nav>
+                }
+                @if self.area == Area::People {
+                    <p class="side-label">("People")</p>
+                    <nav>
+                        <a href="/people" class=(current(self.path == "/people"))>("Accounts")</a>
                     </nav>
                 }
             </aside>
@@ -161,7 +188,10 @@ impl Frame {
         rsx! {
             <nav>
                 <a href=(&base) class=(current(self.path == base))>("Overview")</a>
-                <a href=(&services) class=(current(self.path == services))>("Create service")</a>
+                @if self.deploy {
+                    <a href=(&services)
+                       class=(current(self.path == services))>("Create service")</a>
+                }
             </nav>
         }
     }

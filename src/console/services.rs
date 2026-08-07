@@ -11,7 +11,7 @@ use wabot::rest::RestResult;
 use wabot::ui::hypertext::IntoView;
 
 use crate::deploy::dns;
-use crate::platform::{ports, projects, services};
+use crate::platform::{access, ports, services};
 
 use super::auth::{back_with_error, field, read_form, see_other, signed_in, SessionMiddleware};
 use super::shell::{Area, Frame};
@@ -48,20 +48,26 @@ impl ServicePages {
         let Some(account) = signed_in(&self.auth) else {
             return Ok(Redirect::found("/sign-in").into());
         };
-        let Some(project) = projects::find(&self.state.database, &query.project).await? else {
+        let Some((project, allowed)) =
+            access::find_project(&self.state.database, &account, &query.project).await?
+        else {
             return Ok(Redirect::found("/?error=no+such+project").into());
         };
+        if !allowed.may_deploy() {
+            return Ok(Redirect::found(format!("/projects/{}", project.slug)).into());
+        }
 
         let action = format!("/projects/{}/services", project.slug);
         let back = format!("/projects/{}", project.slug);
-        let all_projects = projects::all(&self.state.database).await?;
+        let all_projects = access::projects_for(&self.state.database, &account).await?;
         let frame = Frame::new(
             &account,
             Area::Projects,
             &all_projects,
             Some(&project),
             format!("/projects/{}/services/new", project.slug),
-        );
+        )
+        .allowing(allowed);
 
         layout::head("Create service");
         let body = rsx! {
@@ -112,7 +118,9 @@ impl ServicePages {
         let Some(account) = signed_in(&self.auth) else {
             return Ok(Redirect::found("/sign-in").into());
         };
-        let Some(project) = projects::find(&self.state.database, &query.project).await? else {
+        let Some((project, allowed)) =
+            access::find_project(&self.state.database, &account, &query.project).await?
+        else {
             return Ok(Redirect::found("/?error=no+such+project").into());
         };
         let Some(service) =
@@ -158,14 +166,15 @@ impl ServicePages {
             None => None,
         };
 
-        let all_projects = projects::all(&self.state.database).await?;
+        let all_projects = access::projects_for(&self.state.database, &account).await?;
         let frame = Frame::new(
             &account,
             Area::Projects,
             &all_projects,
             Some(&project),
             format!("/projects/{}/services/{}", project.slug, service.slug),
-        );
+        )
+        .allowing(allowed);
 
         layout::head(&service.name);
         let body = rsx! {
@@ -232,12 +241,15 @@ impl ServicePages {
                                             }
                                         </td>
                                         <td>
-                                            <form method="post" action=(format!("{add}/{}/delete", port.id))>
-                                                <button class="btn btn-ghost destructive btn-sm"
-                                                        type="submit">
-                                                    ("Remove")
-                                                </button>
-                                            </form>
+                                            @if allowed.may_deploy() {
+                                                <form method="post"
+                                                      action=(format!("{add}/{}/delete", port.id))>
+                                                    <button class="btn btn-ghost destructive btn-sm"
+                                                            type="submit">
+                                                        ("Remove")
+                                                    </button>
+                                                </form>
+                                            }
                                         </td>
                                     </tr>
                                 }
@@ -245,6 +257,7 @@ impl ServicePages {
                         </table>
                     }
 
+                    @if allowed.may_deploy() {
                     <form method="post" action=(&add) class="card stack">
                         <label for="container_port">("Container port")</label>
                         <input id="container_port" name="container_port" type="number"
@@ -302,6 +315,7 @@ impl ServicePages {
                             <button type="submit">("Add port")</button>
                         </div>
                     </form>
+                    }
                 </section>
         }
         .render()
@@ -343,9 +357,9 @@ impl ServiceApi {
     #[raw]
     #[middleware(SessionMiddleware)]
     async fn create(&self, request: Request) -> RestResult<Response> {
-        if signed_in(&self.auth).is_none() {
+        let Some(account) = signed_in(&self.auth) else {
             return Ok(see_other("/sign-in"));
-        }
+        };
 
         // The slug out of the path. Taken from the URI rather than a
         // typed request because `#[raw]` hands over the whole thing —
@@ -354,9 +368,17 @@ impl ServiceApi {
         let Some(slug) = project_slug(&path) else {
             return Ok(see_other("/?error=no+such+project"));
         };
-        let Some(project) = projects::find(&self.state.database, slug).await? else {
+        let Some((project, allowed)) =
+            access::find_project(&self.state.database, &account, slug).await?
+        else {
             return Ok(see_other("/?error=no+such+project"));
         };
+        if !allowed.may_deploy() {
+            return Ok(back_with_error(
+                &format!("/projects/{}", project.slug),
+                "you may look at this project, not change it",
+            ));
+        }
         let form_url = format!("/projects/{}/services/new", project.slug);
 
         let form = match read_form(request).await {
@@ -588,15 +610,23 @@ impl ServiceApi {
             String,
         )>,
     > {
-        if signed_in(&self.auth).is_none() {
+        let Some(account) = signed_in(&self.auth) else {
             return Ok(None);
-        }
+        };
         let Some((project_slug, service_slug)) = service_path(path) else {
             return Ok(None);
         };
-        let Some(project) = projects::find(&self.state.database, project_slug).await? else {
+        let Some((project, allowed)) =
+            access::find_project(&self.state.database, &account, project_slug).await?
+        else {
             return Ok(None);
         };
+        // Every caller of this mutates something. A viewer gets the
+        // same answer as a stranger, which is the same answer as a
+        // service that does not exist.
+        if !allowed.may_deploy() {
+            return Ok(None);
+        }
         let found = services::in_project(&self.state.database, &project.id, service_slug).await?;
 
         let back = format!("/projects/{}", project.slug);
@@ -699,6 +729,7 @@ fn parse_env(text: &str) -> Result<Vec<(String, String)>, String> {
 mod tests {
     use super::*;
     use crate::console::tests::Console;
+    use crate::platform::projects;
     use wabot::rest::axum::http::StatusCode;
 
     async fn project(console: &Console, cookie: &str) -> String {

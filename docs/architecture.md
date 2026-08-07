@@ -1417,3 +1417,80 @@ es exactamente cuando alguien está mirando.
 | quitar un puerto HTTPS | su nombre deja de responder, los demás no | 404 el retirado, 200 los otros |
 | parar el servicio | sin rutas, sin netns, sin tareas | 0/0/0, el nombre da 404 |
 | arrancarlo otra vez | todo vuelve | 200 |
+
+### 8.11 M8 — personas y permisos
+
+Dos niveles de rol, invitaciones por enlace, y la consola aplicándolos
+en cada página y cada POST. 296 tests, `fmt` y `clippy -D warnings`
+limpios.
+
+**Dos niveles, porque hay dos clases de pregunta**
+
+"¿Puede esta persona crear proyectos, invitar, mirar la memoria del
+nodo?" es del nodo. "¿Puede desplegar *aquí*?" es de un proyecto, y la
+respuesta cambia según el proyecto — que es justo la razón de que
+existan los proyectos.
+
+Nodo: `admin` o `member`. Proyecto: `owner`, `deployer`, `viewer`.
+**Un administrador no es miembro de nada y llega a todo**: la
+pertenencia responde la pregunta de proyecto y un admin nunca llega a
+esa pregunta. Es deliberado — un nodo donde el operador tiene que
+añadirse a un proyecto para poder arreglarlo es un nodo que lo deja
+fuera de lo que opera.
+
+**Un rol desconocido es el rol más pequeño.** Toda lectura cae al
+mínimo privilegio que podría significar: una fila escrita por una
+versión que conoce un rol que esta no, no puede conceder más de lo que
+esta entiende. Fallar hacia arriba una sola vez es una concesión
+silenciosa; fallar hacia abajo es una negativa que alguien reporta.
+
+**Las decisiones son valores, no condiciones.** Toda comprobación
+devuelve un `Access` y cada llamada pregunta por nombre —
+`may_deploy()`, no `role == Deployer || role == Owner || es_admin`. La
+comparación escrita en cada sitio es exactamente cómo una de treinta
+acaba sin una cláusula.
+
+**El filtro es la consulta, no la página.** La lista de proyectos de un
+miembro sale de un JOIN con `membership`, no de "todos, filtrados
+después". Una lista construida con todo y estrechada más tarde se
+escapa la primera vez que alguien añade una página que olvida
+estrecharla. Y "no es tuyo" responde **idéntico** a "no existe": si se
+distinguieran, los nombres de todos los proyectos del nodo serían
+enumerables preguntando uno a uno.
+
+**El invitado elige su propia contraseña**
+
+Un administrador que teclea la contraseña de un colega la conoce, y esa
+contraseña viaja por el canal que hayan usado. Un enlace de invitación
+no lleva contraseña: lleva el *derecho* a crear una cuenta, una vez,
+antes de caducar. Mismos mecanismos que el token de setup — hasheado,
+de un solo uso, con caducidad de siete días.
+
+Dos detalles que se ganan pensando en el orden de las operaciones:
+
+- **La cuenta se crea antes de gastar la invitación.** Un rechazo que el
+  invitado puede arreglar —nombre ocupado, contraseña corta— no debe
+  costarle el enlace.
+- **Gastar es un `UPDATE … WHERE used_at IS NULL`**, y si no afecta a
+  ninguna fila es que otro la usó entre la consulta y la escritura: la
+  cuenta recién creada se borra, porque una cuenta creada por una
+  invitación que no se gastó en ella no debería existir.
+
+Y una invitación puede llevar proyecto y rol, así que el caso normal es
+un enlace en vez de un enlace y un segundo paso que alguien olvida.
+
+**Dos cosas que no se pueden hacer**, ambas porque la vuelta atrás
+sería editar la base de datos a mano: quitar al único owner de un
+proyecto, y degradar o borrar al único administrador del nodo.
+
+**Verificado en el nodo**, con una invitación real:
+
+| | |
+| --- | --- |
+| el enlace | dice a qué rol invita y pide usuario y contraseña |
+| aceptar | crea la cuenta, la mete en el proyecto y **la deja con sesión** |
+| lo que ve el miembro | solo `first-project`; `second-project` responde "no such project" |
+| `/people`, `/nodes` | 302 a `/` |
+| borrar el proyecto | rechazado: "only an owner can delete this project" |
+| desplegar | permitido — es deployer |
+| el enlace otra vez | "not valid" |

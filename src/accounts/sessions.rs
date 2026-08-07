@@ -53,7 +53,7 @@ pub async fn lookup(database: &SqliteDatabase, token: &str) -> AccountResult<Opt
         .read(move |connection| {
             connection
                 .query_row(
-                    "SELECT a.\"id\", a.\"username\" FROM session s \
+                    "SELECT a.\"id\", a.\"username\", a.\"role\" FROM session s \
                      JOIN account a ON a.\"id\" = s.\"account_id\" \
                      WHERE s.\"token_hash\" = ?1 AND s.\"expires_at\" > ?2",
                     (hash, now_ms()),
@@ -61,6 +61,11 @@ pub async fn lookup(database: &SqliteDatabase, token: &str) -> AccountResult<Opt
                         Ok(Account {
                             id: row.get(0)?,
                             username: row.get(1)?,
+                            // Read on every request, so a role changed
+                            // while somebody is signed in takes effect
+                            // on their next click rather than at their
+                            // next sign-in.
+                            role: super::roles::NodeRole::parse(&row.get::<_, String>(2)?),
                         })
                     },
                 )

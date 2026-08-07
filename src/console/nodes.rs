@@ -27,7 +27,7 @@ use wabot::rest::RestResult;
 use wabot::ui::hypertext::IntoView;
 
 use crate::node::memory::{self, Snapshot};
-use crate::platform::projects;
+use crate::platform::access;
 
 use super::auth::{signed_in, SessionMiddleware};
 use super::shell::{Area, Frame};
@@ -52,9 +52,14 @@ impl NodePages {
         let Some(account) = signed_in(&self.auth) else {
             return Ok(Redirect::found("/sign-in").into());
         };
+        // The node belongs to whoever runs it. Hiding the link is
+        // courtesy; this is the boundary.
+        if !account.is_admin() {
+            return Ok(Redirect::found("/").into());
+        }
 
         let nodes = crate::node::all(&self.state.config);
-        let projects = projects::all(&self.state.database).await?;
+        let projects = access::projects_for(&self.state.database, &account).await?;
         let facts = super::certificate_facts(&self.state).await;
 
         layout::head("Nodes");
@@ -98,11 +103,14 @@ impl NodePages {
         let Some(account) = signed_in(&self.auth) else {
             return Ok(Redirect::found("/sign-in").into());
         };
+        if !account.is_admin() {
+            return Ok(Redirect::found("/").into());
+        }
         let Some(node) = crate::node::find(&self.state.config, &query.node) else {
             return Ok(Redirect::found("/nodes").into());
         };
 
-        let projects = projects::all(&self.state.database).await?;
+        let projects = access::projects_for(&self.state.database, &account).await?;
         let snapshot = self.state.deployer.memory().await;
         let path = format!("/nodes/{}", node.id);
 
@@ -264,7 +272,7 @@ impl NodeApi {
     #[raw]
     #[middleware(SessionMiddleware)]
     async fn memory_stream(&self, request: Request) -> RestResult<Response> {
-        if signed_in(&self.auth).is_none() {
+        if !signed_in(&self.auth).is_some_and(|account| account.is_admin()) {
             // A stream is not a page, so this is a status rather than a
             // redirect: an EventSource cannot follow one usefully.
             return Ok(Response::builder()

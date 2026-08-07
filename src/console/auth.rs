@@ -169,6 +169,11 @@ pub fn segments(path: &str) -> Vec<&str> {
 #[derive(Debug, Deserialize, Validate)]
 pub struct PageQuery {
     pub error: Option<String>,
+    /// An invitation link, shown once by the page that just made it.
+    /// Carried in the query rather than stored: the token exists in
+    /// clear exactly once, and a page that could show it again would
+    /// mean it was kept somewhere.
+    pub invited: Option<String>,
 }
 
 /// Who this request is, if it is anybody.
@@ -293,7 +298,7 @@ impl AuthPages {
 }
 
 /// The logo and a heading — what a page with no header bar opens with.
-fn mark(heading: &str) -> impl Renderable + '_ {
+pub(crate) fn mark(heading: &str) -> impl Renderable + '_ {
     rsx! {
         <header class="mark">
             <img

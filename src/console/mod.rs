@@ -25,6 +25,7 @@ pub mod assets;
 pub mod auth;
 pub mod layout;
 pub mod nodes;
+pub mod people;
 pub mod projects;
 pub mod services;
 pub mod shell;
@@ -49,6 +50,22 @@ pub struct ConsoleState {
 }
 
 impl ConsoleState {
+    /// Where this console answers, for a link somebody has to paste
+    /// somewhere else. Built from the node's own domain, because a
+    /// link to `localhost` is one only the node can open.
+    pub(crate) fn base_url(&self) -> String {
+        let host = self
+            .config
+            .node
+            .domain
+            .clone()
+            .unwrap_or_else(|| "localhost".into());
+        match self.config.edge.https_port {
+            443 => format!("https://{host}"),
+            port => format!("https://{host}:{port}"),
+        }
+    }
+
     pub fn new(
         database: Arc<SqliteDatabase>,
         config: Config,
@@ -206,6 +223,8 @@ pub fn register(
         auth::AuthApi,
         nodes::NodePages,
         nodes::NodeApi,
+        people::PeoplePages,
+        people::PeopleApi,
         projects::ProjectPages,
         projects::ProjectApi,
         services::ServicePages,
@@ -217,12 +236,14 @@ pub fn routes(container: &Container) -> Router {
     let pages = wabot::ui::ui_router();
     let pages = auth::AuthPages::register_ui_routes(container, pages);
     let pages = nodes::NodePages::register_ui_routes(container, pages);
+    let pages = people::PeoplePages::register_ui_routes(container, pages);
     let pages = projects::ProjectPages::register_ui_routes(container, pages);
     let pages = services::ServicePages::register_ui_routes(container, pages);
 
     let forms = Router::new();
     let forms = auth::AuthApi::register_routes(container, forms);
     let forms = nodes::NodeApi::register_routes(container, forms);
+    let forms = people::PeopleApi::register_routes(container, forms);
     let forms = projects::ProjectApi::register_routes(container, forms);
     let forms = services::ServiceApi::register_routes(container, forms);
 
@@ -265,6 +286,46 @@ pub(crate) mod tests {
                 database,
                 setup_token,
             }
+        }
+
+        /// Invite somebody, accept it, and return their session cookie.
+        ///
+        /// The console's own path from "an administrator" to "a second
+        /// person with less power", which is what most of these tests
+        /// need before they can check that the second person is
+        /// refused something.
+        pub async fn joined_as(&self, admin_cookie: &str, username: &str) -> String {
+            let response = self
+                .harness
+                .post("/people/invite")
+                .header("cookie", admin_cookie)
+                .form(&[("node_role", "member")])
+                .send()
+                .await;
+            let location = response.header("location").expect("redirected");
+            let query = location.split_once('?').expect("carries the link").1;
+            let link = form_urlencoded::parse(query.as_bytes())
+                .find(|(key, _)| key == "invited")
+                .map(|(_, value)| value.into_owned())
+                .expect("the link");
+            let token = link.rsplit('/').next().expect("the token").to_string();
+
+            let joined = self
+                .harness
+                .post(&format!("/join/{token}"))
+                .form(&[
+                    ("username", username),
+                    ("password", "a long passphrase here"),
+                ])
+                .send()
+                .await;
+            joined
+                .header("set-cookie")
+                .expect("signed in")
+                .split(';')
+                .next()
+                .expect("a cookie has a value")
+                .to_string()
         }
 
         /// Complete setup and return the session cookie, in the form a

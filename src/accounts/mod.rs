@@ -22,6 +22,8 @@
 //! costs microseconds — and on a box that deploys containers, "log
 //! that session out now" is worth more than saving a local read.
 
+pub mod invitations;
+pub mod roles;
 pub mod sessions;
 
 use serde::{Deserialize, Serialize};
@@ -78,6 +80,17 @@ impl From<AccountError> for wabot::rest::RestError {
 pub struct Account {
     pub id: String,
     pub username: String,
+    /// What they are on the node. Travels in the session claims, so a
+    /// handler knows without a second query — and a role changed while
+    /// somebody is signed in takes effect on their next request, since
+    /// the middleware reads the row every time.
+    pub role: roles::NodeRole,
+}
+
+impl Account {
+    pub fn is_admin(&self) -> bool {
+        self.role == roles::NodeRole::Admin
+    }
 }
 
 /// Is there anybody yet?
@@ -173,27 +186,156 @@ pub async fn create_admin(
     // it spent.
     spend_setup_token(database, setup_token).await?;
 
+    let account = insert(database, username, password, roles::NodeRole::Admin).await?;
+    tracing::info!(username = %account.username, "administrator created");
+    Ok(account)
+}
+
+/// Create somebody who is not the first.
+///
+/// No setup token: this is the invitation path, and the invitation is
+/// what was checked. Refuses a name already taken, which the unique
+/// index enforces and this turns into something readable.
+pub async fn create(
+    database: &SqliteDatabase,
+    username: &str,
+    password: &str,
+    role: roles::NodeRole,
+) -> AccountResult<Account> {
+    let username = username.trim();
+    validate_username(username)?;
+    validate_password(password)?;
+
+    let account = insert(database, username, password, role).await?;
+    tracing::info!(username = %account.username, role = role.as_str(), "account created");
+    Ok(account)
+}
+
+async fn insert(
+    database: &SqliteDatabase,
+    username: &str,
+    password: &str,
+    role: roles::NodeRole,
+) -> AccountResult<Account> {
     let account = Account {
         id: format!("acc-{}", wabot::prelude::password::generate(16)),
         username: username.to_string(),
+        role,
     };
     let hash = wabot::prelude::password::hash(password)
         .map_err(|error| AccountError::Hash(error.to_string()))?;
 
     let (id, name) = (account.id.clone(), account.username.clone());
+    let taken = account.username.clone();
     database
         .write(move |connection| {
             connection.execute(
-                "INSERT INTO account (\"id\", \"username\", \"password_hash\", \"created_at\") \
-                 VALUES (?1, ?2, ?3, ?4)",
-                (id, name, hash, now_ms()),
+                "INSERT INTO account (\"id\", \"username\", \"password_hash\", \"role\", \
+                                    \"created_at\") \
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                (id, name, hash, role.as_str(), now_ms()),
+            )?;
+            Ok(())
+        })
+        .await
+        .map_err(|error| {
+            if error.to_string().contains("UNIQUE") {
+                AccountError::Refused(format!("the name {taken:?} is taken"))
+            } else {
+                AccountError::Storage(error)
+            }
+        })?;
+
+    Ok(account)
+}
+
+/// Everybody on the node, for the people page.
+pub async fn all(database: &SqliteDatabase) -> AccountResult<Vec<Account>> {
+    Ok(database
+        .read(|connection| {
+            connection
+                .prepare(
+                    "SELECT \"id\", \"username\", \"role\" FROM account ORDER BY \"username\"",
+                )?
+                .query_map([], decode)?
+                .collect()
+        })
+        .await?)
+}
+
+/// Change what somebody is on the node.
+pub async fn set_role(
+    database: &SqliteDatabase,
+    account_id: &str,
+    role: roles::NodeRole,
+) -> AccountResult<()> {
+    // The last administrator cannot demote themselves. A node with no
+    // administrator has nobody who can create one, and the way back is
+    // editing the database by hand.
+    if role != roles::NodeRole::Admin && administrators(database).await? <= 1 {
+        let is_admin = all(database)
+            .await?
+            .into_iter()
+            .any(|account| account.id == account_id && account.is_admin());
+        if is_admin {
+            return Err(AccountError::Refused(
+                "this is the node's only administrator — make somebody else one first".into(),
+            ));
+        }
+    }
+
+    let id = account_id.to_string();
+    database
+        .write(move |connection| {
+            connection.execute(
+                "UPDATE account SET \"role\" = ?2 WHERE \"id\" = ?1",
+                (id, role.as_str()),
             )?;
             Ok(())
         })
         .await?;
+    Ok(())
+}
 
-    tracing::info!(username = %account.username, "administrator created");
-    Ok(account)
+/// Remove somebody, and everything that was theirs alone.
+pub async fn delete(database: &SqliteDatabase, account_id: &str) -> AccountResult<()> {
+    if administrators(database).await? <= 1
+        && all(database)
+            .await?
+            .into_iter()
+            .any(|account| account.id == account_id && account.is_admin())
+    {
+        return Err(AccountError::Refused(
+            "this is the node's only administrator — make somebody else one first".into(),
+        ));
+    }
+
+    let id = account_id.to_string();
+    database
+        .write(move |connection| {
+            // Sessions and memberships cascade; the account row is the
+            // one thing to remove.
+            connection.execute("DELETE FROM account WHERE \"id\" = ?1", [id])?;
+            Ok(())
+        })
+        .await?;
+    Ok(())
+}
+
+async fn administrators(database: &SqliteDatabase) -> AccountResult<usize> {
+    Ok(all(database)
+        .await?
+        .into_iter()
+        .filter(Account::is_admin)
+        .count())
+}
+
+fn decode(row: &wabot::sqlite::rusqlite::Row<'_>) -> wabot::sqlite::rusqlite::Result<Account> {
+    Ok(Account {
+        id: row.get(0)?,
+        username: row.get(1)?,
+        role: roles::NodeRole::parse(&row.get::<_, String>(2)?),
+    })
 }
 
 /// Check a username and password.
@@ -206,20 +348,20 @@ pub async fn authenticate(
     password: &str,
 ) -> AccountResult<Option<Account>> {
     let lookup = username.trim().to_lowercase();
-    let row: Option<(String, String, String)> = database
+    let row: Option<(String, String, String, String)> = database
         .read(move |connection| {
             connection
                 .query_row(
-                    "SELECT \"id\", \"username\", \"password_hash\" FROM account \
+                    "SELECT \"id\", \"username\", \"password_hash\", \"role\" FROM account \
                      WHERE lower(\"username\") = ?1",
                     [lookup],
-                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
                 )
                 .optional()
         })
         .await?;
 
-    let Some((id, username, hash)) = row else {
+    let Some((id, username, hash, role)) = row else {
         // Hash anyway. Returning early on an unknown username makes
         // the response measurably faster, and that difference is a
         // list of which usernames exist.
@@ -242,7 +384,11 @@ pub async fn authenticate(
         })
         .await?;
 
-    Ok(Some(Account { id, username }))
+    Ok(Some(Account {
+        id,
+        username,
+        role: roles::NodeRole::parse(&role),
+    }))
 }
 
 /// A real argon2id hash of a value nobody knows, so the unknown-user
