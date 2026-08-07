@@ -12,7 +12,7 @@ reasoning behind it.
 ## Install
 
 ```sh
-v=0.1.3   # https://github.com/wabot-dev/wabot-deploy/releases
+v=0.1.4   # https://github.com/wabot-dev/wabot-deploy/releases
 base=https://github.com/wabot-dev/wabot-deploy/releases/download/v$v
 
 curl -fsSLO $base/wabot-deploy-$v-x86_64-linux
@@ -33,8 +33,9 @@ does only what is missing.
 
 **systemd and OpenRC** are both understood — Debian, Ubuntu and the rest
 on one side, Alpine on the other. On Alpine it also does what a systemd
-distribution had already done for you: enables the `cgroups` service and
-loads `overlay`. On a machine with neither manager the install still
+distribution had already done for you: enables the `cgroups` service,
+loads `overlay`, and installs `iptables` and `iproute2`, which the
+container network is built with. On a machine with neither manager the install still
 writes everything and tells you that starting the node is yours to
 arrange.
 
