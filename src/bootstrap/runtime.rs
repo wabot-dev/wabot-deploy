@@ -644,16 +644,63 @@ mod tests {
         );
     }
 
-    /// `status` runs on any machine, including one with neither
+    /// `status` runs on any machine, including one with none of it
     /// installed — a preflight that panics is worse than none.
+    ///
+    /// The check is an *implication*, not the formula restated: ready
+    /// means every part is there. Written as an equality it was a copy
+    /// of `ready()`'s body, and when `ready()` grew a fourth
+    /// requirement — the CNI plugins — the copy kept the old
+    /// definition and disagreed. It passed here anyway, because a
+    /// machine with nothing installed makes both sides false; it took
+    /// a CI runner, which ships containerd with Docker, to show it.
     #[test]
-    fn status_answers_without_either_installed() {
+    fn status_is_never_ready_with_something_missing() {
         let status = status();
-        // Whatever the answer, it must be self-consistent.
-        assert_eq!(
-            status.ready(),
-            status.containerd.is_some() && status.crun.is_some() && status.socket
-        );
+
+        if status.ready() {
+            assert!(status.containerd.is_some(), "ready without containerd");
+            assert!(status.crun.is_some(), "ready without crun");
+            assert!(status.socket, "ready without a socket");
+            assert!(status.cni, "ready without the CNI plugins");
+        }
+    }
+
+    /// Every part is required, checked without depending on what the
+    /// machine happens to have. This is the test that would have
+    /// caught the CNI requirement being added to `ready()` while the
+    /// check beside it kept the old definition.
+    #[test]
+    fn ready_means_every_part_is_there() {
+        let complete = Status {
+            containerd: Some("2.3.3".into()),
+            crun: Some("1.28".into()),
+            socket: true,
+            cni: true,
+        };
+        assert!(complete.ready());
+
+        let incomplete = [
+            Status {
+                containerd: None,
+                ..complete.clone()
+            },
+            Status {
+                crun: None,
+                ..complete.clone()
+            },
+            Status {
+                socket: false,
+                ..complete.clone()
+            },
+            Status {
+                cni: false,
+                ..complete.clone()
+            },
+        ];
+        for status in incomplete {
+            assert!(!status.ready(), "ready with something missing: {status:?}");
+        }
     }
 
     #[test]
