@@ -38,6 +38,28 @@ container) -> RestResult<()>`). It can refuse but not touch the
 response; for CORS, gzip or rate limiting, add a tower layer to the
 router — a strict superset of what TS middleware can do.
 
+**Raw endpoints and big bodies.** The default is buffer-then-JSON with a
+1 MiB cap. `#[raw]` hands the handler the `Request` and returns the
+`Response` untouched — for streaming uploads and downloads, SSE, or any
+body that is not JSON. `#[max_body(N)]` raises the cap on a normal
+endpoint. They are sibling attributes, never together (a raw endpoint
+does not buffer, so a byte limit would be a false belief about the
+code), and either one without a route attribute is a compile error.
+
+```rust
+#[get("/blobs/:digest")]
+#[raw]
+async fn blob(&self, request: Request) -> RestResult<Response> { … }
+```
+
+Middlewares still run on a raw endpoint — the wrapper splits the
+request, runs them over the `Parts` and reassembles — so guards keep
+working and axum extractors work inside the handler. Path params arrive
+in the extensions: `path_param(&request, "digest")`.
+
+`#[get]`, `#[post]`, `#[put]`, `#[patch]`, `#[delete]` and `#[head]` all
+exist.
+
 Start from the framework's stack, not a bare router:
 `run_rest_controllers` and `RestHarness` both build it with
 `rest_app()`, which adds trailing-slash normalization and the request

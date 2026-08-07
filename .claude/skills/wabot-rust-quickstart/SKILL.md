@@ -23,7 +23,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-wabot = { version = "0.1", features = ["rest", "chatbot", "addon-anthropic"] }
+wabot = { version = "0.2", features = ["rest", "chatbot", "addon-anthropic"] }
 tokio = { version = "1", features = ["full"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -34,7 +34,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 [dev-dependencies]
 # Harnesses are off by default so a mock LLM adapter can't reach production.
-wabot = { version = "0.1", features = ["testing"] }
+wabot = { version = "0.2", features = ["testing"] }
 ```
 
 | Feature | Pulls in |
@@ -45,6 +45,10 @@ wabot = { version = "0.1", features = ["testing"] }
 | `ui` | server-rendered pages, islands |
 | `async-jobs` | commands, cron, the job runner |
 | `pg` | Postgres stores, locker, migrations |
+| `sqlite` | SQLite stores and migrations — one writer, WAL, `bundled` |
+| `addon-async-sqlite` | job and cron repositories on SQLite |
+| `rest-tls` | rustls on the REST server: static config or a dynamic SNI resolver |
+| `ui-hypertext` | `rsx!` pages — validates element *and* attribute names at compile time |
 | `addon-anthropic`, `addon-openai`, `addon-openrouter`, … | one LLM provider each |
 | `addon-telegram`, `addon-socket` | one channel each |
 | `testing` | the harnesses — **dev-dependencies only** |

@@ -100,9 +100,22 @@ if you disagree.
 ProjectRunner::new(container)
     .service("rest", run_rest_controllers(router, cfg))
     .service("jobs", run_async_workers(c, commands, crons))
+    // A service that has to drain takes the cancellation token.
+    .service_with_cancel("edge", |cancel| edge::serve(state, cancel))
     .on_shutdown(ShutdownTask::new("pool", ShutdownPhase::Close, …))
     .run().await
 ```
+
+`Cancel` is latched, not an edge: awaiting it after the signal already
+fired returns immediately, so a service that starts during a shutdown in
+progress does not wait for a second signal that will never come. The
+runner also sends `READY=1` and `STOPPING=1` to systemd when
+`NOTIFY_SOCKET` is set, and carries the watchdog pinger — an app never
+writes a `cfg` for that.
+
+A service that **returns** ends the process. Something that finishes its
+work and should not take the node down with it has to await the
+cancellation instead of returning.
 
 It is **not** a scanner — half of TS's walks the source tree to trigger
 decorator side effects, which Rust neither can nor should do. What it

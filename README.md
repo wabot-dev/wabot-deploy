@@ -1,48 +1,128 @@
 # wabot-deploy
 
-Container deployments on a node you own — the single-node counterpart
-to wabot-cloud, with containerd instead of Kubernetes, an embedded
-registry instead of Harbor, and SQLite instead of Postgres.
+Container deployments on a node you own — the single-node counterpart to
+wabot-cloud, with containerd instead of Kubernetes, an embedded registry
+instead of Harbor, and SQLite instead of Postgres.
 
 One binary. Two processes on the box: `containerd` and this one.
 
 [`docs/architecture.md`](docs/architecture.md) has the design and the
 reasoning behind it.
 
-## Status
+## Install
 
-**M3** — `install` sets up the whole machine: it checks it can run the
-node, installs containerd and crun, registers a systemd service and
-starts it. What is left is deployments — the node can route a hostname
-to a container but cannot yet start one.
+```sh
+v=0.1.1   # https://github.com/wabot-dev/wabot-deploy/releases
+base=https://github.com/wabot-dev/wabot-deploy/releases/download/v$v
+
+curl -fsSLO $base/wabot-deploy-$v-x86_64-linux
+curl -fsSL  $base/wabot-deploy-$v-x86_64-linux.sha256 | sha256sum -c -
+
+chmod +x wabot-deploy-$v-x86_64-linux
+sudo ./wabot-deploy-$v-x86_64-linux install --domain node.example.com --email you@example.com
+```
+
+One static binary for x86_64 Linux: SQLite is compiled in, TLS is
+rustls, and there is no libc to match. You install by hand once; after
+that the console updates the node.
+
+`install` checks the machine, installs containerd, crun and the CNI
+plugins, writes a systemd unit, obtains a certificate, starts the service
+and prints the setup token the console asks for. It converges: run it
+again and it does only what is missing.
+
+It **fails** if it cannot get a certificate for the domain you gave it —
+an install that reports success while serving a certificate no browser
+trusts is a failure discovered later, in a browser, by somebody who was
+not there. Pass `--allow-self-signed` when that is what you mean: a
+machine on a private network, or one whose DNS is still propagating.
+
+| flag | |
+| --- | --- |
+| `--domain` | the hostname this node answers to |
+| `--email` | contact for the certificate authority — it warns you before expiry |
+| `--acme-staging` | Let's Encrypt staging while testing; production refuses more than five failed orders an hour |
+| `--allow-self-signed` | finish even if no public certificate arrived |
+| `--no-runtime` | leave containerd alone; something else manages it |
+| `--no-system` | change nothing outside the data directory |
+| `--no-start` | install everything, start on the next boot |
+| `--skip-preflight` | when you know something the checks do not |
+
+Then open the console at your domain, paste the setup token, and create
+the first administrator.
+
+## What it does
 
 | | |
 | --- | --- |
-| ✅ `install` | layout, config, database |
-| ✅ `serve` | control plane, graceful shutdown |
-| ✅ `doctor` | what is set up and what is not |
-| ✅ edge | TLS, host routing, reverse proxy with upgrades, HTTP redirect |
-| ✅ ACME | Let's Encrypt over HTTP-01, renewed in the background |
-| ✅ console | a status page at `/`, server-rendered, no JavaScript |
-| ✅ bootstrap | preflight, containerd + crun, the systemd unit, a service that starts |
-| ✅ runtime | pull, unpack, snapshot, OCI spec, run under crun |
-| ⏳ next | services: the entity, the route, the lifecycle |
+| **Projects and services** | a service is an image, an environment and the ports it declares |
+| **Ports** | each one says whether it is published on the node's IP, served over HTTPS on a hostname, both, or neither |
+| **Certificates** | Let's Encrypt over HTTP-01, one per hostname, renewed in the background |
+| **Registry** | `docker push` / `ctr push` straight into containerd's content store — no second copy of any layer |
+| **Releases** | every push is a release, pinned by digest; roll back to an earlier one from the console |
+| **Config history** | environment changes are versioned separately, so reverting one does not move the image |
+| **People** | admin/member on the node, owner/deployer/viewer per project, invitations by link |
+| **Node page** | memory attributed to the platform, the runtime, the shims and your containers |
+| **Updates** | install a published release with one click; never on a timer |
 
-`doctor` lists the install steps that have not shipped as
-`not implemented yet` rather than hiding them.
+## Updating
 
-## Running it
+The console lists what has been published, renders each release's notes,
+and installs one when you ask. It verifies the published checksum, runs
+the downloaded binary to confirm it is the version it claims, copies the
+database before anything can migrate it, swaps the binary atomically and
+restarts.
+
+Nothing happens on its own. A node that updates itself is a node that
+restarts everything on it at a moment nobody chose.
+
+A release that changes the systemd unit says so in its notes — the
+updater does not rewrite it. Re-run `install` for that.
+
+## Configuration
+
+`/etc/wabot-deploy/config.toml`, written by `install` and never rewritten
+afterwards. Unknown keys are refused rather than ignored, so a typo fails
+loudly instead of leaving a default quietly in place.
+
+```toml
+[node]
+domain = "node.example.com"          # seeds the name; the console owns it afterwards
+data_dir = "/var/lib/wabot-deploy"
+
+[edge]
+https_port = 443
+http_port = 80
+
+[acme]
+directory = "production"             # or "staging", or a directory URL
+email = "you@example.com"
+disabled = false
+
+[log]
+filter = "info"
+```
+
+`node.domain` is a **seed**. After the first start the name lives in the
+database, where the node page can change it — set it there, or re-run
+`install --domain`; editing the file again does nothing.
+
+Environment overrides, for a container or a one-off run:
+`WABOT_DEPLOY_DOMAIN`, `WABOT_DEPLOY_DATA_DIR`, `WABOT_DEPLOY_HTTPS_PORT`,
+`WABOT_DEPLOY_HTTP_PORT`, `WABOT_DEPLOY_LOG` (or `RUST_LOG`),
+`WABOT_DEPLOY_WORKERS`.
+
+## Running it locally
 
 ```sh
 cargo build --release
 
-# A node under /tmp on an unprivileged port — no root needed.
+# A node under /tmp on unprivileged ports — no root, no containerd.
 export WABOT_DEPLOY_DATA_DIR=/tmp/wd/data
 export WABOT_DEPLOY_HTTPS_PORT=8443
 export WABOT_DEPLOY_HTTP_PORT=8080
 
-./target/release/wabot-deploy --config /tmp/wd/config.toml install
-./target/release/wabot-deploy --config /tmp/wd/config.toml doctor
+./target/release/wabot-deploy --config /tmp/wd/config.toml install --no-system --skip-preflight
 ./target/release/wabot-deploy --config /tmp/wd/config.toml serve
 ```
 
@@ -52,114 +132,70 @@ curl -sk https://localhost:8443/readyz    # readiness: the database answers too
 
 # Or without -k, trusting the CA that `install` exported:
 curl -s --cacert /tmp/wd/data/certs/local-ca.crt https://localhost:8443/healthz
-
-curl -si http://localhost:8080/  # 308 to HTTPS
 ```
 
-Until a domain is configured the node serves a certificate from a local
-authority, written to `<data_dir>/certs/local-ca.crt` — trust that once
-and the warnings stop.
+Without a domain the node serves a certificate from a local authority,
+written to `<data_dir>/certs/local-ca.crt` — trust that once and the
+warnings stop.
 
-With `node.domain` set and port 80 reachable from the internet, the
-node obtains a Let's Encrypt certificate and swaps it in without a
-restart:
+The listeners bind `0.0.0.0` only on privileged ports — a real node,
+where the edge terminating TLS is the point. On a high port, which in
+practice means a developer's laptop, they bind loopback.
 
-```sh
-sudo wabot-deploy install --domain node.example.com --email you@example.com
-```
-
-`install` asks once and reports what happened; `serve` retries in the
-background and renews at 30 days. A failure is never fatal — the local
-certificate keeps serving, and `doctor` shows the reason.
-
-Add `--acme-staging` while testing. Production refuses more than five
-failed orders per account per hour, so debugging a DNS problem against
-it locks you out for the rest of the hour; staging certificates are
-untrusted by design, which is the trade.
-
-With no routes configured every hostname reaches the control plane, so
-a fresh node is usable at whatever address you can reach it on.
-
-On a real node the defaults are the answer — `/etc/wabot-deploy/config.toml`,
-`/var/lib/wabot-deploy`, port 443 — and `install` runs as root:
-
-```sh
-sudo wabot-deploy install --domain node.example.com
-```
-
-That checks the machine, installs containerd and crun, writes a systemd
-unit, obtains a certificate and starts the service. It converges: run
-it again and it does only what is missing.
-
-| flag | |
-| --- | --- |
-| `--no-runtime` | leave containerd alone; something else manages it |
-| `--no-system` | change nothing outside the data directory — for a container image, or a dry run |
-| `--no-start` | install everything, start on the next boot |
-| `--skip-preflight` | when you know something the checks do not |
-
-The listeners bind `0.0.0.0` only on privileged ports — that is a real
-node, where the edge terminating TLS is the point. On a high port,
-which in practice means a developer, they bind loopback: there is no
-authentication yet, and an unauthenticated console should not appear on
-the network of whatever laptop it was started on.
-
-## Configuration
-
-`/etc/wabot-deploy/config.toml`, written by `install` and never
-rewritten afterwards. Unknown keys are refused rather than ignored, so
-a typo fails loudly instead of leaving a default quietly in place.
-
-```toml
-[node]
-domain = "node.example.com"          # optional; without it, self-signed
-data_dir = "/var/lib/wabot-deploy"
-
-[edge]
-https_port = 443
-http_port = 80
-
-[log]
-filter = "info"
-```
-
-Environment overrides, for a container or a one-off run:
-`WABOT_DEPLOY_DOMAIN`, `WABOT_DEPLOY_DATA_DIR`,
-`WABOT_DEPLOY_HTTPS_PORT`, `WABOT_DEPLOY_HTTP_PORT`,
-`WABOT_DEPLOY_LOG` (or `RUST_LOG`), `WABOT_DEPLOY_WORKERS`.
+`wabot-deploy doctor` reports what is configured, what is installed and
+what is missing. Read-only; safe on a live node.
 
 ## Layout
 
 | | |
 | --- | --- |
-| `src/main.rs` | CLI dispatch, tracing, the tokio runtime |
-| `src/cli.rs` | the three verbs |
-| `src/config.rs` | `config.toml` + environment overrides |
-| `src/db.rs` | opening the database, applying migrations |
-| `src/ledger.rs` | which install steps have run |
-| `src/api.rs` | the control-plane HTTP surface |
+| `src/cli.rs`, `src/commands/` | the verbs: `install`, `serve`, `doctor`, `setup-token`, `containerd` |
+| `src/config.rs`, `src/db.rs`, `src/ledger.rs` | configuration, migrations, which install steps have run |
+| `src/api.rs` | `/healthz`, `/readyz` and the control-plane surface |
 | `src/edge/` | TLS, certificates, ACME, host routing, the reverse proxy |
-| `src/console/` | the web console |
-| `src/bootstrap/` | preflight, containerd + crun, the systemd unit |
+| `src/bootstrap/` | preflight, containerd + crun + CNI, the systemd unit |
 | `src/runtime/` | the containerd client: images, snapshots, specs, containers |
-| `assets/` | the design system, vendored — a node must not need a CDN |
-| `src/commands/` | one module per verb |
+| `src/registry/` | the OCI Distribution API over containerd's content store |
+| `src/platform/` | projects, services, ports, releases, access, tokens |
+| `src/accounts/` | accounts, sessions, invitations, roles |
+| `src/deploy/` | deploying a service, DNS checks, route synchronisation |
+| `src/node/` | what this machine is: memory, settings |
+| `src/update/` | the release catalogue and the self-update |
+| `src/console/` | the web console |
 | `migrations/` | embedded with `include_str!`, so the binary stands alone |
+| `assets/` | the design system, vendored — a node must not need a CDN |
 
 ## Building
 
-`scripts/build-linux.sh` produces the Linux binary from a Mac, via
-Docker — the project builds natively on macOS too, but the thing you
-deploy should be built for where it runs.
+```sh
+cargo test
+cargo clippy --all-targets -- -D warnings
+cargo fmt --all --check
+```
 
-Needs `protoc` — `containerd-client` generates its gRPC bindings in a
-build script — and a sibling checkout of the framework at
-`../../framework/wabot-rust` — see `[patch.crates-io]` in
-`Cargo.toml`. That goes away when `wabot 0.1` reaches crates.io.
+Needs `protoc` at build time: `containerd-client` generates its gRPC
+bindings in a build script.
+
+Two profiles, and the second exists by experience. `release` is full LTO
+with one codegen unit — the binary lives for months on a machine, so
+minutes of link time are traded against every request it will serve.
+`node` drops to thin LTO and four units, because a release build on a
+one-core VM takes the machine down with it.
+
+| | |
+| --- | --- |
+| `scripts/deploy.sh user@host [install flags…]` | builds **on** the node over SSH and installs there |
+| `scripts/build-linux.sh [arch]` | builds the Linux binary from a Mac via Docker — slow on Apple Silicon |
+
+Releases are cut by tag: pushing `v1.2.3` builds a static musl binary and
+publishes it, after checking that the tag and `Cargo.toml` agree.
 
 ## Your coding agent
 
-`.claude/skills/` explains how to build with this framework — start it
+[`CLAUDE.md`](CLAUDE.md) is the short version: how to build, test and
+deploy this, and the conventions the code already follows.
+
+`.claude/skills/` explains how to build with the wabot framework — start
 at `wabot-rust-quickstart`. For Codex or another agent that reads a
 skills directory:
 
