@@ -12,7 +12,7 @@ reasoning behind it.
 ## Install
 
 ```sh
-v=0.1.1   # https://github.com/wabot-dev/wabot-deploy/releases
+v=0.1.2   # https://github.com/wabot-dev/wabot-deploy/releases
 base=https://github.com/wabot-dev/wabot-deploy/releases/download/v$v
 
 curl -fsSLO $base/wabot-deploy-$v-x86_64-linux
