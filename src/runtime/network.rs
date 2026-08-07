@@ -307,10 +307,22 @@ pub async fn attach(
 /// because a leaked namespace or a leaked address reservation is worth
 /// knowing about even when it must not stop a deployment.
 pub async fn detach(network: &ProjectNetwork, container_id: &str) {
-    if netns_path(container_id).exists() {
-        // DEL *before* the namespace goes: the plugin releases the
-        // address reservation and removes the host end of the veth,
-        // and it needs the namespace to find its way there.
+    // Run even when the namespace is gone.
+    //
+    // The address reservation is not in the namespace — `host-local`
+    // keeps it under `/var/lib/cni/networks/<net>/<ip>`, which
+    // survives a reboot while `/run/netns` does not. Skipping the DEL
+    // because the namespace had vanished leaked one reservation per
+    // container per reboot, and the next deployment failed with
+    // "10.42.2.3 has been allocated to <container>, duplicate
+    // allocation is not allowed" — about itself.
+    //
+    // CNI's own contract covers this: DEL must tolerate a missing
+    // netns and still release what it allocated.
+    {
+        // DEL *before* the namespace goes: the plugin removes the host
+        // end of the veth, and it needs the namespace to find its way
+        // there when there is one.
         for (name, config) in [
             // portmap first, so its rules go before the interface they
             // point at disappears.
@@ -608,6 +620,30 @@ mod tests {
         // which address to forward to.
         assert_eq!(parsed["prevResult"]["ips"][0]["address"], "10.42.1.7/24");
         assert_eq!(parsed["capabilities"]["portMappings"], true);
+    }
+
+    /// The reservation lives outside the namespace, so the teardown
+    /// cannot be conditional on the namespace existing. It was, and a
+    /// reboot — which empties `/run/netns` and keeps
+    /// `/var/lib/cni/networks` — leaked one address per container.
+    /// The next deployment then failed with "duplicate allocation"
+    /// about a container that was itself.
+    #[test]
+    fn the_teardown_is_not_conditional_on_a_namespace() {
+        let source = include_str!("network.rs");
+        let detach = source
+            .split_once("pub async fn detach(")
+            .expect("detach exists")
+            .1;
+        let body = detach
+            .split_once("\nfn create_netns")
+            .map(|(body, _)| body)
+            .unwrap_or(detach);
+
+        assert!(
+            !body.contains("if netns_path(container_id).exists()"),
+            "the CNI DEL is gated on the namespace again — a reboot will leak every address"
+        );
     }
 
     #[test]

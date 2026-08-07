@@ -67,22 +67,11 @@ pub async fn run(config: Config) -> anyhow::Result<i32> {
         crate::edge::build(&database, control_plane, &config, routes.clone()).await?;
 
     // After the edge is built, so the deployer holds the same route
-    // table the listener reads — a deployment then takes effect
-    // without a restart. Before the listener *starts*, so a node
-    // coming back up has its containers before it takes traffic for
-    // them.
-    //
-    // Never fatal: a node that cannot reach containerd must still
-    // serve the console, which is where somebody would go to find out
-    // why it cannot.
+    // table the listener reads and a deployment takes effect without a
+    // restart.
     let deployer = crate::deploy::Deployer::new(database.clone(), &config)
         .with_routes(routes)
         .with_certificates(wake.clone());
-    match deployer.reconcile().await {
-        Ok(0) => {}
-        Ok(started) => tracing::info!(started, "services restored"),
-        Err(error) => tracing::warn!(%error, "could not reconcile services"),
-    }
 
     let https: SocketAddr = (bind_address(&config), config.edge.https_port).into();
     let http: SocketAddr = (bind_address(&config), config.edge.http_port).into();
@@ -103,6 +92,40 @@ pub async fn run(config: Config) -> anyhow::Result<i32> {
     let https_port = config.edge.https_port;
 
     let outcome = ProjectRunner::new(container.clone())
+        // Reconciling is a *service*, not a startup step.
+        //
+        // It used to run before the listeners, so that a node coming
+        // back had its containers before it took traffic for them.
+        // That reasoning was wrong in the way that matters: the node
+        // reports ready only once everything before the listeners is
+        // done, so one slow deployment — an image to unpack, a
+        // registry that will not answer — held up readiness until
+        // systemd's start timeout killed the process. Then it did it
+        // again, in a loop, and the console was down too. The console
+        // is where somebody goes to find out why a deployment is
+        // stuck; it must not be the thing the stuck deployment takes
+        // with it.
+        //
+        // So the listeners come up first and this runs beside them. A
+        // service whose container is not back yet answers 404 for a
+        // few seconds instead of not answering at all.
+        .service_with_cancel("reconcile", move |cancel| async move {
+            tokio::select! {
+                _ = cancel.cancelled() => return Ok::<(), anyhow::Error>(()),
+                outcome = deployer.reconcile() => match outcome {
+                    Ok(0) => {}
+                    Ok(started) => tracing::info!(started, "services restored"),
+                    Err(error) => tracing::warn!(%error, "could not reconcile services"),
+                }
+            }
+
+            // Then wait, rather than return. A service that ends takes
+            // the process with it — the runner reads it as the system
+            // being done — so reconciling and returning shut the node
+            // down the moment it finished, seconds after it started.
+            cancel.cancelled().await;
+            Ok::<(), anyhow::Error>(())
+        })
         .service_with_cancel("edge-https", move |cancel| {
             crate::edge::serve_https(edge, resolver, https, cancel)
         })
