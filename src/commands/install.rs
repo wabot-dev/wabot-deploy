@@ -143,52 +143,6 @@ pub async fn run(mut config: Config, config_path: &Path, args: InstallArgs) -> a
         }
     }
 
-    // Attempted here, before the node is started, so a DNS or firewall
-    // problem surfaces while the operator is still looking at a
-    // terminal rather than in a browser weeks later.
-    if let Err(error) = try_certificate(&config, &database).await {
-        println!();
-        println!("  certificate: not obtained — {error}");
-
-        // Left where `doctor` and the console read it. Whoever runs
-        // the install is at a terminal; whoever fixes it afterwards is
-        // looking at a page, and the reason has to reach them too.
-        crate::node::settings::set_acme_error(&database, Some(&error.to_string())).await?;
-
-        // Asked for a domain and did not get a certificate for it. An
-        // install that reports success here is one whose failure is
-        // discovered later, in a browser, by somebody who was not
-        // there — so it fails, unless the operator said in advance
-        // that serving the local authority's certificate is
-        // acceptable.
-        if !args.allow_self_signed {
-            println!();
-            println!("  The node is configured. This run did not start it.");
-            println!();
-            println!("  Fix the name and run install again — most often DNS does not");
-            println!("  point here yet, or :80 is not reachable from the internet, which");
-            println!("  is what the HTTP-01 challenge needs.");
-            println!();
-            println!("  To finish anyway and serve this node's own certificate:");
-            println!("    wabot-deploy install --allow-self-signed");
-
-            database.close().await?;
-            return Ok(1);
-        }
-
-        println!("  --allow-self-signed: serving this node's own certificate for");
-        println!(
-            "  {}, and retrying in the background.",
-            domain.as_deref().unwrap_or("this node")
-        );
-        println!("  `wabot-deploy doctor` shows what the last attempt said.");
-    } else {
-        // A certificate in hand means whatever the last attempt
-        // complained about is over. Leaving the message would have the
-        // console reporting a failure that has been fixed.
-        crate::node::settings::set_acme_error(&database, None).await?;
-    }
-
     // A rename only takes effect once the edge is answering for the
     // new name: the console it serves is reached through the route
     // table, and the name that used to reach it must stop.
@@ -227,13 +181,27 @@ pub async fn run(mut config: Config, config_path: &Path, args: InstallArgs) -> a
     // run can settle — it stops being true the moment somebody upgrades
     // the binary. A ledgered Start left the *old* process serving with
     // the new code sitting on disk beside it, and nothing said so.
+    // Whether there is anything to wait for below. A node with a
+    // certificate already in hand does not have to be disturbed; one
+    // without may be deep in the renewal loop's backoff — up to six
+    // hours — and a restart is what makes it try now.
+    let wants_certificate = !config.acme.disabled
+        && match &domain {
+            Some(domain) => !has_public_certificate(&config, &database, domain).await,
+            None => false,
+        };
+
     if !args.no_system && !args.no_start && init.supervises() {
         use crate::bootstrap::service;
 
         // A rename restarts even when nothing else changed: the edge
         // reads its names and its routes at startup, so a node left
         // running is one still answering to the old domain.
-        if service::is_active() && service::running_current_binary() && !renamed {
+        if service::is_active()
+            && service::running_current_binary()
+            && !renamed
+            && !wants_certificate
+        {
             println!();
             println!("  the node is already running this binary.");
         } else {
@@ -244,7 +212,14 @@ pub async fn run(mut config: Config, config_path: &Path, args: InstallArgs) -> a
                     ledger::record(&database, Step::Start, Status::Done, Some("running".into()))
                         .await?;
                     println!();
-                    println!("  the node is running. `systemctl status wabot-deploy`");
+                    println!(
+                        "  the node is running. `{}`",
+                        match init {
+                            crate::bootstrap::init::Init::OpenRc =>
+                                "rc-service wabot-deploy status",
+                            _ => "systemctl status wabot-deploy",
+                        }
+                    );
                 }
                 Err(error) => {
                     let message = format!("{error:#}");
@@ -262,6 +237,71 @@ pub async fn run(mut config: Config, config_path: &Path, args: InstallArgs) -> a
         }
     }
 
+    // The certificate, last, because the node has to be *running* for
+    // it to be possible at all: the HTTP-01 challenge response is
+    // stored in the database and served over :80 by `serve`, so on a
+    // machine where the node has never started there is nothing to
+    // answer the authority and the order can only end Invalid.
+    //
+    // Asking before starting is what an earlier version did, and it
+    // made a first install with a domain fail for ever: the failure
+    // was fatal, so the node never started, so the next run failed the
+    // same way.
+    let node_running = init.supervises() && crate::bootstrap::service::is_active();
+    let verdict = match (&domain, config.acme.disabled) {
+        (Some(domain), false) => Some(
+            await_certificate(
+                &config,
+                &database,
+                domain,
+                node_running,
+                WAIT_FOR_CERTIFICATE,
+            )
+            .await,
+        ),
+        // No domain, or ACME turned off on purpose: nothing a public
+        // authority could have been asked for.
+        _ => None,
+    };
+
+    if let Some(verdict) = verdict {
+        match verdict {
+            Verdict::Obtained => {
+                // A certificate in hand means whatever the last
+                // attempt complained about is over. Leaving the
+                // message would have the console reporting a failure
+                // that has been fixed.
+                crate::node::settings::set_acme_error(&database, None).await?;
+            }
+            Verdict::WillTryLater => {}
+            Verdict::Failed if !args.allow_self_signed => {
+                let reason = crate::node::settings::acme_error(&database)
+                    .await
+                    .unwrap_or_else(|| "no certificate arrived".into());
+                println!();
+                println!("  certificate: not obtained — {reason}");
+                println!();
+                println!("  The node is running and still retrying, on its own certificate.");
+                println!();
+                println!("  Most often DNS does not point here yet, or :80 is not reachable");
+                println!("  from the internet, which is what the HTTP-01 challenge needs.");
+                println!("  Fix that and run install again — or change the domain from the");
+                println!("  node page, which checks DNS before it asks.");
+                println!();
+                println!("  To accept this node's own certificate instead:");
+                println!("    wabot-deploy install --allow-self-signed");
+
+                setup_token(&database, &config).await;
+                database.close().await?;
+                return Ok(1);
+            }
+            Verdict::Failed => {
+                println!("  --allow-self-signed: serving this node's own certificate, and");
+                println!("  retrying in the background. `wabot-deploy doctor` shows why.");
+            }
+        }
+    }
+
     // Last of all, because it is the one thing here somebody has to
     // read and act on. A node with no administrator serves a console
     // nobody can get into, and this token is the way in.
@@ -269,6 +309,94 @@ pub async fn run(mut config: Config, config_path: &Path, args: InstallArgs) -> a
 
     database.close().await?;
     Ok(0)
+}
+
+/// What became of the certificate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Verdict {
+    Obtained,
+    /// Nothing was running that could answer the challenge, so nothing
+    /// was asked. Not a failure — the node requests one the first time
+    /// it runs.
+    WillTryLater,
+    Failed,
+}
+
+/// Wait for the running node to obtain a certificate for `domain`.
+///
+/// Watching rather than ordering. `install` used to place the order
+/// itself, with a resolver of its own — so a certificate it obtained
+/// landed in the database but not in the running node's live resolver,
+/// which kept serving the old one until its next pass. The node's
+/// renewal loop runs as soon as it starts and installs what it gets;
+/// this only has to look.
+async fn await_certificate(
+    config: &Config,
+    database: &SqliteDatabase,
+    domain: &str,
+    node_running: bool,
+    wait: std::time::Duration,
+) -> Verdict {
+    if has_public_certificate(config, database, domain).await {
+        println!();
+        println!(
+            "  certificate: current, from {}",
+            config.acme.directory_url()
+        );
+        return Verdict::Obtained;
+    }
+
+    if !node_running {
+        println!();
+        println!("  certificate: none yet for {domain}.");
+        println!("  The node requests one the first time it runs — the challenge is");
+        println!("  answered on :80 by the node itself, so it has to be up.");
+        return Verdict::WillTryLater;
+    }
+
+    println!();
+    println!("  requesting a certificate for {domain}…");
+    let deadline = std::time::Instant::now() + wait;
+    while std::time::Instant::now() < deadline {
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+        if has_public_certificate(config, database, domain).await {
+            println!(
+                "  certificate obtained from {}",
+                config.acme.directory_url()
+            );
+            if config.acme.is_staging() {
+                println!("  (staging — browsers will not trust it; that is expected)");
+            }
+            return Verdict::Obtained;
+        }
+    }
+    Verdict::Failed
+}
+
+/// Long enough for a DNS record that just propagated and an authority
+/// under load; short enough that somebody watching a terminal does not
+/// conclude it hung.
+const WAIT_FOR_CERTIFICATE: std::time::Duration = std::time::Duration::from_secs(90);
+
+/// Is there a live certificate for `domain` from the authority this
+/// node was told to use?
+///
+/// The issuer is compared exactly against the directory URL, which is
+/// the rule the renewal loop follows: `starts_with("acme")` once made
+/// a staging certificate pass for a production one, and the node
+/// served it for weeks.
+async fn has_public_certificate(config: &Config, database: &SqliteDatabase, domain: &str) -> bool {
+    match crate::edge::certs::load(database, domain).await {
+        Ok(Some(stored)) => {
+            stored.issuer == config.acme.directory_url()
+                && stored.not_after > crate::platform::now_ms()
+        }
+        Ok(None) => false,
+        Err(error) => {
+            tracing::warn!(%error, "could not read the stored certificate");
+            false
+        }
+    }
 }
 
 /// Issue the token that creates the first administrator.
@@ -460,34 +588,6 @@ async fn report(
     Ok(())
 }
 
-/// Ask the certificate authority, once, synchronously.
-async fn try_certificate(config: &Config, database: &SqliteDatabase) -> anyhow::Result<()> {
-    if config.acme.disabled {
-        return Ok(());
-    }
-    let Some(domain) = config.node.domain.clone() else {
-        // Nothing a public authority could validate. Not a failure.
-        return Ok(());
-    };
-
-    println!();
-    println!("  requesting a certificate for {domain}…");
-    let resolver = crate::edge::certs::CertResolver::new();
-    match crate::edge::acme::ensure_all(database, config, &resolver).await? {
-        true => {
-            println!(
-                "  certificate obtained from {}",
-                config.acme.directory_url()
-            );
-            if config.acme.is_staging() {
-                println!("  (staging — browsers will not trust it; that is expected)");
-            }
-        }
-        false => println!("  the existing certificate is current"),
-    }
-    Ok(())
-}
-
 /// Export the CA to a file the operator can hand to a trust store.
 ///
 /// Written rather than printed: a PEM block in terminal scrollback is
@@ -544,18 +644,18 @@ mod tests {
 
     /// The property `install` is built around: running it again
     /// converges instead of repeating or failing.
-    /// An installer that says "installed" after failing to get the
-    /// certificate for the name it was given hands somebody a node
-    /// that only fails later, in a browser, with nobody watching.
+    /// The install that used to be impossible.
+    ///
+    /// Nothing is running that could answer the HTTP-01 challenge —
+    /// the response is served on :80 by the node itself — so there is
+    /// nothing to fail about. An earlier version asked anyway, failed,
+    /// and refused to start the node, which meant the next run failed
+    /// the same way for ever.
     #[tokio::test]
-    async fn an_install_that_cannot_get_a_certificate_fails() {
+    async fn an_install_that_cannot_start_the_node_does_not_fail_over_a_certificate() {
         let dir = tempfile::tempdir().expect("tempdir");
         let config_path = dir.path().join("config.toml");
         let mut config = config_in(dir.path());
-
-        // A directory URL nothing answers on: the failure is the point
-        // and it must not depend on the network being reachable, or on
-        // anybody's rate limit.
         config.acme.disabled = false;
         config.acme.directory = "http://127.0.0.1:1/directory".into();
 
@@ -563,24 +663,111 @@ mod tests {
         args.allow_self_signed = false;
 
         let code = run(config, &config_path, args).await.expect("install ran");
-        assert_eq!(code, 1, "a missing certificate is a failed install");
+        assert_eq!(code, 0, "there was nothing that could have answered");
     }
 
-    /// …and the operator who knows their node is on a private network,
-    /// or whose DNS has not propagated, can say so and finish.
+    /// The four cases the exit code hangs on, in milliseconds instead
+    /// of the minute and a half the real wait allows.
     #[tokio::test]
-    async fn allow_self_signed_finishes_the_same_install() {
+    async fn what_the_certificate_wait_concludes() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let config_path = dir.path().join("config.toml");
         let mut config = config_in(dir.path());
         config.acme.disabled = false;
-        config.acme.directory = "http://127.0.0.1:1/directory".into();
+        config.acme.directory = "https://acme-v02.api.letsencrypt.org/directory".into();
+        let database = crate::db::open_in_memory().await.expect("open");
+        let none = std::time::Duration::ZERO;
 
-        let mut args = InstallArgs::with_domain("node.example.com");
-        args.allow_self_signed = true;
+        // Nothing running, nothing stored: the node will ask when it
+        // starts, and this run has nothing to report.
+        assert_eq!(
+            await_certificate(&config, &database, "node.example.com", false, none).await,
+            Verdict::WillTryLater
+        );
 
-        let code = run(config, &config_path, args).await.expect("install ran");
-        assert_eq!(code, 0);
+        // Running, and no certificate arrived within the window.
+        assert_eq!(
+            await_certificate(&config, &database, "node.example.com", true, none).await,
+            Verdict::Failed
+        );
+
+        // A certificate from the authority we asked settles it, and
+        // without waiting — this is the upgrade path, where the node
+        // already has one.
+        store_certificate(
+            &database,
+            "node.example.com",
+            config.acme.directory_url(),
+            crate::platform::now_ms() + 30 * 86_400_000,
+        )
+        .await;
+        assert_eq!(
+            await_certificate(&config, &database, "node.example.com", true, none).await,
+            Verdict::Obtained
+        );
+    }
+
+    /// The comparison that once cost weeks of a node serving a
+    /// certificate no browser trusted: `starts_with("acme")` matched
+    /// staging too. Nothing but the exact directory URL counts.
+    #[tokio::test]
+    async fn a_staging_certificate_is_not_the_one_that_was_asked_for() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut config = config_in(dir.path());
+        config.acme.disabled = false;
+        config.acme.directory = "production".into();
+        let database = crate::db::open_in_memory().await.expect("open");
+
+        store_certificate(
+            &database,
+            "node.example.com",
+            "https://acme-staging-v02.api.letsencrypt.org/directory",
+            crate::platform::now_ms() + 30 * 86_400_000,
+        )
+        .await;
+
+        assert!(!has_public_certificate(&config, &database, "node.example.com").await);
+    }
+
+    /// An expired certificate is not a certificate. The node renews on
+    /// its own, but an install that reported "current" over an expired
+    /// row would be reporting the row, not the fact.
+    #[tokio::test]
+    async fn an_expired_certificate_does_not_count() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut config = config_in(dir.path());
+        config.acme.disabled = false;
+        let database = crate::db::open_in_memory().await.expect("open");
+
+        store_certificate(
+            &database,
+            "node.example.com",
+            config.acme.directory_url(),
+            crate::platform::now_ms() - 1,
+        )
+        .await;
+
+        assert!(!has_public_certificate(&config, &database, "node.example.com").await);
+    }
+
+    async fn store_certificate(
+        database: &SqliteDatabase,
+        domain: &str,
+        issuer: &str,
+        not_after: i64,
+    ) {
+        crate::edge::certs::save(
+            database,
+            &crate::edge::certs::StoredCert {
+                domain: domain.to_string(),
+                names: vec![domain.to_string()],
+                cert_pem: "not a certificate".into(),
+                key_pem: "not a key".into(),
+                issuer: issuer.to_string(),
+                not_after,
+            },
+        )
+        .await
+        .expect("store");
     }
 
     /// ACME switched off is somebody saying up front that this node

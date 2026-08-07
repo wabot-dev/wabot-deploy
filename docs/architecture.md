@@ -106,17 +106,36 @@ anterior dijo "hecho" solo produce respuestas viejas. El caso peor fue
 un nodo que se quedó sin los plugins CNI porque `Step::Runtime` ya
 estaba marcado de antes de que ese paso los incluyera.
 
-### 3.1 Certificado o nada
+### 3.1 Certificado o nada, pero después de arrancar
 
-`install --domain X` **falla** si no consigue el certificado: termina con
-código 1 antes de arrancar el servicio y dice qué comprobar. Un install
-que reporta éxito mientras sirve un certificado que ningún navegador
-acepta es un fallo que se descubre después, en un navegador, con nadie
-delante.
+**El reto HTTP-01 lo contesta el nodo corriendo.** La respuesta se
+guarda en la base de datos y se sirve en :80 desde `serve`, así que en
+una máquina donde el nodo nunca ha arrancado no hay nada que conteste a
+la autoridad y la orden solo puede terminar `Invalid`.
 
-La salida existe pero hay que pedirla: `--allow-self-signed`. Una máquina
-en red privada, o una cuyo DNS aún se propaga, es una forma real de
-correr esto; lo que no puede ser es caer ahí por omisión.
+Por eso el certificado es el **último** paso, después del arranque. Y
+por eso `install` no pide la orden él mismo: **mira**. El bucle de
+renovación del nodo corre en cuanto arranca y instala lo que obtenga en
+su resolver vivo; el instalador consulta la base cada dos segundos
+durante minuto y medio y reporta. Pedirla por su cuenta —lo que hacía
+antes, con un resolver propio— dejaba el certificado en la base y al
+nodo sirviendo el viejo hasta su siguiente pasada.
+
+Con eso, `install --domain X` **falla** si el certificado no llega:
+código 1, la razón que el bucle dejó anotada, y el nodo **sigue
+corriendo** y reintentando —la consola es la página donde alguien iría a
+arreglar el dominio, y pararla sería quitársela—. Un install que reporta
+éxito mientras sirve un certificado que ningún navegador acepta es un
+fallo que se descubre después, en un navegador, con nadie delante.
+
+Si nada arrancó el nodo —`--no-start`, `--no-system`, o una máquina sin
+gestor de servicios— no falla: dice que el certificado se pedirá en el
+primer arranque. Nada podía haber contestado el reto, así que culpar al
+operador del orden de los pasos sería el error de antes al revés.
+
+La salida sigue existiendo y hay que pedirla: `--allow-self-signed`. Una
+máquina en red privada, o una cuyo DNS aún se propaga, es una forma real
+de correr esto; lo que no puede ser es caer ahí por omisión.
 
 ### 3.2 crun, no runc
 
@@ -845,3 +864,12 @@ jerarquía de cgroups no se monta sola, `overlay` no se carga solo, y
 `Restart=always` no es gratis en OpenRC —hay que pedir
 `supervise-daemon`—. Nada de eso es exótico; es lo que systemd venía
 haciendo sin que nadie lo escribiera.
+
+Y una tercera cosa, que no era de Alpine en absoluto: **la primera
+instalación con dominio no podía funcionar en ninguna máquina**. Pedir
+el certificado antes de arrancar el nodo es pedirle a la autoridad que
+valide un reto que nadie está sirviendo; como desde 0.1.1 eso era fatal,
+el nodo no arrancaba nunca y la siguiente ejecución fallaba igual. En el
+nodo Ubuntu no se vio porque el servicio ya llevaba corriendo desde
+instalaciones anteriores: la orden se validaba contra el nodo que ya
+estaba en marcha. Ver §3.1.

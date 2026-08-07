@@ -12,7 +12,7 @@ reasoning behind it.
 ## Install
 
 ```sh
-v=0.1.2   # https://github.com/wabot-dev/wabot-deploy/releases
+v=0.1.3   # https://github.com/wabot-dev/wabot-deploy/releases
 base=https://github.com/wabot-dev/wabot-deploy/releases/download/v$v
 
 curl -fsSLO $base/wabot-deploy-$v-x86_64-linux
@@ -38,11 +38,16 @@ loads `overlay`. On a machine with neither manager the install still
 writes everything and tells you that starting the node is yours to
 arrange.
 
-It **fails** if it cannot get a certificate for the domain you gave it —
-an install that reports success while serving a certificate no browser
-trusts is a failure discovered later, in a browser, by somebody who was
-not there. Pass `--allow-self-signed` when that is what you mean: a
-machine on a private network, or one whose DNS is still propagating.
+The certificate comes last, after the node is running: the HTTP-01
+challenge is answered on :80 by the node itself, so it has to be up
+first. If it does not arrive, the install **fails** — an install that
+reports success while serving a certificate no browser trusts is a
+failure discovered later, in a browser, by somebody who was not there.
+The node keeps running and retrying either way, so the console is
+reachable to fix the domain from.
+
+Pass `--allow-self-signed` when that is what you mean: a machine on a
+private network, or one whose DNS is still propagating.
 
 | flag | |
 | --- | --- |
