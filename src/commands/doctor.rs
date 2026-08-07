@@ -126,6 +126,20 @@ pub async fn run(config: Config, config_path: &Path) -> anyhow::Result<i32> {
             format!("{} (absent)", crate::bootstrap::runtime::SOCKET)
         }
     );
+    let missing = crate::bootstrap::runtime::missing_programs();
+    if !missing.is_empty() {
+        // Not a containerd problem, and it looks like one: the
+        // container starts and then fails to get an address.
+        println!(
+            "  missing     {} — no container can get a network",
+            missing
+                .iter()
+                .map(|program| program.command)
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+        problems += 1;
+    }
     if !runtime.ready() {
         // Not counted as a problem: nothing deploys containers yet, so
         // a node without containerd is incomplete rather than broken.

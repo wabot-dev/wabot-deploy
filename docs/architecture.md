@@ -186,13 +186,29 @@ containerd gestiona otra cosa tiene que arrancar igual y decir qué pasa
 en una página que alguien pueda leer, en vez de negarse a arrancar justo
 lo que se lo iba a contar.
 
-Y dos cosas que una distribución con systemd ya hizo por ti, y Alpine
+Y tres cosas que una distribución con systemd ya hizo por ti, y Alpine
 no: montar la jerarquía de cgroups —`install` activa el servicio
-`cgroups` de OpenRC, porque containerd lo declara como dependencia— y
+`cgroups` de OpenRC, porque containerd lo declara como dependencia—,
 cargar `overlay`, que se intenta con `modprobe` y se anota en
-`/etc/modules`. Si falla, containerd cae a un snapshotter más lento:
-convertir "tu snapshotter será más lento" en "tu instalación falló"
-sería el trade equivocado.
+`/etc/modules`, y traer `iptables` e `iproute2`.
+
+Los dos últimos son programas, no bibliotecas: el plugin bridge de CNI
+enmascara con `iptables` y portmap escribe DNAT con él, y la creación
+del netns por contenedor es `ip netns add`. Sin ellos todo instala bien
+y el primer despliegue falla con `failed to locate iptables` en una
+página que nadie asocia con la instalación. Así que `install` los pone
+con el gestor de paquetes de la máquina —`apk`, `apt-get`, `dnf`— y, si
+no hay ninguno, dice el comando exacto.
+
+Es la excepción a "descargamos los tarballs oficiales": containerd, crun
+y los plugins CNI llevan versión elegida por nosotros; iptables e
+iproute2 son parte del sistema operativo, y llevar nuestra copia sería
+pelearse con el kernel de la máquina.
+
+La comprobación de `ip` le pide que haga el trabajo (`ip netns list`) en
+vez de buscar el fichero: busybox trae un `ip` sin `netns`, y un chequeo
+que solo buscara el nombre pasaría justo en las máquinas que fallan
+después.
 
 ### 3.4 La unidad de systemd
 

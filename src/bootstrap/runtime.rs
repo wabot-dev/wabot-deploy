@@ -202,6 +202,23 @@ pub fn ensure() -> RuntimeResult<String> {
         install_cni()?;
         done.push(format!("cni plugins {CNI_VERSION}"));
     }
+
+    // The programs the network path shells out to. Not everything
+    // ships them: Alpine has neither, and the failure surfaces much
+    // later — as a container that will not start, with `failed to
+    // locate iptables` on a page, long after the install said it was
+    // done.
+    let missing = missing_programs();
+    if !missing.is_empty() {
+        install_packages(&missing)?;
+        done.push(
+            missing
+                .iter()
+                .map(|program| program.package)
+                .collect::<Vec<_>>()
+                .join(" + "),
+        );
+    }
     // Asked of the machine, not of this run: a node that was rebooted
     // without the sysctl file, or one where somebody turned it off,
     // needs it turned back on.
@@ -356,6 +373,121 @@ fn install_cni() -> RuntimeResult<()> {
 
 /// Where the sysctl lives, so it survives a reboot.
 pub const SYSCTL_PATH: &str = "/etc/sysctl.d/99-wabot-deploy.conf";
+
+/// A program this node runs, and the package that carries it.
+pub struct Program {
+    pub command: &'static str,
+    pub package: &'static str,
+    /// Why it is needed, for the message when it cannot be installed.
+    pub what_for: &'static str,
+}
+
+/// What has to exist before a container can get a network.
+///
+/// Both are invoked as programs rather than linked as libraries, which
+/// is the CNI contract for one of them and the simplest correct thing
+/// for the other — and the reason a missing package is discovered at
+/// deploy time instead of at compile time.
+pub const PROGRAMS: [Program; 2] = [
+    Program {
+        command: "iptables",
+        package: "iptables",
+        // The bridge plugin masquerades and portmap writes DNAT.
+        what_for: "the CNI bridge and portmap plugins",
+    },
+    Program {
+        command: "ip",
+        package: "iproute2",
+        // busybox ships an `ip` without `netns`, which is the half
+        // this needs.
+        what_for: "creating a network namespace per container",
+    },
+];
+
+/// The ones this machine does not have.
+///
+/// `ip` is probed by asking it to do the thing rather than by looking
+/// for the file: busybox provides an `ip` that cannot manage
+/// namespaces, and a check that only found the name would pass on
+/// exactly the machines that fail later.
+pub fn missing_programs() -> Vec<&'static Program> {
+    PROGRAMS
+        .iter()
+        .filter(|program| match program.command {
+            "ip" => !command_succeeds("ip", &["netns", "list"]),
+            command => !on_path(command),
+        })
+        .collect()
+}
+
+fn on_path(program: &str) -> bool {
+    let Some(path) = std::env::var_os("PATH") else {
+        return false;
+    };
+    std::env::split_paths(&path).any(|dir| dir.join(program).exists())
+}
+
+fn command_succeeds(program: &str, args: &[&str]) -> bool {
+    Command::new(program)
+        .args(args)
+        .output()
+        .map(|output| output.status.success())
+        .unwrap_or(false)
+}
+
+/// How this machine installs a package, when it does.
+fn package_manager() -> Option<(&'static str, &'static [&'static str])> {
+    const CANDIDATES: [(&str, &[&str]); 3] = [
+        ("apk", &["add", "--no-cache"]),
+        ("apt-get", &["install", "-y"]),
+        ("dnf", &["install", "-y"]),
+    ];
+    CANDIDATES.into_iter().find(|(program, _)| on_path(program))
+}
+
+/// Install what is missing with whatever the machine uses.
+///
+/// containerd, crun and the CNI plugins come from their own release
+/// tarballs, pinned and checksummed, because their versions are ours
+/// to choose. These two are the opposite: they are part of the
+/// operating system, every distribution has them, and taking a copy of
+/// somebody's iptables would be picking a fight with their kernel.
+///
+/// When there is no package manager to ask, the error says the exact
+/// command — a message an operator can paste beats one they have to
+/// translate.
+fn install_packages(missing: &[&Program]) -> RuntimeResult<()> {
+    let packages: Vec<&str> = missing.iter().map(|program| program.package).collect();
+    let reason = missing
+        .iter()
+        .map(|program| format!("{} needs {}", program.what_for, program.command))
+        .collect::<Vec<_>>()
+        .join("; ");
+
+    let Some((manager, verb)) = package_manager() else {
+        return Err(RuntimeError::Command(format!(
+            "{reason} — install {} and run install again",
+            packages.join(" and ")
+        )));
+    };
+
+    tracing::info!(packages = packages.join(" "), %manager, "installing");
+    let mut args: Vec<&str> = verb.to_vec();
+    args.extend(packages.iter().copied());
+
+    // apt needs its index before it can install anything on a machine
+    // that has never updated. Failure is ignored: an index that is
+    // merely stale still installs.
+    if manager == "apt-get" {
+        let _ = run("apt-get", &["update", "-qq"]);
+    }
+    run(manager, &args).map_err(|error| {
+        RuntimeError::Command(format!(
+            "{error} — {reason}, so install {} by hand and run install again",
+            packages.join(" and ")
+        ))
+    })
+}
 
 /// Is there a cgroup hierarchy at all?
 ///
@@ -820,6 +952,32 @@ mod tests {
         for status in incomplete {
             assert!(!status.ready(), "ready with something missing: {status:?}");
         }
+    }
+
+    /// The probe for `ip` asks it to manage namespaces rather than
+    /// looking for the file. busybox ships an `ip` without `netns`,
+    /// and a check that only found the name would pass on exactly the
+    /// machines that fail at the first deploy.
+    #[test]
+    fn every_required_program_names_its_package_and_its_reason() {
+        for program in PROGRAMS {
+            assert!(!program.command.is_empty());
+            assert!(!program.package.is_empty());
+            assert!(
+                program.what_for.len() > 10,
+                "{} needs a reason somebody can act on",
+                program.command
+            );
+        }
+    }
+
+    /// Whatever this machine is, the answer has to be a list — the
+    /// install branches on emptiness, and a probe that panicked on a
+    /// machine without `ip` would fail the install it exists to fix.
+    #[test]
+    fn asking_what_is_missing_always_answers() {
+        let missing = missing_programs();
+        assert!(missing.len() <= PROGRAMS.len());
     }
 
     #[test]

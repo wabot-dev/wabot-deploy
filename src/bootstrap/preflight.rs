@@ -106,6 +106,7 @@ pub fn run(https_port: u16, http_port: u16, check_ports: bool) -> Vec<Check> {
         privileges(),
         architecture(),
         init_system(),
+        network_tools(),
         cgroup_v2(),
         overlayfs(),
         memory(),
@@ -187,6 +188,27 @@ fn init_system() -> Check {
              `install` cannot register a service and nothing will restart it",
         ),
     }
+}
+
+/// The programs a container's network is built with.
+///
+/// Advisory rather than blocking because `install` installs them — but
+/// worth naming here, because without them everything succeeds until
+/// the first deploy, which then fails with `failed to locate iptables`
+/// on a page nobody associates with the install.
+fn network_tools() -> Check {
+    let missing = crate::bootstrap::runtime::missing_programs();
+    if missing.is_empty() {
+        return Check::pass("network tools", "iptables, ip");
+    }
+    let packages: Vec<&str> = missing.iter().map(|program| program.package).collect();
+    Check::advisory(
+        "network tools",
+        format!(
+            "missing {} — `install` adds them; without them a container gets no network",
+            packages.join(" and ")
+        ),
+    )
 }
 
 /// cgroup v2, unified.
