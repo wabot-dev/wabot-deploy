@@ -221,8 +221,8 @@ impl ServicePages {
                                 @for port in &ports {
                                     <tr>
                                         <td class="mono">(port.container_port)</td>
-                                        <td class="mono">
-                                            (reachable_at(port, domain.as_deref()))
+                                        <td class="mono reach">
+                                            <span>(reachable_at(port, domain.as_deref()))</span>
                                             @if port.hostname.as_ref()
                                                 .is_some_and(|host| !secured.contains(host)) {
                                                 <span class="badge badge-info">
@@ -233,7 +233,8 @@ impl ServicePages {
                                         </td>
                                         <td>
                                             <form method="post" action=(format!("{add}/{}/delete", port.id))>
-                                                <button class="btn btn-ghost btn-sm" type="submit">
+                                                <button class="btn btn-ghost destructive btn-sm"
+                                                        type="submit">
                                                     ("Remove")
                                                 </button>
                                             </form>

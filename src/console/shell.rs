@@ -145,7 +145,7 @@ impl Frame {
                             </option>
                         }
                     </select>
-                    <button class="btn btn-sm" type="submit">("Go")</button>
+                    <button class="btn btn-secondary btn-sm" type="submit">("Go")</button>
                 </div>
                 @if self.projects.is_empty() {
                     <p class="side-hint">("No projects yet.")</p>

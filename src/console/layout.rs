@@ -168,6 +168,52 @@ pub const CSS: &str = r#"
 }
 .check input[type="checkbox"] { width: 1.05rem; }
 
+/* Where a port is reachable, and whether its certificate has arrived.
+   Two things in one cell, so the cell has to space them itself — and
+   wrap rather than push the table sideways, because a hostname is as
+   long as somebody's domain. */
+.reach {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  flex-wrap: wrap;
+}
+
+/* The design system styles `button[type="submit"]` as the primary
+   action, and that selector outranks `.btn-secondary`, `.btn-ghost`
+   and `.btn-danger` — so every submit came out black whatever variant
+   it asked for. On a console almost every action is a form, so almost
+   every button was shouting. These restate the variants at a
+   specificity that wins.
+
+   The fix belongs upstream in the design system; this is the vendored
+   copy, and editing it here would be lost on the next sync. */
+button[type="submit"].btn-secondary {
+  background: rgb(var(--c-action-soft));
+  color: rgb(var(--c-fg));
+}
+button[type="submit"].btn-secondary:active { background: rgb(var(--c-action-soft) / 0.7); }
+
+button[type="submit"].btn-ghost {
+  background: transparent;
+  color: rgb(var(--c-fg));
+  padding-inline: var(--sp-3);
+}
+button[type="submit"].btn-ghost:active { color: rgb(var(--c-fg-muted)); }
+
+button[type="submit"].btn-danger {
+  background: rgb(var(--c-danger-fg));
+  color: rgb(var(--c-n-0));
+}
+
+/* A destructive action that is not the danger zone: a row's Delete.
+   Red text rather than a red slab — it has to read as destructive
+   without competing with the page's one real action. */
+.btn-ghost.destructive,
+button[type="submit"].btn-ghost.destructive {
+  color: rgb(var(--c-danger-fg));
+}
+
 /* The memory breakdown. One bar in parts, and a table under it whose
    swatches are the same colours — the bar says the proportions, the
    table says the numbers, and neither needs a legend. */
@@ -224,5 +270,23 @@ pub fn style_tag() -> impl Renderable {
     rsx! {
         <style>(Raw::dangerously_create(CSS))</style>
         <style>(Raw::dangerously_create(super::shell::CSS))</style>
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    /// The design system's `button[type="submit"]` outranks its own
+    /// variant classes, so a submit that asks to be secondary or ghost
+    /// comes out primary black. Every form button on this console is a
+    /// submit, which made almost the whole interface shout. These
+    /// overrides are what put that back — losing them is silent.
+    #[test]
+    fn every_button_variant_beats_the_submit_default() {
+        for variant in ["btn-secondary", "btn-ghost", "btn-danger"] {
+            assert!(
+                super::CSS.contains(&format!(r#"button[type="submit"].{variant}"#)),
+                "{variant} would lose to button[type=\'submit\'] and render as primary"
+            );
+        }
     }
 }

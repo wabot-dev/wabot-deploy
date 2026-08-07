@@ -221,7 +221,8 @@ impl ProjectPages {
                                                       "/projects/{}/services/{}/deploy",
                                                       project.slug, service.slug
                                                   ))>
-                                                <button class="btn btn-sm" type="submit">
+                                                <button class="btn btn-secondary btn-sm"
+                                                        type="submit">
                                                     ("Deploy")
                                                 </button>
                                             </form>
@@ -231,7 +232,8 @@ impl ProjectPages {
                                                   "/projects/{}/services/{}/delete",
                                                   project.slug, service.slug
                                               ))>
-                                            <button class="btn btn-ghost btn-sm" type="submit">
+                                            <button class="btn btn-ghost destructive btn-sm"
+                                                    type="submit">
                                                 ("Delete")
                                             </button>
                                         </form>
