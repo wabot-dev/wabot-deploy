@@ -7,7 +7,7 @@ edition = "2021"
 # Only what this milestone uses. `rest-tls`, `ui` and the job
 # repositories arrive with the milestones that need them — a feature
 # turned on "for later" is a dependency tree paid for now.
-wabot = { version = "0.1", default-features = false, features = [
+wabot = { version = "0.2", default-features = false, features = [
     "rest",
     "rest-tls",
     "sqlite",
@@ -146,19 +146,31 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 [dev-dependencies]
 # The harnesses are a separate feature so a mock adapter can never
 # reach production by accident.
-wabot = { version = "0.1", default-features = false, features = ["testing"] }
+wabot = { version = "0.2", default-features = false, features = ["testing"] }
 tempfile = "3"
 
+# What a release is built with.
+#
+# The binary is copied to a machine and lives there for months, so the
+# trade is all one way: minutes of link time against every request it
+# will ever serve. Fat LTO — the whole program optimised as one unit,
+# not per crate — plus a single codegen unit and no symbols.
+#
+# It is slow and memory-hungry to build. That is CI's problem, and the
+# reason `node` exists below.
 [profile.release]
-# The binary is copied to a machine and lives there; a minute of link
-# time buys megabytes back.
-lto = "thin"
+lto = "fat"
 codegen-units = 1
 strip = "symbols"
 
-# Temporary: the framework is not on crates.io yet (5 of 33 crates
-# published). Pointing at the sibling checkout is what lets this build
-# today. Delete this section once `wabot 0.1` resolves from the
-# registry — the version above is already correct.
-[patch.crates-io]
-wabot = { path = "../../framework/wabot-rust/crates/wabot" }
+# What `scripts/deploy.sh` builds with on the node itself.
+#
+# A release build on a one-core VM with under two gigabytes takes the
+# machine down with it — rustc swaps until sshd stops answering, which
+# is a thing that happened rather than a thing to worry about. This
+# gives up the last of the optimisation to stay survivable: the node
+# under test does not need the binary that ships.
+[profile.node]
+inherits = "release"
+lto = "thin"
+codegen-units = 4

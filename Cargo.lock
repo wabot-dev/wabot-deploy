@@ -25,9 +25,9 @@ dependencies = [
 
 [[package]]
 name = "android_system_properties"
-version = "0.1.5"
+version = "0.1.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "819e7219dbd41043ac279b19830f2efc897156490d7fd6ea916720117ee66311"
+checksum = "ae221649c9976a6f6c56ae1facf410f3ddb33cc661c4b7b61020a912d4237fbc"
 dependencies = [
  "libc",
 ]
@@ -291,9 +291,9 @@ checksum = "fc652a48c352aef3ea3aed32080501cf3ef6ed5da78602a020c991775b0aff04"
 
 [[package]]
 name = "cc"
-version = "1.4.0"
+version = "1.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5add81bb678e6cb321aff7fa0dc7689ad82b112dbc032cea19f91d6b8e3582b9"
+checksum = "9066c49992464636f92905fa096ec58baaa4d57ec19a5c096c68d3e25ef3d136"
 dependencies = [
  "find-msvc-tools",
  "shlex",
@@ -331,9 +331,9 @@ dependencies = [
 
 [[package]]
 name = "clap"
-version = "4.6.5"
+version = "4.6.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "301b56658598e48f3648647ac6fc887be7e7108eddfa4e9b63fcf3ec58c0cadf"
+checksum = "473c7e07f409a8d772161724aa8db6a765a2532a70f9667eeb7b49d3d02fbdca"
 dependencies = [
  "clap_builder",
  "clap_derive",
@@ -341,9 +341,9 @@ dependencies = [
 
 [[package]]
 name = "clap_builder"
-version = "4.6.5"
+version = "4.6.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "94a65403d1a1bd28f7dc68eb8506e8874808ee5eecb59298de588e2e1407a078"
+checksum = "7b48fea5a88e9ae728a2dcbedbfc0e730f7d60da42e1cb049a83c9fb8b789889"
 dependencies = [
  "anstyle",
  "clap_lex",
@@ -630,9 +630,9 @@ checksum = "da7c62ceae207dd37ea5b845da6a0696c799f85e97da1ab5b7910be3c1c80223"
 
 [[package]]
 name = "find-msvc-tools"
-version = "0.1.9"
+version = "0.1.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5baebc0774151f905a1a2cc41989300b1e6fbb29aff0ceffa1064fdd3088d582"
+checksum = "26b73573e6edcd2af0cdf47bd6cb58f0b3839491263c314eaad1ccf24430e1de"
 
 [[package]]
 name = "fixedbitset"
@@ -2528,7 +2528,9 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
 name = "wabot"
-version = "0.1.0"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a45d286d53c1df029c6d1e06afc952d466bf80849fb72cd098db31e6df90a9b5"
 dependencies = [
  "futures-util",
  "parking_lot",
@@ -2549,7 +2551,9 @@ dependencies = [
 
 [[package]]
 name = "wabot-addon-async-in-memory"
-version = "0.1.0"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e83c19dbd237451717595ae63f9eef64b3502dde8ddba77a829c5d497486aa8e"
 dependencies = [
  "async-trait",
  "chrono",
@@ -2563,7 +2567,9 @@ dependencies = [
 
 [[package]]
 name = "wabot-addon-ui-hypertext"
-version = "0.1.0"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "163c7e30f61029dcff154d771db0b152096e81aa1e86cfcf14a92ba0c3bef846"
 dependencies = [
  "hypertext",
  "serde",
@@ -2573,7 +2579,9 @@ dependencies = [
 
 [[package]]
 name = "wabot-core"
-version = "0.1.0"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8b0b9973423e8061492dca4a5e07d40cd3582ed08f9e9452512160b7047bdc26"
 dependencies = [
  "argon2",
  "async-trait",
@@ -2636,7 +2644,9 @@ dependencies = [
 
 [[package]]
 name = "wabot-feature-agent"
-version = "0.1.0"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f8b470e2104217a73eb443e9e69c4ce86ca87ec81224a7fbdfe34afea41c9089"
 dependencies = [
  "async-trait",
  "parking_lot",
@@ -2653,7 +2663,9 @@ dependencies = [
 
 [[package]]
 name = "wabot-feature-async"
-version = "0.1.0"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5b6f4986576e2ba0696ac5546e5a5ae94ef82d8c61b7ad55027fffc0fc3225dc"
 dependencies = [
  "async-trait",
  "chrono",
@@ -2672,7 +2684,9 @@ dependencies = [
 
 [[package]]
 name = "wabot-feature-chat-bot"
-version = "0.1.0"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "da61144e748fb8deb3f9f9ac5fa60a9d0bdff302b2f6ca7fd8d544491d9e0e51"
 dependencies = [
  "async-trait",
  "parking_lot",
@@ -2688,7 +2702,9 @@ dependencies = [
 
 [[package]]
 name = "wabot-feature-mindset"
-version = "0.1.0"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4ccc928491db9f3bd4052730653918384acae2b42a8d2273628440014d773c23"
 dependencies = [
  "async-trait",
  "parking_lot",
@@ -2703,7 +2719,9 @@ dependencies = [
 
 [[package]]
 name = "wabot-feature-rest-controller"
-version = "0.1.0"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "daf33ec3fcbf79b33f3325cab89a4f04c791e29b88896b0f91cca8cfa5f360ec"
 dependencies = [
  "async-trait",
  "axum",
@@ -2725,7 +2743,9 @@ dependencies = [
 
 [[package]]
 name = "wabot-feature-sqlite"
-version = "0.1.0"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "04189be869fc6ecf6555d11253ca7f48378c6083959b762c4c5f0c5539b74705"
 dependencies = [
  "async-trait",
  "chrono",
@@ -2742,7 +2762,9 @@ dependencies = [
 
 [[package]]
 name = "wabot-feature-tool"
-version = "0.1.0"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9a5a45e56cb4d03ce89252a8dbf8338487a0a1c66f3135fb1d210d36b3d95f15"
 dependencies = [
  "async-trait",
  "serde",
@@ -2754,7 +2776,9 @@ dependencies = [
 
 [[package]]
 name = "wabot-feature-ui-controller"
-version = "0.1.0"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d26f6c6046ec1757b40c1b87e11a34d1b1e84180ddf1797b32a4aae51b2144af"
 dependencies = [
  "async-trait",
  "axum",
@@ -2772,7 +2796,9 @@ dependencies = [
 
 [[package]]
 name = "wabot-macros"
-version = "0.1.0"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5a645404dbb59c102656aafa4b5b9a94e91f24fa33462de6d12992999188740b"
 dependencies = [
  "darling",
  "proc-macro-crate",
@@ -2783,7 +2809,9 @@ dependencies = [
 
 [[package]]
 name = "wabot-testing"
-version = "0.1.0"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "eebb484d81390c1a22e5a5ae5d9f82dba99cb449e15c7c2e46a7cf7facca4637"
 dependencies = [
  "async-trait",
  "chrono",
@@ -3109,18 +3137,18 @@ dependencies = [
 
 [[package]]
 name = "zerocopy"
-version = "0.8.55"
+version = "0.8.56"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b5a105cd7b140f6eeec8acff2ea38135d3cab283ada58540f629fe51e46696eb"
+checksum = "556764e583adb45a9f8d413c2a147fa7e8d821e48e12b14fd560b607998b75eb"
 dependencies = [
  "zerocopy-derive",
 ]
 
 [[package]]
 name = "zerocopy-derive"
-version = "0.8.55"
+version = "0.8.56"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0fe976fb70c78cd64cccfe3a6fc142244e8a77b70959b30faf9d0ac37ee228eb"
+checksum = "f2ab42fc20575779bd240faa45f94a74256f755c0fa9e89f0ede20d91d0cdfc1"
 dependencies = [
  "proc-macro2",
  "quote",

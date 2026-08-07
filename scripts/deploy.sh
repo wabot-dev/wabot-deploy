@@ -69,8 +69,10 @@ ssh_run "set -e
   # The layout [patch.crates-io] expects: ../../framework/wabot-rust.
   mkdir -p ../../framework
   ln -sfn $REMOTE_DIR/wabot-rust ../../framework/wabot-rust 2>/dev/null || true
-  cargo build --release
-  install -m 0755 target/release/wabot-deploy /usr/local/bin/wabot-deploy
+  # The `node` profile, not `release`: a fat-LTO build on a one-core
+  # VM swaps until the machine stops answering. See Cargo.toml.
+  cargo build --profile node
+  install -m 0755 target/node/wabot-deploy /usr/local/bin/wabot-deploy
   wabot-deploy --version"
 
 if [[ $# -gt 0 ]]; then

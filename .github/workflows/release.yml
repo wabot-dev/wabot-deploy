@@ -1,0 +1,133 @@
+name: release
+
+# A tag is the trigger, and the tag is the version. Nothing else
+# publishes: a release that can happen from a branch is one that
+# happens by accident.
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  # To create the release and attach the binary to it. Nothing else —
+  # a workflow that can write anything is one that can write the wrong
+  # thing.
+  contents: write
+
+env:
+  # Static, so the binary runs on whatever the operator has. A
+  # glibc build carries the runner's glibc version as a floor, and the
+  # machines this lands on are not always newer than a GitHub runner.
+  #
+  # musl costs a slower allocator under heavy threading. This node
+  # proxies requests and writes SQLite; it is not that workload, and
+  # "copy this one file to the machine" is the product.
+  TARGET: x86_64-unknown-linux-musl
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-musl
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          # Full LTO builds are long and the cache is what makes a
+          # re-run of a failed release cheap.
+          key: release-${{ env.TARGET }}
+
+      - name: Install the toolchain the build shells out to
+        run: |
+          sudo apt-get update
+          # protoc: containerd's API arrives as .proto files.
+          # musl-tools: the C compiler for SQLite, which is compiled
+          # in rather than linked against whatever the machine has.
+          sudo apt-get install -y protobuf-compiler musl-tools
+
+      # The tag is the claim; the manifest is the fact. A release
+      # tagged v0.3.0 built from a tree that says 0.2.0 produces a
+      # binary whose `--version` disagrees with the page it was
+      # downloaded from, and nobody notices until they are debugging
+      # something else.
+      - name: The tag and the manifest must agree
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          manifest=$(grep -m1 '^version = ' Cargo.toml | cut -d'"' -f2)
+          if [ "$tag" != "$manifest" ]; then
+            echo "tag $GITHUB_REF_NAME says $tag, Cargo.toml says $manifest" >&2
+            exit 1
+          fi
+          echo "version=$tag" >> "$GITHUB_ENV"
+
+      # The same gate as `ci`, run again here rather than trusted from
+      # a previous run: a tag can point at a commit CI never saw.
+      - name: Check
+        run: |
+          cargo fmt --all --check
+          cargo clippy --all-targets -- -D warnings
+          cargo test
+
+      - name: Build
+        env:
+          CC_x86_64_unknown_linux_musl: musl-gcc
+        run: cargo build --release --target "$TARGET"
+
+      - name: Name it and hash it
+        run: |
+          mkdir -p dist
+          binary="dist/wabot-deploy-${version}-x86_64-linux"
+          cp "target/${TARGET}/release/wabot-deploy" "$binary"
+          chmod +x "$binary"
+
+          # A checksum beside the binary, so somebody who downloaded it
+          # over a link they were sent can tell whether it is the one
+          # this workflow built.
+          (cd dist && sha256sum "$(basename "$binary")" > "$(basename "$binary").sha256")
+
+          # Proof it runs at all, and that it is the version claimed —
+          # a static binary that segfaults on the runner will segfault
+          # on the node.
+          "./$binary" --version
+
+          # And proof it is actually static: a "static" build that
+          # picked up a dynamic libc is one that fails on the first
+          # machine with an older one, long after the release.
+          #
+          # Checked by looking for resolved libraries rather than for a
+          # phrase. `ldd` says "not a dynamic executable" on some
+          # systems and "statically linked" on others — a check written
+          # against one of those wordings fails on a correct binary
+          # built by the other, which is how a release step rejects
+          # exactly what it was meant to pass.
+          if ldd "$binary" 2>&1 | grep -q "=>"; then
+            echo "the binary links against shared libraries:" >&2
+            ldd "$binary" >&2
+            exit 1
+          fi
+
+      - name: Publish
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/wabot-deploy-${{ env.version }}-x86_64-linux
+            dist/wabot-deploy-${{ env.version }}-x86_64-linux.sha256
+          generate_release_notes: true
+          body: |
+            One static binary for x86_64 Linux. No runtime dependencies:
+            SQLite is compiled in, TLS is rustls, and there is no libc to
+            match.
+
+            ```sh
+            curl -fsSLO https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/wabot-deploy-${{ env.version }}-x86_64-linux
+            chmod +x wabot-deploy-${{ env.version }}-x86_64-linux
+            sudo ./wabot-deploy-${{ env.version }}-x86_64-linux install --domain your.node --email you@example.com
+            ```
+
+            `install` sets the machine up — containerd, crun, the CNI
+            plugins, the systemd unit, a certificate — and prints the
+            setup token the console asks for.

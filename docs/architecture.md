@@ -1576,3 +1576,47 @@ TLS, autenticado con token de push):
 | push de una imagen mala | sale a producción: el servicio da 502 |
 | rollback desde la consola | la release vieja vuelve a marcarse actual, **200** |
 | variables | se guardan, se versionan, y restaurar una **no** cambia la imagen |
+
+### 8.13 M10 — el framework publicado y el pipeline de release
+
+`wabot 0.2.0` está en crates.io, así que el `[patch.crates-io]` que
+apuntaba al checkout hermano desaparece: el proyecto resuelve el
+framework desde el registro como cualquier otra dependencia. 345 tests
+verdes contra el crate publicado.
+
+Eso arregla de paso el CI, que llevaba roto sin que se notara: el patch
+apuntaba a una ruta que en un runner no existe. Le faltaba además
+`protoc` — la API de containerd llega como ficheros `.proto` y
+prost-build lo invoca, así que el build fallaba dentro de una
+dependencia, que es donde peor se lee.
+
+**Un tag es el disparador, y el tag es la versión.** Nada más publica:
+un release que puede salir desde una rama es uno que sale por
+accidente. Y el workflow comprueba que el tag y el `Cargo.toml`
+coincidan antes de construir — un `v0.3.0` construido de un árbol que
+dice `0.2.0` produce un binario cuyo `--version` contradice la página
+de la que se descargó, y eso no se descubre hasta que alguien está
+depurando otra cosa.
+
+**musl estático, no glibc.** Un build con glibc lleva como suelo la
+versión del runner, y las máquinas donde esto aterriza no siempre son
+más nuevas que un runner de GitHub. El coste es un asignador de memoria
+más lento bajo mucha concurrencia; este nodo hace de proxy y escribe
+SQLite, no es esa carga, y "copia este fichero a la máquina" es el
+producto. Verificado en hardware real —el propio nodo, que es x86_64
+Linux— antes de escribirlo como definitivo: compila, enlaza estático y
+arranca.
+
+Esa verificación cazó un fallo en el propio workflow: la comprobación
+de "¿es estático?" buscaba la frase `not a dynamic executable`, y el
+`ldd` de esa máquina dice `statically linked`. Habría rechazado
+exactamente el binario que debía aceptar. Ahora busca bibliotecas
+resueltas (`=>`), que es el hecho y no la redacción.
+
+**Dos perfiles, y el segundo existe por experiencia.** `release` es LTO
+completo con una unidad de codegen: el binario vive meses en una
+máquina, así que minutos de enlazado se cambian por cada petición que
+va a servir. `node` —el que usa `scripts/deploy.sh`— baja a LTO fino y
+cuatro unidades, porque un build de release en una VM de un núcleo con
+menos de dos gigas se lleva la máquina por delante: rustc tira de swap
+hasta que sshd deja de contestar. Es algo que pasó, no algo que temer.

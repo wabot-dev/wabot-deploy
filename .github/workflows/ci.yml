@@ -11,6 +11,13 @@ jobs:
         with:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
+
+      # containerd's API arrives as .proto files and prost-build shells
+      # out to protoc to read them. Without this the build fails at a
+      # dependency, which reads as the dependency being broken.
+      - name: Install protoc
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+
       - run: cargo fmt --all --check
       - run: cargo clippy --all-targets -- -D warnings
       - run: cargo test
