@@ -75,18 +75,32 @@ pub struct RuncOptions {
     /// Field 6. The runtime binary — this is how crun gets chosen.
     #[prost(string, tag = "6")]
     pub binary_name: String,
-    /// Field 9. Without it, memory limits and OOM accounting are wrong
-    /// in ways that only surface when a container is killed and the
-    /// reason is misreported.
+    /// Field 9. Which cgroup driver the runtime uses: systemd's, or
+    /// the filesystem directly.
     #[prost(bool, tag = "9")]
     pub systemd_cgroup: bool,
 }
 
 impl RuncOptions {
+    /// crun, with the cgroup driver this machine actually has.
+    ///
+    /// The systemd driver has the runtime ask systemd over D-Bus to
+    /// create the container's slice, which is right on a machine
+    /// systemd is running and impossible on one it is not: crun refuses
+    /// with `cannot open sd-bus: No such file or directory`, an error
+    /// that names neither systemd nor the setting that asked for it.
+    ///
+    /// With cgroupfs the runtime writes the hierarchy itself. Memory
+    /// limits and OOM accounting work either way — what the driver
+    /// decides is *who* creates the cgroup, and on a machine with no
+    /// systemd the answer cannot be systemd.
     pub fn crun() -> Self {
         Self {
             binary_name: crate::bootstrap::runtime::CRUN_PATH.to_string(),
-            systemd_cgroup: true,
+            systemd_cgroup: matches!(
+                crate::bootstrap::init::Init::detect(),
+                crate::bootstrap::init::Init::Systemd
+            ),
         }
     }
 
@@ -241,7 +255,14 @@ mod tests {
     /// container that starts under the wrong runtime without saying so.
     #[test]
     fn crun_options_encode_on_the_numbers_containerd_reads() {
-        let bytes = prost::Message::encode_to_vec(&RuncOptions::crun());
+        // Built explicitly rather than through `crun()`: the driver
+        // there depends on the machine, and what is under test is the
+        // field numbering.
+        let options = RuncOptions {
+            binary_name: crate::bootstrap::runtime::CRUN_PATH.to_string(),
+            systemd_cgroup: true,
+        };
+        let bytes = prost::Message::encode_to_vec(&options);
 
         // Field 6, wire type 2 (length-delimited) → (6 << 3) | 2 = 0x32.
         assert_eq!(bytes[0], 0x32, "binary_name must be field 6: {bytes:02x?}");
@@ -254,6 +275,29 @@ mod tests {
         assert!(
             bytes.windows(2).any(|w| w == [0x48, 0x01]),
             "systemd_cgroup must be field 9 and true: {bytes:02x?}"
+        );
+    }
+
+    /// The setting that made every container on Alpine fail with
+    /// `cannot open sd-bus`. Asking systemd to create a cgroup needs a
+    /// systemd to ask.
+    #[test]
+    fn the_cgroup_driver_follows_what_runs_the_machine() {
+        use crate::bootstrap::init::Init;
+        let expected = matches!(Init::detect(), Init::Systemd);
+        assert_eq!(RuncOptions::crun().systemd_cgroup, expected);
+
+        // And false has to mean *absent* on the wire, which is what
+        // makes the shim fall back to its own default rather than
+        // reading a zero we sent on purpose.
+        let cgroupfs = RuncOptions {
+            binary_name: "/usr/local/bin/crun".into(),
+            systemd_cgroup: false,
+        };
+        let bytes = prost::Message::encode_to_vec(&cgroupfs);
+        assert!(
+            !bytes.windows(2).any(|w| w[0] == 0x48),
+            "field 9 should not be encoded at all: {bytes:02x?}"
         );
     }
 

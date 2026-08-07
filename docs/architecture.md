@@ -159,6 +159,15 @@ con la CLI de runc, y `BinaryName` elige cuál. Consecuencia práctica: un
 containerd preexistente —el que instaló Docker, por ejemplo— nos sirve
 sin tocarle la configuración.
 
+**`SystemdCgroup` sale de lo que corre la máquina**, no de una
+constante. Con el driver de systemd el runtime le pide a systemd por
+D-Bus que cree el slice del contenedor; en un nodo sin systemd eso es
+imposible y crun falla con `cannot open sd-bus: No such file or
+directory`, que no nombra ni a systemd ni al ajuste que lo pidió. Con
+cgroupfs el runtime escribe la jerarquía él mismo. Los límites de
+memoria y la contabilidad de OOM funcionan en los dos casos: lo que
+decide el driver es *quién* crea el cgroup.
+
 Ojo: `containerd-client` no vendoriza ese proto. Lo generamos nosotros
 con prost.
 
@@ -881,7 +890,12 @@ jerarquía de cgroups no se monta sola, `overlay` no se carga solo, y
 `supervise-daemon`—. Nada de eso es exótico; es lo que systemd venía
 haciendo sin que nadie lo escribiera.
 
-Y una tercera cosa, que no era de Alpine en absoluto: **la primera
+Y luego dos que sí eran de Alpine, encontradas desplegando de verdad:
+`iptables` no viene en el sistema base —el plugin bridge lo necesita— y
+`SystemdCgroup = true` era una constante en un producto que ya sabía
+que systemd no siempre está.
+
+Y una tercera, que no era de Alpine en absoluto: **la primera
 instalación con dominio no podía funcionar en ninguna máquina**. Pedir
 el certificado antes de arrancar el nodo es pedirle a la autoridad que
 valide un reto que nadie está sirviendo; como desde 0.1.1 eso era fatal,

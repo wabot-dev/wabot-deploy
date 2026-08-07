@@ -637,7 +637,7 @@ pub const CONFIG_PATH: &str = "/etc/containerd/config.toml";
 /// What containerd needs to be to serve this node.
 fn write_config() -> RuntimeResult<()> {
     std::fs::create_dir_all("/etc/containerd")?;
-    std::fs::write(CONFIG_PATH, CONTAINERD_CONFIG)?;
+    std::fs::write(CONFIG_PATH, containerd_config())?;
     Ok(())
 }
 
@@ -786,7 +786,17 @@ start_pre() {
 ///
 /// Deliberately short. Everything not set here is containerd's own
 /// default, which is the right value and stays right when it changes.
-pub const CONTAINERD_CONFIG: &str = r#"# Written by wabot-deploy. Edit if you must; it is written once, on
+pub fn containerd_config() -> String {
+    CONTAINERD_CONFIG_TEMPLATE.replace(
+        "{systemd_cgroup}",
+        match Init::detect() {
+            Init::Systemd => "true",
+            _ => "false",
+        },
+    )
+}
+
+const CONTAINERD_CONFIG_TEMPLATE: &str = r#"# Written by wabot-deploy. Edit if you must; it is written once, on
 # the install that put containerd here, and never rewritten.
 version = 3
 
@@ -803,10 +813,11 @@ version = 3
   # The shim is named `runc.v2` but drives any runtime with a
   # runc-compatible CLI, and `BinaryName` picks which.
   BinaryName = "/usr/local/bin/crun"
-  # Without this, memory limits and OOM accounting are wrong in ways
-  # that only surface when a container is killed and the reason is
-  # misreported.
-  SystemdCgroup = true
+  # Which cgroup driver: systemd's, or the filesystem directly. The
+  # value is substituted at install time from what is running this
+  # machine — asking systemd to create a cgroup on a node that has no
+  # systemd fails with `cannot open sd-bus`, which names neither.
+  SystemdCgroup = {systemd_cgroup}
 
 [plugins.'io.containerd.cri.v1.images'.registry]
   config_path = "/etc/containerd/certs.d"
@@ -879,9 +890,15 @@ mod tests {
     /// reported as one.
     #[test]
     fn the_configuration_selects_crun_and_systemd_cgroups() {
-        assert!(CONTAINERD_CONFIG.contains(CRUN_PATH));
-        assert!(CONTAINERD_CONFIG.contains("SystemdCgroup = true"));
-        assert!(CONTAINERD_CONFIG.contains("version = 3"));
+        assert!(containerd_config().contains(CRUN_PATH));
+        assert!(containerd_config().contains("version = 3"));
+        // The driver is whatever this machine can actually use, and
+        // the placeholder must not survive into the file.
+        let written = containerd_config();
+        assert!(
+            written.contains("SystemdCgroup = true") || written.contains("SystemdCgroup = false"),
+            "{written}"
+        );
     }
 
     /// The configuration is CRI-only, and the comment has to keep
@@ -890,7 +907,7 @@ mod tests {
     #[test]
     fn the_configuration_says_it_is_cri_only() {
         assert!(
-            CONTAINERD_CONFIG.contains("does not use it"),
+            containerd_config().contains("does not use it"),
             "the CRI caveat must survive edits to this file"
         );
     }
