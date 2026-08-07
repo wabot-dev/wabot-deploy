@@ -36,6 +36,10 @@ use super::{layout, ConsoleState};
 #[derive(Debug, Deserialize, Validate)]
 pub struct NodePage {
     pub node: String,
+    pub error: Option<String>,
+    /// What a check or a request just said, carried back from the POST
+    /// that ran it.
+    pub checked: Option<String>,
 }
 
 #[injectable]
@@ -58,7 +62,9 @@ impl NodePages {
             return Ok(Redirect::found("/").into());
         }
 
-        let nodes = crate::node::all(&self.state.config);
+        let nodes = crate::node::all(
+            crate::node::settings::domain(&self.state.database, &self.state.config).await,
+        );
         let projects = access::projects_for(&self.state.database, &account).await?;
         let facts = super::certificate_facts(&self.state).await;
 
@@ -106,12 +112,15 @@ impl NodePages {
         if !account.is_admin() {
             return Ok(Redirect::found("/").into());
         }
-        let Some(node) = crate::node::find(&self.state.config, &query.node) else {
+        let domain = crate::node::settings::domain(&self.state.database, &self.state.config).await;
+        let Some(node) = crate::node::find(domain.clone(), &query.node) else {
             return Ok(Redirect::found("/nodes").into());
         };
 
         let projects = access::projects_for(&self.state.database, &account).await?;
         let snapshot = self.state.deployer.memory().await;
+        let facts = super::certificate_facts(&self.state).await;
+        let last_error = crate::node::settings::acme_error(&self.state.database).await;
         let path = format!("/nodes/{}", node.id);
 
         layout::head(&node.name);
@@ -126,6 +135,7 @@ impl NodePages {
                     <a class="btn btn-ghost" href="/nodes">("All nodes")</a>
                 </div>
 
+                (certificate_card(&facts, domain.as_deref(), last_error.as_deref(), &query))
                 (memory_card(&snapshot))
                 // The stream replaces the figures above in place.
                 // Loaded last so the page is complete before it runs.
@@ -135,6 +145,79 @@ impl NodePages {
         .into_inner();
 
         Ok(frame.render(body).into_view().into())
+    }
+}
+
+/// Write the domain, treating a storage failure as a storage failure.
+///
+/// Separated only so the two call sites read as one line each; the
+/// error is logged rather than returned because the redirect that
+/// follows is the same either way.
+async fn set_domain(database: &wabot::sqlite::SqliteDatabase, domain: Option<&str>) {
+    if let Err(error) = crate::node::settings::set_domain(database, domain).await {
+        tracing::error!(%error, "could not store the node's domain");
+    }
+}
+
+/// What certificate this node serves, and how to change it.
+///
+/// The form is the answer to a node installed before its DNS was
+/// ready: it serves its own authority's certificate, and until now
+/// there was no way to ask again — with the same name or a different
+/// one — without editing a file and restarting.
+fn certificate_card<'a>(
+    facts: &'a super::CertificateFacts,
+    domain: Option<&'a str>,
+    last_error: Option<&'a str>,
+    query: &'a NodePage,
+) -> impl Renderable + 'a {
+    rsx! {
+        <section class="card stack">
+            <div class="split">
+                <p class="card-label">("Certificate")</p>
+                @if facts.trusted {
+                    <span class="badge badge-success">
+                        <span class="dot dot-success"></span>("Trusted")
+                    </span>
+                } @else {
+                    <span class="badge badge-warning">
+                        <span class="dot dot-warning"></span>("Not trusted")
+                    </span>
+                }
+            </div>
+
+            <dl class="kv">
+                <dt>("Domain")</dt>
+                <dd>(domain.unwrap_or("not set"))</dd>
+                <dt>("Issuer")</dt>
+                <dd>(&facts.issuer)</dd>
+            </dl>
+
+            @if let Some(message) = &query.checked {
+                <p class="note">(message)</p>
+            }
+            @if let Some(message) = &query.error {
+                (layout::error_note(message))
+            }
+            @if let Some(failure) = last_error {
+                <p class="failure">("The last attempt said: ")(failure)</p>
+            }
+
+            <form method="post" action="/nodes/certificate" class="stack">
+                <label for="domain">("Domain")</label>
+                <input id="domain" name="domain" type="text" class="mono"
+                       value=(domain.unwrap_or_default())
+                       placeholder="node.example.com">
+                <p class="field-hint">(
+                    "It must resolve to this node, and this node must be reachable on \
+                     port 80 — that is what the challenge answers on. Both are checked \
+                     before anything is requested."
+                )</p>
+                <div class="actions">
+                    <button type="submit">("Request a certificate")</button>
+                </div>
+            </form>
+        </section>
     }
 }
 
@@ -263,6 +346,89 @@ pub struct NodeApi {
 
 #[rest_controller("/")]
 impl NodeApi {
+    /// Set the node's domain and ask for a certificate now.
+    ///
+    /// The name is checked against DNS first, exactly as a service
+    /// hostname is: asking a certificate authority to validate a name
+    /// that does not point here spends one of five hourly attempts to
+    /// be told what a lookup would have said for free.
+    #[post("/nodes/certificate")]
+    #[raw]
+    #[middleware(SessionMiddleware)]
+    async fn set_certificate(&self, request: Request) -> RestResult<Response> {
+        let Some(account) = signed_in(&self.auth) else {
+            return Ok(super::auth::see_other("/sign-in"));
+        };
+        if !account.is_admin() {
+            return Ok(super::auth::see_other("/"));
+        }
+        let here = "/nodes/local";
+
+        let form = match super::auth::read_form(request).await {
+            Ok(form) => form,
+            Err(response) => return Ok(response),
+        };
+        let typed = super::auth::field(&form, "domain");
+
+        let previous =
+            crate::node::settings::domain(&self.state.database, &self.state.config).await;
+
+        if typed.is_empty() {
+            set_domain(&self.state.database, None).await;
+            self.forget(previous.as_deref(), None).await;
+            return Ok(super::auth::back_with_error(
+                here,
+                "the domain was cleared — this node serves its own certificate",
+            ));
+        }
+        let domain = crate::platform::ports::normalize_hostname(typed);
+
+        // Resolved against itself: the node has no other way to know
+        // where it is reachable, and "does this name arrive here" is
+        // the question. See `deploy::dns`.
+        let outcome = crate::deploy::dns::resolves_here(&domain, &domain).await;
+        if !outcome.ok() {
+            return Ok(super::auth::back_with_error(
+                here,
+                &outcome.explain(&domain),
+            ));
+        }
+
+        set_domain(&self.state.database, Some(&domain)).await;
+        // The new name has to reach the console, the old one has to
+        // stop: the edge answers from the route table, and a rename
+        // that only changed the setting would leave the console on a
+        // name nobody asked for and off the one they did.
+        self.forget(previous.as_deref(), Some(&domain)).await;
+
+        Ok(super::auth::see_other(&format!(
+            "{here}?{}",
+            form_urlencoded::Serializer::new(String::new())
+                .append_pair(
+                    "checked",
+                    &format!(
+                        "{domain} resolves here. The certificate is being requested — \
+                         reload in a few seconds."
+                    )
+                )
+                .finish()
+        )))
+    }
+
+    /// Drop the name the node used to answer to, then rebuild the
+    /// routes — which is also what asks for the certificate, since the
+    /// two answer for the same names.
+    async fn forget(&self, previous: Option<&str>, now: Option<&str>) {
+        if let Some(previous) = previous.filter(|old| Some(*old) != now) {
+            if let Err(error) =
+                crate::edge::routes::forget_control_plane(&self.state.database, previous).await
+            {
+                tracing::warn!(%error, "could not drop the old console route");
+            }
+        }
+        self.state.deployer.sync_routes().await;
+    }
+
     /// A reading every two seconds, as server-sent events.
     ///
     /// `#[raw]`, because the body is a stream that never ends and the
@@ -286,7 +452,8 @@ impl NodeApi {
             .get(1)
             .map(|id| id.to_string())
             .unwrap_or_default();
-        if crate::node::find(&self.state.config, &id).is_none() {
+        let known = crate::node::settings::domain(&self.state.database, &self.state.config).await;
+        if crate::node::find(known, &id).is_none() {
             return Ok(Response::builder()
                 .status(StatusCode::NOT_FOUND)
                 .body(Body::empty())
@@ -369,6 +536,7 @@ fn cells(snapshot: &Snapshot) -> Cells {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::Config;
     use crate::console::tests::Console;
     use wabot::rest::axum::http::StatusCode;
 
@@ -476,6 +644,114 @@ mod tests {
             .await;
         response.assert_status(StatusCode::FOUND);
         assert_eq!(response.header("location"), Some("/nodes"));
+    }
+
+    /// The point of the whole form: a node installed before its DNS
+    /// was ready serves its own certificate, and there has to be a way
+    /// back from that without editing a file and restarting.
+    #[tokio::test]
+    async fn the_node_page_offers_to_request_a_certificate() {
+        let console = Console::new().await;
+        let cookie = console.signed_in().await;
+
+        let body = console
+            .harness
+            .get("/nodes/local")
+            .header("cookie", &cookie)
+            .send()
+            .await
+            .body;
+        assert!(body.contains("Request a certificate"), "{body}");
+        assert!(
+            body.contains("/nodes/certificate"),
+            "the form posts somewhere"
+        );
+    }
+
+    /// A name that does not point here cannot be accepted: asking an
+    /// authority to validate it spends one of five hourly attempts to
+    /// be told what a lookup says for free.
+    #[tokio::test]
+    async fn a_name_that_does_not_resolve_here_is_refused() {
+        let console = Console::new().await;
+        let cookie = console.signed_in().await;
+
+        let response = console
+            .harness
+            .post("/nodes/certificate")
+            .header("cookie", &cookie)
+            // `.invalid` is reserved by RFC 2606 precisely so it can
+            // never resolve — no network needed to know the answer.
+            .form(&[("domain", "nowhere.invalid")])
+            .send()
+            .await;
+
+        response.assert_status(StatusCode::SEE_OTHER);
+        let location = response.header("location").unwrap_or_default();
+        assert!(location.starts_with("/nodes/local?error="), "{location}");
+
+        assert_eq!(
+            crate::node::settings::domain(&console.database, &Config::default()).await,
+            None,
+            "a refused name must not be stored"
+        );
+    }
+
+    /// Clearing it is how somebody goes back to a node with no public
+    /// name — and it must not be gated on a lookup.
+    #[tokio::test]
+    async fn the_domain_can_be_cleared() {
+        let console = Console::new().await;
+        let cookie = console.signed_in().await;
+
+        crate::node::settings::set_domain(&console.database, Some("was.example"))
+            .await
+            .expect("set");
+
+        console
+            .harness
+            .post("/nodes/certificate")
+            .header("cookie", &cookie)
+            .form(&[("domain", "")])
+            .send()
+            .await
+            .assert_status(StatusCode::SEE_OTHER);
+
+        assert_eq!(
+            crate::node::settings::domain(&console.database, &Config::default()).await,
+            None
+        );
+    }
+
+    /// Changing what the whole node answers to is not something a
+    /// member of one project gets to do.
+    #[tokio::test]
+    async fn only_an_admin_may_change_it() {
+        let console = Console::new().await;
+        let admin = console.signed_in().await;
+        let member = console.joined_as(&admin, "member").await;
+
+        crate::node::settings::set_domain(&console.database, Some("was.example"))
+            .await
+            .expect("set");
+
+        let response = console
+            .harness
+            .post("/nodes/certificate")
+            .header("cookie", &member)
+            .form(&[("domain", "")])
+            .send()
+            .await;
+
+        response.assert_status(StatusCode::SEE_OTHER);
+        assert_eq!(response.header("location"), Some("/"));
+        assert_eq!(
+            crate::node::settings::domain(&console.database, &Config::default())
+                .await
+                .as_deref(),
+            Some("was.example"),
+            "a member changed the node's domain"
+        );
     }
 
     /// The stream is as private as the page it feeds.

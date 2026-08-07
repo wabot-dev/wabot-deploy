@@ -78,7 +78,9 @@ pub struct Deployer {
     database: Arc<SqliteDatabase>,
     /// Written once at startup and bind-mounted into every container.
     resolv_conf: PathBuf,
-    node_domain: Option<String>,
+    /// The whole config, because the node's domain can change while it
+    /// runs and is read per use rather than captured here.
+    config: crate::config::Config,
     /// The live table the listener reads, when there is one. `None` in
     /// a test and in `install`, where nothing is serving.
     routes: Option<Arc<crate::edge::routes::RouteTable>>,
@@ -91,7 +93,7 @@ impl Deployer {
         Self {
             database,
             resolv_conf: config.node.data_dir.join("resolv.conf"),
-            node_domain: config.node.domain.clone(),
+            config: config.clone(),
             routes: None,
             certificates: None,
         }
@@ -114,10 +116,12 @@ impl Deployer {
 
     /// Recompute the routes. Called after anything that can change
     /// where a hostname points.
-    async fn sync_routes(&self) {
+    pub(crate) async fn sync_routes(&self) {
         if let Err(error) = routing::sync(
             &self.database,
-            self.node_domain.as_deref(),
+            crate::node::settings::domain(&self.database, &self.config)
+                .await
+                .as_deref(),
             self.routes.as_ref(),
         )
         .await

@@ -295,9 +295,10 @@ impl Config {
              # rewritten. Unknown keys are refused rather than ignored, so a\n\
              # typo fails loudly instead of leaving a default in place.\n\
              #\n\
-             # Set node.domain once DNS points here and re-run `install` to\n\
-             # obtain a certificate; until then the node serves a self-signed\n\
-             # one.\n\n{body}"
+             # node.domain seeds the name this node answers to. After the\n\
+             # first start it lives in the database, where the console can\n\
+             # change it — editing it here again does nothing unless you\n\
+             # re-run `install --domain`.\n\n{body}"
         )
     }
 

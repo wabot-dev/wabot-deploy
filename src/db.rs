@@ -37,6 +37,10 @@ fn migrations() -> Vec<Migration> {
             "0010_registry_tags",
             include_str!("../migrations/0010_registry_tags.sql"),
         ),
+        Migration::new(
+            "0011_updates",
+            include_str!("../migrations/0011_updates.sql"),
+        ),
     ]
 }
 

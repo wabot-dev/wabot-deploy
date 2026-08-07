@@ -311,7 +311,13 @@ pub async fn ensure_all(
     let mut changed = false;
     let mut failure: Option<AcmeError> = None;
 
-    let mut names: Vec<String> = config.node.domain.iter().cloned().collect();
+    // Read now, not at startup: an operator who fixed their DNS and
+    // set the domain from the console needs the next pass to use it,
+    // not the value this process booted with.
+    let mut names: Vec<String> = crate::node::settings::domain(database, config)
+        .await
+        .into_iter()
+        .collect();
     match crate::platform::ports::all(database).await {
         Ok(ports) => names.extend(ports.into_iter().filter_map(|port| port.hostname)),
         Err(error) => tracing::warn!(%error, "could not read the service hostnames"),
@@ -393,13 +399,18 @@ pub async fn renewal_loop(
     wake: Arc<Wake>,
     cancel: wabot::lifecycle::Cancel,
 ) -> Result<(), std::convert::Infallible> {
-    if config.acme.disabled || config.node.domain.is_none() {
-        tracing::info!("ACME is not configured; serving the local authority's certificate");
+    if config.acme.disabled {
+        tracing::info!("ACME is disabled; serving the local authority's certificate");
         // Not a return: a service that ends takes the process with it,
-        // and "no domain configured" is a fine way to run.
+        // and "no ACME" is a fine way to run.
         cancel.cancelled().await;
         return Ok(());
     }
+
+    // A node with no domain *yet* still runs this loop. It has nothing
+    // to ask for until somebody sets one — and when they do, from the
+    // console, this is what notices. Leaving early on "no domain at
+    // startup" made that impossible without a restart.
 
     // Start at a minute and back off to six hours. The first attempts
     // are the ones most likely to be waiting on DNS the operator is
@@ -419,11 +430,14 @@ pub async fn renewal_loop(
                         "certificate installed without a restart"
                     );
                 }
+                if let Err(error) = crate::node::settings::set_acme_error(&database, None).await {
+                    tracing::debug!(%error, "could not clear the last failure");
+                }
                 delay = SETTLED_DELAY;
             }
             Err(error) => {
                 tracing::warn!(%error, retry_in = ?delay, "could not obtain a certificate");
-                if let Err(error) = record_failure(&database, &config, &error).await {
+                if let Err(error) = record_failure(&database, &error).await {
                     tracing::debug!(%error, "could not record the failure");
                 }
                 delay = (delay * 2).min(MAX_DELAY);
@@ -470,26 +484,14 @@ impl Wake {
     }
 }
 
-/// Leave the reason on the certificate row, so `doctor` can show it
+/// Leave the reason where `doctor` and the console can show it,
 /// without an operator reading the journal.
-async fn record_failure(
-    database: &SqliteDatabase,
-    config: &Config,
-    error: &AcmeError,
-) -> AcmeResult<()> {
-    let Some(domain) = config.node.domain.clone() else {
-        return Ok(());
-    };
-    let message = error.to_string();
-    database
-        .write(move |connection| {
-            connection.execute(
-                "UPDATE certificate SET \"last_error\" = ?2 WHERE \"domain\" = ?1",
-                (domain, message),
-            )?;
-            Ok(())
-        })
-        .await?;
+///
+/// Beside the domain rather than on the certificate row, because the
+/// failure that matters most — asked for a name, got nothing — is the
+/// one where no row exists to carry it.
+async fn record_failure(database: &SqliteDatabase, error: &AcmeError) -> AcmeResult<()> {
+    crate::node::settings::set_acme_error(database, Some(&error.to_string())).await?;
     Ok(())
 }
 

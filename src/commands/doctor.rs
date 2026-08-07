@@ -185,26 +185,22 @@ pub async fn run(config: Config, config_path: &Path) -> anyhow::Result<i32> {
         }
     }
 
-    // The reason a certificate is missing lives on its row, so an
-    // operator sees it here rather than in the journal.
-    if let Some(domain) = &config.node.domain {
-        match crate::edge::certs::last_error(&database, domain).await {
-            Ok(Some(error)) => {
-                println!("  last ACME failure for {domain}:");
-                println!("    {error}");
-                problems += 1;
-            }
-            Ok(None) => {}
-            Err(error) => println!("  (could not read the last error: {error})"),
-        }
+    // The reason a certificate is missing is recorded beside the
+    // domain, so an operator sees it here rather than in the journal.
+    let domain = crate::node::settings::domain(&database, &config).await;
+    if let Some(error) = crate::node::settings::acme_error(&database).await {
+        let name = domain.as_deref().unwrap_or("this node");
+        println!("  last ACME failure for {name}:");
+        println!("    {error}");
+        problems += 1;
     }
 
     println!();
     println!("acme");
     if config.acme.disabled {
         println!("  disabled — the local authority's certificate is served");
-    } else if config.node.domain.is_none() {
-        println!("  no node.domain configured; nothing a public authority could validate");
+    } else if domain.is_none() {
+        println!("  no domain set; nothing a public authority could validate");
     } else {
         println!("  directory  {}", config.acme.directory_url());
         if config.acme.is_staging() {

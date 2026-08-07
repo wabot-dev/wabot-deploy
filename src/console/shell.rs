@@ -145,6 +145,8 @@ impl Frame {
                     <p class="side-label">("Node")</p>
                     <nav>
                         <a href="/nodes" class=(current(self.path == "/nodes"))>("All nodes")</a>
+                        <a href="/updates"
+                           class=(current(self.path == "/updates"))>("Updates")</a>
                     </nav>
                 }
                 @if self.area == Area::People {

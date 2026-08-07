@@ -1620,3 +1620,126 @@ va a servir. `node` —el que usa `scripts/deploy.sh`— baja a LTO fino y
 cuatro unidades, porque un build de release en una VM de un núcleo con
 menos de dos gigas se lleva la máquina por delante: rustc tira de swap
 hasta que sshd deja de contestar. Es algo que pasó, no algo que temer.
+
+### 8.14 M11 — el dominio como estado, no como configuración
+
+Dos correcciones pedidas después de instalar en real, y las dos tenían
+la misma raíz.
+
+**Un install que no consigue el certificado, falla.** Antes imprimía
+"not obtained yet", seguía adelante y dejaba el nodo sirviendo el
+certificado de su propia autoridad. Eso convierte un fallo de DNS en un
+descubrimiento posterior, en un navegador, de alguien que no estaba
+delante. Ahora `install --domain X` termina con código 1 antes de
+arrancar el servicio, dice qué falló y qué comprobar —lo habitual es
+que el DNS no apunte aquí todavía, o que el :80 no sea alcanzable desde
+internet, que es donde contesta el reto HTTP-01.
+
+La salida sigue existiendo, pero hay que pedirla:
+`--allow-self-signed`. Una máquina en red privada, o una cuyo DNS
+todavía se está propagando, es una forma real de correr esto; lo que no
+puede ser es caer ahí por omisión. Con la bandera, el nodo emite un
+certificado propio **que cubre el nombre nuevo** y sigue pidiendo el
+bueno en segundo plano.
+
+**Y desde la consola se puede reintentar.** Ese era el segundo agujero:
+tras un install con certificado autofirmado no había forma de volver a
+pedirlo sin editar un fichero y reiniciar. Ahora la página del nodo
+lleva una tarjeta con el emisor actual, el último error de ACME y un
+formulario para fijar el dominio —el mismo u otro— que comprueba el DNS
+antes de aceptarlo, exactamente como ya hacía el hostname de un
+servicio: pedirle a una autoridad que valide un nombre que no apunta
+aquí gasta uno de los cinco intentos por hora para que te digan lo que
+una consulta te decía gratis.
+
+**Para que eso sea posible, el dominio dejó de ser configuración.**
+Vivía en el fichero, leído al arrancar y transportado por valor; una
+consola que solo lee un valor fijado en el arranque no puede cambiarlo.
+Ahora vive en la tabla `setting` y el fichero es la semilla: lo
+almacenado gana. Al revés —que el fichero pudiera imponerse— sería un
+cambio de consola que deja de aplicar calladamente en el siguiente
+reinicio. El comentario que `install` escribe en el `config.toml` lo
+dice, porque un fichero que miente sobre su propio efecto es peor que
+uno vacío.
+
+Eso obligó a repasar cada lector: el arranque del edge (los nombres del
+certificado autofirmado), el bucle de renovación —que además ya no sale
+temprano cuando no hay dominio al arrancar, o un dominio puesto después
+no se notaría hasta reiniciar—, las rutas, la sugerencia de hostname de
+un servicio, la lista de nodos y `doctor`.
+
+**El último error de ACME se mudó también.** Estaba en la fila del
+certificado, que es justo la que no existe cuando el fallo es "pedí un
+nombre y no obtuve nada". Ahora se guarda junto al dominio, se limpia
+en cuanto una pasada termina bien, y lo leen tanto `doctor` como la
+consola.
+
+**Renombrar un nodo funciona de verdad.** Volver a correr el instalador
+con otro dominio ya no cambia solo el ajuste: emite un autofirmado que
+cubre el nombre nuevo, quita la ruta de control-plane del viejo, pone
+la del nuevo —y solo si ya había rutas, porque una tabla vacía es lo
+que hace que un nodo recién instalado conteste en su IP pelada— y
+reinicia el servicio aunque el binario sea el mismo, porque el edge lee
+sus nombres y sus rutas al arrancar.
+
+Y al revés: un `install` sin `--domain` **no** pisa lo que se cambió
+desde la consola, aunque el fichero siga diciendo el nombre viejo. Una
+actualización re-ejecuta el instalador; si eso revirtiera el dominio,
+el nodo volvería calladamente a un nombre que alguien dejó de usar.
+
+### 8.15 M12 — actualizarse con un clic
+
+El repositorio es público y publica releases, así que el nodo puede
+traerse una. **Nunca solo:** nada de esto corre por temporizador. Un
+nodo que se actualiza a sí mismo es un nodo que reinicia todo lo que
+lleva encima en un momento que nadie eligió; la consola *ofrece*, la
+persona decide.
+
+**El orden de los pasos es la seguridad.** Descargar el `.sha256`,
+descargar el binario, comparar, ejecutarlo con `--version`, copiar la
+base de datos, mover el binario, reiniciar. Todo lo anterior al
+`rename` es barato de deshacer, y el `rename` es atómico —el binario
+viejo queda al lado como `.previous`—. La copia de la base va antes
+que nada porque la migración es el único paso que devolver el binario
+viejo no deshace; se hace con `VACUUM INTO`, no copiando el fichero:
+SQLite se está escribiendo mientras tanto y una copia byte a byte es
+la copia de una transacción a medias.
+
+Dos comprobaciones antes de tocar nada: el checksum publicado, y
+ejecutar lo descargado para que diga qué versión es. La segunda caza
+dos cosas que el checksum no ve —un binario para otra arquitectura o
+libc, y un release cuyo asset no coincide con su tag—.
+
+**Quién termina el trabajo.** El último paso reemplaza el proceso, así
+que el proceso no puede informar de su propio resultado. La fila queda
+en `restarting` y la resuelve el nodo que vuelve, comparando su propia
+versión con la que la fila decía. Por eso ese estado vive en la base de
+datos y no en memoria: la página que el navegador recarga después la
+sirve el binario *nuevo* leyendo lo que escribió el viejo.
+
+**El reinicio se hace desde fuera del cgroup.** Un `systemctl restart`
+lanzado desde dentro de la unidad se mata a sí mismo al parar la
+unidad; `systemd-run --on-active=1` crea una unidad transitoria que
+sobrevive. El `systemctl` directo queda de reserva, porque systemd
+encola el trabajo al recibirlo y normalmente llega antes que el kill
+—es el orden lo que no está garantizado, y por eso es la reserva y no
+el plan—.
+
+**Las notas de cada release se leen en la consola.** Vienen en Markdown
+y renderizarlas sería o una dependencia que lo parsea todo y emite HTML
+—que luego hay que sanear, porque ese texto viene de internet— o un
+parser pequeño de lo que las notas usan de verdad. Es lo segundo, y no
+produce HTML: produce estructura, y `rsx!` escapa cada valor. Una nota
+que contenga `<script>` es un párrafo que dice `<script>`. Los enlaces
+solo son enlaces si son `http(s)`.
+
+El catálogo se cachea quince minutos: GitHub permite sesenta peticiones
+sin autenticar por hora y por IP, y la página es de las que se
+recargan. Hay un botón para preguntar otra vez, que es más barato que
+explicarle la caché a quien acaba de publicar un release.
+
+**Lo que todavía no hace.** No reescribe la unidad de systemd: un
+release que cambie la unidad tiene que decir en sus notas que hay que
+volver a correr `install`. Y no hay botón de rollback: volver atrás una
+migración no es una operación de ficheros, que es justo para lo que
+está la copia de la base.

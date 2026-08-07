@@ -29,6 +29,7 @@ pub mod people;
 pub mod projects;
 pub mod services;
 pub mod shell;
+pub mod updates;
 
 use std::sync::Arc;
 
@@ -47,18 +48,19 @@ pub struct ConsoleState {
     pub(crate) database: Arc<SqliteDatabase>,
     pub(crate) config: Config,
     pub(crate) deployer: Arc<crate::deploy::Deployer>,
+    /// What releases exist, as last read from GitHub. Shared so that
+    /// the page and the update it starts agree about what they are
+    /// installing.
+    pub(crate) catalogue: Arc<crate::update::Catalogue>,
 }
 
 impl ConsoleState {
     /// Where this console answers, for a link somebody has to paste
     /// somewhere else. Built from the node's own domain, because a
     /// link to `localhost` is one only the node can open.
-    pub(crate) fn base_url(&self) -> String {
-        let host = self
-            .config
-            .node
-            .domain
-            .clone()
+    pub(crate) async fn base_url(&self) -> String {
+        let host = crate::node::settings::domain(&self.database, &self.config)
+            .await
             .unwrap_or_else(|| "localhost".into());
         match self.config.edge.https_port {
             443 => format!("https://{host}"),
@@ -81,6 +83,7 @@ impl ConsoleState {
             database,
             config,
             deployer,
+            catalogue: Arc::new(crate::update::Catalogue::default()),
         }
     }
 }
@@ -95,7 +98,7 @@ pub(crate) struct CertificateFacts {
 }
 
 pub(crate) async fn certificate_facts(state: &ConsoleState) -> CertificateFacts {
-    let domain = state.config.node.domain.clone();
+    let domain = crate::node::settings::domain(&state.database, &state.config).await;
     let stored = match &domain {
         Some(domain) => certs::load(&state.database, domain).await.ok().flatten(),
         None => None,
@@ -184,8 +187,8 @@ fn certificate_note(facts: &CertificateFacts) -> &'static str {
         "Staging certificate — browsers will not trust it, which is expected. \
          Set acme.directory to production when you are done testing."
     } else {
-        "Self-signed, from this node's local authority. Set node.domain and \
-         the node will obtain a public one."
+        "Self-signed, from this node's local authority. Set the node's domain \
+         on the node page and it will obtain a public one."
     }
 }
 
@@ -228,7 +231,9 @@ pub fn register(
         projects::ProjectPages,
         projects::ProjectApi,
         services::ServicePages,
-        services::ServiceApi
+        services::ServiceApi,
+        updates::UpdatePages,
+        updates::UpdateApi
     );
 }
 
@@ -239,6 +244,7 @@ pub fn routes(container: &Container) -> Router {
     let pages = people::PeoplePages::register_ui_routes(container, pages);
     let pages = projects::ProjectPages::register_ui_routes(container, pages);
     let pages = services::ServicePages::register_ui_routes(container, pages);
+    let pages = updates::UpdatePages::register_ui_routes(container, pages);
 
     let forms = Router::new();
     let forms = auth::AuthApi::register_routes(container, forms);
@@ -246,6 +252,7 @@ pub fn routes(container: &Container) -> Router {
     let forms = people::PeopleApi::register_routes(container, forms);
     let forms = projects::ProjectApi::register_routes(container, forms);
     let forms = services::ServiceApi::register_routes(container, forms);
+    let forms = updates::UpdateApi::register_routes(container, forms);
 
     pages
         .merge(forms)
@@ -522,6 +529,9 @@ pub(crate) mod tests {
             .body;
 
         assert!(body.contains("self-signed"), "{body}");
-        assert!(body.contains("node.domain"), "and says what to do");
+        // What to do about it, and where. The instruction used to name
+        // a config key; it names the page that can change it now,
+        // because editing a file and restarting is no longer the way.
+        assert!(body.contains("node page"), "and says what to do: {body}");
     }
 }

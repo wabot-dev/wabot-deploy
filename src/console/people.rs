@@ -329,7 +329,7 @@ impl PeopleApi {
         // Back through the query string, because this is the only time
         // the token exists in clear and the page has to show it once.
         // Stored hashed, so no page can ever show it again.
-        let link = format!("{}/join/{token}", self.state.base_url());
+        let link = format!("{}/join/{token}", self.state.base_url().await);
         Ok(see_other(&format!(
             "/people?{}",
             form_urlencoded::Serializer::new(String::new())

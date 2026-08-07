@@ -27,6 +27,11 @@ pub async fn run(config: Config) -> anyhow::Result<i32> {
     // owns the other.
     let wake = Arc::new(crate::edge::acme::Wake::default());
 
+    // Whatever the last process was in the middle of. An update ends
+    // by replacing that process, so the only one who can say whether
+    // it worked is this one — see `update::settle_after_restart`.
+    crate::update::settle_after_restart(&database).await;
+
     let container = Container::new();
     crate::api::register(&container, database.clone());
     crate::console::register(
@@ -48,10 +53,8 @@ pub async fn run(config: Config) -> anyhow::Result<i32> {
                 .with_routes(routes.clone())
                 .with_certificates(wake.clone()),
         ),
-        host: config
-            .node
-            .domain
-            .clone()
+        host: crate::node::settings::domain(&database, &config)
+            .await
             .unwrap_or_else(|| "localhost".into()),
     });
     crate::registry::register(&container, registry_state);

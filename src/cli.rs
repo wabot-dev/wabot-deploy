@@ -94,6 +94,21 @@ pub struct InstallArgs {
     #[arg(long)]
     pub acme_staging: bool,
 
+    /// Finish the install even if no public certificate was obtained.
+    ///
+    /// Without this, `install --domain` fails when the certificate
+    /// does not arrive — because the alternative is an install that
+    /// reports success and serves a certificate no browser trusts,
+    /// which is discovered later by somebody who was not there.
+    ///
+    /// With it, the node serves its own authority's certificate and
+    /// keeps asking in the background. That is a real way to run — a
+    /// machine on a private network, or one whose DNS is still
+    /// propagating — and it should be said out loud rather than fallen
+    /// into.
+    #[arg(long)]
+    pub allow_self_signed: bool,
+
     /// Install the node but leave containerd alone.
     ///
     /// For a machine where containerd is managed by something else, or
@@ -136,6 +151,10 @@ impl InstallArgs {
             domain: None,
             email: None,
             acme_staging: false,
+            // Tests that are not about the certificate must not fail
+            // on one; the tests that *are* about it set this to false
+            // and say so.
+            allow_self_signed: true,
             no_runtime: false,
             // Tests must not touch containerd, systemd, or
             // /usr/local on whoever's machine is running them.

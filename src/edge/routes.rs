@@ -131,6 +131,32 @@ pub async fn retain_proxies(database: &SqliteDatabase, keep: &[String]) -> Sqlit
         .await
 }
 
+/// Forget one control-plane name.
+///
+/// For the node that was renamed: the old name keeps answering the
+/// console otherwise, which is a name the operator stopped meaning to
+/// serve and stopped having a certificate for.
+///
+/// Proxy rows are left alone — those belong to `retain_proxies`, which
+/// derives them from the services.
+pub async fn forget_control_plane(database: &SqliteDatabase, host: &str) -> SqliteResult<()> {
+    let host = normalize(host);
+    // Never the fallback: `localhost` is how somebody reaches the
+    // console from the node itself when everything else is wrong.
+    if host == crate::edge::certs::FALLBACK_NAME {
+        return Ok(());
+    }
+    database
+        .write(move |connection| {
+            connection.execute(
+                "DELETE FROM route WHERE \"host\" = ?1 AND \"upstream_kind\" = 'control_plane'",
+                [host],
+            )?;
+            Ok(())
+        })
+        .await
+}
+
 /// Load every enabled route.
 ///
 /// A row whose upstream cannot be parsed is skipped with a warning

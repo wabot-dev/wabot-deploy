@@ -36,6 +36,32 @@ pub fn head(title_text: &str) {
 }
 
 /// The error strip a form shows when the node refused it.
+/// A moment, as how long ago it was.
+///
+/// Relative rather than absolute because every reader of this console
+/// is looking at a machine, not a calendar: "4 minutes ago" answers
+/// "did that just happen" without anybody working out what time zone
+/// the node keeps. Absolute dates are for release notes, which come
+/// with their own.
+pub fn when(at_ms: i64) -> String {
+    let seconds = (super::now_ms() - at_ms) / 1000;
+    match seconds {
+        // Clock skew, or a row written in the same tick.
+        s if s < 0 => "just now".into(),
+        s if s < 60 => "just now".into(),
+        s if s < 3600 => plural(s / 60, "minute"),
+        s if s < 86_400 => plural(s / 3600, "hour"),
+        s => plural(s / 86_400, "day"),
+    }
+}
+
+fn plural(count: i64, unit: &str) -> String {
+    match count {
+        1 => format!("1 {unit} ago"),
+        many => format!("{many} {unit}s ago"),
+    }
+}
+
 pub fn error_note(message: &str) -> impl Renderable + '_ {
     rsx! {
         <p class="form-error"><strong>("Error: ")</strong>(message)</p>
@@ -112,6 +138,28 @@ pub const CSS: &str = r#"
   font-size: var(--fs-sm);
   white-space: pre-wrap;
   word-break: break-word;
+}
+
+/* Release notes. Written by somebody else, arriving as Markdown, and
+   rendered here as ordinary prose — narrow enough to read, with the
+   bullets and code the notes actually use. */
+.notes { max-width: 46rem; }
+.notes h3 {
+  font-size: var(--fs-md);
+  margin: var(--sp-5) 0 var(--sp-2);
+}
+.notes h3:first-child { margin-top: 0; }
+.notes p { margin: 0 0 var(--sp-3); }
+.notes ul { margin: 0 0 var(--sp-3); padding-left: var(--sp-5); }
+.notes li { margin: 0 0 var(--sp-1); }
+.notes pre { margin: 0 0 var(--sp-3); overflow-x: auto; }
+
+/* Back to where this page was reached from. Small, above the title,
+   because the title is what somebody came to read. */
+.crumb {
+  margin: 0 0 var(--sp-2);
+  font-size: var(--fs-sm);
+  color: rgb(var(--c-fg-muted));
 }
 
 .empty {

@@ -16,6 +16,7 @@ use crate::ledger::{self, Status, Step};
 pub async fn run(mut config: Config, config_path: &Path, args: InstallArgs) -> anyhow::Result<i32> {
     // Flags win over the file, and are then persisted — so
     // `install --domain x` once is the same as editing the file.
+    let explicit_domain = args.domain.is_some();
     if let Some(domain) = args.domain {
         config.node.domain = Some(domain);
     }
@@ -103,16 +104,114 @@ pub async fn run(mut config: Config, config_path: &Path, args: InstallArgs) -> a
 
     report(&config, config_path, wrote_config, &database).await?;
 
-    // Attempted here so a DNS or firewall problem surfaces while the
-    // operator is still looking at a terminal — but never fatal: the
-    // node serves on the local authority's certificate either way, and
-    // `serve` retries in the background. An install that failed
-    // because a DNS record had not propagated yet would be a bad
-    // reason to have no node.
+    // What this node answers to, settled before the certificate is
+    // asked for — that request reads it, and so does the console
+    // afterwards.
+    //
+    // `--domain` is somebody saying it now, and wins. Without the flag
+    // the stored value stands: a domain changed from the console must
+    // survive the next `install`, which is what an upgrade runs.
+    let previous = crate::node::settings::domain(&database, &config).await;
+    let domain = match explicit_domain {
+        true => config.node.domain.clone(),
+        false => previous.clone(),
+    };
+    if let Some(domain) = &domain {
+        crate::node::settings::set_domain(&database, Some(domain)).await?;
+    }
+    config.node.domain = domain.clone();
+    let renamed = domain != previous;
+
+    // Something to serve on the new name immediately, whatever the
+    // authority says next. Without this a rename leaves the node
+    // presenting a certificate for the name it stopped answering to.
+    if renamed {
+        if let Some(domain) = &domain {
+            crate::edge::certs::ensure_self_signed(
+                &database,
+                crate::edge::certs::FALLBACK_NAME,
+                &[
+                    crate::edge::certs::FALLBACK_NAME.to_string(),
+                    domain.clone(),
+                ],
+            )
+            .await?;
+        }
+    }
+
+    // Attempted here, before the node is started, so a DNS or firewall
+    // problem surfaces while the operator is still looking at a
+    // terminal rather than in a browser weeks later.
     if let Err(error) = try_certificate(&config, &database).await {
         println!();
-        println!("  certificate: not obtained yet — {error}");
-        println!("  the node will serve its local certificate and keep retrying.");
+        println!("  certificate: not obtained — {error}");
+
+        // Left where `doctor` and the console read it. Whoever runs
+        // the install is at a terminal; whoever fixes it afterwards is
+        // looking at a page, and the reason has to reach them too.
+        crate::node::settings::set_acme_error(&database, Some(&error.to_string())).await?;
+
+        // Asked for a domain and did not get a certificate for it. An
+        // install that reports success here is one whose failure is
+        // discovered later, in a browser, by somebody who was not
+        // there — so it fails, unless the operator said in advance
+        // that serving the local authority's certificate is
+        // acceptable.
+        if !args.allow_self_signed {
+            println!();
+            println!("  The node is configured. This run did not start it.");
+            println!();
+            println!("  Fix the name and run install again — most often DNS does not");
+            println!("  point here yet, or :80 is not reachable from the internet, which");
+            println!("  is what the HTTP-01 challenge needs.");
+            println!();
+            println!("  To finish anyway and serve this node's own certificate:");
+            println!("    wabot-deploy install --allow-self-signed");
+
+            database.close().await?;
+            return Ok(1);
+        }
+
+        println!("  --allow-self-signed: serving this node's own certificate for");
+        println!(
+            "  {}, and retrying in the background.",
+            domain.as_deref().unwrap_or("this node")
+        );
+        println!("  `wabot-deploy doctor` shows what the last attempt said.");
+    } else {
+        // A certificate in hand means whatever the last attempt
+        // complained about is over. Leaving the message would have the
+        // console reporting a failure that has been fixed.
+        crate::node::settings::set_acme_error(&database, None).await?;
+    }
+
+    // A rename only takes effect once the edge is answering for the
+    // new name: the console it serves is reached through the route
+    // table, and the name that used to reach it must stop.
+    if renamed {
+        // Asked before anything is dropped: removing the old name
+        // could empty the table, and "was this node already routing"
+        // is the question — not "is it routing after the removal".
+        let routing = !crate::edge::routes::load_all(&database).await?.is_empty();
+
+        if let Some(previous) = &previous {
+            crate::edge::routes::forget_control_plane(&database, previous).await?;
+        }
+        // Only into a table that already had rows. An empty one means
+        // every hostname reaches the control plane — which is what
+        // makes a fresh node reachable at its bare IP — and writing
+        // the first row here would take that away.
+        if let Some(domain) = &domain {
+            if routing {
+                crate::edge::routes::upsert(
+                    &database,
+                    domain,
+                    &crate::edge::routes::Upstream::ControlPlane,
+                    None,
+                )
+                .await?;
+            }
+        }
     }
 
     // Last, because it is the step that makes everything before it
@@ -127,7 +226,10 @@ pub async fn run(mut config: Config, config_path: &Path, args: InstallArgs) -> a
     if !args.no_system && !args.no_start && crate::bootstrap::service::systemd_available() {
         use crate::bootstrap::service;
 
-        if service::is_active() && service::running_current_binary() {
+        // A rename restarts even when nothing else changed: the edge
+        // reads its names and its routes at startup, so a node left
+        // running is one still answering to the old domain.
+        if service::is_active() && service::running_current_binary() && !renamed {
             println!();
             println!("  the node is already running this binary.");
         } else {
@@ -438,6 +540,228 @@ mod tests {
 
     /// The property `install` is built around: running it again
     /// converges instead of repeating or failing.
+    /// An installer that says "installed" after failing to get the
+    /// certificate for the name it was given hands somebody a node
+    /// that only fails later, in a browser, with nobody watching.
+    #[tokio::test]
+    async fn an_install_that_cannot_get_a_certificate_fails() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let config_path = dir.path().join("config.toml");
+        let mut config = config_in(dir.path());
+
+        // A directory URL nothing answers on: the failure is the point
+        // and it must not depend on the network being reachable, or on
+        // anybody's rate limit.
+        config.acme.disabled = false;
+        config.acme.directory = "http://127.0.0.1:1/directory".into();
+
+        let mut args = InstallArgs::with_domain("node.example.com");
+        args.allow_self_signed = false;
+
+        let code = run(config, &config_path, args).await.expect("install ran");
+        assert_eq!(code, 1, "a missing certificate is a failed install");
+    }
+
+    /// …and the operator who knows their node is on a private network,
+    /// or whose DNS has not propagated, can say so and finish.
+    #[tokio::test]
+    async fn allow_self_signed_finishes_the_same_install() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let config_path = dir.path().join("config.toml");
+        let mut config = config_in(dir.path());
+        config.acme.disabled = false;
+        config.acme.directory = "http://127.0.0.1:1/directory".into();
+
+        let mut args = InstallArgs::with_domain("node.example.com");
+        args.allow_self_signed = true;
+
+        let code = run(config, &config_path, args).await.expect("install ran");
+        assert_eq!(code, 0);
+    }
+
+    /// ACME switched off is somebody saying up front that this node
+    /// serves its own certificate. Failing that install would be
+    /// refusing to do what was asked.
+    #[tokio::test]
+    async fn acme_disabled_is_not_a_failure() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let config_path = dir.path().join("config.toml");
+
+        let mut args = InstallArgs::with_domain("node.example.com");
+        args.allow_self_signed = false;
+
+        let code = run(config_in(dir.path()), &config_path, args)
+            .await
+            .expect("install ran");
+        assert_eq!(code, 0);
+    }
+
+    /// An upgrade re-runs `install`, and it must not undo a domain
+    /// somebody changed from the console — the config file still holds
+    /// whatever the first install wrote, and silently restoring it
+    /// would point the node back at a name they stopped using.
+    #[tokio::test]
+    async fn a_domain_set_from_the_console_survives_an_upgrade() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let config_path = dir.path().join("config.toml");
+        let config = config_in(dir.path());
+        let database_path = config.database_path();
+
+        run(
+            config.clone(),
+            &config_path,
+            InstallArgs::with_domain("first.example"),
+        )
+        .await
+        .expect("install");
+
+        // What the console does.
+        let database = crate::db::open(&database_path).await.expect("open");
+        crate::node::settings::set_domain(&database, Some("changed.example"))
+            .await
+            .expect("set");
+        database.close().await.expect("close");
+
+        // The upgrade: same config file, no --domain.
+        let mut args = InstallArgs::none();
+        args.domain = None;
+        run(
+            Config::load(&config_path).expect("load"),
+            &config_path,
+            args,
+        )
+        .await
+        .expect("install");
+
+        let database = crate::db::open(&database_path).await.expect("open");
+        let stored = crate::node::settings::domain(&database, &config_in(dir.path())).await;
+        assert_eq!(stored.as_deref(), Some("changed.example"));
+    }
+
+    /// Re-running with a different name is how somebody renames a
+    /// node, and the rename has to reach the certificate and the route
+    /// that make it answer — not just the setting.
+    #[tokio::test]
+    async fn a_second_install_with_another_domain_moves_the_node() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let config_path = dir.path().join("config.toml");
+        let config = config_in(dir.path());
+        let database_path = config.database_path();
+
+        run(
+            config.clone(),
+            &config_path,
+            InstallArgs::with_domain("first.example"),
+        )
+        .await
+        .expect("install");
+
+        // A node past its first day: something has written routes.
+        let database = crate::db::open(&database_path).await.expect("open");
+        crate::edge::routes::upsert(
+            &database,
+            "first.example",
+            &crate::edge::routes::Upstream::ControlPlane,
+            None,
+        )
+        .await
+        .expect("route");
+        database.close().await.expect("close");
+
+        run(
+            Config::load(&config_path).expect("load"),
+            &config_path,
+            InstallArgs::with_domain("second.example"),
+        )
+        .await
+        .expect("install");
+
+        let database = crate::db::open(&database_path).await.expect("open");
+        let hosts: Vec<String> = crate::edge::routes::load_all(&database)
+            .await
+            .expect("routes")
+            .into_iter()
+            .map(|(host, _)| host)
+            .collect();
+        assert!(hosts.contains(&"second.example".to_string()), "{hosts:?}");
+        assert!(
+            !hosts.contains(&"first.example".to_string()),
+            "the old name still reaches the console: {hosts:?}"
+        );
+
+        // And a certificate exists for it, self-signed or not, so the
+        // node is not presenting the old name's.
+        let stored = crate::edge::certs::load(&database, crate::edge::certs::FALLBACK_NAME)
+            .await
+            .expect("load")
+            .expect("a certificate");
+        assert!(
+            stored.names.iter().any(|name| name == "second.example"),
+            "{:?}",
+            stored.names
+        );
+    }
+
+    /// A fresh node reaches its console at whatever address the
+    /// operator can type — a bare IP, most often. Writing the first
+    /// route here would end that.
+    #[tokio::test]
+    async fn the_first_install_writes_no_routes() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let config_path = dir.path().join("config.toml");
+        let config = config_in(dir.path());
+        let database_path = config.database_path();
+
+        run(
+            config,
+            &config_path,
+            InstallArgs::with_domain("first.example"),
+        )
+        .await
+        .expect("install");
+
+        let database = crate::db::open(&database_path).await.expect("open");
+        assert!(crate::edge::routes::load_all(&database)
+            .await
+            .expect("routes")
+            .is_empty());
+    }
+
+    /// …and `--domain` is somebody saying it now, which does win.
+    #[tokio::test]
+    async fn the_flag_overrides_what_was_stored() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let config_path = dir.path().join("config.toml");
+        let config = config_in(dir.path());
+        let database_path = config.database_path();
+
+        run(
+            config.clone(),
+            &config_path,
+            InstallArgs::with_domain("first.example"),
+        )
+        .await
+        .expect("install");
+
+        let database = crate::db::open(&database_path).await.expect("open");
+        crate::node::settings::set_domain(&database, Some("changed.example"))
+            .await
+            .expect("set");
+        database.close().await.expect("close");
+
+        run(
+            Config::load(&config_path).expect("load"),
+            &config_path,
+            InstallArgs::with_domain("said.example"),
+        )
+        .await
+        .expect("install");
+
+        let database = crate::db::open(&database_path).await.expect("open");
+        let stored = crate::node::settings::domain(&database, &config_in(dir.path())).await;
+        assert_eq!(stored.as_deref(), Some("said.example"));
+    }
+
     #[tokio::test]
     async fn install_is_idempotent() {
         let dir = tempfile::tempdir().expect("tempdir");

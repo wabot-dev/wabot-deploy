@@ -135,6 +135,23 @@ prost-types = "0.14"
 # it.
 oci-spec = { version = "0.10", default-features = false, features = ["runtime", "image"] }
 
+# Talking to GitHub: the release catalogue, and the binary itself.
+#
+# `webpki-tokio` — the bundled root certificates — rather than the
+# machine's store. This ships as one static binary onto machines whose
+# `/etc/ssl` is not something it configured, and an update that fails
+# on a bare box because the trust store is somewhere else is exactly
+# the failure this feature exists to avoid.
+#
+# `ring` to match the one crypto backend in the binary. Two enabled
+# providers make rustls refuse to pick and panic on first use.
+hyper-rustls = { version = "0.27", default-features = false, features = [
+    "http1",
+    "ring",
+    "tls12",
+    "webpki-tokio",
+] }
+
 # Verifying release downloads before anything runs them.
 sha2 = "0.10"
 thiserror = "2"

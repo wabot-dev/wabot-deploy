@@ -24,6 +24,7 @@ mod node;
 mod platform;
 mod registry;
 mod runtime;
+mod update;
 
 use cli::{Cli, Command};
 

@@ -430,23 +430,6 @@ pub async fn load_all(database: &SqliteDatabase) -> CertResult<Vec<StoredCert>> 
         .await?)
 }
 
-/// Why the last attempt to obtain this certificate failed, if it did.
-pub async fn last_error(database: &SqliteDatabase, domain: &str) -> CertResult<Option<String>> {
-    let domain = domain.to_string();
-    Ok(database
-        .read(move |connection| {
-            connection
-                .query_row(
-                    "SELECT \"last_error\" FROM certificate WHERE \"domain\" = ?1",
-                    [domain],
-                    |row| row.get::<_, Option<String>>(0),
-                )
-                .optional()
-        })
-        .await?
-        .flatten())
-}
-
 /// Store a certificate, whoever issued it.
 pub async fn save(database: &SqliteDatabase, stored: &StoredCert) -> CertResult<()> {
     let stored = stored.clone();

@@ -23,8 +23,7 @@
 //! either column would answer a question nobody asked.
 
 pub mod memory;
-
-use crate::config::Config;
+pub mod settings;
 
 /// A node, as the console lists it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -43,7 +42,7 @@ pub struct Node {
 pub const LOCAL_ID: &str = "local";
 
 impl Node {
-    pub fn local(config: &Config) -> Self {
+    pub fn local(domain: Option<String>) -> Self {
         let hostname = std::fs::read_to_string("/proc/sys/kernel/hostname")
             .ok()
             .map(|name| name.trim().to_string())
@@ -51,13 +50,11 @@ impl Node {
 
         Self {
             id: LOCAL_ID.into(),
-            name: config
-                .node
-                .domain
+            name: domain
                 .clone()
                 .or(hostname)
                 .unwrap_or_else(|| "this node".into()),
-            domain: config.node.domain.clone(),
+            domain,
             version: crate::api::VERSION,
             is_self: true,
         }
@@ -67,12 +64,12 @@ impl Node {
 /// Every node this console knows about.
 ///
 /// One, and the plural is the point — see the module docs.
-pub fn all(config: &Config) -> Vec<Node> {
-    vec![Node::local(config)]
+pub fn all(domain: Option<String>) -> Vec<Node> {
+    vec![Node::local(domain)]
 }
 
-pub fn find(config: &Config, id: &str) -> Option<Node> {
-    all(config).into_iter().find(|node| node.id == id)
+pub fn find(domain: Option<String>, id: &str) -> Option<Node> {
+    all(domain).into_iter().find(|node| node.id == id)
 }
 
 #[cfg(test)]
@@ -81,10 +78,7 @@ mod tests {
 
     #[test]
     fn a_node_with_a_domain_is_named_by_it() {
-        let mut config = Config::default();
-        config.node.domain = Some("node.example".into());
-
-        let node = Node::local(&config);
+        let node = Node::local(Some("node.example".into()));
         assert_eq!(node.name, "node.example");
         assert_eq!(node.id, LOCAL_ID);
         assert!(node.is_self);
@@ -94,17 +88,16 @@ mod tests {
     /// list shows a blank row.
     #[test]
     fn a_node_without_a_domain_still_has_a_name() {
-        let node = Node::local(&Config::default());
+        let node = Node::local(None);
         assert!(!node.name.is_empty());
     }
 
     #[test]
     fn the_list_contains_this_node() {
-        let config = Config::default();
-        let nodes = all(&config);
+        let nodes = all(None);
 
         assert_eq!(nodes.len(), 1);
-        assert_eq!(find(&config, LOCAL_ID), Some(nodes[0].clone()));
-        assert_eq!(find(&config, "somewhere-else"), None);
+        assert_eq!(find(None, LOCAL_ID), Some(nodes[0].clone()));
+        assert_eq!(find(None, "somewhere-else"), None);
     }
 }

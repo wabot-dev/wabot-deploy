@@ -63,8 +63,11 @@ pub async fn build(
     // Every name this node can be reached by before ACME. `localhost`
     // is always present so a local `curl` works on a node with no DNS.
     let mut names = vec![certs::FALLBACK_NAME.to_string()];
-    if let Some(domain) = &config.node.domain {
-        names.push(domain.clone());
+    // From the database, not the file: a domain set from the console
+    // has to be the one this node presents a certificate for after a
+    // restart, or the change lasts exactly until the next boot.
+    if let Some(domain) = crate::node::settings::domain(database, config).await {
+        names.push(domain);
     }
     certs::ensure_self_signed(database, certs::FALLBACK_NAME, &names).await?;
 

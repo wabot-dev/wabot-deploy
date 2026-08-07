@@ -163,7 +163,7 @@ impl ServicePages {
         // What to propose for a hostname, and whether the operator has
         // to type one. Both come from asking DNS, and the answer is
         // only meaningful for a node that has a domain at all.
-        let domain = self.state.config.node.domain.clone();
+        let domain = crate::node::settings::domain(&self.state.database, &self.state.config).await;
         let suggestion = match &domain {
             Some(domain) => {
                 let name = dns::suggested_hostname(&service.slug, &project.slug, domain);
@@ -437,7 +437,7 @@ impl ServicePages {
                             None => {
                                 <p class="field-hint">(
                                     "This node has no domain of its own yet, so there is \
-                                     nothing to suggest. Set node.domain, or type a \
+                                     nothing to suggest. Set the node's domain, or type a \
                                      hostname already pointed here."
                                 )</p>
                                 <input name="hostname" type="text" class="mono"
@@ -593,11 +593,13 @@ impl ServiceApi {
             }
             let hostname = ports::normalize_hostname(typed);
 
-            let Some(node_domain) = self.state.config.node.domain.clone() else {
+            let Some(node_domain) =
+                crate::node::settings::domain(&self.state.database, &self.state.config).await
+            else {
                 return Ok(back_with_error(
                     &here,
                     "this node has no domain of its own, so it cannot check whether \
-                     that name points here — set node.domain first",
+                     that name points here — set one on the node page first",
                 ));
             };
 
