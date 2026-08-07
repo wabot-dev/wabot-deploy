@@ -26,8 +26,10 @@ use crate::runtime::content;
 ///
 /// A layer is hundreds of megabytes and the node has hundreds in
 /// total, so the body is read in pieces and each is handed to
-/// containerd before the next is read.
-const CHUNK: usize = 4 * 1024 * 1024;
+/// containerd before the next is read. A megabyte, not four: a client
+/// pushes several layers at once, and each of them holding four is
+/// most of a small node's headroom.
+const CHUNK: usize = 1024 * 1024;
 
 /// `HEAD /v2/<name>/blobs/<digest>` — do we already have it?
 pub async fn head(digest: &str) -> RestResult<Response> {
@@ -101,62 +103,62 @@ pub async fn finish(name: &str, session: &str, request: Request) -> RestResult<R
     };
 
     // Whatever is left of the body belongs to this upload too: a
-    // client is free to send everything in the PUT and never PATCH at
-    // all.
-    let offset = starting_offset(&request);
+    // client is free to send everything in the `PUT` and never `PATCH`
+    // at all.
     let body = read_body(request).await?;
-
     let client = connect().await?;
-    if body.is_empty() {
-        // Nothing new — commit what the PATCHes already wrote.
-        content::commit(
-            &client,
-            session,
-            &digest,
-            offset,
-            Vec::new(),
-            Default::default(),
-        )
+
+    // Asked of containerd, never of the request. The final `PUT` of a
+    // layered upload carries no body, no length and no range — so a
+    // total taken from a header is zero, and committing a 200 MB blob
+    // as zero bytes fails. The client's answer to that failure is to
+    // upload the whole layer again, which reads as "it finished and
+    // then retried".
+    let written = content::written_so_far(&client, session)
         .await
         .map_err(internal)?;
-    } else {
-        let total = offset + body.len() as i64;
-        content::commit(&client, session, &digest, total, body, Default::default())
-            .await
-            .map_err(internal)?;
-    }
+    let total = written + body.len() as i64;
+
+    content::commit(&client, session, &digest, total, body, Default::default())
+        .await
+        .map_err(internal)?;
 
     Ok(created(name, &digest))
 }
 
 /// Write a whole request body into a transaction, in pieces.
+///
+/// One gRPC stream for the whole body, not one per chunk. A 200 MB
+/// layer is fifty chunks, and fifty stream set-ups against a
+/// single-core node is time the TLS handshakes of the four parallel
+/// uploads beside it are waiting for.
 async fn stream_into(session: &str, offset: i64, request: Request) -> RestResult<i64> {
     let client = connect().await?;
-    let mut body = request.into_body().into_data_stream();
-    let mut at = offset;
-    let mut buffered: Vec<u8> = Vec::new();
+    let body = request.into_body().into_data_stream();
 
-    use futures_util::StreamExt;
-    while let Some(chunk) = body.next().await {
-        let chunk = chunk.map_err(|error| RestError::Client {
-            status: 400,
-            message: format!("the upload stopped: {error}"),
-        })?;
-        buffered.extend_from_slice(&chunk);
+    // Coalesced into pieces of a megabyte before they cross the
+    // socket. A body arrives in whatever sizes the network chose —
+    // often a few kilobytes — and one gRPC message each would be tens
+    // of thousands of them for one layer.
+    let chunks = async_stream::stream! {
+        use futures_util::StreamExt;
+        futures_util::pin_mut!(body);
 
-        if buffered.len() >= CHUNK {
-            at = content::write_chunk(&client, session, at, std::mem::take(&mut buffered))
-                .await
-                .map_err(internal)?;
+        let mut buffered: Vec<u8> = Vec::with_capacity(CHUNK);
+        while let Some(Ok(bytes)) = body.next().await {
+            buffered.extend_from_slice(&bytes);
+            if buffered.len() >= CHUNK {
+                yield std::mem::take(&mut buffered);
+            }
         }
-    }
+        if !buffered.is_empty() {
+            yield buffered;
+        }
+    };
 
-    if !buffered.is_empty() {
-        at = content::write_chunk(&client, session, at, buffered)
-            .await
-            .map_err(internal)?;
-    }
-    Ok(at)
+    content::write_chunks(&client, session, offset, chunks)
+        .await
+        .map_err(internal)
 }
 
 /// Commit a blob that arrived whole.
