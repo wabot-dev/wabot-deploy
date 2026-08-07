@@ -143,7 +143,39 @@ sin tocarle la configuración.
 Ojo: `containerd-client` no vendoriza ese proto. Lo generamos nosotros
 con prost.
 
-### 3.3 La unidad de systemd
+### 3.3 Qué supervisa el nodo
+
+systemd o **OpenRC** — Alpine es una máquina que este producto debería
+querer: musl, un binario estático y un sistema base que deja el
+presupuesto de RAM para lo que hace el trabajo. `bootstrap::init` sabe
+dónde va un fichero de servicio, cómo se habilita, cómo se reinicia y
+cómo preguntar si corre; **no** sabe qué dice ese fichero, porque una
+unit y un script de init para el mismo servicio no comparten nada más
+que la intención. Cada servicio trae sus dos textos.
+
+Detección: `/run/systemd/system` primero —existe solo cuando systemd es
+PID 1, a diferencia de `/usr/bin/systemctl`, que es solo un paquete—,
+luego `/run/openrc`.
+
+Sin ninguno de los dos, `install` escribe todo y **dice** que arrancarlo
+es cosa tuya. Lo que no puede hacer es fingir que registró algo.
+
+En OpenRC ambos servicios usan `supervise-daemon` con `respawn_max=0`,
+que es la mitad de `Restart=always` que OpenRC no da por defecto. El
+script del nodo declara `want containerd`, no `need`: un nodo cuyo
+containerd gestiona otra cosa tiene que arrancar igual y decir qué pasa
+en una página que alguien pueda leer, en vez de negarse a arrancar justo
+lo que se lo iba a contar.
+
+Y dos cosas que una distribución con systemd ya hizo por ti, y Alpine
+no: montar la jerarquía de cgroups —`install` activa el servicio
+`cgroups` de OpenRC, porque containerd lo declara como dependencia— y
+cargar `overlay`, que se intenta con `modprobe` y se anota en
+`/etc/modules`. Si falla, containerd cae a un snapshotter más lento:
+convertir "tu snapshotter será más lento" en "tu instalación falló"
+sería el trade equivocado.
+
+### 3.4 La unidad de systemd
 
 Corre como **root**: necesita el socket de containerd, escribir en
 `/var/lib/wabot-deploy` y enlazar :443. `Type=notify`, para que
@@ -158,7 +190,7 @@ cuyo trabajo es construir namespaces y montajes para la máquina no puede
 estar escondido del árbol de montajes de la máquina. Hay un test que
 impide que vuelvan.
 
-### 3.4 Composición de `serve`
+### 3.5 Composición de `serve`
 
 ```rust
 ProjectRunner::new(container)
@@ -514,7 +546,9 @@ nadie eligió.
 
 **El reinicio se hace desde fuera del cgroup.** Un `systemctl restart`
 lanzado desde dentro de la unidad se mata a sí mismo al parar la unidad;
-`systemd-run --on-active=1` crea una unidad transitoria que sobrevive.
+`systemd-run --on-active=1` crea una unidad transitoria que sobrevive. En
+OpenRC no hay tal cgroup, pero el comando muere igual con la sesión de su
+padre, así que se le da una propia con `setsid`.
 
 **Quién informa del resultado.** El último paso reemplaza el proceso, así
 que la fila queda en `restarting` y la resuelve el nodo que vuelve,
@@ -796,3 +830,18 @@ Ver §8. Verificado de punta a punta en el nodo: 0.1.0 → 0.1.1 desde la
 consola, con `update settled status="done"` escrito por el binario nuevo
 leyendo la fila del viejo, la copia de la base en `backups/`, el binario
 anterior en `.previous` y los dos contenedores intactos.
+
+### 10.16 M13 — Alpine
+
+Un intento de instalar en Alpine se paró donde tenía que pararse —al
+arrancar containerd— y dejó ver que el nodo confundía "systemd" con
+"algo que supervisa servicios". Ahora esa pregunta tiene un tipo
+(`bootstrap::init::Init`) y tres respuestas, y todo lo que la hacía
+—`install`, `doctor`, el preflight, el actualizador— pregunta por lo que
+le importa: *¿hay algo que mantenga esto vivo?*
+
+Lo que Alpine enseñó y una distribución con systemd escondía: la
+jerarquía de cgroups no se monta sola, `overlay` no se carga solo, y
+`Restart=always` no es gratis en OpenRC —hay que pedir
+`supervise-daemon`—. Nada de eso es exótico; es lo que systemd venía
+haciendo sin que nadie lo escribiera.

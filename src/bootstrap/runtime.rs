@@ -38,6 +38,8 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use super::init::{Init, ServiceFile};
+
 /// Pinned, not "latest": the version this was tested against, on every
 /// distribution, until someone raises it deliberately.
 pub const CONTAINERD_VERSION: &str = "2.3.3";
@@ -208,6 +210,19 @@ pub fn ensure() -> RuntimeResult<String> {
         done.push("ip forwarding".into());
     }
 
+    // What a systemd distribution has already done for you. Alpine
+    // mounts no cgroup hierarchy and loads no overlay module until
+    // something asks, and containerd asks by failing.
+    if Init::detect() == Init::OpenRc {
+        if !cgroups_mounted() {
+            enable_cgroups()?;
+            done.push("cgroups".into());
+        }
+        if !overlay_available() && load_overlay() {
+            done.push("overlay".into());
+        }
+    }
+
     // Each of these asks about the *thing*, not about whether this run
     // created it. An earlier version keyed the configuration off
     // "did we just install containerd", and a run that installed the
@@ -219,7 +234,7 @@ pub fn ensure() -> RuntimeResult<String> {
         write_config()?;
         done.push("configuration".into());
     }
-    if ours() && !Path::new(CONTAINERD_UNIT_PATH).exists() {
+    if ours() && !containerd_service_path().exists() {
         write_unit()?;
         done.push("unit".into());
     }
@@ -342,6 +357,62 @@ fn install_cni() -> RuntimeResult<()> {
 /// Where the sysctl lives, so it survives a reboot.
 pub const SYSCTL_PATH: &str = "/etc/sysctl.d/99-wabot-deploy.conf";
 
+/// Is there a cgroup hierarchy at all?
+///
+/// The unified controllers file is the honest probe: `/sys/fs/cgroup`
+/// existing as a directory says nothing about anything being mounted
+/// on it.
+fn cgroups_mounted() -> bool {
+    Path::new("/sys/fs/cgroup/cgroup.controllers").exists()
+        || Path::new("/sys/fs/cgroup/memory").exists()
+}
+
+/// Turn OpenRC's cgroups service on, now and at boot.
+///
+/// containerd needs it — memory limits and OOM accounting are cgroup
+/// facts — and this node's own containerd service declares `need
+/// cgroups`, so without this the whole chain refuses to start with a
+/// message about a dependency rather than about cgroups.
+fn enable_cgroups() -> RuntimeResult<()> {
+    run("rc-update", &["add", "cgroups", "boot"])?;
+    run("rc-service", &["cgroups", "start"])?;
+    Ok(())
+}
+
+fn overlay_available() -> bool {
+    std::fs::read_to_string("/proc/filesystems")
+        .map(|text| text.contains("overlay"))
+        .unwrap_or(false)
+}
+
+/// Load overlayfs and keep it loaded across reboots.
+///
+/// Best effort, and `false` when it does not work: the kernel may have
+/// it built in under another name, or refuse it entirely, and
+/// containerd falls back to a slower snapshotter rather than failing.
+/// Turning "your snapshotter will be slower" into "your install
+/// failed" would be the wrong trade.
+fn load_overlay() -> bool {
+    if run("modprobe", &["overlay"]).is_err() {
+        return false;
+    }
+    // `/etc/modules` is what Alpine's `modules` service reads at boot.
+    let listed = std::fs::read_to_string("/etc/modules")
+        .map(|text| text.lines().any(|line| line.trim() == "overlay"))
+        .unwrap_or(false);
+    if !listed {
+        use std::io::Write;
+        if let Ok(mut file) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open("/etc/modules")
+        {
+            let _ = writeln!(file, "overlay");
+        }
+    }
+    overlay_available()
+}
+
 fn forwarding_enabled() -> bool {
     std::fs::read_to_string("/proc/sys/net/ipv4/ip_forward")
         .map(|value| value.trim() == "1")
@@ -438,32 +509,36 @@ fn write_config() -> RuntimeResult<()> {
     Ok(())
 }
 
-/// containerd's unit, which the release tarball does not ship.
+/// containerd's service, which the release tarball does not ship.
 fn write_unit() -> RuntimeResult<()> {
-    if !Path::new("/run/systemd/system").is_dir() {
+    let init = Init::detect();
+    if !init.supervises() {
         return Ok(());
     }
-    let unit = Path::new(CONTAINERD_UNIT_PATH);
-    if let Some(parent) = unit.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    std::fs::write(unit, CONTAINERD_UNIT)?;
-    run("systemctl", &["daemon-reload"])?;
-    run("systemctl", &["enable", "containerd"])?;
+    init.install_service(
+        "containerd",
+        &ServiceFile {
+            systemd: CONTAINERD_UNIT.to_string(),
+            openrc: CONTAINERD_OPENRC.to_string(),
+        },
+    )
+    .map_err(|error| RuntimeError::Command(error.to_string()))?;
     Ok(())
 }
 
 fn start_containerd() -> RuntimeResult<()> {
-    if !Path::new("/run/systemd/system").is_dir() {
+    let init = Init::detect();
+    if !init.supervises() {
         return Err(RuntimeError::Command(
-            "no systemd, so containerd cannot be started as a service — \
-             run `containerd` yourself and re-run install"
+            "nothing supervises services on this machine, so containerd cannot be \
+             started for you — run `containerd` in the background and re-run install"
                 .into(),
         ));
     }
-    run("systemctl", &["start", "containerd"])?;
+    init.restart("containerd")
+        .map_err(|error| RuntimeError::Command(error.to_string()))?;
 
-    // The unit returns as soon as the process is spawned; the socket
+    // Starting returns as soon as the process is spawned; the socket
     // is what the node actually needs, and it appears a moment later.
     for _ in 0..50 {
         if Path::new(SOCKET).exists() {
@@ -472,7 +547,7 @@ fn start_containerd() -> RuntimeResult<()> {
         std::thread::sleep(std::time::Duration::from_millis(200));
     }
     Err(RuntimeError::Command(format!(
-        "containerd started but {SOCKET} never appeared — `journalctl -u containerd`"
+        "containerd started but {SOCKET} never appeared — check its log"
     )))
 }
 
@@ -491,7 +566,10 @@ fn run(program: &str, args: &[&str]) -> RuntimeResult<()> {
     )))
 }
 
-pub const CONTAINERD_UNIT_PATH: &str = "/etc/systemd/system/containerd.service";
+/// Where containerd's service file lives, whichever manager wants it.
+pub fn containerd_service_path() -> std::path::PathBuf {
+    Init::detect().service_path("containerd")
+}
 
 /// containerd's own unit, from its repository.
 ///
@@ -529,6 +607,47 @@ OOMScoreAdjust=-999
 
 [Install]
 WantedBy=multi-user.target
+"#;
+
+/// The same service under OpenRC.
+///
+/// `supervise-daemon` for the same reason the unit says `Restart`:
+/// containerd dying and staying dead takes every container with it at
+/// the next boot.
+///
+/// What the unit expresses and this cannot: `KillMode=process`, which
+/// is what lets a containerd restart leave the running shims alone.
+/// OpenRC's supervisor stops the process it started and nothing else,
+/// which happens to be the same behaviour — but by default rather than
+/// by declaration, so it is written here where somebody will look.
+pub const CONTAINERD_OPENRC: &str = r#"#!/sbin/openrc-run
+# containerd, as wabot-deploy installs it. Written because the release
+# tarball ships binaries only. Left alone once written.
+
+name="containerd"
+description="containerd container runtime"
+
+command="/usr/local/bin/containerd"
+supervisor="supervise-daemon"
+pidfile="/run/containerd.pid"
+respawn_delay=5
+respawn_max=0
+
+output_log="/var/log/containerd.log"
+error_log="/var/log/containerd.log"
+
+rc_ulimit="-n 1048576 -u unlimited"
+
+depend() {
+    need cgroups
+    after net
+}
+
+start_pre() {
+    # The snapshotter wants it, and Alpine does not load it on its own.
+    modprobe overlay 2>/dev/null
+    return 0
+}
 "#;
 
 /// containerd's configuration, as this node needs it.

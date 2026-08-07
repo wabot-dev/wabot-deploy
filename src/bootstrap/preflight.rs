@@ -177,16 +177,15 @@ fn architecture() -> Check {
 }
 
 fn init_system() -> Check {
-    // The directory exists on any systemd host; asking systemctl would
-    // be slower and no more certain.
-    if Path::new("/run/systemd/system").is_dir() {
-        Check::pass("init", "systemd")
-    } else {
-        Check::advisory(
+    use crate::bootstrap::init::Init;
+    match Init::detect() {
+        Init::Systemd => Check::pass("init", "systemd"),
+        Init::OpenRc => Check::pass("init", "OpenRC"),
+        Init::None => Check::advisory(
             "init",
-            "not systemd — the node runs fine in the foreground, but `install` cannot \
-             register a service and nothing will restart it",
-        )
+            "no service manager found — the node runs fine in the foreground, but \
+             `install` cannot register a service and nothing will restart it",
+        ),
     }
 }
 
@@ -206,6 +205,18 @@ fn cgroup_v2() -> Check {
             "v1 — memory limits and OOM accounting differ, and this node reads both. \
              Boot with systemd.unified_cgroup_hierarchy=1.",
         )
+    } else if matches!(
+        crate::bootstrap::init::Init::detect(),
+        crate::bootstrap::init::Init::OpenRc
+    ) {
+        // Alpine mounts no hierarchy until its `cgroups` service runs.
+        // `install` turns it on, so this is a note about what is about
+        // to happen rather than something to go and do.
+        Check::advisory(
+            "cgroups",
+            "nothing mounted yet — `install` enables OpenRC's cgroups service, which is \
+             what mounts the v2 hierarchy containerd needs",
+        )
     } else {
         Check::unknown("cgroups", "could not read /sys/fs/cgroup")
     }
@@ -220,8 +231,8 @@ fn overlayfs() -> Check {
     } else {
         Check::advisory(
             "overlayfs",
-            "not in /proc/filesystems — containerd may load it on demand, or fall back to \
-             a slower snapshotter",
+            "not in /proc/filesystems — `install` tries `modprobe overlay`; without it \
+             containerd falls back to a slower snapshotter",
         )
     }
 }

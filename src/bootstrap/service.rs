@@ -17,11 +17,16 @@
 //! expected to own.
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
+
+use super::init::{Init, ServiceFile};
 
 pub const BINARY_PATH: &str = "/usr/local/bin/wabot-deploy";
-pub const UNIT_PATH: &str = "/etc/systemd/system/wabot-deploy.service";
-pub const UNIT_NAME: &str = "wabot-deploy.service";
+
+/// What the service is called to whatever supervises it.
+///
+/// Without the `.service` suffix: systemd accepts the bare name and
+/// OpenRC only knows the bare name, so one constant serves both.
+pub const SERVICE_NAME: &str = "wabot-deploy";
 
 #[derive(Debug, thiserror::Error)]
 pub enum ServiceError {
@@ -33,7 +38,7 @@ pub enum ServiceError {
     Io(#[from] std::io::Error),
 }
 
-type ServiceResult<T> = Result<T, ServiceError>;
+pub type ServiceResult<T> = Result<T, ServiceError>;
 
 /// Copy this executable to its permanent home.
 ///
@@ -92,39 +97,14 @@ fn sha256_of(path: &Path) -> std::io::Result<[u8; 32]> {
     Ok(hasher.finalize().into())
 }
 
-/// Write the unit and enable it. Returns whether the unit changed.
+/// Write the service file and enable it. Returns whether it changed.
 pub fn install_unit(config_path: &Path) -> ServiceResult<bool> {
-    if !systemd_available() {
-        return Err(ServiceError::Command(
-            "no systemd here — run `wabot-deploy serve` yourself, or install a unit for \
-             whatever supervises services on this machine"
-                .into(),
-        ));
-    }
-
-    let unit = unit_file(config_path);
-    let changed = match std::fs::read_to_string(UNIT_PATH) {
-        Ok(existing) => existing != unit,
-        Err(_) => true,
-    };
-
-    if changed {
-        std::fs::write(UNIT_PATH, &unit)?;
-        run("systemctl", &["daemon-reload"])?;
-    }
-    run("systemctl", &["enable", UNIT_NAME])?;
-    Ok(changed)
+    Init::detect().install_service(SERVICE_NAME, &service_file(config_path))
 }
 
-/// Start (or restart) the node and wait for it to be ready.
-///
-/// `restart` rather than `start`: the step exists to leave a running
-/// node behind, and one already running an older binary is not that.
+/// Start (or restart) the node.
 pub fn start() -> ServiceResult<()> {
-    run("systemctl", &["restart", UNIT_NAME])?;
-    // No polling loop: `Type=notify` means systemctl already waited
-    // for READY=1. That is the whole reason for the unit type.
-    Ok(())
+    Init::detect().restart(SERVICE_NAME)
 }
 
 /// Is the running service executing the binary that is installed?
@@ -166,31 +146,29 @@ pub fn running_current_binary() -> bool {
 }
 
 fn main_pid() -> Option<u32> {
-    let output = Command::new("systemctl")
-        .args(["show", "-p", "MainPID", "--value", UNIT_NAME])
-        .output()
-        .ok()?;
-    let pid: u32 = String::from_utf8_lossy(&output.stdout)
-        .trim()
-        .parse()
-        .ok()?;
-    (pid > 0).then_some(pid)
+    Init::detect().main_pid(SERVICE_NAME)
 }
 
 pub fn is_active() -> bool {
-    Command::new("systemctl")
-        .args(["is-active", "--quiet", UNIT_NAME])
-        .status()
-        .map(|status| status.success())
-        .unwrap_or(false)
+    Init::detect().is_active(SERVICE_NAME)
 }
 
-pub fn systemd_available() -> bool {
-    Path::new("/run/systemd/system").is_dir()
+/// Is there anything here that can keep the node running?
+pub fn supervised() -> bool {
+    Init::detect().supervises()
 }
 
-/// The unit, with the config path baked in so `serve` and `install`
-/// cannot disagree about which file they mean.
+/// The node's service, in both flavours, with the config path baked
+/// in so `serve` and `install` cannot disagree about which file they
+/// mean.
+pub fn service_file(config_path: &Path) -> ServiceFile {
+    ServiceFile {
+        systemd: unit_file(config_path),
+        openrc: openrc_file(config_path),
+    }
+}
+
+/// The systemd unit.
 pub fn unit_file(config_path: &Path) -> String {
     format!(
         r#"# Written by wabot-deploy. Rewritten on every install — this unit
@@ -245,32 +223,71 @@ WantedBy=multi-user.target
     )
 }
 
-fn run(program: &str, args: &[&str]) -> ServiceResult<()> {
-    let output = Command::new(program)
-        .args(args)
-        .output()
-        .map_err(|error| ServiceError::Command(format!("could not run {program}: {error}")))?;
-    if output.status.success() {
-        return Ok(());
-    }
-    Err(ServiceError::Command(format!(
-        "{program} {} failed: {}",
-        args.join(" "),
-        String::from_utf8_lossy(&output.stderr).trim()
-    )))
+/// The OpenRC init script — Alpine, and anything else that boots this
+/// way.
+///
+/// `supervise-daemon` rather than the classic background-and-pidfile
+/// mode, because that is what makes `Restart=always` true here too: a
+/// node whose process died and stays dead is the failure this whole
+/// service file exists to prevent. It also gives a pidfile holding the
+/// *supervised* process, which is what `running_current_binary` needs.
+///
+/// `want containerd` and not `need`: a node whose containerd is
+/// managed by something else must still boot. It comes up, and says
+/// what is wrong on a page somebody can read — which beats a machine
+/// that refuses to start the thing that would have told them.
+pub fn openrc_file(config_path: &Path) -> String {
+    format!(
+        r#"#!/sbin/openrc-run
+# Written by wabot-deploy. Rewritten on every install — this script
+# belongs to the program, unlike {config}, which is yours.
+
+name="wabot-deploy"
+description="wabot-deploy"
+
+command="{binary}"
+command_args="--config {config} serve"
+
+supervisor="supervise-daemon"
+pidfile="/run/wabot-deploy.pid"
+respawn_delay=2
+# Unlimited: a node that gave up restarting is a node nobody is
+# watching, which is the situation this is for.
+respawn_max=0
+
+# OpenRC has nowhere to send a daemon's output on its own, so it goes
+# to a file rather than nowhere.
+output_log="/var/log/wabot-deploy.log"
+error_log="/var/log/wabot-deploy.log"
+
+# The drain window the node is given on the way down. It defaults to
+# three seconds outside production, which is short for a node holding
+# open connections.
+export RUST_ENV=production
+
+depend() {{
+    want containerd
+    after net
+}}
+"#,
+        binary = BINARY_PATH,
+        config = config_path.display(),
+    )
 }
 
-/// Where the unit would go, for reporting.
+/// Where the service file would go, for reporting.
 pub fn unit_path() -> PathBuf {
-    PathBuf::from(UNIT_PATH)
+    Init::detect().service_path(SERVICE_NAME)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    const CONFIG: &str = "/etc/wabot-deploy/config.toml";
+
     fn unit() -> String {
-        unit_file(Path::new("/etc/wabot-deploy/config.toml"))
+        unit_file(Path::new(CONFIG))
     }
 
     /// `Type=notify` is the reason the install can start the node and
@@ -384,5 +401,71 @@ mod tests {
         let unit = unit();
         assert!(unit.contains("NoNewPrivileges=yes"));
         assert!(unit.contains("LimitNOFILE=65535"));
+    }
+}
+
+#[cfg(test)]
+mod openrc_tests {
+    use super::*;
+    use std::path::Path;
+
+    const CONFIG: &str = "/etc/wabot-deploy/config.toml";
+
+    fn script() -> String {
+        openrc_file(Path::new(CONFIG))
+    }
+
+    /// OpenRC reads the shebang, and a script without it is a service
+    /// that fails at boot with a message about a format.
+    #[test]
+    fn it_is_an_openrc_script() {
+        assert!(script().starts_with("#!/sbin/openrc-run"));
+    }
+
+    /// The half of `Restart=always` that OpenRC does not give by
+    /// default. A node whose process died and stays dead is the
+    /// failure a service file exists to prevent.
+    #[test]
+    fn it_is_supervised_and_restarts_for_ever() {
+        let script = script();
+        assert!(script.contains("supervisor=\"supervise-daemon\""));
+        assert!(script.contains("respawn_max=0"), "unlimited restarts");
+    }
+
+    /// `running_current_binary` reads this file to decide whether the
+    /// node is executing the binary that is installed.
+    #[test]
+    fn it_names_the_pidfile_that_is_read_back() {
+        assert!(script().contains("pidfile=\"/run/wabot-deploy.pid\""));
+    }
+
+    /// `want`, not `need`: a node whose containerd is managed by
+    /// something else must still boot, and say what is wrong on a page
+    /// somebody can read.
+    #[test]
+    fn containerd_is_wanted_not_required() {
+        let script = script();
+        assert!(script.contains("want containerd"));
+        assert!(!script.contains("need containerd"));
+    }
+
+    /// The same widening the unit does — and for the same reason: the
+    /// framework's default drain is three seconds outside production.
+    #[test]
+    fn it_widens_the_drain_window() {
+        assert!(script().contains("RUST_ENV=production"));
+    }
+
+    /// Both flavours have to name the same config file and the same
+    /// binary, or `install` and `serve` disagree about which node this
+    /// is.
+    #[test]
+    fn both_flavours_agree_about_what_they_run() {
+        let file = service_file(Path::new(CONFIG));
+        for text in [&file.systemd, &file.openrc] {
+            assert!(text.contains(BINARY_PATH), "{text}");
+            assert!(text.contains(CONFIG), "{text}");
+            assert!(text.contains("serve"), "{text}");
+        }
     }
 }

@@ -64,8 +64,8 @@ pub enum UpdateError {
     AlreadyCurrent(String),
     #[error("{0} published no build this node can install")]
     NotInstallable(String),
-    #[error("systemd is not managing this node, so it cannot restart itself")]
-    NoSystemd,
+    #[error("nothing supervises this node, so it cannot restart itself")]
+    NoServiceManager,
 }
 
 /// The release list, and when it was read.
@@ -163,8 +163,8 @@ pub async fn apply(
     // update that cannot restart the node ends with a new binary on
     // disk and the old one still serving, which is the confusing half
     // of a failure.
-    if !crate::bootstrap::service::systemd_available() {
-        return Err(UpdateError::NoSystemd);
+    if !crate::bootstrap::service::supervised() {
+        return Err(UpdateError::NoServiceManager);
     }
 
     let run = runs::start(
@@ -385,40 +385,12 @@ async fn back_up(
 
 /// Restart the node, from inside the node.
 ///
-/// `systemd-run` rather than a plain `systemctl restart`: this process
-/// is in the unit's control group, and stopping the unit kills
-/// everything in it — including the `systemctl` that was asked to do
-/// the restarting. A transient unit runs outside that group and
-/// survives the stop.
+/// The mechanics differ per service manager and live with the rest of
+/// them — see [`crate::bootstrap::init::Init::restart_from_within`].
 fn restart() -> UpdateResult<()> {
-    use crate::bootstrap::service::UNIT_NAME;
-
-    let transient = std::process::Command::new("systemd-run")
-        .args([
-            "--collect",
-            "--on-active=1",
-            "--unit=wabot-deploy-selfupdate",
-            "systemctl",
-            "restart",
-            UNIT_NAME,
-        ])
-        .status();
-
-    match transient {
-        Ok(status) if status.success() => Ok(()),
-        other => {
-            // Worth trying anyway: systemd queues the job when the
-            // request arrives, and the request usually arrives before
-            // the kill. It is the ordering that is not guaranteed,
-            // which is why it is the fallback and not the plan.
-            tracing::warn!(?other, "systemd-run did not take; restarting the plain way");
-            std::process::Command::new("systemctl")
-                .args(["restart", UNIT_NAME])
-                .spawn()
-                .map(|_| ())
-                .map_err(|error| UpdateError::Io(error.to_string()))
-        }
-    }
+    crate::bootstrap::init::Init::detect()
+        .restart_from_within(crate::bootstrap::service::SERVICE_NAME)
+        .map_err(|error| UpdateError::Io(error.to_string()))
 }
 
 /// Settle whatever the last process was in the middle of.

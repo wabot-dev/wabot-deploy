@@ -134,9 +134,11 @@ pub async fn run(config: Config, config_path: &Path) -> anyhow::Result<i32> {
 
     println!();
     println!("service");
-    if crate::bootstrap::service::systemd_available() {
+    let init = crate::bootstrap::init::Init::detect();
+    if crate::bootstrap::service::supervised() {
+        println!("  managed by  {}", init.name());
         println!(
-            "  unit        {}",
+            "  file        {}",
             crate::bootstrap::service::unit_path().display()
         );
         println!(
@@ -148,7 +150,7 @@ pub async fn run(config: Config, config_path: &Path) -> anyhow::Result<i32> {
             }
         );
     } else {
-        println!("  systemd is not here; the node has to be run in the foreground");
+        println!("  nothing supervises services here; the node has to be run in the foreground");
     }
 
     println!();

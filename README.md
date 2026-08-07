@@ -27,9 +27,16 @@ rustls, and there is no libc to match. You install by hand once; after
 that the console updates the node.
 
 `install` checks the machine, installs containerd, crun and the CNI
-plugins, writes a systemd unit, obtains a certificate, starts the service
-and prints the setup token the console asks for. It converges: run it
-again and it does only what is missing.
+plugins, registers a service, obtains a certificate, starts it and prints
+the setup token the console asks for. It converges: run it again and it
+does only what is missing.
+
+**systemd and OpenRC** are both understood — Debian, Ubuntu and the rest
+on one side, Alpine on the other. On Alpine it also does what a systemd
+distribution had already done for you: enables the `cgroups` service and
+loads `overlay`. On a machine with neither manager the install still
+writes everything and tells you that starting the node is yours to
+arrange.
 
 It **fails** if it cannot get a certificate for the domain you gave it —
 an install that reports success while serving a certificate no browser

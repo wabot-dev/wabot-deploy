@@ -332,10 +332,10 @@ impl UpdateApi {
                 &format!("an update to {} is already running", existing.to_version),
             ));
         }
-        if !crate::bootstrap::service::systemd_available() {
+        if !crate::bootstrap::service::supervised() {
             return Ok(super::auth::back_with_error(
                 "/updates",
-                "systemd is not managing this node, so it cannot restart itself",
+                "nothing supervises this node, so it cannot restart itself",
             ));
         }
 

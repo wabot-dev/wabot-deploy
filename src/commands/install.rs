@@ -89,17 +89,21 @@ pub async fn run(mut config: Config, config_path: &Path, args: InstallArgs) -> a
         .await?;
     }
 
-    if !args.no_system && crate::bootstrap::service::systemd_available() {
+    let init = crate::bootstrap::init::Init::detect();
+    if !args.no_system && init.supervises() {
         let unit_path = config_path.to_path_buf();
-        step(&database, Step::Service, "the systemd unit", move || {
+        let what = format!("the {} service", init.name());
+        step(&database, Step::Service, &what, move || {
+            let path = crate::bootstrap::service::unit_path();
             Ok(match crate::bootstrap::service::install_unit(&unit_path)? {
-                true => format!("written to {}", crate::bootstrap::service::UNIT_PATH),
+                true => format!("written to {}", path.display()),
                 false => "already current".to_string(),
             })
         })
         .await?;
     } else if !args.no_system {
-        println!("  systemd is not here, so no service was registered.");
+        println!("  no service manager here, so nothing was registered.");
+        println!("  run `wabot-deploy serve` yourself, or supervise it however this machine does.");
     }
 
     report(&config, config_path, wrote_config, &database).await?;
@@ -223,7 +227,7 @@ pub async fn run(mut config: Config, config_path: &Path, args: InstallArgs) -> a
     // run can settle — it stops being true the moment somebody upgrades
     // the binary. A ledgered Start left the *old* process serving with
     // the new code sitting on disk beside it, and nothing said so.
-    if !args.no_system && !args.no_start && crate::bootstrap::service::systemd_available() {
+    if !args.no_system && !args.no_start && init.supervises() {
         use crate::bootstrap::service;
 
         // A rename restarts even when nothing else changed: the edge
