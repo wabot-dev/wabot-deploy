@@ -22,6 +22,7 @@ mod edge;
 mod ledger;
 mod node;
 mod platform;
+mod registry;
 mod runtime;
 
 use cli::{Cli, Command};

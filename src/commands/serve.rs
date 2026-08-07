@@ -37,10 +37,31 @@ pub async fn run(config: Config) -> anyhow::Result<i32> {
         wake.clone(),
     );
 
-    // One router: the console's pages and the API's endpoints answer on
-    // the same hostname, because they are the same thing to whoever is
-    // looking at the node.
-    let control_plane = crate::api::routes(&container).merge(crate::console::routes(&container));
+    // The registry shares the control plane's hostname and its
+    // listener: `docker push node.example/project/app` reaches the
+    // same place the console does, over the same certificate, with no
+    // second port to open.
+    let registry_state = Arc::new(crate::registry::RegistryState {
+        database: database.clone(),
+        deployer: Arc::new(
+            crate::deploy::Deployer::new(database.clone(), &config)
+                .with_routes(routes.clone())
+                .with_certificates(wake.clone()),
+        ),
+        host: config
+            .node
+            .domain
+            .clone()
+            .unwrap_or_else(|| "localhost".into()),
+    });
+    crate::registry::register(&container, registry_state);
+
+    // One router: the console's pages, the API's endpoints and the
+    // registry answer on the same hostname, because they are the same
+    // thing to whoever is looking at the node.
+    let control_plane = crate::api::routes(&container)
+        .merge(crate::console::routes(&container))
+        .merge(crate::registry::routes(&container));
 
     let (edge, resolver) =
         crate::edge::build(&database, control_plane, &config, routes.clone()).await?;

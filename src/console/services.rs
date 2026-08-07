@@ -11,7 +11,7 @@ use wabot::rest::RestResult;
 use wabot::ui::hypertext::IntoView;
 
 use crate::deploy::dns;
-use crate::platform::{access, ports, services};
+use crate::platform::{access, config_history, ports, releases, services};
 
 use super::auth::{back_with_error, field, read_form, see_other, signed_in, SessionMiddleware};
 use super::shell::{Area, Frame};
@@ -130,6 +130,13 @@ impl ServicePages {
         };
 
         let ports = ports::of_service(&self.state.database, &service.id).await?;
+        let releases = releases::of_service(&self.state.database, &service.id).await?;
+        let history = config_history::of_service(&self.state.database, &service.id).await?;
+        let env_text: String = service
+            .env
+            .iter()
+            .map(|(key, value)| format!("{key}={value}\n"))
+            .collect();
 
         // Whether each HTTPS name has a certificate yet. Asked here
         // rather than assumed: the certificate arrives seconds after
@@ -207,6 +214,133 @@ impl ServicePages {
                     </dl>
                     @if let Some(failure) = &service.last_error {
                         <p class="failure">(failure)</p>
+                    }
+                </section>
+
+                <section class="stack">
+                    <div class="split">
+                        <p class="card-label">("Releases")</p>
+                        <span class="who">(
+                            format!("watching :{}", crate::platform::images::tracked_tag(
+                                &service.image, service.track_tag.as_deref()
+                            ).unwrap_or_else(|| "—".into()))
+                        )</span>
+                    </div>
+                    @if releases.is_empty() {
+                        <p class="tile-detail">(
+                            "Nothing has been pushed yet. Create a push token on the \
+                             project page and push an image to this repository."
+                        )</p>
+                    } @else {
+                        <table>
+                            <thead>
+                                <tr>
+                                    <th>("Image")</th>
+                                    <th>("From")</th>
+                                    <th>("State")</th>
+                                    <th></th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                @for release in &releases {
+                                    <tr>
+                                        <td class="mono" title=(&release.digest)>
+                                            (release.short_digest())
+                                        </td>
+                                        <td class="tile-detail">(release.source.label())</td>
+                                        <td>
+                                            @if release.deployed_at.is_some() {
+                                                <span class="badge badge-success">
+                                                    <span class="dot dot-success"></span>
+                                                    ("Running")
+                                                </span>
+                                            }
+                                        </td>
+                                        <td>
+                                            @if allowed.may_deploy()
+                                                && release.deployed_at.is_none() {
+                                                <form method="post"
+                                                      action=(format!(
+                                                          "/projects/{}/services/{}/releases/{}/deploy",
+                                                          project.slug, service.slug, release.id
+                                                      ))>
+                                                    <button class="btn btn-secondary btn-sm"
+                                                            type="submit">("Deploy this")</button>
+                                                </form>
+                                            }
+                                        </td>
+                                    </tr>
+                                }
+                            </tbody>
+                        </table>
+                    }
+                    @if allowed.may_deploy() {
+                        <form method="post"
+                              action=(format!(
+                                  "/projects/{}/services/{}/tracking",
+                                  project.slug, service.slug
+                              ))
+                              class="row">
+                            <input name="track_tag" type="text"
+                                   value=(service.track_tag.clone().unwrap_or_default())
+                                   placeholder="tag to watch">
+                            <label class="check">
+                                <input type="checkbox" name="auto_deploy" value="1"
+                                       checked=(service.auto_deploy)>
+                                ("Deploy a push automatically")
+                            </label>
+                            <button class="btn btn-secondary btn-sm" type="submit">("Save")</button>
+                        </form>
+                    }
+                </section>
+
+                <section class="stack">
+                    <p class="card-label">("Environment")</p>
+                    @if allowed.may_deploy() {
+                        <form method="post"
+                              action=(format!(
+                                  "/projects/{}/services/{}/env",
+                                  project.slug, service.slug
+                              ))
+                              class="card stack">
+                            <textarea name="env" rows="6" class="mono"
+                                      placeholder="KEY=value">(&env_text)</textarea>
+                            <p class="field-hint">(
+                                "Saving redeploys the service with these values. The image \
+                                 it runs does not change."
+                            )</p>
+                            <div class="actions">
+                                <button type="submit">("Save environment")</button>
+                            </div>
+                        </form>
+                    } @else if service.env.is_empty() {
+                        <p class="tile-detail">("None.")</p>
+                    } @else {
+                        <pre><code>(&env_text)</code></pre>
+                    }
+
+                    @if !history.is_empty() && allowed.may_deploy() {
+                        <table>
+                            <tbody>
+                                @for revision in history.iter().skip(1) {
+                                    <tr>
+                                        <td class="tile-detail">
+                                            (revision.env.len())(" values · ")(&revision.reason)
+                                        </td>
+                                        <td>
+                                            <form method="post"
+                                                  action=(format!(
+                                                      "/projects/{}/services/{}/env/{}/revert",
+                                                      project.slug, service.slug, revision.id
+                                                  ))>
+                                                <button class="btn btn-ghost btn-sm"
+                                                        type="submit">("Restore")</button>
+                                            </form>
+                                        </td>
+                                    </tr>
+                                }
+                            </tbody>
+                        </table>
                     }
                 </section>
 
@@ -539,6 +673,122 @@ impl ServiceApi {
         Ok(see_other(&here))
     }
 
+    /// Deploy one release — the newest, or an older one, which is
+    /// what a rollback is.
+    #[post("/projects/:project/services/:service/releases/:release/deploy")]
+    #[raw]
+    #[middleware(SessionMiddleware)]
+    async fn deploy_release(&self, request: Request) -> RestResult<Response> {
+        let path = request.uri().path().to_string();
+        let segments = super::auth::segments(&path);
+        let Some((project, service, back)) = self.locate(&path).await? else {
+            return Ok(see_other("/?error=no+such+service"));
+        };
+        let here = format!("/projects/{}/services/{}", project.slug, service.slug);
+        let _ = back;
+
+        let Some(id) = segments.get(5) else {
+            return Ok(see_other(&here));
+        };
+        let Some(release) = releases::find(&self.state.database, id).await? else {
+            return Ok(see_other(&here));
+        };
+        // Only this service's releases: an id from another page must
+        // not deploy somebody else's image here.
+        if release.service_id != service.id {
+            return Ok(see_other(&here));
+        }
+
+        self.state.deployer.deploy_release(&service, &release).await;
+        Ok(see_other(&here))
+    }
+
+    /// What tag to watch, and whether a push goes out on its own.
+    #[post("/projects/:project/services/:service/tracking")]
+    #[raw]
+    #[middleware(SessionMiddleware)]
+    async fn tracking(&self, request: Request) -> RestResult<Response> {
+        let path = request.uri().path().to_string();
+        let Some((project, service, _)) = self.locate(&path).await? else {
+            return Ok(see_other("/?error=no+such+service"));
+        };
+        let here = format!("/projects/{}/services/{}", project.slug, service.slug);
+
+        let form = match read_form(request).await {
+            Ok(form) => form,
+            Err(response) => return Ok(response),
+        };
+        let tag = field(&form, "track_tag");
+
+        services::set_tracking(
+            &self.state.database,
+            &service.id,
+            (!tag.is_empty()).then_some(tag),
+            checked(&form, "auto_deploy"),
+        )
+        .await?;
+        Ok(see_other(&here))
+    }
+
+    /// Change the environment, and redeploy with it.
+    #[post("/projects/:project/services/:service/env")]
+    #[raw]
+    #[middleware(SessionMiddleware)]
+    async fn set_env(&self, request: Request) -> RestResult<Response> {
+        let path = request.uri().path().to_string();
+        let Some((project, service, _)) = self.locate(&path).await? else {
+            return Ok(see_other("/?error=no+such+service"));
+        };
+        let here = format!("/projects/{}/services/{}", project.slug, service.slug);
+        let account = signed_in(&self.auth);
+
+        let form = match read_form(request).await {
+            Ok(form) => form,
+            Err(response) => return Ok(response),
+        };
+        let env = match parse_env(field(&form, "env")) {
+            Ok(env) => env,
+            Err(message) => return Ok(back_with_error(&here, &message)),
+        };
+
+        self.apply_env(&project, &service, env, account.map(|a| a.id), "edit")
+            .await?;
+        Ok(see_other(&here))
+    }
+
+    /// Put an earlier set of values back.
+    ///
+    /// Independent of releases on purpose: the usual case is "this
+    /// build is bad, run the previous one, keep the settings I fixed
+    /// since" — and the other way round just as often.
+    #[post("/projects/:project/services/:service/env/:revision/revert")]
+    #[raw]
+    #[middleware(SessionMiddleware)]
+    async fn revert_env(&self, request: Request) -> RestResult<Response> {
+        let path = request.uri().path().to_string();
+        let segments = super::auth::segments(&path);
+        let Some((project, service, _)) = self.locate(&path).await? else {
+            return Ok(see_other("/?error=no+such+service"));
+        };
+        let here = format!("/projects/{}/services/{}", project.slug, service.slug);
+        let account = signed_in(&self.auth);
+
+        let Some(id) = segments.get(5) else {
+            return Ok(see_other(&here));
+        };
+        let Some(revision) = config_history::find(&self.state.database, id).await? else {
+            return Ok(see_other(&here));
+        };
+        if revision.service_id != service.id {
+            return Ok(see_other(&here));
+        }
+
+        let env: Vec<(String, String)> = revision.env.into_iter().collect();
+        self.apply_env(&project, &service, env, account.map(|a| a.id), "revert")
+            .await?;
+        Ok(see_other(&here))
+    }
+
     /// Start (or restart) a service's container.
     #[post("/projects/:project/services/:service/deploy")]
     #[raw]
@@ -590,6 +840,58 @@ impl ServiceApi {
 }
 
 impl ServiceApi {
+    /// Store an environment, record the revision, and redeploy.
+    ///
+    /// One place, because the three have to happen together: values
+    /// stored without a revision are values nobody can undo, and
+    /// values stored without a redeploy are values the container does
+    /// not have.
+    async fn apply_env(
+        &self,
+        project: &crate::platform::projects::Project,
+        service: &services::Service,
+        env: Vec<(String, String)>,
+        by: Option<String>,
+        reason: &str,
+    ) -> RestResult<()> {
+        let map: std::collections::BTreeMap<String, String> = env.into_iter().collect();
+        services::set_env(&self.state.database, &service.id, &map).await?;
+        config_history::record(
+            &self.state.database,
+            &service.id,
+            &map,
+            by.as_deref(),
+            reason,
+        )
+        .await?;
+
+        let updated = services::Service {
+            env: map,
+            ..service.clone()
+        };
+
+        // Redeployed with the release it is *already running*, not with
+        // its image reference. Those differ the moment a tag moves —
+        // and then changing a variable would quietly bring in whatever
+        // was pushed since, which is precisely what releases exist to
+        // prevent. Found by changing an environment variable and
+        // watching the service jump to a different image.
+        let current = releases::of_service(&self.state.database, &service.id)
+            .await?
+            .into_iter()
+            .find(|release| release.deployed_at.is_some());
+
+        match current {
+            Some(release) => self.state.deployer.deploy_release(&updated, &release).await,
+            // Nothing has been released yet, so its reference is all
+            // there is to go on.
+            None => {
+                let _ = self.state.deployer.deploy(project, &updated).await;
+            }
+        }
+        Ok(())
+    }
+
     /// The project and service this request is about, and where to send
     /// the browser afterwards.
     ///

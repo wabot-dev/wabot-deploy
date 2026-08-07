@@ -29,6 +29,7 @@ use wabot::sqlite::SqliteDatabase;
 
 use crate::platform::ports::{self, Port};
 use crate::platform::projects::Project;
+use crate::platform::releases::{self, Release};
 use crate::platform::services::{self, DesiredState, Service};
 use crate::platform::{projects, PlatformError};
 use crate::runtime::client::Containerd;
@@ -221,6 +222,57 @@ impl Deployer {
         }
     }
 
+    /// Bring a service back to what it was running.
+    ///
+    /// Its release when it has one, and its image reference only when
+    /// it does not. The difference matters the moment a tag moves: a
+    /// restart that resolved the tag again would quietly bring in
+    /// whatever was pushed since, which is exactly what a release
+    /// exists to prevent.
+    async fn restore(&self, project: &Project, service: &Service) -> bool {
+        let current = releases::of_service(&self.database, &service.id)
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .find(|release| release.deployed_at.is_some());
+
+        match current {
+            Some(release) => {
+                self.deploy_release(service, &release).await;
+                true
+            }
+            None => self.deploy(project, service).await.is_ok(),
+        }
+    }
+
+    /// Deploy one specific release.
+    ///
+    /// The image is the release's *digest*, not the tag it arrived
+    /// under: a tag moves, and a deployment that resolved one again at
+    /// run time would not be the release anybody chose. This is also
+    /// what makes a rollback a rollback.
+    pub async fn deploy_release(&self, service: &Service, release: &Release) {
+        let Ok(Some(project)) = projects::find(&self.database, &service.project_id).await else {
+            tracing::warn!(service = %service.slug, "no project for this service");
+            return;
+        };
+
+        // A copy of the row pointed at the pinned reference. The
+        // service's own `image` keeps naming the tag it watches —
+        // changing it here would make the next push look like it was
+        // for a different repository.
+        let pinned = Service {
+            image: release.pinned(),
+            ..service.clone()
+        };
+
+        if self.deploy(&project, &pinned).await.is_ok() {
+            if let Err(error) = releases::mark_deployed(&self.database, &release.id).await {
+                tracing::error!(%error, "could not record which release is running");
+            }
+        }
+    }
+
     /// Stop a service and take it off the network.
     ///
     /// Records `stopped` as the intent, so a reconcile does not start
@@ -334,7 +386,7 @@ impl Deployer {
                 }
                 Observed::Absent | Observed::Stopped { .. } => {
                     tracing::info!(service = %service.slug, "reconciling: should be running");
-                    if self.deploy(project, &service).await.is_ok() {
+                    if self.restore(project, &service).await {
                         started += 1;
                     }
                 }

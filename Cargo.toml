@@ -107,6 +107,13 @@ async-trait = "0.1"
 # The server-sent events stream on the node page: a body that yields
 # a reading every couple of seconds and never ends.
 async-stream = "0.3"
+# containerd's content write is a client-streaming call, so a request
+# has to arrive as a stream even when it is one message long.
+tokio-stream = "0.1"
+# The registry: decoding a Basic credential, and reading a layer off
+# the wire in pieces rather than into memory.
+base64 = "0.22"
+futures-util = { version = "0.3", default-features = false }
 # containerd's native gRPC API. Generated bindings only — there is no
 # high-level client, so pulling, container creation and task lifecycle
 # are ours to write.

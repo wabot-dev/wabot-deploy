@@ -55,6 +55,11 @@ pub struct Service {
     /// The container's address on its project's bridge, while it is
     /// running. `None` means nothing to proxy to.
     pub address: Option<String>,
+    /// The tag a push has to carry for this service to care. `None`
+    /// means "whatever tag my image reference names".
+    pub track_tag: Option<String>,
+    /// Whether a push to that tag goes out on its own.
+    pub auto_deploy: bool,
 }
 
 impl Service {
@@ -108,6 +113,11 @@ pub async fn create(
         desired_state: DesiredState::Running,
         last_error: None,
         address: None,
+        track_tag: None,
+        // On by default. A node where CI has to be told twice — once
+        // to push, once to deploy — is one where the second half gets
+        // forgotten and somebody debugs a version that never went out.
+        auto_deploy: true,
     };
 
     let row = service.clone();
@@ -190,7 +200,8 @@ pub async fn in_project(
             connection
                 .query_row(
                     "SELECT \"id\", \"project_id\", \"name\", \"slug\", \"image\", \
-                     \"env\", \"desired_state\", \"last_error\", \"address\" \
+                     \"env\", \"desired_state\", \"last_error\", \"address\", \
+                     \"track_tag\", \"auto_deploy\" \
                      FROM service WHERE \"project_id\" = ?1 AND \"slug\" = ?2",
                     (project_id, slug),
                     decode,
@@ -208,7 +219,8 @@ pub async fn all(
     Ok(database
         .read(move |connection| {
             let sql = "SELECT \"id\", \"project_id\", \"name\", \"slug\", \"image\", \
-                       \"env\", \"desired_state\", \"last_error\", \"address\" FROM service";
+                       \"env\", \"desired_state\", \"last_error\", \"address\", \
+                       \"track_tag\", \"auto_deploy\" FROM service";
             match filter {
                 Some(project) => connection
                     .prepare(&format!(
@@ -239,6 +251,8 @@ fn decode(row: &wabot::sqlite::rusqlite::Row<'_>) -> wabot::sqlite::rusqlite::Re
         desired_state: DesiredState::parse(&row.get::<_, String>(6)?),
         last_error: row.get(7)?,
         address: row.get(8)?,
+        track_tag: row.get(9)?,
+        auto_deploy: row.get::<_, i64>(10)? != 0,
     })
 }
 
@@ -279,6 +293,47 @@ pub async fn set_last_error(
             connection.execute(
                 "UPDATE service SET \"last_error\" = ?2, \"updated_at\" = ?3 WHERE \"id\" = ?1",
                 (id, error, now_ms()),
+            )?;
+            Ok(())
+        })
+        .await?;
+    Ok(())
+}
+
+/// What a push has to carry, and whether it goes out on its own.
+pub async fn set_tracking(
+    database: &SqliteDatabase,
+    service_id: &str,
+    track_tag: Option<&str>,
+    auto_deploy: bool,
+) -> PlatformResult<()> {
+    let (id, tag) = (service_id.to_string(), track_tag.map(str::to_string));
+    database
+        .write(move |connection| {
+            connection.execute(
+                "UPDATE service SET \"track_tag\" = ?2, \"auto_deploy\" = ?3, \
+                 \"updated_at\" = ?4 WHERE \"id\" = ?1",
+                (id, tag, i64::from(auto_deploy), now_ms()),
+            )?;
+            Ok(())
+        })
+        .await?;
+    Ok(())
+}
+
+/// Replace a service's environment.
+pub async fn set_env(
+    database: &SqliteDatabase,
+    service_id: &str,
+    env: &BTreeMap<String, String>,
+) -> PlatformResult<()> {
+    let id = service_id.to_string();
+    let payload = serde_json::to_string(env).unwrap_or_else(|_| "{}".into());
+    database
+        .write(move |connection| {
+            connection.execute(
+                "UPDATE service SET \"env\" = ?2, \"updated_at\" = ?3 WHERE \"id\" = ?1",
+                (id, payload, now_ms()),
             )?;
             Ok(())
         })
@@ -334,6 +389,8 @@ mod tests {
             desired_state: DesiredState::Running,
             last_error: None,
             address: None,
+            track_tag: None,
+            auto_deploy: true,
         };
 
         let id = service.container_id("first-project");

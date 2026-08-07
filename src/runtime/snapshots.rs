@@ -23,7 +23,8 @@
 //! for inspecting an image and wrong for running one.
 
 use containerd_client::services::v1::snapshots::{
-    snapshots_client::SnapshotsClient, PrepareSnapshotRequest, RemoveSnapshotRequest,
+    snapshots_client::SnapshotsClient, CommitSnapshotRequest, PrepareSnapshotRequest,
+    RemoveSnapshotRequest, StatSnapshotRequest,
 };
 use containerd_client::types::Mount;
 
@@ -93,6 +94,74 @@ pub async fn prepare(
         .into_inner();
 
     Ok(response.mounts)
+}
+
+/// Does this snapshot exist?
+///
+/// Asked before unpacking a layer: on a node with one content store,
+/// most layers of most images are already there because something else
+/// unpacked them.
+pub async fn exists(client: &Containerd, key: &str) -> ClientResult<bool> {
+    match SnapshotsClient::new(client.channel())
+        .stat(client.request(StatSnapshotRequest {
+            snapshotter: SNAPSHOTTER.to_string(),
+            key: key.to_string(),
+        }))
+        .await
+    {
+        Ok(_) => Ok(true),
+        Err(status) if status.code() == tonic::Code::NotFound => Ok(false),
+        Err(source) => Err(ClientError::Call {
+            call: "Snapshots.Stat",
+            source,
+        }),
+    }
+}
+
+/// Prepare a snapshot without the container-id naming.
+///
+/// [`prepare`] builds a container's writable layer; this builds the
+/// intermediate one an unpack applies a layer onto. Same call, and
+/// kept separate so the error message about a missing parent stays
+/// attached to the case where it means something.
+pub async fn prepare_from(
+    client: &Containerd,
+    key: &str,
+    parent: &str,
+) -> ClientResult<Vec<Mount>> {
+    let response = SnapshotsClient::new(client.channel())
+        .prepare(client.request(PrepareSnapshotRequest {
+            snapshotter: SNAPSHOTTER.to_string(),
+            key: key.to_string(),
+            parent: parent.to_string(),
+            labels: Default::default(),
+        }))
+        .await
+        .map_err(|source| ClientError::Call {
+            call: "Snapshots.Prepare",
+            source,
+        })?
+        .into_inner();
+
+    Ok(response.mounts)
+}
+
+/// Turn a prepared snapshot into a permanent one, named by its chain
+/// ID — which is what everything else looks it up by.
+pub async fn commit(client: &Containerd, chain_id: &str, key: &str) -> ClientResult<()> {
+    SnapshotsClient::new(client.channel())
+        .commit(client.request(CommitSnapshotRequest {
+            snapshotter: SNAPSHOTTER.to_string(),
+            name: chain_id.to_string(),
+            key: key.to_string(),
+            labels: Default::default(),
+        }))
+        .await
+        .map_err(|source| ClientError::Call {
+            call: "Snapshots.Commit",
+            source,
+        })?;
+    Ok(())
 }
 
 /// Remove a snapshot. A missing one is already removed.

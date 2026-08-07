@@ -1494,3 +1494,85 @@ proyecto, y degradar o borrar al único administrador del nodo.
 | borrar el proyecto | rechazado: "only an owner can delete this project" |
 | desplegar | permitido — es deployer |
 | el enlace otra vez | "not valid" |
+
+### 8.12 M9 — registry, releases y rollback
+
+El nodo recibe imágenes, cada push es una release, y una release
+anterior se vuelve a desplegar con un botón. 344 tests, `fmt` y
+`clippy -D warnings` limpios.
+
+**Compartir el content store, no copiar en él**
+
+Los blobs entran directos al content store de containerd por su
+servicio Content, y el manifest se convierte en un image record. Así
+una imagen empujada **ya es** la imagen que el runtime corre: ni una
+segunda copia en disco, ni un paso de importación, y `ctr images ls`
+enseña lo que enseña la consola. Ésa es la razón de escribir esto en
+vez de correr un registry en un contenedor al lado, que guardaría cada
+capa dos veces en un nodo cuyo diseño entero va de no hacer eso.
+
+La sesión de subida es de containerd, no nuestra: su escritura de
+contenido es una transacción con nombre, reanudable por ref y offset.
+Así que el id de la subida **es** el ref, y el módulo no guarda estado
+entre peticiones — la alternativa (un fichero o un stream gRPC por
+subida en un mapa) filtra uno cada vez que un cliente se marcha a
+medias.
+
+**Una release es un digest, no una etiqueta.** Las etiquetas se mueven:
+"vuelve al latest de ayer" no significa nada cuando el latest de ayer
+es el de hoy. Y la actual está *marcada*, no derivada de "la más
+nueva", porque un rollback hace que la actual sea una vieja — que es la
+función entera.
+
+**Dos historiales, a propósito.** Volver atrás una imagen y volver atrás
+una configuración son intenciones distintas: lo normal es "esta build
+está mal, corre la anterior, mantén los ajustes que arreglé". Atarlas
+haría una de las dos imposible.
+
+**Cinco fallos, y ninguno se veía sin el nodo**
+
+1. **El registry decía "ya lo tengo" de imágenes que nadie había
+   empujado.** El índice de etiquetas era el de containerd, que
+   comparte con todo lo demás: `ctr images tag` escribe uno, un pull
+   escribe otro. El cliente se saltaba la subida, el push reportaba
+   éxito, no se creaba ninguna release y nada decía por qué. Compartir
+   el *contenido* es el diseño; compartir el *espacio de nombres de
+   etiquetas* no lo era. Ahora el registry tiene su propia tabla.
+
+2. **La referencia de la release no llevaba host**, así que containerd
+   leía el primer segmento como un registry a marcar: un error de DNS
+   sobre un host llamado `first-project`.
+
+3. **Desplegar por digest no encontraba registro local**, porque solo
+   creábamos el de la etiqueta. Ahora se crean los dos.
+
+4. **Un push deja blobs, no snapshots.** Un contenedor necesita un
+   rootfs desempaquetado, así que una imagen que llegó por push y nunca
+   se bajó falla con "no unpacked layer" — que se lee como imagen
+   corrupta y no como paso que falta. El servicio Transfer de containerd
+   desempaqueta como parte de un *pull*; pedirle transferir una imagen
+   del store a sí misma con configuración de unpack reporta éxito y no
+   desempaqueta nada (probado en el nodo, dos veces, con plataforma y
+   snapshotter escritos). Así que lo hacemos como lo hace un unpacker:
+   por cada capa, preparar un snapshot sobre la cadena, aplicar el diff
+   y comprometerlo bajo el chain ID que el runtime buscará.
+
+5. **Cambiar una variable movía el servicio de imagen.** El redespliegue
+   usaba la *referencia* del servicio —su etiqueta— en vez de la release
+   que estaba corriendo. En cuanto la etiqueta se mueve, tocar el
+   entorno traía lo que se hubiera empujado desde entonces: justo lo que
+   las releases existen para evitar. Lo mismo pasaba al reconciliar tras
+   un reinicio. Ahora ambos restauran la release marcada.
+
+**Verificado en el nodo, con un cliente OCI real** (`ctr push` sobre
+TLS, autenticado con token de push):
+
+| | |
+| --- | --- |
+| `docker login` | acepta el token de proyecto como contraseña |
+| push | blobs al content store compartido, image record y `registry_tag` |
+| release | se registra sola, y se despliega sola por defecto |
+| corre por digest | `…/first-project/nginx@sha256:4a73073b…` |
+| push de una imagen mala | sale a producción: el servicio da 502 |
+| rollback desde la consola | la release vieja vuelve a marcarse actual, **200** |
+| variables | se guardan, se versionan, y restaurar una **no** cambia la imagen |

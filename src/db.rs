@@ -29,6 +29,14 @@ fn migrations() -> Vec<Migration> {
         ),
         Migration::new("0007_ports", include_str!("../migrations/0007_ports.sql")),
         Migration::new("0008_people", include_str!("../migrations/0008_people.sql")),
+        Migration::new(
+            "0009_registry",
+            include_str!("../migrations/0009_registry.sql"),
+        ),
+        Migration::new(
+            "0010_registry_tags",
+            include_str!("../migrations/0010_registry_tags.sql"),
+        ),
     ]
 }
 

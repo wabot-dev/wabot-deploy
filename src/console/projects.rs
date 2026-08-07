@@ -24,6 +24,8 @@ use super::{layout, ConsoleState};
 pub struct ProjectQuery {
     pub project: String,
     pub error: Option<String>,
+    /// A push token, shown once by the page that just made it.
+    pub token: Option<String>,
 }
 
 #[injectable]
@@ -154,6 +156,18 @@ impl ProjectPages {
 
         let all_projects = access::projects_for(&self.state.database, &account).await?;
         let members = access::members(&self.state.database, &project.id).await?;
+        let tokens = if allowed.may_deploy() {
+            crate::platform::tokens::of_project(&self.state.database, &project.id).await?
+        } else {
+            Vec::new()
+        };
+        let registry_host = self
+            .state
+            .config
+            .node
+            .domain
+            .clone()
+            .unwrap_or_else(|| "this node".into());
         let path = format!("/projects/{}", project.slug);
 
         layout::head(&project.name);
@@ -267,6 +281,59 @@ impl ProjectPages {
                             }
                         </tbody>
                     </table>
+                }
+
+                @if allowed.may_deploy() {
+                <section class="card stack">
+                    <div class="split">
+                        <p class="card-label">("Push tokens")</p>
+                        <span class="who">(&registry_host)("/")(&project.slug)("/…")</span>
+                    </div>
+                    @if let Some(secret) = &query.token {
+                        <p class="field-hint">(
+                            "Shown once. Use it as the password: "
+                        )</p>
+                        <pre><code>("docker login ")(&registry_host)(" -u ci -p ")(secret)</code></pre>
+                    }
+                    @if tokens.is_empty() {
+                        <p class="tile-detail">(
+                            "None. A token is what CI authenticates with — it is nobody's \
+                             password, and revoking it changes nothing else."
+                        )</p>
+                    } @else {
+                        <table>
+                            <tbody>
+                                @for token in &tokens {
+                                    <tr>
+                                        <td>(&token.name)</td>
+                                        <td class="tile-detail">
+                                            @if token.last_used_at.is_some() {
+                                                ("used")
+                                            } @else {
+                                                ("never used")
+                                            }
+                                        </td>
+                                        <td>
+                                            <form method="post"
+                                                  action=(format!(
+                                                      "/projects/{}/tokens/{}/revoke",
+                                                      project.slug, token.id
+                                                  ))>
+                                                <button class="btn btn-ghost destructive btn-sm"
+                                                        type="submit">("Revoke")</button>
+                                            </form>
+                                        </td>
+                                    </tr>
+                                }
+                            </tbody>
+                        </table>
+                    }
+                    <form method="post" action=(format!("/projects/{}/tokens", project.slug))
+                          class="row">
+                        <input name="name" type="text" placeholder="what it is for" required>
+                        <button class="btn btn-secondary" type="submit">("Create token")</button>
+                    </form>
+                </section>
                 }
 
                 <section class="card stack">
@@ -550,6 +617,79 @@ impl ProjectApi {
             Some((project, _)) => Ok(see_other(&format!("/projects/{}", project.slug))),
             None => Ok(see_other("/?error=no+such+project")),
         }
+    }
+
+    /// Mint a push token for this project.
+    #[post("/projects/:project/tokens")]
+    #[raw]
+    #[middleware(SessionMiddleware)]
+    async fn create_token(&self, request: Request) -> RestResult<Response> {
+        let path = request.uri().path().to_string();
+        let Some((project, allowed, _)) = self.locate(&path).await? else {
+            return Ok(see_other("/?error=no+such+project"));
+        };
+        let here = format!("/projects/{}", project.slug);
+        if !allowed.may_deploy() {
+            return Ok(back_with_error(
+                &here,
+                "you may look at this project, not push to it",
+            ));
+        }
+        let Some(account) = signed_in(&self.auth) else {
+            return Ok(see_other("/sign-in"));
+        };
+
+        let form = match read_form(request).await {
+            Ok(form) => form,
+            Err(response) => return Ok(response),
+        };
+
+        match crate::platform::tokens::create(
+            &self.state.database,
+            &project.id,
+            field(&form, "name"),
+            &account.id,
+        )
+        .await
+        {
+            // Through the query string, because this is the only time
+            // the secret exists in clear. Stored hashed, so no page can
+            // ever show it again.
+            Ok((_, secret)) => Ok(see_other(&format!(
+                "{here}?{}",
+                form_urlencoded::Serializer::new(String::new())
+                    .append_pair("token", &secret)
+                    .finish()
+            ))),
+            Err(error) => Ok(back_with_error(&here, &error.to_string())),
+        }
+    }
+
+    #[post("/projects/:project/tokens/:token/revoke")]
+    #[raw]
+    #[middleware(SessionMiddleware)]
+    async fn revoke_token(&self, request: Request) -> RestResult<Response> {
+        let path = request.uri().path().to_string();
+        let Some((project, allowed, segments)) = self.locate(&path).await? else {
+            return Ok(see_other("/?error=no+such+project"));
+        };
+        let here = format!("/projects/{}", project.slug);
+        if !allowed.may_deploy() {
+            return Ok(see_other(&here));
+        }
+
+        // Only this project's tokens: an id from another page must not
+        // revoke somebody else's.
+        if let Some(id) = segments.get(3) {
+            let owned = crate::platform::tokens::of_project(&self.state.database, &project.id)
+                .await?
+                .into_iter()
+                .any(|token| token.id == *id);
+            if owned {
+                crate::platform::tokens::revoke(&self.state.database, id).await?;
+            }
+        }
+        Ok(see_other(&here))
     }
 
     /// Delete a project and, by cascade, its services.

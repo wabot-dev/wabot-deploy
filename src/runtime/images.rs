@@ -101,6 +101,134 @@ pub async fn pull(client: &Containerd, reference: &str) -> ClientResult<()> {
     Ok(())
 }
 
+/// Unpack an image that is already in the content store.
+///
+/// A push leaves blobs, not snapshots — the registry stores what it
+/// received and nothing more. A container needs an unpacked rootfs, so
+/// an image that arrived by push and was never pulled fails to start
+/// with "no unpacked layer", which reads like a corrupt image rather
+/// than a missing step. Found exactly that way, on the node, the first
+/// time something was pushed from outside.
+///
+/// ## Done here rather than through the transfer service
+///
+/// containerd's transfer service unpacks as part of a *pull*. Asked to
+/// transfer an image in the store to itself with an unpack
+/// configuration, it reports success and unpacks nothing — tried on
+/// the node, twice, with the platform and the snapshotter spelled out.
+///
+/// So this does what an unpacker does: for each layer, prepare a
+/// snapshot on top of the chain so far, apply the layer's diff onto
+/// it, and commit it under the chain ID the runtime will look for.
+/// Roughly forty lines, against an API that is doing exactly what it
+/// says.
+pub async fn unpack(client: &Containerd, reference: &str) -> ClientResult<()> {
+    use containerd_client::services::v1::diff_client::DiffClient;
+    use containerd_client::services::v1::ApplyRequest;
+
+    let target = image_target(client, reference).await?;
+    let manifest = resolve_manifest(client, &target).await?;
+    let diffs = diff_ids(client, reference).await?;
+
+    if manifest.layers().len() != diffs.len() {
+        return Err(ClientError::Other(format!(
+            "{} layers and {} diff ids — the manifest and its config disagree",
+            manifest.layers().len(),
+            diffs.len()
+        )));
+    }
+
+    for (index, layer) in manifest.layers().iter().enumerate() {
+        let chain = super::snapshots::chain_id(&diffs[..=index])
+            .ok_or_else(|| ClientError::Other("a layer with no chain id".into()))?;
+
+        // Already unpacked — by an earlier pull, or by the layer being
+        // shared with an image that was. This is the common case on a
+        // node whose whole design is one content store.
+        if super::snapshots::exists(client, &chain).await? {
+            continue;
+        }
+
+        let parent = if index == 0 {
+            String::new()
+        } else {
+            super::snapshots::chain_id(&diffs[..index])
+                .ok_or_else(|| ClientError::Other("a parent with no chain id".into()))?
+        };
+
+        let key = format!("unpack-{chain}");
+        let mounts = super::snapshots::prepare_from(client, &key, &parent).await?;
+
+        DiffClient::new(client.channel())
+            .apply(client.request(ApplyRequest {
+                diff: Some(containerd_client::types::Descriptor {
+                    media_type: layer.media_type().to_string(),
+                    digest: layer.digest().to_string(),
+                    size: layer.size() as i64,
+                    annotations: Default::default(),
+                }),
+                mounts,
+                ..Default::default()
+            }))
+            .await
+            .map_err(|source| ClientError::Call {
+                call: "Diff.Apply",
+                source,
+            })?;
+
+        super::snapshots::commit(client, &chain, &key).await?;
+    }
+
+    tracing::info!(
+        image = reference,
+        layers = manifest.layers().len(),
+        "unpacked"
+    );
+    Ok(())
+}
+
+/// The platform manifest for this target, following an index when
+/// there is one.
+async fn resolve_manifest(
+    client: &Containerd,
+    target: &containerd_client::types::Descriptor,
+) -> ClientResult<oci_spec::image::ImageManifest> {
+    let bytes = super::content::read(client, target).await?;
+    let wanted = platform();
+
+    if is_index(&target.media_type) {
+        let index: oci_spec::image::ImageIndex = serde_json::from_slice(&bytes)
+            .map_err(|error| ClientError::Other(format!("unreadable image index: {error}")))?;
+
+        let chosen = index
+            .manifests()
+            .iter()
+            .find(|descriptor| {
+                descriptor.platform().as_ref().is_some_and(|platform| {
+                    platform.architecture().to_string() == wanted.architecture
+                        && platform.os().to_string() == wanted.os
+                })
+            })
+            .ok_or_else(|| {
+                ClientError::Other(format!(
+                    "the image has no {}/{} manifest",
+                    wanted.os, wanted.architecture
+                ))
+            })?;
+
+        let descriptor = containerd_client::types::Descriptor {
+            media_type: chosen.media_type().to_string(),
+            digest: chosen.digest().to_string(),
+            size: chosen.size() as i64,
+            annotations: Default::default(),
+        };
+        return Box::pin(resolve_manifest(client, &descriptor)).await;
+    }
+
+    serde_json::from_slice(&bytes)
+        .map_err(|error| ClientError::Other(format!("unreadable manifest: {error}")))
+}
+
 /// Is this image already here?
 pub async fn exists(client: &Containerd, reference: &str) -> ClientResult<bool> {
     match ImagesClient::new(client.channel())
