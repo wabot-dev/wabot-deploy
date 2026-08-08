@@ -5,7 +5,9 @@ use std::sync::Arc;
 use hypertext::prelude::*;
 use serde::Deserialize;
 use wabot::prelude::*;
+use wabot::rest::axum::body::Body;
 use wabot::rest::axum::extract::Request;
+use wabot::rest::axum::http::{header, StatusCode};
 use wabot::rest::axum::response::Response;
 use wabot::rest::RestResult;
 use wabot::ui::hypertext::IntoView;
@@ -196,85 +198,7 @@ impl ProjectPages {
                         }
                     </section>
                 } @else {
-                    <table>
-                        <thead>
-                            <tr>
-                                <th>("Service")</th>
-                                <th>("Image")</th>
-                                <th>("Address")</th>
-                                <th>("State")</th>
-                                // The delete column. Headed by nothing,
-                                // because "Delete" over a column of
-                                // Delete buttons reads as a heading for
-                                // a thing rather than a label for one.
-                                <th></th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            @for (service, observed, busy) in &rows {
-                                <tr>
-                                    <td>
-                                        <a href=(format!(
-                                            "/projects/{}/services/{}",
-                                            project.slug, service.slug
-                                        ))>(&service.name)</a>
-                                    </td>
-                                    <td class="mono">(&service.image)</td>
-                                    <td class="mono">(
-                                        service.address.clone().unwrap_or_else(|| "—".into())
-                                    )</td>
-                                    <td>(state_badge(observed, *busy))</td>
-                                    <td class="row">
-                                        @if !allowed.may_deploy() {
-                                            // A viewer sees the state and
-                                            // nothing to press. The check
-                                            // that matters is on the POST;
-                                            // this is so the page does not
-                                            // offer what it will refuse.
-                                        } @else if matches!(observed, Observed::Running { .. }) {
-                                            <form method="post"
-                                                  action=(format!(
-                                                      "/projects/{}/services/{}/stop",
-                                                      project.slug, service.slug
-                                                  ))>
-                                                <button class="btn btn-secondary btn-sm" type="submit">
-                                                    ("Stop")
-                                                </button>
-                                            </form>
-                                        } @else {
-                                            <form method="post"
-                                                  action=(format!(
-                                                      "/projects/{}/services/{}/deploy",
-                                                      project.slug, service.slug
-                                                  ))>
-                                                <button class="btn btn-secondary btn-sm"
-                                                        type="submit">
-                                                    ("Deploy")
-                                                </button>
-                                            </form>
-                                        }
-                                        @if allowed.may_deploy() {
-                                            <form method="post"
-                                                  action=(format!(
-                                                      "/projects/{}/services/{}/delete",
-                                                      project.slug, service.slug
-                                                  ))>
-                                                <button class="btn btn-ghost destructive btn-sm"
-                                                        type="submit">
-                                                    ("Delete")
-                                                </button>
-                                            </form>
-                                        }
-                                    </td>
-                                </tr>
-                                @if let Some(failure) = &service.last_error {
-                                    <tr>
-                                        <td colspan="5" class="failure">(failure)</td>
-                                    </tr>
-                                }
-                            }
-                        </tbody>
-                    </table>
+                    (service_table(&project, &rows, allowed))
                 }
 
         }
@@ -559,6 +483,153 @@ impl ProjectApi {
 /// pid, and everything else says which kind of not-running it is. A
 /// runtime that cannot be reached is its own answer, because
 /// redeploying is the wrong response to it.
+/// The services table, as an island host.
+///
+/// Its own function for the reason `Frame::render` gives: an `rsx!`
+/// expands to a closure that captures by move, so nesting one inside
+/// the page's would have both wanting the same `project` and `rows`.
+/// A reference moves freely — it is `Copy` — and the markup is
+/// rendered before the host wraps it.
+fn service_table(
+    project: &crate::platform::projects::Project,
+    rows: &[(services::Service, Observed, bool)],
+    allowed: crate::accounts::roles::Access,
+) -> impl Renderable {
+    let inner = rsx! {
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>("Service")</th>
+                                <th>("Address")</th>
+                                <th class="state">("State")</th>
+                                // The delete column. Headed by nothing,
+                                // because "Delete" over a column of
+                                // Delete buttons reads as a heading for
+                                // a thing rather than a label for one.
+                                <th></th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            @for (service, observed, busy) in rows {
+                                <tr>
+                                    <td>
+                                        <a href=(format!(
+                                            "/projects/{}/services/{}",
+                                            project.slug, service.slug
+                                        ))>(&service.name)</a>
+                                    </td>
+                                    <td class="mono">(
+                                        service.address.clone().unwrap_or_else(|| "—".into())
+                                    )</td>
+                                    <td class="state" data-state=(&service.id)>
+                                        (state_badge(observed, *busy))
+                                    </td>
+                                    <td class="row">
+                                        @if !allowed.may_deploy() {
+                                            // A viewer sees the state and
+                                            // nothing to press. The check
+                                            // that matters is on the POST;
+                                            // this is so the page does not
+                                            // offer what it will refuse.
+                                        } @else if matches!(observed, Observed::Running { .. }) {
+                                            <form method="post"
+                                                  action=(format!(
+                                                      "/projects/{}/services/{}/stop",
+                                                      project.slug, service.slug
+                                                  ))>
+                                                <button class="btn btn-secondary btn-sm" type="submit">
+                                                    ("Stop")
+                                                </button>
+                                            </form>
+                                        } @else {
+                                            <form method="post"
+                                                  action=(format!(
+                                                      "/projects/{}/services/{}/deploy",
+                                                      project.slug, service.slug
+                                                  ))>
+                                                <button class="btn btn-secondary btn-sm"
+                                                        type="submit">
+                                                    ("Deploy")
+                                                </button>
+                                            </form>
+                                        }
+                                        @if allowed.may_deploy() {
+                                            <form method="post"
+                                                  action=(format!(
+                                                      "/projects/{}/services/{}/delete",
+                                                      project.slug, service.slug
+                                                  ))>
+                                                <button class="btn btn-ghost destructive btn-sm"
+                                                        type="submit">
+                                                    ("Delete")
+                                                </button>
+                                            </form>
+                                        }
+                                    </td>
+                                </tr>
+                                @if let Some(failure) = &service.last_error {
+                                    <tr>
+                                        <td colspan="4" class="failure">(failure)</td>
+                                    </tr>
+                                }
+                            }
+                        </tbody>
+                    </table>
+    }
+    .render()
+    .into_inner();
+
+    wabot::ui::hypertext::island(
+        "project-live",
+        &serde_json::json!({ "project": &project.slug }),
+        hypertext::Raw::dangerously_create(&inner),
+    )
+}
+
+/// One service's state, as the three things the badge shows.
+///
+/// Formatted here so the first paint and every update after it come
+/// from one place. The stream only assigns text and classes that the
+/// server already rendered — see the island rules in CLAUDE.md.
+#[derive(serde::Serialize)]
+pub(crate) struct StateCell {
+    word: String,
+    badge: &'static str,
+    dot: &'static str,
+}
+
+pub(crate) fn state_cell(observed: &Observed, deploying: bool) -> StateCell {
+    if deploying {
+        return StateCell {
+            word: "Deploying".into(),
+            badge: "badge badge-info",
+            dot: "dot dot-info dot-pulse",
+        };
+    }
+    match observed {
+        Observed::Running { .. } => StateCell {
+            word: "Running".into(),
+            badge: "badge badge-success",
+            dot: "dot dot-success",
+        },
+        Observed::Stopped { exit_code } => StateCell {
+            word: format!("Exited {exit_code}"),
+            badge: "badge badge-danger",
+            dot: "dot dot-danger",
+        },
+        Observed::Absent => StateCell {
+            word: "Not deployed".into(),
+            badge: "badge badge-warning",
+            dot: "dot dot-warning",
+        },
+        Observed::Unknown(_) => StateCell {
+            word: "Unknown".into(),
+            badge: "badge badge-info",
+            dot: "dot dot-info",
+        },
+    }
+}
+
 /// What a service is doing, as a dot and a word.
 ///
 /// `deploying` outranks whatever containerd says, because during a
@@ -646,6 +717,78 @@ impl ProjectApi {
     }
 
     /// Put somebody who already has an account into this project.
+    /// What each service is doing, as server-sent events.
+    ///
+    /// A tick rather than a signal: a deployment's progress lives in
+    /// the job store and containerd, and neither announces itself. Two
+    /// seconds is the same cadence the node page uses for memory.
+    ///
+    /// `#[raw]`, because the body is a stream that never ends and the
+    /// JSON path buffers a value.
+    #[get("/projects/:project/live")]
+    #[raw]
+    #[middleware(SessionMiddleware)]
+    async fn live(&self, request: Request) -> RestResult<Response> {
+        let path = request.uri().path().to_string();
+        let Some(account) = signed_in(&self.auth) else {
+            // A status, not a redirect: an EventSource cannot follow
+            // one usefully.
+            return Ok(Response::builder()
+                .status(StatusCode::UNAUTHORIZED)
+                .body(Body::empty())
+                .expect("a constant response is well-formed"));
+        };
+        let Some(slug) = super::auth::segments(&path).get(1).map(|s| s.to_string()) else {
+            return Ok(Response::builder()
+                .status(StatusCode::NOT_FOUND)
+                .body(Body::empty())
+                .expect("a constant response is well-formed"));
+        };
+        // The same check the page makes: a stream is as private as
+        // what it streams.
+        let Some((project, _)) =
+            access::find_project(&self.state.database, &account, &slug).await?
+        else {
+            return Ok(Response::builder()
+                .status(StatusCode::NOT_FOUND)
+                .body(Body::empty())
+                .expect("a constant response is well-formed"));
+        };
+
+        let state = self.state.clone();
+        let stream = async_stream::stream! {
+            loop {
+                let mut cells = std::collections::BTreeMap::new();
+                if let Ok(services) =
+                    services::all(&state.database, Some(&project.id)).await
+                {
+                    let deploying =
+                        crate::deploy::jobs::deploying(&state.container).await;
+                    for service in services {
+                        let observed = state.deployer.observe(&project, &service).await;
+                        let busy = deploying.contains(&service.id);
+                        cells.insert(service.id.clone(), state_cell(&observed, busy));
+                    }
+                }
+                let payload = serde_json::to_string(&cells)
+                    .unwrap_or_else(|_| "{}".into());
+                yield Ok::<_, std::convert::Infallible>(
+                    wabot::rest::axum::body::Bytes::from(format!("data: {payload}\n\n")),
+                );
+                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+            }
+        };
+
+        Ok(Response::builder()
+            .header(header::CONTENT_TYPE, "text/event-stream")
+            // Every hop has to be told, or a proxy holds the stream
+            // until it has "enough" and the page never updates.
+            .header(header::CACHE_CONTROL, "no-cache")
+            .header("x-accel-buffering", "no")
+            .body(Body::from_stream(stream))
+            .expect("a constant response is well-formed"))
+    }
+
     #[post("/projects/:project/people")]
     #[raw]
     #[middleware(SessionMiddleware)]
@@ -1008,6 +1151,63 @@ mod tests {
 
         let idle = state_badge(&Observed::Absent, false).render().into_inner();
         assert!(idle.contains("Not deployed"), "{idle}");
+    }
+
+    /// The state updates in place, so the page has to declare the
+    /// island and a hook per service — a stream with nothing to write
+    /// into is a connection held open for nothing.
+    #[tokio::test]
+    async fn the_services_table_is_a_live_island() {
+        let console = Console::new().await;
+        let cookie = console.signed_in().await;
+        console
+            .harness
+            .post("/projects")
+            .header("cookie", &cookie)
+            .form(&[("name", "shipping")])
+            .send()
+            .await;
+        console
+            .harness
+            .post("/projects/shipping/services")
+            .header("cookie", &cookie)
+            .form(&[("name", "web"), ("image", "docker.io/library/nginx:alpine")])
+            .send()
+            .await;
+
+        let page = console
+            .ui
+            .with_header("cookie", cookie.clone())
+            .get("/projects/shipping")
+            .await;
+        assert!(page.has_island("project-live"), "{}", page.html());
+        assert_eq!(
+            page.island_props("project-live"),
+            Some(serde_json::json!({ "project": "shipping" })),
+            "the client needs the slug to open the stream"
+        );
+
+        let service = services::all(&console.database, None)
+            .await
+            .expect("query")
+            .pop()
+            .expect("one service");
+        assert!(
+            page.html()
+                .contains(&format!("data-state=\"{}\"", service.id)),
+            "and a hook to write into: {}",
+            page.html()
+        );
+    }
+
+    /// The stream is as private as the table it feeds.
+    #[tokio::test]
+    async fn the_project_stream_needs_a_session() {
+        let console = Console::new().await;
+        console.signed_in().await;
+
+        let response = console.harness.get("/projects/shipping/live").send().await;
+        response.assert_status(StatusCode::UNAUTHORIZED);
     }
 
     /// One page, one subject. The overview used to carry the services,

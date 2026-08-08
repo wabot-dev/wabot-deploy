@@ -223,6 +223,16 @@ pub const CSS: &str = r#"
 .tile-name { margin: 0 0 var(--sp-2); font-weight: 600; }
 .tile-detail { margin: 0; color: rgb(var(--c-fg-muted)); font-size: var(--fs-sm); }
 
+/* The state column keeps its width whatever the word is.
+ *
+ * "Not deployed" wrapped to two lines where "Running" did not, so the
+ * row grew and the column moved — and with the state updating in place
+ * that becomes a table that jumps while somebody is reading it. Wide
+ * enough for the longest answer, and the badge never wraps.
+ */
+.state { width: 9rem; }
+.state .badge { white-space: nowrap; }
+
 /* The reason a service is not running, under the service it is about.
    Full width because a containerd error is a paragraph, not a word. */
 .failure {

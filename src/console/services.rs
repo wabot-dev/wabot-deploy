@@ -1444,7 +1444,10 @@ mod tests {
             .await
             .body;
         assert!(body.contains("web"), "{body}");
-        assert!(body.contains("nginx:alpine"), "{body}");
+        // Not the image: the list dropped that column. Which image a
+        // service runs is on the service's own page, where somebody
+        // deciding about it is already looking.
+        assert!(!body.contains("nginx:alpine"), "{body}");
 
         // The value with an `=` in it survived the form.
         let stored = services::all(&console.database, None)

@@ -90,6 +90,45 @@
     };
   });
 
+  // ---- a project's service states ---------------------------------------
+  //
+  // Every badge in the table, replaced in place. Without this the row
+  // still shows what the server rendered, which is correct and stale —
+  // and a deployment finishing while somebody watches is exactly when
+  // stale is worst.
+
+  wabot.island('project-live', function (host, props) {
+    if (!props || !props.project) return null;
+    var source = new EventSource(
+      '/projects/' + encodeURIComponent(props.project) + '/live'
+    );
+
+    source.onmessage = function (event) {
+      var states;
+      try {
+        states = JSON.parse(event.data);
+      } catch (e) {
+        return;
+      }
+      Object.keys(states).forEach(function (id) {
+        var cell = host.querySelector('[data-state="' + id + '"]');
+        if (!cell) return;
+        var badge = cell.querySelector('.badge');
+        var dot = cell.querySelector('.dot');
+        if (!badge || !dot) return;
+        // The word is the badge's last text node, after the dot.
+        badge.className = states[id].badge;
+        dot.className = states[id].dot;
+        var text = badge.lastChild;
+        if (text) text.textContent = states[id].word;
+      });
+    };
+
+    return function () {
+      source.close();
+    };
+  });
+
   // ---- the node's live figures ----------------------------------------
   //
   // Memory changes every second and a certificate request finishes
