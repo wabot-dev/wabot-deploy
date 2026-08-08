@@ -125,10 +125,18 @@
         // Both controls are in the markup; this shows the one that
         // applies. A row saying "Running" beside a Deploy button is the
         // page contradicting itself.
+        //
+        // The one that applies is always shown — disabled while a
+        // deployment is in flight, never hidden. A control that
+        // disappears takes the column's width with it, and leaves
+        // nothing to read.
         var row = cell.parentNode;
         ['deploy', 'stop'].forEach(function (name) {
           var form = row.querySelector('[data-action="' + name + '"]');
-          if (form) form.hidden = states[id].action !== name;
+          if (!form) return;
+          form.hidden = states[id].action !== name;
+          var button = form.querySelector('button');
+          if (button) button.disabled = !!states[id].busy;
         });
       });
     };

@@ -548,6 +548,7 @@ fn service_table(
                                                   ))>
                                                 <button class="btn btn-secondary btn-sm icon"
                                                         type="submit" title="Deploy"
+                                                        disabled=(cell.busy)
                                                         aria-label="Deploy">
                                                     (hypertext::Raw::dangerously_create(PLAY))
                                                 </button>
@@ -560,6 +561,7 @@ fn service_table(
                                                   ))>
                                                 <button class="btn btn-secondary btn-sm icon"
                                                         type="submit" title="Stop"
+                                                        disabled=(cell.busy)
                                                         aria-label="Stop">
                                                     (hypertext::Raw::dangerously_create(STOP))
                                                 </button>
@@ -610,9 +612,14 @@ pub(crate) struct StateCell {
     word: String,
     badge: &'static str,
     dot: &'static str,
-    /// Which control applies: `deploy`, `stop`, or `none` while a
-    /// deployment is in flight and neither would mean anything.
+    /// Which control applies: `deploy` or `stop`. Always one of the
+    /// two — a control that vanishes takes the column's width with it
+    /// and leaves nothing to press or to read.
     action: &'static str,
+    /// Whether it is pressable. A deployment in flight shows `stop`
+    /// disabled: that is where it is heading, and saying so is more
+    /// use than an empty cell.
+    busy: bool,
 }
 
 pub(crate) fn state_cell(observed: &Observed, deploying: bool) -> StateCell {
@@ -621,7 +628,8 @@ pub(crate) fn state_cell(observed: &Observed, deploying: bool) -> StateCell {
             word: "Deploying".into(),
             badge: "badge badge-info",
             dot: "dot dot-info dot-pulse",
-            action: "none",
+            action: "stop",
+            busy: true,
         };
     }
     match observed {
@@ -630,24 +638,28 @@ pub(crate) fn state_cell(observed: &Observed, deploying: bool) -> StateCell {
             badge: "badge badge-success",
             dot: "dot dot-success",
             action: "stop",
+            busy: false,
         },
         Observed::Stopped { exit_code } => StateCell {
             word: format!("Exited {exit_code}"),
             badge: "badge badge-danger",
             dot: "dot dot-danger",
             action: "deploy",
+            busy: false,
         },
         Observed::Absent => StateCell {
             word: "Not deployed".into(),
             badge: "badge badge-warning",
             dot: "dot dot-warning",
             action: "deploy",
+            busy: false,
         },
         Observed::Unknown(_) => StateCell {
             word: "Unknown".into(),
             badge: "badge badge-info",
             dot: "dot dot-info",
             action: "deploy",
+            busy: false,
         },
     }
 }
@@ -1144,13 +1156,16 @@ mod tests {
     fn a_deployment_in_flight_outranks_what_containerd_says() {
         let busy = state_cell(&Observed::Absent, true);
         assert_eq!(busy.word, "Deploying");
-        // And neither control applies while it is in flight: a Deploy
-        // button during a deployment is an invitation to queue a second.
-        assert_eq!(busy.action, "none");
+        // Shown, not hidden: a control that vanishes takes the column's
+        // width with it. Disabled says the same thing and keeps the row
+        // still — and it names where the deployment is heading.
+        assert_eq!(busy.action, "stop");
+        assert!(busy.busy, "and it cannot be pressed yet");
 
         let idle = state_cell(&Observed::Absent, false);
         assert_eq!(idle.word, "Not deployed");
         assert_eq!(idle.action, "deploy");
+        assert!(!idle.busy);
 
         // Running offers Stop, which is the pairing the row used to get
         // wrong the moment the badge updated and the button did not.
