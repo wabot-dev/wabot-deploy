@@ -130,6 +130,12 @@
         // deployment is in flight, never hidden. A control that
         // disappears takes the column's width with it, and leaves
         // nothing to read.
+        // The address is assigned by the same message: a deployment
+        // ends by giving the container one, and a row that showed the
+        // new state beside the old address would be half-updated.
+        var where = host.querySelector('[data-address="' + id + '"]');
+        if (where) where.textContent = states[id].address;
+
         var row = cell.parentNode;
         ['deploy', 'stop'].forEach(function (name) {
           var form = row.querySelector('[data-action="' + name + '"]');

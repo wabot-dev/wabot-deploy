@@ -162,7 +162,11 @@ impl ProjectPages {
             // The same value the stream sends, so the first paint and
             // every update after it cannot disagree about which action
             // applies or what the badge says.
-            let cell = state_cell(&observed, deploying.contains(&service.id));
+            let cell = state_cell(
+                &observed,
+                deploying.contains(&service.id),
+                service.address.as_deref(),
+            );
             rows.push((service, cell));
         }
 
@@ -503,7 +507,7 @@ fn service_table(
                         <thead>
                             <tr>
                                 <th>("Service")</th>
-                                <th>("Address")</th>
+                                <th class="address">("Address")</th>
                                 <th class="state">("State")</th>
                                 // The delete column. Headed by nothing,
                                 // because "Delete" over a column of
@@ -521,9 +525,9 @@ fn service_table(
                                             project.slug, service.slug
                                         ))>(&service.name)</a>
                                     </td>
-                                    <td class="mono">(
-                                        service.address.clone().unwrap_or_else(|| "—".into())
-                                    )</td>
+                                    <td class="mono address" data-address=(&service.id)>
+                                        (&cell.address)
+                                    </td>
                                     <td class="state" data-state=(&service.id)>
                                         (state_badge(cell))
                                     </td>
@@ -647,9 +651,14 @@ pub(crate) struct StateCell {
     /// disabled: that is where it is heading, and saying so is more
     /// use than an empty cell.
     busy: bool,
+    /// Where the container answers, or a dash. It changes with the
+    /// state — a deployment ends by assigning one — so it travels with
+    /// it rather than waiting for a reload.
+    address: String,
 }
 
-pub(crate) fn state_cell(observed: &Observed, deploying: bool) -> StateCell {
+pub(crate) fn state_cell(observed: &Observed, deploying: bool, address: Option<&str>) -> StateCell {
+    let address = address.unwrap_or("—").to_string();
     if deploying {
         return StateCell {
             word: "Deploying".into(),
@@ -657,6 +666,7 @@ pub(crate) fn state_cell(observed: &Observed, deploying: bool) -> StateCell {
             dot: "dot dot-info dot-pulse",
             action: "stop",
             busy: true,
+            address,
         };
     }
     match observed {
@@ -666,6 +676,7 @@ pub(crate) fn state_cell(observed: &Observed, deploying: bool) -> StateCell {
             dot: "dot dot-success",
             action: "stop",
             busy: false,
+            address,
         },
         Observed::Stopped { exit_code } => StateCell {
             word: format!("Exited {exit_code}"),
@@ -673,6 +684,7 @@ pub(crate) fn state_cell(observed: &Observed, deploying: bool) -> StateCell {
             dot: "dot dot-danger",
             action: "deploy",
             busy: false,
+            address: address.clone(),
         },
         Observed::Absent => StateCell {
             word: "Not deployed".into(),
@@ -680,6 +692,7 @@ pub(crate) fn state_cell(observed: &Observed, deploying: bool) -> StateCell {
             dot: "dot dot-warning",
             action: "deploy",
             busy: false,
+            address: address.clone(),
         },
         Observed::Unknown(_) => StateCell {
             word: "Unknown".into(),
@@ -687,6 +700,7 @@ pub(crate) fn state_cell(observed: &Observed, deploying: bool) -> StateCell {
             dot: "dot dot-info",
             action: "deploy",
             busy: false,
+            address: address.clone(),
         },
     }
 }
@@ -803,7 +817,10 @@ impl ProjectApi {
                     for service in services {
                         let observed = state.deployer.observe(&project, &service).await;
                         let busy = deploying.contains(&service.id);
-                        cells.insert(service.id.clone(), state_cell(&observed, busy));
+                        cells.insert(
+                            service.id.clone(),
+                            state_cell(&observed, busy, service.address.as_deref()),
+                        );
                     }
                 }
                 let payload = serde_json::to_string(&cells)
@@ -1181,7 +1198,7 @@ mod tests {
     /// there reads as a fault. The job is what knows.
     #[test]
     fn a_deployment_in_flight_outranks_what_containerd_says() {
-        let busy = state_cell(&Observed::Absent, true);
+        let busy = state_cell(&Observed::Absent, true, None);
         assert_eq!(busy.word, "Deploying");
         // Shown, not hidden: a control that vanishes takes the column's
         // width with it. Disabled says the same thing and keeps the row
@@ -1189,7 +1206,7 @@ mod tests {
         assert_eq!(busy.action, "stop");
         assert!(busy.busy, "and it cannot be pressed yet");
 
-        let idle = state_cell(&Observed::Absent, false);
+        let idle = state_cell(&Observed::Absent, false, None);
         assert_eq!(idle.word, "Not deployed");
         assert_eq!(idle.action, "deploy");
         assert!(!idle.busy);
@@ -1202,8 +1219,13 @@ mod tests {
                 address: None,
             },
             false,
+            Some("10.42.1.5"),
         );
         assert_eq!(running.action, "stop");
+        // The address rides with the state: a deployment ends by
+        // assigning one, and a row showing the new state beside the old
+        // address is half-updated.
+        assert_eq!(running.address, "10.42.1.5");
     }
 
     /// The state updates in place, so the page has to declare the

@@ -212,7 +212,7 @@ impl ServicePages {
                 <section class="card stack">
                     <div class="split">
                         <p class="card-label">("Container")</p>
-                        (super::projects::state_badge(&super::projects::state_cell(&observed, deploying)))
+                        (super::projects::state_badge(&super::projects::state_cell(&observed, deploying, service.address.as_deref())))
                     </div>
                     <dl class="kv">
                         <dt>("Image")</dt>

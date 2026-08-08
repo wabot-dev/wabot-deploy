@@ -230,7 +230,11 @@ pub const CSS: &str = r#"
  * that becomes a table that jumps while somebody is reading it. Wide
  * enough for the longest answer, and the badge never wraps.
  */
+/* Fixed widths so a column does not resize when its content does. The
+   state and the address both change in place now, and a table that
+   reflows on every update is one nobody can read while it works. */
 .state { width: 9rem; }
+.address { width: 9rem; }
 
 /* An icon button is square, and its glyph is centred rather than
    sitting on the text baseline it no longer has. */
