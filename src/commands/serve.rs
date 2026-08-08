@@ -8,7 +8,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use wabot::lifecycle::{ShutdownPhase, ShutdownTask};
-use wabot::prelude::Container;
+use wabot::prelude::{register_transients, Container};
 use wabot::ProjectRunner;
 
 use crate::config::Config;
@@ -33,6 +33,27 @@ pub async fn run(config: Config) -> anyhow::Result<i32> {
     crate::update::settle_after_restart(&database).await;
 
     let container = Container::new();
+
+    // Deploying is a job. Registered before anything can enqueue one,
+    // and `ensure_ready` because these tables are the store's own —
+    // `db.rs` owns the node's schema, the queue brings its two.
+    let jobs = Arc::new(wabot_addon_async_sqlite::SqliteJobRepository::new(
+        (*database).clone(),
+    ));
+    let crons = Arc::new(wabot_addon_async_sqlite::SqliteCronJobRepository::new(
+        (*database).clone(),
+    ));
+    jobs.ensure_ready().await?;
+    crons.ensure_ready().await?;
+    wabot::async_jobs::register_job_repository(&container, jobs);
+    wabot::async_jobs::register_cron_job_repository(&container, crons);
+    // `InProcessLocker`, which `register_async_runtime` picks when
+    // nothing else is registered: there is one node, and the Postgres
+    // advisory-lock variant wants a server this product exists not to
+    // need.
+    wabot::async_jobs::register_async_runtime(&container);
+    register_transients!(&container, crate::deploy::jobs::DeployHandler);
+
     crate::api::register(&container, database.clone());
     crate::console::register(
         &container,
@@ -72,9 +93,13 @@ pub async fn run(config: Config) -> anyhow::Result<i32> {
     // After the edge is built, so the deployer holds the same route
     // table the listener reads and a deployment takes effect without a
     // restart.
-    let deployer = crate::deploy::Deployer::new(database.clone(), &config)
-        .with_routes(routes)
-        .with_certificates(wake.clone());
+    let deployer = Arc::new(
+        crate::deploy::Deployer::new(database.clone(), &config)
+            .with_routes(routes)
+            .with_certificates(wake.clone()),
+    );
+    // The job handler resolves this one rather than building a third.
+    container.register_instance::<crate::deploy::Deployer>(deployer.clone());
 
     let https: SocketAddr = (bind_address(&config), config.edge.https_port).into();
     let http: SocketAddr = (bind_address(&config), config.edge.http_port).into();
@@ -112,23 +137,38 @@ pub async fn run(config: Config) -> anyhow::Result<i32> {
         // So the listeners come up first and this runs beside them. A
         // service whose container is not back yet answers 404 for a
         // few seconds instead of not answering at all.
-        .service_with_cancel("reconcile", move |cancel| async move {
-            tokio::select! {
-                _ = cancel.cancelled() => return Ok::<(), anyhow::Error>(()),
-                outcome = deployer.reconcile() => match outcome {
-                    Ok(0) => {}
-                    Ok(started) => tracing::info!(started, "services restored"),
-                    Err(error) => tracing::warn!(%error, "could not reconcile services"),
+        .service_with_cancel("reconcile", {
+            let reconciler = deployer.clone();
+            move |cancel| async move {
+                tokio::select! {
+                    _ = cancel.cancelled() => return Ok::<(), anyhow::Error>(()),
+                    outcome = reconciler.reconcile() => match outcome {
+                        Ok(0) => {}
+                        Ok(started) => tracing::info!(started, "services restored"),
+                        Err(error) => tracing::warn!(%error, "could not reconcile services"),
+                    }
                 }
-            }
 
-            // Then wait, rather than return. A service that ends takes
-            // the process with it — the runner reads it as the system
-            // being done — so reconciling and returning shut the node
-            // down the moment it finished, seconds after it started.
-            cancel.cancelled().await;
-            Ok::<(), anyhow::Error>(())
+                // Then wait, rather than return. A service that ends takes
+                // the process with it — the runner reads it as the system
+                // being done — so reconciling and returning shut the node
+                // down the moment it finished, seconds after it started.
+                cancel.cancelled().await;
+                Ok::<(), anyhow::Error>(())
+            }
         })
+        // Deploys land here. A service that returns ends the process,
+        // so the runner's own loop is what keeps this one alive.
+        .service(
+            "jobs",
+            wabot::async_jobs::run_async_workers(
+                container.clone(),
+                vec![crate::deploy::jobs::DeployHandler::__handler_entry(
+                    &container,
+                )],
+                vec![],
+            ),
+        )
         .service_with_cancel("edge-https", move |cancel| {
             crate::edge::serve_https(edge, resolver, https, cancel)
         })

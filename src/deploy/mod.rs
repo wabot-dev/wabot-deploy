@@ -19,6 +19,7 @@
 //! tested by every deployment before it.
 
 pub mod dns;
+pub mod jobs;
 pub mod routing;
 
 use std::net::Ipv4Addr;

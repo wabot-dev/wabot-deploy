@@ -57,6 +57,11 @@ pub struct ConsoleState {
     /// it is doing. Held here as well as inside the deployer because
     /// the node page reports on it, which is not deploying.
     pub(crate) certificates: Arc<crate::edge::acme::Wake>,
+    /// For enqueuing work. `run_command` is a free function over the
+    /// container — the framework's reasoning is that an `Async`
+    /// singleton would have to hold a container that holds it — so the
+    /// container is what a caller needs. It is a cheap clonable handle.
+    pub(crate) container: Container,
 }
 
 /// A secret handed from a POST to the GET that follows it.
@@ -123,6 +128,7 @@ impl ConsoleState {
     }
 
     pub fn new(
+        container: Container,
         database: Arc<SqliteDatabase>,
         config: Config,
         routes: Arc<crate::edge::routes::RouteTable>,
@@ -140,6 +146,7 @@ impl ConsoleState {
             catalogue: Arc::new(crate::update::Catalogue::default()),
             reveals: Reveals::default(),
             certificates,
+            container,
         }
     }
 }
@@ -247,6 +254,7 @@ pub fn register(
     certificates: Arc<crate::edge::acme::Wake>,
 ) {
     container.register_instance::<ConsoleState>(Arc::new(ConsoleState::new(
+        container.clone(),
         database,
         config,
         routes,
@@ -302,6 +310,9 @@ pub fn routes(container: &Container) -> Router {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+    use wabot::async_jobs::{
+        register_async_runtime, register_cron_job_repository, register_job_repository,
+    };
     use wabot::rest::axum::http::StatusCode;
     use wabot::testing::RestHarness;
 
@@ -332,6 +343,39 @@ pub(crate) mod tests {
                 Arc::new(crate::edge::routes::RouteTable::new()),
                 Arc::new(crate::edge::acme::Wake::default()),
             );
+            // The queue, so a test exercises the path a node takes:
+            // a POST enqueues, `run_command` spawns, the handler runs.
+            // Without it `run_command` fails to resolve a repository
+            // and every deployment quietly does not happen.
+            register_job_repository(
+                &container,
+                Arc::new(wabot_addon_async_in_memory::InMemoryJobRepository::new()),
+            );
+            register_cron_job_repository(
+                &container,
+                Arc::new(wabot_addon_async_in_memory::InMemoryCronJobRepository::new()),
+            );
+            register_async_runtime(&container);
+            // The handler wants both, and `console::register` registers
+            // neither — on a node `api::register` puts the database in.
+            container.register_instance::<SqliteDatabase>(database.clone());
+            container.register_instance::<crate::deploy::Deployer>(Arc::new(
+                crate::deploy::Deployer::new(database.clone(), &Config::default()),
+            ));
+            register_transients!(&container, crate::deploy::jobs::DeployHandler);
+            // What `run_async_workers` does with its entries, minus the
+            // workers: the executor only runs a command it knows, and
+            // `run_command`'s immediate spawn checks exactly that.
+            //
+            // This is not yet enough — a queued deployment still does
+            // not execute here, and I have not found why. The wiring
+            // stays because it is the half that is certainly needed;
+            // see the note in `deploy::jobs`.
+            let commands: Arc<wabot::async_jobs::CommandRegistry> = container.resolve();
+            commands.register(crate::deploy::jobs::DeployHandler::__handler_entry(
+                &container,
+            ));
+
             let router = routes(&container);
             Self {
                 harness: RestHarness::new(router.clone()),

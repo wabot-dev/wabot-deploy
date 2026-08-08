@@ -12,11 +12,15 @@ description: Use when running work in the background in wabot-rust — commands,
 #[derive(Serialize, Deserialize, Validate)]
 struct SendEmail { to: String }
 
+// The attribute goes on the **struct** — `expand_command_handler`
+// parses an `ItemStruct` — and `handle` lives in a plain inherent
+// impl beside it. On the impl it is a parse error that reads
+// "expected struct", which does not point at the mistake.
 #[injectable]
+#[command_handler(SendEmail, retry_delays = [5, 30], dedup = 300)]
 #[derive(Default)]
 struct SendEmailHandler;
 
-#[command_handler(SendEmail, retry_delays = [5, 30], dedup = 300)]
 impl SendEmailHandler {
     async fn handle(&self, data: SendEmail) -> Result<(), AsyncError> { … }
 }

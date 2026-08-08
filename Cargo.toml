@@ -11,6 +11,11 @@ wabot = { version = "0.2", default-features = false, features = [
     "rest",
     "rest-tls",
     "sqlite",
+    # Deploying is a job, not a request: it outlives the POST that asks
+    # for it, and it has to survive the process being replaced — which
+    # is a thing that happens here on purpose, since the updater ends
+    # by restarting the node. See `deploy::jobs`.
+    "addon-async-sqlite",
     # Server-rendered pages. No Node and no build step — the console is
     # HTML the node produces, which is the right shape for something
     # that has to work on a box with no internet access.
@@ -97,6 +102,13 @@ instant-acme = { version = "0.8", default-features = false, features = [
     "hyper-rustls",
     "ring",
 ] }
+# The SQLite job store. A direct dependency because the umbrella crate
+# declares `wabot-addon-async-sqlite` behind its `addon-async-sqlite`
+# feature but never re-exports it, so there is no `wabot::` path to
+# `SqliteJobRepository`. That missing re-export belongs upstream; this
+# names the crate in the meantime.
+wabot-addon-async-sqlite = "0.2"
+
 # Reading a certificate's expiry. Already in the tree through rcgen's
 # `x509-parser` feature, so this names it rather than adding it.
 x509-parser = "0.16"
@@ -171,6 +183,10 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # reach production by accident.
 wabot = { version = "0.2", default-features = false, features = ["testing"] }
 tempfile = "3"
+# The job store the console harness runs against. In memory rather than
+# the SQLite one a node uses: a test wants the queue's behaviour, not
+# its durability, and this one needs no tables.
+wabot-addon-async-in-memory = "0.2"
 
 # What a release is built with.
 #

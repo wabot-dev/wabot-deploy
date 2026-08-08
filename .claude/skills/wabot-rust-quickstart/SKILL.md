@@ -246,11 +246,12 @@ struct SendEmail {
     to: String,
 }
 
+// On the struct, not the impl: the macro parses an `ItemStruct`.
 #[injectable]
+#[command_handler(SendEmail, retry_delays = [5, 30])]
 #[derive(Default)]
 struct SendEmailHandler;
 
-#[command_handler(SendEmail, retry_delays = [5, 30])]
 impl SendEmailHandler {
     async fn handle(&self, data: SendEmail) -> Result<(), AsyncError> {
         tracing::info!(to = %data.to, "sending");

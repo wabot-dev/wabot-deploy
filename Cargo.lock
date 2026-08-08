@@ -2537,9 +2537,11 @@ dependencies = [
  "parking_lot",
  "tokio",
  "tracing",
+ "wabot-addon-async-sqlite",
  "wabot-addon-ui-hypertext",
  "wabot-core",
  "wabot-feature-agent",
+ "wabot-feature-async",
  "wabot-feature-chat-bot",
  "wabot-feature-mindset",
  "wabot-feature-rest-controller",
@@ -2564,6 +2566,21 @@ dependencies = [
  "tracing",
  "wabot-core",
  "wabot-feature-async",
+]
+
+[[package]]
+name = "wabot-addon-async-sqlite"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "90920e631146801a482db940b9acb244ae7ddb96a79458b32c176f4532f9cf56"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "rusqlite",
+ "tokio",
+ "wabot-core",
+ "wabot-feature-async",
+ "wabot-feature-sqlite",
 ]
 
 [[package]]
@@ -2641,6 +2658,8 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "wabot",
+ "wabot-addon-async-in-memory",
+ "wabot-addon-async-sqlite",
  "x509-parser 0.16.0",
 ]
 

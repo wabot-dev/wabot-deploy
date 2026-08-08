@@ -775,7 +775,7 @@ impl ServiceApi {
                 // Straight to the service's own page: declaring ports
                 // is the next thing anybody does, and it is where the
                 // reason lives if this deployment failed.
-                let _ = self.state.deployer.deploy(&project, &service).await;
+                self.enqueue(&service.id, None).await;
                 Ok(see_other(&format!(
                     "/projects/{}/services/{}",
                     project.slug, service.slug
@@ -864,7 +864,7 @@ impl ServiceApi {
                 // container is built: published ports are iptables
                 // rules made when it joins the network, not something
                 // that can be added to a running one.
-                let _ = self.state.deployer.deploy(&project, &service).await;
+                self.enqueue(&service.id, None).await;
 
                 let confirmed = port
                     .hostname
@@ -913,7 +913,7 @@ impl ServiceApi {
 
         if owned {
             ports::delete(&self.state.database, port_id).await?;
-            let _ = self.state.deployer.deploy(&project, &service).await;
+            self.enqueue(&service.id, None).await;
         }
         Ok(see_other(&here))
     }
@@ -1027,7 +1027,10 @@ impl ServiceApi {
             return Ok(see_other(&here));
         }
 
-        self.state.deployer.deploy_release(&service, &release).await;
+        // Enqueued, not run. Pulling an image inside this POST is what
+        // held the request open long enough for somebody to reload and
+        // be offered "confirm form resubmission".
+        self.enqueue(&service.id, Some(&release.id)).await;
         Ok(see_other(&here))
     }
 
@@ -1141,10 +1144,11 @@ impl ServiceApi {
             return Ok(see_other("/?error=no+such+service"));
         };
 
-        // The failure is already on the row by the time this returns —
-        // `deploy` records it — so the page shows the reason under the
-        // service rather than in a redirect that the next click loses.
-        let _ = self.state.deployer.deploy(&project, &service).await;
+        // The failure lands on the row, not in this redirect: the job
+        // outlives the answer, and a reason carried in a query string
+        // is one the next click loses anyway.
+        let _ = project;
+        self.enqueue(&service.id, None).await;
         Ok(see_other(&back))
     }
 
@@ -1224,15 +1228,31 @@ impl ServiceApi {
             .into_iter()
             .find(|release| release.deployed_at.is_some());
 
-        match current {
-            Some(release) => self.state.deployer.deploy_release(&updated, &release).await,
-            // Nothing has been released yet, so its reference is all
-            // there is to go on.
-            None => {
-                let _ = self.state.deployer.deploy(project, &updated).await;
-            }
-        }
+        let _ = project;
+        self.enqueue(
+            &updated.id,
+            current.as_ref().map(|release| release.id.as_str()),
+        )
+        .await;
         Ok(())
+    }
+
+    /// Ask for a deployment and answer the browser.
+    ///
+    /// The reason a failure is not returned here: by the time one
+    /// exists this request is long finished. `deploy` writes it to the
+    /// service row, which is what the page reads — see
+    /// [`crate::deploy::jobs`].
+    async fn enqueue(&self, service_id: &str, release_id: Option<&str>) {
+        let command = crate::deploy::jobs::DeployService {
+            service_id: service_id.to_string(),
+            release_id: release_id.map(str::to_string),
+        };
+        if let Err(error) = wabot::async_jobs::run_command(&self.state.container, &command).await {
+            // Nothing else can report this: there is no job to carry
+            // the reason, because making one is what failed.
+            tracing::error!(%service_id, %error, "could not queue a deployment");
+        }
     }
 
     /// The project and service this request is about, and where to send
@@ -1439,6 +1459,12 @@ mod tests {
     /// not just in a log. This runs where containerd is not — a
     /// developer's machine — which is exactly the failure an operator
     /// meets when the socket is down.
+    ///
+    /// The reason is put on the row by `Deployer::deploy`, which is
+    /// what the job calls. Driven directly here rather than through the
+    /// POST: creating a service now *queues* a deployment, and this
+    /// harness has no job runner, so going through the form would test
+    /// that nothing happened.
     #[tokio::test]
     async fn a_deployment_that_fails_says_why_on_the_page() {
         let console = Console::new().await;
@@ -1453,6 +1479,22 @@ mod tests {
             .send()
             .await
             .assert_status(StatusCode::SEE_OTHER);
+
+        let stored = services::all(&console.database, None)
+            .await
+            .expect("query")
+            .pop()
+            .expect("one service");
+        let found = crate::platform::projects::find(&console.database, "my-api")
+            .await
+            .expect("query")
+            .expect("present");
+
+        let deployer = crate::deploy::Deployer::new(
+            console.database.clone(),
+            &crate::config::Config::default(),
+        );
+        let _ = deployer.deploy(&found, &stored).await;
 
         let stored = services::all(&console.database, None)
             .await
@@ -1475,6 +1517,34 @@ mod tests {
             .body;
         assert!(body.contains("class=\"failure\""), "the row is rendered");
         assert!(body.contains("containerd"), "with the reason in it");
+    }
+
+    /// The POST answers before the work happens. Holding the request
+    /// open for an image pull is what offered somebody "confirm form
+    /// resubmission" when they reloaded.
+    #[tokio::test]
+    async fn deploying_answers_without_waiting_for_the_deployment() {
+        let console = Console::new().await;
+        let cookie = console.signed_in().await;
+        let page = service(&console, &cookie).await;
+
+        let response = console
+            .harness
+            .post(&format!("{page}/deploy"))
+            .header("cookie", &cookie)
+            .send()
+            .await;
+        response.assert_status(StatusCode::SEE_OTHER);
+
+        // The job is spawned, not awaited, so the row is still
+        // untouched the instant the answer arrives. What eventually
+        // lands there is the previous test's subject.
+        let stored = services::all(&console.database, None)
+            .await
+            .expect("query")
+            .pop()
+            .expect("one service");
+        assert!(stored.address.is_none(), "nothing was deployed inline");
     }
 
     #[tokio::test]
