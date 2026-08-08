@@ -1519,6 +1519,51 @@ mod tests {
         assert!(body.contains("containerd"), "with the reason in it");
     }
 
+    /// The join the node found broken: a queued deployment has to
+    /// reach `Deployer::deploy` and leave its reason on the row.
+    ///
+    /// It did not, in production, because nothing registered
+    /// `SqliteDatabase` in the container and the handler could not be
+    /// built — the worker panicked, the button still answered, and the
+    /// service stayed as it was. This is the test that would have
+    /// caught it.
+    #[tokio::test]
+    async fn a_queued_deployment_reaches_the_row() {
+        let console = Console::new().await;
+        let cookie = console.signed_in().await;
+        let page = service(&console, &cookie).await;
+
+        console
+            .harness
+            .post(&format!("{page}/deploy"))
+            .header("cookie", &cookie)
+            .send()
+            .await
+            .assert_status(StatusCode::SEE_OTHER);
+
+        // Polled, not slept: the job runs on a spawned task, and a
+        // fixed wait is either flaky or slow.
+        let mut reason = None;
+        for _ in 0..150 {
+            let stored = services::all(&console.database, None)
+                .await
+                .expect("query")
+                .pop()
+                .expect("one service");
+            if let Some(found) = stored.last_error {
+                reason = Some(found);
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+
+        let reason = reason.expect("the handler ran and recorded a reason");
+        assert!(
+            reason.contains("containerd"),
+            "which names the runtime: {reason}"
+        );
+    }
+
     /// The POST answers before the work happens. Holding the request
     /// open for an image pull is what offered somebody "confirm form
     /// resubmission" when they reloaded.

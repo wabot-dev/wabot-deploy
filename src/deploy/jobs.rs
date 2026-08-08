@@ -22,14 +22,19 @@
 //! It also brings retries and the drain phase, both of which would
 //! otherwise be written here and be a second, worse copy.
 //!
-//! ## What is not covered yet
+//! ## Two registrations, both easy to miss
 //!
-//! The console harness registers the queue and the handler, and
-//! `run_command` succeeds there — but a queued deployment does not run
-//! under test and I have not found why. So the tests cover the two
-//! halves separately: that the POST answers without waiting, and that
-//! `Deployer::deploy` records its reason on the row. Nothing yet
-//! proves the join between them, which is the part a node depends on.
+//! The handler resolves `SqliteDatabase` from the container, and
+//! nothing else puts it there — `api::register` takes the database and
+//! keeps it inside `NodeStatus`. Without it the worker panics building
+//! the handler while the button still answers happily, which is how
+//! the first deployment on a real node did nothing at all.
+//!
+//! And `JobExecutor` keeps its own set of command names, separate from
+//! `CommandRegistry`. `run_command`'s immediate spawn checks *that*
+//! one, so a command registered only with the registry is stored and
+//! never run. `run_async_workers` does both; anything wiring this by
+//! hand has to as well.
 //!
 //! ## Ids, not rows
 //!

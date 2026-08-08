@@ -367,14 +367,16 @@ pub(crate) mod tests {
             // workers: the executor only runs a command it knows, and
             // `run_command`'s immediate spawn checks exactly that.
             //
-            // This is not yet enough — a queued deployment still does
-            // not execute here, and I have not found why. The wiring
-            // stays because it is the half that is certainly needed;
-            // see the note in `deploy::jobs`.
+            // And the executor keeps its *own* set of names, which is
+            // what `run_command`'s immediate spawn checks — registering
+            // with the `CommandRegistry` alone leaves the job stored
+            // and never run.
             let commands: Arc<wabot::async_jobs::CommandRegistry> = container.resolve();
             commands.register(crate::deploy::jobs::DeployHandler::__handler_entry(
                 &container,
             ));
+            let executor: Arc<wabot::async_jobs::JobExecutor> = container.resolve();
+            executor.add_command(crate::deploy::jobs::DeployService::COMMAND_NAME);
 
             let router = routes(&container);
             Self {

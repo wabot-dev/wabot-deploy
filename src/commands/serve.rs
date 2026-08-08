@@ -33,6 +33,13 @@ pub async fn run(config: Config) -> anyhow::Result<i32> {
     crate::update::settle_after_restart(&database).await;
 
     let container = Container::new();
+    // The job handler resolves this. Nothing else registered it —
+    // `api::register` takes the database and keeps it inside
+    // `NodeStatus` — so the first queued deployment panicked the worker
+    // with "no provider registered for type SqliteDatabase". The button
+    // answered, the job was stored, and nothing ran: found on the node,
+    // because no test covers the join.
+    container.register_instance::<wabot::sqlite::SqliteDatabase>(database.clone());
 
     // Deploying is a job. Registered before anything can enqueue one,
     // and `ensure_ready` because these tables are the store's own —
