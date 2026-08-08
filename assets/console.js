@@ -134,7 +134,9 @@
         ['deploy', 'stop'].forEach(function (name) {
           var form = row.querySelector('[data-action="' + name + '"]');
           if (!form) return;
-          form.hidden = states[id].action !== name;
+          // The class, not the attribute — the server cannot spell
+          // "no `hidden`" and this keeps both halves on one mechanism.
+          form.classList.toggle('is-hidden', states[id].action !== name);
           var button = form.querySelector('button');
           if (button) button.disabled = !!states[id].busy;
         });

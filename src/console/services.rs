@@ -453,8 +453,14 @@ impl ServicePages {
                                value=(service.track_tag.clone().unwrap_or_default())
                                placeholder="latest">
                         <label class="check">
-                            <input type="checkbox" name="auto_deploy" value="1"
-                                   checked=(service.auto_deploy)>
+                            // `checked="false"` checks it. This box read
+                            // as on whatever the row said, and saving the
+                            // form then turned it on for real.
+                            @if service.auto_deploy {
+                                <input type="checkbox" name="auto_deploy" value="1" checked>
+                            } @else {
+                                <input type="checkbox" name="auto_deploy" value="1">
+                            }
                             ("Deploy a push automatically")
                         </label>
                         <p class="field-hint">(

@@ -265,6 +265,10 @@ pub const CSS: &str = r#"
    stay on screen with nothing but the attribute to say it should not
    be. Nothing else in this stylesheet uses `!important`. */
 [hidden] { display: none !important; }
+/* The same job for markup the server renders. The `hidden` attribute
+   cannot be used there: it is boolean by presence, so writing it with a
+   falsey value hides the element just as thoroughly. */
+.is-hidden { display: none !important; }
 
 /* Release notes. Written by somebody else, arriving as Markdown, and
    rendered here as ordinary prose — narrow enough to read, with the

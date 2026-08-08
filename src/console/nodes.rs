@@ -487,9 +487,11 @@ pub(crate) fn certificate_source_form(
                 <label for=(field("source"))>("Where the certificate comes from")</label>
                 <select id=(field("source")) name="renew_with">
                     @for (value, label) in SOURCES {
-                        <option value=(value) selected=(policy.renew_with.as_str() == *value)>
-                            (label)
-                        </option>
+                        @if policy.renew_with.as_str() == *value {
+                            <option value=(value) selected>(label)</option>
+                        } @else {
+                            <option value=(value)>(label)</option>
+                        }
                     }
                 </select>
 

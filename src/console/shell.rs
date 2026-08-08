@@ -245,12 +245,16 @@ impl Frame {
                 <label class="side-label" for="project">("Project")</label>
                 <div class="workspace">
                     <select id="project" name="project">
+                        // Same trap as everywhere else `selected` is
+                        // written: it is boolean by presence, so with
+                        // more than one project the browser took the
+                        // last and this named the wrong one.
                         @for (slug, name) in &self.projects {
-                            <option
-                                value=(slug)
-                                selected=(self.current.as_deref() == Some(slug.as_str()))>
-                                (name)
-                            </option>
+                            @if self.current.as_deref() == Some(slug.as_str()) {
+                                <option value=(slug) selected>(name)</option>
+                            } @else {
+                                <option value=(slug)>(name)</option>
+                            }
                         }
                     </select>
                     <button class="btn btn-secondary btn-sm" type="submit">("Go")</button>

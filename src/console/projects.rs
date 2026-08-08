@@ -541,30 +541,20 @@ fn service_table(
                                             // page does not offer what
                                             // it will refuse.
                                             <form method="post" data-action="deploy"
-                                                  hidden=(cell.action != "deploy")
+                                                  class=(shown(cell.action == "deploy"))
                                                   action=(format!(
                                                       "/projects/{}/services/{}/deploy",
                                                       project.slug, service.slug
                                                   ))>
-                                                <button class="btn btn-secondary btn-sm icon"
-                                                        type="submit" title="Deploy"
-                                                        disabled=(cell.busy)
-                                                        aria-label="Deploy">
-                                                    (hypertext::Raw::dangerously_create(PLAY))
-                                                </button>
+                                                (action_button("Deploy", PLAY, cell.busy))
                                             </form>
                                             <form method="post" data-action="stop"
-                                                  hidden=(cell.action != "stop")
+                                                  class=(shown(cell.action == "stop"))
                                                   action=(format!(
                                                       "/projects/{}/services/{}/stop",
                                                       project.slug, service.slug
                                                   ))>
-                                                <button class="btn btn-secondary btn-sm icon"
-                                                        type="submit" title="Stop"
-                                                        disabled=(cell.busy)
-                                                        aria-label="Stop">
-                                                    (hypertext::Raw::dangerously_create(STOP))
-                                                </button>
+                                                (action_button("Stop", STOP, cell.busy))
                                             </form>
                                         }
                                     </td>
@@ -586,6 +576,43 @@ fn service_table(
         &serde_json::json!({ "project": &project.slug }),
         hypertext::Raw::dangerously_create(&inner),
     )
+}
+
+/// Whether a row's control is the one that applies.
+///
+/// A class rather than the `hidden` attribute, because `hidden` is
+/// boolean *by presence*: `rsx!` renders `hidden=(false)` as
+/// `hidden="false"`, which hides the element just as thoroughly. Both
+/// controls were hidden on first paint and only appeared when the
+/// stream's first message set the DOM property. `class` has no such
+/// trap — an empty one matches nothing.
+fn shown(applies: bool) -> &'static str {
+    if applies {
+        ""
+    } else {
+        "is-hidden"
+    }
+}
+
+/// One control, disabled or not.
+///
+/// Written twice rather than `disabled=(busy)`, for the same reason:
+/// `disabled="false"` disables. There is no way to spell "no attribute"
+/// in an `rsx!` attribute value, so the branch is on the element.
+fn action_button(label: &'static str, icon: &'static str, busy: bool) -> impl Renderable {
+    rsx! {
+        @if busy {
+            <button class="btn btn-secondary btn-sm icon" type="submit"
+                    title=(label) aria-label=(label) disabled>
+                (hypertext::Raw::dangerously_create(icon))
+            </button>
+        } @else {
+            <button class="btn btn-secondary btn-sm icon" type="submit"
+                    title=(label) aria-label=(label)>
+                (hypertext::Raw::dangerously_create(icon))
+            </button>
+        }
+    }
 }
 
 /// Lucide `play` and `square`, inlined.
@@ -1234,6 +1261,59 @@ mod tests {
 
         let response = console.harness.get("/projects/shipping/live").send().await;
         response.assert_status(StatusCode::UNAUTHORIZED);
+    }
+
+    /// `hidden` and `disabled` are boolean *by presence*: rendering
+    /// `hidden="false"` hides just as thoroughly. Both controls were
+    /// hidden on first paint and only appeared once the stream's first
+    /// message set the DOM property, so a reload showed a row with
+    /// nothing to press for a second.
+    #[tokio::test]
+    async fn a_control_that_applies_is_visible_before_any_script_runs() {
+        let console = Console::new().await;
+        let cookie = console.signed_in().await;
+        console
+            .harness
+            .post("/projects")
+            .header("cookie", &cookie)
+            .form(&[("name", "shipping")])
+            .send()
+            .await;
+        console
+            .harness
+            .post("/projects/shipping/services")
+            .header("cookie", &cookie)
+            .form(&[("name", "web"), ("image", "docker.io/library/nginx:alpine")])
+            .send()
+            .await;
+
+        let body = console
+            .harness
+            .get("/projects/shipping")
+            .header("cookie", &cookie)
+            .send()
+            .await
+            .body;
+
+        assert!(
+            !body.contains("hidden=\"false\"") && !body.contains("disabled=\"false\""),
+            "an attribute the browser reads as true: {body}"
+        );
+        // Creating a service queues a deployment, so this is the very
+        // case the bug was about: something is in flight, and the row
+        // still has to show a control rather than an empty cell.
+        assert!(
+            body.contains(r#"data-action="stop" class=""#),
+            "the control that applies is shown: {body}"
+        );
+        assert!(
+            body.contains(r#"data-action="deploy" class="is-hidden""#),
+            "and the other one is not: {body}"
+        );
+        assert!(
+            body.contains("disabled>"),
+            "shown, and not pressable yet: {body}"
+        );
     }
 
     /// One page, one subject. The overview used to carry the services,
