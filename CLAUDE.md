@@ -61,8 +61,41 @@ the journal is a failure nobody sees: put the reason where the person
 looking for it will be (the run row, the service row, `doctor`, the
 page).
 
-**No JavaScript in the console** beyond the one `EventSource` on the
-node page, and that page renders complete without it.
+**The console works without JavaScript.** That is the rule; "no
+JavaScript" was the proxy for it, and the proxy started costing more
+than it bought. Somebody opens this console when the node is unhealthy,
+so every page must render complete and every form must submit with
+scripting off.
+
+**The framework's client runtime is already there.** `/_wabot/client.js`
+comes with the `ui-hypertext` feature, every page loads it, and
+**boosted navigation is on**: an in-console link swaps the view with
+`innerHTML` rather than loading a page. Two consequences, both of which
+shipped as bugs before anyone noticed:
+
+- A `<script>` inside swapped HTML **never runs**. Inline scripts in a
+  view are dead on arrival for anyone who clicked a link.
+- A listener attached once at load belongs to a form the next swap
+  discards.
+
+So client behaviour goes through `wabot.island(id, mount)` and a
+`<wabot-island>` host, which the runtime re-hydrates after every swap
+and tears down when the host leaves. `assets/console.js` registers the
+two this console has: `fields` (hides what does not apply, adds
+`required` where the server already refuses) and `node-live` (the
+stream). Both declarative — the markup carries `data-when` /
+`data-required-when`, so a new dependent field is an attribute rather
+than another script.
+
+Preact is available through `wabot-ui-bundler`, and deliberately unused:
+it is a build dependency wanting Node and esbuild, and `deploy.sh`
+builds *on* a one-core node. Reach for it when something needs real
+component state — nothing here does yet.
+
+An island may **hide what is irrelevant** and **add a constraint the
+server already imposes**. It may not be needed to submit a form, fetch
+data the page did not have, or build a field. A rule the browser
+enforces is a courtesy; the check that counts is on the POST.
 
 ## Design
 
@@ -72,6 +105,28 @@ highlights only, sentence case, no emoji as iconography. Status is a
 coloured dot plus a word. `src/console/layout.rs` holds the page-level
 CSS; the tokens come from `assets/`, vendored so a node never needs a
 CDN.
+
+## Working locally
+
+```sh
+scripts/dev.sh                           # https://localhost:8443, installs on the first run
+scripts/dev.sh --reset                   # throw the local node away
+```
+
+For console work. Pages, sessions, the registry and the database are
+the real ones; containerd is not there, so every service reads
+`unknown` and nothing deploys. Everything above the runtime is what a
+node runs, and it comes up in seconds.
+
+State lives in `.dev/`, which is gitignored — deleting it is the reset.
+The certificate is self-signed, so the browser warns once; trust
+`.dev/data/certs/local-ca.crt` to stop it. ACME is off by default here
+(`WABOT_DEPLOY_ACME_DISABLED`), because a laptop that sets a domain
+would otherwise place real orders and production locks the account out
+after five failures.
+
+This is not the verification step. Containerd, systemd, CNI and ACME
+still have to run on a node — see the rule below.
 
 ## Working on the node
 

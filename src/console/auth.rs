@@ -321,6 +321,8 @@ pub(crate) fn mark(heading: &str) -> impl Renderable + '_ {
 #[injectable]
 pub struct AuthApi {
     state: Arc<ConsoleState>,
+    /// Only `/theme` needs it — it writes against whoever is asking.
+    auth: Arc<Auth>,
 }
 
 #[rest_controller("/")]
@@ -395,6 +397,39 @@ impl AuthApi {
     ///
     /// Revokes the row as well as clearing the cookie: a cookie the
     /// browser forgot is still a cookie somebody copied.
+    /// Which theme to read in.
+    ///
+    /// A form with three submits, so choosing is one click and the
+    /// current answer is visible rather than folded into a menu. The
+    /// value lands on the account, which means the next page the
+    /// server renders already carries it — no script, and no flash of
+    /// the theme somebody just turned off.
+    #[post("/theme")]
+    #[raw]
+    #[middleware(SessionMiddleware)]
+    async fn set_theme(&self, request: Request) -> RestResult<Response> {
+        let Some(account) = signed_in(&self.auth) else {
+            return Ok(see_other("/sign-in"));
+        };
+        let form = match read_form(request).await {
+            Ok(form) => form,
+            Err(response) => return Ok(response),
+        };
+
+        let theme = super::shell::Theme::parse(field(&form, "theme"));
+        if let Err(error) =
+            crate::accounts::set_theme(&self.state.database, &account.id, theme).await
+        {
+            tracing::warn!(%error, "could not store the theme");
+        }
+
+        // Back where they were. A path from the form rather than the
+        // Referer: this console decides where its own links go, and a
+        // header a client controls is not that.
+        let back = field(&form, "from");
+        Ok(see_other(if back.starts_with('/') { back } else { "/" }))
+    }
+
     #[post("/sign-out")]
     #[raw]
     async fn sign_out(&self, request: Request) -> RestResult<Response> {

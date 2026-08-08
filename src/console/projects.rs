@@ -24,8 +24,9 @@ use super::{layout, ConsoleState};
 pub struct ProjectQuery {
     pub project: String,
     pub error: Option<String>,
-    /// A push token, shown once by the page that just made it.
-    pub token: Option<String>,
+    /// Names a push token this node is holding for one read. Not the
+    /// token — see `ConsoleState::reveals`.
+    pub shown: Option<String>,
 }
 
 #[injectable]
@@ -50,7 +51,6 @@ impl ProjectPages {
         // everything and narrowed afterwards leaks the first time
         // somebody adds a page that forgets to narrow.
         let projects = access::projects_for(&self.state.database, &account).await?;
-        let facts = super::certificate_facts(&self.state).await;
 
         layout::head("Projects");
         let frame = Frame::new(&account, Area::Projects, &projects, None, "/");
@@ -65,9 +65,12 @@ impl ProjectPages {
                 }
 
                 @if projects.is_empty() {
+                    // No second "Create project" here: the one in the
+                    // header is on this page whether or not the list is
+                    // empty, and two buttons a hand's width apart that
+                    // do the same thing read as two different things.
                     <section class="empty">
                         <p>("No projects yet.")</p>
-                        <a class="btn" href="/projects/new">("Create project")</a>
                     </section>
                 } @else {
                     <div class="grid">
@@ -79,8 +82,6 @@ impl ProjectPages {
                         }
                     </div>
                 }
-
-                (super::node_card(&facts))
         }
         .render()
         .into_inner();
@@ -155,19 +156,6 @@ impl ProjectPages {
         }
 
         let all_projects = access::projects_for(&self.state.database, &account).await?;
-        let members = access::members(&self.state.database, &project.id).await?;
-        let tokens = if allowed.may_deploy() {
-            crate::platform::tokens::of_project(&self.state.database, &project.id).await?
-        } else {
-            Vec::new()
-        };
-        let registry_host = self
-            .state
-            .config
-            .node
-            .domain
-            .clone()
-            .unwrap_or_else(|| "this node".into());
         let path = format!("/projects/{}", project.slug);
 
         layout::head(&project.name);
@@ -283,13 +271,187 @@ impl ProjectPages {
                     </table>
                 }
 
-                @if allowed.may_deploy() {
+        }
+        .render()
+        .into_inner();
+
+        Ok(frame.render(body).into_view().into())
+    }
+
+    /// Who is in this project, and what they may do.
+    ///
+    /// Its own page rather than a card under the services, because the
+    /// two are read at different times by different people: the list of
+    /// services is what somebody opens twenty times a day, and access
+    /// is what somebody changes when a person joins or leaves.
+    ///
+    /// Readable by anyone who can see the project — knowing who else is
+    /// here is not privileged — while the forms need administration.
+    #[view("/projects/:project/people")]
+    #[middleware(SessionMiddleware)]
+    async fn project_people(&self, query: ProjectQuery) -> UiResult<ViewOutcome> {
+        let Some(account) = signed_in(&self.auth) else {
+            return Ok(Redirect::found("/sign-in").into());
+        };
+        let Some((project, allowed)) =
+            access::find_project(&self.state.database, &account, &query.project).await?
+        else {
+            return Ok(Redirect::found("/?error=no+such+project").into());
+        };
+
+        let members = access::members(&self.state.database, &project.id).await?;
+        let all_projects = access::projects_for(&self.state.database, &account).await?;
+        let here = format!("/projects/{}", project.slug);
+        let frame = Frame::new(
+            &account,
+            Area::Projects,
+            &all_projects,
+            Some(&project),
+            format!("{here}/people"),
+        )
+        .allowing(allowed);
+
+        layout::head(&format!("{} people", project.name));
+        let body = rsx! {
+                (layout::style_tag())
+                <div class="split">
+                    <div class="stack-sm">
+                        <h1>("People")</h1>
+                        <p class="slug-preview">(&project.slug)</p>
+                    </div>
+                    <span class="who">("You are: ")(allowed.label())</span>
+                </div>
+                @if let Some(message) = &query.error {
+                    (layout::error_note(message))
+                }
+
+                <table>
+                    <tbody>
+                        @for member in &members {
+                            <tr>
+                                <td>(&member.username)</td>
+                                <td>(member.role.label())</td>
+                                <td>
+                                    @if allowed.may_administer() {
+                                        <form method="post"
+                                              action=(format!(
+                                                  "{here}/people/{}/remove", member.account_id
+                                              ))>
+                                            <button class="btn btn-ghost destructive btn-sm"
+                                                    type="submit">
+                                                ("Remove")
+                                            </button>
+                                        </form>
+                                    }
+                                </td>
+                            </tr>
+                        }
+                        @if members.is_empty() {
+                            <tr>
+                                <td class="tile-detail" colspan="3">(
+                                    "Nobody but administrators, who reach every project."
+                                )</td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+
+                @if allowed.may_administer() {
+                    <form method="post" action=(format!("{here}/people")) class="card stack">
+                        <label for="username">("Username")</label>
+                        <div class="row">
+                            <input id="username" name="username" type="text"
+                                   placeholder="username" required>
+                            <select name="role">
+                                @for role in ProjectRole::ALL {
+                                    <option value=(role.as_str())>(role.label())</option>
+                                }
+                            </select>
+                            <button type="submit">("Add")</button>
+                        </div>
+                        <p class="field-hint">(
+                            "Somebody who already has an account on this node. To bring \
+                             in a new person, invite them from the people page."
+                        )</p>
+                    </form>
+                }
+        }
+        .render()
+        .into_inner();
+
+        Ok(frame.render(body).into_view().into())
+    }
+
+    /// What the project is configured with, and how to destroy it.
+    ///
+    /// Push tokens and the danger zone: the two things nobody opens a
+    /// project page *for*, and the two that were hardest to find under
+    /// a table of services.
+    #[view("/projects/:project/settings")]
+    #[middleware(SessionMiddleware)]
+    async fn project_settings(&self, query: ProjectQuery) -> UiResult<ViewOutcome> {
+        let Some(account) = signed_in(&self.auth) else {
+            return Ok(Redirect::found("/sign-in").into());
+        };
+        let Some((project, allowed)) =
+            access::find_project(&self.state.database, &account, &query.project).await?
+        else {
+            return Ok(Redirect::found("/?error=no+such+project").into());
+        };
+        let here = format!("/projects/{}", project.slug);
+        // A viewer may look at this project and change nothing on this
+        // page, so it has nothing for them. The checks that count are
+        // still on each POST.
+        if !allowed.may_deploy() {
+            return Ok(Redirect::found(here).into());
+        }
+
+        let tokens = crate::platform::tokens::of_project(&self.state.database, &project.id).await?;
+        // Spent on read. "Shown once" used to mean "in the URL until
+        // you navigate away", so a refresh put it back on the screen
+        // and the back button found it an hour later.
+        let revealed = query
+            .shown
+            .as_deref()
+            .and_then(|nonce| self.state.reveals.take(nonce));
+        let registry_host = self
+            .state
+            .config
+            .node
+            .domain
+            .clone()
+            .unwrap_or_else(|| "this node".into());
+
+        let all_projects = access::projects_for(&self.state.database, &account).await?;
+        let frame = Frame::new(
+            &account,
+            Area::Projects,
+            &all_projects,
+            Some(&project),
+            format!("{here}/settings"),
+        )
+        .allowing(allowed);
+
+        layout::head(&format!("{} settings", project.name));
+        let body = rsx! {
+                (layout::style_tag())
+                <div class="split">
+                    <div class="stack-sm">
+                        <h1>("Settings")</h1>
+                        <p class="slug-preview">(&project.slug)</p>
+                    </div>
+                    <a class="btn btn-ghost" href=(&here)>("Back to project")</a>
+                </div>
+                @if let Some(message) = &query.error {
+                    (layout::error_note(message))
+                }
+
                 <section class="card stack">
                     <div class="split">
                         <p class="card-label">("Push tokens")</p>
                         <span class="who">(&registry_host)("/")(&project.slug)("/…")</span>
                     </div>
-                    @if let Some(secret) = &query.token {
+                    @if let Some(secret) = &revealed {
                         <p class="field-hint">(
                             "Shown once. Use it as the password: "
                         )</p>
@@ -316,8 +478,7 @@ impl ProjectPages {
                                         <td>
                                             <form method="post"
                                                   action=(format!(
-                                                      "/projects/{}/tokens/{}/revoke",
-                                                      project.slug, token.id
+                                                      "{here}/tokens/{}/revoke", token.id
                                                   ))>
                                                 <button class="btn btn-ghost destructive btn-sm"
                                                         type="submit">("Revoke")</button>
@@ -328,82 +489,23 @@ impl ProjectPages {
                             </tbody>
                         </table>
                     }
-                    <form method="post" action=(format!("/projects/{}/tokens", project.slug))
-                          class="row">
+                    <form method="post" action=(format!("{here}/tokens")) class="row">
                         <input name="name" type="text" placeholder="what it is for" required>
                         <button class="btn btn-secondary" type="submit">("Create token")</button>
                     </form>
                 </section>
-                }
-
-                <section class="card stack">
-                    <div class="split">
-                        <p class="card-label">("People")</p>
-                        <span class="who">("You are: ")(allowed.label())</span>
-                    </div>
-                    <table>
-                        <tbody>
-                            @for member in &members {
-                                <tr>
-                                    <td>(&member.username)</td>
-                                    <td>(member.role.label())</td>
-                                    <td>
-                                        @if allowed.may_administer() {
-                                            <form method="post"
-                                                  action=(format!(
-                                                      "/projects/{}/people/{}/remove",
-                                                      project.slug, member.account_id
-                                                  ))>
-                                                <button class="btn btn-ghost destructive btn-sm"
-                                                        type="submit">
-                                                    ("Remove")
-                                                </button>
-                                            </form>
-                                        }
-                                    </td>
-                                </tr>
-                            }
-                            @if members.is_empty() {
-                                <tr>
-                                    <td class="tile-detail" colspan="3">(
-                                        "Nobody but administrators, who reach every project."
-                                    )</td>
-                                </tr>
-                            }
-                        </tbody>
-                    </table>
-
-                    @if allowed.may_administer() {
-                        <form method="post"
-                              action=(format!("/projects/{}/people", project.slug))
-                              class="row">
-                            <input name="username" type="text" placeholder="username" required>
-                            <select name="role">
-                                @for role in ProjectRole::ALL {
-                                    <option value=(role.as_str())>(role.label())</option>
-                                }
-                            </select>
-                            <button class="btn btn-secondary" type="submit">("Add")</button>
-                        </form>
-                        <p class="field-hint">(
-                            "Somebody who already has an account on this node. To bring \
-                             in a new person, invite them from the people page."
-                        )</p>
-                    }
-                </section>
 
                 @if allowed.may_administer() {
-                <section class="card stack">
-                    <p class="card-label">("Danger zone")</p>
-                    <p class="tile-detail">(
-                        "Deleting a project deletes every service under it. \
-                         Nothing is stopped first — do that yourself."
-                    )</p>
-                    <form method="post"
-                          action=(format!("/projects/{}/delete", project.slug))>
-                        <button class="btn btn-danger" type="submit">("Delete project")</button>
-                    </form>
-                </section>
+                    <section class="card stack">
+                        <p class="card-label">("Danger zone")</p>
+                        <p class="tile-detail">(
+                            "Deleting a project deletes every service under it. \
+                             Nothing is stopped first — do that yourself."
+                        )</p>
+                        <form method="post" action=(format!("{here}/delete"))>
+                            <button class="btn btn-danger" type="submit">("Delete project")</button>
+                        </form>
+                    </section>
                 }
         }
         .render()
@@ -534,7 +636,9 @@ impl ProjectApi {
         let Some((project, allowed, _)) = self.locate(&path).await? else {
             return Ok(see_other("/?error=no+such+project"));
         };
-        let here = format!("/projects/{}", project.slug);
+        // Back to the page the form is on. It used to be the project
+        // overview, which is where these forms lived.
+        let here = format!("/projects/{}/people", project.slug);
         if !allowed.may_administer() {
             return Ok(back_with_error(
                 &here,
@@ -573,7 +677,9 @@ impl ProjectApi {
         let Some((project, allowed, segments)) = self.locate(&path).await? else {
             return Ok(see_other("/?error=no+such+project"));
         };
-        let here = format!("/projects/{}", project.slug);
+        // Back to the page the form is on. It used to be the project
+        // overview, which is where these forms lived.
+        let here = format!("/projects/{}/people", project.slug);
         if !allowed.may_administer() {
             return Ok(back_with_error(
                 &here,
@@ -628,7 +734,9 @@ impl ProjectApi {
         let Some((project, allowed, _)) = self.locate(&path).await? else {
             return Ok(see_other("/?error=no+such+project"));
         };
-        let here = format!("/projects/{}", project.slug);
+        // Back to the page the form is on. It used to be the project
+        // overview, which is where these forms lived.
+        let here = format!("/projects/{}/settings", project.slug);
         if !allowed.may_deploy() {
             return Ok(back_with_error(
                 &here,
@@ -652,15 +760,20 @@ impl ProjectApi {
         )
         .await
         {
-            // Through the query string, because this is the only time
-            // the secret exists in clear. Stored hashed, so no page can
-            // ever show it again.
-            Ok((_, secret)) => Ok(see_other(&format!(
-                "{here}?{}",
-                form_urlencoded::Serializer::new(String::new())
-                    .append_pair("token", &secret)
-                    .finish()
-            ))),
+            // The nonce travels, not the secret. This is the only
+            // moment the token exists in clear — it is stored hashed,
+            // so no page can ever show it again — and a query string is
+            // read by the address bar, the history and every refresh.
+            // See `ConsoleState::reveals`.
+            Ok((_, secret)) => {
+                let nonce = self.state.reveals.stash(secret);
+                Ok(see_other(&format!(
+                    "{here}?{}",
+                    form_urlencoded::Serializer::new(String::new())
+                        .append_pair("shown", &nonce)
+                        .finish()
+                )))
+            }
             Err(error) => Ok(back_with_error(&here, &error.to_string())),
         }
     }
@@ -673,7 +786,9 @@ impl ProjectApi {
         let Some((project, allowed, segments)) = self.locate(&path).await? else {
             return Ok(see_other("/?error=no+such+project"));
         };
-        let here = format!("/projects/{}", project.slug);
+        // Back to the page the form is on. It used to be the project
+        // overview, which is where these forms lived.
+        let here = format!("/projects/{}/settings", project.slug);
         if !allowed.may_deploy() {
             return Ok(see_other(&here));
         }
@@ -782,6 +897,63 @@ mod tests {
     }
 
     /// Whoever makes a project owns it — otherwise a member would
+    /// A push token used to ride to its page in the query string. That
+    /// put the one secret this console ever shows into the address bar,
+    /// the browser's history, and back on the screen on every refresh.
+    /// The redirect carries a nonce now, and reading spends it.
+    #[tokio::test]
+    async fn a_new_token_is_shown_once_and_never_in_the_url() {
+        let console = Console::new().await;
+        let admin = console.signed_in().await;
+        console
+            .harness
+            .post("/projects")
+            .header("cookie", &admin)
+            .form(&[("name", "shipping")])
+            .send()
+            .await;
+
+        let response = console
+            .harness
+            .post("/projects/shipping/tokens")
+            .header("cookie", &admin)
+            .form(&[("name", "ci")])
+            .send()
+            .await;
+        let location = response.header("location").expect("redirected").to_string();
+        assert!(location.contains("shown="), "{location}");
+
+        let nonce = location
+            .split("shown=")
+            .nth(1)
+            .expect("a nonce")
+            .to_string();
+        let first = console
+            .harness
+            .get(&location)
+            .header("cookie", &admin)
+            .send()
+            .await
+            .body;
+        assert!(first.contains("docker login"), "shown once: {first}");
+        assert!(
+            !first.contains(&nonce),
+            "what travelled is not what was shown"
+        );
+
+        let again = console
+            .harness
+            .get(&location)
+            .header("cookie", &admin)
+            .send()
+            .await
+            .body;
+        assert!(
+            !again.contains("docker login"),
+            "and a refresh does not show it again: {again}"
+        );
+    }
+
     /// create one and immediately not be able to see it.
     #[tokio::test]
     async fn creating_a_project_makes_you_its_owner() {
@@ -799,12 +971,102 @@ mod tests {
 
         let body = console
             .harness
-            .get("/projects/mine")
+            .get("/projects/mine/settings")
             .header("cookie", &member)
             .send()
             .await
             .body;
         assert!(body.contains("Danger zone"), "an owner sees it: {body}");
+    }
+
+    /// One page, one subject. The overview used to carry the services,
+    /// the push tokens, the people and the delete button — four things
+    /// somebody came for at four different moments, and the one they
+    /// came for most often was the one they had to scroll past.
+    #[tokio::test]
+    async fn the_overview_carries_services_and_nothing_else() {
+        let console = Console::new().await;
+        let cookie = console.signed_in().await;
+        console
+            .harness
+            .post("/projects")
+            .header("cookie", &cookie)
+            .form(&[("name", "shipping")])
+            .send()
+            .await;
+
+        let get = |path: &'static str| {
+            let harness = &console.harness;
+            let cookie = cookie.clone();
+            async move {
+                harness
+                    .get(path)
+                    .header("cookie", &cookie)
+                    .send()
+                    .await
+                    .body
+            }
+        };
+
+        let overview = get("/projects/shipping").await;
+        for elsewhere in ["Push tokens", "Danger zone", "Create token"] {
+            assert!(
+                !overview.contains(elsewhere),
+                "{elsewhere} is still on the overview: {overview}"
+            );
+        }
+        assert!(overview.contains("No services yet"), "{overview}");
+
+        // Not empty: creating a project grants the creator Owner, so
+        // there is always at least one person to list.
+        let people = get("/projects/shipping/people").await;
+        assert!(people.contains("Owner"), "{people}");
+        assert!(people.contains("Username"), "and a way to add one");
+
+        let settings = get("/projects/shipping/settings").await;
+        assert!(settings.contains("Push tokens"), "{settings}");
+        assert!(settings.contains("Danger zone"), "{settings}");
+    }
+
+    /// Each form comes back to the page it is on, or the next edit
+    /// starts with a click nobody should have had to make.
+    #[tokio::test]
+    async fn a_project_form_returns_to_its_own_page() {
+        let console = Console::new().await;
+        let cookie = console.signed_in().await;
+        console
+            .harness
+            .post("/projects")
+            .header("cookie", &cookie)
+            .form(&[("name", "shipping")])
+            .send()
+            .await;
+
+        for (action, form, expected) in [
+            (
+                "tokens",
+                vec![("name", "ci")],
+                "/projects/shipping/settings",
+            ),
+            (
+                "people",
+                vec![("username", "nobody"), ("role", "viewer")],
+                "/projects/shipping/people",
+            ),
+        ] {
+            let response = console
+                .harness
+                .post(&format!("/projects/shipping/{action}"))
+                .header("cookie", &cookie)
+                .form(&form)
+                .send()
+                .await;
+            let location = response.header("location").expect("redirected").to_string();
+            assert!(
+                location.starts_with(expected),
+                "{action} went to {location}"
+            );
+        }
     }
 
     /// A viewer sees the state and is offered nothing to press — and
@@ -851,7 +1113,20 @@ mod tests {
             .body;
         assert!(body.contains("shared"), "they can see it");
         assert!(!body.contains("Create service"), "and press nothing");
-        assert!(!body.contains("Danger zone"));
+
+        // Settings is nothing but controls they would be refused, so
+        // it is not a page for them at all.
+        let refused = console
+            .harness
+            .get("/projects/shared/settings")
+            .header("cookie", &member)
+            .send()
+            .await;
+        assert_eq!(
+            refused.header("location"),
+            Some("/projects/shared"),
+            "a viewer was shown the settings page"
+        );
 
         console
             .harness

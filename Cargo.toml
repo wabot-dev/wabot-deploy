@@ -11,10 +11,16 @@ wabot = { version = "0.2", default-features = false, features = [
     "rest",
     "rest-tls",
     "sqlite",
-    # Server-rendered pages. No Node, no build step, and no client
-    # payload — the console is HTML the node produces, which is the
-    # right shape for something that has to work on a box with no
-    # internet access.
+    # Server-rendered pages. No Node and no build step — the console is
+    # HTML the node produces, which is the right shape for something
+    # that has to work on a box with no internet access.
+    #
+    # There *is* a client payload: this feature serves the framework's
+    # runtime at `/_wabot/client.js` and every page loads it. It
+    # hydrates islands and boosts navigation, and it has been doing
+    # both since the first page rendered. Two bugs came from not
+    # knowing that, so it is written down here now — see the island
+    # rules in CLAUDE.md.
     #
     # `ui-hypertext` rather than `ui` (Maud) for one reason: it
     # validates element *and* attribute names at compile time. Maud

@@ -764,6 +764,7 @@ mod tests {
                 key_pem: "not a key".into(),
                 issuer: issuer.to_string(),
                 not_after,
+                source: crate::edge::certs::Source::parse(issuer),
             },
         )
         .await

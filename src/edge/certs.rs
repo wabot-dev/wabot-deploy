@@ -67,6 +67,43 @@ pub struct StoredCert {
     pub key_pem: String,
     pub issuer: String,
     pub not_after: i64,
+    /// Where this came from, as opposed to who signed it.
+    ///
+    /// `issuer` was carrying both, and the renewal loop read it as a
+    /// decision — "is this from the authority I am configured for" —
+    /// which silently replaced anything it did not recognise. See
+    /// migration `0012`.
+    pub source: Source,
+}
+
+/// Where a certificate came from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Source {
+    SelfSigned,
+    Acme,
+    /// Read off disk, kept fresh by something outside this node.
+    File,
+}
+
+impl Source {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::SelfSigned => "self_signed",
+            Self::Acme => "acme",
+            Self::File => "file",
+        }
+    }
+
+    /// Unknown reads as self-signed: it is the one answer that is safe
+    /// to act on, because reissuing a self-signed certificate cannot
+    /// throw away something nobody here could make again.
+    pub fn parse(text: &str) -> Self {
+        match text {
+            "acme" => Self::Acme,
+            "file" => Self::File,
+            _ => Self::SelfSigned,
+        }
+    }
 }
 
 /// Sorted and deduplicated, so two requests for the same set compare
@@ -371,6 +408,7 @@ pub async fn ensure_self_signed(
         cert_pem: format!("{}{}", leaf.pem(), ca.pem),
         key_pem: key.serialize_pem(),
         issuer: "self-signed".to_string(),
+        source: Source::SelfSigned,
         not_after: now_ms() + SELF_SIGNED_DAYS * 86_400_000,
     };
     save(database, &stored).await?;
@@ -388,7 +426,7 @@ pub async fn load(database: &SqliteDatabase, domain: &str) -> CertResult<Option<
         .read(move |connection| {
             connection
                 .query_row(
-                    "SELECT \"domain\", \"names\", \"cert_pem\", \"key_pem\", \"issuer\", \"not_after\" \
+                    "SELECT \"domain\", \"names\", \"cert_pem\", \"key_pem\", \"issuer\", \"not_after\", \"source\" \
                      FROM certificate WHERE \"domain\" = ?1",
                     [domain],
                     |row| {
@@ -398,6 +436,7 @@ pub async fn load(database: &SqliteDatabase, domain: &str) -> CertResult<Option<
                             cert_pem: row.get(2)?,
                             key_pem: row.get(3)?,
                             issuer: row.get(4)?,
+                            source: Source::parse(&row.get::<_, String>(6)?),
                             not_after: row.get(5)?,
                         })
                     },
@@ -412,7 +451,7 @@ pub async fn load_all(database: &SqliteDatabase) -> CertResult<Vec<StoredCert>> 
         .read(|connection| {
             connection
                 .prepare(
-                    "SELECT \"domain\", \"names\", \"cert_pem\", \"key_pem\", \"issuer\", \"not_after\" \
+                    "SELECT \"domain\", \"names\", \"cert_pem\", \"key_pem\", \"issuer\", \"not_after\", \"source\" \
                      FROM certificate ORDER BY \"domain\"",
                 )?
                 .query_map([], |row| {
@@ -422,6 +461,7 @@ pub async fn load_all(database: &SqliteDatabase) -> CertResult<Vec<StoredCert>> 
                         cert_pem: row.get(2)?,
                         key_pem: row.get(3)?,
                         issuer: row.get(4)?,
+                        source: Source::parse(&row.get::<_, String>(6)?),
                         not_after: row.get(5)?,
                     })
                 })?
@@ -437,8 +477,8 @@ pub async fn save(database: &SqliteDatabase, stored: &StoredCert) -> CertResult<
         .write(move |connection| {
             connection.execute(
                 "INSERT INTO certificate \
-                   (\"domain\", \"names\", \"cert_pem\", \"key_pem\", \"issuer\", \"issued_at\", \"not_after\") \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7) \
+                   (\"domain\", \"names\", \"cert_pem\", \"key_pem\", \"issuer\", \"issued_at\", \"not_after\", \"source\") \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8) \
                  ON CONFLICT (\"domain\") DO UPDATE SET \
                    \"names\" = excluded.\"names\", \
                    \"cert_pem\" = excluded.\"cert_pem\", \
@@ -446,6 +486,7 @@ pub async fn save(database: &SqliteDatabase, stored: &StoredCert) -> CertResult<
                    \"issuer\" = excluded.\"issuer\", \
                    \"issued_at\" = excluded.\"issued_at\", \
                    \"not_after\" = excluded.\"not_after\", \
+                   \"source\" = excluded.\"source\", \
                    \"last_error\" = NULL",
                 (
                     stored.domain,
@@ -455,6 +496,7 @@ pub async fn save(database: &SqliteDatabase, stored: &StoredCert) -> CertResult<
                     stored.issuer,
                     now_ms(),
                     stored.not_after,
+                    stored.source.as_str(),
                 ),
             )?;
             Ok(())
@@ -478,6 +520,143 @@ pub fn not_after(cert_pem: &str) -> Option<i64> {
     Some(parsed.validity().not_after.timestamp() * 1000)
 }
 
+/// Every DNS name a certificate says it is for.
+///
+/// Read out of the leaf, unlike `StoredCert::names` for the ones this
+/// node issues — there we know what we asked for. A certificate that
+/// arrived from somewhere else has to be asked.
+pub fn names_in(cert_pem: &str) -> Vec<String> {
+    let Some(der) = pem_blocks(cert_pem, "CERTIFICATE").into_iter().next() else {
+        return Vec::new();
+    };
+    let Ok((_, parsed)) = x509_parser::parse_x509_certificate(&der) else {
+        return Vec::new();
+    };
+    let Ok(Some(alternative)) = parsed.subject_alternative_name() else {
+        return Vec::new();
+    };
+    let mut names: Vec<String> = alternative
+        .value
+        .general_names
+        .iter()
+        .filter_map(|name| match name {
+            x509_parser::extensions::GeneralName::DNSName(dns) => Some(dns.to_string()),
+            _ => None,
+        })
+        .collect();
+    names.sort();
+    names.dedup();
+    names
+}
+
+/// Does one of `names` answer for `wanted`?
+///
+/// Exact, case-insensitively. No wildcards: a name here is a name the
+/// node serves, and every one of them is written down — the node's
+/// domain, or a port's hostname. Matching `*.example.com` would mean
+/// the resolver has to as well, and it does not: it looks a name up in
+/// a map. Accepting one here and failing to serve it is worse than
+/// refusing it, because the console would report the node configured
+/// and no browser would open it.
+pub fn covers(names: &[String], wanted: &str) -> bool {
+    names.iter().any(|name| name.eq_ignore_ascii_case(wanted))
+}
+
+/// Read a certificate and its key off disk, refusing anything that
+/// would take the node off the air.
+///
+/// Every check here is one that otherwise surfaces as a failed
+/// handshake — and the console is served over the same listener, so a
+/// certificate that breaks TLS breaks the only page anybody could fix
+/// it from. This is the one place in the node where a private key
+/// arrives from outside, and it is the last moment it can be refused.
+pub fn from_files(name: &str, cert_path: &str, key_path: &str) -> CertResult<StoredCert> {
+    let read = |path: &str| {
+        std::fs::read_to_string(path)
+            .map_err(|error| CertError::Invalid(format!("could not read {path}: {error}")))
+    };
+    let cert_pem = read(cert_path)?;
+    let key_pem = read(key_path)?;
+
+    let names = names_in(&cert_pem);
+    if names.is_empty() {
+        return Err(CertError::Invalid(format!(
+            "{cert_path} has no DNS names in it — a certificate with no subject \
+             alternative name is one no browser will accept"
+        )));
+    }
+    if !covers(&names, name) {
+        // A wildcard is the near miss worth naming. "is for
+        // *.example.com — not api.example.com" reads like a typo, and
+        // somebody would spend a while checking a file that is exactly
+        // what they thought it was.
+        let wildcard = names.iter().any(|found| found.starts_with("*."));
+        return Err(CertError::Invalid(if wildcard {
+            format!(
+                "{cert_path} is a wildcard certificate ({}), and this node serves \
+                 names one at a time — give it a certificate for {name} itself",
+                names.join(", ")
+            )
+        } else {
+            format!("{cert_path} is for {} — not {name}", names.join(", "))
+        }));
+    }
+
+    let Some(not_after) = not_after(&cert_pem) else {
+        return Err(CertError::Invalid(format!(
+            "could not read an expiry from {cert_path}"
+        )));
+    };
+    if not_after <= now_ms() {
+        return Err(CertError::Invalid(format!(
+            "{cert_path} expired already — installing it would take this node off \
+             the air rather than keep it on"
+        )));
+    }
+
+    let stored = StoredCert {
+        domain: name.to_string(),
+        // Who signed it stays a fact read off the certificate; `source`
+        // records how the node came by it. Writing "file" into both
+        // would be the same conflation migration `0012` undid.
+        issuer: issuer_of(&cert_pem).unwrap_or_else(|| "unknown".into()),
+        names,
+        cert_pem,
+        key_pem,
+        not_after,
+        source: Source::File,
+    };
+
+    // Last, because it is the expensive one and because the errors
+    // above are the ones somebody can act on. A key that does not
+    // belong to the certificate is the failure that would otherwise
+    // reach a browser as a handshake alert with no explanation.
+    certified_key(&stored)?.keys_match().map_err(|error| {
+        CertError::Invalid(format!("{key_path} does not open {cert_path}: {error}"))
+    })?;
+
+    Ok(stored)
+}
+
+/// Who signed a certificate, as its issuer's common name.
+///
+/// For anything this node did not issue: an ACME certificate records
+/// the directory URL it came from, and a self-signed one says so, but
+/// a certificate found on disk has to be asked.
+pub fn issuer_of(cert_pem: &str) -> Option<String> {
+    let der = pem_blocks(cert_pem, "CERTIFICATE").into_iter().next()?;
+    let (_, parsed) = x509_parser::parse_x509_certificate(&der).ok()?;
+    let common_name = parsed
+        .issuer()
+        .iter_common_name()
+        .next()
+        .and_then(|name| name.as_str().ok())
+        .map(str::to_string);
+    // Bound to a local before returning: the parse borrows `der`, and
+    // the name borrows the parse.
+    common_name
+}
+
 fn split_names(joined: &str) -> Vec<String> {
     joined
         .split(',')
@@ -496,6 +675,102 @@ fn now_ms() -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A certificate and key on disk, as something outside this node
+    /// would have left them.
+    fn write_pair(dir: &std::path::Path, names: &[&str]) -> (String, String) {
+        let key = rcgen::KeyPair::generate().expect("key");
+        let params = rcgen::CertificateParams::new(
+            names
+                .iter()
+                .map(|name| name.to_string())
+                .collect::<Vec<_>>(),
+        )
+        .expect("params");
+        let certificate = params.self_signed(&key).expect("sign");
+
+        let cert_path = dir.join("node.crt");
+        let key_path = dir.join("node.key");
+        std::fs::write(&cert_path, certificate.pem()).expect("write cert");
+        std::fs::write(&key_path, key.serialize_pem()).expect("write key");
+        (
+            cert_path.to_string_lossy().into_owned(),
+            key_path.to_string_lossy().into_owned(),
+        )
+    }
+
+    #[test]
+    fn a_pair_on_disk_is_read_and_named() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (cert_path, key_path) = write_pair(dir.path(), &["node.example.com"]);
+
+        let stored = from_files("node.example.com", &cert_path, &key_path).expect("accepted");
+        assert_eq!(stored.source, Source::File);
+        assert_eq!(stored.names, vec!["node.example.com".to_string()]);
+        assert!(stored.not_after > now_ms(), "and it is still valid");
+    }
+
+    /// The failure this refuses is the expensive one: a mismatched pair
+    /// installs cleanly and then breaks every handshake, including the
+    /// one serving the page somebody would fix it from.
+    #[test]
+    fn a_key_that_does_not_open_the_certificate_is_refused() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (cert_path, _) = write_pair(dir.path(), &["node.example.com"]);
+        let other = tempfile::tempdir().expect("tempdir");
+        let (_, key_path) = write_pair(other.path(), &["node.example.com"]);
+
+        let error = from_files("node.example.com", &cert_path, &key_path).expect_err("refused");
+        assert!(error.to_string().contains("does not open"), "{error}");
+    }
+
+    #[test]
+    fn a_certificate_for_another_name_is_refused() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (cert_path, key_path) = write_pair(dir.path(), &["other.example.com"]);
+
+        let error = from_files("node.example.com", &cert_path, &key_path).expect_err("refused");
+        assert!(
+            error.to_string().contains("not node.example.com"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn a_missing_file_says_which_one() {
+        let error = from_files("node.example.com", "/nowhere/node.crt", "/nowhere/node.key")
+            .expect_err("refused");
+        assert!(error.to_string().contains("/nowhere/node.crt"), "{error}");
+    }
+
+    /// Names match exactly. The resolver looks a name up in a map, so a
+    /// wildcard accepted here would be a certificate the node stored
+    /// and then never served.
+    #[test]
+    fn a_name_matches_itself_and_nothing_else() {
+        let names = vec!["api.example.com".to_string()];
+        assert!(covers(&names, "api.example.com"));
+        assert!(covers(&names, "API.example.com"), "case does not matter");
+        assert!(!covers(&names, "example.com"));
+        assert!(!covers(&["*.example.com".to_string()], "api.example.com"));
+    }
+
+    /// A wildcard is the near miss worth explaining: "is for
+    /// *.example.com — not api.example.com" reads like a typo, and
+    /// somebody would go looking for a mistake in a file that is
+    /// exactly what they thought it was.
+    #[test]
+    fn a_wildcard_is_refused_by_name() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (cert_path, key_path) = write_pair(dir.path(), &["*.example.com"]);
+
+        let error = from_files("api.example.com", &cert_path, &key_path).expect_err("refused");
+        assert!(error.to_string().contains("wildcard"), "{error}");
+        assert!(
+            error.to_string().contains("api.example.com itself"),
+            "and says what would work: {error}"
+        );
+    }
 
     async fn database() -> SqliteDatabase {
         crate::db::open_in_memory().await.expect("open")

@@ -68,6 +68,7 @@ pub const PRELOAD_FONTS: &[&str] = &[
 
 pub const ASSETS: EmbeddedAssets = &[
     asset!("wabot.css", "text/css; charset=utf-8"),
+    asset!("console.js", "text/javascript; charset=utf-8"),
     asset!("wabot-logo.png", "image/png"),
     asset!("favicon.png", "image/png"),
     asset!("fonts/Geist-Regular.woff2", "font/woff2"),

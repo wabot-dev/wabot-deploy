@@ -14,7 +14,7 @@ use super::assets;
 /// framework assembles the document and a view's only way in is the
 /// render scope.
 pub fn head(title_text: &str) {
-    use wabot::ui::hypertext::{link, style, title};
+    use wabot::ui::hypertext::{link, script, style, title};
 
     title(format!("{title_text} · wabot-deploy"));
 
@@ -28,6 +28,10 @@ pub fn head(title_text: &str) {
         ]);
     }
     style(format!("{}/wabot.css", assets::MOUNT));
+    // Deferred by being a module, so it runs after the document is
+    // parsed and finds the forms it is about. Nothing waits on it: the
+    // page is already complete and correct when it arrives.
+    script(format!("{}/console.js", assets::MOUNT));
     link([
         ("rel", "icon"),
         ("type", "image/png"),
@@ -73,6 +77,80 @@ pub fn error_note(message: &str) -> impl Renderable + '_ {
 /// business. No borders, no shadows, no hover states — separation is
 /// background contrast.
 pub const CSS: &str = r#"
+/* The quiet text tones, corrected in both themes.
+ *
+ * The design system ships `--c-fg-faint` at a value that fails WCAG AA
+ * against every surface this console paints it on — 2.0:1 to 2.5:1 in
+ * light, 2.6:1 to 3.3:1 in dark, where the floor for body text is
+ * 4.5:1. That is not decorative: faint is what renders a project's
+ * slug, an empty-state line and every placeholder. `--c-fg-muted`
+ * failed the same way in light only.
+ *
+ * Overridden here rather than in `assets/wabot.css` because that file
+ * is vendored — editing it forks the copy and the next sync silently
+ * takes the fix away. The ramp belongs to the whole design system, so
+ * the real fix is upstream; this holds until then.
+ */
+:root {
+  --c-fg-muted: 88 83 76;   /* worst case 6.06:1 */
+  --c-fg-faint: 104 99 92;  /* worst case 4.73:1 */
+}
+
+/* Dark, chosen explicitly. Two corrections, and only two — the rest of
+ * the dark palette is the design system's and it measures well.
+ *
+ * `--c-fg` comes down from 15.1:1 to 12.6:1 against the canvas. There
+ * is no upper bound in WCAG, but near-maximum contrast on a dark
+ * background is what makes light text look like it is vibrating, and
+ * the people who feel it worst are the ones reading a deploy console
+ * at two in the morning. 12.6:1 is still far above AAA.
+ *
+ * The canvas itself is left alone at #1A1918. It is a deliberate warm
+ * charcoal rather than black, which is the part of "easy on the eyes"
+ * the design system already got right.
+ */
+[data-theme='dark'] {
+  --c-fg:       224 218 209;  /* 12.64:1 on the canvas, down from 15.14 */
+  --c-fg-faint: 158 152 143;  /* worst case 5.00:1, up from 2.60 */
+}
+
+/* Dark, followed from the operating system when nobody has chosen.
+ *
+ * The tokens are restated because the design system ships its dark
+ * palette only under `[data-theme='dark']`, and CSS cannot make a
+ * media query set an attribute. Keep in step with the vendored block;
+ * a `prefers-color-scheme` variant belongs upstream.
+ */
+@media (prefers-color-scheme: dark) {
+  .app-shell:not([data-theme='light']) {
+    --c-bg:          26 25 24;
+    --c-bg-raised:   34 33 31;
+    --c-bg-sunken:   21 20 19;
+    --c-bg-contrast: 44 42 39;
+    --c-bg-inverse:  244 242 238;
+    --c-fg:          224 218 209;
+    --c-fg-body:     214 210 202;
+    --c-fg-muted:    160 154 145;
+    --c-fg-faint:    158 152 143;
+    --c-fg-inverse:   17  16  15;
+    --c-action:      244 242 238;
+    --c-action-fg:    17  16  15;
+    --c-action-soft:  44  42  39;
+    --c-brand-wash:   60  32  18;
+  }
+}
+
+/* The theme attribute sits on the shell rather than the document root:
+ * the framework assembles the document, and a view has no way to reach
+ * that element. So the shell paints the canvas itself, or the strip a
+ * rubber-band scroll reveals would stay the other theme's colour.
+ */
+.app-shell {
+  background: rgb(var(--c-bg));
+  color: rgb(var(--c-fg-body));
+  color-scheme: light dark;
+}
+
 .shell {
   max-width: 62rem;
   margin: 0 auto;
@@ -100,6 +178,22 @@ pub const CSS: &str = r#"
   text-decoration: none;
 }
 .who { color: rgb(var(--c-fg-muted)); font-size: var(--fs-sm); }
+
+/* Three submits reading as one control. Separation is the sunken tone
+   under them, not borders — same rule as everything else here. */
+.segmented { display: flex; gap: 2px; }
+.segmented button {
+  background: none;
+  padding: 0.3rem var(--sp-3);
+  border-radius: var(--r-md);
+  font-size: var(--fs-xs);
+  color: rgb(var(--c-fg-muted));
+}
+.segmented button.active {
+  background: rgb(var(--c-bg-raised));
+  color: rgb(var(--c-fg));
+  font-weight: 500;
+}
 
 .mark { display: flex; align-items: center; gap: var(--sp-5); }
 .mark h1 { font-size: var(--fs-3xl); margin: 0; letter-spacing: -0.03em; }
@@ -139,6 +233,19 @@ pub const CSS: &str = r#"
   white-space: pre-wrap;
   word-break: break-word;
 }
+/* The node page keeps an empty one in the markup for the stream to
+   write into — the script only replaces text that is already there, so
+   an element that appears on failure could never appear at all. Empty
+   means nothing failed, and a bare red band saying nothing is worse
+   than no band. */
+.failure:empty { display: none; }
+
+/* What `console.js` hides. `!important` because these sit inside flex
+   and grid containers, whose `display` on the child would otherwise
+   win over the `hidden` attribute's user-agent rule — the field would
+   stay on screen with nothing but the attribute to say it should not
+   be. Nothing else in this stylesheet uses `!important`. */
+[hidden] { display: none !important; }
 
 /* Release notes. Written by somebody else, arriving as Markdown, and
    rendered here as ordinary prose — narrow enough to read, with the

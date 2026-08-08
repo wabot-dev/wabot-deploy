@@ -33,7 +33,6 @@ pub mod updates;
 
 use std::sync::Arc;
 
-use hypertext::prelude::*;
 use wabot::prelude::*;
 use wabot::rest::axum::Router;
 use wabot::sqlite::SqliteDatabase;
@@ -52,6 +51,61 @@ pub struct ConsoleState {
     /// the page and the update it starts agree about what they are
     /// installing.
     pub(crate) catalogue: Arc<crate::update::Catalogue>,
+    /// Secrets waiting for the one page that will show them.
+    pub(crate) reveals: Reveals,
+    /// The certificate loop, to ask it to look now and to watch what
+    /// it is doing. Held here as well as inside the deployer because
+    /// the node page reports on it, which is not deploying.
+    pub(crate) certificates: Arc<crate::edge::acme::Wake>,
+}
+
+/// A secret handed from a POST to the GET that follows it.
+///
+/// A push token exists in clear for exactly the moment it is minted,
+/// and the page that shows it is reached by redirect. It used to travel
+/// there in the query string — which put it in the address bar, in the
+/// browser's history, and back on the screen on every refresh. This
+/// console's own rule is that a query parameter is fine *because it is
+/// not secret* (see `back_with_error`), and that one was the exception
+/// nobody noticed.
+///
+/// So the redirect now carries a nonce that names the secret, and the
+/// nonce is spent when the page reads it. In memory rather than in the
+/// database because the plaintext must not outlive the process, and a
+/// restart losing an unread secret is the right failure — the token is
+/// revocable and another one costs a click.
+#[derive(Default)]
+pub(crate) struct Reveals {
+    held: std::sync::Mutex<std::collections::HashMap<String, (String, i64)>>,
+}
+
+/// How long a minted secret waits to be read. Long enough for a
+/// redirect, short enough that a browser left on the login screen does
+/// not keep one in memory all afternoon.
+const REVEAL_TTL_MS: i64 = 60_000;
+
+impl Reveals {
+    /// Hold a secret, returning the nonce that names it.
+    pub(crate) fn stash(&self, secret: String) -> String {
+        let nonce = wabot::prelude::password::generate(24);
+        let now = now_ms();
+        let mut held = self.held.lock().expect("no panic holds this lock");
+        // Swept here rather than on a timer: the only way the map
+        // grows is somebody minting a token, so the act of growing it
+        // is the right moment to drop what expired.
+        held.retain(|_, (_, at)| now - *at < REVEAL_TTL_MS);
+        held.insert(nonce.clone(), (secret, now));
+        nonce
+    }
+
+    /// Read a secret, once.
+    pub(crate) fn take(&self, nonce: &str) -> Option<String> {
+        let now = now_ms();
+        let mut held = self.held.lock().expect("no panic holds this lock");
+        held.remove(nonce)
+            .filter(|(_, at)| now - *at < REVEAL_TTL_MS)
+            .map(|(secret, _)| secret)
+    }
 }
 
 impl ConsoleState {
@@ -77,32 +131,71 @@ impl ConsoleState {
         let deployer = Arc::new(
             crate::deploy::Deployer::new(database.clone(), &config)
                 .with_routes(routes)
-                .with_certificates(certificates),
+                .with_certificates(certificates.clone()),
         );
         Self {
             database,
             config,
             deployer,
             catalogue: Arc::new(crate::update::Catalogue::default()),
+            reveals: Reveals::default(),
+            certificates,
         }
     }
 }
 
 /// How the node's TLS is currently answered for.
 pub(crate) struct CertificateFacts {
-    pub domain: Option<String>,
-    /// `letsencrypt`, `letsencrypt-staging`, `self-signed`, …
+    /// `letsencrypt`, `letsencrypt-staging`, `self-signed`, or whatever
+    /// common name signed a certificate found on disk. A fact.
     pub issuer: String,
     pub days_left: i64,
     pub trusted: bool,
+    /// How the node came by it, which is a different question — see
+    /// migration `0012`.
+    pub source: crate::edge::certs::Source,
+}
+
+impl CertificateFacts {
+    /// How long until renewal starts, or `None` when nothing will
+    /// renew — a self-signed certificate reports zero days left, and
+    /// subtracting the window from that is a negative number about an
+    /// event that is not coming.
+    /// What a name with nothing issued for it looks like: the node is
+    /// serving it off the local authority's certificate, which is what
+    /// `refresh_local` keeps covering every name.
+    pub(crate) fn none() -> Self {
+        Self {
+            issuer: "self-signed".into(),
+            days_left: 0,
+            trusted: false,
+            source: crate::edge::certs::Source::SelfSigned,
+        }
+    }
+
+    pub(crate) fn renews_in_days(&self) -> Option<i64> {
+        let renews_in = self.days_left - RENEW_WINDOW_DAYS;
+        (renews_in > 0).then_some(renews_in)
+    }
 }
 
 pub(crate) async fn certificate_facts(state: &ConsoleState) -> CertificateFacts {
-    let domain = crate::node::settings::domain(&state.database, &state.config).await;
-    let stored = match &domain {
-        Some(domain) => certs::load(&state.database, domain).await.ok().flatten(),
-        None => None,
-    };
+    // The domain is not carried back out: every caller already knows it
+    // — they render the form that sets it — and two copies of a value
+    // one page shows twice is how they end up disagreeing.
+    match crate::node::settings::domain(&state.database, &state.config).await {
+        Some(domain) => certificate_facts_for(state, &domain).await,
+        None => CertificateFacts::none(),
+    }
+}
+
+/// The same, for any name the node answers for.
+///
+/// A service hostname has a certificate of its own, with its own
+/// source and its own expiry — the node's domain is not a special case
+/// of anything, it is just the name that had a page first.
+pub(crate) async fn certificate_facts_for(state: &ConsoleState, name: &str) -> CertificateFacts {
+    let stored = certs::load(&state.database, name).await.ok().flatten();
 
     match stored {
         Some(certificate) => {
@@ -112,17 +205,17 @@ pub(crate) async fn certificate_facts(state: &ConsoleState) -> CertificateFacts 
                 // Staging roots are untrusted by design, and saying so
                 // here saves somebody working out why their browser
                 // still complains.
+                //
+                // A certificate found on disk is not claimed either
+                // way: whether a browser trusts it depends on a trust
+                // store this node cannot see, and guessing would be the
+                // console asserting something it does not know.
                 trusted: issuer == "letsencrypt",
                 issuer,
-                domain,
+                source: certificate.source,
             }
         }
-        None => CertificateFacts {
-            domain,
-            issuer: "self-signed".into(),
-            days_left: 0,
-            trusted: false,
-        },
+        None => CertificateFacts::none(),
     }
 }
 
@@ -138,59 +231,6 @@ fn short_issuer(issuer: &str) -> String {
 /// Renewal starts this far before expiry, so "renews in" is the
 /// remaining life minus the window rather than the whole of it.
 const RENEW_WINDOW_DAYS: i64 = 30;
-
-/// What the node is, as a card at the foot of the projects page.
-///
-/// It stays on the page somebody lands on rather than getting its own
-/// route: the questions it answers — which certificate, how long left
-/// — are the ones asked while looking at something else.
-pub(crate) fn node_card(facts: &CertificateFacts) -> impl Renderable + '_ {
-    let hostname = facts.domain.clone().unwrap_or_else(|| "not set".into());
-    let renews_in = facts.days_left - RENEW_WINDOW_DAYS;
-
-    rsx! {
-        <section class="card card-sunken">
-            <div class="split">
-                <p class="card-label">("This node")</p>
-                <span class="badge badge-success">
-                    <span class="dot dot-success"></span>
-                    ("Serving")
-                </span>
-            </div>
-            <dl class="kv">
-                <dt>("Version")</dt>
-                <dd>(crate::api::VERSION)</dd>
-                <dt>("Hostname")</dt>
-                <dd>(hostname)</dd>
-                <dt>("Certificate")</dt>
-                <dd>(&facts.issuer)</dd>
-                @if renews_in > 0 {
-                    <dt>("Renews in")</dt>
-                    <dd>(renews_in)(" days")</dd>
-                }
-            </dl>
-            <p class="note">(certificate_note(facts))</p>
-        </section>
-    }
-}
-
-/// What to say about the certificate currently being served.
-///
-/// Plain text rather than markup: the three cases differ only in
-/// wording, and a function returning a string is easier to read than
-/// three branches of near-identical HTML.
-fn certificate_note(facts: &CertificateFacts) -> &'static str {
-    if facts.trusted {
-        "This page reached you over TLS with a publicly trusted certificate \
-         the node obtained and installed on its own."
-    } else if facts.issuer == "letsencrypt-staging" {
-        "Staging certificate — browsers will not trust it, which is expected. \
-         Set acme.directory to production when you are done testing."
-    } else {
-        "Self-signed, from this node's local authority. Set the node's domain \
-         on the node page and it will obtain a public one."
-    }
-}
 
 pub(crate) fn now_ms() -> i64 {
     std::time::SystemTime::now()
@@ -269,6 +309,10 @@ pub(crate) mod tests {
     /// issued — what `install` leaves behind.
     pub(crate) struct Console {
         pub harness: RestHarness,
+        /// The same router, asked the way the client runtime asks it.
+        /// `navigate` fetches a boosted-navigation fragment, which is
+        /// how every in-console link actually arrives.
+        pub ui: wabot::testing::UiHarness,
         pub database: Arc<SqliteDatabase>,
         pub setup_token: String,
     }
@@ -288,8 +332,10 @@ pub(crate) mod tests {
                 Arc::new(crate::edge::routes::RouteTable::new()),
                 Arc::new(crate::edge::acme::Wake::default()),
             );
+            let router = routes(&container);
             Self {
-                harness: RestHarness::new(routes(&container)),
+                harness: RestHarness::new(router.clone()),
+                ui: wabot::testing::UiHarness::new(router),
                 database,
                 setup_token,
             }
@@ -494,6 +540,87 @@ pub(crate) mod tests {
         assert!(checked >= 3, "the page references its assets: {checked}");
     }
 
+    /// The theme is in the first byte the browser gets, which is the
+    /// whole reason it lives on the account rather than in a script.
+    /// A theme applied after paint is a flash of the one somebody just
+    /// turned off.
+    #[tokio::test]
+    async fn the_chosen_theme_is_server_rendered() {
+        let console = Console::new().await;
+        let cookie = console.signed_in().await;
+
+        let before = console
+            .harness
+            .get("/")
+            .header("cookie", &cookie)
+            .send()
+            .await
+            .body;
+        assert!(
+            before.contains(r#"data-theme="""#),
+            "system means no attribute, so the media query decides: {before}"
+        );
+
+        console
+            .harness
+            .post("/theme")
+            .header("cookie", &cookie)
+            .form(&[("theme", "dark"), ("from", "/")])
+            .send()
+            .await
+            .assert_status(StatusCode::SEE_OTHER);
+
+        let after = console
+            .harness
+            .get("/")
+            .header("cookie", &cookie)
+            .send()
+            .await
+            .body;
+        assert!(after.contains(r#"data-theme="dark""#), "{after}");
+        assert!(
+            !after.contains("<script>document.documentElement"),
+            "and nothing had to run to get it there"
+        );
+    }
+
+    /// `from` is a path this console put in its own form. Taking it
+    /// from the Referer would let a page elsewhere choose where a
+    /// submit lands.
+    #[tokio::test]
+    async fn the_theme_form_only_returns_to_a_path() {
+        let console = Console::new().await;
+        let cookie = console.signed_in().await;
+
+        let response = console
+            .harness
+            .post("/theme")
+            .header("cookie", &cookie)
+            .form(&[("theme", "dark"), ("from", "https://elsewhere.example/")])
+            .send()
+            .await;
+        assert_eq!(response.header("location"), Some("/"));
+    }
+
+    /// Both islands are declared where the runtime will look for them.
+    /// A host that stops being emitted takes its behaviour with it and
+    /// nothing errors — the page just quietly stops doing the thing.
+    #[tokio::test]
+    async fn the_console_declares_the_islands_it_registers() {
+        let console = Console::new().await;
+        let cookie = console.signed_in().await;
+        let ui = console.ui.with_header("cookie", cookie);
+
+        let node = ui.get("/nodes/local").await;
+        assert!(node.has_island("node-live"), "{}", node.html());
+        assert_eq!(
+            node.island_props("node-live"),
+            Some(serde_json::json!({ "node": "local" })),
+            "the client needs the id to open the stream"
+        );
+        assert!(node.has_island("fields"), "and the certificate form");
+    }
+
     /// A stylesheet the browser cannot parse renders an unstyled page,
     /// which looks like a bug in the product rather than in a header.
     #[tokio::test]
@@ -514,24 +641,53 @@ pub(crate) mod tests {
         );
     }
 
-    /// The node card is what the splash page became, and the honesty
-    /// of the certificate line is the reason it exists.
+    /// A node serving its own authority's certificate has to say so.
+    /// The sentence outlived two homes — a splash page, then a summary
+    /// card — and what makes it worth keeping is that it names what to
+    /// do next, beside the form that does it.
     #[tokio::test]
-    async fn the_node_card_reports_a_self_signed_node_honestly() {
+    async fn a_self_signed_node_says_so_where_it_can_be_fixed() {
         let console = Console::new().await;
         let cookie = console.signed_in().await;
         let body = console
             .harness
-            .get("/")
+            .get(&format!("/nodes/{}", crate::node::LOCAL_ID))
             .header("cookie", &cookie)
             .send()
             .await
             .body;
 
         assert!(body.contains("self-signed"), "{body}");
-        // What to do about it, and where. The instruction used to name
-        // a config key; it names the page that can change it now,
-        // because editing a file and restarting is no longer the way.
-        assert!(body.contains("node page"), "and says what to do: {body}");
+        assert!(body.contains("below"), "and points at the form: {body}");
+        assert!(
+            body.contains("/nodes/certificate"),
+            "which is on this page: {body}"
+        );
+    }
+
+    /// The list said the node's name, version and state; the card under
+    /// it said the same three things again. Two cards agreeing is not
+    /// confirmation, it is a page that has not decided what it is for.
+    #[tokio::test]
+    async fn the_nodes_list_says_each_thing_once() {
+        let console = Console::new().await;
+        let cookie = console.signed_in().await;
+        let body = console
+            .harness
+            .get("/nodes")
+            .header("cookie", &cookie)
+            .send()
+            .await
+            .body;
+
+        assert_eq!(
+            body.matches("Serving").count(),
+            1,
+            "one node, said once: {body}"
+        );
+        assert!(
+            !body.contains("Certificate"),
+            "the certificate lives on the node's own page: {body}"
+        );
     }
 }

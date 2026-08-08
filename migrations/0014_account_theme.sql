@@ -1,0 +1,15 @@
+-- Which theme this person reads in.
+--
+-- On the account rather than in a cookie, for two reasons. The console
+-- is a tool somebody opens from more than one machine, and a
+-- preference that does not follow them is one they set again on each.
+-- And it costs no plumbing: every view already loads the account to
+-- decide what it may show, and `Frame::new` already takes it — a
+-- cookie would need a request-scoped channel from the middleware to
+-- the view that the framework does not expose.
+--
+-- 'system' is the default and means "follow the operating system",
+-- which is the only answer that keeps up when a machine switches at
+-- sunset. It is stored rather than left NULL because there is nothing
+-- stale about it: it names a behaviour, not a resolved colour.
+ALTER TABLE account ADD COLUMN theme TEXT NOT NULL DEFAULT 'system';

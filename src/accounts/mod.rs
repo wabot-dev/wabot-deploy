@@ -85,6 +85,9 @@ pub struct Account {
     /// somebody is signed in takes effect on their next request, since
     /// the middleware reads the row every time.
     pub role: roles::NodeRole,
+    /// Which theme they read in. Travels with the account so the
+    /// choice follows the person rather than the browser.
+    pub theme: crate::console::shell::Theme,
 }
 
 impl Account {
@@ -218,6 +221,7 @@ async fn insert(
     role: roles::NodeRole,
 ) -> AccountResult<Account> {
     let account = Account {
+        theme: crate::console::shell::Theme::System,
         id: format!("acc-{}", wabot::prelude::password::generate(16)),
         username: username.to_string(),
         role,
@@ -255,7 +259,7 @@ pub async fn all(database: &SqliteDatabase) -> AccountResult<Vec<Account>> {
         .read(|connection| {
             connection
                 .prepare(
-                    "SELECT \"id\", \"username\", \"role\" FROM account ORDER BY \"username\"",
+                    "SELECT \"id\", \"username\", \"role\", \"theme\" FROM account ORDER BY \"username\"",
                 )?
                 .query_map([], decode)?
                 .collect()
@@ -335,7 +339,27 @@ fn decode(row: &wabot::sqlite::rusqlite::Row<'_>) -> wabot::sqlite::rusqlite::Re
         id: row.get(0)?,
         username: row.get(1)?,
         role: roles::NodeRole::parse(&row.get::<_, String>(2)?),
+        theme: crate::console::shell::Theme::parse(&row.get::<_, String>(3)?),
     })
+}
+
+/// Store which theme somebody reads in.
+pub async fn set_theme(
+    database: &SqliteDatabase,
+    id: &str,
+    theme: crate::console::shell::Theme,
+) -> AccountResult<()> {
+    let (id, theme) = (id.to_string(), theme.as_str().to_string());
+    database
+        .write(move |connection| {
+            connection.execute(
+                "UPDATE account SET \"theme\" = ?2 WHERE \"id\" = ?1",
+                (id, theme),
+            )?;
+            Ok(())
+        })
+        .await?;
+    Ok(())
 }
 
 /// Check a username and password.
@@ -348,20 +372,28 @@ pub async fn authenticate(
     password: &str,
 ) -> AccountResult<Option<Account>> {
     let lookup = username.trim().to_lowercase();
-    let row: Option<(String, String, String, String)> = database
+    let row: Option<(String, String, String, String, String)> = database
         .read(move |connection| {
             connection
                 .query_row(
-                    "SELECT \"id\", \"username\", \"password_hash\", \"role\" FROM account \
+                    "SELECT \"id\", \"username\", \"password_hash\", \"role\", \"theme\" FROM account \
                      WHERE lower(\"username\") = ?1",
                     [lookup],
-                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+                    |row| {
+                        Ok((
+                            row.get(0)?,
+                            row.get(1)?,
+                            row.get(2)?,
+                            row.get(3)?,
+                            row.get(4)?,
+                        ))
+                    },
                 )
                 .optional()
         })
         .await?;
 
-    let Some((id, username, hash, role)) = row else {
+    let Some((id, username, hash, role, theme)) = row else {
         // Hash anyway. Returning early on an unknown username makes
         // the response measurably faster, and that difference is a
         // list of which usernames exist.
@@ -385,6 +417,7 @@ pub async fn authenticate(
         .await?;
 
     Ok(Some(Account {
+        theme: crate::console::shell::Theme::parse(&theme),
         id,
         username,
         role: roles::NodeRole::parse(&role),

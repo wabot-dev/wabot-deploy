@@ -53,7 +53,7 @@ pub async fn lookup(database: &SqliteDatabase, token: &str) -> AccountResult<Opt
         .read(move |connection| {
             connection
                 .query_row(
-                    "SELECT a.\"id\", a.\"username\", a.\"role\" FROM session s \
+                    "SELECT a.\"id\", a.\"username\", a.\"role\", a.\"theme\" FROM session s \
                      JOIN account a ON a.\"id\" = s.\"account_id\" \
                      WHERE s.\"token_hash\" = ?1 AND s.\"expires_at\" > ?2",
                     (hash, now_ms()),
@@ -66,6 +66,10 @@ pub async fn lookup(database: &SqliteDatabase, token: &str) -> AccountResult<Opt
                             // on their next click rather than at their
                             // next sign-in.
                             role: super::roles::NodeRole::parse(&row.get::<_, String>(2)?),
+                            // Read here too, for the same reason: a
+                            // theme chosen on one page has to be the
+                            // one the next page renders in.
+                            theme: crate::console::shell::Theme::parse(&row.get::<_, String>(3)?),
                         })
                     },
                 )

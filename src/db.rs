@@ -41,6 +41,18 @@ fn migrations() -> Vec<Migration> {
             "0011_updates",
             include_str!("../migrations/0011_updates.sql"),
         ),
+        Migration::new(
+            "0012_certificate_sources",
+            include_str!("../migrations/0012_certificate_sources.sql"),
+        ),
+        Migration::new(
+            "0013_certificate_failures",
+            include_str!("../migrations/0013_certificate_failures.sql"),
+        ),
+        Migration::new(
+            "0014_account_theme",
+            include_str!("../migrations/0014_account_theme.sql"),
+        ),
     ]
 }
 

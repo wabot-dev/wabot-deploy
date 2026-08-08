@@ -34,6 +34,7 @@ use wabot::sqlite::rusqlite::OptionalExtension;
 use wabot::sqlite::SqliteDatabase;
 
 use super::certs::{self, StoredCert};
+use super::policy;
 use crate::config::Config;
 
 /// Renew once the certificate is inside this window of expiring.
@@ -49,6 +50,15 @@ const RENEW_WITHIN_DAYS: i64 = 30;
 /// An order the CA never validates leaves its challenge behind; this
 /// is what stops the table growing forever.
 const CHALLENGE_TTL_SECONDS: i64 = 3600;
+
+/// How close to expiry a certificate nothing will replace may get
+/// before the node signs for that name itself.
+///
+/// Three days rather than thirty: this is the floor, not the renewal
+/// window. Dropping to a self-signed certificate is a visible
+/// downgrade, and doing it a month early would throw away most of the
+/// time somebody had to put a real one in place.
+const FLOOR_DAYS: i64 = 3;
 
 pub const CHALLENGE_PREFIX: &str = "/.well-known/acme-challenge/";
 
@@ -280,6 +290,7 @@ pub async fn obtain(
         // and then switching between them would silently keep serving
         // the old one — see `ensure`.
         issuer: config.acme.directory_url().to_string(),
+        source: certs::Source::Acme,
     };
     certs::save(database, &stored).await?;
 
@@ -303,17 +314,17 @@ pub async fn obtain(
 /// Returns whether anything changed. A failure on one name does not
 /// stop the others: a service with a broken DNS record must not keep
 /// the node's own certificate from renewing.
-pub async fn ensure_all(
-    database: &SqliteDatabase,
-    config: &Config,
-    resolver: &certs::CertResolver,
-) -> AcmeResult<bool> {
-    let mut changed = false;
-    let mut failure: Option<AcmeError> = None;
-
-    // Read now, not at startup: an operator who fixed their DNS and
-    // set the domain from the console needs the next pass to use it,
-    // not the value this process booted with.
+/// Every name a public authority should answer for.
+///
+/// Read now, not at startup: an operator who fixed their DNS and set
+/// the domain from the console needs the next pass to use it, not the
+/// value this process booted with.
+///
+/// Its own function because the loop asks the same question before it
+/// says it is working — an attempt over an empty list is not an
+/// attempt, and a page that flashed "requesting" twice a day for a
+/// node with no domain would be reporting a thing that never happened.
+pub async fn wanted_names(database: &SqliteDatabase, config: &Config) -> Vec<String> {
     let mut names: Vec<String> = crate::node::settings::domain(database, config)
         .await
         .into_iter()
@@ -323,15 +334,178 @@ pub async fn ensure_all(
         Err(error) => tracing::warn!(%error, "could not read the service hostnames"),
     }
     names.dedup();
+    names
+}
 
-    for name in names {
-        match ensure(database, config, resolver, &name).await {
+/// Keep the local authority's certificate covering every name the node
+/// answers for, and put it in front of the listener.
+///
+/// Runs whether or not ACME is enabled, because it answers a different
+/// question. A node that has just been given a domain is still
+/// presenting a certificate for the name it had before — wrong name,
+/// not merely untrusted — and on a node where ACME is switched off
+/// that is the only certificate it will ever have.
+///
+/// `ensure_self_signed` already reissues when the name set changes, so
+/// this is idempotent: a pass that changes nothing costs one read.
+pub async fn refresh_local(
+    database: &SqliteDatabase,
+    config: &Config,
+    resolver: &certs::CertResolver,
+) -> AcmeResult<()> {
+    let mut names = wanted_names(database, config).await;
+    // The fallback answers a handshake that asked for no name, and
+    // every certificate here is stored under it — see `CertResolver`.
+    names.push(certs::FALLBACK_NAME.to_string());
+
+    let before = certs::load(database, certs::FALLBACK_NAME).await?;
+    let after = certs::ensure_self_signed(database, certs::FALLBACK_NAME, &names).await?;
+    if before.map(|existing| existing.names) == Some(after.names) {
+        return Ok(());
+    }
+
+    // Reloaded from storage rather than pushed in, for the same reason
+    // as `ensure`: the resolver then serves exactly what a restart
+    // would.
+    resolver.replace(&certs::load_all(database).await?)?;
+    tracing::info!(
+        names = resolver.names().join(", "),
+        "local certificate reissued"
+    );
+    Ok(())
+}
+
+/// Install whatever is on disk for `name`, if it is not already what
+/// is being served.
+///
+/// This is the whole of "renew a certificate somebody gave us". The
+/// node cannot ask for another — it has no relationship with whoever
+/// signed it — but something else can keep the files current, and this
+/// notices. Compared by content rather than by mtime: a file touched
+/// without being changed is not a reason to swap the resolver, and a
+/// file changed without its mtime moving still has to be picked up.
+async fn install_from_file(
+    database: &SqliteDatabase,
+    resolver: &certs::CertResolver,
+    name: &str,
+    cert_path: &str,
+    key_path: &str,
+) -> AcmeResult<bool> {
+    let found = certs::from_files(name, cert_path, key_path)?;
+
+    if let Some(existing) = certs::load(database, name).await? {
+        if existing.cert_pem == found.cert_pem && existing.key_pem == found.key_pem {
+            return Ok(false);
+        }
+    }
+
+    certs::save(database, &found).await?;
+    resolver.replace(&certs::load_all(database).await?)?;
+    tracing::info!(%name, %cert_path, "installed the certificate found on disk");
+    Ok(true)
+}
+
+/// A certificate about to expire that nothing else will replace.
+///
+/// An expired certificate is a hard failure — no browser offers a way
+/// past it — while a self-signed one is a warning somebody can click
+/// through. So when a name is within [`FLOOR_DAYS`] of serving nothing
+/// usable, the node signs for it rather than letting it lapse.
+///
+/// Only for sources that cannot replace themselves. ACME has its own
+/// retry with backoff and taking over from it would throw away an
+/// order that was about to succeed; a self-signed certificate is
+/// already reissued by `refresh_local`. A file source is the case this
+/// exists for: if whatever keeps those files fresh has stopped, no
+/// amount of waiting produces a new one.
+async fn hold_the_floor(
+    database: &SqliteDatabase,
+    config: &Config,
+    resolver: &certs::CertResolver,
+    name: &str,
+    policy: &policy::Policy,
+) -> AcmeResult<bool> {
+    if policy.renew_with.is_self_serve() {
+        return Ok(false);
+    }
+    let Some(existing) = certs::load(database, name).await? else {
+        // Nothing installed at all: `refresh_local` covers the node
+        // with a certificate carrying every name it answers for, so
+        // this name is already being served something.
+        return Ok(false);
+    };
+    if existing.not_after > now_ms() + FLOOR_DAYS * 86_400_000 {
+        return Ok(false);
+    }
+    if existing.source == certs::Source::SelfSigned {
+        // Already on the floor. Reissuing every pass would rewrite the
+        // row twice a day and log it each time.
+        return Ok(false);
+    }
+
+    tracing::warn!(
+        %name,
+        expires_in_days = (existing.not_after - now_ms()) / 86_400_000,
+        "the certificate on disk is about to expire and nothing is replacing it; \
+         signing for this name locally so it does not lapse"
+    );
+    certs::ensure_self_signed(database, name, &[name.to_string()]).await?;
+    resolver.replace(&certs::load_all(database).await?)?;
+    let _ = config;
+    Ok(true)
+}
+
+pub async fn ensure_all(
+    database: &SqliteDatabase,
+    config: &Config,
+    resolver: &certs::CertResolver,
+) -> AcmeResult<bool> {
+    let mut changed = false;
+    let mut failure: Option<AcmeError> = None;
+
+    for name in wanted_names(database, config).await {
+        // What to do is read per name rather than inferred from what is
+        // installed. Inferring it is what let this loop replace a
+        // certificate it had not issued — see migration `0012`.
+        let policy = policy::for_name(database, config, &name).await;
+        let outcome = match &policy.renew_with {
+            policy::RenewWith::Acme => ensure(database, config, resolver, &name).await,
+            // Handled by `refresh_local`, which covers every name the
+            // node answers for in one certificate. Reissuing here as
+            // well would be a second certificate for the same name.
+            policy::RenewWith::SelfSigned => Ok(false),
+            policy::RenewWith::File {
+                cert_path,
+                key_path,
+            } => install_from_file(database, resolver, &name, cert_path, key_path).await,
+        };
+
+        // Recorded against the name it is about. The node-wide
+        // `acme_error` stays for `doctor` and for `install`, which ask
+        // "did anything fail" rather than "what happened to this name".
+        let recorded = match &outcome {
+            Err(error) => policy::record_failure(database, &name, &error.to_string()).await,
+            Ok(_) => policy::clear_failure(database, &name).await,
+        };
+        if let Err(error) = recorded {
+            tracing::debug!(%name, %error, "could not record the certificate outcome");
+        }
+
+        match outcome {
             Ok(true) => changed = true,
             Ok(false) => {}
             Err(error) => {
                 tracing::warn!(%name, %error, "could not obtain a certificate");
                 failure.get_or_insert(error);
             }
+        }
+
+        // Whatever happened above, a name must not end up serving a
+        // certificate that has expired. See `hold_the_floor`.
+        match hold_the_floor(database, config, resolver, &name, &policy).await {
+            Ok(true) => changed = true,
+            Ok(false) => {}
+            Err(error) => tracing::warn!(%name, %error, "could not hold the expiry floor"),
         }
     }
 
@@ -401,10 +575,6 @@ pub async fn renewal_loop(
 ) -> Result<(), std::convert::Infallible> {
     if config.acme.disabled {
         tracing::info!("ACME is disabled; serving the local authority's certificate");
-        // Not a return: a service that ends takes the process with it,
-        // and "no ACME" is a fine way to run.
-        cancel.cancelled().await;
-        return Ok(());
     }
 
     // A node with no domain *yet* still runs this loop. It has nothing
@@ -422,6 +592,28 @@ pub async fn renewal_loop(
     const SETTLED_DELAY: std::time::Duration = std::time::Duration::from_secs(12 * 3600);
 
     loop {
+        // Nothing to certify is not an attempt. Marking one anyway
+        // would flash "requesting" on a page about a node that has no
+        // domain, twice a day, for a request never made.
+        let attempt = (!wanted_names(&database, &config).await.is_empty()).then(|| wake.begin());
+
+        // Before the public one, and whether or not there will be a
+        // public one. A node whose domain just changed is presenting a
+        // certificate for the name it used to have; that is true even
+        // where ACME is switched off, and it is the case somebody
+        // testing on a laptop is most likely to be looking at.
+        if let Err(error) = refresh_local(&database, &config, &resolver).await {
+            tracing::warn!(%error, "could not reissue the local certificate");
+        }
+
+        if config.acme.disabled {
+            drop(attempt);
+            tokio::select! {
+                _ = cancel.cancelled() => return Ok(()),
+                _ = wake.notified() => continue,
+            }
+        }
+
         match ensure_all(&database, &config, &resolver).await {
             Ok(changed) => {
                 if changed {
@@ -444,6 +636,11 @@ pub async fn renewal_loop(
             }
         }
 
+        // After the outcome is stored, never before: a page woken by
+        // this reads the database, and waking it first would show it
+        // the state the attempt just replaced.
+        drop(attempt);
+
         tokio::select! {
             _ = cancel.cancelled() => return Ok(()),
             _ = tokio::time::sleep(delay) => {}
@@ -463,24 +660,85 @@ pub async fn renewal_loop(
     }
 }
 
-/// How the rest of the node asks for a certificate check now.
+/// How the rest of the node asks for a certificate check now, and how
+/// a page watching one finds out that it finished.
 ///
 /// A notification rather than a direct call: issuance belongs in the
 /// loop, which owns the retries and the backoff. A console request
 /// that issued inline would either block for the round trip to the
 /// authority or invent a second retry policy beside this one.
-#[derive(Debug, Default)]
-pub struct Wake(tokio::sync::Notify);
+///
+/// The channel is the other direction, and it is why this is more than
+/// a `Notify` now. Nothing used to record that an attempt was
+/// *running* — only that one had failed — so the console could say
+/// "asked for" and "failed" but never "asking", and the page that set
+/// a domain had to tell the operator to reload in a few seconds.
+#[derive(Debug)]
+pub struct Wake {
+    notify: tokio::sync::Notify,
+    phase: tokio::sync::watch::Sender<Phase>,
+}
+
+/// Whether the loop is in the middle of an attempt.
+///
+/// Deliberately not the *outcome*: that is written to the database, and
+/// two copies of it would be two things to keep in step. This says when
+/// to go and read it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Phase {
+    Idle,
+    Working,
+}
+
+impl Default for Wake {
+    fn default() -> Self {
+        Self {
+            notify: tokio::sync::Notify::default(),
+            phase: tokio::sync::watch::channel(Phase::Idle).0,
+        }
+    }
+}
 
 impl Wake {
     /// Ask the loop to look now. Never blocks; a wake with nothing to
     /// do costs one cheap pass over the stored certificates.
     pub fn now(&self) {
-        self.0.notify_one();
+        self.notify.notify_one();
     }
 
     async fn notified(&self) {
-        self.0.notified().await
+        self.notify.notified().await
+    }
+
+    /// A signal every time the loop starts or stops working.
+    pub fn watch(&self) -> tokio::sync::watch::Receiver<Phase> {
+        self.phase.subscribe()
+    }
+
+    pub fn phase(&self) -> Phase {
+        *self.phase.borrow()
+    }
+
+    /// Mark an attempt as running until the returned guard is dropped.
+    ///
+    /// A guard rather than a pair of calls: an early return or a panic
+    /// between them would leave every page saying "requesting" for the
+    /// rest of the process's life, and that is a lie no restart-free
+    /// path could correct.
+    fn begin(&self) -> Attempt<'_> {
+        // `send_replace`, not `send`: with no page open there are no
+        // receivers, and `send` reports that as an error rather than
+        // storing the value the next subscriber should see.
+        self.phase.send_replace(Phase::Working);
+        Attempt(self)
+    }
+}
+
+struct Attempt<'a>(&'a Wake);
+
+impl Drop for Attempt<'_> {
+    fn drop(&mut self) {
+        self.0.phase.send_replace(Phase::Idle);
     }
 }
 
@@ -646,6 +904,7 @@ mod tests {
             key_pem: String::new(),
             issuer: issuer.to_string(),
             not_after: now_ms() + days_left * 86_400_000,
+            source: certs::Source::parse(issuer),
         }
     }
 

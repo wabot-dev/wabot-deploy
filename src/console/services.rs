@@ -28,6 +28,18 @@ pub struct ServicePage {
     pub project: String,
     pub service: String,
     pub error: Option<String>,
+}
+
+/// The same service, from the page that changes it.
+///
+/// Its own struct rather than a shared one: `checked` is produced by
+/// the port form and belongs where that form is, and a page that
+/// accepts a parameter nothing sends it invites somebody to send it.
+#[derive(Debug, Deserialize, Validate)]
+pub struct ServiceSettings {
+    pub project: String,
+    pub service: String,
+    pub error: Option<String>,
     /// What a DNS check just said, carried back from the POST that ran
     /// it. Not stored: it describes the world a second ago, and the
     /// next attempt asks again.
@@ -111,7 +123,13 @@ impl ServicePages {
         Ok(frame.render(body).into_view().into())
     }
 
-    /// One service: what it exposes, and what it is doing.
+    /// What this service is doing, and where to reach it.
+    ///
+    /// Reading, and the one action that belongs with it — deploying a
+    /// release. Everything that *configures* the service lives on
+    /// [`Self::settings`]: the two answer different questions, and a
+    /// page somebody keeps open while a deployment lands should not be
+    /// a page covered in forms they are not filling in.
     #[view("/projects/:project/services/:service")]
     #[middleware(SessionMiddleware)]
     async fn service(&self, query: ServicePage) -> UiResult<ViewOutcome> {
@@ -131,12 +149,6 @@ impl ServicePages {
 
         let ports = ports::of_service(&self.state.database, &service.id).await?;
         let releases = releases::of_service(&self.state.database, &service.id).await?;
-        let history = config_history::of_service(&self.state.database, &service.id).await?;
-        let env_text: String = service
-            .env
-            .iter()
-            .map(|(key, value)| format!("{key}={value}\n"))
-            .collect();
 
         // Whether each HTTPS name has a certificate yet. Asked here
         // rather than assumed: the certificate arrives seconds after
@@ -158,20 +170,11 @@ impl ServicePages {
         }
         let observed = self.state.deployer.observe(&project, &service).await;
         let back = format!("/projects/{}", project.slug);
-        let add = format!("/projects/{}/services/{}/ports", project.slug, service.slug);
-
-        // What to propose for a hostname, and whether the operator has
-        // to type one. Both come from asking DNS, and the answer is
-        // only meaningful for a node that has a domain at all.
+        let settings = format!(
+            "/projects/{}/services/{}/settings",
+            project.slug, service.slug
+        );
         let domain = crate::node::settings::domain(&self.state.database, &self.state.config).await;
-        let suggestion = match &domain {
-            Some(domain) => {
-                let name = dns::suggested_hostname(&service.slug, &project.slug, domain);
-                let wildcard = dns::wildcard_works(domain).await;
-                Some((name, wildcard))
-            }
-            None => None,
-        };
 
         let all_projects = access::projects_for(&self.state.database, &account).await?;
         let frame = Frame::new(
@@ -191,14 +194,16 @@ impl ServicePages {
                         <h1>(&service.name)</h1>
                         <p class="slug-preview">(&project.slug)(" / ")(&service.slug)</p>
                     </div>
-                    <a class="btn btn-ghost" href=(&back)>("Back to project")</a>
+                    <div class="row">
+                        @if allowed.may_deploy() {
+                            <a class="btn btn-secondary" href=(&settings)>("Settings")</a>
+                        }
+                        <a class="btn btn-ghost" href=(&back)>("Back to project")</a>
+                    </div>
                 </div>
 
                 @if let Some(message) = &query.error {
                     (layout::error_note(message))
-                }
-                @if let Some(message) = &query.checked {
-                    <p class="note">(message)</p>
                 }
 
                 <section class="card stack">
@@ -274,52 +279,206 @@ impl ServicePages {
                             </tbody>
                         </table>
                     }
-                    @if allowed.may_deploy() {
-                        <form method="post"
-                              action=(format!(
-                                  "/projects/{}/services/{}/tracking",
-                                  project.slug, service.slug
-                              ))
-                              class="row">
-                            <input name="track_tag" type="text"
-                                   value=(service.track_tag.clone().unwrap_or_default())
-                                   placeholder="tag to watch">
-                            <label class="check">
-                                <input type="checkbox" name="auto_deploy" value="1"
-                                       checked=(service.auto_deploy)>
-                                ("Deploy a push automatically")
-                            </label>
-                            <button class="btn btn-secondary btn-sm" type="submit">("Save")</button>
-                        </form>
+                </section>
+
+                <section class="stack">
+                    <p class="card-label">("Reachable at")</p>
+                    @if ports.is_empty() {
+                        <p class="tile-detail">(
+                            "This service exposes nothing. That is the right answer \
+                             for a worker; a port is added in settings."
+                        )</p>
+                    } @else {
+                        <table>
+                            <thead>
+                                <tr>
+                                    <th>("Container")</th>
+                                    <th>("Reachable at")</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                @for port in &ports {
+                                    <tr>
+                                        <td class="mono">(port.container_port)</td>
+                                        <td class="mono reach">
+                                            <span>(reachable_at(port, domain.as_deref()))</span>
+                                            @if port.hostname.as_ref()
+                                                .is_some_and(|host| !secured.contains(host)) {
+                                                <span class="badge badge-info">
+                                                    <span class="dot dot-info dot-pulse"></span>
+                                                    ("Certificate on the way")
+                                                </span>
+                                            }
+                                        </td>
+                                    </tr>
+                                }
+                            </tbody>
+                        </table>
                     }
+                </section>
+        }
+        .render()
+        .into_inner();
+
+        Ok(frame.render(body).into_view().into())
+    }
+
+    /// How this service is configured, and everything that changes it.
+    ///
+    /// Split from [`Self::service`] because the two are read at
+    /// different moments: the service page is open while a deployment
+    /// lands, this one is opened to change something and left again.
+    /// Every form that used to crowd that page is here, and every POST
+    /// behind them comes back here rather than to the page it left.
+    #[view("/projects/:project/services/:service/settings")]
+    #[middleware(SessionMiddleware)]
+    async fn settings(&self, query: ServiceSettings) -> UiResult<ViewOutcome> {
+        let Some(account) = signed_in(&self.auth) else {
+            return Ok(Redirect::found("/sign-in").into());
+        };
+        let Some((project, allowed)) =
+            access::find_project(&self.state.database, &account, &query.project).await?
+        else {
+            return Ok(Redirect::found("/?error=no+such+project").into());
+        };
+        let Some(service) =
+            services::in_project(&self.state.database, &project.id, &query.service).await?
+        else {
+            return Ok(Redirect::found(format!("/projects/{}", project.slug)).into());
+        };
+
+        let here = format!("/projects/{}/services/{}", project.slug, service.slug);
+        // Every control on this page is one a viewer would be refused,
+        // so they get the page they may read instead of a form that
+        // lies to them. The check that matters is still on each POST.
+        if !allowed.may_deploy() {
+            return Ok(Redirect::found(here).into());
+        }
+
+        let ports = ports::of_service(&self.state.database, &service.id).await?;
+        let history = config_history::of_service(&self.state.database, &service.id).await?;
+        let env_text: String = service
+            .env
+            .iter()
+            .map(|(key, value)| format!("{key}={value}\n"))
+            .collect();
+
+        let mut secured = std::collections::BTreeSet::new();
+        for port in &ports {
+            if let Some(hostname) = &port.hostname {
+                if crate::edge::certs::load(&self.state.database, hostname)
+                    .await
+                    .ok()
+                    .flatten()
+                    .is_some_and(|certificate| certificate.issuer != "self-signed")
+                {
+                    secured.insert(hostname.clone());
+                }
+            }
+        }
+
+        // One answer per name the service is served under. The node's
+        // domain is not a special case of this — it is the same
+        // question asked about a different name.
+        let mut certificates = Vec::new();
+        for port in &ports {
+            let Some(hostname) = &port.hostname else {
+                continue;
+            };
+            let facts = super::certificate_facts_for(&self.state, hostname).await;
+            let state = super::nodes::CertificateState::read(
+                &facts,
+                Some(hostname),
+                // Not the node's stored failure: it records one reason
+                // for the whole node, and attributing it to this name
+                // would be the console guessing.
+                None,
+                self.state.certificates.phase(),
+                self.state.config.acme.disabled,
+            );
+            let policy =
+                crate::edge::policy::for_name(&self.state.database, &self.state.config, hostname)
+                    .await;
+            let cells = super::nodes::certificate_cells(&state, &facts, Some(hostname));
+            certificates.push((port.id.clone(), hostname.clone(), cells, policy));
+        }
+
+        let add = format!("{here}/ports");
+        let domain = crate::node::settings::domain(&self.state.database, &self.state.config).await;
+        let suggestion = match &domain {
+            Some(domain) => {
+                let name = dns::suggested_hostname(&service.slug, &project.slug, domain);
+                let wildcard = dns::wildcard_works(domain).await;
+                Some((name, wildcard))
+            }
+            None => None,
+        };
+
+        let all_projects = access::projects_for(&self.state.database, &account).await?;
+        let frame = Frame::new(
+            &account,
+            Area::Projects,
+            &all_projects,
+            Some(&project),
+            format!("{here}/settings"),
+        )
+        .allowing(allowed);
+
+        layout::head(&format!("{} settings", service.name));
+        let body = rsx! {
+            (layout::style_tag())
+                <div class="split">
+                    <div class="stack-sm">
+                        <h1>("Settings")</h1>
+                        <p class="slug-preview">(&project.slug)(" / ")(&service.slug)</p>
+                    </div>
+                    <a class="btn btn-ghost" href=(&here)>("Back to service")</a>
+                </div>
+
+                @if let Some(message) = &query.error {
+                    (layout::error_note(message))
+                }
+                @if let Some(message) = &query.checked {
+                    <p class="note">(message)</p>
+                }
+
+                <section class="stack">
+                    <p class="card-label">("Releases")</p>
+                    <form method="post" action=(format!("{here}/tracking")) class="card stack">
+                        <label for="track_tag">("Tag to watch")</label>
+                        <input id="track_tag" name="track_tag" type="text" class="mono"
+                               value=(service.track_tag.clone().unwrap_or_default())
+                               placeholder="latest">
+                        <label class="check">
+                            <input type="checkbox" name="auto_deploy" value="1"
+                                   checked=(service.auto_deploy)>
+                            ("Deploy a push automatically")
+                        </label>
+                        <p class="field-hint">(
+                            "Without this, a push is recorded as a release and waits \
+                             for somebody to deploy it from the service page."
+                        )</p>
+                        <div class="actions">
+                            <button type="submit">("Save")</button>
+                        </div>
+                    </form>
                 </section>
 
                 <section class="stack">
                     <p class="card-label">("Environment")</p>
-                    @if allowed.may_deploy() {
-                        <form method="post"
-                              action=(format!(
-                                  "/projects/{}/services/{}/env",
-                                  project.slug, service.slug
-                              ))
-                              class="card stack">
-                            <textarea name="env" rows="6" class="mono"
-                                      placeholder="KEY=value">(&env_text)</textarea>
-                            <p class="field-hint">(
-                                "Saving redeploys the service with these values. The image \
-                                 it runs does not change."
-                            )</p>
-                            <div class="actions">
-                                <button type="submit">("Save environment")</button>
-                            </div>
-                        </form>
-                    } @else if service.env.is_empty() {
-                        <p class="tile-detail">("None.")</p>
-                    } @else {
-                        <pre><code>(&env_text)</code></pre>
-                    }
+                    <form method="post" action=(format!("{here}/env")) class="card stack">
+                        <textarea name="env" rows="6" class="mono"
+                                  placeholder="KEY=value">(&env_text)</textarea>
+                        <p class="field-hint">(
+                            "Saving redeploys the service with these values. The image \
+                             it runs does not change."
+                        )</p>
+                        <div class="actions">
+                            <button type="submit">("Save environment")</button>
+                        </div>
+                    </form>
 
-                    @if !history.is_empty() && allowed.may_deploy() {
+                    @if !history.is_empty() {
                         <table>
                             <tbody>
                                 @for revision in history.iter().skip(1) {
@@ -330,8 +489,7 @@ impl ServicePages {
                                         <td>
                                             <form method="post"
                                                   action=(format!(
-                                                      "/projects/{}/services/{}/env/{}/revert",
-                                                      project.slug, service.slug, revision.id
+                                                      "{here}/env/{}/revert", revision.id
                                                   ))>
                                                 <button class="btn btn-ghost btn-sm"
                                                         type="submit">("Restore")</button>
@@ -375,15 +533,13 @@ impl ServicePages {
                                             }
                                         </td>
                                         <td>
-                                            @if allowed.may_deploy() {
-                                                <form method="post"
-                                                      action=(format!("{add}/{}/delete", port.id))>
-                                                    <button class="btn btn-ghost destructive btn-sm"
-                                                            type="submit">
-                                                        ("Remove")
-                                                    </button>
-                                                </form>
-                                            }
+                                            <form method="post"
+                                                  action=(format!("{add}/{}/delete", port.id))>
+                                                <button class="btn btn-ghost destructive btn-sm"
+                                                        type="submit">
+                                                    ("Remove")
+                                                </button>
+                                            </form>
                                         </td>
                                     </tr>
                                 }
@@ -391,72 +547,149 @@ impl ServicePages {
                         </table>
                     }
 
-                    @if allowed.may_deploy() {
-                    <form method="post" action=(&add) class="card stack">
-                        <label for="container_port">("Container port")</label>
-                        <input id="container_port" name="container_port" type="number"
-                               min="1" max="65535" placeholder="80" required>
-                        <p class="field-hint">(
-                            "What the process listens on inside the container."
-                        )</p>
-
-                        <label class="check">
-                            <input type="checkbox" name="publish" value="1">
-                            ("Publish on the node's public address (raw TCP)")
-                        </label>
-                        <p class="field-hint">(
-                            "For a database or anything that is not HTTP. The node \
-                             picks the outside port. It is reachable from the whole \
-                             internet unless a firewall says otherwise."
-                        )</p>
-
-                        <label class="check">
-                            <input type="checkbox" name="https" value="1">
-                            ("Serve over HTTPS at a hostname")
-                        </label>
-                        @match &suggestion {
-                            Some((name, true)) => {
-                                <p class="field-hint">(
-                                    "A wildcard record covers this node, so this name \
-                                     already resolves here. Leave it as it is."
-                                )</p>
-                                <input name="hostname" type="text" class="mono" value=(name)>
-                            }
-                            Some((name, false)) => {
-                                <p class="field-hint">(
-                                    "No wildcard record answers for this node, so "
-                                )(name)(
-                                    " will not resolve. Either add \
-                                     *.<node domain> pointing at this node, or type a \
-                                     hostname you have already pointed here — it is \
-                                     checked before it is accepted."
-                                )</p>
-                                <input name="hostname" type="text" class="mono"
-                                       placeholder="api.example.com">
-                            }
-                            None => {
-                                <p class="field-hint">(
-                                    "This node has no domain of its own yet, so there is \
-                                     nothing to suggest. Set the node's domain, or type a \
-                                     hostname already pointed here."
-                                )</p>
-                                <input name="hostname" type="text" class="mono"
-                                       placeholder="api.example.com">
-                            }
-                        }
-
-                        <div class="actions">
-                            <button type="submit">("Add port")</button>
-                        </div>
-                    </form>
-                    }
+                    (port_form(&add, &suggestion, account.is_admin()))
                 </section>
+
+                @if !certificates.is_empty() {
+                    <section class="stack">
+                        <p class="card-label">("Certificates")</p>
+                        <p class="tile-detail">(
+                            "One per hostname. A node with no public DNS, or a name a \
+                             certificate authority cannot reach, is what the other two \
+                             answers are for."
+                        )</p>
+                        @for (port_id, hostname, cells, policy) in &certificates {
+                            <div class="card stack">
+                                <div class="split">
+                                    <p class="mono">(hostname)</p>
+                                    <span class=(cells.badge)>
+                                        <span class=(cells.dot)></span>
+                                        <span>(cells.word)</span>
+                                    </span>
+                                </div>
+                                <dl class="kv">
+                                    <dt>("Issuer")</dt>
+                                    <dd>(&cells.issuer)</dd>
+                                    <dt>("Renews in")</dt>
+                                    <dd>(&cells.renews)</dd>
+                                </dl>
+                                (super::nodes::certificate_source_form(
+                                    &format!("{here}/ports/{port_id}/certificate"),
+                                    policy,
+                                ))
+                            </div>
+                        }
+                    </section>
+                }
         }
         .render()
         .into_inner();
 
         Ok(frame.render(body).into_view().into())
     }
+}
+
+/// Declaring a port, as an island host.
+///
+/// Its own function for the reason `Frame::render` gives: an `rsx!`
+/// expands to a closure that captures by move, so nesting one inside
+/// another makes both want the same `add` and `suggestion`. Rendering
+/// this one first ends its borrow before the page's begins.
+fn port_form<'a>(
+    add: &'a str,
+    suggestion: &'a Option<(String, bool)>,
+    admin: bool,
+) -> impl Renderable + 'a {
+    wabot::ui::hypertext::island_bare(
+        "fields",
+        rsx! {
+                        <form method="post" action=(add) class="card stack">
+                            <label for="container_port">("Container port")</label>
+                            <input id="container_port" name="container_port" type="number"
+                                   min="1" max="65535" placeholder="80" required>
+                            <p class="field-hint">(
+                                "What the process listens on inside the container."
+                            )</p>
+
+                            <label class="check">
+                                <input type="checkbox" name="publish" value="1">
+                                ("Publish on the node's public address (raw TCP)")
+                            </label>
+                            <p class="field-hint">(
+                                "For a database or anything that is not HTTP. The node \
+                                 picks the outside port. It is reachable from the whole \
+                                 internet unless a firewall says otherwise."
+                            )</p>
+
+                            // Whether HTTPS is offered at all depends on the
+                            // node having a domain. Without one, `add_port`
+                            // refuses every hostname — it has nothing to
+                            // check "does this point here" against — so a
+                            // ticked box and a filled field could only ever
+                            // come back as an error.
+                            @match &suggestion {
+                                Some((name, true)) => {
+                                    <label class="check">
+                                        <input type="checkbox" name="https" value="1">
+                                        ("Serve over HTTPS at a hostname")
+                                    </label>
+                                    <div class="stack" data-when="https">
+                                        <p class="field-hint">(
+                                            "A wildcard record covers this node, so this \
+                                             name already resolves here. Leave it as it is."
+                                        )</p>
+                                        <input name="hostname" type="text" class="mono"
+                                               value=(name) data-required-when="https">
+                                    </div>
+                                }
+                                Some((name, false)) => {
+                                    <label class="check">
+                                        <input type="checkbox" name="https" value="1">
+                                        ("Serve over HTTPS at a hostname")
+                                    </label>
+                                    <div class="stack" data-when="https">
+                                        <p class="field-hint">(
+                                            "No wildcard record answers for this node, so "
+                                        )(name)(
+                                            " will not resolve. Either add \
+                                             *.<node domain> pointing at this node, or type \
+                                             a hostname you have already pointed here — it \
+                                             is checked before it is accepted."
+                                        )</p>
+                                        <input name="hostname" type="text" class="mono"
+                                               placeholder="api.example.com"
+                                               data-required-when="https">
+                                    </div>
+                                }
+                                None => {
+                                    <label class="check">
+                                        <input type="checkbox" name="https" value="1" disabled>
+                                        ("Serve over HTTPS at a hostname")
+                                    </label>
+                                    <p class="field-hint">(
+                                        "This node has no domain of its own, so it cannot \
+                                         check that a name points here — and it will not \
+                                         route one it could not check. The node needs a \
+                                         domain before anything can be served over HTTPS."
+                                    )</p>
+                                    @if admin {
+                                        <a class="btn btn-secondary btn-sm" href="/nodes">(
+                                            "Set the node's domain"
+                                        )</a>
+                                    } @else {
+                                        <p class="field-hint">(
+                                            "Ask whoever runs this node to set one."
+                                        )</p>
+                                    }
+                                }
+                            }
+
+                            <div class="actions">
+                                <button type="submit">("Add port")</button>
+                            </div>
+                        </form>
+        },
+    )
 }
 
 /// Where a port can be reached from, in one cell.
@@ -566,7 +799,12 @@ impl ServiceApi {
         let Some((project, service, _)) = self.locate(&path).await? else {
             return Ok(see_other("/?error=no+such+service"));
         };
-        let here = format!("/projects/{}/services/{}", project.slug, service.slug);
+        // Back to the page the form is on, not the one it used to
+        // share with the service's state.
+        let here = format!(
+            "/projects/{}/services/{}/settings",
+            project.slug, service.slug
+        );
 
         let form = match read_form(request).await {
             Ok(form) => form,
@@ -655,7 +893,12 @@ impl ServiceApi {
         let Some((project, service, _)) = self.locate(&path).await? else {
             return Ok(see_other("/?error=no+such+service"));
         };
-        let here = format!("/projects/{}/services/{}", project.slug, service.slug);
+        // Back to the page the form is on, not the one it used to
+        // share with the service's state.
+        let here = format!(
+            "/projects/{}/services/{}/settings",
+            project.slug, service.slug
+        );
 
         let ["projects", _, "services", _, "ports", port_id, "delete"] = segments.as_slice() else {
             return Ok(see_other(&here));
@@ -672,6 +915,89 @@ impl ServiceApi {
             ports::delete(&self.state.database, port_id).await?;
             let _ = self.state.deployer.deploy(&project, &service).await;
         }
+        Ok(see_other(&here))
+    }
+
+    /// Choose where one hostname's certificate comes from.
+    ///
+    /// The same three answers as the node's own name, because it is
+    /// the same question. The file pair is read and checked here,
+    /// before the choice is stored: a policy that cannot work would
+    /// fail on every pass of the renewal loop with the reason in the
+    /// journal, and a mismatched pair installed would break the
+    /// handshake for this hostname outright.
+    #[post("/projects/:project/services/:service/ports/:port/certificate")]
+    #[raw]
+    #[middleware(SessionMiddleware)]
+    async fn set_port_certificate(&self, request: Request) -> RestResult<Response> {
+        let path = request.uri().path().to_string();
+        let segments = super::auth::segments(&path);
+        let Some((project, service, _)) = self.locate(&path).await? else {
+            return Ok(see_other("/?error=no+such+service"));
+        };
+        let here = format!(
+            "/projects/{}/services/{}/settings",
+            project.slug, service.slug
+        );
+
+        let ["projects", _, "services", _, "ports", port_id, "certificate"] = segments.as_slice()
+        else {
+            return Ok(see_other(&here));
+        };
+
+        // This service's port, and one that actually has a name to
+        // certify. An id from another page must not repoint somebody
+        // else's certificate.
+        let Some(hostname) = ports::of_service(&self.state.database, &service.id)
+            .await?
+            .into_iter()
+            .find(|port| port.id == *port_id)
+            .and_then(|port| port.hostname)
+        else {
+            return Ok(see_other(&here));
+        };
+
+        let form = match read_form(request).await {
+            Ok(form) => form,
+            Err(response) => return Ok(response),
+        };
+
+        let renew_with = match field(&form, "renew_with") {
+            "self_signed" => crate::edge::policy::RenewWith::SelfSigned,
+            "file" => {
+                let cert_path = field(&form, "cert_path").trim().to_string();
+                let key_path = field(&form, "key_path").trim().to_string();
+                if cert_path.is_empty() || key_path.is_empty() {
+                    return Ok(back_with_error(
+                        &here,
+                        "reading from files needs both a certificate and a key",
+                    ));
+                }
+                if let Err(error) = crate::edge::certs::from_files(&hostname, &cert_path, &key_path)
+                {
+                    return Ok(back_with_error(&here, &error.to_string()));
+                }
+                crate::edge::policy::RenewWith::File {
+                    cert_path,
+                    key_path,
+                }
+            }
+            _ => crate::edge::policy::RenewWith::Acme,
+        };
+
+        // Choosing the default forgets rather than records it, so the
+        // stored answer cannot outlive the config that produced it.
+        let stored =
+            if renew_with == crate::edge::policy::RenewWith::default_for(&self.state.config) {
+                crate::edge::policy::clear(&self.state.database, &hostname).await
+            } else {
+                crate::edge::policy::set(&self.state.database, &hostname, &renew_with).await
+            };
+        if let Err(error) = stored {
+            return Ok(back_with_error(&here, &error.to_string()));
+        }
+        self.state.certificates.now();
+
         Ok(see_other(&here))
     }
 
@@ -714,7 +1040,12 @@ impl ServiceApi {
         let Some((project, service, _)) = self.locate(&path).await? else {
             return Ok(see_other("/?error=no+such+service"));
         };
-        let here = format!("/projects/{}/services/{}", project.slug, service.slug);
+        // Back to the page the form is on, not the one it used to
+        // share with the service's state.
+        let here = format!(
+            "/projects/{}/services/{}/settings",
+            project.slug, service.slug
+        );
 
         let form = match read_form(request).await {
             Ok(form) => form,
@@ -741,7 +1072,12 @@ impl ServiceApi {
         let Some((project, service, _)) = self.locate(&path).await? else {
             return Ok(see_other("/?error=no+such+service"));
         };
-        let here = format!("/projects/{}/services/{}", project.slug, service.slug);
+        // Back to the page the form is on, not the one it used to
+        // share with the service's state.
+        let here = format!(
+            "/projects/{}/services/{}/settings",
+            project.slug, service.slug
+        );
         let account = signed_in(&self.auth);
 
         let form = match read_form(request).await {
@@ -772,7 +1108,12 @@ impl ServiceApi {
         let Some((project, service, _)) = self.locate(&path).await? else {
             return Ok(see_other("/?error=no+such+service"));
         };
-        let here = format!("/projects/{}/services/{}", project.slug, service.slug);
+        // Back to the page the form is on, not the one it used to
+        // share with the service's state.
+        let here = format!(
+            "/projects/{}/services/{}/settings",
+            project.slug, service.slug
+        );
         let account = signed_in(&self.auth);
 
         let Some(id) = segments.get(5) else {
@@ -1254,6 +1595,249 @@ mod tests {
         "/projects/my-api/services/web".to_string()
     }
 
+    /// The split: one page says what the service is doing, the other
+    /// changes it. A form that drifts back onto the service page puts
+    /// a text box next to the state somebody is watching, which is the
+    /// crowding this separation exists to undo.
+    #[tokio::test]
+    async fn the_service_page_reads_and_the_settings_page_writes() {
+        let console = Console::new().await;
+        let cookie = console.signed_in().await;
+        let page = service(&console, &cookie).await;
+
+        let reading = console
+            .harness
+            .get(&page)
+            .header("cookie", &cookie)
+            .send()
+            .await
+            .body;
+        for form in [
+            "/tracking\"",
+            "/env\"",
+            "name=\"container_port\"",
+            "name=\"env\"",
+        ] {
+            assert!(
+                !reading.contains(form),
+                "{form} is still on the service page: {reading}"
+            );
+        }
+        assert!(reading.contains("/settings"), "and it links to them");
+
+        let writing = console
+            .harness
+            .get(&format!("{page}/settings"))
+            .header("cookie", &cookie)
+            .send()
+            .await
+            .body;
+        for form in [
+            "/tracking\"",
+            "/env\"",
+            "name=\"container_port\"",
+            "name=\"env\"",
+        ] {
+            assert!(writing.contains(form), "{form} is missing: {writing}");
+        }
+    }
+
+    /// Each form comes back to the page it is on. Landing on the
+    /// service page after saving means the next edit starts with a
+    /// click somebody should not have had to make.
+    #[tokio::test]
+    async fn saving_a_setting_stays_on_the_settings_page() {
+        let console = Console::new().await;
+        let cookie = console.signed_in().await;
+        let page = service(&console, &cookie).await;
+        let settings = format!("{page}/settings");
+
+        for (action, form) in [
+            ("tracking", vec![("track_tag", "latest")]),
+            ("env", vec![("env", "A=1")]),
+            ("ports", vec![("container_port", "8080")]),
+        ] {
+            let response = console
+                .harness
+                .post(&format!("{page}/{action}"))
+                .header("cookie", &cookie)
+                .form(&form)
+                .send()
+                .await;
+            let location = response.header("location").expect("redirected");
+            assert!(
+                location.starts_with(&settings),
+                "{action} went to {location}"
+            );
+        }
+    }
+
+    /// A viewer may read the service and change nothing, so the page
+    /// made of nothing but controls is not a page for them.
+    #[tokio::test]
+    async fn a_viewer_asking_for_settings_gets_the_service() {
+        let console = Console::new().await;
+        let admin = console.signed_in().await;
+        let page = service(&console, &admin).await;
+        let member = console.joined_as(&admin, "watcher").await;
+
+        let watcher = crate::accounts::all(&console.database)
+            .await
+            .expect("query")
+            .into_iter()
+            .find(|account| account.username == "watcher")
+            .expect("joined");
+        let project = crate::platform::projects::find(&console.database, "my-api")
+            .await
+            .expect("query")
+            .expect("present");
+        access::grant(
+            &console.database,
+            &watcher.id,
+            &project.id,
+            crate::accounts::roles::ProjectRole::Viewer,
+        )
+        .await
+        .expect("granted");
+
+        let response = console
+            .harness
+            .get(&format!("{page}/settings"))
+            .header("cookie", &member)
+            .send()
+            .await;
+        assert_eq!(
+            response.header("location"),
+            Some(page.as_str()),
+            "sent to the page they may read"
+        );
+    }
+
+    /// A hostname declared through `ports::create` rather than the
+    /// form: the form checks DNS first, and no name resolves to a test.
+    async fn hostname_on(console: &Console, hostname: &str) -> String {
+        let project = crate::platform::projects::find(&console.database, "my-api")
+            .await
+            .expect("query")
+            .expect("present");
+        let service = services::in_project(&console.database, &project.id, "web")
+            .await
+            .expect("query")
+            .expect("present");
+        let port = ports::create(&console.database, &service.id, 80, false, Some(hostname))
+            .await
+            .expect("port");
+        port.id
+    }
+
+    /// Every name the node serves gets the same three answers. The
+    /// node's own domain had a page first; that is the only thing
+    /// special about it.
+    #[tokio::test]
+    async fn a_service_hostname_gets_its_own_certificate_control() {
+        let console = Console::new().await;
+        let cookie = console.signed_in().await;
+        let page = service(&console, &cookie).await;
+        let port_id = hostname_on(&console, "api.example.com").await;
+
+        let body = console
+            .harness
+            .get(&format!("{page}/settings"))
+            .header("cookie", &cookie)
+            .send()
+            .await
+            .body;
+        assert!(body.contains("api.example.com"), "{body}");
+        assert!(
+            body.contains(&format!("{page}/ports/{port_id}/certificate")),
+            "the form posts for this port: {body}"
+        );
+        assert!(
+            body.contains("Read from files on this node"),
+            "and offers all three: {body}"
+        );
+    }
+
+    /// The hostname field is the case that could not be done in HTML
+    /// alone: `required` only when the HTTPS box is ticked. The field
+    /// is still in the markup and the server still refuses an empty one
+    /// — the attribute is a courtesy, not the check.
+    #[tokio::test]
+    async fn the_hostname_field_is_conditioned_on_the_https_box() {
+        let console = Console::new().await;
+        let cookie = console.signed_in().await;
+        let page = service(&console, &cookie).await;
+        hostname_on(&console, "api.example.com").await;
+        // Without a domain the node offers no hostname field at all —
+        // it cannot check that a name points here, so there is nothing
+        // to type. That branch is a different test.
+        crate::node::settings::set_domain(&console.database, Some("node.example.com"))
+            .await
+            .expect("domain");
+
+        let body = console
+            .harness
+            .get(&format!("{page}/settings"))
+            .header("cookie", &cookie)
+            .send()
+            .await
+            .body;
+
+        assert!(
+            body.contains("data-required-when=\"https\""),
+            "required only with the box: {body}"
+        );
+        super::super::nodes::tests::conditions_name_real_controls(&body);
+    }
+
+    /// Refused while there is somebody to tell. A pair stored and found
+    /// wrong later fails on every pass of the renewal loop, with the
+    /// reason in a journal nobody is reading.
+    #[tokio::test]
+    async fn a_file_pair_for_another_name_is_refused_and_not_stored() {
+        let console = Console::new().await;
+        let cookie = console.signed_in().await;
+        let page = service(&console, &cookie).await;
+        let port_id = hostname_on(&console, "api.example.com").await;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let key = rcgen::KeyPair::generate().expect("key");
+        let certificate = rcgen::CertificateParams::new(vec!["other.example.com".to_string()])
+            .expect("params")
+            .self_signed(&key)
+            .expect("sign");
+        let cert_path = dir.path().join("x.crt");
+        let key_path = dir.path().join("x.key");
+        std::fs::write(&cert_path, certificate.pem()).expect("write");
+        std::fs::write(&key_path, key.serialize_pem()).expect("write");
+
+        let response = console
+            .harness
+            .post(&format!("{page}/ports/{port_id}/certificate"))
+            .header("cookie", &cookie)
+            .form(&[
+                ("renew_with", "file"),
+                ("cert_path", cert_path.to_str().expect("path")),
+                ("key_path", key_path.to_str().expect("path")),
+            ])
+            .send()
+            .await;
+        let location = response.header("location").expect("redirected");
+        assert!(location.contains("error="), "it said no: {location}");
+
+        assert_eq!(
+            crate::edge::policy::for_name(
+                &console.database,
+                &crate::config::Config::default(),
+                "api.example.com",
+            )
+            .await
+            .renew_with,
+            crate::edge::policy::RenewWith::Acme,
+            "and stored nothing"
+        );
+    }
+
     /// The default answer: a service exposes nothing.
     #[tokio::test]
     async fn a_new_service_exposes_nothing() {
@@ -1397,6 +1981,51 @@ mod tests {
             .await
             .body;
         assert!(body.contains("Certificate on the way"), "{body}");
+    }
+
+    /// A node with no domain of its own cannot check that a name points
+    /// at it, so `add_port` refuses every hostname on that ground. The
+    /// form offered the box and a text field anyway, under a hint that
+    /// said to "type a hostname already pointed here" — which could
+    /// only ever come back as an error.
+    #[tokio::test]
+    async fn https_is_not_offered_until_the_node_has_a_domain() {
+        let console = Console::new().await;
+        let cookie = console.signed_in().await;
+        let page = service(&console, &cookie).await;
+
+        let body = console
+            .harness
+            .get(&format!("{page}/settings"))
+            .header("cookie", &cookie)
+            .send()
+            .await
+            .body;
+        assert!(body.contains("needs a domain"), "it says why: {body}");
+        assert!(
+            !body.contains("api.example.com"),
+            "and offers no field to fill in: {body}"
+        );
+
+        // The disabled box is a courtesy; this is the check that counts.
+        console
+            .harness
+            .post(&format!("{page}/ports"))
+            .header("cookie", &cookie)
+            .form(&[
+                ("container_port", "80"),
+                ("https", "1"),
+                ("hostname", "api.example.com"),
+            ])
+            .send()
+            .await;
+        assert!(
+            ports::all(&console.database)
+                .await
+                .expect("query")
+                .is_empty(),
+            "a hostname was accepted with no node domain"
+        );
     }
 
     /// Ticking HTTPS with no hostname must not silently create a port
