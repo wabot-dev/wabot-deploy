@@ -242,6 +242,15 @@ impl Config {
         if let Some(email) = env_string("WABOT_DEPLOY_ACME_EMAIL") {
             self.acme.email = Some(email);
         }
+        // Worth an override of its own rather than only a file key: a
+        // node run on a laptop has no name a CA can validate, and the
+        // moment somebody sets a domain in its console the renewal loop
+        // starts placing real orders. Production refuses more than five
+        // failed ones an hour, so the cost of that mistake is an hour
+        // of not being able to ask for the certificate you meant.
+        if let Some(disabled) = env_flag("WABOT_DEPLOY_ACME_DISABLED")? {
+            self.acme.disabled = disabled;
+        }
         // `RUST_LOG` too, because every Rust operator reaches for it
         // first and a daemon that ignored it would be quietly annoying.
         if let Some(filter) = env_string("WABOT_DEPLOY_LOG").or_else(|| env_string("RUST_LOG")) {
@@ -328,6 +337,31 @@ fn env_string(name: &str) -> Option<String> {
     match std::env::var(name) {
         Ok(value) if !value.trim().is_empty() => Some(value),
         _ => None,
+    }
+}
+
+/// A boolean from the environment, refusing what it cannot read.
+///
+/// Not "anything non-empty is true": `WABOT_DEPLOY_ACME_DISABLED=no`
+/// reads as off to everyone who types it, and silently meaning on is
+/// the same failure `deny_unknown_fields` exists to prevent.
+fn env_flag(name: &str) -> ConfigResult<Option<bool>> {
+    match env_string(name) {
+        None => Ok(None),
+        Some(value) => parse_flag(name, &value).map(Some),
+    }
+}
+
+/// Split out from [`env_flag`] so it can be tested without setting a
+/// variable: the suite runs in threads, and a test that mutates the
+/// environment is a test that fails whichever other one reads it.
+fn parse_flag(name: &str, value: &str) -> ConfigResult<bool> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "1" | "true" | "yes" | "on" => Ok(true),
+        "0" | "false" | "no" | "off" => Ok(false),
+        _ => Err(ConfigError::Invalid(format!(
+            "{name} is not a yes or a no: {value:?}"
+        ))),
     }
 }
 
@@ -425,6 +459,21 @@ mod tests {
             Config::load(&path).expect("load").node.domain.as_deref(),
             Some("kept.example.com")
         );
+    }
+
+    /// The variable that keeps a laptop from placing real ACME orders.
+    /// Reading `no` as "yes, disable it" would arm the thing it is
+    /// there to disarm.
+    #[test]
+    fn a_flag_means_what_it_says_or_is_refused() {
+        for yes in ["1", "true", "YES", " on "] {
+            assert!(parse_flag("F", yes).expect("accepted"), "{yes:?}");
+        }
+        for no in ["0", "false", "NO", " off "] {
+            assert!(!parse_flag("F", no).expect("accepted"), "{no:?}");
+        }
+        let error = parse_flag("F", "maybe").expect_err("refused");
+        assert!(error.to_string().contains("maybe"), "{error}");
     }
 
     #[test]
