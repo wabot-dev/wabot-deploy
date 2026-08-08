@@ -121,6 +121,15 @@
         dot.className = states[id].dot;
         var text = badge.lastChild;
         if (text) text.textContent = states[id].word;
+
+        // Both controls are in the markup; this shows the one that
+        // applies. A row saying "Running" beside a Deploy button is the
+        // page contradicting itself.
+        var row = cell.parentNode;
+        ['deploy', 'stop'].forEach(function (name) {
+          var form = row.querySelector('[data-action="' + name + '"]');
+          if (form) form.hidden = states[id].action !== name;
+        });
       });
     };
 

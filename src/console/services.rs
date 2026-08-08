@@ -212,7 +212,7 @@ impl ServicePages {
                 <section class="card stack">
                     <div class="split">
                         <p class="card-label">("Container")</p>
-                        (super::projects::state_badge(&observed, deploying))
+                        (super::projects::state_badge(&super::projects::state_cell(&observed, deploying)))
                     </div>
                     <dl class="kv">
                         <dt>("Image")</dt>
@@ -551,6 +551,17 @@ impl ServicePages {
                     }
 
                     (port_form(&add, &suggestion, account.is_admin()))
+                </section>
+
+                <section class="card stack">
+                    <p class="card-label">("Danger zone")</p>
+                    <p class="tile-detail">(
+                        "Deleting a service stops its container and removes it. The \
+                         images it was built from stay in the registry."
+                    )</p>
+                    <form method="post" action=(format!("{here}/delete"))>
+                        <button class="btn btn-danger" type="submit">("Delete service")</button>
+                    </form>
                 </section>
 
                 @if !certificates.is_empty() {

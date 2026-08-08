@@ -159,8 +159,11 @@ impl ProjectPages {
         let mut rows = Vec::with_capacity(services.len());
         for service in services {
             let observed = self.state.deployer.observe(&project, &service).await;
-            let busy = deploying.contains(&service.id);
-            rows.push((service, observed, busy));
+            // The same value the stream sends, so the first paint and
+            // every update after it cannot disagree about which action
+            // applies or what the badge says.
+            let cell = state_cell(&observed, deploying.contains(&service.id));
+            rows.push((service, cell));
         }
 
         let all_projects = access::projects_for(&self.state.database, &account).await?;
@@ -492,7 +495,7 @@ impl ProjectApi {
 /// rendered before the host wraps it.
 fn service_table(
     project: &crate::platform::projects::Project,
-    rows: &[(services::Service, Observed, bool)],
+    rows: &[(services::Service, StateCell)],
     allowed: crate::accounts::roles::Access,
 ) -> impl Renderable {
     let inner = rsx! {
@@ -510,7 +513,7 @@ fn service_table(
                             </tr>
                         </thead>
                         <tbody>
-                            @for (service, observed, busy) in rows {
+                            @for (service, cell) in rows {
                                 <tr>
                                     <td>
                                         <a href=(format!(
@@ -522,46 +525,43 @@ fn service_table(
                                         service.address.clone().unwrap_or_else(|| "—".into())
                                     )</td>
                                     <td class="state" data-state=(&service.id)>
-                                        (state_badge(observed, *busy))
+                                        (state_badge(cell))
                                     </td>
                                     <td class="row">
-                                        @if !allowed.may_deploy() {
-                                            // A viewer sees the state and
-                                            // nothing to press. The check
-                                            // that matters is on the POST;
-                                            // this is so the page does not
-                                            // offer what it will refuse.
-                                        } @else if matches!(observed, Observed::Running { .. }) {
-                                            <form method="post"
-                                                  action=(format!(
-                                                      "/projects/{}/services/{}/stop",
-                                                      project.slug, service.slug
-                                                  ))>
-                                                <button class="btn btn-secondary btn-sm" type="submit">
-                                                    ("Stop")
-                                                </button>
-                                            </form>
-                                        } @else {
-                                            <form method="post"
+                                        @if allowed.may_deploy() {
+                                            // Both actions are rendered
+                                            // and one is hidden, so the
+                                            // stream can swap them by
+                                            // toggling — an island may
+                                            // hide what does not apply,
+                                            // not build what does. A
+                                            // viewer gets neither: the
+                                            // check that counts is on
+                                            // the POST, this is so the
+                                            // page does not offer what
+                                            // it will refuse.
+                                            <form method="post" data-action="deploy"
+                                                  hidden=(cell.action != "deploy")
                                                   action=(format!(
                                                       "/projects/{}/services/{}/deploy",
                                                       project.slug, service.slug
                                                   ))>
-                                                <button class="btn btn-secondary btn-sm"
-                                                        type="submit">
-                                                    ("Deploy")
+                                                <button class="btn btn-secondary btn-sm icon"
+                                                        type="submit" title="Deploy"
+                                                        aria-label="Deploy">
+                                                    (hypertext::Raw::dangerously_create(PLAY))
                                                 </button>
                                             </form>
-                                        }
-                                        @if allowed.may_deploy() {
-                                            <form method="post"
+                                            <form method="post" data-action="stop"
+                                                  hidden=(cell.action != "stop")
                                                   action=(format!(
-                                                      "/projects/{}/services/{}/delete",
+                                                      "/projects/{}/services/{}/stop",
                                                       project.slug, service.slug
                                                   ))>
-                                                <button class="btn btn-ghost destructive btn-sm"
-                                                        type="submit">
-                                                    ("Delete")
+                                                <button class="btn btn-secondary btn-sm icon"
+                                                        type="submit" title="Stop"
+                                                        aria-label="Stop">
+                                                    (hypertext::Raw::dangerously_create(STOP))
                                                 </button>
                                             </form>
                                         }
@@ -586,6 +586,20 @@ fn service_table(
     )
 }
 
+/// Lucide `play` and `square`, inlined.
+///
+/// Inlined rather than fetched: the design system names Lucide for the
+/// rare icon, and this console cannot reach a CDN — the same reason the
+/// fonts are vendored. A deliberate substitution, since the original
+/// product has no icon here.
+///
+/// Raw because `rsx!` validates element names and does not know SVG's.
+/// XSS SAFETY: two constants in this file, never a value from a
+/// request.
+const PLAY: &str = r#"<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polygon points="6 3 20 12 6 21 6 3"/></svg>"#;
+
+const STOP: &str = r#"<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="1"/></svg>"#;
+
 /// One service's state, as the three things the badge shows.
 ///
 /// Formatted here so the first paint and every update after it come
@@ -596,6 +610,9 @@ pub(crate) struct StateCell {
     word: String,
     badge: &'static str,
     dot: &'static str,
+    /// Which control applies: `deploy`, `stop`, or `none` while a
+    /// deployment is in flight and neither would mean anything.
+    action: &'static str,
 }
 
 pub(crate) fn state_cell(observed: &Observed, deploying: bool) -> StateCell {
@@ -604,6 +621,7 @@ pub(crate) fn state_cell(observed: &Observed, deploying: bool) -> StateCell {
             word: "Deploying".into(),
             badge: "badge badge-info",
             dot: "dot dot-info dot-pulse",
+            action: "none",
         };
     }
     match observed {
@@ -611,61 +629,40 @@ pub(crate) fn state_cell(observed: &Observed, deploying: bool) -> StateCell {
             word: "Running".into(),
             badge: "badge badge-success",
             dot: "dot dot-success",
+            action: "stop",
         },
         Observed::Stopped { exit_code } => StateCell {
             word: format!("Exited {exit_code}"),
             badge: "badge badge-danger",
             dot: "dot dot-danger",
+            action: "deploy",
         },
         Observed::Absent => StateCell {
             word: "Not deployed".into(),
             badge: "badge badge-warning",
             dot: "dot dot-warning",
+            action: "deploy",
         },
         Observed::Unknown(_) => StateCell {
             word: "Unknown".into(),
             badge: "badge badge-info",
             dot: "dot dot-info",
+            action: "deploy",
         },
     }
 }
 
 /// What a service is doing, as a dot and a word.
 ///
-/// `deploying` outranks whatever containerd says, because during a
-/// deployment what containerd says is a half-truth: the old container
-/// is already gone and the new one is not up. Reporting "absent" there
-/// is technically right and reads as a fault.
-pub(crate) fn state_badge(observed: &Observed, deploying: bool) -> impl Renderable + '_ {
+/// Rendered from the same [`StateCell`] the stream sends, so the first
+/// paint and every update after it come from one place. They used to be
+/// two functions that had to be kept in step, which is the kind of pair
+/// that drifts.
+pub(crate) fn state_badge(cell: &StateCell) -> impl Renderable + '_ {
     rsx! {
-        @if deploying {
-            <span class="badge badge-info">
-                <span class="dot dot-info dot-pulse"></span>("Deploying")
-            </span>
-        } @else {
-        @match observed {
-            Observed::Running { pid, .. } => {
-                <span class="badge badge-success" title=(format!("pid {pid}"))>
-                    <span class="dot dot-success"></span>("Running")
-                </span>
-            }
-            Observed::Stopped { exit_code } => {
-                <span class="badge badge-danger">
-                    <span class="dot dot-danger"></span>("Exited ")(exit_code)
-                </span>
-            }
-            Observed::Absent => {
-                <span class="badge badge-warning">
-                    <span class="dot dot-warning"></span>("Not deployed")
-                </span>
-            }
-            Observed::Unknown(_) => {
-                <span class="badge badge-info">
-                    <span class="dot dot-info"></span>("Unknown")
-                </span>
-            }
-        }
-        }
+        <span class=(cell.badge)>
+            <span class=(cell.dot)></span>(&cell.word)
+        </span>
     }
 }
 
@@ -1145,12 +1142,26 @@ mod tests {
     /// there reads as a fault. The job is what knows.
     #[test]
     fn a_deployment_in_flight_outranks_what_containerd_says() {
-        let absent = state_badge(&Observed::Absent, true).render().into_inner();
-        assert!(absent.contains("Deploying"), "{absent}");
-        assert!(!absent.contains("Not deployed"), "{absent}");
+        let busy = state_cell(&Observed::Absent, true);
+        assert_eq!(busy.word, "Deploying");
+        // And neither control applies while it is in flight: a Deploy
+        // button during a deployment is an invitation to queue a second.
+        assert_eq!(busy.action, "none");
 
-        let idle = state_badge(&Observed::Absent, false).render().into_inner();
-        assert!(idle.contains("Not deployed"), "{idle}");
+        let idle = state_cell(&Observed::Absent, false);
+        assert_eq!(idle.word, "Not deployed");
+        assert_eq!(idle.action, "deploy");
+
+        // Running offers Stop, which is the pairing the row used to get
+        // wrong the moment the badge updated and the button did not.
+        let running = state_cell(
+            &Observed::Running {
+                pid: 1,
+                address: None,
+            },
+            false,
+        );
+        assert_eq!(running.action, "stop");
     }
 
     /// The state updates in place, so the page has to declare the

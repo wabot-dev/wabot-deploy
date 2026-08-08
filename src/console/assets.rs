@@ -23,11 +23,14 @@ macro_rules! asset {
             path: $path,
             bytes: include_bytes!(concat!("../../assets/", $path)),
             content_type: $type,
-            // The build hash would be better, but `EmbeddedAsset`
-            // wants a `&'static str` and there is no build script
-            // here. The version is enough: assets only change when the
-            // binary does.
-            etag: concat!("\"", env!("CARGO_PKG_VERSION"), "-", $path, "\""),
+            // A hash of the assets, from `build.rs`. It used to be the
+            // crate version, which does not move when the assets do —
+            // and these are served `must-revalidate`, so every browser
+            // that had seen an earlier build of the same version asked,
+            // was told 304, and kept the stale file. A feature worked on
+            // the server and did nothing in the page, with no error
+            // anywhere. `env!` because `concat!` needs a literal.
+            etag: concat!("\"", env!("WABOT_ASSET_HASH"), "-", $path, "\""),
         }
     };
 }
@@ -153,6 +156,24 @@ mod tests {
         }
     }
 
+    /// The tag has to be a hash of the assets, not of anything that
+    /// can stay still while they change. Four deploys of 0.1.5 shipped
+    /// four different `console.js` files under one version-derived tag,
+    /// and every browser that had seen an earlier one kept it.
+    #[test]
+    fn the_tag_does_not_come_from_the_version() {
+        let tag = ASSETS
+            .iter()
+            .find(|asset| asset.path == "console.js")
+            .expect("shipped")
+            .etag;
+        assert!(
+            !tag.contains(env!("CARGO_PKG_VERSION")),
+            "the version cannot be what identifies an asset: {tag}"
+        );
+        assert!(tag.contains(env!("WABOT_ASSET_HASH")), "{tag}");
+    }
+
     #[test]
     fn nothing_is_empty() {
         for asset in ASSETS {
@@ -164,8 +185,10 @@ mod tests {
         }
     }
 
-    /// A stale asset served from cache after an upgrade is a confusing
-    /// bug, so the tag has to move when the binary does.
+    /// A stale asset served from cache is a confusing bug — it looks
+    /// like a feature that does nothing rather than like an error — so
+    /// the tag has to move when the *asset* does, which is not the same
+    /// as when the version does.
     #[test]
     fn etags_are_distinct_and_versioned() {
         let mut tags: Vec<&str> = ASSETS.iter().map(|asset| asset.etag).collect();
@@ -174,8 +197,11 @@ mod tests {
         tags.dedup();
         assert_eq!(tags.len(), total, "two assets share an ETag");
 
+        // The hash, not the version: a release that changes an asset
+        // without changing the version has to serve a new tag, or the
+        // browser keeps what it had.
         assert!(ASSETS
             .iter()
-            .all(|asset| asset.etag.contains(env!("CARGO_PKG_VERSION"))));
+            .all(|asset| asset.etag.contains(env!("WABOT_ASSET_HASH"))));
     }
 }

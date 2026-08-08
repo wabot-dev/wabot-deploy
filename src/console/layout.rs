@@ -231,6 +231,15 @@ pub const CSS: &str = r#"
  * enough for the longest answer, and the badge never wraps.
  */
 .state { width: 9rem; }
+
+/* An icon button is square, and its glyph is centred rather than
+   sitting on the text baseline it no longer has. */
+.btn.icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0.35rem 0.6rem;
+}
 .state .badge { white-space: nowrap; }
 
 /* The reason a service is not running, under the service it is about.
