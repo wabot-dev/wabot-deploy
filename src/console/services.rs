@@ -169,6 +169,9 @@ impl ServicePages {
             }
         }
         let observed = self.state.deployer.observe(&project, &service).await;
+        let deploying = crate::deploy::jobs::deploying(&self.state.container)
+            .await
+            .contains(&service.id);
         let back = format!("/projects/{}", project.slug);
         let settings = format!(
             "/projects/{}/services/{}/settings",
@@ -209,7 +212,7 @@ impl ServicePages {
                 <section class="card stack">
                     <div class="split">
                         <p class="card-label">("Container")</p>
-                        (super::projects::state_badge(&observed))
+                        (super::projects::state_badge(&observed, deploying))
                     </div>
                     <dl class="kv">
                         <dt>("Image")</dt>

@@ -149,10 +149,16 @@ impl ProjectPages {
         // because a project has a handful of services and each answer
         // is a round trip to a local socket — a fan-out here would buy
         // milliseconds and cost the ability to read the code.
+        // One question for the whole page rather than one per row: the
+        // answer is a set, and asking the job store per service would
+        // be the same read repeated.
+        let deploying = crate::deploy::jobs::deploying(&self.state.container).await;
+
         let mut rows = Vec::with_capacity(services.len());
         for service in services {
             let observed = self.state.deployer.observe(&project, &service).await;
-            rows.push((service, observed));
+            let busy = deploying.contains(&service.id);
+            rows.push((service, observed, busy));
         }
 
         let all_projects = access::projects_for(&self.state.database, &account).await?;
@@ -205,7 +211,7 @@ impl ProjectPages {
                             </tr>
                         </thead>
                         <tbody>
-                            @for (service, observed) in &rows {
+                            @for (service, observed, busy) in &rows {
                                 <tr>
                                     <td>
                                         <a href=(format!(
@@ -217,7 +223,7 @@ impl ProjectPages {
                                     <td class="mono">(
                                         service.address.clone().unwrap_or_else(|| "—".into())
                                     )</td>
-                                    <td>(state_badge(observed))</td>
+                                    <td>(state_badge(observed, *busy))</td>
                                     <td class="row">
                                         @if !allowed.may_deploy() {
                                             // A viewer sees the state and
@@ -553,8 +559,19 @@ impl ProjectApi {
 /// pid, and everything else says which kind of not-running it is. A
 /// runtime that cannot be reached is its own answer, because
 /// redeploying is the wrong response to it.
-pub(crate) fn state_badge(observed: &Observed) -> impl Renderable + '_ {
+/// What a service is doing, as a dot and a word.
+///
+/// `deploying` outranks whatever containerd says, because during a
+/// deployment what containerd says is a half-truth: the old container
+/// is already gone and the new one is not up. Reporting "absent" there
+/// is technically right and reads as a fault.
+pub(crate) fn state_badge(observed: &Observed, deploying: bool) -> impl Renderable + '_ {
     rsx! {
+        @if deploying {
+            <span class="badge badge-info">
+                <span class="dot dot-info dot-pulse"></span>("Deploying")
+            </span>
+        } @else {
         @match observed {
             Observed::Running { pid, .. } => {
                 <span class="badge badge-success" title=(format!("pid {pid}"))>
@@ -576,6 +593,7 @@ pub(crate) fn state_badge(observed: &Observed) -> impl Renderable + '_ {
                     <span class="dot dot-info"></span>("Unknown")
                 </span>
             }
+        }
         }
     }
 }
@@ -977,6 +995,19 @@ mod tests {
             .await
             .body;
         assert!(body.contains("Danger zone"), "an owner sees it: {body}");
+    }
+
+    /// During a deployment containerd's answer is a half-truth — the
+    /// old container is gone and the new one is not up — so "absent"
+    /// there reads as a fault. The job is what knows.
+    #[test]
+    fn a_deployment_in_flight_outranks_what_containerd_says() {
+        let absent = state_badge(&Observed::Absent, true).render().into_inner();
+        assert!(absent.contains("Deploying"), "{absent}");
+        assert!(!absent.contains("Not deployed"), "{absent}");
+
+        let idle = state_badge(&Observed::Absent, false).render().into_inner();
+        assert!(idle.contains("Not deployed"), "{idle}");
     }
 
     /// One page, one subject. The overview used to carry the services,

@@ -134,3 +134,36 @@ impl DeployHandler {
         }
     }
 }
+
+/// Which services have a deployment running right now.
+///
+/// Asked of the job store rather than kept in memory: a queue that
+/// survives a restart needs an answer that survives one too, and after
+/// an update the console would otherwise report nothing in flight
+/// while the worker was mid-pull.
+///
+/// Running, not merely queued. `run_command` spawns immediately, so
+/// the gap between the two is a moment — and a page that showed
+/// "deploying" for a job the executor had not picked up would be
+/// promising something it could not see.
+pub async fn deploying(container: &Container) -> std::collections::BTreeSet<String> {
+    let Ok(repository) = container.try_resolve::<wabot::async_jobs::DynJobRepository>() else {
+        return Default::default();
+    };
+    let Ok(running) = repository.0.find_running().await else {
+        // A store that cannot answer is not a reason to fail a page:
+        // the worst case is a badge that does not appear.
+        return Default::default();
+    };
+
+    running
+        .iter()
+        .filter(|job| wabot::async_jobs::job::command_name(job) == DeployService::COMMAND_NAME)
+        .filter_map(|job| {
+            wabot::async_jobs::job::command_data(job)
+                .get("service_id")?
+                .as_str()
+                .map(str::to_string)
+        })
+        .collect()
+}
