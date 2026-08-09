@@ -559,6 +559,31 @@ async fn holder(database: &SqliteDatabase, name: &str) -> NetworkResult<Option<O
         .await?)
 }
 
+/// Every name this node holds **on another node's behalf**.
+///
+/// The certificate loop needs it: a name that arrived on an edge errand
+/// has no local port row, so reading the `port` table alone would leave
+/// the one thing this node was asked to do — answer HTTPS for somebody
+/// else's service — served by the local authority's self-signed
+/// certificate for ever.
+///
+/// Names claimed by this node itself are left out. Those already come
+/// from the `port` table, and counting them twice would only make the
+/// loop ask for the same certificate under two names for one thing.
+pub async fn claimed_for_others(database: &SqliteDatabase) -> NetworkResult<Vec<String>> {
+    Ok(database
+        .read(|connection| {
+            connection
+                .prepare(
+                    "SELECT \"name\" FROM claim \
+                     WHERE \"authority_id\" IS NOT NULL ORDER BY \"name\"",
+                )?
+                .query_map([], |row| row.get(0))?
+                .collect()
+        })
+        .await?)
+}
+
 pub async fn release(database: &SqliteDatabase, name: &str) -> NetworkResult<()> {
     let name = name.to_string();
     Ok(database

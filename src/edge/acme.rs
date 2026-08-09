@@ -333,6 +333,18 @@ pub async fn wanted_names(database: &SqliteDatabase, config: &Config) -> Vec<Str
         Ok(ports) => names.extend(ports.into_iter().filter_map(|port| port.hostname)),
         Err(error) => tracing::warn!(%error, "could not read the service hostnames"),
     }
+    // And the names this node serves for somebody else. They have no
+    // port row here — the route arrived on an errand — so reading the
+    // `port` table alone would leave the one thing this node was asked
+    // to do answering with the local authority's certificate.
+    match crate::network::claimed_for_others(database).await {
+        Ok(claimed) => names.extend(claimed),
+        Err(error) => tracing::warn!(%error, "could not read the names claimed for other nodes"),
+    }
+    // Sorted, because `dedup` only removes *adjacent* repeats and the
+    // node's own domain can also be a service's hostname — which would
+    // otherwise order two certificates for one name.
+    names.sort();
     names.dedup();
     names
 }
@@ -846,6 +858,57 @@ mod tests {
             .await
             .expect("read")
             .is_some());
+    }
+
+    /// A name this node serves for another one has no port row here —
+    /// the route arrived on an edge errand — so reading only the `port`
+    /// table left it answering HTTPS with the local authority's
+    /// certificate for ever, which is the one thing that node was asked
+    /// not to do.
+    #[tokio::test]
+    async fn a_name_served_for_another_node_gets_a_certificate_too() {
+        let database = database().await;
+        let mut config = Config::default();
+        config.node.domain = Some("node.example.com".into());
+
+        crate::network::claim(&database, "app.example.com", Some("nd-elsewhere"))
+            .await
+            .expect("claim")
+            .expect("granted");
+
+        assert_eq!(
+            wanted_names(&database, &config).await,
+            vec![
+                "app.example.com".to_string(),
+                "node.example.com".to_string()
+            ]
+        );
+    }
+
+    /// The node's own domain can also be a service's hostname, and
+    /// `dedup` only removes *adjacent* repeats — so an unsorted list
+    /// ordered two certificates for one name.
+    #[tokio::test]
+    async fn one_name_is_wanted_once_however_many_places_it_appears() {
+        let database = database().await;
+        let mut config = Config::default();
+        config.node.domain = Some("node.example.com".into());
+
+        let project = crate::platform::projects::create(&database, "demo")
+            .await
+            .expect("project");
+        let service =
+            crate::platform::services::create(&database, &project.id, "web", "alpine:3.23", &[])
+                .await
+                .expect("service");
+        crate::platform::ports::create(&database, &service.id, 80, false, Some("node.example.com"))
+            .await
+            .expect("port");
+
+        assert_eq!(
+            wanted_names(&database, &config).await,
+            vec!["node.example.com".to_string()]
+        );
     }
 
     /// Without a domain there is nothing a public CA could validate,
