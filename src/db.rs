@@ -53,6 +53,10 @@ fn migrations() -> Vec<Migration> {
             "0014_account_theme",
             include_str!("../migrations/0014_account_theme.sql"),
         ),
+        Migration::new(
+            "0015_network",
+            include_str!("../migrations/0015_network.sql"),
+        ),
     ]
 }
 
