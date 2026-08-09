@@ -61,7 +61,15 @@ Three consequences that shape everything below:
   about where a service is.
 
 This document is the plan and the record of what was decided and why.
-Phases 0 to 3 are in the tree and verified between two real nodes.
+Phases 0 to 6 are in the tree. Phases 0 to 3 are verified between two
+real nodes; 4 to 6 have not run on one yet.
+
+**One thing 5 and 6 left open.** A replica placed on another node cannot
+be *removed* from the page that placed it — nothing can tell that node
+to stop, so dropping the row would leave its container running with
+nothing naming it. Eviction works in the other direction, from the
+machine running it. The reverse errand is what closes that, and it is
+the same shape as everything else here.
 
 ## The shape
 
@@ -261,10 +269,10 @@ Still open:
 | 1 | Enrolment | Token, `join`, keys, B recording A as authority | **done** |
 | 2 | Overlay | Spike, then a real session. `doctor` proves it | **done** |
 | 3 | Errand: host | A queues a deploy on B | **done**, in the wrong place |
-| 4 | Replicas | A service is *n* placements; the container id carries the index | next |
-| 5 | Placement | The form moves to the service; provenance, read-only, eviction | |
-| 6 | Reporting | The poll carries each replica's state back to the node that placed it | |
-| 7 | Errand: edge | The owner picks public nodes to serve a name; they claim it, get the certificate, and proxy to the replicas | |
+| 4 | Replicas | A service is *n* placements; the container id carries the index | **done** |
+| 5 | Placement | The form moves to the service; provenance, read-only, eviction | **done** |
+| 6 | Reporting | The poll carries each replica's state back to the node that placed it | **done** |
+| 7 | Errand: edge | The owner picks public nodes to serve a name; they claim it, get the certificate, and proxy to the replicas | next |
 | 8 | Groups | Health and failover across the upstreams of one name | |
 
 Phase 3 works and is in the wrong place, which is worth saying plainly

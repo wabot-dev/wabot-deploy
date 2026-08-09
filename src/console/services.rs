@@ -241,7 +241,11 @@ impl ServicePages {
                 @if service.is_ours() {
                     (placement_card(&project, &service, &placements, &nodes))
                 } @else {
-                    (from_elsewhere_card(&service))
+                    (from_elsewhere_card(
+                        &project,
+                        &service,
+                        placements.iter().all(|replica| replica.evicted()),
+                    ))
                 }
 
                 <section class="stack">
@@ -875,7 +879,11 @@ fn placement_state(replica: &crate::platform::replicas::Replica) -> impl Rendera
 /// Named rather than hidden: somebody looking at it needs to know which
 /// node to go and argue with, and a page that simply showed fewer
 /// buttons would leave them wondering what they had done wrong.
-fn from_elsewhere_card(service: &services::Service) -> impl Renderable + '_ {
+fn from_elsewhere_card<'a>(
+    project: &'a crate::platform::projects::Project,
+    service: &'a services::Service,
+    evicted: bool,
+) -> impl Renderable + 'a {
     rsx! {
         <section class="card stack">
             <p class="card-label">("From another node")</p>
@@ -889,9 +897,36 @@ fn from_elsewhere_card(service: &services::Service) -> impl Renderable + '_ {
             </dl>
             <p class="field-hint">(
                 "The machine is yours: throwing it out is something you can always do, \
-                 and it is the only thing here that is. That lives in the project's \
-                 danger zone."
+                 and it is the only thing here that is."
             )</p>
+        </section>
+
+        <section class="card stack">
+            <p class="card-label">("Throw it off this node")</p>
+            @if evicted {
+                <p>(
+                    "Already thrown out. Its containers are stopped and the node that \
+                     placed it has been told — or will be, the next time it asks."
+                )</p>
+                <p class="field-hint">(
+                    "The rows stay because they are what carries that news. Removing \
+                     them here would leave the other node sending the same instruction \
+                     again."
+                )</p>
+            } @else {
+                <p>(
+                    "Stops its containers here and tells the node that placed it to \
+                     stop asking. It cannot be undone from this side — that node \
+                     decides what happens next, and it may place it somewhere else."
+                )</p>
+                <form method="post" action=(format!(
+                    "/projects/{}/services/{}/evict", project.slug, service.slug
+                ))>
+                    <button class="btn btn-ghost destructive" type="submit">
+                        ("Throw it out")
+                    </button>
+                </form>
+            }
         </section>
     }
 }
@@ -1368,6 +1403,82 @@ impl ServiceApi {
         services::delete(&self.state.database, &service.id).await?;
         Ok(see_other(&back))
     }
+    /// Throw a service somebody else placed here off this machine.
+    ///
+    /// The one thing this node's operator can always do to something
+    /// they did not create — the machine is theirs even when the orders
+    /// are not, which is the same rule the grant follows in the other
+    /// direction.
+    ///
+    /// **The guard is the inverse of `locate`'s.** That one refuses a
+    /// foreign service because every caller of it changes something
+    /// this node does not decide; this one refuses a service of *our
+    /// own*, because deleting one of those is what the delete button is
+    /// for and it has different consequences.
+    ///
+    /// The rows stay, marked evicted. They are what the next report
+    /// carries, and that report is the only thing that makes the node
+    /// which placed it stop asking — deleting them here would leave the
+    /// authority re-sending an errand for a container this machine has
+    /// just thrown out.
+    #[post("/projects/:project/services/:service/evict")]
+    #[raw]
+    #[middleware(SessionMiddleware)]
+    async fn evict(&self, request: Request) -> RestResult<Response> {
+        let Some(account) = signed_in(&self.auth) else {
+            return Ok(see_other("/sign-in"));
+        };
+        // Not a project-level decision: what is being thrown out was
+        // put here by another node, and answering to it is the node's
+        // business rather than one project's.
+        if !account.is_admin() {
+            return Ok(see_other("/"));
+        }
+
+        let path = request.uri().path().to_string();
+        let Some((project_slug, service_slug)) = service_path(&path) else {
+            return Ok(see_other("/"));
+        };
+        let Some(project) = crate::platform::projects::all(&self.state.database)
+            .await?
+            .into_iter()
+            .find(|project| project.slug == project_slug)
+        else {
+            return Ok(see_other("/"));
+        };
+        let Some(service) =
+            services::in_project(&self.state.database, &project.id, service_slug).await?
+        else {
+            return Ok(see_other("/"));
+        };
+        let here = format!("/projects/{}/services/{}", project.slug, service.slug);
+
+        // The inverse guard. A service of this node's own is deleted,
+        // not evicted, and the two are not the same button.
+        let Some(origin) = service.origin_node_id.clone() else {
+            return Ok(back_with_error(
+                &here,
+                "this service was created here — deleting it is the button for that",
+            ));
+        };
+
+        // The containers first: a row marked evicted while its
+        // container kept running would be the page lying about the
+        // machine it is describing.
+        self.state.deployer.tear_down(&project, &service).await;
+
+        for replica in crate::platform::replicas::of_service(&self.state.database, &service.id)
+            .await?
+            .into_iter()
+            .filter(|replica| replica.is_here())
+        {
+            crate::platform::replicas::evict(&self.state.database, &replica.id).await?;
+        }
+
+        tracing::info!(service = %service.slug, %origin, "evicted a service placed from elsewhere");
+        Ok(see_other(&here))
+    }
+
     /// How many copies of this service run, and where each one goes.
     ///
     /// One form for both, because they are one decision: a replica is a
@@ -1820,6 +1931,104 @@ mod tests {
         )
         .await
         .expect("service")
+    }
+
+    /// The one thing the operator of a machine can always do to
+    /// something they did not put there. The machine is theirs even
+    /// when the orders are not.
+    #[tokio::test]
+    async fn a_service_from_another_node_can_be_thrown_off_this_one() {
+        let console = Console::new().await;
+        let cookie = console.signed_in().await;
+        let service = placed_service(&console, &cookie).await;
+        services::set_origin(&console.database, &service.id, "nd-elsewhere1")
+            .await
+            .expect("origin");
+
+        console
+            .harness
+            .post("/projects/shared/services/web/evict")
+            .header("cookie", &cookie)
+            .send()
+            .await
+            .assert_status(StatusCode::SEE_OTHER);
+
+        let placements = crate::platform::replicas::of_service(&console.database, &service.id)
+            .await
+            .expect("replicas");
+        assert!(
+            placements.iter().all(|replica| replica.evicted()),
+            "{placements:?}"
+        );
+
+        // The rows stay: they are what the next report carries, and
+        // that report is the only thing that makes the other node stop
+        // asking.
+        assert!(
+            services::in_project(&console.database, &service.project_id, "web")
+                .await
+                .expect("query")
+                .is_some(),
+            "the tombstone was removed, so the errand will come back"
+        );
+    }
+
+    /// The guard is the inverse of `locate`'s: a service this node made
+    /// itself is *deleted*, not evicted, and the two buttons do not
+    /// mean the same thing.
+    #[tokio::test]
+    async fn a_service_of_this_nodes_own_is_not_evictable() {
+        let console = Console::new().await;
+        let cookie = console.signed_in().await;
+        let service = placed_service(&console, &cookie).await;
+
+        let response = console
+            .harness
+            .post("/projects/shared/services/web/evict")
+            .header("cookie", &cookie)
+            .send()
+            .await;
+
+        let location = response.header("location").unwrap_or_default();
+        assert!(location.contains("error="), "{location}");
+        assert!(
+            crate::platform::replicas::of_service(&console.database, &service.id)
+                .await
+                .expect("replicas")
+                .iter()
+                .all(|replica| !replica.evicted()),
+            "somebody's own service was evicted"
+        );
+    }
+
+    /// Throwing another node's work off this machine is the node's
+    /// business, not one project's.
+    #[tokio::test]
+    async fn only_an_admin_may_evict() {
+        let console = Console::new().await;
+        let admin = console.signed_in().await;
+        let service = placed_service(&console, &admin).await;
+        services::set_origin(&console.database, &service.id, "nd-elsewhere1")
+            .await
+            .expect("origin");
+        let member = console.joined_as(&admin, "member").await;
+
+        let response = console
+            .harness
+            .post("/projects/shared/services/web/evict")
+            .header("cookie", &member)
+            .send()
+            .await;
+
+        assert_eq!(response.header("location"), Some("/"));
+        assert!(
+            crate::platform::replicas::of_service(&console.database, &service.id)
+                .await
+                .expect("replicas")
+                .iter()
+                .all(|replica| !replica.evicted()),
+            "a member evicted another node's service"
+        );
     }
 
     /// The page the whole goal hangs off: a service is administered
