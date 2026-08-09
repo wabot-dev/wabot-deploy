@@ -181,7 +181,7 @@ fn interface_address(address: &str) -> String {
 /// on a developer's machine is above the line rather than below it.
 #[cfg(target_os = "linux")]
 fn apply(address: &str, private: &str, port: u16, peers: Vec<Peer>) -> Result<(), String> {
-    let mut api = WGApi::<Kernel>::new(INTERFACE.to_string())
+    let mut api = WGApi::<Kernel>::new(INTERFACE)
         .map_err(|error| format!("could not open netlink: {error}"))?;
 
     // Creating an interface that is already there is the normal case —
@@ -200,7 +200,7 @@ fn apply(address: &str, private: &str, port: u16, peers: Vec<Peer>) -> Result<()
         name: INTERFACE.to_string(),
         prvkey: private.to_string(),
         addresses,
-        port: u32::from(port) as u16,
+        port,
         peers,
         mtu: None,
         fwmark: None,
@@ -230,7 +230,7 @@ pub fn observed() -> Result<Vec<Handshake>, String> {
 /// what it asked for, which is the question nobody has.
 #[cfg(target_os = "linux")]
 pub fn observed() -> Result<Vec<Handshake>, String> {
-    let api = WGApi::<Kernel>::new(INTERFACE.to_string())
+    let api = WGApi::<Kernel>::new(INTERFACE)
         .map_err(|error| format!("could not open netlink: {error}"))?;
     let host = api
         .read_interface_data()
