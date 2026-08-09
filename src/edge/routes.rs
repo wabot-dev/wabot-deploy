@@ -160,8 +160,17 @@ pub async fn retain_proxies(database: &SqliteDatabase, keep: &[String]) -> Sqlit
     database
         .write(move |connection| {
             let mut removed = 0;
+            // Only routes this node's own services own. A proxy route
+            // with no local service behind it was written by an errand
+            // — this node is somebody else's edge for that name — and
+            // pruning it here would take the name off the air every
+            // time anything deployed locally, for a reason nobody
+            // looking at either node could see.
             let hosts: Vec<String> = connection
-                .prepare("SELECT \"host\" FROM route WHERE \"upstream_kind\" = 'proxy'")?
+                .prepare(
+                    "SELECT \"host\" FROM route \
+                     WHERE \"upstream_kind\" = 'proxy' AND \"service_id\" IS NOT NULL",
+                )?
                 .query_map([], |row| row.get(0))?
                 .collect::<Result<_, _>>()?;
 

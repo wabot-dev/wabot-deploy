@@ -205,6 +205,11 @@ async fn carry_out(
                 .map_err(|error| format!("that is not a host errand: {error}"))?;
             host_service(database, config, container, authority, host).await
         }
+        Kind::Edge => {
+            let edge: errand::Edge = serde_json::from_value(order.payload)
+                .map_err(|error| format!("that is not an edge errand: {error}"))?;
+            serve_name(database, authority, edge).await
+        }
         // An instruction from a newer node. Refused with the reason
         // rather than dropped — the authority learns that this node is
         // the old one, which is something somebody can act on.
@@ -305,6 +310,81 @@ async fn host_service(
         .map_err(|error| format!("could not queue the deployment: {error}"))?;
 
     tracing::info!(service = %service.id, image = %host.image, "an errand queued a deployment");
+    Ok(())
+}
+
+/// Answer for a name here, proxying to the replicas the errand named.
+///
+/// **The claim comes first.** A name belongs to one authority, and a
+/// second claim is refused rather than merged — two nodes pointing one
+/// hostname at different backends is not a conflict anything can
+/// resolve, and choosing silently would make the wrong backend look
+/// like the right one. The refusal names who holds it, which is the
+/// only outcome somebody can act on. This is what the `claim` table
+/// from phase 0 was written for.
+///
+/// Re-claiming a name this authority already holds succeeds: an errand
+/// sent twice must not fail the second time.
+async fn serve_name(
+    database: &SqliteDatabase,
+    authority: &str,
+    edge: errand::Edge,
+) -> Result<(), String> {
+    if edge.hostname.trim().is_empty() {
+        return Err("that errand names no hostname".into());
+    }
+
+    match crate::network::claim(database, &edge.hostname, Some(authority))
+        .await
+        .map_err(|error| error.to_string())?
+    {
+        Ok(()) => {}
+        Err(refused) => return Err(refused.to_string()),
+    }
+
+    let upstreams: Vec<std::net::SocketAddr> = edge
+        .upstreams
+        .iter()
+        .filter_map(|address| match address.parse() {
+            Ok(parsed) => Some(parsed),
+            Err(_) => {
+                tracing::warn!(%address, "upstream skipped: not an address");
+                None
+            }
+        })
+        .collect();
+
+    // Nothing to send it to is not a route. Answering 404 is truthful;
+    // a name pointing at an empty list is a hung request waiting to
+    // happen.
+    if upstreams.is_empty() {
+        crate::edge::routes::forget_control_plane(database, &edge.hostname)
+            .await
+            .map_err(|error| error.to_string())?;
+        crate::network::release(database, &edge.hostname)
+            .await
+            .map_err(|error| error.to_string())?;
+        return Ok(());
+    }
+
+    // `None` for the service: there is no local service behind this
+    // name, and that absence is exactly what stops the local sync from
+    // pruning the row — see `routes::retain_proxies`.
+    crate::edge::routes::upsert(
+        database,
+        &edge.hostname,
+        &crate::edge::routes::Upstream::Proxy(upstreams),
+        None,
+    )
+    .await
+    .map_err(|error| error.to_string())?;
+
+    tracing::info!(
+        hostname = %edge.hostname,
+        upstreams = edge.upstreams.len(),
+        %authority,
+        "serving a name for another node"
+    );
     Ok(())
 }
 
@@ -414,6 +494,84 @@ mod tests {
         .expect_err("refused");
 
         assert!(error.contains("older"), "{error}");
+    }
+
+    /// A name belongs to one authority, and this is where phase 0's
+    /// claim rule finally does its job: two nodes pointing one hostname
+    /// at different backends is not a conflict anything can resolve,
+    /// and choosing silently would make the wrong backend look right.
+    #[tokio::test]
+    async fn a_name_is_served_for_one_authority_and_the_second_is_told_who_has_it() {
+        let database = crate::db::open_in_memory().await.expect("open");
+        let edge = errand::Edge {
+            hostname: "app.example.com".into(),
+            upstreams: vec!["10.42.0.3:30000".into(), "10.42.0.3:30001".into()],
+        };
+
+        serve_name(&database, "nd-first", edge.clone())
+            .await
+            .expect("served");
+
+        // The route is there, with one upstream per replica.
+        let routes = crate::edge::routes::load_all(&database)
+            .await
+            .expect("routes");
+        let (_, upstream) = routes
+            .iter()
+            .find(|(host, _)| host == "app.example.com")
+            .expect("a route");
+        assert_eq!(
+            *upstream,
+            crate::edge::routes::Upstream::Proxy(vec![
+                "10.42.0.3:30000".parse().unwrap(),
+                "10.42.0.3:30001".parse().unwrap(),
+            ])
+        );
+
+        // Sent twice by the same authority is the same instruction.
+        serve_name(&database, "nd-first", edge.clone())
+            .await
+            .expect("again");
+
+        let refused = serve_name(&database, "nd-second", edge)
+            .await
+            .expect_err("refused");
+        assert!(
+            refused.contains("nd-first"),
+            "and names who has it: {refused}"
+        );
+    }
+
+    /// A route this node keeps for somebody else must survive its own
+    /// deployments. It has no local service behind it, and that absence
+    /// is what the local sync uses to leave it alone — without it, the
+    /// name went off the air every time anything deployed here.
+    #[tokio::test]
+    async fn an_edge_route_survives_a_local_sync() {
+        let database = crate::db::open_in_memory().await.expect("open");
+        serve_name(
+            &database,
+            "nd-first",
+            errand::Edge {
+                hostname: "app.example.com".into(),
+                upstreams: vec!["10.42.0.3:30000".into()],
+            },
+        )
+        .await
+        .expect("served");
+
+        // What a local deployment does at the end of every sync.
+        crate::edge::routes::retain_proxies(&database, &[])
+            .await
+            .expect("retain");
+
+        let routes = crate::edge::routes::load_all(&database)
+            .await
+            .expect("routes");
+        assert!(
+            routes.iter().any(|(host, _)| host == "app.example.com"),
+            "a local deploy took somebody else's name off the air"
+        );
     }
 
     /// A payload that will not parse is a refusal with a reason too,

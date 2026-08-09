@@ -483,14 +483,12 @@ pub async fn revoke(database: &SqliteDatabase, node_id: &str) -> NetworkResult<(
 
 // ---------- who claimed a name -------------------------------------------
 //
-// Phase 4: an authority tells an edge to route a name to a container
-// somewhere else, and this is what refuses the second claim on it. The
-// rule is the reason there is no consensus here, so it is written and
-// tested now rather than argued about later with a working system in
-// the way. Nothing calls it until there is an errand to carry it.
+// Written in phase 0 and used here: an authority tells an edge to serve
+// a name, and this is what refuses the second claim on it. The rule is
+// the reason there is no consensus in this design, and it was worth
+// settling before anything depended on it.
 
 /// Why a claim was not accepted.
-#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Refused {
     /// Somebody else already serves this name here.
@@ -517,7 +515,6 @@ impl std::fmt::Display for Refused {
 ///
 /// Re-claiming a name you already hold succeeds: the instruction is
 /// convergent, and an errand sent twice must not fail the second time.
-#[allow(dead_code)]
 pub async fn claim(
     database: &SqliteDatabase,
     name: &str,
@@ -562,7 +559,6 @@ async fn holder(database: &SqliteDatabase, name: &str) -> NetworkResult<Option<O
         .await?)
 }
 
-#[allow(dead_code)]
 pub async fn release(database: &SqliteDatabase, name: &str) -> NetworkResult<()> {
     let name = name.to_string();
     Ok(database

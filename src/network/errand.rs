@@ -44,6 +44,8 @@ use crate::platform::now_ms;
 pub enum Kind {
     /// Run this service here.
     Host,
+    /// Serve this name from here, proxying to the replicas named.
+    Edge,
     /// Anything this version does not know about.
     #[serde(other)]
     Unknown,
@@ -53,6 +55,7 @@ impl Kind {
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::Host => "host",
+            Self::Edge => "edge",
             Self::Unknown => "unknown",
         }
     }
@@ -64,6 +67,7 @@ impl Kind {
     pub fn parse(text: &str) -> Self {
         match text {
             "host" => Self::Host,
+            "edge" => Self::Edge,
             _ => Self::Unknown,
         }
     }
@@ -121,6 +125,24 @@ pub struct Host {
 
 fn one_slot() -> Vec<u32> {
     vec![1]
+}
+
+/// The arguments of a [`Kind::Edge`] errand: answer for this name here.
+///
+/// The upstreams come *with* the instruction rather than being looked
+/// up: the node that placed the replicas knows where they are and
+/// whether they answered, and an edge that discovered them would be a
+/// second thing with an opinion about where a service is.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Edge {
+    pub hostname: String,
+    /// `host:port` per replica, and **one entry per replica** — a node
+    /// running two copies appears twice, which is what makes a plain
+    /// round-robin send it twice the requests.
+    ///
+    /// Each is an overlay address and a port bound to it, never a
+    /// container's own: a bridge address is not unique across nodes.
+    pub upstreams: Vec<String>,
 }
 
 /// An errand and what became of it, for the page that lists them.
@@ -441,12 +463,17 @@ mod tests {
     #[test]
     fn an_instruction_this_version_does_not_know_is_a_value_not_a_crash() {
         assert_eq!(Kind::parse("host"), Kind::Host);
-        assert_eq!(Kind::parse("edge"), Kind::Unknown);
+        assert_eq!(Kind::parse("edge"), Kind::Edge);
+        // Something a later version might add. This example used to be
+        // `edge`, which is the point: today's unknown is tomorrow's
+        // kind, and what has to keep working is the *shape* of not
+        // knowing.
+        assert_eq!(Kind::parse("backup"), Kind::Unknown);
         assert_eq!(Kind::parse(""), Kind::Unknown);
 
         // And over the wire, which is where it actually arrives.
         let from_the_future: Errand =
-            serde_json::from_str(r#"{"id":"er-1","kind":"edge","payload":{}}"#).expect("decodes");
+            serde_json::from_str(r#"{"id":"er-1","kind":"backup","payload":{}}"#).expect("decodes");
         assert_eq!(from_the_future.kind, Kind::Unknown);
     }
 
