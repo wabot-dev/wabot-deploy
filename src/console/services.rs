@@ -185,6 +185,9 @@ impl ServicePages {
         let deploying = crate::deploy::jobs::deploying(&self.state.container)
             .await
             .contains(&service.id);
+        // Taken before the markup moves it: the island below names the
+        // stream this page joins, and `rsx!` captures by move.
+        let project_slug = project.slug.clone();
         // Built once and shared by the badge and the control, so the
         // page cannot show "running" beside a play button.
         let cell = super::projects::state_cell(
@@ -232,7 +235,14 @@ impl ServicePages {
                 <section class="card stack">
                     <div class="split">
                         <p class="card-label">("Container")</p>
-                        <div class="row">
+                        // `data-state` and `data-address` are what the
+                        // project's island writes into, keyed by service
+                        // id — so this page joins that stream instead of
+                        // opening one of its own. The badge said
+                        // "Deploying" until somebody reloaded, on the
+                        // one page they were watching to find out when
+                        // it stopped.
+                        <div class="row" data-state=(&service.id)>
                             (super::projects::state_badge(&cell))
                             // The page showed the state and withheld the
                             // control, so the one place you go to find
@@ -240,7 +250,13 @@ impl ServicePages {
                             // you could not start it.
                             @if allowed.may_deploy() && service.is_ours() {
                                 (super::projects::deploy_controls(
-                                    &project.slug, &service.slug, &cell
+                                    &project.slug,
+                                    &service.slug,
+                                    &cell,
+                                    &format!(
+                                        "/projects/{}/services/{}",
+                                        project.slug, service.slug
+                                    ),
                                 ))
                             }
                         </div>
@@ -249,7 +265,11 @@ impl ServicePages {
                         <dt>("Image")</dt>
                         <dd>(&service.image)</dd>
                         <dt>("Address")</dt>
-                        <dd>(here.as_ref().and_then(|r| r.address.clone()).unwrap_or_else(|| "not running".into()))</dd>
+                        <dd class="mono" data-address=(&service.id)>(
+                            here.as_ref()
+                                .and_then(|r| r.address.clone())
+                                .unwrap_or_else(|| "not running".into())
+                        )</dd>
                     </dl>
                     @if let Some(failure) = here.as_ref().and_then(|r| r.last_error.as_ref()) {
                         <p class="failure">(failure)</p>
@@ -366,6 +386,22 @@ impl ServicePages {
                     }
                 </section>
         }
+        .render()
+        .into_inner();
+
+        // The project's own island, on the project's own stream. It
+        // writes by service id into `data-state` and `data-address`,
+        // and this page has one of each — so a page showing one service
+        // costs no second endpoint and cannot drift from the list.
+        //
+        // Rendered first, then wrapped: `rsx!` expands to a closure
+        // that captures by move, and nesting one inside the island's
+        // would have both wanting the same borrows.
+        let body = wabot::ui::hypertext::island(
+            "project-live",
+            &serde_json::json!({ "project": project_slug }),
+            hypertext::Raw::dangerously_create(&body),
+        )
         .render()
         .into_inner();
 
@@ -776,6 +812,28 @@ fn reachable_at(port: &crate::platform::ports::Port, node_domain: Option<&str>) 
         return "the project only".into();
     }
     where_from.join("  ")
+}
+
+/// Where to send the browser after a control was pressed.
+///
+/// The form says, because only the form knows: the same play and stop
+/// are on the project's list and on the service's own page, and sending
+/// somebody back to the list from the page they were reading is the
+/// console deciding they meant to leave.
+///
+/// A path this console put in its own markup, never a `Referer` — that
+/// would let a page elsewhere choose where a submit lands. Anything
+/// that is not a path falls back to where it always went.
+async fn returning_to(request: Request, fallback: &str) -> String {
+    let form = match read_form(request).await {
+        Ok(form) => form,
+        Err(_) => return fallback.to_string(),
+    };
+    let from = field(&form, "from");
+    match from.starts_with('/') && !from.starts_with("//") {
+        true => from.to_string(),
+        false => fallback.to_string(),
+    }
 }
 
 /// Where every copy of this service runs, and how to change it.
@@ -1402,9 +1460,11 @@ impl ServiceApi {
     #[raw]
     #[middleware(SessionMiddleware)]
     async fn deploy(&self, request: Request) -> RestResult<Response> {
-        let Some((project, service, back)) = self.locate(request.uri().path()).await? else {
+        let path = request.uri().path().to_string();
+        let Some((project, service, back)) = self.locate(&path).await? else {
             return Ok(see_other("/?error=no+such+service"));
         };
+        let back = returning_to(request, &back).await;
 
         // The failure lands on the row, not in this redirect: the job
         // outlives the answer, and a reason carried in a query string
@@ -1419,9 +1479,11 @@ impl ServiceApi {
     #[raw]
     #[middleware(SessionMiddleware)]
     async fn stop(&self, request: Request) -> RestResult<Response> {
-        let Some((project, service, back)) = self.locate(request.uri().path()).await? else {
+        let path = request.uri().path().to_string();
+        let Some((project, service, back)) = self.locate(&path).await? else {
             return Ok(see_other("/?error=no+such+service"));
         };
+        let back = returning_to(request, &back).await;
 
         match self.state.deployer.stop(&project, &service).await {
             Ok(()) => Ok(see_other(&back)),
@@ -1704,19 +1766,41 @@ impl ServiceApi {
             .await
             .map_err(|error| error.to_string())?;
 
-        for replica in placements.iter().filter(|r| r.slot > wanted) {
-            if !replica.is_here() {
-                return Err(format!(
-                    "replica #{} runs on another node, and nothing can tell it to stop yet",
-                    replica.slot
-                ));
+        if placements.len() as u32 > wanted {
+            // Which ones go, and the order is the point. By slot number
+            // alone, lowering a service with a dead #2 and a healthy #3
+            // removes the healthy one and keeps the corpse — so the
+            // ones already thrown out where they ran go first, and only
+            // then the highest-numbered.
+            let mut going: Vec<_> = placements.iter().collect();
+            going.sort_by_key(|replica| (replica.evicted(), replica.slot));
+            going.reverse();
+            going.truncate(placements.len() - wanted as usize);
+
+            for replica in going {
+                // An evicted copy is safe to let go wherever it ran:
+                // the machine running it stopped its container, which
+                // is what evicting means. A live one elsewhere is not —
+                // nothing can tell that node to stop it, and dropping
+                // the row would leave it running with nothing naming
+                // it.
+                if !replica.is_here() && !replica.evicted() {
+                    return Err(format!(
+                        "replica #{} runs on another node, and nothing can tell it to stop yet",
+                        replica.slot
+                    ));
+                }
+                crate::platform::replicas::remove(&self.state.database, &replica.id)
+                    .await
+                    .map_err(|error| error.to_string())?;
             }
-            crate::platform::replicas::remove(&self.state.database, &replica.id)
-                .await
-                .map_err(|error| error.to_string())?;
         }
 
-        crate::platform::replicas::ensure_here(&self.state.database, service_id, wanted)
+        // By count, not by range: after a removal the service may hold
+        // slots 1 and 3, which is already two copies. Filling
+        // `1..=wanted` would put slot 2 back and undo the removal that
+        // just happened — which is exactly what it did.
+        crate::platform::replicas::ensure_count_here(&self.state.database, service_id, wanted)
             .await
             .map_err(|error| error.to_string())?;
         Ok(())
@@ -2015,6 +2099,128 @@ mod tests {
         assert!(
             body.contains("/projects/shared/services/web/stop"),
             "{body}"
+        );
+    }
+
+    /// The badge said "Deploying" until somebody reloaded, on the one
+    /// page they were watching to find out when it stopped. It joins
+    /// the project's stream rather than opening one of its own: the
+    /// island writes by service id, and this page has one of each cell.
+    #[tokio::test]
+    async fn the_service_page_comes_alive_on_the_projects_stream() {
+        let console = Console::new().await;
+        let cookie = console.signed_in().await;
+        let service = placed_service(&console, &cookie).await;
+
+        let page = console
+            .ui
+            .with_header("cookie", cookie)
+            .get("/projects/shared/services/web")
+            .await;
+
+        assert!(page.has_island("project-live"), "{}", page.html());
+        assert_eq!(
+            page.island_props("project-live"),
+            Some(serde_json::json!({ "project": "shared" })),
+            "the client needs the project to open the stream"
+        );
+
+        let html = page.html();
+        for hook in [
+            format!("data-state=\"{}\"", service.id),
+            format!("data-address=\"{}\"", service.id),
+        ] {
+            assert!(
+                html.contains(&hook),
+                "nothing for the stream to write into: {hook}"
+            );
+        }
+    }
+
+    /// The same two controls are on the list and on the service's own
+    /// page. Sending somebody back to the list from the page they were
+    /// reading is the console deciding they meant to leave.
+    #[tokio::test]
+    async fn a_control_returns_to_the_page_it_was_pressed_on() {
+        let console = Console::new().await;
+        let cookie = console.signed_in().await;
+        placed_service(&console, &cookie).await;
+
+        let response = console
+            .harness
+            .post("/projects/shared/services/web/stop")
+            .header("cookie", &cookie)
+            .form(&[("from", "/projects/shared/services/web")])
+            .send()
+            .await;
+        // The reason rides along when there is one — no containerd in
+        // a test — but the *page* is what this pins.
+        let location = response.header("location").unwrap_or_default();
+        assert!(
+            location.starts_with("/projects/shared/services/web"),
+            "{location}"
+        );
+
+        // A path this console put in its own markup, never somewhere
+        // else's: that would let another page choose where a submit
+        // lands.
+        let elsewhere = console
+            .harness
+            .post("/projects/shared/services/web/stop")
+            .header("cookie", &cookie)
+            .form(&[("from", "https://elsewhere.example/")])
+            .send()
+            .await;
+        let location = elsewhere.header("location").unwrap_or_default();
+        assert!(
+            location.starts_with("/projects/shared?") || location == "/projects/shared",
+            "somewhere else chose where the submit landed: {location}"
+        );
+    }
+
+    /// By slot number alone, lowering a service with a dead #2 and a
+    /// healthy #3 removes the healthy one and keeps the corpse.
+    #[tokio::test]
+    async fn lowering_the_count_lets_the_evicted_go_first() {
+        let console = Console::new().await;
+        let cookie = console.signed_in().await;
+        let service = placed_service(&console, &cookie).await;
+
+        // #2 thrown out where it ran, #3 alive and here.
+        let two = crate::platform::replicas::place(
+            &console.database,
+            &service.id,
+            Some("nd-elsewhere1"),
+            2,
+        )
+        .await
+        .expect("placed");
+        crate::platform::replicas::evict(&console.database, &two.id)
+            .await
+            .expect("evicted");
+        crate::platform::replicas::place(&console.database, &service.id, None, 3)
+            .await
+            .expect("placed");
+
+        console
+            .harness
+            .post("/projects/shared/services/web/placement")
+            .header("cookie", &cookie)
+            .form(&[("replicas", "2")])
+            .send()
+            .await
+            .assert_status(StatusCode::SEE_OTHER);
+
+        let left: Vec<u32> = crate::platform::replicas::of_service(&console.database, &service.id)
+            .await
+            .expect("replicas")
+            .into_iter()
+            .map(|replica| replica.slot)
+            .collect();
+        assert_eq!(
+            left,
+            vec![1, 3],
+            "the corpse was kept and the live one killed"
         );
     }
 

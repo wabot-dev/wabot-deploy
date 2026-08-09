@@ -78,6 +78,30 @@ pub async fn ensure_here(
     of_service(database, service_id).await
 }
 
+/// Bring the number of copies to `wanted`, adding here.
+///
+/// Counts rather than filling `1..=wanted`, which is the difference
+/// that matters after something was removed: a service left holding
+/// slots 1 and 3 already *has* two copies, and filling the range would
+/// put slot 2 back — undoing the removal that just happened. New ones
+/// take the lowest free slot, so the numbering stays dense.
+pub async fn ensure_count_here(
+    database: &SqliteDatabase,
+    service_id: &str,
+    wanted: u32,
+) -> PlatformResult<Vec<Replica>> {
+    loop {
+        let existing = of_service(database, service_id).await?;
+        if existing.len() as u32 >= wanted {
+            return Ok(existing);
+        }
+        let free = (1u32..)
+            .find(|slot| !existing.iter().any(|replica| replica.slot == *slot))
+            .expect("the naturals do not run out");
+        place(database, service_id, None, free).await?;
+    }
+}
+
 /// Make sure exactly these slots exist here, and hand back what runs.
 ///
 /// **A slot number belongs to the service, not to the node.** When one

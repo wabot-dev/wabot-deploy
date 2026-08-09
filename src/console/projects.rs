@@ -551,7 +551,10 @@ fn service_table(
                                     <td class="row">
                                         @if allowed.may_deploy() {
                                             (deploy_controls(
-                                                &project.slug, &service.slug, cell
+                                                &project.slug,
+                                                &service.slug,
+                                                cell,
+                                                &format!("/projects/{}", project.slug),
                                             ))
                                         }
                                     </td>
@@ -612,16 +615,22 @@ pub(crate) fn deploy_controls<'a>(
     project_slug: &'a str,
     service_slug: &'a str,
     cell: &'a StateCell,
+    // Where to go afterwards. The form carries it because only the form
+    // knows which page it is on — the same two controls live on the
+    // list and on the service's own page.
+    from: &'a str,
 ) -> impl Renderable + 'a {
     rsx! {
         <form method="post" data-action="deploy"
               class=(shown(cell.action == "deploy"))
               action=(format!("/projects/{project_slug}/services/{service_slug}/deploy"))>
+            <input type="hidden" name="from" value=(from)>
             (action_button("Deploy", PLAY, cell.busy))
         </form>
         <form method="post" data-action="stop"
               class=(shown(cell.action == "stop"))
               action=(format!("/projects/{project_slug}/services/{service_slug}/stop"))>
+            <input type="hidden" name="from" value=(from)>
             (action_button("Stop", STOP, cell.busy))
         </form>
     }
