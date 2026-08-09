@@ -17,6 +17,14 @@ cargo test
 All three, before saying anything is done. CI runs the same three, and
 so does the release workflow — a tag can point at a commit CI never saw.
 
+They are only the same three if the compiler is the same one.
+`rust-toolchain.toml` names a **version**, not `stable`: it used to say
+`stable` and claim to pin, and every machine resolved that to whatever
+it had while CI installed the newest on every run. A lint added between
+two releases then fails the gate on CI having passed it locally. Raising
+it is a deliberate edit — change the number, run the three, fix what the
+newer compiler found.
+
 `protoc` must be installed: `containerd-client` generates its gRPC
 bindings in a build script.
 

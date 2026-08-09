@@ -1,4 +1,12 @@
 [toolchain]
-# Pinned so everyone on the project — and CI — compiles with the same
-# compiler. Raise it deliberately, not by drifting.
-channel = "stable"
+# A version, not a channel.
+#
+# This said `stable` and claimed to pin — which it does not: every
+# machine resolves it to whatever stable it happens to have, and CI
+# installs the newest one on every run. That drift is invisible until a
+# lint added between two releases fails the gate on CI having passed it
+# locally, which is exactly how it was found.
+#
+# Raise it deliberately: change the number, run the three checks, fix
+# what the newer compiler found.
+channel = "1.97.0"

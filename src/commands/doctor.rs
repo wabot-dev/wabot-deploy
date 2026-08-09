@@ -320,7 +320,7 @@ pub async fn run(config: Config, config_path: &Path) -> anyhow::Result<i32> {
             for peer in &peers {
                 println!(
                     "  peer        {} {}",
-                    &peer.public_key,
+                    peer.public_key,
                     match peer.last_handshake {
                         Some(at) => {
                             let ago = (now_ms() / 1000).saturating_sub(at as i64);
