@@ -31,6 +31,7 @@ use wabot::sqlite::SqliteDatabase;
 use crate::platform::ports::{self, Port};
 use crate::platform::projects::Project;
 use crate::platform::releases::{self, Release};
+use crate::platform::replicas::{self, Replica};
 use crate::platform::services::{self, DesiredState, Service};
 use crate::platform::{projects, PlatformError};
 use crate::runtime::client::Containerd;
@@ -48,6 +49,10 @@ pub enum DeployError {
     Platform(#[from] PlatformError),
     #[error("{0}")]
     Io(#[from] std::io::Error),
+    /// Something the caller asked for that this node will not do — a
+    /// service with nothing placed here, and nothing to deploy.
+    #[error("{0}")]
+    Refused(String),
 }
 
 pub type DeployResult<T> = Result<T, DeployError>;
@@ -137,39 +142,96 @@ impl Deployer {
         }
     }
 
-    /// Start (or restart) a service's container.
+    /// Start (or restart) every copy of a service that runs here.
     ///
-    /// Records the outcome on the row either way: an address and no
-    /// error when it worked, the reason when it did not. A deployment
-    /// that failed silently is one nobody can act on.
+    /// The service is what to run; a replica is one running copy of it.
+    /// Returns the address of the first one, which is what a caller
+    /// that used to get "the" address wants — and what routing used to
+    /// read before it learned to gather them.
     pub async fn deploy(&self, project: &Project, service: &Service) -> DeployResult<Ipv4Addr> {
-        let result = self.try_deploy(project, service).await;
+        let mine = self.mine(service).await?;
+        let Some(first) = mine.first().cloned() else {
+            return Err(DeployError::Refused(format!(
+                "{} has no replica on this node",
+                service.slug
+            )));
+        };
+
+        // The intent is the service's, not one copy's: `stopped` has to
+        // mean the whole service, or a reconcile would start back the
+        // replicas somebody did not stop.
+        services::set_desired_state(&self.database, &service.id, DesiredState::Running).await?;
+
+        let mut first_address = None;
+        let mut failure = None;
+        for replica in &mine {
+            match self.deploy_one(project, service, replica).await {
+                Ok(address) if replica.id == first.id => first_address = Some(address),
+                Ok(_) => {}
+                Err(error) => failure = Some(error),
+            }
+        }
+
+        // The routes go up once, after all of them: rebuilding per
+        // replica would publish a half-deployed service n times.
+        self.sync_routes().await;
+
+        match (first_address, failure) {
+            (Some(address), _) => Ok(address),
+            (None, Some(error)) => Err(error),
+            (None, None) => Err(DeployError::Refused(format!(
+                "{} did not start anywhere",
+                service.slug
+            ))),
+        }
+    }
+
+    /// One copy, with its outcome on its own row.
+    ///
+    /// Per replica and not per service: one copy failing to pull is not
+    /// the service failing, and a page that said so would send somebody
+    /// looking at the wrong container.
+    async fn deploy_one(
+        &self,
+        project: &Project,
+        service: &Service,
+        replica: &Replica,
+    ) -> DeployResult<Ipv4Addr> {
+        let result = self.try_deploy(project, service, replica).await;
 
         match &result {
             Ok(address) => {
-                services::set_address(&self.database, &service.id, Some(&address.to_string()))
+                replicas::set_address(&self.database, &replica.id, Some(&address.to_string()))
                     .await?;
-                services::set_last_error(&self.database, &service.id, None).await?;
-                services::set_desired_state(&self.database, &service.id, DesiredState::Running)
-                    .await?;
-                self.sync_routes().await;
+                replicas::set_last_error(&self.database, &replica.id, None).await?;
             }
             Err(error) => {
                 let message = error.to_string();
-                tracing::error!(service = %service.slug, %message, "deploy failed");
-                services::set_address(&self.database, &service.id, None).await?;
-                services::set_last_error(&self.database, &service.id, Some(&message)).await?;
-                // The route goes with the address. A name pointing at a
-                // container that failed to start is a hung request.
-                self.sync_routes().await;
+                tracing::error!(service = %service.slug, slot = replica.slot, %message, "deploy failed");
+                replicas::set_address(&self.database, &replica.id, None).await?;
+                replicas::set_last_error(&self.database, &replica.id, Some(&message)).await?;
             }
         }
         result
     }
 
-    async fn try_deploy(&self, project: &Project, service: &Service) -> DeployResult<Ipv4Addr> {
+    /// The copies of a service this node is the one running.
+    async fn mine(&self, service: &Service) -> DeployResult<Vec<Replica>> {
+        Ok(replicas::of_service(&self.database, &service.id)
+            .await?
+            .into_iter()
+            .filter(|replica| replica.is_here() && !replica.evicted())
+            .collect())
+    }
+
+    async fn try_deploy(
+        &self,
+        project: &Project,
+        service: &Service,
+        replica: &Replica,
+    ) -> DeployResult<Ipv4Addr> {
         let client = Containerd::connect().await?;
-        let id = service.container_id(&project.slug);
+        let id = replica.container_id(&project.slug, &service.slug);
 
         let index = projects::ensure_network_index(&self.database, &project.id).await?;
         let net = ProjectNetwork::new(index)?;
@@ -290,19 +352,24 @@ impl Deployer {
     /// Records `stopped` as the intent, so a reconcile does not start
     /// it again ten seconds later.
     pub async fn stop(&self, project: &Project, service: &Service) -> DeployResult<()> {
+        // The intent first, so a reconcile arriving mid-stop does not
+        // start back what is being taken down.
         services::set_desired_state(&self.database, &service.id, DesiredState::Stopped).await?;
 
-        let id = service.container_id(&project.slug);
         let client = Containerd::connect().await?;
+        let net = self.network_of(project).await;
 
-        containers::stop(&client, &id, STOP_GRACE).await?;
-        containers::remove(&client, &id).await?;
+        for replica in self.mine(service).await? {
+            let id = replica.container_id(&project.slug, &service.slug);
+            containers::stop(&client, &id, STOP_GRACE).await?;
+            containers::remove(&client, &id).await?;
 
-        if let Some(index) = self.network_of(project).await {
-            network::detach(&index, &id).await;
+            if let Some(net) = &net {
+                network::detach(net, &id).await;
+            }
+            replicas::set_address(&self.database, &replica.id, None).await?;
+            replicas::set_last_error(&self.database, &replica.id, None).await?;
         }
-        services::set_address(&self.database, &service.id, None).await?;
-        services::set_last_error(&self.database, &service.id, None).await?;
         self.sync_routes().await;
 
         tracing::info!(service = %service.slug, project = %project.slug, "stopped");
@@ -351,20 +418,44 @@ impl Deployer {
         crate::node::memory::read(&pids)
     }
 
-    /// What containerd says about this service right now.
-    pub async fn observe(&self, project: &Project, service: &Service) -> Observed {
+    /// What containerd says about one copy right now.
+    pub async fn observe(
+        &self,
+        project: &Project,
+        service: &Service,
+        replica: &Replica,
+    ) -> Observed {
         let client = match Containerd::connect().await {
             Ok(client) => client,
             Err(error) => return Observed::Unknown(error.to_string()),
         };
 
-        match containers::status(&client, &service.container_id(&project.slug)).await {
+        let id = replica.container_id(&project.slug, &service.slug);
+        match containers::status(&client, &id).await {
             Ok(Some(status)) if status.running() => Observed::Running {
                 pid: status.pid,
-                address: service.address.clone(),
+                address: replica.address.clone(),
             },
             Ok(Some(TaskStatus { exit_code, .. })) => Observed::Stopped { exit_code },
             Ok(None) => Observed::Absent,
+            Err(error) => Observed::Unknown(error.to_string()),
+        }
+    }
+
+    /// What containerd says about the copy of this service that runs
+    /// here, when one does.
+    ///
+    /// For a page that shows a service as one thing, which every page
+    /// still does — the replicas each get their own line when the
+    /// service page learns to place them. A service with nothing here
+    /// reads as absent, which is true: there is no container on this
+    /// node to ask about.
+    pub async fn observe_service(&self, project: &Project, service: &Service) -> Observed {
+        match self.mine(service).await {
+            Ok(mine) => match mine.first() {
+                Some(replica) => self.observe(project, service, replica).await,
+                None => Observed::Absent,
+            },
             Err(error) => Observed::Unknown(error.to_string()),
         }
     }
@@ -378,9 +469,16 @@ impl Deployer {
     pub async fn reconcile(&self) -> DeployResult<usize> {
         let services = services::all(&self.database, None).await?;
         let projects = projects::all(&self.database).await?;
+        // What should be up *here*, whoever placed it — a replica on
+        // another node is not this one's to start, and an evicted one
+        // is not either.
+        let mine = replicas::here(&self.database).await?;
         let mut started = 0;
 
-        for service in services {
+        for replica in mine {
+            let Some(service) = services.iter().find(|s| s.id == replica.service_id) else {
+                continue;
+            };
             if service.desired_state != DesiredState::Running {
                 continue;
             }
@@ -388,7 +486,7 @@ impl Deployer {
                 continue;
             };
 
-            match self.observe(project, &service).await {
+            match self.observe(project, service, &replica).await {
                 Observed::Running { .. } => {}
                 Observed::Unknown(error) => {
                     // Reconciling against a runtime that cannot answer
@@ -397,8 +495,12 @@ impl Deployer {
                     tracing::warn!(service = %service.slug, %error, "skipped: cannot ask containerd");
                 }
                 Observed::Absent | Observed::Stopped { .. } => {
-                    tracing::info!(service = %service.slug, "reconciling: should be running");
-                    if self.restore(project, &service).await {
+                    tracing::info!(
+                        service = %service.slug,
+                        slot = replica.slot,
+                        "reconciling: should be running"
+                    );
+                    if self.restore(project, service).await {
                         started += 1;
                     }
                 }

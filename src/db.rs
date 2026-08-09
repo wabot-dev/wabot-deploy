@@ -70,6 +70,10 @@ fn migrations() -> Vec<Migration> {
             "0019_registry_credential",
             include_str!("../migrations/0019_registry_credential.sql"),
         ),
+        Migration::new(
+            "0020_replica",
+            include_str!("../migrations/0020_replica.sql"),
+        ),
     ]
 }
 

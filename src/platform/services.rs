@@ -52,8 +52,11 @@ pub struct Service {
     pub env: BTreeMap<String, String>,
     pub desired_state: DesiredState,
     pub last_error: Option<String>,
-    /// The container's address on its project's bridge, while it is
-    /// running. `None` means nothing to proxy to.
+    /// Vestigial. An address belongs to a **replica** now — a service
+    /// is *n* running copies and each has its own — so nothing writes
+    /// this and nothing should read it. The column goes in a migration
+    /// of its own, once no node is still running a version that
+    /// selects it.
     pub address: Option<String>,
     /// The tag a push has to carry for this service to care. `None`
     /// means "whatever tag my image reference names".
@@ -156,6 +159,15 @@ pub async fn create(
         })?;
 
     tracing::info!(service = %service.slug, image = %service.image, "created");
+    // A service is at least one replica, and creating it is where that
+    // becomes true. Without this a new service is a description of
+    // something with nowhere to run — and reconciliation, which asks
+    // about replicas, would never start it.
+    //
+    // Services that predate replicas were given theirs by migration
+    // `0020`; this is the same row, for the ones made since.
+    super::replicas::ensure_here(database, &service.id, 1).await?;
+
     Ok(service)
 }
 
@@ -359,26 +371,6 @@ pub async fn set_env(
             connection.execute(
                 "UPDATE service SET \"env\" = ?2, \"updated_at\" = ?3 WHERE \"id\" = ?1",
                 (id, payload, now_ms()),
-            )?;
-            Ok(())
-        })
-        .await?;
-    Ok(())
-}
-
-/// Where the proxy reaches this service, or `None` because it is not
-/// running.
-pub async fn set_address(
-    database: &SqliteDatabase,
-    service_id: &str,
-    address: Option<&str>,
-) -> PlatformResult<()> {
-    let (id, address) = (service_id.to_string(), address.map(str::to_string));
-    database
-        .write(move |connection| {
-            connection.execute(
-                "UPDATE service SET \"address\" = ?2, \"updated_at\" = ?3 WHERE \"id\" = ?1",
-                (id, address, now_ms()),
             )?;
             Ok(())
         })

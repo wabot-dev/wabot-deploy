@@ -30,6 +30,9 @@ pub async fn sync(
 ) -> PlatformResult<usize> {
     let ports = ports::all(database).await?;
     let services = services::all(database, None).await?;
+    // Addresses are per replica now: a service is *n* running copies,
+    // and which of them a name reaches is the route table's question.
+    let placements = crate::platform::replicas::here(database).await?;
 
     let mut hosts = Vec::new();
     for port in &ports {
@@ -39,11 +42,21 @@ pub async fn sync(
         let Some(service) = services.iter().find(|s| s.id == port.service_id) else {
             continue;
         };
-        // No address means the container is not running. The route is
+        // No address means no copy of it is running here. The route is
         // dropped rather than kept pointing at where it used to be: a
         // 404 from the edge is a truthful answer, and a proxy attempt
         // to a dead address is a hung request.
-        let Some(address) = &service.address else {
+        //
+        // The first running copy, because `Upstream` names one address.
+        // Spreading a name across several is the phase that comes with
+        // health checks — sending traffic to a second replica without
+        // knowing whether it answers would be worse than not sending
+        // it.
+        let Some(address) = placements
+            .iter()
+            .filter(|replica| replica.service_id == service.id)
+            .find_map(|replica| replica.address.as_deref())
+        else {
             continue;
         };
 
@@ -86,6 +99,23 @@ pub async fn sync(
 
 #[cfg(test)]
 mod tests {
+    /// Put the service's copy on an address, the way a deployment does.
+    ///
+    /// An address belongs to a replica now — a service is *n* running
+    /// copies — so a test that sets one has to say which copy.
+    async fn running_at(
+        database: &wabot::sqlite::SqliteDatabase,
+        service_id: &str,
+        address: Option<&str>,
+    ) {
+        let replicas = crate::platform::replicas::of_service(database, service_id)
+            .await
+            .expect("replicas");
+        crate::platform::replicas::set_address(database, &replicas[0].id, address)
+            .await
+            .expect("address");
+    }
+
     use super::*;
     use crate::platform::projects;
 
@@ -110,9 +140,7 @@ mod tests {
         ports::create(&database, &service, 80, false, Some("api.example.com"))
             .await
             .expect("port");
-        services::set_address(&database, &service, Some("10.42.1.5"))
-            .await
-            .expect("address");
+        running_at(&database, &service, Some("10.42.1.5")).await;
 
         let table = Arc::new(RouteTable::new());
         assert_eq!(
@@ -136,9 +164,7 @@ mod tests {
         ports::create(&database, &service, 80, false, Some("api.example.com"))
             .await
             .expect("port");
-        services::set_address(&database, &service, Some("10.42.1.5"))
-            .await
-            .expect("address");
+        running_at(&database, &service, Some("10.42.1.5")).await;
 
         let table = Arc::new(RouteTable::new());
         sync(&database, Some("node.example"), Some(&table))
@@ -146,9 +172,7 @@ mod tests {
             .expect("sync");
 
         // Stopped: the address goes, and so must the route.
-        services::set_address(&database, &service, None)
-            .await
-            .expect("address");
+        running_at(&database, &service, None).await;
         sync(&database, Some("node.example"), Some(&table))
             .await
             .expect("sync");
@@ -165,9 +189,7 @@ mod tests {
         ports::create(&database, &service, 80, false, Some("api.example.com"))
             .await
             .expect("port");
-        services::set_address(&database, &service, Some("10.42.1.5"))
-            .await
-            .expect("address");
+        running_at(&database, &service, Some("10.42.1.5")).await;
 
         let table = Arc::new(RouteTable::new());
         sync(&database, Some("node.example"), Some(&table))
@@ -194,9 +216,7 @@ mod tests {
         let port = ports::create(&database, &service, 80, false, Some("api.example.com"))
             .await
             .expect("port");
-        services::set_address(&database, &service, Some("10.42.1.5"))
-            .await
-            .expect("address");
+        running_at(&database, &service, Some("10.42.1.5")).await;
 
         let table = Arc::new(RouteTable::new());
         sync(&database, Some("node.example"), Some(&table))
@@ -219,9 +239,7 @@ mod tests {
         ports::create(&database, &service, 5432, true, None)
             .await
             .expect("port");
-        services::set_address(&database, &service, Some("10.42.1.5"))
-            .await
-            .expect("address");
+        running_at(&database, &service, Some("10.42.1.5")).await;
 
         let table = Arc::new(RouteTable::new());
         assert_eq!(

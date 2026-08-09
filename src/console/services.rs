@@ -168,7 +168,14 @@ impl ServicePages {
                 }
             }
         }
-        let observed = self.state.deployer.observe(&project, &service).await;
+        let observed = self
+            .state
+            .deployer
+            .observe_service(&project, &service)
+            .await;
+        // The address and the reason live on the copy that runs here —
+        // a service is *n* of them now, and this page still shows one.
+        let here = crate::platform::replicas::here_for(&self.state.database, &service.id).await?;
         let deploying = crate::deploy::jobs::deploying(&self.state.container)
             .await
             .contains(&service.id);
@@ -212,15 +219,15 @@ impl ServicePages {
                 <section class="card stack">
                     <div class="split">
                         <p class="card-label">("Container")</p>
-                        (super::projects::state_badge(&super::projects::state_cell(&observed, deploying, service.address.as_deref())))
+                        (super::projects::state_badge(&super::projects::state_cell(&observed, deploying, here.as_ref().and_then(|r| r.address.as_deref()))))
                     </div>
                     <dl class="kv">
                         <dt>("Image")</dt>
                         <dd>(&service.image)</dd>
                         <dt>("Address")</dt>
-                        <dd>(service.address.clone().unwrap_or_else(|| "not running".into()))</dd>
+                        <dd>(here.as_ref().and_then(|r| r.address.clone()).unwrap_or_else(|| "not running".into()))</dd>
                     </dl>
-                    @if let Some(failure) = &service.last_error {
+                    @if let Some(failure) = here.as_ref().and_then(|r| r.last_error.as_ref()) {
                         <p class="failure">(failure)</p>
                     }
                 </section>
@@ -1524,12 +1531,25 @@ mod tests {
             .expect("query")
             .pop()
             .expect("one service");
-        let failure = stored.last_error.expect("the reason was recorded");
+        let failure = crate::platform::replicas::of_service(&console.database, &stored.id)
+            .await
+            .expect("replicas")
+            .into_iter()
+            .next()
+            .and_then(|replica| replica.last_error)
+            .expect("the reason was recorded");
         assert!(
             failure.contains("containerd"),
             "the reason names the runtime: {failure}"
         );
-        assert!(stored.address.is_none(), "nothing to route to");
+        assert!(
+            crate::platform::replicas::of_service(&console.database, &stored.id)
+                .await
+                .expect("replicas")
+                .into_iter()
+                .all(|replica| replica.address.is_none()),
+            "nothing to route to"
+        );
 
         let body = console
             .harness
@@ -1573,7 +1593,14 @@ mod tests {
                 .expect("query")
                 .pop()
                 .expect("one service");
-            if let Some(found) = stored.last_error {
+            if let Some(found) =
+                crate::platform::replicas::of_service(&console.database, &stored.id)
+                    .await
+                    .expect("replicas")
+                    .into_iter()
+                    .next()
+                    .and_then(|replica| replica.last_error)
+            {
                 reason = Some(found);
                 break;
             }
@@ -1612,7 +1639,14 @@ mod tests {
             .expect("query")
             .pop()
             .expect("one service");
-        assert!(stored.address.is_none(), "nothing was deployed inline");
+        assert!(
+            crate::platform::replicas::of_service(&console.database, &stored.id)
+                .await
+                .expect("replicas")
+                .into_iter()
+                .all(|replica| replica.address.is_none()),
+            "nothing was deployed inline"
+        );
     }
 
     #[tokio::test]

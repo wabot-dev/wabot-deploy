@@ -23,7 +23,19 @@ That is the same rule the grant already follows in the other direction.
 The machine is yours even when the orders are not, and joining is not a
 loss of control.
 
-Two consequences that shape everything below:
+**The owner also decides who serves it.** A service's edges are chosen
+from the same page, and they can be *any* public node on the network —
+not only the one the service lives on. So the owning node configures two
+things about a service: where its replicas run, and which public nodes
+answer for its name.
+
+That is what the `claim` table from phase 0 was written for. Any node
+can ask any public node to serve a name, so the second claim on one
+hostname is refused and names who holds it — a machine cannot resolve
+two authorities pointing one name at different backends, and choosing
+silently would make the wrong one look right.
+
+Three consequences that shape everything below:
 
 - **A replica is the unit**, not a service. A service has a number of
   them and each names its node, repeats allowed — two on one machine is
@@ -33,6 +45,20 @@ Two consequences that shape everything below:
 - **State has to travel back.** A page that administers a replica it
   cannot see the state of is a page that is lying. The poll a node
   already makes is where that goes.
+- **An edge reaches a replica through its node, not at its container.**
+  A container's bridge address is `10.42.<project>.<n>`, which is not
+  unique across nodes — two nodes each numbering a project 2 is normal
+  and has to stay normal. And the overlay is a `/24` of *node*
+  addresses on purpose. So a replica that something elsewhere has to
+  reach needs a port published on its node's overlay address, and the
+  edge proxies to `10.42.0.<node>:<port>`. `proxy.rs` still needs no
+  changes — it already proxies to an arbitrary address — which was the
+  whole reason for choosing an overlay in the first place.
+
+  It also keeps the edge dumb: the owner knows where its replicas are
+  and whether they are up, so the errand carries the upstreams. An edge
+  that had to discover them would be a second thing with an opinion
+  about where a service is.
 
 This document is the plan and the record of what was decided and why.
 Phases 0 to 3 are in the tree and verified between two real nodes.
@@ -238,7 +264,8 @@ Still open:
 | 4 | Replicas | A service is *n* placements; the container id carries the index | next |
 | 5 | Placement | The form moves to the service; provenance, read-only, eviction | |
 | 6 | Reporting | The poll carries each replica's state back to the node that placed it | |
-| 7 | Errand: edge | A name reaches its replicas wherever they are; health, failover | |
+| 7 | Errand: edge | The owner picks public nodes to serve a name; they claim it, get the certificate, and proxy to the replicas | |
+| 8 | Groups | Health and failover across the upstreams of one name | |
 
 Phase 3 works and is in the wrong place, which is worth saying plainly
 rather than quietly reshaping. Its form lives on the *node* page — pick
@@ -249,9 +276,10 @@ from its own. Phases 4 and 5 are what fix both; the errand mechanism
 underneath them does not change.
 
 What used to be phases 4 and 5 — an edge routing a name to a container
-elsewhere, then groups — is now one phase at the end, because with
-replicas it is one problem: a name reaches *the replicas of a service*,
-wherever they are, and one of them being local is not a special case.
+elsewhere, then groups — is still two, but both moved and the first one
+grew: an edge is now anything the owner picks from the public nodes on
+the network, and a name reaches *the replicas of a service* wherever
+they are, with one of them being local not a special case.
 
 The spike is done and it reversed the overlay decision above. The
 interface comes up from the `node` table at every start and whenever a

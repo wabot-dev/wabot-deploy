@@ -158,16 +158,25 @@ impl ProjectPages {
 
         let mut rows = Vec::with_capacity(services.len());
         for service in services {
-            let observed = self.state.deployer.observe(&project, &service).await;
+            let observed = self
+                .state
+                .deployer
+                .observe_service(&project, &service)
+                .await;
+            // The address and the reason live on the copy that runs
+            // here — a service is *n* of them now, and this row still
+            // shows one.
+            let here =
+                crate::platform::replicas::here_for(&self.state.database, &service.id).await?;
             // The same value the stream sends, so the first paint and
             // every update after it cannot disagree about which action
             // applies or what the badge says.
             let cell = state_cell(
                 &observed,
                 deploying.contains(&service.id),
-                service.address.as_deref(),
+                here.as_ref().and_then(|replica| replica.address.as_deref()),
             );
-            rows.push((service, cell));
+            rows.push((service, cell, here.and_then(|replica| replica.last_error)));
         }
 
         let all_projects = access::projects_for(&self.state.database, &account).await?;
@@ -499,7 +508,10 @@ impl ProjectApi {
 /// rendered before the host wraps it.
 fn service_table(
     project: &crate::platform::projects::Project,
-    rows: &[(services::Service, StateCell)],
+    // The third is why the copy running here is not, when it is not.
+    // Carried alongside rather than read off the service: it belongs to
+    // a replica now, and a service is several of them.
+    rows: &[(services::Service, StateCell, Option<String>)],
     allowed: crate::accounts::roles::Access,
 ) -> impl Renderable {
     let inner = rsx! {
@@ -517,7 +529,7 @@ fn service_table(
                             </tr>
                         </thead>
                         <tbody>
-                            @for (service, cell) in rows {
+                            @for (service, cell, failure) in rows {
                                 <tr>
                                     <td>
                                         <a href=(format!(
@@ -563,7 +575,7 @@ fn service_table(
                                         }
                                     </td>
                                 </tr>
-                                @if let Some(failure) = &service.last_error {
+                                @if let Some(failure) = failure {
                                     <tr>
                                         <td colspan="4" class="failure">(failure)</td>
                                     </tr>
@@ -815,7 +827,7 @@ impl ProjectApi {
                     let deploying =
                         crate::deploy::jobs::deploying(&state.container).await;
                     for service in services {
-                        let observed = state.deployer.observe(&project, &service).await;
+                        let observed = state.deployer.observe_service(&project, &service).await;
                         let busy = deploying.contains(&service.id);
                         cells.insert(
                             service.id.clone(),
