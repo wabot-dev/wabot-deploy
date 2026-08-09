@@ -177,6 +177,27 @@ anyhow = "1"
 toml = "0.8"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+# The overlay's key pair. A WireGuard key is a Curve25519 key whichever
+# implementation ends up carrying the packets — the kernel module and
+# `boringtun` read the same base64 — so this commits to nothing that the
+# phase 2 spike is meant to decide. It is here now because the public
+# key travels *in* the join token, and a field added to that token later
+# means every node that already joined has to join again.
+#
+# `ring` cannot do this: its X25519 private keys are ephemeral by
+# construction and cannot be exported, and a key regenerated on every
+# start would invalidate every token already handed out.
+#
+# `static_secrets` for a key that can be stored, `getrandom` for
+# `StaticSecret::random`, `zeroize` so it does not linger in memory
+# after use. No `precomputed-tables`: that trades binary size for a
+# speed-up on repeated base-point multiplication, and this does exactly
+# one, once, ever.
+x25519-dalek = { version = "3", default-features = false, features = [
+    "static_secrets",
+    "getrandom",
+    "zeroize",
+] }
 
 [dev-dependencies]
 # The harnesses are a separate feature so a mock adapter can never

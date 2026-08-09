@@ -1,12 +1,14 @@
 //! What this machine is, and what it is spending.
 //!
-//! ## One node, in the plural
+//! ## The list moved
 //!
-//! There is exactly one node today — this one — and the console lists
-//! it as a list of one. That is not decoration: the shape of the page
-//! and the shape of the data are what a second node would arrive into,
-//! and a list that starts as a detail page never becomes a list
-//! without breaking every link into it.
+//! This module used to answer "what nodes are there" with a synthetic
+//! list of one, so that the page and the data would already be the
+//! shape a second node arrived into — a list that starts as a detail
+//! page never becomes a list without breaking every link into it. That
+//! second node is now possible, so the list is a table: see
+//! [`crate::network`]. What is left here is what only *this* machine
+//! can answer.
 //!
 //! ## Memory, attributed rather than totalled
 //!
@@ -25,51 +27,21 @@
 pub mod memory;
 pub mod settings;
 
-/// A node, as the console lists it.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Node {
-    /// Stable within this installation. `local` while a node can only
-    /// describe itself; a joined node would carry its own.
-    pub id: String,
-    /// What it answers to, or its hostname when it has no domain.
-    pub name: String,
-    pub domain: Option<String>,
-    pub version: &'static str,
-    /// True for the node serving this console.
-    pub is_self: bool,
-}
-
-pub const LOCAL_ID: &str = "local";
-
-impl Node {
-    pub fn local(domain: Option<String>) -> Self {
-        let hostname = std::fs::read_to_string("/proc/sys/kernel/hostname")
-            .ok()
-            .map(|name| name.trim().to_string())
-            .filter(|name| !name.is_empty());
-
-        Self {
-            id: LOCAL_ID.into(),
-            name: domain
-                .clone()
-                .or(hostname)
-                .unwrap_or_else(|| "this node".into()),
-            domain,
-            version: crate::api::VERSION,
-            is_self: true,
-        }
-    }
-}
-
-/// Every node this console knows about.
+/// What to call this machine in a list.
 ///
-/// One, and the plural is the point — see the module docs.
-pub fn all(domain: Option<String>) -> Vec<Node> {
-    vec![Node::local(domain)]
-}
+/// The domain if it answers to one, the kernel's hostname if not, and
+/// a placeholder if even that is missing — a blank row in a list of
+/// nodes is worse than a vague one.
+pub fn name(domain: Option<&str>) -> String {
+    let hostname = std::fs::read_to_string("/proc/sys/kernel/hostname")
+        .ok()
+        .map(|name| name.trim().to_string())
+        .filter(|name| !name.is_empty());
 
-pub fn find(domain: Option<String>, id: &str) -> Option<Node> {
-    all(domain).into_iter().find(|node| node.id == id)
+    domain
+        .map(str::to_string)
+        .or(hostname)
+        .unwrap_or_else(|| "this node".into())
 }
 
 #[cfg(test)]
@@ -78,26 +50,13 @@ mod tests {
 
     #[test]
     fn a_node_with_a_domain_is_named_by_it() {
-        let node = Node::local(Some("node.example".into()));
-        assert_eq!(node.name, "node.example");
-        assert_eq!(node.id, LOCAL_ID);
-        assert!(node.is_self);
+        assert_eq!(name(Some("node.example")), "node.example");
     }
 
     /// A node with no domain still has to be called something, or the
     /// list shows a blank row.
     #[test]
     fn a_node_without_a_domain_still_has_a_name() {
-        let node = Node::local(None);
-        assert!(!node.name.is_empty());
-    }
-
-    #[test]
-    fn the_list_contains_this_node() {
-        let nodes = all(None);
-
-        assert_eq!(nodes.len(), 1);
-        assert_eq!(find(None, LOCAL_ID), Some(nodes[0].clone()));
-        assert_eq!(find(None, "somewhere-else"), None);
+        assert!(!name(None).is_empty());
     }
 }

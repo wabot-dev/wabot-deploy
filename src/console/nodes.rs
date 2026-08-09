@@ -36,6 +36,7 @@ use wabot::rest::axum::response::Response;
 use wabot::rest::RestResult;
 use wabot::ui::hypertext::IntoView;
 
+use crate::network::{self, enrolment::Enrolment, Kind};
 use crate::node::memory::{self, Snapshot};
 use crate::platform::access;
 
@@ -52,6 +53,18 @@ pub struct NodePage {
     pub checked: Option<String>,
 }
 
+#[derive(Debug, Deserialize, Validate)]
+pub struct NodesPage {
+    pub error: Option<String>,
+    /// Names a join token this node is holding for one read. Not the
+    /// token — see `ConsoleState::reveals`.
+    pub shown: Option<String>,
+    /// The node this one has just joined. A name, not a secret, so the
+    /// query string is the right place for it — the same rule
+    /// `back_with_error` follows.
+    pub joined: Option<String>,
+}
+
 #[injectable]
 pub struct NodePages {
     state: Arc<ConsoleState>,
@@ -62,7 +75,7 @@ pub struct NodePages {
 impl NodePages {
     #[view("/nodes")]
     #[middleware(SessionMiddleware)]
-    async fn index(&self) -> UiResult<ViewOutcome> {
+    async fn index(&self, query: NodesPage) -> UiResult<ViewOutcome> {
         let Some(account) = signed_in(&self.auth) else {
             return Ok(Redirect::found("/sign-in").into());
         };
@@ -72,10 +85,21 @@ impl NodePages {
             return Ok(Redirect::found("/").into());
         }
 
-        let nodes = crate::node::all(
-            crate::node::settings::domain(&self.state.database, &self.state.config).await,
-        );
+        let nodes = network::all(&self.state.database).await?;
+        let enrolments = network::enrolment::all(&self.state.database).await?;
+        let authorities = network::authorities(&self.state.database).await?;
         let projects = access::projects_for(&self.state.database, &account).await?;
+        // Spent on read: the token exists in clear for exactly this one
+        // page load, and a query parameter would put it in the address
+        // bar, the history and every refresh. See `ConsoleState::reveals`.
+        let revealed = query
+            .shown
+            .as_deref()
+            .and_then(|nonce| self.state.reveals.take(nonce));
+        // Whether this node has an address another one could be told to
+        // call back on. Not a setting — see `network::Node::may_be_edge`.
+        let may_enrol = nodes.iter().any(|node| node.is_self && node.may_be_edge());
+        let now = super::now_ms();
 
         layout::head("Nodes");
         let frame = Frame::new(&account, Area::Nodes, &projects, None, "/nodes");
@@ -83,26 +107,94 @@ impl NodePages {
                 (layout::style_tag())
                 <h1>("Nodes")</h1>
                 <p class="tagline">(
-                    "One node runs this console and everything on it. \
-                     Joining a second is not a thing yet."
+                    "This node, and the ones that have agreed to take instructions \
+                     from it."
                 )</p>
+                @if let Some(message) = &query.error {
+                    (layout::error_note(message))
+                }
 
                 <div class="grid">
                     @for node in &nodes {
                         <a class="card tile" href=(format!("/nodes/{}", node.id))>
                             <div class="split">
                                 <p class="tile-name">(&node.name)</p>
-                                <span class="badge badge-success">
-                                    <span class="dot dot-success"></span>("Serving")
-                                </span>
+                                @if node.is_self {
+                                    <span class="badge badge-success">
+                                        <span class="dot dot-success"></span>("Serving")
+                                    </span>
+                                } @else {
+                                    // Not "up": nothing has asked it
+                                    // anything, so the only fact here is
+                                    // that it joined. A green dot would
+                                    // be this page inventing a health
+                                    // check it does not run.
+                                    <span class="badge badge-info">
+                                        <span class="dot dot-info"></span>("Joined")
+                                    </span>
+                                }
                             </div>
                             <p class="tile-detail">
-                                ("wabot-deploy ")(node.version)
-                                @if node.is_self { (" · this node") }
+                                @if node.is_self {
+                                    ("wabot-deploy ")(crate::api::VERSION)(" · this node")
+                                } @else {
+                                    (kind_word(node.kind))
+                                }
+                                @if let Some(address) = &node.overlay_ip {
+                                    (" · ")(address)
+                                }
                             </p>
                         </a>
                     }
                 </div>
+
+                @if let Some(token) = &revealed {
+                    <section class="card stack">
+                        <p class="card-label">("Run this on the other node")</p>
+                        <pre><code>("wabot-deploy join ")(token)</code></pre>
+                        <p class="field-hint">(
+                            "It works once and expires in 24 hours. This node will not \
+                             show it again — what is stored is its hash. The other \
+                             machine has to be a node already: install it there first, \
+                             then join."
+                        )</p>
+                    </section>
+                }
+
+                // Ordered by which one this node is for. A node that can
+                // be an edge is somebody's hub and wants to add nodes
+                // below it; a node that cannot is one somebody is
+                // pasting a token into, and burying that under a
+                // paragraph about a feature it does not have would put
+                // the only action it has second.
+                @if may_enrol {
+                    (enrol_card(true))
+                    (join_card(query.joined.as_deref(), &enrolments, now))
+                } @else {
+                    (join_card(query.joined.as_deref(), &enrolments, now))
+                    (enrol_card(false))
+                }
+
+                @if !authorities.is_empty() {
+                    <section class="stack">
+                        <p class="card-label">("Takes instructions from")</p>
+                        <p class="field-hint">(
+                            "Nodes this one has granted authority to. Revoking is one \
+                             row, and it takes effect here — a node that has been \
+                             revoked can ask for nothing."
+                        )</p>
+                        <table>
+                            <thead>
+                                <tr><th>("Node")</th><th>("State")</th><th></th></tr>
+                            </thead>
+                            <tbody>
+                                @for authority in &authorities {
+                                    (authority_row(authority, &nodes))
+                                }
+                            </tbody>
+                        </table>
+                    </section>
+                }
         }
         .render()
         .into_inner();
@@ -120,11 +212,55 @@ impl NodePages {
             return Ok(Redirect::found("/").into());
         }
         let domain = crate::node::settings::domain(&self.state.database, &self.state.config).await;
-        let Some(node) = crate::node::find(domain.clone(), &query.node) else {
+        let Some(node) = network::find(&self.state.database, &query.node).await? else {
             return Ok(Redirect::found("/nodes").into());
         };
 
         let projects = access::projects_for(&self.state.database, &account).await?;
+
+        // A node that is not this one has no memory reading and no
+        // certificate: both are answers only the machine itself can
+        // give, and nothing asks it anything yet. So the page says what
+        // is known rather than rendering cards full of "unknown".
+        if !node.is_self {
+            let path = format!("/nodes/{}", node.id);
+            layout::head(&node.name);
+            let frame = Frame::new(&account, Area::Nodes, &projects, None, path);
+            let body = rsx! {
+                    (layout::style_tag())
+                    <div class="split">
+                        <div class="stack-sm">
+                            <h1>(&node.name)</h1>
+                            <p class="slug-preview">(kind_word(node.kind))(" node")</p>
+                        </div>
+                        <a class="btn btn-ghost" href="/nodes">("All nodes")</a>
+                    </div>
+                    @if let Some(message) = &query.error {
+                        (layout::error_note(message))
+                    }
+                    (network_card(&node))
+
+                    <section class="card stack">
+                        <p class="card-label">("Forget this node")</p>
+                        <p class="field-hint">(
+                            "This node stops listing it. It is one direction only: the \
+                             other node still holds this one as an authority until \
+                             somebody revokes it there, from its own console. A grant \
+                             belongs to the node that made it."
+                        )</p>
+                        <form method="post" action=(format!("/nodes/forget/{}", node.id))>
+                            <button class="btn btn-ghost destructive" type="submit">
+                                ("Forget")
+                            </button>
+                        </form>
+                    </section>
+            }
+            .render()
+            .into_inner();
+
+            return Ok(frame.render(body).into_view().into());
+        }
+
         let snapshot = self.state.deployer.memory().await;
         let facts = super::certificate_facts(&self.state).await;
         let policy = crate::edge::policy::for_name(
@@ -165,7 +301,7 @@ impl NodePages {
                 <div class="split">
                     <div class="stack-sm">
                         <h1>(&node.name)</h1>
-                        <p class="slug-preview">("wabot-deploy ")(node.version)</p>
+                        <p class="slug-preview">("wabot-deploy ")(crate::api::VERSION)</p>
                     </div>
                     <a class="btn btn-ghost" href="/nodes">("All nodes")</a>
                 </div>
@@ -177,11 +313,276 @@ impl NodePages {
                 // arriving here by clicking a link left the page a
                 // snapshot with no sign that it was one.
                 (live_cards(&node.id, &cells, &state, &policy, domain.as_deref(), &query, &snapshot))
+
+                // Outside the island: none of it streams, and a card
+                // inside the host would be replaced by an update that
+                // has nothing to say about it.
+                (network_card(&node))
         }
         .render()
         .into_inner();
 
         Ok(frame.render(body).into_view().into())
+    }
+}
+
+/// Mint a token for a node that is not here yet — or say why not.
+///
+/// The refusal is a card rather than a hidden form: "this node cannot
+/// do that" is an answer, and a section that vanishes leaves somebody
+/// looking for the thing they read about.
+fn enrol_card(may_enrol: bool) -> impl Renderable {
+    rsx! {
+        <section class="stack">
+            <p class="card-label">("Add a private node")</p>
+            @if may_enrol {
+                <form method="post" action="/nodes/enrol" class="card stack">
+                    <label for="name">("What to call it")</label>
+                    <input id="name" name="name" type="text"
+                           placeholder="alpine" required>
+                    <p class="field-hint">(
+                        "This mints a token carrying this node's address, its overlay \
+                         key and an address on the overlay for the new node. Joining \
+                         with it there records this node as an authority — which that \
+                         node can revoke at any time — and tells this one it arrived."
+                    )</p>
+                    // The failure that will actually happen, said beside
+                    // the button rather than discovered on the far
+                    // machine: joining calls back over this hostname,
+                    // and a node serving its own authority's certificate
+                    // is one nothing else trusts yet.
+                    <p class="field-hint">(
+                        "The other machine has to trust the certificate this console \
+                         is served on. Until this node has a public one, joining will \
+                         refuse rather than send its token to whatever answered."
+                    )</p>
+                    <div class="actions">
+                        <button type="submit">("Create join token")</button>
+                    </div>
+                </form>
+            } @else {
+                <section class="card stack">
+                    <p>(
+                        "This node has no address another one could call back on, so it \
+                         cannot enrol anybody yet."
+                    )</p>
+                    <p class="field-hint">(
+                        "Set a domain on this node's own page. A joining node reaches it \
+                         over the same hostname and certificate this console is served \
+                         on, and that certificate has to be one the other machine \
+                         already trusts."
+                    )</p>
+                </section>
+            }
+        </section>
+    }
+}
+
+/// Paste a token from somewhere else, and what became of the ones this
+/// node minted.
+///
+/// One section, because they are two halves of the same question — the
+/// tokens this node handed out, and the one it was handed.
+fn join_card<'a>(
+    joined: Option<&'a str>,
+    enrolments: &'a [Enrolment],
+    now: i64,
+) -> impl Renderable + 'a {
+    rsx! {
+        <section class="stack">
+            <p class="card-label">("Join a network")</p>
+            @if let Some(name) = joined {
+                <section class="card stack">
+                    <p>("This node now takes instructions from ")(name)(".")</p>
+                    <p class="field-hint">(
+                        "Nothing travels yet — errands need the overlay. It is listed \
+                         below, and revoking it there takes effect here and \
+                         immediately."
+                    )</p>
+                </section>
+            }
+            <form method="post" action="/nodes/join" class="card stack">
+                <label for="token">("Join token")</label>
+                <input id="token" name="token" type="text" class="mono"
+                       placeholder="wdj1.…" autocomplete="off" required>
+                <p class="field-hint">(
+                    "From the nodes page of the node you are joining: add a private \
+                     node there, and it shows one token, once. Pasting it here does \
+                     what `wabot-deploy join` does in a terminal — this node records \
+                     that one as an authority and tells it so. The same token can be \
+                     pasted again if something goes wrong part-way."
+                )</p>
+                <div class="actions">
+                    <button type="submit">("Join")</button>
+                </div>
+            </form>
+
+            @if !enrolments.is_empty() {
+                <p class="card-label">("Tokens this node minted")</p>
+                <table>
+                    <thead>
+                        <tr>
+                            <th>("For")</th><th>("Address")</th>
+                            <th>("State")</th><th></th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @for enrolment in enrolments {
+                            (enrolment_row(enrolment, now))
+                        }
+                    </tbody>
+                </table>
+            }
+        </section>
+    }
+}
+
+/// What a node is, in the one word the list has room for.
+fn kind_word(kind: Kind) -> &'static str {
+    match kind {
+        Kind::Public => "public",
+        Kind::Private => "private",
+    }
+}
+
+/// What is known about a node's place on the overlay.
+///
+/// The same card for this node and for a joined one, because it is the
+/// same set of facts: an id other nodes use, a kind derived from
+/// reachability, an address, and a key. A node that has never enrolled
+/// anybody and never joined anything has neither of the last two, and
+/// says so rather than showing an empty row.
+fn network_card(node: &network::Node) -> impl Renderable + '_ {
+    rsx! {
+        <section class="card stack">
+            <div class="split">
+                <p class="card-label">("On this network")</p>
+                <span class="badge badge-info">
+                    <span class="dot dot-info"></span>(kind_word(node.kind))
+                </span>
+            </div>
+
+            <dl class="kv">
+                <dt>("Id")</dt>
+                <dd class="mono">(&node.id)</dd>
+                <dt>("Reachable at")</dt>
+                <dd class="mono">(node.endpoint.as_deref().unwrap_or("—"))</dd>
+                <dt>("Overlay address")</dt>
+                <dd class="mono">(node.overlay_ip.as_deref().unwrap_or("not on one"))</dd>
+                <dt>("Public key")</dt>
+                <dd class="mono">(node.public_key.as_deref().unwrap_or("none yet"))</dd>
+            </dl>
+
+            @if node.is_self {
+                <p class="note">(
+                    "A key and an address appear the first time this node enrols \
+                     another one or joins one itself. Nothing travels over the overlay \
+                     yet — an errand has no way to reach a node until there is a tunnel \
+                     to carry it."
+                )</p>
+            } @else {
+                <p class="note">(
+                    "Recorded when this node joined. Nothing has been sent to it — \
+                     errands need a tunnel, which is the next piece — so what is here \
+                     is what it said about itself when it arrived."
+                )</p>
+            }
+        </section>
+    }
+}
+
+/// One join token, and what became of it.
+fn enrolment_row(enrolment: &Enrolment, now: i64) -> impl Renderable + '_ {
+    let spent = enrolment.spent();
+    rsx! {
+        <tr>
+            <td>(&enrolment.name)</td>
+            <td class="mono">(&enrolment.overlay_ip)</td>
+            <td>
+                // "Is it still worth carrying to a machine" first,
+                // because it is the question somebody opens this table
+                // to answer.
+                @if enrolment.live(now) {
+                    <span class="badge badge-success">
+                        <span class="dot dot-success"></span>("Waiting")
+                    </span>
+                } @else if spent {
+                    <span class="badge">("Used")</span>
+                } @else {
+                    <span class="badge badge-warning">("Expired")</span>
+                }
+            </td>
+            <td>
+                // A used token is history, and withdrawing one would
+                // free an address a node is already answering to.
+                @if !spent {
+                    <form method="post"
+                          action=(format!("/nodes/enrolments/{}/withdraw", enrolment.id))>
+                        <button class="btn btn-ghost destructive btn-sm" type="submit">
+                            ("Withdraw")
+                        </button>
+                    </form>
+                }
+            </td>
+        </tr>
+    }
+}
+
+/// One authority, named by the node it belongs to when that node is
+/// known here — an id is not something anybody recognises.
+fn authority_row<'a>(
+    authority: &'a network::Authority,
+    nodes: &'a [network::Node],
+) -> impl Renderable + 'a {
+    let name = nodes
+        .iter()
+        .find(|node| node.id == authority.node_id)
+        .map(|node| node.name.as_str())
+        .unwrap_or(authority.node_id.as_str());
+
+    rsx! {
+        <tr>
+            <td>
+                (name)
+                <span class="tile-detail">(" ")(&authority.node_id)</span>
+            </td>
+            <td>
+                @if authority.live() {
+                    <span class="badge badge-success">
+                        <span class="dot dot-success"></span>("Allowed")
+                    </span>
+                } @else {
+                    <span class="badge">("Revoked")</span>
+                }
+            </td>
+            <td>
+                @if authority.live() {
+                    <form method="post"
+                          action=(format!("/nodes/revoke/{}", authority.node_id))>
+                        <button class="btn btn-ghost destructive btn-sm" type="submit">
+                            ("Revoke")
+                        </button>
+                    </form>
+                }
+            </td>
+        </tr>
+    }
+}
+
+/// Where this node's own page is.
+///
+/// Looked up rather than named by a constant: the id is minted when the
+/// node is installed, so there is no path a `const` could hold. Back to
+/// the list if there is somehow no row — a redirect to a page that does
+/// not exist is worse than one to the page above it.
+async fn self_path(database: &wabot::sqlite::SqliteDatabase) -> String {
+    match network::me(database).await {
+        Ok(Some(me)) => format!("/nodes/{}", me.id),
+        Ok(None) => "/nodes".to_string(),
+        Err(error) => {
+            tracing::warn!(%error, "could not read this node's own row");
+            "/nodes".to_string()
+        }
     }
 }
 
@@ -671,7 +1072,7 @@ impl NodeApi {
         if !account.is_admin() {
             return Ok(super::auth::see_other("/"));
         }
-        let here = "/nodes/local";
+        let here = &self_path(&self.state.database).await;
 
         let form = match super::auth::read_form(request).await {
             Ok(form) => form,
@@ -743,6 +1144,204 @@ impl NodeApi {
         )))
     }
 
+    /// Mint a join token for a node that does not exist here yet.
+    ///
+    /// Everything the other machine needs is decided here, because
+    /// everything it needs is this node's to decide: the address on
+    /// this node's overlay, the key it will talk to, and the secret it
+    /// will authenticate with. The token is shown once and then only
+    /// its hash is kept.
+    #[post("/nodes/enrol")]
+    #[raw]
+    #[middleware(SessionMiddleware)]
+    async fn enrol(&self, request: Request) -> RestResult<Response> {
+        let Some(account) = signed_in(&self.auth) else {
+            return Ok(super::auth::see_other("/sign-in"));
+        };
+        // Enrolling a node is not a project-level decision: it grants
+        // whoever holds the token a place on this node's network.
+        if !account.is_admin() {
+            return Ok(super::auth::see_other("/"));
+        }
+        let here = "/nodes";
+
+        let form = match super::auth::read_form(request).await {
+            Ok(form) => form,
+            Err(response) => return Ok(response),
+        };
+        let name = super::auth::field(&form, "name");
+        if name.is_empty() || name.chars().count() > 60 {
+            return Ok(super::auth::back_with_error(
+                here,
+                "give the node a name — a list of unnamed tokens is unreadable",
+            ));
+        }
+
+        // A key, a row and an address for this node, in that order, and
+        // only now: a node that never enrols anybody needs none of them.
+        let me = network::ensure_hub(&self.state.database, &self.state.config).await?;
+        // Refused rather than minted into a token nothing can use: the
+        // endpoint is what the other node calls back on, and a token
+        // carrying no address is one that fails on the far machine
+        // where nobody is watching.
+        let Some(endpoint) = me.endpoint.clone().filter(|_| me.may_be_edge()) else {
+            return Ok(super::auth::back_with_error(
+                here,
+                "this node has no address another one could call back on — set a domain first",
+            ));
+        };
+        let Some(public_key) = network::keys::public_key(&self.state.database).await else {
+            return Ok(super::auth::back_with_error(
+                here,
+                "this node has no overlay key yet",
+            ));
+        };
+        let Some(overlay_ip) = me.overlay_ip.clone() else {
+            return Ok(super::auth::back_with_error(
+                here,
+                "this node has no address on its own overlay yet",
+            ));
+        };
+
+        let assigned_ip = network::overlay::allocate(&self.state.database).await?;
+        let (_, secret) =
+            network::enrolment::create(&self.state.database, name, &assigned_ip, &account.id)
+                .await?;
+
+        let token = network::token::JoinToken {
+            authority: me.id,
+            name: me.name,
+            endpoint,
+            public_key,
+            overlay_ip,
+            assigned_ip,
+            secret,
+        };
+
+        // The nonce travels, not the token. This is the only moment it
+        // exists in clear, and a query string is read by the address
+        // bar, the history and every refresh — the same reason a push
+        // token stopped travelling that way. See `ConsoleState::reveals`.
+        let nonce = self.state.reveals.stash(token.encode());
+        Ok(super::auth::see_other(&format!(
+            "{here}?{}",
+            form_urlencoded::Serializer::new(String::new())
+                .append_pair("shown", &nonce)
+                .finish()
+        )))
+    }
+
+    /// Take instructions from the node that minted this token.
+    ///
+    /// The console's door onto the same work `wabot-deploy join` does,
+    /// and the reason it exists: a node that is already installed and
+    /// already answering is one somebody is looking at through a
+    /// browser, and telling them to go and find its terminal for a
+    /// one-field form is telling them to go somewhere else to do the
+    /// thing they are already here for.
+    ///
+    /// Inline rather than queued, unlike a deployment. It is one
+    /// request with a timeout, and its whole value is the answer: a
+    /// join that failed has a reason, and a reason nobody sees is the
+    /// failure this console exists to prevent.
+    #[post("/nodes/join")]
+    #[raw]
+    #[middleware(SessionMiddleware)]
+    async fn join(&self, request: Request) -> RestResult<Response> {
+        let Some(account) = signed_in(&self.auth) else {
+            return Ok(super::auth::see_other("/sign-in"));
+        };
+        // Granting another node authority over this one is the largest
+        // thing anybody can do from this console.
+        if !account.is_admin() {
+            return Ok(super::auth::see_other("/"));
+        }
+        let here = "/nodes";
+
+        let form = match super::auth::read_form(request).await {
+            Ok(form) => form,
+            Err(response) => return Ok(response),
+        };
+        let token = super::auth::field(&form, "token");
+        if token.is_empty() {
+            return Ok(super::auth::back_with_error(here, "paste the join token"));
+        }
+
+        // The token is never carried back — not into the query string,
+        // not into the form's value. A refusal says what was wrong with
+        // it, which is all somebody needs to paste it again.
+        match network::join::join(&self.state.database, &self.state.config, token).await {
+            Ok(joined) => Ok(super::auth::see_other(&format!(
+                "{here}?{}",
+                form_urlencoded::Serializer::new(String::new())
+                    .append_pair("joined", &joined.authority.name)
+                    .finish()
+            ))),
+            Err(error) => Ok(super::auth::back_with_error(here, &error.to_string())),
+        }
+    }
+
+    /// Withdraw a token nobody has spent.
+    #[post("/nodes/enrolments/:enrolment/withdraw")]
+    #[raw]
+    #[middleware(SessionMiddleware)]
+    async fn withdraw(&self, request: Request) -> RestResult<Response> {
+        let Some(account) = signed_in(&self.auth) else {
+            return Ok(super::auth::see_other("/sign-in"));
+        };
+        if !account.is_admin() {
+            return Ok(super::auth::see_other("/"));
+        }
+
+        let path = request.uri().path().to_string();
+        if let Some(id) = super::auth::segments(&path).get(2) {
+            network::enrolment::withdraw(&self.state.database, id).await?;
+        }
+        Ok(super::auth::see_other("/nodes"))
+    }
+
+    /// Stop listing a node.
+    #[post("/nodes/forget/:node")]
+    #[raw]
+    #[middleware(SessionMiddleware)]
+    async fn forget_node(&self, request: Request) -> RestResult<Response> {
+        let Some(account) = signed_in(&self.auth) else {
+            return Ok(super::auth::see_other("/sign-in"));
+        };
+        if !account.is_admin() {
+            return Ok(super::auth::see_other("/"));
+        }
+
+        let path = request.uri().path().to_string();
+        if let Some(id) = super::auth::segments(&path).get(2) {
+            network::forget(&self.state.database, id).await?;
+        }
+        Ok(super::auth::see_other("/nodes"))
+    }
+
+    /// Stop taking instructions from a node.
+    ///
+    /// The half of joining that makes it not a one-way door. It takes
+    /// effect here and nowhere else — the other node keeps whatever it
+    /// recorded, and finds out by being refused.
+    #[post("/nodes/revoke/:node")]
+    #[raw]
+    #[middleware(SessionMiddleware)]
+    async fn revoke_authority(&self, request: Request) -> RestResult<Response> {
+        let Some(account) = signed_in(&self.auth) else {
+            return Ok(super::auth::see_other("/sign-in"));
+        };
+        if !account.is_admin() {
+            return Ok(super::auth::see_other("/"));
+        }
+
+        let path = request.uri().path().to_string();
+        if let Some(id) = super::auth::segments(&path).get(2) {
+            network::revoke(&self.state.database, id).await?;
+        }
+        Ok(super::auth::see_other("/nodes"))
+    }
+
     /// Choose where this name's certificate comes from.
     ///
     /// The file pair is read and checked *here*, before the choice is
@@ -762,7 +1361,7 @@ impl NodeApi {
         if !account.is_admin() {
             return Ok(super::auth::see_other("/"));
         }
-        let here = "/nodes/local";
+        let here = &self_path(&self.state.database).await;
 
         let form = match super::auth::read_form(request).await {
             Ok(form) => form,
@@ -863,8 +1462,16 @@ impl NodeApi {
             .get(1)
             .map(|id| id.to_string())
             .unwrap_or_default();
-        let known = crate::node::settings::domain(&self.state.database, &self.state.config).await;
-        if crate::node::find(known, &id).is_none() {
+        // Only this node's own page has a stream. What it carries — a
+        // memory reading and a certificate — are answers only the
+        // machine itself can give, so a stream for a joined node would
+        // be this one reporting its own figures under somebody else's
+        // name.
+        let mine = network::me(&self.state.database)
+            .await
+            .unwrap_or_default()
+            .is_some_and(|me| me.id == id);
+        if !mine {
             return Ok(Response::builder()
                 .status(StatusCode::NOT_FOUND)
                 .body(Body::empty())
@@ -1064,7 +1671,10 @@ pub(crate) mod tests {
             .await
             .body;
         assert!(body.contains("Nodes"), "{body}");
-        assert!(body.contains("/nodes/local"), "the node links to itself");
+        assert!(
+            body.contains(&console.node_path),
+            "the node links to itself: {body}"
+        );
     }
 
     #[tokio::test]
@@ -1074,7 +1684,7 @@ pub(crate) mod tests {
 
         let body = console
             .harness
-            .get("/nodes/local")
+            .get(&console.node_path)
             .header("cookie", &cookie)
             .send()
             .await
@@ -1114,7 +1724,7 @@ pub(crate) mod tests {
 
         let body = console
             .harness
-            .get("/nodes/local")
+            .get(&console.node_path)
             .header("cookie", &cookie)
             .send()
             .await
@@ -1164,7 +1774,7 @@ pub(crate) mod tests {
         let fragment = console
             .ui
             .with_header("cookie", cookie)
-            .navigate("/nodes/local")
+            .navigate(&console.node_path)
             .await;
 
         let html = fragment.html();
@@ -1189,7 +1799,7 @@ pub(crate) mod tests {
 
         let body = console
             .harness
-            .get("/nodes/local")
+            .get(&console.node_path)
             .header("cookie", &cookie)
             .send()
             .await
@@ -1218,7 +1828,7 @@ pub(crate) mod tests {
 
         let body = console
             .harness
-            .get("/nodes/local")
+            .get(&console.node_path)
             .header("cookie", &cookie)
             .send()
             .await
@@ -1323,7 +1933,10 @@ pub(crate) mod tests {
 
         response.assert_status(StatusCode::SEE_OTHER);
         let location = response.header("location").unwrap_or_default();
-        assert!(location.starts_with("/nodes/local?error="), "{location}");
+        assert!(
+            location.starts_with(&format!("{}?error=", console.node_path)),
+            "{location}"
+        );
 
         assert_eq!(
             crate::node::settings::domain(&console.database, &Config::default()).await,
@@ -1395,8 +2008,365 @@ pub(crate) mod tests {
         let console = Console::new().await;
         console.signed_in().await;
 
-        let response = console.harness.get("/nodes/local/live").send().await;
+        let response = console
+            .harness
+            .get(&format!("{}/live", console.node_path))
+            .send()
+            .await;
         response.assert_status(StatusCode::UNAUTHORIZED);
+    }
+
+    /// A node with nowhere to be called back on cannot enrol anybody,
+    /// and the page has to say which of the two it is rather than
+    /// offering a form whose token would fail on the far machine.
+    #[tokio::test]
+    async fn a_node_with_no_address_explains_why_it_cannot_enrol() {
+        let console = Console::new().await;
+        let cookie = console.signed_in().await;
+
+        let body = console
+            .harness
+            .get("/nodes")
+            .header("cookie", &cookie)
+            .send()
+            .await
+            .body;
+        assert!(
+            body.contains("no address another one could call back on"),
+            "{body}"
+        );
+        assert!(!body.contains("/nodes/enrol"), "and offers no form: {body}");
+
+        // And the endpoint behind it is the boundary, not the form.
+        let response = console
+            .harness
+            .post("/nodes/enrol")
+            .header("cookie", &cookie)
+            .form(&[("name", "alpine")])
+            .send()
+            .await;
+        assert!(response
+            .header("location")
+            .is_some_and(|to| to.contains("error=")));
+    }
+
+    /// Mint a token the way the console does, and read it back out of
+    /// the one page load that will ever show it.
+    async fn enrol(console: &Console, cookie: &str, name: &str) -> String {
+        crate::node::settings::set_domain(&console.database, Some("hub.example"))
+            .await
+            .expect("domain");
+        crate::network::ensure_self(&console.database, &Config::default())
+            .await
+            .expect("this node");
+
+        let response = console
+            .harness
+            .post("/nodes/enrol")
+            .header("cookie", cookie)
+            .form(&[("name", name)])
+            .send()
+            .await;
+        response.assert_status(StatusCode::SEE_OTHER);
+        let location = response.header("location").expect("redirected");
+
+        console
+            .harness
+            .get(location)
+            .header("cookie", cookie)
+            .send()
+            .await
+            .body
+    }
+
+    /// The whole enrolment surface: a token, shown once, with the
+    /// command that spends it — and an address held for the node it
+    /// was minted for.
+    #[tokio::test]
+    async fn a_join_token_is_shown_once_with_what_to_do_with_it() {
+        let console = Console::new().await;
+        let cookie = console.signed_in().await;
+
+        let body = enrol(&console, &cookie, "alpine").await;
+        let shown = body
+            .split_once("wabot-deploy join ")
+            .map(|(_, rest)| rest.split('<').next().unwrap_or_default().to_string())
+            .expect("the command to run, with the token in it");
+        assert!(shown.starts_with("wdj1."), "{body}");
+        assert!(body.contains("alpine"), "the list names it: {body}");
+        assert!(body.contains("10.42.0.2"), "and holds an address: {body}");
+
+        // A second load of the same page shows nothing: the token is
+        // stored hashed, and the nonce that named it is spent. Compared
+        // against the token itself rather than the prefix — the join
+        // form's placeholder carries that, and matching on it would be
+        // a test that passes because it found the wrong thing.
+        let again = console
+            .harness
+            .get("/nodes")
+            .header("cookie", &cookie)
+            .send()
+            .await
+            .body;
+        assert!(!again.contains(&shown), "the token came back: {again}");
+        assert!(
+            again.contains("Waiting"),
+            "but the token is listed: {again}"
+        );
+    }
+
+    /// Withdrawing gives the address back, so a token minted by mistake
+    /// does not cost the overlay an address for ever.
+    #[tokio::test]
+    async fn a_token_can_be_withdrawn() {
+        let console = Console::new().await;
+        let cookie = console.signed_in().await;
+        enrol(&console, &cookie, "alpine").await;
+
+        let enrolment = crate::network::enrolment::all(&console.database)
+            .await
+            .expect("list")
+            .pop()
+            .expect("one");
+        console
+            .harness
+            .post(&format!("/nodes/enrolments/{}/withdraw", enrolment.id))
+            .header("cookie", &cookie)
+            .send()
+            .await
+            .assert_status(StatusCode::SEE_OTHER);
+
+        assert!(crate::network::enrolment::all(&console.database)
+            .await
+            .expect("list")
+            .is_empty());
+    }
+
+    /// Putting a node on this one's network is not something a member
+    /// of one project gets to do.
+    #[tokio::test]
+    async fn only_an_admin_may_enrol_a_node() {
+        let console = Console::new().await;
+        let admin = console.signed_in().await;
+        let member = console.joined_as(&admin, "member").await;
+        crate::node::settings::set_domain(&console.database, Some("hub.example"))
+            .await
+            .expect("domain");
+        crate::network::ensure_self(&console.database, &Config::default())
+            .await
+            .expect("this node");
+
+        let response = console
+            .harness
+            .post("/nodes/enrol")
+            .header("cookie", &member)
+            .form(&[("name", "alpine")])
+            .send()
+            .await;
+
+        response.assert_status(StatusCode::SEE_OTHER);
+        assert_eq!(response.header("location"), Some("/"));
+        assert!(
+            crate::network::enrolment::all(&console.database)
+                .await
+                .expect("list")
+                .is_empty(),
+            "a member enrolled a node"
+        );
+    }
+
+    /// A joined node's page is what is known about it, not this node's
+    /// figures under somebody else's name. It has no memory reading and
+    /// no certificate, and nothing has asked it anything.
+    #[tokio::test]
+    async fn a_joined_nodes_page_shows_what_is_known_and_no_more() {
+        let console = Console::new().await;
+        let cookie = console.signed_in().await;
+        joined(&console, "nd-elsewhere1").await;
+
+        let body = console
+            .harness
+            .get("/nodes/nd-elsewhere1")
+            .header("cookie", &cookie)
+            .send()
+            .await
+            .body;
+        assert!(body.contains("10.42.0.9"), "its address: {body}");
+        assert!(body.contains("private node"), "{body}");
+        assert!(body.contains("Forget"), "and a way to stop listing it");
+        assert!(
+            !body.contains("Save domain") && !body.contains("data-cell=\"summary\""),
+            "it rendered this node's own cards: {body}"
+        );
+
+        // The stream belongs to this node's page alone — it carries a
+        // memory reading, and there is nowhere to get that node's.
+        console
+            .harness
+            .get("/nodes/nd-elsewhere1/live")
+            .header("cookie", &cookie)
+            .send()
+            .await
+            .assert_status(StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn a_node_can_be_forgotten_from_its_page() {
+        let console = Console::new().await;
+        let cookie = console.signed_in().await;
+        joined(&console, "nd-elsewhere1").await;
+
+        console
+            .harness
+            .post("/nodes/forget/nd-elsewhere1")
+            .header("cookie", &cookie)
+            .send()
+            .await
+            .assert_status(StatusCode::SEE_OTHER);
+
+        assert_eq!(
+            crate::network::find(&console.database, "nd-elsewhere1")
+                .await
+                .expect("query"),
+            None
+        );
+    }
+
+    /// The half of joining that makes it not a one-way door, from the
+    /// console of the node that granted it.
+    #[tokio::test]
+    async fn an_authority_can_be_revoked_from_this_page() {
+        let console = Console::new().await;
+        let cookie = console.signed_in().await;
+        crate::network::grant(&console.database, "nd-hub0000001", "a-secret")
+            .await
+            .expect("grant");
+
+        let body = console
+            .harness
+            .get("/nodes")
+            .header("cookie", &cookie)
+            .send()
+            .await
+            .body;
+        assert!(body.contains("Takes instructions from"), "{body}");
+        assert!(body.contains("nd-hub0000001"), "{body}");
+
+        console
+            .harness
+            .post("/nodes/revoke/nd-hub0000001")
+            .header("cookie", &cookie)
+            .send()
+            .await
+            .assert_status(StatusCode::SEE_OTHER);
+
+        assert!(
+            !crate::network::is_authorised(&console.database, "nd-hub0000001").await,
+            "it may still send this node errands"
+        );
+    }
+
+    /// The reason this form exists: a node that is already installed
+    /// and already answering is one somebody is looking at through a
+    /// browser, and joining must not send them to find its terminal.
+    #[tokio::test]
+    async fn the_nodes_page_offers_to_join_a_network() {
+        let console = Console::new().await;
+        let cookie = console.signed_in().await;
+
+        let body = console
+            .harness
+            .get("/nodes")
+            .header("cookie", &cookie)
+            .send()
+            .await
+            .body;
+        assert!(body.contains("Join a network"), "{body}");
+        assert!(body.contains("/nodes/join"), "the form posts somewhere");
+        assert!(body.contains("name=\"token\""), "{body}");
+    }
+
+    /// A refusal has to land on the page with its reason, and the token
+    /// must not travel back with it — not into the query string, not
+    /// into the form. It is the one secret this page handles.
+    #[tokio::test]
+    async fn a_join_that_is_refused_says_why_without_echoing_the_token() {
+        let console = Console::new().await;
+        let cookie = console.signed_in().await;
+
+        let response = console
+            .harness
+            .post("/nodes/join")
+            .header("cookie", &cookie)
+            .form(&[("token", "wdj1.not-a-real-token")])
+            .send()
+            .await;
+
+        response.assert_status(StatusCode::SEE_OTHER);
+        let location = response.header("location").unwrap_or_default();
+        assert!(location.starts_with("/nodes?error="), "{location}");
+        assert!(
+            !location.contains("wdj1"),
+            "the token came back in the URL: {location}"
+        );
+
+        // And nothing was granted on the strength of it.
+        assert!(crate::network::authorities(&console.database)
+            .await
+            .expect("query")
+            .is_empty());
+
+        let body = console
+            .harness
+            .get(location)
+            .header("cookie", &cookie)
+            .send()
+            .await
+            .body;
+        assert!(
+            body.contains("damaged"),
+            "the reason reaches the page: {body}"
+        );
+        assert!(!body.contains("not-a-real-token"), "{body}");
+    }
+
+    /// Granting another node authority over this one is the largest
+    /// thing anybody can do from this console.
+    #[tokio::test]
+    async fn only_an_admin_may_join_a_network() {
+        let console = Console::new().await;
+        let admin = console.signed_in().await;
+        let member = console.joined_as(&admin, "member").await;
+
+        let response = console
+            .harness
+            .post("/nodes/join")
+            .header("cookie", &member)
+            .form(&[("token", "wdj1.whatever")])
+            .send()
+            .await;
+
+        response.assert_status(StatusCode::SEE_OTHER);
+        assert_eq!(response.header("location"), Some("/"));
+    }
+
+    /// A node that arrived through a join, as the API writes it.
+    async fn joined(console: &Console, id: &str) {
+        crate::network::save(
+            &console.database,
+            &crate::network::Node {
+                id: id.into(),
+                name: "alpine.example".into(),
+                kind: Kind::Private,
+                endpoint: None,
+                public_key: Some("0hEr0DzTvMDTRfPPmYFCVCQ1cA0nnUnP+2fFqZBBBGQ=".into()),
+                overlay_ip: Some("10.42.0.9".into()),
+                is_self: false,
+                last_seen_at: Some(super::super::now_ms()),
+            },
+        )
+        .await
+        .expect("save");
     }
 
     #[tokio::test]
@@ -1404,7 +2374,7 @@ pub(crate) mod tests {
         let console = Console::new().await;
         console.signed_in().await;
 
-        for path in ["/nodes", "/nodes/local"] {
+        for path in ["/nodes", &console.node_path] {
             let response = console.harness.get(path).send().await;
             assert_eq!(
                 response.header("location"),

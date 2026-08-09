@@ -77,6 +77,23 @@ the first administrator.
 | **People** | admin/member on the node, owner/deployer/viewer per project, invitations by link |
 | **Node page** | memory attributed to the platform, the runtime, the shims and your containers |
 | **Updates** | install a published release with one click; never on a timer |
+| **A second node** | a node with a public address can enrol another one, which then takes instructions from it |
+
+## A second node
+
+From the nodes page of a node that answers to a name: add a private
+node, and it mints a join token, shown once.
+
+Take it to the other machine — installed already, this is not an
+installer — and spend it either way round: paste it into that node's own
+nodes page, or run `wabot-deploy join <token>` there. Both record the
+first node as an authority, tell it so, and take an address on the
+overlay.
+
+Nothing is sent across yet. Authority is directed and revocable from the
+node that granted it, which is the whole model:
+[`docs/network.md`](docs/network.md) is the plan and the record of what
+was decided.
 
 ## Updating
 
@@ -162,7 +179,7 @@ what is missing. Read-only; safe on a live node.
 
 | | |
 | --- | --- |
-| `src/cli.rs`, `src/commands/` | the verbs: `install`, `serve`, `doctor`, `setup-token`, `containerd` |
+| `src/cli.rs`, `src/commands/` | the verbs: `install`, `serve`, `doctor`, `join`, `setup-token`, `containerd` |
 | `src/config.rs`, `src/db.rs`, `src/ledger.rs` | configuration, migrations, which install steps have run |
 | `src/api.rs` | `/healthz`, `/readyz` and the control-plane surface |
 | `src/edge/` | TLS, certificates, ACME, host routing, the reverse proxy |
@@ -173,6 +190,7 @@ what is missing. Read-only; safe on a live node.
 | `src/accounts/` | accounts, sessions, invitations, roles |
 | `src/deploy/` | deploying a service, DNS checks, route synchronisation |
 | `src/node/` | what this machine is: memory, settings |
+| `src/network/` | the nodes it knows, who may configure it, enrolment |
 | `src/update/` | the release catalogue and the self-update |
 | `src/console/` | the web console |
 | `migrations/` | embedded with `include_str!`, so the binary stands alone |

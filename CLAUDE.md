@@ -189,9 +189,24 @@ Publishing a release is outward-facing. Ask first.
 ## The network work
 
 [`docs/network.md`](docs/network.md) is the plan and the record of what
-was decided. Phase 0 — the model — is in the tree; nothing consumes it
-yet, which is why `src/network/mod.rs` carries an `allow(dead_code)`
-that names what removes it.
+was decided. Phases 0 and 1 — the model, and enrolment on top of it —
+are in the tree: a public node mints a join token, the joining node
+records it as an authority and calls back, and the nodes page lists the
+`node` table. A token can be spent from the joining node's console or
+from its terminal — `network::join` is the one implementation, and both
+doors are thin over it.
 
-Next: seed the self row in `install`, have the console read the `node`
-table instead of the synthetic list of one, then phase 1 (enrolment).
+Two things about it that are easy to get wrong from the outside:
+
+- **A node's id is its own.** Minted at `install`, kept for ever, and
+  what every other node calls it. The enrolling node allocates the
+  overlay address and nothing else.
+- **Nothing travels between nodes yet.** The one call that exists goes
+  *from* the joining node *to* the authority, once, at join time.
+  Errands need the overlay, which is phase 2.
+
+Next: the phase 2 spike — kernel WireGuard against `boringtun`, on the
+Alpine node, before anything is committed to.
+
+Phase 1 has not run between two real nodes yet. See the end of
+`docs/network.md` for what that check is expected to surface.

@@ -1,7 +1,8 @@
 //! wabot-deploy — container deployments on a node you own.
 //!
-//! One binary, three verbs: `install` sets the machine up, `serve` is
-//! what systemd runs, `doctor` says what state things are in.
+//! One binary: `install` sets the machine up, `serve` is what systemd
+//! runs, `doctor` says what state things are in, and `join` makes this
+//! node part of somebody else's network.
 //!
 //! Everything is wired by hand on purpose: nothing is discovered, so a
 //! component left unregistered is a compile error rather than a route
@@ -65,6 +66,7 @@ fn main() -> std::process::ExitCode {
             Command::Install(args) => commands::install::run(config, &cli.config, args).await,
             Command::Serve => commands::serve::run(config).await,
             Command::Doctor => commands::doctor::run(config, &cli.config).await,
+            Command::Join { token } => commands::join::run(config, &token).await,
             Command::SetupToken => commands::setup_token::run(config).await,
             Command::Containerd { pull, run, port } => {
                 commands::containerd::run(pull, run, port).await

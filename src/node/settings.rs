@@ -69,7 +69,13 @@ pub async fn set_acme_error(database: &SqliteDatabase, message: Option<&str>) ->
     write(database, ACME_ERROR, message.unwrap_or_default()).await
 }
 
-async fn read(database: &SqliteDatabase, key: &str) -> SqliteResult<Option<String>> {
+/// The same table, for a caller that owns its own key.
+///
+/// `pub(crate)` rather than another pair of named accessors here: the
+/// `setting` table is the node's key-value store and this module is
+/// where opening it lives, but what `network.private_key` means is
+/// `network::keys`'s business, not this module's.
+pub(crate) async fn read(database: &SqliteDatabase, key: &str) -> SqliteResult<Option<String>> {
     let key = key.to_string();
     database
         .read(move |connection| {
@@ -84,7 +90,7 @@ async fn read(database: &SqliteDatabase, key: &str) -> SqliteResult<Option<Strin
         .await
 }
 
-async fn write(database: &SqliteDatabase, key: &str, value: &str) -> SqliteResult<()> {
+pub(crate) async fn write(database: &SqliteDatabase, key: &str, value: &str) -> SqliteResult<()> {
     let (key, value) = (key.to_string(), value.to_string());
     database
         .write(move |connection| {

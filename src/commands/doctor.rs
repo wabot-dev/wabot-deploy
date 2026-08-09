@@ -229,6 +229,81 @@ pub async fn run(config: Config, config_path: &Path) -> anyhow::Result<i32> {
     }
 
     println!();
+    println!("network");
+    // The one place `join` can be checked from. Everything it wrote is
+    // on this machine, and until there is a tunnel there is nothing to
+    // ask the other node — so what an operator needs is this printed
+    // back rather than a connection test that cannot exist yet.
+    match crate::network::me(&database).await {
+        Ok(Some(me)) => {
+            println!("  this node   {} ({})", me.name, me.id);
+            println!("  kind        {}", me.kind.as_str());
+            println!(
+                "  reachable   {}",
+                me.endpoint.as_deref().unwrap_or("(no address to dial)")
+            );
+            println!(
+                "  overlay     {}",
+                me.overlay_ip.as_deref().unwrap_or("(not on one)")
+            );
+            println!(
+                "  public key  {}",
+                me.public_key.as_deref().unwrap_or("(none yet)")
+            );
+        }
+        Ok(None) => {
+            // Convergent on the next start, so it is worth saying and
+            // not worth failing over.
+            println!("  this node has no row of its own yet; `serve` writes one");
+        }
+        Err(error) => {
+            println!("  unreadable: {error}");
+            problems += 1;
+        }
+    }
+
+    match crate::network::authorities(&database).await {
+        Ok(authorities) if authorities.is_empty() => {
+            println!("  takes instructions from nobody");
+        }
+        Ok(authorities) => {
+            for authority in &authorities {
+                println!(
+                    "  authority   {} {}",
+                    authority.node_id,
+                    if authority.live() {
+                        "allowed"
+                    } else {
+                        "revoked"
+                    }
+                );
+            }
+        }
+        Err(error) => {
+            println!("  authorities unreadable: {error}");
+            problems += 1;
+        }
+    }
+
+    match crate::network::all(&database).await {
+        Ok(nodes) => {
+            for node in nodes.iter().filter(|node| !node.is_self) {
+                println!(
+                    "  knows       {} ({}) {} {}",
+                    node.name,
+                    node.id,
+                    node.kind.as_str(),
+                    node.overlay_ip.as_deref().unwrap_or("—")
+                );
+            }
+        }
+        Err(error) => {
+            println!("  nodes unreadable: {error}");
+            problems += 1;
+        }
+    }
+
+    println!();
     println!("install steps");
     let entries = ledger::all(&database).await.unwrap_or_default();
     for (step, state, is_problem) in step_states(&entries) {

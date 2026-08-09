@@ -126,6 +126,15 @@ pub async fn run(mut config: Config, config_path: &Path, args: InstallArgs) -> a
     config.node.domain = domain.clone();
     let renamed = domain != previous;
 
+    // What this node is, as a row other nodes can be listed beside.
+    // After the domain is settled, because whether this node is public
+    // is derived from whether it answers to a name — see
+    // `network::ensure_self`. Not fatal: a node that cannot write this
+    // row still installs, and `serve` writes it on the next start.
+    if let Err(error) = crate::network::ensure_self(&database, &config).await {
+        tracing::warn!(%error, "could not record what this node is");
+    }
+
     // Something to serve on the new name immediately, whatever the
     // authority says next. Without this a rename leaves the node
     // presenting a certificate for the name it stopped answering to.
@@ -640,6 +649,58 @@ mod tests {
         // The domain from the flag reached the file.
         let written = Config::load(&config_path).expect("load");
         assert_eq!(written.node.domain.as_deref(), Some("node.example.com"));
+    }
+
+    /// A node has to exist as a row before anything can be listed
+    /// beside it, and the id in that row is what every other node will
+    /// call this one — so a second install must not mint a new one.
+    #[tokio::test]
+    async fn install_records_what_this_node_is() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let config_path = dir.path().join("config.toml");
+        let config = config_in(dir.path());
+
+        run(
+            config.clone(),
+            &config_path,
+            InstallArgs::with_domain("node.example.com"),
+        )
+        .await
+        .expect("install");
+
+        let database = crate::db::open(&config.database_path())
+            .await
+            .expect("open");
+        let first = crate::network::me(&database)
+            .await
+            .expect("query")
+            .expect("a row of its own");
+        assert_eq!(first.name, "node.example.com");
+        assert!(
+            first.may_be_edge(),
+            "a node with a name the world can dial is public: {first:?}"
+        );
+        database.close().await.expect("close");
+
+        run(
+            Config::load(&config_path).expect("load"),
+            &config_path,
+            InstallArgs::none(),
+        )
+        .await
+        .expect("install");
+
+        let database = crate::db::open(&config.database_path())
+            .await
+            .expect("open");
+        assert_eq!(
+            crate::network::me(&database)
+                .await
+                .expect("query")
+                .map(|me| me.id),
+            Some(first.id),
+            "the second install minted a new identity"
+        );
     }
 
     /// The property `install` is built around: running it again

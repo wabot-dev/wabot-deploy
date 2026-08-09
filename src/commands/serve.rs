@@ -32,6 +32,14 @@ pub async fn run(config: Config) -> anyhow::Result<i32> {
     // it worked is this one — see `update::settle_after_restart`.
     crate::update::settle_after_restart(&database).await;
 
+    // What this node is. Here as well as in `install` because an update
+    // replaces the binary and restarts without running the installer,
+    // so a node upgraded into a version that has this table would
+    // otherwise have no row in it — and the console lists that table.
+    if let Err(error) = crate::network::ensure_self(&database, &config).await {
+        tracing::warn!(%error, "could not record what this node is");
+    }
+
     let container = Container::new();
     // The job handler resolves this. Nothing else registered it —
     // `api::register` takes the database and keeps it inside
@@ -62,6 +70,11 @@ pub async fn run(config: Config) -> anyhow::Result<i32> {
     register_transients!(&container, crate::deploy::jobs::DeployHandler);
 
     crate::api::register(&container, database.clone());
+    // Where a joining node announces itself. On the control plane
+    // rather than beside it, so it answers on the node's own hostname
+    // and certificate — the endpoint in a join token is the same
+    // address the console is at.
+    crate::network::api::register(&container);
     crate::console::register(
         &container,
         database.clone(),
@@ -91,6 +104,7 @@ pub async fn run(config: Config) -> anyhow::Result<i32> {
     // registry answer on the same hostname, because they are the same
     // thing to whoever is looking at the node.
     let control_plane = crate::api::routes(&container)
+        .merge(crate::network::api::routes(&container))
         .merge(crate::console::routes(&container))
         .merge(crate::registry::routes(&container));
 

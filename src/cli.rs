@@ -1,4 +1,4 @@
-//! The three things you can ask the binary to do.
+//! What you can ask the binary to do.
 //!
 //! One executable rather than three, because they must agree about
 //! where the database is and what the config means — and the surest
@@ -40,6 +40,19 @@ pub enum Command {
     /// Report what is configured, what is installed, and what is
     /// missing. Read-only — safe on a live node.
     Doctor,
+
+    /// Take instructions from another node, using a token it minted.
+    ///
+    /// The sibling of `install`: that one makes this machine a node,
+    /// this one makes it part of somebody's network. Both ends treat a
+    /// second attempt with the same token as the same join, so a run
+    /// that failed halfway is fixed by running it again.
+    Join {
+        /// The token the other node's console showed. It begins with
+        /// `wdj1.` and it works once.
+        #[arg(value_name = "TOKEN")]
+        token: String,
+    },
 
     /// Issue a setup token and print it.
     ///
@@ -215,5 +228,18 @@ mod tests {
     #[test]
     fn a_missing_subcommand_is_an_error_not_a_default() {
         assert!(Cli::try_parse_from(["wabot-deploy"]).is_err());
+    }
+
+    /// The token is the whole of the command, and it is not optional:
+    /// a bare `join` that did something would be a node joining
+    /// whatever it last heard about.
+    #[test]
+    fn join_takes_a_token_and_needs_one() {
+        let cli = Cli::parse_from(["wabot-deploy", "join", "wdj1.abc"]);
+        match cli.command {
+            Command::Join { token } => assert_eq!(token, "wdj1.abc"),
+            other => panic!("expected join, got {other:?}"),
+        }
+        assert!(Cli::try_parse_from(["wabot-deploy", "join"]).is_err());
     }
 }

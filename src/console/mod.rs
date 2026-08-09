@@ -326,6 +326,9 @@ pub(crate) mod tests {
         pub ui: wabot::testing::UiHarness,
         pub database: Arc<SqliteDatabase>,
         pub setup_token: String,
+        /// This node's own page. The id is minted when the node is
+        /// installed, so there is no path a test can spell out.
+        pub node_path: String,
     }
 
     impl Console {
@@ -334,6 +337,13 @@ pub(crate) mod tests {
             let setup_token = crate::accounts::issue_setup_token(&database)
                 .await
                 .expect("token");
+            // What `install` and every `serve` write. The nodes pages
+            // read this table, so a console without it is a console
+            // listing nothing — which is not a state a real node is
+            // ever in.
+            let me = crate::network::ensure_self(&database, &Config::default())
+                .await
+                .expect("this node");
 
             let container = Container::new();
             register(
@@ -384,6 +394,7 @@ pub(crate) mod tests {
                 ui: wabot::testing::UiHarness::new(router),
                 database,
                 setup_token,
+                node_path: format!("/nodes/{}", me.id),
             }
         }
 
@@ -657,11 +668,13 @@ pub(crate) mod tests {
         let cookie = console.signed_in().await;
         let ui = console.ui.with_header("cookie", cookie);
 
-        let node = ui.get("/nodes/local").await;
+        let node = ui.get(&console.node_path).await;
         assert!(node.has_island("node-live"), "{}", node.html());
         assert_eq!(
             node.island_props("node-live"),
-            Some(serde_json::json!({ "node": "local" })),
+            Some(serde_json::json!({
+                "node": console.node_path.trim_start_matches("/nodes/"),
+            })),
             "the client needs the id to open the stream"
         );
         assert!(node.has_island("fields"), "and the certificate form");
@@ -697,7 +710,7 @@ pub(crate) mod tests {
         let cookie = console.signed_in().await;
         let body = console
             .harness
-            .get(&format!("/nodes/{}", crate::node::LOCAL_ID))
+            .get(&console.node_path)
             .header("cookie", &cookie)
             .send()
             .await

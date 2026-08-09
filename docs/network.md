@@ -5,7 +5,7 @@ node can be an edge for a name whose container lives on a private one,
 and a name can eventually be served by a group of them.
 
 This document is the plan and the record of what was decided and why.
-Phase 0 is in the tree; the rest is not.
+Phases 0 and 1 are in the tree; the rest is not.
 
 ## The shape
 
@@ -75,38 +75,110 @@ anything is committed to.
 
 ## Enrolment
 
-From a public node: "add private node" mints a token and an install
-command. The token carries the public node's endpoint, its WireGuard
-public key, the overlay address it allocated, and a bearer secret.
-`wabot-deploy join <token>` is the sibling of `install`.
+From a public node: "add private node" mints a token. The token carries
+the public node's id and name, the endpoint its control plane answers
+on, its overlay public key, its own overlay address, the address it
+allocated for the joiner, and a bearer secret.
 
-The pattern already exists twice — `setup-token` and people invitations
+Spending it has **two doors and one implementation**. `wabot-deploy join
+<token>` is the sibling of `install`, for a machine somebody is already
+logged into; the joining node's own console has a form, for the far more
+common case of a node that is already installed and already answering,
+where sending somebody to find its terminal would be sending them away
+from where they are. The order of the writes below is a safety property
+rather than a detail of how it was typed, so it lives in
+`network::join` and both doors are thin.
+
+The pattern already existed twice — `setup-token` and people invitations
 are both "a single-use secret, shown once" — and the push-token fix from
-the same work is the template for showing it without putting it in a URL.
+the same work was the template for showing it without putting it in a
+URL. That is what this uses: the redirect carries a nonce, the page
+spends it, and what is stored is the hash.
 
-Two things to decide before writing it:
+Written, and these are the decisions inside it.
 
-- **That token is a network credential.** Single use, short lived, shown
-  once, hashed at rest.
+**The token is one opaque blob, versioned.** `wdj1.` then unpadded
+url-safe base64 of the fields. Six flags would be four chances to
+transcribe something wrong, and three of the four failures do not
+surface until a tunnel does not come up. The prefix means a paste is
+recognisably a join token, and a later field can be added without an
+older node reading a newer token as a corrupt one. Single use, 24 hours,
+shown once, hashed at rest.
+
+**The joining node brings its own identity; the authority allocates only
+an address.** Tempting to allocate the id here too — the address is
+allocated here — and wrong: a node that joins two authorities would be
+two nodes with two identities, and "which node ran this" would have two
+answers. So the id is minted at `install` and travels in the callback.
+The cost is that a claimed id could collide with one already known, so a
+collision is *refused* rather than merged; the upsert underneath would
+otherwise let a joining node overwrite the row it collided with,
+including the authority's own.
+
+**The callback is the one exchange that runs the other way.** Every
+other message travels from the authority to the node that granted it.
+This one has to go back, because after `join` has written the grant the
+authority still does not know the node exists. Ordinary HTTPS on the
+control plane — the same hostname and certificate the console is on, no
+new listener, nothing to do with the overlay.
+
+**`join` calls before it grants.** Both orders leave something to tidy
+up when the exchange half-fails. This one's leftovers are harmless: an
+authority that knows about a node not yet obeying it can be re-joined,
+whereas a node obeying an authority it never reached would have granted
+power over itself on the strength of a pasted string. Both halves are
+convergent, so the fix either way is to run it again with the same
+token — spending is idempotent *for the node that spent it*, which is
+what makes a lost response survivable.
+
+**The authority needs a publicly trusted certificate.** Bundled roots,
+as everywhere else in this binary, so a node serving its own
+certificate cannot enrol anybody. That is a real limitation and the
+honest one: the alternative is a joining node that accepts any
+certificate and hands its bearer token to whoever answered. The way out,
+if it ever matters, is a fingerprint in the token and a pinning verifier
+— not a flag that turns verification off.
+
+**Overlay addresses are `10.42.0.0/16`, lowest free first.** Not
+`10.0.0.0/24` or `10.1.0.0/16`, which is what everything else picks by
+default and where a collision costs the node its own default route.
+Lowest free rather than next, so an overlay whose nodes come and go
+stays dense enough to read. A pending token holds its address — it is
+already written into something somebody is carrying.
+
+**Keys exist before there is a tunnel.** Curve25519, generated on demand
+the first time a node enrols or joins, private half in `setting`, public
+half in the node row. Not a phase 2 decision in disguise: the kernel
+module and `boringtun` read the same base64, so this commits to nothing.
+It is here because the key travels *in the token*, and a field added to
+the token later means every node that already joined has to join again.
+
+Still open:
+
 - **`curl | sh` is outward-facing.** It is the convention and it is
-  convenient; it also defines how this product is distributed.
+  convenient; it also defines how this product is distributed. Not
+  decided, so the console does not print one: it shows `wabot-deploy
+  join <token>` and says the other machine has to be a node already.
 
 ## Phases
 
 | | Phase | Delivers | State |
 |---|---|---|---|
 | 0 | Model | `node`, `authority`, `claim`; the claim rule | **done** |
-| 1 | Enrolment | Token, `join`, keys, B recording A as authority. No new networking | next |
-| 2 | Overlay | Spike, then a real session. `doctor` proves it | |
+| 1 | Enrolment | Token, `join`, keys, B recording A as authority | **done** |
+| 2 | Overlay | Spike, then a real session. `doctor` proves it | next |
 | 3 | Errand: host | A queues a deploy on B | |
 | 4 | Errand: edge | A tells C to route a name to B; C obtains the certificate | |
 | 5 | Groups | Several upstreams per name, health, failover | |
 
-Phase 1 has the best return for its size: end-to-end verifiable with the
-Ubuntu node as public and the Alpine one as private, and it needs no new
-networking at all.
+Phase 2 is where the throwaway spike belongs — kernel WireGuard against
+`boringtun`, on the Alpine node, before anything is committed to. Every
+piece it needs from phase 1 is already in the token: both public keys,
+both overlay addresses, and an endpoint.
 
 ## Two things not to discover late
+
+(Both still ahead. Phase 1 touched neither.)
 
 **Images live where they were pushed.** The registry is per node, and a
 private node needs the image to start the container. Either you push to
@@ -117,15 +189,33 @@ one's. That is design, not detail.
 errand to host something has to run its job on the target node, so the
 queue stops being purely local and job routing appears.
 
-## Where phase 0 stopped
+## Where phase 1 stopped
 
-`migrations/0015_network.sql` and `src/network/mod.rs`, with tests.
-Nothing consumes it yet, so the module carries an `allow(dead_code)`
-naming what removes it:
+`migrations/0016_enrolment.sql` and `src/network/` — `keys`, `overlay`,
+`enrolment`, `token`, `call`, `api`, `join` — plus `wabot-deploy join`,
+the nodes page at both ends of the exchange, and a `network` section in
+`doctor`.
 
-1. `install` seeding the self row.
-2. The console reading this table instead of `node::all()`'s synthetic
-   list of one.
+The model is real rather than described now: `install` and every `serve`
+write the self row, the console lists that table instead of a synthetic
+list of one, and `node::all()` is gone. What still carries an
+`allow(dead_code)` is only what a later phase consumes, each naming its
+phase — `is_authorised` and the claim rule for phases 3 and 4, and the
+private key for phase 2.
 
-That wiring is the first half-hour of the next session, and it is what
-makes the model real rather than described.
+**Not verified on a node yet.** Everything here passes against the real
+migrations and the real router, and none of it has run between the
+Ubuntu box and the Alpine one. That is the check phase 1 was chosen for,
+and until it happens the certificate requirement in particular is a
+claim rather than a fact.
+
+Two things a node will show up:
+
+- The Alpine node answers to a name, so its own row reads *public*. That
+  is correct — reachability, not policy — and it means "private node" on
+  the enrolling side is about how it was recorded, not about what the
+  joined machine thinks it is. Worth watching whether that reads as a
+  contradiction on the page.
+- Nothing pings a joined node, so its badge says "Joined" and never
+  changes. `last_seen_at` is written once, at the join. The first thing
+  phase 2 makes possible is for that to mean something.
