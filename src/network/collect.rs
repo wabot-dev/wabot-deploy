@@ -23,7 +23,7 @@ use wabot::sqlite::SqliteDatabase;
 
 use super::errand::{self, Errand, Kind};
 use crate::config::Config;
-use crate::platform::{projects, registry_credentials, services, slugify};
+use crate::platform::{projects, registry_credentials, replicas, services, slugify};
 use crate::runtime::images::Credential;
 
 /// How often a node asks. Short enough that a deployment somebody
@@ -212,6 +212,13 @@ async fn host_service(
         }
     };
 
+    // Exactly the copies it was told to run, in the service's own
+    // numbering. `create` above made slot 1; anything else the errand
+    // named is placed beside it.
+    replicas::ensure_slots(database, &service.id, &host.slots)
+        .await
+        .map_err(|error| error.to_string())?;
+
     let _ = config;
     // Its own job, on its own queue. This is the whole of "deploying is
     // local": the authority asked, and what runs is this node's own
@@ -347,6 +354,7 @@ mod tests {
                 secret: "a-push-token".into(),
                 env: Default::default(),
                 port: None,
+                slots: vec![1],
             };
             // The rows, without the queue — `run_command` wants a
             // container this test has no reason to build, and what is

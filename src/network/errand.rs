@@ -108,6 +108,19 @@ pub struct Host {
     /// image's own declaration.
     #[serde(default)]
     pub port: Option<u16>,
+    /// Which copies of the service this node is to run, by the
+    /// **service's** numbering rather than its own.
+    ///
+    /// A node given slots 2 and 3 runs slots 2 and 3, so the container
+    /// ids match on both sides and a report about "slot 3" names one
+    /// thing across the network. Defaulted for a payload written before
+    /// this field existed, which meant exactly one copy.
+    #[serde(default = "one_slot")]
+    pub slots: Vec<u32>,
+}
+
+fn one_slot() -> Vec<u32> {
+    vec![1]
 }
 
 /// An errand and what became of it, for the page that lists them.

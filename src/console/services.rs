@@ -1578,7 +1578,18 @@ impl ServiceApi {
             .filter_map(|replica| replica.node_id.clone())
             .collect::<std::collections::BTreeSet<_>>()
         {
-            if let Err(error) = self.send_there(project, service, &node_id, by).await {
+            // Every slot that node holds, in the service's numbering:
+            // a node running two copies is told about both in one
+            // errand rather than being sent the same instruction twice
+            // with no way to tell the copies apart.
+            let slots: Vec<u32> = placements
+                .iter()
+                .filter(|replica| replica.node_id.as_deref() == Some(node_id.as_str()))
+                .filter(|replica| !replica.evicted())
+                .map(|replica| replica.slot)
+                .collect();
+
+            if let Err(error) = self.send_there(project, service, &node_id, by, slots).await {
                 // Reported and not fatal: the other placements are
                 // still worth making, and the page shows a replica
                 // nobody has answered for.
@@ -1599,6 +1610,7 @@ impl ServiceApi {
         service: &services::Service,
         node_id: &str,
         by: &str,
+        slots: Vec<u32>,
     ) -> Result<(), String> {
         let Some(registry) = crate::platform::registry_credentials::host_of(&service.image) else {
             return Err(
@@ -1624,6 +1636,7 @@ impl ServiceApi {
             secret,
             env: service.env.clone(),
             port: None,
+            slots,
         })
         .map_err(|error| error.to_string())?;
 

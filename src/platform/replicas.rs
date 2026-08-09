@@ -78,6 +78,34 @@ pub async fn ensure_here(
     of_service(database, service_id).await
 }
 
+/// Make sure exactly these slots exist here, and hand back what runs.
+///
+/// **A slot number belongs to the service, not to the node.** When one
+/// node places slots 2 and 3 on another, they are slots 2 and 3 there
+/// too — not that node's own 1 and 2. Two reasons, and the second is
+/// what phase 6 needs: the container ids match on both sides, so a
+/// replica moving home is the same container; and a report about "slot
+/// 3" names one thing across the whole network, with nothing to map
+/// between.
+///
+/// Missing slots are created. Extra ones are **left alone**: taking a
+/// replica away is stopping a container, which is an instruction of its
+/// own and not a side effect of a list arriving without it.
+pub async fn ensure_slots(
+    database: &SqliteDatabase,
+    service_id: &str,
+    slots: &[u32],
+) -> PlatformResult<Vec<Replica>> {
+    let existing = of_service(database, service_id).await?;
+    for slot in slots {
+        if existing.iter().any(|replica| replica.slot == *slot) {
+            continue;
+        }
+        place(database, service_id, None, *slot).await?;
+    }
+    of_service(database, service_id).await
+}
+
 /// Put one replica in a slot, on a node or here.
 #[allow(dead_code)]
 pub async fn place(
@@ -343,6 +371,41 @@ mod tests {
         assert_eq!(replicas.len(), 1, "{replicas:?}");
         assert_eq!(replicas[0].slot, 1);
         assert!(replicas[0].is_here());
+    }
+
+    /// A slot number belongs to the service, not to the node it lands
+    /// on. A node given slots 2 and 3 runs slots 2 and 3 — so the
+    /// container ids match at both ends, and a report about "slot 3"
+    /// names one thing across the network with nothing to map between.
+    #[tokio::test]
+    async fn a_node_told_to_run_slots_two_and_three_runs_those() {
+        let (database, service) = service().await;
+
+        let placed = ensure_slots(&database, &service, &[2, 3])
+            .await
+            .expect("slots");
+        assert_eq!(
+            placed.iter().map(|r| r.slot).collect::<Vec<_>>(),
+            vec![1, 2, 3],
+            "slot 1 came from `create`; 2 and 3 were named"
+        );
+
+        let two = placed.iter().find(|r| r.slot == 2).expect("two");
+        assert_eq!(two.container_id("demo", "web"), "demo.web.2");
+    }
+
+    /// A list arriving without a slot is not an instruction to stop it.
+    /// Taking a replica away is stopping a container, which is its own
+    /// errand rather than a side effect of an omission.
+    #[tokio::test]
+    async fn a_slot_left_out_is_left_alone() {
+        let (database, service) = service().await;
+        ensure_slots(&database, &service, &[1, 2])
+            .await
+            .expect("slots");
+
+        let after = ensure_slots(&database, &service, &[1]).await.expect("one");
+        assert_eq!(after.len(), 2, "an omission stopped a container");
     }
 
     /// Slots are positions, not a count. A service that lost its second

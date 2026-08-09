@@ -1524,6 +1524,10 @@ impl NodeApi {
             secret,
             env: service.env.clone(),
             port: None,
+            // One copy. This form predates placement and is the one on
+            // the wrong page — the service's own page is where a
+            // replica count is chosen.
+            slots: vec![1],
         })
         .unwrap_or_default();
 
