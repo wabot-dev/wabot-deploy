@@ -274,7 +274,22 @@ to proxy. Three things about it:
   until something says otherwise — `edges::set` returns who was dropped
   so the caller cannot forget.
 
-None of 4 to 7 has run on a node. Phase 3 taught what that is worth.
+**What the nodes showed the moment 4 to 7 met them**, none of which any
+test could have caught, because in a test both ends are one database
+and the rows are the ones I wrote:
+
+- **A joined node is recorded as private**, correctly — it arrived
+  through a token and the enrolling node has no address for it but the
+  overlay. `may_be_edge` needs an endpoint, so the picker could never
+  offer it: "any public node on the network" was "this one". The node's
+  own report now carries where the world can dial it.
+- **A replica that moved kept running where it left.** Reconciliation
+  only ever *starts* things — a container no row claims is left alone
+  rather than destroyed, which is right — so nothing stopped it, and
+  the Ubuntu node was running two containers the page said were on
+  Alpine. Moving a replica away, and dropping one, now stop it here.
+
+Phase 3 taught what that is worth. This is the second time.
 
 Next: phase 8, groups — health and failover across the upstreams of one
 name. Today a dead replica stays in the list until the owner notices.

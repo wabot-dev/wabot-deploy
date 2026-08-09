@@ -1722,6 +1722,30 @@ impl ServiceApi {
                 }
                 touched.insert(node.to_string());
             }
+            // Sent away, so its container here has to go. Nothing else
+            // would: reconciliation only ever *starts* things, on
+            // purpose — a container no row claims is left alone rather
+            // than destroyed. So a replica that moved used to leave a
+            // copy running here for ever, serving traffic from a node
+            // the page said it had left.
+            if replica.is_here() && wanted.is_some() {
+                if let Err(error) = self
+                    .state
+                    .deployer
+                    .stop_replica(&project, &service, replica)
+                    .await
+                {
+                    // Reported and carried on from: the row moves
+                    // either way, and a container this node could not
+                    // reach must not stop the placement it was told to
+                    // make.
+                    tracing::warn!(
+                        slot = replica.slot,
+                        %error,
+                        "stopping a copy that was sent to another node"
+                    );
+                }
+            }
             crate::platform::replicas::move_to(&self.state.database, &replica.id, wanted).await?;
         }
 
@@ -1735,7 +1759,7 @@ impl ServiceApi {
                 "a service runs between 1 and 16 replicas",
             ));
         }
-        if let Err(error) = self.resize(&service.id, wanted).await {
+        if let Err(error) = self.resize(&project, &service, wanted).await {
             return Ok(back_with_error(&here, &error));
         }
 
@@ -1901,7 +1925,13 @@ impl ServiceApi {
     /// nothing can tell that node to stop yet, so dropping the row
     /// would leave its container running with nothing naming it — the
     /// worst of both, and invisible from either end.
-    async fn resize(&self, service_id: &str, wanted: u32) -> Result<(), String> {
+    async fn resize(
+        &self,
+        project: &crate::platform::projects::Project,
+        service: &services::Service,
+        wanted: u32,
+    ) -> Result<(), String> {
+        let service_id = &service.id;
         let placements = crate::platform::replicas::of_service(&self.state.database, service_id)
             .await
             .map_err(|error| error.to_string())?;
@@ -1918,17 +1948,32 @@ impl ServiceApi {
             going.truncate(placements.len() - wanted as usize);
 
             for replica in going {
-                // An evicted copy is safe to let go wherever it ran:
-                // the machine running it stopped its container, which
-                // is what evicting means. A live one elsewhere is not —
-                // nothing can tell that node to stop it, and dropping
-                // the row would leave it running with nothing naming
-                // it.
-                if !replica.is_here() && !replica.evicted() {
-                    return Err(format!(
-                        "replica #{} runs on another node, and nothing can tell it to stop yet",
-                        replica.slot
-                    ));
+                // A copy here is this node's to stop, and nothing else
+                // would: reconciliation only ever *starts* things, so
+                // dropping the row alone left a container running that
+                // nothing named — the count said two and the machine
+                // ran three.
+                //
+                // One elsewhere is stopped by the node running it, when
+                // the `host` errand that follows this names the slots
+                // that are left. That is why the set of nodes to tell
+                // is taken *before* any of this: after it there is
+                // nothing left pointing at the one that lost its last
+                // copy. An evicted one is already stopped — that is
+                // what evicting means.
+                if replica.is_here() {
+                    if let Err(error) = self
+                        .state
+                        .deployer
+                        .stop_replica(project, service, replica)
+                        .await
+                    {
+                        tracing::warn!(
+                            slot = replica.slot,
+                            %error,
+                            "stopping a copy that was dropped"
+                        );
+                    }
                 }
                 crate::platform::replicas::remove(&self.state.database, &replica.id)
                     .await
@@ -2673,12 +2718,14 @@ mod tests {
         );
     }
 
-    /// Removing a replica that runs somewhere else would leave its
-    /// container running with nothing naming it — invisible from both
-    /// ends. Refused with the reason until something can tell that node
-    /// to stop.
+    /// Dropping a replica that runs somewhere else used to be refused,
+    /// because nothing could tell that node to stop and the row going
+    /// would have left its container running with nothing naming it.
+    /// A `host` errand now carries the slots that are *left*, and an
+    /// empty list is a real instruction — so the row can go, and the
+    /// node it ran on finds out on its next poll.
     #[tokio::test]
-    async fn a_replica_on_another_node_cannot_be_dropped_from_here_yet() {
+    async fn dropping_a_replica_that_runs_elsewhere_tells_that_node() {
         let console = Console::new().await;
         let cookie = console.signed_in().await;
         let service = placed_service(&console, &cookie).await;
@@ -2695,14 +2742,27 @@ mod tests {
             .await;
 
         let location = response.header("location").unwrap_or_default();
-        assert!(location.contains("error="), "{location}");
+        assert!(!location.contains("error="), "{location}");
         assert_eq!(
             crate::platform::replicas::of_service(&console.database, &service.id)
                 .await
                 .expect("replicas")
                 .len(),
-            2,
-            "it was dropped anyway"
+            1,
+            "the row it was told to drop is still there"
+        );
+
+        let latest = crate::network::errand::waiting(&console.database, "nd-elsewhere1")
+            .await
+            .expect("errands")
+            .pop()
+            .expect("something was queued for it");
+        let host: crate::network::errand::Host =
+            serde_json::from_value(latest.payload.clone()).expect("a host errand");
+        assert!(
+            host.slots.is_empty(),
+            "it was told to keep running {:?}",
+            host.slots
         );
     }
 
