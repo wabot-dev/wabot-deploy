@@ -95,6 +95,11 @@ pub struct ReplicaState {
     /// Where its container answers, while it is up.
     #[serde(default)]
     pub address: Option<String>,
+    /// The port on that node's overlay address which reaches this
+    /// copy. What an edge is given as an upstream — the container's own
+    /// address is on a bridge that is not unique across nodes.
+    #[serde(default)]
+    pub overlay_port: Option<u16>,
     /// Why it is not, when it is not.
     #[serde(default)]
     pub error: Option<String>,
@@ -538,6 +543,8 @@ async fn record(
             return Ok::<(), crate::platform::PlatformError>(());
         }
         crate::platform::replicas::set_address(database, &replica.id, state.address.as_deref())
+            .await?;
+        crate::platform::replicas::set_overlay_port(database, &replica.id, state.overlay_port)
             .await?;
         crate::platform::replicas::set_last_error(database, &replica.id, state.error.as_deref())
             .await

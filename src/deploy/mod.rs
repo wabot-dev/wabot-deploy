@@ -256,6 +256,30 @@ impl Deployer {
             })
             .collect();
 
+        // A port for an edge somewhere else, when this service has a
+        // name to serve. Bound to this node's overlay address and
+        // nowhere else: the container stays on the private network, and
+        // what can reach it is a node on the overlay — not the
+        // internet, which a `0.0.0.0` port would have handed it to.
+        //
+        // Only for a port with a hostname. A service nothing serves by
+        // name has nothing an edge would proxy to, and opening a port
+        // for it would be opening one nobody asked for.
+        let mut published = published;
+        if let Some(port) = ports.iter().find(|port| port.hostname.is_some()) {
+            // Not on an overlay means nothing elsewhere can reach this
+            // node anyway, so there is nothing to open a port for.
+            if let Some(overlay) = self.overlay_address().await {
+                let overlay_port =
+                    replicas::ensure_overlay_port(&self.database, &replica.id).await?;
+                published.push(PortMapping {
+                    host_port: overlay_port,
+                    container_port: port.container_port,
+                    host_ip: Some(overlay),
+                });
+            }
+        }
+
         let address = network::attach(&net, &id, &published).await?;
 
         self.write_resolv_conf()?;
@@ -548,6 +572,15 @@ impl Deployer {
             tracing::info!(started, "reconciled");
         }
         Ok(started)
+    }
+
+    /// This node's own address on the overlay, if it is on one.
+    async fn overlay_address(&self) -> Option<String> {
+        crate::network::me(&self.database)
+            .await
+            .ok()
+            .flatten()
+            .and_then(|me| me.overlay_ip)
     }
 
     async fn network_of(&self, project: &Project) -> Option<ProjectNetwork> {

@@ -75,6 +75,10 @@ fn migrations() -> Vec<Migration> {
             include_str!("../migrations/0020_replica.sql"),
         ),
         Migration::new("0021_origin", include_str!("../migrations/0021_origin.sql")),
+        Migration::new(
+            "0022_overlay_port",
+            include_str!("../migrations/0022_overlay_port.sql"),
+        ),
     ]
 }
 

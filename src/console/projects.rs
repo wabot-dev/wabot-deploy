@@ -1276,6 +1276,7 @@ mod tests {
                 node_id: (!here).then(|| "nd-elsewhere".to_string()),
                 slot,
                 address: address.map(str::to_string),
+                overlay_port: None,
                 last_error: None,
                 evicted_at: None,
             };

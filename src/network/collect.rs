@@ -180,6 +180,7 @@ async fn report_for(
                     service: service.name.clone(),
                     slot: replica.slot,
                     address: replica.address.clone(),
+                    overlay_port: replica.overlay_port,
                     error: replica.last_error.clone(),
                     evicted: replica.evicted(),
                 });

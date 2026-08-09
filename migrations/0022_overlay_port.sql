@@ -1,0 +1,26 @@
+-- The port a replica answers on, for an edge somewhere else.
+--
+-- ## Why a replica and not a service
+--
+-- Two copies of one service on one machine cannot share a host port,
+-- and they are exactly the case this exists for: the edge needs one
+-- upstream per replica so that a node running two takes twice the
+-- requests. A port on the service would collapse them back into one.
+--
+-- ## Why a port at all
+--
+-- A container has an address on its project's bridge —
+-- `10.42.<project>.<n>` — which is not unique across nodes: two nodes
+-- each numbering a project 2 is normal and has to stay normal. And the
+-- overlay is a `/24` of *node* addresses on purpose. So a replica that
+-- something elsewhere must reach is published on its own node's overlay
+-- address, and the edge proxies to `10.42.0.<node>:<port>`.
+--
+-- Bound to that address and nowhere else. On `0.0.0.0` it would be
+-- handed to anybody on the internet who guessed the number, and the
+-- container is supposed to stay on the private network — see
+-- `PortMapping::host_ip`.
+--
+-- Null until something needs it: a replica nothing outside its node
+-- reaches has no reason to open a port at all.
+ALTER TABLE replica ADD COLUMN overlay_port INTEGER;

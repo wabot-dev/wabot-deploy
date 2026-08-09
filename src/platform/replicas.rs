@@ -26,6 +26,10 @@ pub struct Replica {
     /// Its number within the service, from 1.
     pub slot: u32,
     pub address: Option<String>,
+    /// The port on **this node's overlay address** that reaches this
+    /// copy, for an edge running somewhere else. `None` until something
+    /// outside the node needs to reach it. See migration `0022`.
+    pub overlay_port: Option<u16>,
     pub last_error: Option<String>,
     /// Set when the node running it threw it out. The node that placed
     /// it stops asking.
@@ -144,6 +148,7 @@ pub async fn place(
         node_id: node_id.map(str::to_string),
         slot,
         address: None,
+        overlay_port: None,
         last_error: None,
         evicted_at: None,
     };
@@ -277,6 +282,61 @@ pub async fn find(database: &SqliteDatabase, id: &str) -> PlatformResult<Option<
         .await?)
 }
 
+/// Ports for reaching a replica from another node.
+///
+/// A range of their own, so this allocator and the one handing out
+/// published host ports cannot collide by construction rather than by
+/// both remembering to check the other's table.
+const OVERLAY_PORT_RANGE: std::ops::Range<u16> = 30000..31000;
+
+/// Give this copy a port on the node's overlay address, if it has none.
+///
+/// Convergent, and it keeps the port it already had: the number is in
+/// the upstream list some edge is holding, so re-deploying a replica
+/// must not move it.
+pub async fn ensure_overlay_port(database: &SqliteDatabase, id: &str) -> PlatformResult<u16> {
+    if let Some(existing) = find(database, id).await?.and_then(|r| r.overlay_port) {
+        return Ok(existing);
+    }
+
+    let taken: Vec<u16> = database
+        .read(|connection| {
+            let mut statement = connection.prepare(
+                "SELECT \"overlay_port\" FROM replica WHERE \"overlay_port\" IS NOT NULL",
+            )?;
+            let ports: wabot::sqlite::rusqlite::Result<Vec<i64>> =
+                statement.query_map([], |row| row.get(0))?.collect();
+            ports
+        })
+        .await?
+        .into_iter()
+        .map(|port| port as u16)
+        .collect();
+
+    let port = OVERLAY_PORT_RANGE
+        .clone()
+        .find(|candidate| !taken.contains(candidate))
+        .ok_or_else(|| {
+            super::PlatformError::Refused(
+                "every overlay port on this node is in use — that is 1000 replicas \
+                 reachable from elsewhere"
+                    .into(),
+            )
+        })?;
+
+    let (id, stored) = (id.to_string(), port as i64);
+    database
+        .write(move |connection| {
+            connection.execute(
+                "UPDATE replica SET \"overlay_port\" = ?2 WHERE \"id\" = ?1",
+                (id, stored),
+            )?;
+            Ok(())
+        })
+        .await?;
+    Ok(port)
+}
+
 /// Where this copy's container answers, while it is up.
 pub async fn set_address(
     database: &SqliteDatabase,
@@ -289,6 +349,29 @@ pub async fn set_address(
             connection.execute(
                 "UPDATE replica SET \"address\" = ?2 WHERE \"id\" = ?1",
                 (id, address),
+            )?;
+            Ok(())
+        })
+        .await?;
+    Ok(())
+}
+
+/// Record the port another node says its copy answers on.
+///
+/// Written by the report, not by an allocator: the number belongs to
+/// the node running the replica — it came out of *its* port space — and
+/// this side only remembers it so an edge can be given the upstream.
+pub async fn set_overlay_port(
+    database: &SqliteDatabase,
+    id: &str,
+    port: Option<u16>,
+) -> PlatformResult<()> {
+    let (id, port) = (id.to_string(), port.map(i64::from));
+    database
+        .write(move |connection| {
+            connection.execute(
+                "UPDATE replica SET \"overlay_port\" = ?2 WHERE \"id\" = ?1",
+                (id, port),
             )?;
             Ok(())
         })
@@ -349,7 +432,7 @@ pub async fn remove(database: &SqliteDatabase, id: &str) -> PlatformResult<()> {
 }
 
 const COLUMNS: &str = "\"id\", \"service_id\", \"node_id\", \"slot\", \"address\", \
-                       \"last_error\", \"evicted_at\"";
+                       \"last_error\", \"evicted_at\", \"overlay_port\"";
 
 fn decode(row: &Row<'_>) -> wabot::sqlite::rusqlite::Result<Replica> {
     Ok(Replica {
@@ -360,6 +443,7 @@ fn decode(row: &Row<'_>) -> wabot::sqlite::rusqlite::Result<Replica> {
         address: row.get(4)?,
         last_error: row.get(5)?,
         evicted_at: row.get(6)?,
+        overlay_port: row.get::<_, Option<i64>>(7)?.map(|port| port as u16),
     })
 }
 
@@ -389,6 +473,7 @@ mod tests {
             node_id: None,
             slot,
             address: None,
+            overlay_port: None,
             last_error: None,
             evicted_at: None,
         };
@@ -411,6 +496,52 @@ mod tests {
         assert_eq!(replicas.len(), 1, "{replicas:?}");
         assert_eq!(replicas[0].slot, 1);
         assert!(replicas[0].is_here());
+    }
+
+    /// The number is in an upstream list some edge is holding, so
+    /// re-deploying a replica must not move it.
+    #[tokio::test]
+    async fn a_copy_keeps_the_overlay_port_it_was_given() {
+        let (database, service) = service().await;
+        let replicas = of_service(&database, &service).await.expect("replicas");
+
+        let first = ensure_overlay_port(&database, &replicas[0].id)
+            .await
+            .expect("port");
+        let again = ensure_overlay_port(&database, &replicas[0].id)
+            .await
+            .expect("port");
+        assert_eq!(first, again);
+        assert!(OVERLAY_PORT_RANGE.contains(&first), "{first}");
+    }
+
+    /// Two copies on one machine cannot share a host port, and they are
+    /// exactly the case this exists for — an edge needs one upstream
+    /// per replica so a node running two takes twice the requests.
+    #[tokio::test]
+    async fn two_copies_on_one_node_get_different_ports() {
+        let (database, service) = service().await;
+        let replicas = ensure_here(&database, &service, 2).await.expect("two");
+
+        let one = ensure_overlay_port(&database, &replicas[0].id)
+            .await
+            .expect("port");
+        let two = ensure_overlay_port(&database, &replicas[1].id)
+            .await
+            .expect("port");
+        assert_ne!(one, two, "both copies answer on one port");
+    }
+
+    /// The overlay range and the published-host-port range are separate
+    /// so the two allocators cannot collide by construction, rather
+    /// than by both remembering to check the other's table.
+    #[test]
+    fn the_two_port_spaces_do_not_overlap() {
+        let published = super::super::ports::HOST_PORT_RANGE;
+        assert!(
+            OVERLAY_PORT_RANGE.start >= published.end || OVERLAY_PORT_RANGE.end <= published.start,
+            "an overlay port could be handed out twice"
+        );
     }
 
     /// A slot number belongs to the service, not to the node it lands

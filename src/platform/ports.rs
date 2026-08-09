@@ -15,7 +15,11 @@ use super::{now_ms, PlatformError, PlatformResult};
 /// Above the registered range and below the ephemeral one Linux hands
 /// out for outgoing connections, so an allocation cannot collide with
 /// a socket the kernel opened while nobody was looking.
-const HOST_PORT_RANGE: std::ops::Range<u16> = 20000..29000;
+/// Where a *published* port comes from — one the operator asked to be
+/// reachable. `replicas::OVERLAY_PORT_RANGE` is deliberately disjoint
+/// from this, so the two allocators cannot hand out the same number
+/// without either of them consulting the other's table.
+pub(crate) const HOST_PORT_RANGE: std::ops::Range<u16> = 20000..29000;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Port {
