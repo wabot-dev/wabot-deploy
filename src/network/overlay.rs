@@ -12,15 +12,32 @@
 //! would give it two addresses, which is correct — it is on two
 //! overlays.
 //!
-//! ## Why this range
+//! ## Why this range, and why a `/24`
 //!
-//! `10.42.0.0/16` is RFC 1918 space, and the middle of it: `10.0.0.0/24`
-//! and `10.1.0.0/16` are what everything else picks by default, and an
-//! overlay that collides with the network the node is already on is a
-//! machine that loses its own default route. Sixty-five thousand
-//! addresses is more nodes than this product will ever put on one
-//! overlay, and picking a /16 rather than a /24 means never having to
-//! renumber.
+//! This said `10.42.0.0/16` and explained at length why that range was
+//! safely away from what a VPS or a Docker install would be using. It
+//! was away from those and **on top of this product's own**: project
+//! bridges have always been carved out of `10.42.0.0/16`, one `/24`
+//! each — see `runtime::network`. The overlay was put in the same space
+//! by somebody who checked the outside world and not the inside.
+//!
+//! It worked, by two accidents. Project indexes start at 1, so
+//! `10.42.0.0/24` is deliberately left alone; the first 254 overlay
+//! addresses land in exactly that reserved slot. And a container's own
+//! `/24` is a longer prefix than the overlay's `/16`, so local traffic
+//! kept winning the route.
+//!
+//! The `/24` is the fix, and it is also the honest description: an
+//! overlay address names a **node**, never a container. A `/16` claimed
+//! a route over every project bridge on the machine and would have
+//! handed out `10.42.1.x` — inside project 1's subnet — at the 255th
+//! node. Nothing in flight has to move: the addresses already allocated
+//! are all inside this `/24`.
+//!
+//! Reaching a *container* on another node is phase 4, and it goes
+//! through that node rather than by routing its bridges across the
+//! tunnel — which is what makes it safe for two nodes to both have a
+//! project numbered 2.
 
 use std::collections::BTreeSet;
 
@@ -28,21 +45,24 @@ use wabot::sqlite::{SqliteDatabase, SqliteResult};
 
 use super::{NetworkError, NetworkResult};
 
-/// The overlay's address space, as an operator would write it.
-pub const SUBNET: &str = "10.42.0.0/16";
+/// The overlay's address space, as an operator would write it. The one
+/// `/24` `runtime::network` reserves.
+pub const SUBNET: &str = "10.42.0.0/24";
 
 /// How much of an address is the network. The interface carries this
 /// rather than a `/32`, which is what routes every other overlay
-/// address through it.
-pub const PREFIX_LENGTH: u8 = 16;
+/// address through it — and it is a `/24` rather than a `/16` so that
+/// route stops overlapping every project bridge on the machine.
+pub const PREFIX_LENGTH: u8 = 24;
 
 /// The first two octets, which every address here shares.
 const PREFIX: (u8, u8) = (10, 42);
 
-/// `10.42.0.0` is the network and `10.42.255.255` the broadcast, so
-/// hosts run from 1 to 65534.
+/// `10.42.0.0` is the network and `10.42.0.255` the broadcast, so hosts
+/// run from 1 to 254. That is the ceiling on nodes in one overlay, and
+/// it is the same 254 the product already accepts for projects.
 const FIRST: u32 = 1;
-const LAST: u32 = 65_534;
+const LAST: u32 = 254;
 
 /// The lowest address nothing is using.
 ///
@@ -166,16 +186,22 @@ mod tests {
         assert_ne!(allocate(&database).await.expect("allocate"), first);
     }
 
-    /// Addresses roll over the third octet rather than stopping at 254.
+    /// Every address stays inside the one `/24` that project bridges
+    /// leave alone. A `/16` would have reached `10.42.1.x` at the 255th
+    /// node — inside project 1's own subnet — and claimed a route over
+    /// every bridge on the machine along the way.
     #[test]
-    fn the_range_is_a_sixteen_and_reads_back() {
-        assert_eq!(address(1), "10.42.0.1");
-        assert_eq!(address(255), "10.42.0.255");
-        assert_eq!(address(256), "10.42.1.0");
-        assert_eq!(address(LAST), "10.42.255.254");
+    fn the_range_never_leaves_the_slot_projects_reserve() {
+        assert_eq!(address(FIRST), "10.42.0.1");
+        assert_eq!(address(LAST), "10.42.0.254");
 
-        for host in [FIRST, 255, 256, 4_242, LAST] {
-            assert_eq!(super::host(&address(host)), Some(host));
+        for host in [FIRST, 42, 128, LAST] {
+            let address = address(host);
+            assert!(
+                address.starts_with("10.42.0."),
+                "{address} is in a project's subnet"
+            );
+            assert_eq!(super::host(&address), Some(host));
         }
     }
 

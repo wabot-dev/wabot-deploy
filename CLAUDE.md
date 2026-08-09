@@ -242,7 +242,15 @@ writes its own service row and its own local deploy from it.
 A node that joined before v0.4.0 has no credential to ask with and must
 **re-join**: the direction inverted, and a hash cannot be presented.
 
-Next: phase 4, telling an edge to route a name to a container on another
-node. A request to a bare overlay address answers 404 — the far node's
-edge routes by hostname — so the proxy leg goes to the container's port,
-not through that edge.
+**Read `docs/network.md`'s "What it is for" before the phases.** A
+service is administered from the node where it was created, and what
+lands on a receiving node is derived: not editable there, evictable
+there. That reshaped the plan — phase 3 works and its form is on the
+wrong page — and it makes a **replica** the unit rather than a service.
+A container id therefore has to carry a replica index, which reaches the
+runtime, the boot reconciliation and routing.
+
+Next: phase 4, replicas. A request to a bare overlay address answers
+404 — the far node's edge routes by hostname — so a proxy leg to a
+replica elsewhere goes to the container's port, not through that node's
+edge.

@@ -232,21 +232,20 @@ impl NetworkApi {
             Err(error) => return Ok(unreadable(error)),
         };
 
-        // Before spending it, so a refusal somebody can fix does not
-        // cost them the token.
-        let mine = enrolment.used_by.as_deref() == Some(arriving.node.as_str());
-        if !mine {
-            match super::find(&self.database, &arriving.node).await {
-                Ok(Some(known)) => {
-                    let reason = match known.is_self {
-                        true => "that id is this node's own",
-                        false => "a different node here already goes by that id",
-                    };
-                    return Ok(refuse(StatusCode::CONFLICT, reason));
-                }
-                Ok(None) => {}
-                Err(error) => return Ok(unreadable(error)),
-            }
+        // What this node already knows by that id, if anything.
+        //
+        // Only its *own* id is a refusal. A node already known here
+        // presenting a fresh token is a **re-join** — which is a thing
+        // operators are told to do, and was refused as an id collision
+        // until a real one was needed. The caller is holding a token
+        // this node minted and has not spent, which is exactly the
+        // standing required to claim an id.
+        let known = match super::find(&self.database, &arriving.node).await {
+            Ok(known) => known,
+            Err(error) => return Ok(unreadable(error)),
+        };
+        if known.as_ref().is_some_and(|node| node.is_self) {
+            return Ok(refuse(StatusCode::CONFLICT, "that id is this node's own"));
         }
 
         match enrolment::spend(&self.database, &enrolment.id, &arriving.node).await {
@@ -275,7 +274,17 @@ impl NetworkApi {
                 kind: Kind::Private,
                 endpoint: None,
                 public_key: Some(arriving.public_key.clone()),
-                overlay_ip: Some(enrolment.overlay_ip.clone()),
+                // A node that is already here keeps the address it
+                // already has. Re-joining used to move it, which meant
+                // reconfiguring both ends of a working tunnel and
+                // leaking the old address for ever — a spent enrolment
+                // holds its address, so nothing ever gave it back.
+                overlay_ip: Some(
+                    known
+                        .as_ref()
+                        .and_then(|node| node.overlay_ip.clone())
+                        .unwrap_or_else(|| enrolment.overlay_ip.clone()),
+                ),
                 is_self: false,
                 last_seen_at: Some(now_ms()),
             },
@@ -319,7 +328,9 @@ impl NetworkApi {
             &Accepted {
                 authority: me.id,
                 name: me.name,
-                overlay_ip: enrolment.overlay_ip,
+                overlay_ip: known
+                    .and_then(|node| node.overlay_ip)
+                    .unwrap_or(enrolment.overlay_ip),
             },
         ))
     }

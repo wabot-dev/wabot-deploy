@@ -585,9 +585,10 @@ fn network_card(node: &network::Node) -> impl Renderable + '_ {
                 )</p>
             } @else {
                 <p class="note">(
-                    "Recorded when this node joined. Nothing has been sent to it — \
-                     errands need a tunnel, which is the next piece — so what is here \
-                     is what it said about itself when it arrived."
+                    "Recorded when this node joined — what it said about itself when it \
+                     arrived. Instructions do not travel over the overlay: that node \
+                     collects them over the same connection it enrolled through, which \
+                     is why nothing here has to be able to reach it."
                 )</p>
             }
         </section>

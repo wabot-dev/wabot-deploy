@@ -4,9 +4,38 @@ Public nodes are entry points; private nodes run containers. Any public
 node can be an edge for a name whose container lives on a private one,
 and a name can eventually be served by a group of them.
 
+## What it is for
+
+**A service is administered from the node where it was created**, and
+never by going to the machine it happens to run on. That node is where
+somebody says how many replicas it has and where each of them goes —
+here, or on a node that joined. Staying local is a placement like any
+other.
+
+What lands on the receiving node is **derived**, and reads that way: the
+project and the replica are not editable there, because the instruction
+came from somewhere else. The one thing that node's operator can always
+do is **evict** it — a danger zone that says where it came from and
+removes it. Not modify: modifying would be two nodes disagreeing about
+one service with no way to settle it.
+
+That is the same rule the grant already follows in the other direction.
+The machine is yours even when the orders are not, and joining is not a
+loss of control.
+
+Two consequences that shape everything below:
+
+- **A replica is the unit**, not a service. A service has a number of
+  them and each names its node, repeats allowed — two on one machine is
+  a thing somebody will want. So a container id has to carry the replica
+  index rather than being derived from the service, which reaches the
+  runtime, the reconciliation on boot, and routing.
+- **State has to travel back.** A page that administers a replica it
+  cannot see the state of is a page that is lying. The poll a node
+  already makes is where that goes.
+
 This document is the plan and the record of what was decided and why.
-Phases 0 to 3 are in the tree. Phases 0 to 2 are verified between two
-real nodes; phase 3 is not yet.
+Phases 0 to 3 are in the tree and verified between two real nodes.
 
 ## The shape
 
@@ -158,12 +187,31 @@ certificate and hands its bearer token to whoever answered. The way out,
 if it ever matters, is a fingerprint in the token and a pinning verifier
 — not a flag that turns verification off.
 
-**Overlay addresses are `10.42.0.0/16`, lowest free first.** Not
-`10.0.0.0/24` or `10.1.0.0/16`, which is what everything else picks by
-default and where a collision costs the node its own default route.
+**Overlay addresses are `10.42.0.0/24`, lowest free first.** That is
+the one `/24` project bridges deliberately leave alone; the rest of
+`10.42.0.0/16` has always been theirs, one `/24` per project.
+
+It was written as a `/16`, under a comment explaining why that range sat
+safely away from what a VPS or Docker would use — checked against the
+outside world and not against this product's own container networking.
+It worked by two accidents: project indexes start at 1, so the overlay's
+first 254 addresses landed in the reserved slot, and a bridge's `/24`
+outranks a `/16` in the routing table. The `/16` would have claimed a
+route over every project bridge on the machine and handed out
+`10.42.1.x` — inside project 1's subnet — at the 255th node.
+
+A `/24` is also the honest description: **an overlay address names a
+node, never a container.** Reaching a container on another node goes
+*through* that node, which is what lets two nodes each have a project
+numbered 2. Nothing in flight had to move — every address already
+allocated was inside the `/24`.
+
 Lowest free rather than next, so an overlay whose nodes come and go
 stays dense enough to read. A pending token holds its address — it is
-already written into something somebody is carrying.
+already written into something somebody is carrying — and a node that
+**re-joins keeps the address it already has**: moving it would mean
+reconfiguring both ends of a working tunnel, and a spent enrolment holds
+its address for ever, so the old one was never given back.
 
 **Keys exist before there is a tunnel.** Curve25519, generated on demand
 the first time a node enrols or joins, private half in `setting`, public
@@ -186,9 +234,24 @@ Still open:
 | 0 | Model | `node`, `authority`, `claim`; the claim rule | **done** |
 | 1 | Enrolment | Token, `join`, keys, B recording A as authority | **done** |
 | 2 | Overlay | Spike, then a real session. `doctor` proves it | **done** |
-| 3 | Errand: host | A queues a deploy on B | **done** |
-| 4 | Errand: edge | A tells C to route a name to B; C obtains the certificate | |
-| 5 | Groups | Several upstreams per name, health, failover | |
+| 3 | Errand: host | A queues a deploy on B | **done**, in the wrong place |
+| 4 | Replicas | A service is *n* placements; the container id carries the index | next |
+| 5 | Placement | The form moves to the service; provenance, read-only, eviction | |
+| 6 | Reporting | The poll carries each replica's state back to the node that placed it | |
+| 7 | Errand: edge | A name reaches its replicas wherever they are; health, failover | |
+
+Phase 3 works and is in the wrong place, which is worth saying plainly
+rather than quietly reshaping. Its form lives on the *node* page — pick
+a service, send it there — and the goal above puts it on the *service*
+page: how many replicas, and where each goes. What the receiving node
+writes is also a full project and service, editable, indistinguishable
+from its own. Phases 4 and 5 are what fix both; the errand mechanism
+underneath them does not change.
+
+What used to be phases 4 and 5 — an edge routing a name to a container
+elsewhere, then groups — is now one phase at the end, because with
+replicas it is one problem: a name reaches *the replicas of a service*,
+wherever they are, and one of them being local is not a special case.
 
 The spike is done and it reversed the overlay decision above. The
 interface comes up from the `node` table at every start and whenever a

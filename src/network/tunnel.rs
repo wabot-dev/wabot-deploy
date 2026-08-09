@@ -284,9 +284,14 @@ mod tests {
     /// A `/32` would give the kernel an address and no route to use it
     /// with — the interface has to carry the subnet for anything to be
     /// reachable through it.
+    ///
+    /// And a `/24`, not a `/16`: the wider mask claimed a route over
+    /// every project bridge on the machine, which are carved out of the
+    /// same `10.42.0.0/16`. An overlay address names a node, never a
+    /// container.
     #[test]
     fn the_interface_carries_the_subnet_not_one_address() {
-        assert_eq!(interface_address("10.42.0.2"), "10.42.0.2/16");
+        assert_eq!(interface_address("10.42.0.2"), "10.42.0.2/24");
         assert!(interface_address("10.42.0.2").parse::<IpAddrMask>().is_ok());
     }
 
