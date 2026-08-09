@@ -221,6 +221,22 @@ pub async fn here_for(
         .find(|replica| replica.is_here() && !replica.evicted()))
 }
 
+/// One copy of a service, by the slot it occupies.
+///
+/// How a report from another node lands: it names a service and a slot,
+/// which is one row across the whole network because slot numbers are
+/// the service's rather than the node's.
+pub async fn in_slot(
+    database: &SqliteDatabase,
+    service_id: &str,
+    slot: u32,
+) -> PlatformResult<Option<Replica>> {
+    Ok(of_service(database, service_id)
+        .await?
+        .into_iter()
+        .find(|replica| replica.slot == slot))
+}
+
 #[allow(dead_code)]
 pub async fn find(database: &SqliteDatabase, id: &str) -> PlatformResult<Option<Replica>> {
     let id = id.to_string();

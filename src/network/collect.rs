@@ -103,6 +103,20 @@ async fn from_one(
         return 0;
     };
 
+    // What this node's copies of that node's services are doing, before
+    // asking for more work — so an authority queueing something has
+    // just heard the truth about what is already there, and a replica
+    // evicted here stops being asked for in the same round trip.
+    match report_for(database, node_id).await {
+        Ok(report) if report.replicas.is_empty() => {}
+        Ok(report) => {
+            if let Err(error) = super::call::report(&endpoint, &secret, &report).await {
+                tracing::debug!(%error, authority = %node_id, "could not report");
+            }
+        }
+        Err(error) => tracing::warn!(%error, "could not read what this node is holding"),
+    }
+
     let waiting = match super::call::errands(&endpoint, &secret).await {
         Ok(waiting) => waiting,
         Err(error) => {
@@ -130,6 +144,50 @@ async fn from_one(
         }
     }
     settled
+}
+
+/// What this node is running on behalf of `authority`.
+///
+/// Read from the rows rather than from containerd: the deploy path
+/// already writes what happened to each replica, and asking the runtime
+/// again here would be a second opinion that can disagree with the one
+/// the console shows.
+async fn report_for(
+    database: &SqliteDatabase,
+    authority: &str,
+) -> Result<super::api::Report, String> {
+    let projects = projects::all(database)
+        .await
+        .map_err(|error| error.to_string())?;
+    let mut replicas = Vec::new();
+
+    for project in projects
+        .iter()
+        .filter(|project| project.origin_node_id.as_deref() == Some(authority))
+    {
+        for service in services::all(database, Some(&project.id))
+            .await
+            .map_err(|error| error.to_string())?
+        {
+            for replica in replicas::of_service(database, &service.id)
+                .await
+                .map_err(|error| error.to_string())?
+                .into_iter()
+                .filter(|replica| replica.is_here())
+            {
+                replicas.push(super::api::ReplicaState {
+                    project: project.name.clone(),
+                    service: service.name.clone(),
+                    slot: replica.slot,
+                    address: replica.address.clone(),
+                    error: replica.last_error.clone(),
+                    evicted: replica.evicted(),
+                });
+            }
+        }
+    }
+
+    Ok(super::api::Report { replicas })
 }
 
 /// Do what one errand says, or say why not.

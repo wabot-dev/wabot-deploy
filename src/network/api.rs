@@ -71,6 +71,40 @@ pub struct Settled {
     pub settled: bool,
 }
 
+/// What a node holding somebody else's replicas says about them.
+///
+/// Sent by the node running them, on the same schedule it collects
+/// errands on. The authority placed them and has no other way to know:
+/// nothing can reach a private node to ask.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Report {
+    pub replicas: Vec<ReplicaState>,
+}
+
+/// One copy, as the node running it sees it.
+///
+/// Named by project, service and **slot** rather than by an id: slot
+/// numbers belong to the service, so this is one row on the other side
+/// with nothing to map between. The names are the ones the errand
+/// carried, so they resolve back on the node that sent them.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReplicaState {
+    pub project: String,
+    pub service: String,
+    pub slot: u32,
+    /// Where its container answers, while it is up.
+    #[serde(default)]
+    pub address: Option<String>,
+    /// Why it is not, when it is not.
+    #[serde(default)]
+    pub error: Option<String>,
+    /// The operator of that machine threw it out. The node that placed
+    /// it stops asking — a danger zone the origin undid would not be
+    /// one.
+    #[serde(default)]
+    pub evicted: bool,
+}
+
 /// A refusal, in the shape the other end knows how to print.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Refusal {
@@ -184,6 +218,51 @@ impl NetworkApi {
             }
             Err(error) => Ok(unreadable(error)),
         }
+    }
+
+    /// What the caller says about the replicas this node placed there.
+    ///
+    /// The only way an authority learns anything about a copy it does
+    /// not run: nothing can reach a private node to ask, so the node
+    /// running it says so on the same schedule it collects errands on.
+    ///
+    /// Only rows this node placed **on that node** are touched. A
+    /// report naming a replica somebody else holds, or one that runs
+    /// here, is ignored rather than refused — the caller is describing
+    /// its own machine and cannot know what this one has decided since.
+    #[post("/report")]
+    #[raw]
+    async fn report(&self, request: Request) -> RestResult<Response> {
+        let Some(secret) = bearer(&request).map(str::to_string) else {
+            return Ok(refuse(
+                StatusCode::UNAUTHORIZED,
+                "this endpoint needs the secret from the token this node was enrolled with",
+            ));
+        };
+        let node = match asking(&self.database, &secret).await {
+            Ok(node) => node,
+            Err(response) => return Ok(response),
+        };
+
+        let Ok(bytes) = wabot::rest::axum::body::to_bytes(request.into_body(), MAX_BODY).await
+        else {
+            return Ok(refuse(StatusCode::BAD_REQUEST, "that request is too large"));
+        };
+        let Ok(report) = serde_json::from_slice::<Report>(&bytes) else {
+            return Ok(refuse(StatusCode::BAD_REQUEST, "that is not a report"));
+        };
+
+        let mut recorded = 0;
+        for state in &report.replicas {
+            match record(&self.database, &node, state).await {
+                Ok(true) => recorded += 1,
+                Ok(false) => {}
+                Err(error) => return Ok(unreadable(error)),
+            }
+        }
+
+        tracing::debug!(node = %node, recorded, "a node reported");
+        Ok(json(StatusCode::OK, &Settled { settled: true }))
     }
 
     /// Record a node that is holding one of this node's join tokens.
@@ -411,6 +490,62 @@ fn json<T: Serialize>(status: StatusCode, value: &T) -> Response {
         .header(header::CONTENT_TYPE, "application/json")
         .body(Body::from(body))
         .expect("a serialised body is well-formed")
+}
+
+/// Write one reported state onto the row this node placed.
+///
+/// `false` when there is nothing here it matches — a service renamed
+/// since, or a replica this node has already moved. Not an error: the
+/// other end is describing its own machine truthfully, and it cannot
+/// know what has been decided here since it was told.
+async fn record(
+    database: &SqliteDatabase,
+    node: &str,
+    state: &ReplicaState,
+) -> Result<bool, super::NetworkError> {
+    let Some(project) = crate::platform::projects::all(database)
+        .await
+        .map_err(|error| super::NetworkError::Refused(error.to_string()))?
+        .into_iter()
+        .find(|project| project.name == state.project)
+    else {
+        return Ok(false);
+    };
+    let found = crate::platform::services::in_project(
+        database,
+        &project.id,
+        &crate::platform::slugify(&state.service),
+    )
+    .await
+    .map_err(|error| super::NetworkError::Refused(error.to_string()))?;
+    let Some(service) = found else {
+        return Ok(false);
+    };
+
+    let replica = crate::platform::replicas::in_slot(database, &service.id, state.slot)
+        .await
+        .map_err(|error| super::NetworkError::Refused(error.to_string()))?;
+    // Only what this node placed *there*. A row that has since been
+    // brought home, or moved to a third node, is not this caller's to
+    // describe any more.
+    let Some(replica) = replica.filter(|replica| replica.node_id.as_deref() == Some(node)) else {
+        return Ok(false);
+    };
+
+    let write = async {
+        if state.evicted {
+            crate::platform::replicas::evict(database, &replica.id).await?;
+            return Ok::<(), crate::platform::PlatformError>(());
+        }
+        crate::platform::replicas::set_address(database, &replica.id, state.address.as_deref())
+            .await?;
+        crate::platform::replicas::set_last_error(database, &replica.id, state.error.as_deref())
+            .await
+    };
+    write
+        .await
+        .map_err(|error| super::NetworkError::Refused(error.to_string()))?;
+    Ok(true)
 }
 
 /// A storage failure, in the same shape as every other answer here.
@@ -650,6 +785,153 @@ mod tests {
             .send()
             .await
             .assert_ok();
+    }
+
+    /// The only way an authority learns anything about a copy it does
+    /// not run. Nothing can reach a private node to ask, so the node
+    /// running it says so — and until it does, the page says "waiting"
+    /// rather than inventing an outcome.
+    #[tokio::test]
+    async fn a_node_reports_what_it_is_running_for_this_one() {
+        let authority = authority().await;
+        authority
+            .harness
+            .post("/api/network/join")
+            .header("authorization", format!("Bearer {}", authority.secret))
+            .json(&arriving())
+            .send()
+            .await
+            .assert_ok();
+
+        let placed = placed_there(&authority, 2).await;
+
+        authority
+            .harness
+            .post("/api/network/report")
+            .header("authorization", format!("Bearer {}", authority.secret))
+            .json(&serde_json::json!({
+                "replicas": [
+                    { "project": "shared", "service": "web", "slot": 2,
+                      "address": "10.42.7.3" }
+                ]
+            }))
+            .send()
+            .await
+            .assert_ok();
+
+        let after = crate::platform::replicas::in_slot(&authority.database, &placed, 2)
+            .await
+            .expect("query")
+            .expect("there");
+        assert_eq!(after.address.as_deref(), Some("10.42.7.3"));
+        assert!(!after.evicted());
+    }
+
+    /// An eviction is the one thing the node running a replica can
+    /// always do, and the authority has to stop asking — a danger zone
+    /// the origin undid would not be one.
+    #[tokio::test]
+    async fn an_eviction_reaches_the_node_that_placed_it() {
+        let authority = authority().await;
+        authority
+            .harness
+            .post("/api/network/join")
+            .header("authorization", format!("Bearer {}", authority.secret))
+            .json(&arriving())
+            .send()
+            .await
+            .assert_ok();
+        let placed = placed_there(&authority, 2).await;
+
+        authority
+            .harness
+            .post("/api/network/report")
+            .header("authorization", format!("Bearer {}", authority.secret))
+            .json(&serde_json::json!({
+                "replicas": [
+                    { "project": "shared", "service": "web", "slot": 2, "evicted": true }
+                ]
+            }))
+            .send()
+            .await
+            .assert_ok();
+
+        let after = crate::platform::replicas::in_slot(&authority.database, &placed, 2)
+            .await
+            .expect("query")
+            .expect("there");
+        assert!(after.evicted(), "the authority kept asking for it");
+    }
+
+    /// A node describes its own machine truthfully and cannot know what
+    /// has been decided here since. A report naming a replica this node
+    /// has brought home is ignored rather than refused — and must not
+    /// overwrite the row that is now local.
+    #[tokio::test]
+    async fn a_report_about_a_replica_that_came_home_is_ignored() {
+        let authority = authority().await;
+        authority
+            .harness
+            .post("/api/network/join")
+            .header("authorization", format!("Bearer {}", authority.secret))
+            .json(&arriving())
+            .send()
+            .await
+            .assert_ok();
+        let placed = placed_there(&authority, 2).await;
+
+        let replica = crate::platform::replicas::in_slot(&authority.database, &placed, 2)
+            .await
+            .expect("query")
+            .expect("there");
+        crate::platform::replicas::move_to(&authority.database, &replica.id, None)
+            .await
+            .expect("home");
+
+        authority
+            .harness
+            .post("/api/network/report")
+            .header("authorization", format!("Bearer {}", authority.secret))
+            .json(&serde_json::json!({
+                "replicas": [
+                    { "project": "shared", "service": "web", "slot": 2, "evicted": true }
+                ]
+            }))
+            .send()
+            .await
+            .assert_ok();
+
+        let after = crate::platform::replicas::in_slot(&authority.database, &placed, 2)
+            .await
+            .expect("query")
+            .expect("there");
+        assert!(!after.evicted(), "a stale report evicted a local replica");
+        assert!(after.is_here());
+    }
+
+    /// A service with a replica placed on the joined node, and its id.
+    async fn placed_there(authority: &Authority, slot: u32) -> String {
+        let project = crate::platform::projects::create(&authority.database, "shared")
+            .await
+            .expect("project");
+        let service = crate::platform::services::create(
+            &authority.database,
+            &project.id,
+            "web",
+            "hub.example/shared/web@sha256:abc",
+            &[],
+        )
+        .await
+        .expect("service");
+        crate::platform::replicas::place(
+            &authority.database,
+            &service.id,
+            Some("nd-joining001"),
+            slot,
+        )
+        .await
+        .expect("placed");
+        service.id
     }
 
     /// The whole of phase 3's delivery, from the authority's side: a

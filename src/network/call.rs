@@ -101,6 +101,25 @@ pub async fn errands(
     }
 }
 
+/// Say what this node's copies of somebody else's services are doing.
+///
+/// Sent before collecting, so an authority queueing work has just heard
+/// the truth about what is already there — and so a replica that was
+/// evicted here stops being asked for in the same round trip.
+pub async fn report(
+    endpoint: &str,
+    secret: &str,
+    report: &super::api::Report,
+) -> Result<(), CallError> {
+    let url = format!("https://{endpoint}/api/network/report");
+    let body = serde_json::to_string(report).expect("a report is plain data");
+
+    match tokio::time::timeout(TIMEOUT, send(&url, secret, Some(body))).await {
+        Ok(result) => result.map(|_| ()),
+        Err(_) => Err(CallError::TimedOut { url }),
+    }
+}
+
 /// Say how one went. `None` is success.
 pub async fn settle(
     endpoint: &str,
