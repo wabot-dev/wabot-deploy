@@ -56,6 +56,14 @@ CNI or ACME, it is not verified until it ran on a real node.
 convergent — each one asks about the thing, not about the history. This
 rule was learned three times.
 
+**A boolean attribute is written by branching, not by a value.** `rsx!`
+renders `hidden=(false)` as `hidden="false"`, and HTML reads `hidden`,
+`disabled`, `checked` and `selected` by *presence* — so that hides,
+disables, checks and selects. Write `@if cond { <el attr> } @else { <el> }`.
+This was wrong in four places at once, and each was invisible: a button
+that appeared a second late, a checkbox that always read on, a selector
+naming the wrong project.
+
 **Errors are values somebody can act on.** A failure that only reaches
 the journal is a failure nobody sees: put the reason where the person
 looking for it will be (the run row, the service row, `doctor`, the
@@ -168,3 +176,22 @@ Publishing a release is outward-facing. Ask first.
   it has to say so in its notes.
 - No rollback button for an update — rolling back a migration is not a
   file operation, which is what the database copy is for.
+- Wildcard certificates are refused by name: the resolver looks names up
+  in a map, so accepting one would store a certificate never served.
+- Building happens on the node, ~25 minutes on the one-core box.
+  Compiling locally against a static musl target is the clean way out,
+  and it contradicts the "Working on the node" rationale above — so it
+  needs that section rewritten, not quietly ignored.
+- `scripts/deploy.sh` prints `line 76: release: command not found` on
+  every run. Harmless, and it is exactly where somebody looks when
+  something is wrong.
+
+## The network work
+
+[`docs/network.md`](docs/network.md) is the plan and the record of what
+was decided. Phase 0 — the model — is in the tree; nothing consumes it
+yet, which is why `src/network/mod.rs` carries an `allow(dead_code)`
+that names what removes it.
+
+Next: seed the self row in `install`, have the console read the `node`
+table instead of the synthetic list of one, then phase 1 (enrolment).
