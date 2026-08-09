@@ -30,8 +30,18 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: dtolnay/rust-toolchain@stable
+      # The compiler comes from `rust-toolchain.toml`, read rather than
+      # repeated: naming the version in two places is the same drift
+      # that pinning was supposed to end, moved somewhere new. The
+      # components have to be installed for *that* toolchain — asking
+      # for them on `stable` installs them under a different name, and
+      # `cargo fmt` then fails saying rustfmt is not installed.
+      - id: toolchain
+        run: sed -n 's/^channel *= *"\(.*\)"/channel=\1/p' rust-toolchain.toml >> "$GITHUB_OUTPUT"
+
+      - uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: ${{ steps.toolchain.outputs.channel }}
           targets: x86_64-unknown-linux-musl
           components: rustfmt, clippy
 
