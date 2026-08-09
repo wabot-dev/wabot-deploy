@@ -351,6 +351,34 @@ impl Deployer {
     ///
     /// Records `stopped` as the intent, so a reconcile does not start
     /// it again ten seconds later.
+    /// Stop one copy and take it off the network, leaving the rest of
+    /// the service alone.
+    ///
+    /// Without the desired state, deliberately: that is the *service's*
+    /// intent, and one copy going away is not the service being
+    /// stopped. Used when a node is told it no longer runs a slot — the
+    /// others it holds keep running.
+    pub async fn stop_replica(
+        &self,
+        project: &Project,
+        service: &Service,
+        replica: &Replica,
+    ) -> DeployResult<()> {
+        let id = replica.container_id(&project.slug, &service.slug);
+        let client = Containerd::connect().await?;
+
+        containers::stop(&client, &id, STOP_GRACE).await?;
+        containers::remove(&client, &id).await?;
+        if let Some(net) = self.network_of(project).await {
+            network::detach(&net, &id).await;
+        }
+        replicas::set_address(&self.database, &replica.id, None).await?;
+        self.sync_routes().await;
+
+        tracing::info!(service = %service.slug, slot = replica.slot, "stopped one copy");
+        Ok(())
+    }
+
     pub async fn stop(&self, project: &Project, service: &Service) -> DeployResult<()> {
         // The intent first, so a reconcile arriving mid-stop does not
         // start back what is being taken down.

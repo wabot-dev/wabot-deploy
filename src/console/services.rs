@@ -185,6 +185,13 @@ impl ServicePages {
         let deploying = crate::deploy::jobs::deploying(&self.state.container)
             .await
             .contains(&service.id);
+        // Built once and shared by the badge and the control, so the
+        // page cannot show "running" beside a play button.
+        let cell = super::projects::state_cell(
+            &observed,
+            deploying,
+            here.as_ref().and_then(|replica| replica.address.as_deref()),
+        );
         let back = format!("/projects/{}", project.slug);
         let settings = format!(
             "/projects/{}/services/{}/settings",
@@ -225,7 +232,18 @@ impl ServicePages {
                 <section class="card stack">
                     <div class="split">
                         <p class="card-label">("Container")</p>
-                        (super::projects::state_badge(&super::projects::state_cell(&observed, deploying, here.as_ref().and_then(|r| r.address.as_deref()))))
+                        <div class="row">
+                            (super::projects::state_badge(&cell))
+                            // The page showed the state and withheld the
+                            // control, so the one place you go to find
+                            // out a service is down was the one place
+                            // you could not start it.
+                            @if allowed.may_deploy() && service.is_ours() {
+                                (super::projects::deploy_controls(
+                                    &project.slug, &service.slug, &cell
+                                ))
+                            }
+                        </div>
                     </div>
                     <dl class="kv">
                         <dt>("Image")</dt>
@@ -244,6 +262,11 @@ impl ServicePages {
                     (from_elsewhere_card(
                         &project,
                         &service,
+                        &placements
+                            .iter()
+                            .filter(|replica| replica.is_here())
+                            .cloned()
+                            .collect::<Vec<_>>(),
                         placements.iter().all(|replica| replica.evicted()),
                     ))
                 }
@@ -882,6 +905,7 @@ fn placement_state(replica: &crate::platform::replicas::Replica) -> impl Rendera
 fn from_elsewhere_card<'a>(
     project: &'a crate::platform::projects::Project,
     service: &'a services::Service,
+    mine: &'a [crate::platform::replicas::Replica],
     evicted: bool,
 ) -> impl Renderable + 'a {
     rsx! {
@@ -895,6 +919,25 @@ fn from_elsewhere_card<'a>(
                 <dt>("Placed by")</dt>
                 <dd class="mono">(service.origin_node_id.as_deref().unwrap_or("—"))</dd>
             </dl>
+
+            // What is actually on *this* machine. The page used to name
+            // the node that sent it and stop there, so the operator
+            // could not see how many copies they were running or what
+            // any of them was doing — which is the one thing they can
+            // see about it that the other node cannot.
+            <table>
+                <thead>
+                    <tr><th>("Running here")</th><th>("State")</th></tr>
+                </thead>
+                <tbody>
+                    @for replica in mine {
+                        <tr>
+                            <td class="mono">("#")(replica.slot)</td>
+                            <td>(placement_state(replica))</td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
             <p class="field-hint">(
                 "The machine is yours: throwing it out is something you can always do, \
                  and it is the only thing here that is."
@@ -1517,6 +1560,15 @@ impl ServiceApi {
 
         let placements =
             crate::platform::replicas::of_service(&self.state.database, &service.id).await?;
+        // Every node this service is on *before* anything moves. A node
+        // losing its last replica has to be told, and after the move
+        // there is nothing left pointing at it — so the set is taken
+        // now. Without this a replica brought home kept running there
+        // for ever, invisible from both sides.
+        let mut touched: std::collections::BTreeSet<String> = placements
+            .iter()
+            .filter_map(|replica| replica.node_id.clone())
+            .collect();
 
         // Where each existing replica should be. An unnamed slot keeps
         // what it had: a form that arrived without a field is a form
@@ -1537,6 +1589,7 @@ impl ServiceApi {
                 {
                     return Ok(back_with_error(&here, "no such node"));
                 }
+                touched.insert(node.to_string());
             }
             crate::platform::replicas::move_to(&self.state.database, &replica.id, wanted).await?;
         }
@@ -1555,7 +1608,8 @@ impl ServiceApi {
             return Ok(back_with_error(&here, &error));
         }
 
-        self.dispatch(&project, &service, &account.id).await?;
+        self.dispatch(&project, &service, &account.id, touched)
+            .await?;
         Ok(see_other(&here))
     }
 }
@@ -1679,20 +1733,24 @@ impl ServiceApi {
         project: &crate::platform::projects::Project,
         service: &services::Service,
         by: &str,
+        touched: std::collections::BTreeSet<String>,
     ) -> RestResult<()> {
         let placements =
             crate::platform::replicas::of_service(&self.state.database, &service.id).await?;
 
-        for node_id in placements
-            .iter()
-            .filter(|replica| !replica.evicted())
-            .filter_map(|replica| replica.node_id.clone())
-            .collect::<std::collections::BTreeSet<_>>()
-        {
+        // Every node that holds a replica *or has just stopped holding
+        // one*. The second half is why the set is passed in: a node
+        // losing its last copy is exactly the one nothing points at any
+        // more, and it is the one that most needs telling.
+        for node_id in touched {
             // Every slot that node holds, in the service's numbering:
             // a node running two copies is told about both in one
             // errand rather than being sent the same instruction twice
             // with no way to tell the copies apart.
+            //
+            // An **empty** list is a real instruction, not a reason to
+            // skip: it says "you run none of this now", which is how a
+            // node finds out that its last replica went home.
             let slots: Vec<u32> = placements
                 .iter()
                 .filter(|replica| replica.node_id.as_deref() == Some(node_id.as_str()))
@@ -1933,6 +1991,60 @@ mod tests {
         .expect("service")
     }
 
+    /// The page you go to when a service is down was the one page you
+    /// could not start it from: it showed the state and withheld the
+    /// control.
+    #[tokio::test]
+    async fn the_service_page_offers_the_control_its_state_calls_for() {
+        let console = Console::new().await;
+        let cookie = console.signed_in().await;
+        placed_service(&console, &cookie).await;
+
+        let body = console
+            .harness
+            .get("/projects/shared/services/web")
+            .header("cookie", &cookie)
+            .send()
+            .await
+            .body;
+
+        assert!(
+            body.contains("/projects/shared/services/web/deploy"),
+            "no way to start it: {body}"
+        );
+        assert!(
+            body.contains("/projects/shared/services/web/stop"),
+            "{body}"
+        );
+    }
+
+    /// A service placed here by another node is not this node's to
+    /// start or stop — the same boundary every mutation goes through,
+    /// and the page must not offer what the POST will refuse.
+    #[tokio::test]
+    async fn a_foreign_service_is_offered_no_controls() {
+        let console = Console::new().await;
+        let cookie = console.signed_in().await;
+        let service = placed_service(&console, &cookie).await;
+        services::set_origin(&console.database, &service.id, "nd-elsewhere1")
+            .await
+            .expect("origin");
+
+        let body = console
+            .harness
+            .get("/projects/shared/services/web")
+            .header("cookie", &cookie)
+            .send()
+            .await
+            .body;
+
+        assert!(
+            !body.contains("/projects/shared/services/web/deploy"),
+            "it offered to start somebody else's service"
+        );
+        assert!(body.contains("From another node"), "{body}");
+    }
+
     /// The one thing the operator of a machine can always do to
     /// something they did not put there. The machine is theirs even
     /// when the orders are not.
@@ -2098,6 +2210,86 @@ mod tests {
             serde_json::from_value(waiting[0].payload.clone()).expect("a host errand");
         assert_eq!(host.service, "web");
         assert!(!host.secret.is_empty(), "nothing to pull it with");
+    }
+
+    /// Bringing a replica home has to tell the node it left.
+    ///
+    /// This shipped in v0.5.0 as a leak: the row moved and nothing was
+    /// sent, so that node kept the container running for ever — and a
+    /// report about it is ignored by design, because the row is local
+    /// now. Invisible from both sides, which is the worst shape a bug
+    /// can have here.
+    #[tokio::test]
+    async fn bringing_a_replica_home_tells_the_node_it_left() {
+        let console = Console::new().await;
+        let cookie = console.signed_in().await;
+        let service = placed_service(&console, &cookie).await;
+        crate::network::save(
+            &console.database,
+            &crate::network::Node {
+                id: "nd-elsewhere1".into(),
+                name: "alpine.example".into(),
+                kind: crate::network::Kind::Private,
+                endpoint: None,
+                public_key: Some("k".into()),
+                overlay_ip: Some("10.42.0.9".into()),
+                is_self: false,
+                last_seen_at: None,
+            },
+        )
+        .await
+        .expect("node");
+
+        // Two replicas, the second one away.
+        for form in [
+            vec![("replicas", "2")],
+            vec![("replicas", "2"), ("slot-2", "nd-elsewhere1")],
+        ] {
+            console
+                .harness
+                .post("/projects/shared/services/web/placement")
+                .header("cookie", &cookie)
+                .form(&form)
+                .send()
+                .await
+                .assert_status(StatusCode::SEE_OTHER);
+        }
+        crate::network::errand::waiting(&console.database, "nd-elsewhere1")
+            .await
+            .expect("collected");
+
+        // And back home.
+        console
+            .harness
+            .post("/projects/shared/services/web/placement")
+            .header("cookie", &cookie)
+            .form(&[("replicas", "2"), ("slot-1", ""), ("slot-2", "")])
+            .send()
+            .await
+            .assert_status(StatusCode::SEE_OTHER);
+
+        let placements = crate::platform::replicas::of_service(&console.database, &service.id)
+            .await
+            .expect("replicas");
+        assert!(placements.iter().all(|replica| replica.is_here()));
+
+        // The node it left is told, and told it runs *none* of it —
+        // which is the instruction that stops its container.
+        // The newest one, and it says it runs *none* of this — which
+        // is the instruction that stops its container. Collecting does
+        // not settle an errand, so the earlier one is still pending
+        // beside it; what matters is the last thing it was told.
+        let waiting = crate::network::errand::waiting(&console.database, "nd-elsewhere1")
+            .await
+            .expect("waiting");
+        let latest = waiting.last().expect("the node it left was told nothing");
+        let host: crate::network::errand::Host =
+            serde_json::from_value(latest.payload.clone()).expect("a host errand");
+        assert!(
+            host.slots.is_empty(),
+            "it was told to keep running {:?}",
+            host.slots
+        );
     }
 
     /// Removing a replica that runs somewhere else would leave its

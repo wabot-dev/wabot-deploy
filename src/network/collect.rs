@@ -271,13 +271,27 @@ async fn host_service(
     };
 
     // Exactly the copies it was told to run, in the service's own
-    // numbering. `create` above made slot 1; anything else the errand
-    // named is placed beside it.
+    // numbering — and **only** those. A `host` errand is the whole of
+    // what this node runs for that service, not an addition to it:
+    // that is what lets the other node move a replica away, or bring
+    // it home, and have this one find out. Before this, a copy whose
+    // slot stopped being named kept running for ever, invisible from
+    // both sides.
     replicas::ensure_slots(database, &service.id, &host.slots)
         .await
         .map_err(|error| error.to_string())?;
+    stop_unnamed(database, config, &project, &service, &host.slots).await?;
 
-    let _ = config;
+    // Nothing left to run: the other node has taken the whole service
+    // off this machine, so the rows go too. Not a tombstone — an
+    // eviction leaves one because the *authority* has to be told, and
+    // here the authority is the one that asked.
+    if host.slots.is_empty() {
+        services::delete(database, &service.id)
+            .await
+            .map_err(|error| error.to_string())?;
+        return Ok(());
+    }
     // Its own job, on its own queue. This is the whole of "deploying is
     // local": the authority asked, and what runs is this node's own
     // deployment, indistinguishable from one somebody clicked here.
@@ -290,6 +304,40 @@ async fn host_service(
         .map_err(|error| format!("could not queue the deployment: {error}"))?;
 
     tracing::info!(service = %service.id, image = %host.image, "an errand queued a deployment");
+    Ok(())
+}
+
+/// Stop every copy of this service here that the errand did not name.
+///
+/// The rows go with the containers. A replica this node is no longer
+/// asked to run is not evicted — nobody threw it out, the node that
+/// placed it changed its mind — so there is nothing to report and
+/// nothing to keep.
+async fn stop_unnamed(
+    database: &SqliteDatabase,
+    config: &Config,
+    project: &projects::Project,
+    service: &services::Service,
+    slots: &[u32],
+) -> Result<(), String> {
+    let deployer = crate::deploy::Deployer::new(std::sync::Arc::new(database.clone()), config);
+
+    for replica in replicas::of_service(database, &service.id)
+        .await
+        .map_err(|error| error.to_string())?
+        .into_iter()
+        .filter(|replica| replica.is_here() && !slots.contains(&replica.slot))
+    {
+        if let Err(error) = deployer.stop_replica(project, service, &replica).await {
+            // Reported and carried on from: the row is going either
+            // way, and a container this node could not reach must not
+            // keep it listed as something it runs.
+            tracing::warn!(slot = replica.slot, %error, "stopping a copy that was taken away");
+        }
+        replicas::remove(database, &replica.id)
+            .await
+            .map_err(|error| error.to_string())?;
+    }
     Ok(())
 }
 

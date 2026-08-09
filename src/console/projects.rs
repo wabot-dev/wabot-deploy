@@ -166,15 +166,20 @@ impl ProjectPages {
             // The address and the reason live on the copy that runs
             // here — a service is *n* of them now, and this row still
             // shows one.
-            let here =
-                crate::platform::replicas::here_for(&self.state.database, &service.id).await?;
+            let placements =
+                crate::platform::replicas::of_service(&self.state.database, &service.id).await?;
+            let here = placements
+                .iter()
+                .find(|replica| replica.is_here() && !replica.evicted())
+                .cloned();
+            let where_it_runs = where_it_runs(&placements);
             // The same value the stream sends, so the first paint and
             // every update after it cannot disagree about which action
             // applies or what the badge says.
             let cell = state_cell(
                 &observed,
                 deploying.contains(&service.id),
-                here.as_ref().and_then(|replica| replica.address.as_deref()),
+                Some(where_it_runs.as_str()),
             );
             rows.push((service, cell, here.and_then(|replica| replica.last_error)));
         }
@@ -545,33 +550,9 @@ fn service_table(
                                     </td>
                                     <td class="row">
                                         @if allowed.may_deploy() {
-                                            // Both actions are rendered
-                                            // and one is hidden, so the
-                                            // stream can swap them by
-                                            // toggling — an island may
-                                            // hide what does not apply,
-                                            // not build what does. A
-                                            // viewer gets neither: the
-                                            // check that counts is on
-                                            // the POST, this is so the
-                                            // page does not offer what
-                                            // it will refuse.
-                                            <form method="post" data-action="deploy"
-                                                  class=(shown(cell.action == "deploy"))
-                                                  action=(format!(
-                                                      "/projects/{}/services/{}/deploy",
-                                                      project.slug, service.slug
-                                                  ))>
-                                                (action_button("Deploy", PLAY, cell.busy))
-                                            </form>
-                                            <form method="post" data-action="stop"
-                                                  class=(shown(cell.action == "stop"))
-                                                  action=(format!(
-                                                      "/projects/{}/services/{}/stop",
-                                                      project.slug, service.slug
-                                                  ))>
-                                                (action_button("Stop", STOP, cell.busy))
-                                            </form>
+                                            (deploy_controls(
+                                                &project.slug, &service.slug, cell
+                                            ))
                                         }
                                     </td>
                                 </tr>
@@ -615,6 +596,37 @@ fn shown(applies: bool) -> &'static str {
 /// Written twice rather than `disabled=(busy)`, for the same reason:
 /// `disabled="false"` disables. There is no way to spell "no attribute"
 /// in an `rsx!` attribute value, so the branch is on the element.
+/// The play and the stop, for whichever page is showing a service.
+///
+/// One definition, because the project's list and the service's own
+/// page must not disagree about which control applies — and they had
+/// no way not to, since the detail page simply had neither. A service
+/// you can see the state of and cannot start is a page that shows a
+/// problem and withholds the fix.
+///
+/// Both actions are rendered and one is hidden, so the stream can swap
+/// them by toggling: an island may hide what does not apply, not build
+/// what does. The check that counts is on the POST; this is so the page
+/// does not offer what it will refuse.
+pub(crate) fn deploy_controls<'a>(
+    project_slug: &'a str,
+    service_slug: &'a str,
+    cell: &'a StateCell,
+) -> impl Renderable + 'a {
+    rsx! {
+        <form method="post" data-action="deploy"
+              class=(shown(cell.action == "deploy"))
+              action=(format!("/projects/{project_slug}/services/{service_slug}/deploy"))>
+            (action_button("Deploy", PLAY, cell.busy))
+        </form>
+        <form method="post" data-action="stop"
+              class=(shown(cell.action == "stop"))
+              action=(format!("/projects/{project_slug}/services/{service_slug}/stop"))>
+            (action_button("Stop", STOP, cell.busy))
+        </form>
+    }
+}
+
 fn action_button(label: &'static str, icon: &'static str, busy: bool) -> impl Renderable {
     rsx! {
         @if busy {
@@ -663,10 +675,34 @@ pub(crate) struct StateCell {
     /// disabled: that is where it is heading, and saying so is more
     /// use than an empty cell.
     busy: bool,
-    /// Where the container answers, or a dash. It changes with the
-    /// state — a deployment ends by assigning one — so it travels with
-    /// it rather than waiting for a reload.
+    /// Where it runs, in the width of a column.
+    ///
+    /// The container's address while a service is one copy on this
+    /// node, which is what it usually is and the most useful thing to
+    /// show. Once there are several, one address is a lie about the
+    /// other n − 1, so it becomes a count instead — the service's own
+    /// page is where each copy is named.
     address: String,
+}
+
+/// Where a service runs, in the width of a column.
+///
+/// One copy here is the ordinary case and its address is the useful
+/// thing. Several copies make one address a lie about the others, so
+/// they become a count — and a copy somewhere else is worth saying
+/// even when there is only one, because "running" on this page would
+/// otherwise mean a container this node has never seen.
+pub(crate) fn where_it_runs(placements: &[crate::platform::replicas::Replica]) -> String {
+    let live: Vec<&crate::platform::replicas::Replica> =
+        placements.iter().filter(|r| !r.evicted()).collect();
+    let elsewhere = live.iter().filter(|r| !r.is_here()).count();
+
+    match (live.len(), elsewhere) {
+        (1, 0) => live[0].address.clone().unwrap_or_else(|| "—".into()),
+        (1, 1) => "1 elsewhere".to_string(),
+        (n, 0) => format!("{n} replicas"),
+        (n, away) => format!("{n} replicas · {away} elsewhere"),
+    }
 }
 
 pub(crate) fn state_cell(observed: &Observed, deploying: bool, address: Option<&str>) -> StateCell {
@@ -831,7 +867,21 @@ impl ProjectApi {
                         let busy = deploying.contains(&service.id);
                         cells.insert(
                             service.id.clone(),
-                            state_cell(&observed, busy, service.address.as_deref()),
+                            state_cell(
+                                &observed,
+                                busy,
+                                Some(
+                                    where_it_runs(
+                                        &crate::platform::replicas::of_service(
+                                            &state.database,
+                                            &service.id,
+                                        )
+                                        .await
+                                        .unwrap_or_default(),
+                                    )
+                                    .as_str(),
+                                ),
+                            ),
                         );
                     }
                 }
@@ -1203,6 +1253,45 @@ mod tests {
             .await
             .body;
         assert!(body.contains("Danger zone"), "an owner sees it: {body}");
+    }
+
+    /// One address is a lie about the other n − 1. The column says
+    /// where a service runs, and only names an address while there is
+    /// exactly one copy to name.
+    #[test]
+    fn the_column_stops_naming_an_address_once_there_are_several() {
+        let replica =
+            |slot, here: bool, address: Option<&str>| crate::platform::replicas::Replica {
+                id: format!("rp-{slot}"),
+                service_id: "svc-1".into(),
+                node_id: (!here).then(|| "nd-elsewhere".to_string()),
+                slot,
+                address: address.map(str::to_string),
+                last_error: None,
+                evicted_at: None,
+            };
+
+        // The ordinary case, and the useful one.
+        assert_eq!(
+            where_it_runs(&[replica(1, true, Some("10.42.1.5"))]),
+            "10.42.1.5"
+        );
+        // One copy and it is not on this machine: an address here would
+        // name a container this node has never seen.
+        assert_eq!(where_it_runs(&[replica(1, false, None)]), "1 elsewhere");
+
+        assert_eq!(
+            where_it_runs(&[replica(1, true, Some("10.42.1.5")), replica(2, true, None)]),
+            "2 replicas"
+        );
+        assert_eq!(
+            where_it_runs(&[
+                replica(1, true, Some("10.42.1.5")),
+                replica(2, false, None),
+                replica(3, false, None),
+            ]),
+            "3 replicas · 2 elsewhere"
+        );
     }
 
     /// During a deployment containerd's answer is a half-truth — the
