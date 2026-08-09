@@ -188,7 +188,15 @@ async fn report_for(
         }
     }
 
-    Ok(super::api::Report { replicas })
+    // This node's own reachability, as it sees it. The authority cannot
+    // work it out: everything it knows about this node arrived through
+    // a token or over the overlay.
+    let endpoint = super::me(database)
+        .await
+        .map_err(|error| error.to_string())?
+        .and_then(|me| me.endpoint);
+
+    Ok(super::api::Report { replicas, endpoint })
 }
 
 /// Do what one errand says, or say why not.

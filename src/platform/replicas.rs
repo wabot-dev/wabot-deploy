@@ -234,6 +234,27 @@ pub async fn here(database: &SqliteDatabase) -> PlatformResult<Vec<Replica>> {
         .await?)
 }
 
+/// Every replica this node placed **somewhere else**.
+///
+/// The other half of `here`, and what the route table needs: this node
+/// is the edge for its own services' names, so a name whose service has
+/// a copy on another node has to reach it from here too. Evicted ones
+/// are left out — nothing is running there to reach.
+pub async fn elsewhere(database: &SqliteDatabase) -> PlatformResult<Vec<Replica>> {
+    Ok(database
+        .read(|connection| {
+            let mut statement = connection.prepare(&format!(
+                "SELECT {COLUMNS} FROM replica \
+                 WHERE \"node_id\" IS NOT NULL AND \"evicted_at\" IS NULL \
+                 ORDER BY \"service_id\", \"slot\""
+            ))?;
+            let replicas: wabot::sqlite::rusqlite::Result<Vec<Replica>> =
+                statement.query_map([], decode)?.collect();
+            replicas
+        })
+        .await?)
+}
+
 /// The copy of a service that runs on this node, if one does.
 ///
 /// What a page showing a service as one thing reads its address and its

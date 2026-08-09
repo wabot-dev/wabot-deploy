@@ -185,9 +185,15 @@ impl ServicePages {
         // Who could answer for a name, and who was asked to. Only a
         // node with an address the world can dial: sending a hostname
         // to one without would publish a name that resolves to nothing.
+        //
+        // This node is not among them, and it is not an omission. It
+        // already serves the names of the services it owns — that is
+        // what it did before any of this, and the route is recomputed
+        // from the ports after every deploy. A checkbox for it would be
+        // one that changes nothing when unticked.
         let public_nodes: Vec<crate::network::Node> = nodes
             .iter()
-            .filter(|node| node.may_be_edge())
+            .filter(|node| node.may_be_edge() && !node.is_self)
             .cloned()
             .collect();
         let serving = crate::platform::edges::of_service(&self.state.database, &service.id).await?;
@@ -971,7 +977,7 @@ fn served_by_form<'a>(
                   project.slug, service.slug
               ))>
             <input type="hidden" name="hostname" value=(hostname)>
-            <p class="tile-detail">("Served by")</p>
+            <p class="tile-detail">("Also served by")</p>
             @for node in public {
                 <label class="served-by-node">
                     @if chosen.contains(&node.id.as_str()) {
@@ -1764,11 +1770,15 @@ impl ServiceApi {
         }
 
         // A checkbox sends its value only when ticked, so the chosen
-        // set is what arrived and the rest is what was cleared.
+        // set is what arrived and the rest is what was cleared. Read
+        // from the node table rather than from the form, so a field
+        // naming something that is not a public node cannot put a row
+        // in — and this node never among them: an errand queued for
+        // itself is one nobody ever collects.
         let public: Vec<String> = crate::network::all(&self.state.database)
             .await?
             .into_iter()
-            .filter(|node| node.may_be_edge())
+            .filter(|node| node.may_be_edge() && !node.is_self)
             .map(|node| node.id)
             .collect();
         let chosen: Vec<String> = public

@@ -33,7 +33,7 @@ use wabot::rest::axum::Router;
 use wabot::rest::RestResult;
 use wabot::sqlite::SqliteDatabase;
 
-use super::{enrolment, errand, Kind, Node};
+use super::{enrolment, errand, Kind, NetworkResult, Node};
 use crate::platform::now_ms;
 
 /// What a node says about itself when it arrives.
@@ -79,6 +79,26 @@ pub struct Settled {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Report {
     pub replicas: Vec<ReplicaState>,
+    /// Where the world can dial the reporting node, if anywhere.
+    ///
+    /// Enrolment records every joining node as private, because it
+    /// arrived through a token rather than being dialled and the
+    /// enrolling node has no address for it but the overlay one it just
+    /// allocated. That was right about reachability and wrong about
+    /// what the owner needs: a node it cannot see is public is a node
+    /// it can never choose as an edge, so phase 7's whole point — a
+    /// name served by any public node on the network — was unreachable
+    /// from the one page that decides it.
+    ///
+    /// It travels on the report rather than at join time so an already
+    /// joined node heals itself on its next poll, and so a node that
+    /// gains or loses a domain stops being wrong within one interval.
+    ///
+    /// `None` from an older node, which reads as "no change" rather
+    /// than "private" — a report that omits it must not demote a node
+    /// the operator can see is public.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub endpoint: Option<String>,
 }
 
 /// One copy, as the node running it sees it.
@@ -256,6 +276,14 @@ impl NetworkApi {
         let Ok(report) = serde_json::from_slice::<Report>(&bytes) else {
             return Ok(refuse(StatusCode::BAD_REQUEST, "that is not a report"));
         };
+
+        // Before the replicas, because it is about the node itself and
+        // a failure to read one replica must not lose it.
+        if let Err(error) =
+            note_reachability(&self.database, &node, report.endpoint.as_deref()).await
+        {
+            return Ok(unreadable(error));
+        }
 
         let mut recorded = 0;
         for state in &report.replicas {
@@ -495,6 +523,62 @@ fn json<T: Serialize>(status: StatusCode, value: &T) -> Response {
         .header(header::CONTENT_TYPE, "application/json")
         .body(Body::from(body))
         .expect("a serialised body is well-formed")
+}
+
+/// Record where the world can dial a node that just reported, and that
+/// it was heard from.
+///
+/// The node's own answer is the only one available: everything this
+/// node knows about it arrived through a join token or over the
+/// overlay, neither of which carries a public address. Trusting it is
+/// bounded — the caller already proved it holds this node's credential,
+/// and the worst a lying one achieves is being offered as an edge for a
+/// name that then fails to resolve, which is visible immediately.
+///
+/// The endpoint is never dialled for an errand. Errands are collected,
+/// not delivered, so nothing here reaches outward at all; this is read
+/// by `may_be_edge` and shown on the nodes page, and that is all.
+///
+/// `None` means the report said nothing, which is an older node — left
+/// alone rather than demoted, because a report that omits a field must
+/// not undo what the operator can see is true.
+async fn note_reachability(
+    database: &SqliteDatabase,
+    node_id: &str,
+    endpoint: Option<&str>,
+) -> NetworkResult<()> {
+    let Some(node) = super::find(database, node_id).await? else {
+        return Ok(());
+    };
+
+    // An endpoint it has stopped having *is* news: a node whose domain
+    // was taken away is no longer somewhere to send the internet, and
+    // leaving it in the picker would offer a name that resolves to
+    // nothing. An empty string is that, said by a node that has one
+    // field for both answers.
+    let endpoint = match endpoint {
+        Some(endpoint) if endpoint.trim().is_empty() => None,
+        Some(endpoint) => Some(endpoint.to_string()),
+        None => node.endpoint.clone(),
+    };
+
+    super::save(
+        database,
+        &Node {
+            // Derived from the endpoint rather than reported, the same
+            // way this node decides its own: a kind somebody can send
+            // is a kind somebody can send wrongly, and an unrecognised
+            // node must never be offered as somewhere to send traffic.
+            kind: match endpoint.is_some() {
+                true => Kind::Public,
+                false => Kind::Private,
+            },
+            endpoint,
+            last_seen_at: Some(now_ms()),
+            ..node
+        },
+    )
+    .await
 }
 
 /// Write one reported state onto the row this node placed.
@@ -832,6 +916,128 @@ mod tests {
             .expect("there");
         assert_eq!(after.address.as_deref(), Some("10.42.7.3"));
         assert!(!after.evicted());
+    }
+
+    /// Enrolment records every joining node as private, and both nodes
+    /// were right: it arrived through a token, and this one has no
+    /// address for it but the overlay. It also made phase 7's whole
+    /// point unreachable — a node the owner cannot see is public is one
+    /// it can never choose as an edge. The node's own report is the
+    /// only place that answer exists.
+    #[tokio::test]
+    async fn a_node_that_reports_an_endpoint_can_be_chosen_as_an_edge() {
+        let authority = authority().await;
+        authority
+            .harness
+            .post("/api/network/join")
+            .header("authorization", format!("Bearer {}", authority.secret))
+            .json(&arriving())
+            .send()
+            .await
+            .assert_ok();
+
+        let joined = super::super::find(&authority.database, "nd-joining001")
+            .await
+            .expect("query")
+            .expect("joined");
+        assert!(
+            !joined.may_be_edge(),
+            "nothing has said where the world can dial it"
+        );
+
+        authority
+            .harness
+            .post("/api/network/report")
+            .header("authorization", format!("Bearer {}", authority.secret))
+            .json(&serde_json::json!({
+                "replicas": [],
+                "endpoint": "alpine.example:443"
+            }))
+            .send()
+            .await
+            .assert_ok();
+
+        let after = super::super::find(&authority.database, "nd-joining001")
+            .await
+            .expect("query")
+            .expect("joined");
+        assert_eq!(after.kind, Kind::Public);
+        assert_eq!(after.endpoint.as_deref(), Some("alpine.example:443"));
+        assert!(after.may_be_edge());
+        assert!(after.last_seen_at.is_some(), "it was just heard from");
+    }
+
+    /// A node whose domain was taken away is no longer somewhere to
+    /// send the internet, and leaving it in the picker would offer a
+    /// name that resolves to nothing.
+    #[tokio::test]
+    async fn a_node_that_stops_being_reachable_stops_being_an_edge() {
+        let authority = authority().await;
+        authority
+            .harness
+            .post("/api/network/join")
+            .header("authorization", format!("Bearer {}", authority.secret))
+            .json(&arriving())
+            .send()
+            .await
+            .assert_ok();
+
+        for endpoint in ["alpine.example:443", ""] {
+            authority
+                .harness
+                .post("/api/network/report")
+                .header("authorization", format!("Bearer {}", authority.secret))
+                .json(&serde_json::json!({ "replicas": [], "endpoint": endpoint }))
+                .send()
+                .await
+                .assert_ok();
+        }
+
+        let after = super::super::find(&authority.database, "nd-joining001")
+            .await
+            .expect("query")
+            .expect("joined");
+        assert_eq!(after.kind, Kind::Private);
+        assert!(!after.may_be_edge());
+    }
+
+    /// A report from a node that predates the field says nothing about
+    /// reachability, and saying nothing must not undo what the operator
+    /// can already see is true.
+    #[tokio::test]
+    async fn a_report_without_an_endpoint_leaves_one_alone() {
+        let authority = authority().await;
+        authority
+            .harness
+            .post("/api/network/join")
+            .header("authorization", format!("Bearer {}", authority.secret))
+            .json(&arriving())
+            .send()
+            .await
+            .assert_ok();
+
+        authority
+            .harness
+            .post("/api/network/report")
+            .header("authorization", format!("Bearer {}", authority.secret))
+            .json(&serde_json::json!({ "replicas": [], "endpoint": "alpine.example:443" }))
+            .send()
+            .await
+            .assert_ok();
+        authority
+            .harness
+            .post("/api/network/report")
+            .header("authorization", format!("Bearer {}", authority.secret))
+            .json(&serde_json::json!({ "replicas": [] }))
+            .send()
+            .await
+            .assert_ok();
+
+        let after = super::super::find(&authority.database, "nd-joining001")
+            .await
+            .expect("query")
+            .expect("joined");
+        assert!(after.may_be_edge(), "an older node must not be demoted");
     }
 
     /// An eviction is the one thing the node running a replica can

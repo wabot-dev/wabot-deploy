@@ -33,6 +33,13 @@ pub async fn sync(
     // Addresses are per replica now: a service is *n* running copies,
     // and which of them a name reaches is the route table's question.
     let placements = crate::platform::replicas::here(database).await?;
+    // And the copies that are *not* here. This node is the edge for its
+    // own services' names — that is what it was before any of this —
+    // so a name whose service has a replica elsewhere has to reach it
+    // from here too, or placing one on another node would quietly halve
+    // what the name serves rather than doubling it.
+    let nodes = crate::network::all(database).await.unwrap_or_default();
+    let elsewhere = crate::platform::replicas::elsewhere(database).await?;
 
     let mut hosts = Vec::new();
     for port in &ports {
@@ -51,7 +58,7 @@ pub async fn sync(
         // copies contributes two, so a plain round-robin sends it twice
         // the requests — which is what "two there and one here" is
         // asking for, without anything having to carry a weight.
-        let upstreams: Vec<SocketAddr> = placements
+        let mut upstreams: Vec<SocketAddr> = placements
             .iter()
             .filter(|replica| replica.service_id == service.id)
             .filter_map(|replica| replica.address.as_deref())
@@ -65,6 +72,29 @@ pub async fn sync(
                 }
             })
             .collect();
+
+        // The copies on other nodes, reached the only way anything
+        // outside a node can: that node's overlay address and the port
+        // it opened there. Appended to the local ones rather than
+        // replacing them, so the list is one entry per replica wherever
+        // it runs — which is what makes a node with two of them take
+        // twice the traffic without anything carrying a weight.
+        let mine: Vec<_> = elsewhere
+            .iter()
+            .filter(|replica| replica.service_id == service.id)
+            .cloned()
+            .collect();
+        upstreams.extend(
+            crate::platform::edges::upstreams(&mine, &nodes)
+                .iter()
+                .filter_map(|address| match address.parse::<SocketAddr>() {
+                    Ok(upstream) => Some(upstream),
+                    Err(_) => {
+                        tracing::warn!(%address, "upstream skipped: not an address");
+                        None
+                    }
+                }),
+        );
 
         // Nothing running: the route is dropped rather than kept
         // pointing at where it used to be. A 404 from the edge is a
