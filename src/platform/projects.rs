@@ -12,6 +12,25 @@ pub struct Project {
     pub name: String,
     pub slug: String,
     pub created_at: i64,
+    /// The node that asked for this, when it was not this one. `None`
+    /// is ours — see migration `0021`.
+    pub origin_node_id: Option<String>,
+}
+
+impl Project {
+    /// Whether this node is the one that decides about it.
+    ///
+    /// A project that arrived on an errand is administered from the
+    /// node that sent it: nothing here may change it, and the one thing
+    /// this node's operator can always do is throw it out.
+    /// Nothing reads this yet: the project page's own guard and the
+    /// danger zone that evicts one are what do, and they arrive with
+    /// the page that places replicas. `services::Service::is_ours` is
+    /// already the check every service mutation goes through.
+    #[allow(dead_code)]
+    pub fn is_ours(&self) -> bool {
+        self.origin_node_id.is_none()
+    }
 }
 
 pub async fn create(database: &SqliteDatabase, name: &str) -> PlatformResult<Project> {
@@ -34,6 +53,9 @@ pub async fn create(database: &SqliteDatabase, name: &str) -> PlatformResult<Pro
         name: name.to_string(),
         slug,
         created_at: now_ms(),
+        // Made here. A project that came from an errand is written by
+        // `create_for`, which is the only way one gets an origin.
+        origin_node_id: None,
     };
 
     let row = project.clone();
@@ -64,12 +86,30 @@ pub async fn create(database: &SqliteDatabase, name: &str) -> PlatformResult<Pro
     Ok(project)
 }
 
+/// Record that another node asked for this project.
+///
+/// Same reasoning as `services::set_origin`: separate from `create` so
+/// that a project is this node's own unless something said otherwise.
+pub async fn set_origin(database: &SqliteDatabase, id: &str, node_id: &str) -> PlatformResult<()> {
+    let (id, node_id) = (id.to_string(), node_id.to_string());
+    database
+        .write(move |connection| {
+            connection.execute(
+                "UPDATE project SET \"origin_node_id\" = ?2 WHERE \"id\" = ?1",
+                (id, node_id),
+            )?;
+            Ok(())
+        })
+        .await?;
+    Ok(())
+}
+
 pub async fn all(database: &SqliteDatabase) -> PlatformResult<Vec<Project>> {
     Ok(database
         .read(|connection| {
             connection
                 .prepare(
-                    "SELECT \"id\", \"name\", \"slug\", \"created_at\" FROM project \
+                    "SELECT \"id\", \"name\", \"slug\", \"created_at\", \"origin_node_id\" FROM project \
                      ORDER BY \"created_at\" ASC",
                 )?
                 .query_map([], |row| {
@@ -78,6 +118,7 @@ pub async fn all(database: &SqliteDatabase) -> PlatformResult<Vec<Project>> {
                         name: row.get(1)?,
                         slug: row.get(2)?,
                         created_at: row.get(3)?,
+                        origin_node_id: row.get(4)?,
                     })
                 })?
                 .collect()
@@ -91,7 +132,7 @@ pub async fn find(database: &SqliteDatabase, id: &str) -> PlatformResult<Option<
         .read(move |connection| {
             connection
                 .query_row(
-                    "SELECT \"id\", \"name\", \"slug\", \"created_at\" FROM project \
+                    "SELECT \"id\", \"name\", \"slug\", \"created_at\", \"origin_node_id\" FROM project \
                      WHERE \"id\" = ?1 OR \"slug\" = ?1",
                     [id],
                     |row| {
@@ -100,6 +141,7 @@ pub async fn find(database: &SqliteDatabase, id: &str) -> PlatformResult<Option<
                             name: row.get(1)?,
                             slug: row.get(2)?,
                             created_at: row.get(3)?,
+                            origin_node_id: row.get(4)?,
                         })
                     },
                 )

@@ -63,9 +63,24 @@ pub struct Service {
     pub track_tag: Option<String>,
     /// Whether a push to that tag goes out on its own.
     pub auto_deploy: bool,
+    /// The node that asked for this, when it was not this one. `None`
+    /// is ours — see migration `0021`.
+    pub origin_node_id: Option<String>,
 }
 
 impl Service {
+    /// Whether this node is the one that decides about it.
+    ///
+    /// A service that arrived on an errand is administered from the
+    /// node that sent it: nothing here may change it, and the one thing
+    /// this node's operator can always do is throw it out. Two nodes
+    /// disagreeing about one service is not a conflict anything can
+    /// settle, which is the same reason a name belongs to one
+    /// authority.
+    pub fn is_ours(&self) -> bool {
+        self.origin_node_id.is_none()
+    }
+
     /// The containerd container id, and the label every container of
     /// this node carries.
     ///
@@ -117,6 +132,11 @@ pub async fn create(
         last_error: None,
         address: None,
         track_tag: None,
+        // Made here. A service that came from an errand gets its origin
+        // from `set_origin`, which the collector calls and nothing else
+        // does — so the default is the honest one and forgetting it
+        // cannot silently make a foreign service editable.
+        origin_node_id: None,
         // On by default. A node where CI has to be told twice — once
         // to push, once to deploy — is one where the second half gets
         // forgotten and somebody debugs a version that never went out.
@@ -213,7 +233,7 @@ pub async fn in_project(
                 .query_row(
                     "SELECT \"id\", \"project_id\", \"name\", \"slug\", \"image\", \
                      \"env\", \"desired_state\", \"last_error\", \"address\", \
-                     \"track_tag\", \"auto_deploy\" \
+                     \"track_tag\", \"auto_deploy\", \"origin_node_id\" \
                      FROM service WHERE \"project_id\" = ?1 AND \"slug\" = ?2",
                     (project_id, slug),
                     decode,
@@ -232,7 +252,7 @@ pub async fn all(
         .read(move |connection| {
             let sql = "SELECT \"id\", \"project_id\", \"name\", \"slug\", \"image\", \
                        \"env\", \"desired_state\", \"last_error\", \"address\", \
-                       \"track_tag\", \"auto_deploy\" FROM service";
+                       \"track_tag\", \"auto_deploy\", \"origin_node_id\" FROM service";
             match filter {
                 Some(project) => connection
                     .prepare(&format!(
@@ -265,6 +285,7 @@ fn decode(row: &wabot::sqlite::rusqlite::Row<'_>) -> wabot::sqlite::rusqlite::Re
         address: row.get(8)?,
         track_tag: row.get(9)?,
         auto_deploy: row.get::<_, i64>(10)? != 0,
+        origin_node_id: row.get(11)?,
     })
 }
 
@@ -287,6 +308,30 @@ pub async fn set_image(
             connection.execute(
                 "UPDATE service SET \"image\" = ?2 WHERE \"id\" = ?1",
                 (service_id, image),
+            )?;
+            Ok(())
+        })
+        .await?;
+    Ok(())
+}
+
+/// Record that another node asked for this service.
+///
+/// Called by the collector and nothing else. Separate from `create` so
+/// that the default is the honest one — a service is this node's until
+/// something says otherwise, and forgetting to say so cannot silently
+/// make a foreign service editable.
+pub async fn set_origin(
+    database: &SqliteDatabase,
+    service_id: &str,
+    node_id: &str,
+) -> PlatformResult<()> {
+    let (service_id, node_id) = (service_id.to_string(), node_id.to_string());
+    database
+        .write(move |connection| {
+            connection.execute(
+                "UPDATE service SET \"origin_node_id\" = ?2 WHERE \"id\" = ?1",
+                (service_id, node_id),
             )?;
             Ok(())
         })
@@ -407,6 +452,7 @@ mod tests {
             last_error: None,
             address: None,
             track_tag: None,
+            origin_node_id: None,
             auto_deploy: true,
         };
 

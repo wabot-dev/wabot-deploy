@@ -116,7 +116,7 @@ async fn from_one(
     let mut settled = 0;
     for order in waiting {
         let id = order.id.clone();
-        let outcome = carry_out(database, config, container, order).await;
+        let outcome = carry_out(database, config, container, node_id, order).await;
         if let Err(reason) = &outcome {
             tracing::warn!(errand = %id, %reason, "could not carry out an errand");
         }
@@ -137,13 +137,14 @@ async fn carry_out(
     database: &SqliteDatabase,
     config: &Config,
     container: &Container,
+    authority: &str,
     order: Errand,
 ) -> Result<(), String> {
     match order.kind {
         Kind::Host => {
             let host: errand::Host = serde_json::from_value(order.payload)
                 .map_err(|error| format!("that is not a host errand: {error}"))?;
-            host_service(database, config, container, host).await
+            host_service(database, config, container, authority, host).await
         }
         // An instruction from a newer node. Refused with the reason
         // rather than dropped — the authority learns that this node is
@@ -159,6 +160,7 @@ async fn host_service(
     database: &SqliteDatabase,
     config: &Config,
     container: &Container,
+    authority: &str,
     host: errand::Host,
 ) -> Result<(), String> {
     // The credential first: without it the deploy fails at the pull,
@@ -174,7 +176,7 @@ async fn host_service(
     .await
     .map_err(|error| error.to_string())?;
 
-    let project = ensure_project(database, &host.project).await?;
+    let project = ensure_project(database, &host.project, authority).await?;
 
     // Looked up by slug, which is what the row is keyed on — two names
     // that differ only in punctuation are one service, and creating a
@@ -197,9 +199,16 @@ async fn host_service(
         }
         None => {
             let env: Vec<(String, String)> = host.env.clone().into_iter().collect();
-            services::create(database, &project.id, &host.service, &host.image, &env)
+            let made = services::create(database, &project.id, &host.service, &host.image, &env)
                 .await
-                .map_err(|error| error.to_string())?
+                .map_err(|error| error.to_string())?;
+            // Marked before anything else touches it. A service that
+            // existed for even a moment without its origin is one this
+            // node's console would have offered to edit.
+            services::set_origin(database, &made.id, authority)
+                .await
+                .map_err(|error| error.to_string())?;
+            made
         }
     };
 
@@ -224,6 +233,7 @@ async fn host_service(
 async fn ensure_project(
     database: &SqliteDatabase,
     name: &str,
+    authority: &str,
 ) -> Result<projects::Project, String> {
     let existing = projects::all(database)
         .await
@@ -231,12 +241,35 @@ async fn ensure_project(
         .into_iter()
         .find(|project| project.name == name);
 
-    match existing {
-        Some(project) => Ok(project),
-        None => projects::create(database, name)
-            .await
-            .map_err(|error| error.to_string()),
+    // A project this node made itself, with a name an errand happens to
+    // match, is **not** the errand's to use. Refused rather than
+    // adopted: quietly marking somebody's own project as foreign would
+    // take their own work away from them, and it is exactly the kind of
+    // thing nobody would look for afterwards.
+    if let Some(project) = existing {
+        return match project.origin_node_id.as_deref() {
+            Some(origin) if origin == authority => Ok(project),
+            None => Err(format!(
+                "this node already has a project called {name:?} of its own"
+            )),
+            Some(other) => Err(format!(
+                "this node already has a project called {name:?}, from {other}"
+            )),
+        };
     }
+
+    let project = projects::create(database, name)
+        .await
+        .map_err(|error| error.to_string())?;
+    projects::set_origin(database, &project.id, authority)
+        .await
+        .map_err(|error| error.to_string())?;
+    // Read back, so what is returned carries the origin it was just
+    // given rather than the `None` `create` handed out.
+    projects::find(database, &project.id)
+        .await
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "the project vanished as it was made".to_string())
 }
 
 #[cfg(test)]
@@ -256,6 +289,7 @@ mod tests {
             &database,
             &Config::default(),
             &container,
+            "nd-authority",
             Errand {
                 id: "er-1".into(),
                 kind: Kind::Unknown,
@@ -279,6 +313,7 @@ mod tests {
             &database,
             &Config::default(),
             &container,
+            "nd-authority",
             Errand {
                 id: "er-1".into(),
                 kind: Kind::Host,
@@ -316,7 +351,7 @@ mod tests {
             // The rows, without the queue — `run_command` wants a
             // container this test has no reason to build, and what is
             // being pinned here is convergence of the rows.
-            let project = ensure_project(&database, &host.project)
+            let project = ensure_project(&database, &host.project, "nd-authority")
                 .await
                 .expect("project");
             let existing = services::in_project(&database, &project.id, &slugify(&host.service))
@@ -341,6 +376,72 @@ mod tests {
             .expect("services")
             .expect("one service");
         assert_eq!(service.image, "hub.example.com/proj/app@sha256:bbb");
+    }
+
+    /// What lands on this node from an errand is derived, and has to
+    /// read that way from the moment it exists: a service that was ours
+    /// for even a moment is one this console would have offered to
+    /// edit.
+    #[tokio::test]
+    async fn what_arrives_on_an_errand_belongs_to_the_node_that_sent_it() {
+        let database = crate::db::open_in_memory().await.expect("open");
+
+        let project = ensure_project(&database, "shared", "nd-authority")
+            .await
+            .expect("project");
+        assert!(!project.is_ours());
+        assert_eq!(project.origin_node_id.as_deref(), Some("nd-authority"));
+
+        let made = services::create(&database, &project.id, "web", "hub.example/p/a:1", &[])
+            .await
+            .expect("service");
+        services::set_origin(&database, &made.id, "nd-authority")
+            .await
+            .expect("origin");
+
+        let stored = services::in_project(&database, &project.id, "web")
+            .await
+            .expect("query")
+            .expect("there");
+        assert!(!stored.is_ours());
+        assert_eq!(stored.origin_node_id.as_deref(), Some("nd-authority"));
+    }
+
+    /// A project this node made itself is not an errand's to use, even
+    /// when the names match. Adopting it would take somebody's own work
+    /// away from them and mark it foreign, which is the kind of thing
+    /// nobody would go looking for afterwards.
+    #[tokio::test]
+    async fn an_errand_does_not_take_over_a_project_this_node_made() {
+        let database = crate::db::open_in_memory().await.expect("open");
+        let mine = projects::create(&database, "shared").await.expect("mine");
+
+        let error = ensure_project(&database, "shared", "nd-authority")
+            .await
+            .expect_err("refused");
+        assert!(error.contains("of its own"), "{error}");
+
+        let untouched = projects::find(&database, &mine.id)
+            .await
+            .expect("query")
+            .expect("still here");
+        assert!(untouched.is_ours(), "somebody's own project was taken over");
+    }
+
+    /// And a project from *another* authority is not this one's either
+    /// — two nodes pointing one name at different things is the same
+    /// conflict the claim rule refuses, one level down.
+    #[tokio::test]
+    async fn an_errand_does_not_take_over_another_authoritys_project() {
+        let database = crate::db::open_in_memory().await.expect("open");
+        ensure_project(&database, "shared", "nd-first")
+            .await
+            .expect("first");
+
+        let error = ensure_project(&database, "shared", "nd-second")
+            .await
+            .expect_err("refused");
+        assert!(error.contains("nd-first"), "and names who has it: {error}");
     }
 
     /// The credential has to be stored before the deploy runs, because

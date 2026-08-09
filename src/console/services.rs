@@ -1321,6 +1321,19 @@ impl ServiceApi {
         }
         let found = services::in_project(&self.state.database, &project.id, service_slug).await?;
 
+        // A service that arrived on an errand is administered from the
+        // node that sent it. Every caller of this changes something, so
+        // a foreign one answers the same way a stranger's does — the
+        // one thing this node's operator can do to it is throw it out,
+        // and that has its own path through the danger zone rather than
+        // going through here.
+        //
+        // The check is on the *service*, not only the project: a
+        // project that arrived from elsewhere holds only foreign
+        // services, but reading it off the row that is actually being
+        // changed is the one that cannot be wrong.
+        let found = found.filter(|service| service.is_ours());
+
         let back = format!("/projects/{}", project.slug);
         Ok(found.map(|service| (project, service, back)))
     }

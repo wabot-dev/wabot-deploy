@@ -75,7 +75,8 @@ pub async fn projects_for(
         .read(move |connection| {
             connection
                 .prepare(
-                    "SELECT p.\"id\", p.\"name\", p.\"slug\", p.\"created_at\" \
+                    "SELECT p.\"id\", p.\"name\", p.\"slug\", p.\"created_at\", \
+                     p.\"origin_node_id\" \
                      FROM project p JOIN membership m ON m.\"project_id\" = p.\"id\" \
                      WHERE m.\"account_id\" = ?1 ORDER BY p.\"created_at\" ASC",
                 )?
@@ -85,6 +86,7 @@ pub async fn projects_for(
                         name: row.get(1)?,
                         slug: row.get(2)?,
                         created_at: row.get(3)?,
+                        origin_node_id: row.get(4)?,
                     })
                 })?
                 .collect()
