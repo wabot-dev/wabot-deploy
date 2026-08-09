@@ -1,0 +1,22 @@
+-- The credential a node uses to ask its authority for work.
+--
+-- `token_hash` above it is the wrong shape for what phase 3 turned out
+-- to need, and the reason is worth writing down.
+--
+-- The plan had the authority *delivering* errands, so this node would
+-- verify what arrived — hash at rest, compare on receipt, exactly like
+-- every other secret here. But the authority cannot reach a private
+-- node over TLS: that node has a self-signed certificate for a name,
+-- not for an overlay address. The direction that works is the one
+-- enrolment already proved, so the node **collects** its errands.
+--
+-- Which inverts who has to prove what. This node now authenticates
+-- *itself* to the authority, so it needs the secret it can present —
+-- not a hash it can only compare against. It is this node's own client
+-- credential, held the way a CI job holds a push token, and the
+-- authority is still the only side that stores a hash.
+--
+-- Nullable, and null for any node that joined before this existed:
+-- there is nothing to derive it from. Those nodes re-join, which is one
+-- paste, and the console says so rather than failing quietly.
+ALTER TABLE authority ADD COLUMN secret TEXT;

@@ -5,8 +5,8 @@ node can be an edge for a name whose container lives on a private one,
 and a name can eventually be served by a group of them.
 
 This document is the plan and the record of what was decided and why.
-Phases 0 to 2 are in the tree; the rest is not. Phase 1 has run between
-two real nodes, phase 2 has not.
+Phases 0 to 2 are in the tree and verified between two real nodes; the
+rest is not.
 
 ## The shape
 
@@ -185,8 +185,8 @@ Still open:
 |---|---|---|---|
 | 0 | Model | `node`, `authority`, `claim`; the claim rule | **done** |
 | 1 | Enrolment | Token, `join`, keys, B recording A as authority | **done** |
-| 2 | Overlay | Spike, then a real session. `doctor` proves it | **written** |
-| 3 | Errand: host | A queues a deploy on B | |
+| 2 | Overlay | Spike, then a real session. `doctor` proves it | **done** |
+| 3 | Errand: host | A queues a deploy on B | in progress |
 | 4 | Errand: edge | A tells C to route a name to B; C obtains the certificate | |
 | 5 | Groups | Several upstreams per name, health, failover | |
 
@@ -196,16 +196,79 @@ node joins or is enrolled, and `doctor` reads the peers back **from the
 kernel** rather than from what this process asked for — the question is
 whether packets move, and the only thing that knows is the kernel.
 
-Not run between the two nodes yet. Phase 1 taught what that is worth,
-and two things in particular are claims until it happens: that creating
-the interface autoloads the module on both (the kernel asks
-`rtnl-link-wireguard` through modprobe, which exists on both, but the
-spike created the interface *after* a manual `modprobe`), and that UDP
-51820 reaches the public node at all.
+**Verified between the two nodes** on v0.3.1. Both claims held: creating
+the interface over netlink autoloaded the `wireguard` module with no
+`modprobe` anywhere, and the Alpine node's handshake reached UDP 51820
+on the public one. ICMP and TCP-with-TLS both cross, at 18 ms.
+
+The asymmetry works as designed. The public node has no endpoint
+configured for the private one — its `node` row has none to give — and
+WireGuard learned `172.104.24.252:51820` from the handshake that
+arrived. Nothing guessed an address the NAT owns.
+
+One thing to know before phase 3: a request to `https://10.42.0.2` over
+the overlay answers **404**, because the edge on the far side routes by
+hostname and a bare address is not one of its names. That is the edge
+working, and it is why an errand that hosts a container will proxy to
+the container's port on the overlay rather than through the far node's
+edge.
 
 ## Two things not to discover late
 
-(Both still ahead. Phase 1 touched neither.)
+Both were phase 3's, and both are now decided.
+
+**Images live where they were pushed.** The private node **pulls from
+the authority's registry** — one of the three originally listed, and the
+one that reuses the direction that works: it already reaches the
+authority over a certificate it trusts. The errand carries the image
+reference and a credential; the image moves only when something needs
+it, and only the layers that are missing.
+
+The pull path had no way to carry a credential — `resolver: Default`,
+so an authenticated registry answered 401. containerd's transfer API
+offers two ways in: a stream it makes auth callbacks on, and a flat map
+of headers. The stream is for interactive and token-exchange flows; a
+static `Authorization` is what a registry reading Basic credentials
+wants and is the whole of what this needs.
+
+The cost of a static header is that containerd sends it to whatever host
+the transfer talks to, **including one it was redirected to**. That is
+safe here because the registry being pulled from is another
+wabot-deploy node, which serves blobs out of its own content store and
+redirects nowhere. It would not be safe against a registry that hands
+blobs off to object storage, and the note is in `runtime::images::pull`
+so it is read before somebody points it at one.
+
+The credential is stored per **registry host**, not per service: every
+service whose image lives on the same node authenticates the same way,
+and per-service copies would be one secret duplicated per deployment
+with nowhere to rotate it. Same shape as `~/.docker/config.json`, for
+the same reason.
+
+**Deploying is local, and stays local.** An errand is an *instruction*,
+not a job. The node that collects one writes its own local job for it,
+so the queue never stops being per-node and job routing never appears.
+`deploy` still talks to *this* node's containerd, on whichever node that
+is.
+
+**A fourth, found while wiring it:** the node that collects errands has
+to authenticate *itself* to the authority, so it needs the secret it can
+present — not a hash it can only compare against. The plan had the
+authority delivering, which put the hash on the right side; collecting
+inverts it. Migration `0018` adds the clear copy on the collecting side,
+and it is null for any node that joined before — those re-join, which is
+one paste. `is_authorised` is still unused for the same reason: nothing
+arrives from an authority to be authorised.
+
+**And a third, which the phase surfaced rather than the plan:** the
+authority cannot reach a private node over TLS. B has a self-signed
+certificate for a name, not for `10.42.0.2`. The direction that works is
+the one enrolment already proved — B reaches A over a publicly trusted
+certificate — so **B collects its errands rather than A delivering
+them**. The authority still decides; the model is who gives orders, not
+who dials. That also means the overlay is not in the control path at
+all: it is a data plane, and its reason for existing is phase 4, where
+an edge must reach a container on another node.
 
 **Images live where they were pushed.** The registry is per node, and a
 private node needs the image to start the container. Either you push to

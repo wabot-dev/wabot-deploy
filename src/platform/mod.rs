@@ -24,6 +24,7 @@ pub mod config_history;
 pub mod images;
 pub mod ports;
 pub mod projects;
+pub mod registry_credentials;
 pub mod releases;
 pub mod services;
 pub mod tokens;

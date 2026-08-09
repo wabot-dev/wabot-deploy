@@ -61,6 +61,15 @@ fn migrations() -> Vec<Migration> {
             "0016_enrolment",
             include_str!("../migrations/0016_enrolment.sql"),
         ),
+        Migration::new("0017_errand", include_str!("../migrations/0017_errand.sql")),
+        Migration::new(
+            "0018_authority_secret",
+            include_str!("../migrations/0018_authority_secret.sql"),
+        ),
+        Migration::new(
+            "0019_registry_credential",
+            include_str!("../migrations/0019_registry_credential.sql"),
+        ),
     ]
 }
 

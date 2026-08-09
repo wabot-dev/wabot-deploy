@@ -227,6 +227,13 @@ WireGuard would swap one module for another and add the data path. It is
 kernel WireGuard, configured over netlink from inside the binary, with
 no `wireguard-tools` on the node.
 
-Next: run it between the two nodes. `doctor` reads the peers back from
-the kernel, so a peer that has never shaken hands says so — which is the
-failure that has to be distinguishable from working.
+Verified between the two nodes on v0.3.1: the module autoloads from the
+netlink interface creation, the handshake crosses, and ICMP and TCP both
+run over it. `doctor` reads the peers back from the kernel, so one that
+has never shaken hands says so — the failure that has to be
+distinguishable from working.
+
+Next: phase 3, an errand that hosts a container on another node. Note
+that a request to a bare overlay address answers 404 — the far node's
+edge routes by hostname — so the proxy leg goes to the container's port,
+not through that edge.

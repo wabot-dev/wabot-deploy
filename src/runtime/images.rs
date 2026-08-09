@@ -23,7 +23,9 @@ use containerd_client::services::v1::images_client::ImagesClient;
 use containerd_client::services::v1::transfer_client::TransferClient;
 use containerd_client::services::v1::{GetImageRequest, TransferOptions, TransferRequest};
 use containerd_client::to_any;
-use containerd_client::types::transfer::{ImageStore, OciRegistry, UnpackConfiguration};
+use containerd_client::types::transfer::{
+    ImageStore, OciRegistry, RegistryResolver, UnpackConfiguration,
+};
 use containerd_client::types::Platform;
 
 use super::client::{ClientError, ClientResult, Containerd};
@@ -59,17 +61,67 @@ pub fn platform() -> Platform {
     }
 }
 
+/// What to send a registry that will not serve an image to strangers.
+///
+/// A username and a password, which is what the OCI distribution spec
+/// says and what this node's own registry reads — a push token goes in
+/// as the password against any username.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Credential {
+    pub username: String,
+    pub secret: String,
+}
+
+impl Credential {
+    /// The header a registry expects, built once so the two places that
+    /// care — this and the test that pins it — cannot disagree.
+    fn header(&self) -> String {
+        use base64::Engine;
+        let encoded = base64::engine::general_purpose::STANDARD
+            .encode(format!("{}:{}", self.username, self.secret));
+        format!("Basic {encoded}")
+    }
+}
+
 /// Pull `reference` and unpack it, so a task can be started from it.
 ///
 /// Idempotent in the way that matters: layers already in the content
 /// store are not downloaded again — containerd short-circuits on
 /// `content.Exists` — so a re-pull costs a few manifest requests.
-pub async fn pull(client: &Containerd, reference: &str) -> ClientResult<()> {
+///
+/// ## The credential is a header, not an auth stream
+///
+/// containerd's transfer API offers both: a stream it can make auth
+/// callbacks on, and a flat map of headers to send. The stream is for
+/// interactive and token-exchange flows; a static `Authorization` is
+/// what a registry reading Basic credentials wants, and it is the whole
+/// of what this needs.
+///
+/// The cost of a static header is that containerd sends it to whatever
+/// host the transfer talks to, including one it was redirected to. That
+/// is safe *here* because the registry this pulls from is another
+/// wabot-deploy node, which serves blobs from its own content store and
+/// redirects nowhere — see `registry::blobs`. It would not be safe
+/// against a registry that hands blobs off to object storage, and this
+/// is the note that says so before somebody points it at one.
+pub async fn pull(
+    client: &Containerd,
+    reference: &str,
+    credential: Option<&Credential>,
+) -> ClientResult<()> {
     let platform = platform();
 
     let source = OciRegistry {
         reference: reference.to_string(),
-        resolver: Default::default(),
+        resolver: Some(RegistryResolver {
+            headers: match credential {
+                Some(credential) => [("Authorization".to_string(), credential.header())]
+                    .into_iter()
+                    .collect(),
+                None => Default::default(),
+            },
+            ..Default::default()
+        }),
     };
     let destination = ImageStore {
         name: reference.to_string(),
@@ -247,11 +299,15 @@ pub async fn exists(client: &Containerd, reference: &str) -> ClientResult<bool> 
 }
 
 /// Pull only if it is not already here.
-pub async fn ensure(client: &Containerd, reference: &str) -> ClientResult<bool> {
+pub async fn ensure(
+    client: &Containerd,
+    reference: &str,
+    credential: Option<&Credential>,
+) -> ClientResult<bool> {
     if exists(client, reference).await? {
         return Ok(false);
     }
-    pull(client, reference).await?;
+    pull(client, reference, credential).await?;
     Ok(true)
 }
 
@@ -412,6 +468,32 @@ fn is_index(media_type: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use super::Credential;
+
+    /// The header a registry reads. Built here rather than inline so
+    /// this test pins it: `wg`-style base64 of `user:secret`, which is
+    /// what the OCI spec says and what this node's own registry
+    /// decodes — see `registry::basic_password`.
+    #[test]
+    fn a_credential_is_sent_as_basic_auth() {
+        let credential = Credential {
+            username: "wabot".into(),
+            secret: "a-push-token".into(),
+        };
+        // `wabot:a-push-token`, base64.
+        assert_eq!(credential.header(), "Basic d2Fib3Q6YS1wdXNoLXRva2Vu");
+
+        // And it survives the round trip the registry does on receipt.
+        use base64::Engine;
+        let decoded = base64::engine::general_purpose::STANDARD
+            .decode(credential.header().trim_start_matches("Basic "))
+            .expect("base64");
+        assert_eq!(
+            String::from_utf8(decoded).expect("utf-8"),
+            "wabot:a-push-token"
+        );
+    }
+
     use super::*;
 
     /// The manifest spelling, not Rust's. `x86_64` appears in no image

@@ -125,6 +125,34 @@ pub async fn look_up(database: &SqliteDatabase, secret: &str) -> NetworkResult<O
     Ok(found.filter(|enrolment| !enrolment.expired(now_ms())))
 }
 
+/// Which node this secret belongs to, if any.
+///
+/// The join token becomes the standing credential of the node that
+/// spent it: that is what the secret was always for — the doc calls it
+/// "what an errand from the authority will carry" — and errands turned
+/// out to be collected rather than delivered, so it is what the node
+/// presents when it asks.
+///
+/// **Expiry is deliberately not checked.** The window bounds how long a
+/// token can be used to *join*; a node that joined does not stop being
+/// that node a day later. Filtering here would cut every node off from
+/// its authority exactly 24 hours after it arrived.
+pub async fn holder(database: &SqliteDatabase, secret: &str) -> NetworkResult<Option<String>> {
+    let hash = sha256_hex(secret);
+    Ok(database
+        .read(move |connection| {
+            connection
+                .query_row(
+                    "SELECT \"used_by\" FROM enrolment WHERE \"token_hash\" = ?1",
+                    [hash],
+                    |row| row.get::<_, Option<String>>(0),
+                )
+                .optional()
+        })
+        .await?
+        .flatten())
+}
+
 /// Spend it for `node_id`, or say it is not this node's to spend.
 ///
 /// The whole race, in one statement. A token that is unspent is taken;
@@ -292,6 +320,46 @@ mod tests {
             "10.42.0.1",
             "the address it was holding is free again"
         );
+    }
+
+    /// The token becomes the standing credential of whoever spent it,
+    /// and the expiry is not rechecked — the window bounds joining, not
+    /// being a node afterwards. Filtering here would cut every node off
+    /// from its authority a day after it arrived.
+    #[tokio::test]
+    async fn a_spent_token_names_its_node_for_ever() {
+        let (database, admin) = node().await;
+        let (enrolment, secret) = mint(&database, &admin).await;
+
+        assert_eq!(
+            holder(&database, &secret).await.expect("holder"),
+            None,
+            "nobody has spent it yet"
+        );
+        spend(&database, &enrolment.id, "nd-first")
+            .await
+            .expect("spend");
+        assert_eq!(
+            holder(&database, &secret).await.expect("holder").as_deref(),
+            Some("nd-first")
+        );
+
+        let id = enrolment.id.clone();
+        database
+            .write(move |connection| {
+                connection.execute(
+                    "UPDATE enrolment SET \"expires_at\" = 1 WHERE \"id\" = ?1",
+                    [id],
+                )
+            })
+            .await
+            .expect("expire");
+        assert_eq!(
+            holder(&database, &secret).await.expect("holder").as_deref(),
+            Some("nd-first"),
+            "the node was cut off a day after it joined"
+        );
+        assert_eq!(holder(&database, "made-up").await.expect("holder"), None);
     }
 
     /// A database somebody reads must not be a database somebody joins

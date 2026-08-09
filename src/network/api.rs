@@ -33,7 +33,7 @@ use wabot::rest::axum::Router;
 use wabot::rest::RestResult;
 use wabot::sqlite::SqliteDatabase;
 
-use super::{enrolment, Kind, Node};
+use super::{enrolment, errand, Kind, Node};
 use crate::platform::now_ms;
 
 /// What a node says about itself when it arrives.
@@ -58,6 +58,19 @@ pub struct Accepted {
     pub overlay_ip: String,
 }
 
+/// How an errand went, as the node that carried it out reports it.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Outcome {
+    /// `None` — or an absent body — is success.
+    #[serde(default)]
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Settled {
+    pub settled: bool,
+}
+
 /// A refusal, in the shape the other end knows how to print.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Refusal {
@@ -77,6 +90,102 @@ pub struct NetworkApi {
 
 #[rest_controller("/api/network")]
 impl NetworkApi {
+    /// What this node has asked the caller to do.
+    ///
+    /// Collected rather than delivered: the authority cannot reach a
+    /// private node over TLS — it has a certificate for a name, not for
+    /// an overlay address — so the node that takes instructions is the
+    /// one that dials, over the certificate it enrolled through. The
+    /// authority still decides; the model is who gives orders, not who
+    /// makes the call.
+    ///
+    /// Handing the same errand over twice is normal. A node that
+    /// collected one and then died has to be given it again, and
+    /// nothing here can tell that from a slow one — so what settles an
+    /// errand is the acknowledgement below, not the collection.
+    #[get("/errands")]
+    #[raw]
+    async fn errands(&self, request: Request) -> RestResult<Response> {
+        // Copied before anything is awaited: see `asking`.
+        let Some(secret) = bearer(&request).map(str::to_string) else {
+            return Ok(refuse(
+                StatusCode::UNAUTHORIZED,
+                "this endpoint needs the secret from the token this node was enrolled with",
+            ));
+        };
+        let node = match asking(&self.database, &secret).await {
+            Ok(node) => node,
+            Err(response) => return Ok(response),
+        };
+
+        match errand::waiting(&self.database, &node).await {
+            Ok(waiting) => Ok(json(StatusCode::OK, &waiting)),
+            Err(error) => Ok(unreadable(error)),
+        }
+    }
+
+    /// How it went. Both outcomes end here.
+    ///
+    /// A failure is an answer — the authority learns what happened,
+    /// with the reason — and the state this exists to prevent is an
+    /// errand that stays pending for ever because nobody said.
+    #[post("/errands/:errand/done")]
+    #[raw]
+    async fn settle(&self, request: Request) -> RestResult<Response> {
+        // Copied before anything is awaited: see `asking`.
+        let Some(secret) = bearer(&request).map(str::to_string) else {
+            return Ok(refuse(
+                StatusCode::UNAUTHORIZED,
+                "this endpoint needs the secret from the token this node was enrolled with",
+            ));
+        };
+        let node = match asking(&self.database, &secret).await {
+            Ok(node) => node,
+            Err(response) => return Ok(response),
+        };
+        let path = request.uri().path().to_string();
+        // Four segments in, not two: this controller is mounted under
+        // `/api/network`, so the path is `/api/network/errands/<id>/done`.
+        let Some(id) = crate::console::auth::segments(&path)
+            .get(3)
+            .map(|id| id.to_string())
+        else {
+            return Ok(refuse(StatusCode::NOT_FOUND, "no such errand"));
+        };
+
+        let Ok(bytes) = wabot::rest::axum::body::to_bytes(request.into_body(), MAX_BODY).await
+        else {
+            return Ok(refuse(StatusCode::BAD_REQUEST, "that request is too large"));
+        };
+        // An empty body is success. Saying nothing went wrong by saying
+        // nothing is the shape a caller reaches for, and refusing it
+        // would make the common case the awkward one.
+        let outcome: Outcome = match bytes.is_empty() {
+            true => Outcome { error: None },
+            false => match serde_json::from_slice(&bytes) {
+                Ok(outcome) => outcome,
+                Err(_) => return Ok(refuse(StatusCode::BAD_REQUEST, "that is not an outcome")),
+            },
+        };
+
+        match errand::settle(&self.database, &node, &id, outcome.error.as_deref()).await {
+            // Already settled, or not this node's: the same answer,
+            // because from over there they are the same thing — there
+            // is nothing of yours here by that name.
+            Ok(false) => Ok(refuse(StatusCode::NOT_FOUND, "no such errand")),
+            Ok(true) => {
+                match &outcome.error {
+                    Some(reason) => {
+                        tracing::warn!(node = %node, errand = %id, %reason, "an errand failed")
+                    }
+                    None => tracing::info!(node = %node, errand = %id, "an errand was carried out"),
+                }
+                Ok(json(StatusCode::OK, &Settled { settled: true }))
+            }
+            Err(error) => Ok(unreadable(error)),
+        }
+    }
+
     /// Record a node that is holding one of this node's join tokens.
     ///
     /// `#[raw]` because the answer is a status as much as a body: a
@@ -238,6 +347,38 @@ fn describes_a_node(arriving: &Arriving) -> Result<(), &'static str> {
         return Err("a node has to bring a public key");
     }
     Ok(())
+}
+
+/// Which node is asking, from the secret it presented.
+///
+/// Three refusals collapse into one answer on purpose — an unknown
+/// secret, a secret nobody has spent, and a node this one has since
+/// forgotten all read as "not yours". Telling them apart would tell a
+/// caller something about a secret it does not hold, and the third is
+/// what makes *Forget* actually cut a node off rather than merely
+/// hiding it from a page.
+/// Takes the secret rather than the request: a `&Request` held across
+/// an await makes the handler's future non-`Send`, because axum's
+/// `Body` is not `Sync`. Reading the header first is not a style
+/// choice.
+async fn asking(database: &SqliteDatabase, secret: &str) -> Result<String, Response> {
+    let refused = || {
+        refuse(
+            StatusCode::UNAUTHORIZED,
+            "this endpoint needs the secret from the token this node was enrolled with",
+        )
+    };
+
+    let node = match enrolment::holder(database, secret).await {
+        Ok(Some(node)) => node,
+        Ok(None) => return Err(refused()),
+        Err(error) => return Err(unreadable(error)),
+    };
+    match super::find(database, &node).await {
+        Ok(Some(_)) => Ok(node),
+        Ok(None) => Err(refused()),
+        Err(error) => Err(unreadable(error)),
+    }
 }
 
 /// The secret out of an `Authorization: Bearer` header.
@@ -498,6 +639,157 @@ mod tests {
             .send()
             .await
             .assert_ok();
+    }
+
+    /// The whole of phase 3's delivery, from the authority's side: a
+    /// node asks what is waiting for it, does it, and says how it went.
+    #[tokio::test]
+    async fn a_node_collects_its_errands_and_reports_back() {
+        let authority = authority().await;
+        authority
+            .harness
+            .post("/api/network/join")
+            .header("authorization", format!("Bearer {}", authority.secret))
+            .json(&arriving())
+            .send()
+            .await
+            .assert_ok();
+
+        errand::queue(
+            &authority.database,
+            "nd-joining001",
+            errand::Kind::Host,
+            &serde_json::json!({ "service": "web" }),
+        )
+        .await
+        .expect("queued");
+
+        let response = authority
+            .harness
+            .get("/api/network/errands")
+            .header("authorization", format!("Bearer {}", authority.secret))
+            .send()
+            .await;
+        response.assert_ok();
+        let waiting = response.value();
+        assert_eq!(waiting.as_array().map(Vec::len), Some(1));
+        let id = waiting[0]["id"].as_str().expect("an id").to_string();
+        assert_eq!(waiting[0]["kind"], "host");
+
+        // An empty body is success — saying nothing went wrong by
+        // saying nothing is the shape a caller reaches for.
+        authority
+            .harness
+            .post(&format!("/api/network/errands/{id}/done"))
+            .header("authorization", format!("Bearer {}", authority.secret))
+            .send()
+            .await
+            .assert_ok();
+
+        let settled = authority
+            .harness
+            .get("/api/network/errands")
+            .header("authorization", format!("Bearer {}", authority.secret))
+            .send()
+            .await;
+        assert_eq!(settled.value().as_array().map(Vec::len), Some(0));
+
+        let record = errand::find(&authority.database, &id)
+            .await
+            .expect("query")
+            .expect("there");
+        assert!(record.done() && !record.failed());
+    }
+
+    /// A failure is an answer. The state this prevents is an errand
+    /// pending for ever because nobody recorded what happened.
+    #[tokio::test]
+    async fn a_failure_carries_its_reason_back() {
+        let authority = authority().await;
+        authority
+            .harness
+            .post("/api/network/join")
+            .header("authorization", format!("Bearer {}", authority.secret))
+            .json(&arriving())
+            .send()
+            .await
+            .assert_ok();
+        let queued = errand::queue(
+            &authority.database,
+            "nd-joining001",
+            errand::Kind::Host,
+            &serde_json::json!({}),
+        )
+        .await
+        .expect("queued");
+
+        authority
+            .harness
+            .post(&format!("/api/network/errands/{}/done", queued.id))
+            .header("authorization", format!("Bearer {}", authority.secret))
+            .json(&serde_json::json!({ "error": "no such image" }))
+            .send()
+            .await
+            .assert_ok();
+
+        let record = errand::find(&authority.database, &queued.id)
+            .await
+            .expect("query")
+            .expect("there");
+        assert!(record.done());
+        assert_eq!(record.error.as_deref(), Some("no such image"));
+    }
+
+    /// Forgetting a node has to cut it off, not merely hide it from a
+    /// page. Its credential still exists — the enrolment row that named
+    /// it is untouched — so the check is that the node is still known.
+    #[tokio::test]
+    async fn a_forgotten_node_is_refused() {
+        let authority = authority().await;
+        authority
+            .harness
+            .post("/api/network/join")
+            .header("authorization", format!("Bearer {}", authority.secret))
+            .json(&arriving())
+            .send()
+            .await
+            .assert_ok();
+
+        super::super::forget(&authority.database, "nd-joining001")
+            .await
+            .expect("forget");
+
+        authority
+            .harness
+            .get("/api/network/errands")
+            .header("authorization", format!("Bearer {}", authority.secret))
+            .send()
+            .await
+            .assert_status(StatusCode::UNAUTHORIZED);
+    }
+
+    /// One node must not settle another's errand, and a secret nobody
+    /// has spent is nobody.
+    #[tokio::test]
+    async fn errands_need_the_secret_of_the_node_they_belong_to() {
+        let authority = authority().await;
+
+        for header in [None, Some("Bearer made-up".to_string())] {
+            let mut request = authority.harness.get("/api/network/errands");
+            if let Some(header) = header {
+                request = request.header("authorization", header);
+            }
+            request.send().await.assert_status(StatusCode::UNAUTHORIZED);
+        }
+
+        // Minted but never spent: a valid secret that names no node.
+        authority
+            .harness
+            .get("/api/network/errands")
+            .header("authorization", format!("Bearer {}", authority.secret))
+            .send()
+            .await
+            .assert_status(StatusCode::UNAUTHORIZED);
     }
 
     /// Nothing may write a row here without a token, and an unknown

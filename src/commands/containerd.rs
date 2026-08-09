@@ -46,7 +46,7 @@ pub async fn run(pull: Option<String>, run: Option<String>, port: u16) -> anyhow
     if let Some(reference) = pull {
         println!();
         println!("image {reference}");
-        let fetched = crate::runtime::images::ensure(&client, &reference).await?;
+        let fetched = crate::runtime::images::ensure(&client, &reference, None).await?;
         println!(
             "  {}",
             if fetched {
@@ -96,7 +96,8 @@ pub async fn run(pull: Option<String>, run: Option<String>, port: u16) -> anyhow
             ..Default::default()
         };
 
-        let status = crate::runtime::containers::run(&client, ID, &reference, &request).await?;
+        let status =
+            crate::runtime::containers::run(&client, ID, &reference, &request, None).await?;
         println!("  pid        {}", status.pid);
         println!("  status     {}", status.status);
 

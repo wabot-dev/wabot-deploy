@@ -205,7 +205,14 @@ impl Deployer {
             resolv_conf: Some(self.resolv_conf.clone()),
         };
 
-        match containers::run(&client, &id, &service.image, &request).await {
+        // What this node presents to the registry the image lives on,
+        // if it has been given anything. `None` is the ordinary case —
+        // an image from a registry that serves anybody.
+        let credential =
+            crate::platform::registry_credentials::for_reference(&self.database, &service.image)
+                .await;
+
+        match containers::run(&client, &id, &service.image, &request, credential.as_ref()).await {
             Ok(status) => {
                 tracing::info!(
                     service = %service.slug,

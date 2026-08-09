@@ -353,12 +353,19 @@ pub async fn run(config: Config, config_path: &Path) -> anyhow::Result<i32> {
     match crate::network::all(&database).await {
         Ok(nodes) => {
             for node in nodes.iter().filter(|node| !node.is_self) {
+                // The relationship, not the machine — the same rule the
+                // console follows, and it was applied there and not
+                // here. This node printed `private` for a machine whose
+                // own `doctor`, two terminals away, said `public`. Both
+                // were right; the pair was nonsense.
                 println!(
-                    "  knows       {} ({}) {} {}",
+                    "  knows       {} ({}) {}",
                     node.name,
                     node.id,
-                    node.kind.as_str(),
-                    node.overlay_ip.as_deref().unwrap_or("—")
+                    match &node.overlay_ip {
+                        Some(address) => format!("on the overlay at {address}"),
+                        None => "no address for it yet".to_string(),
+                    }
                 );
             }
         }

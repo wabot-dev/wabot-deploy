@@ -32,6 +32,7 @@
 pub mod api;
 pub mod call;
 pub mod enrolment;
+pub mod errand;
 pub mod join;
 pub mod keys;
 pub mod overlay;
@@ -402,22 +403,66 @@ pub async fn is_authorised(database: &SqliteDatabase, node_id: &str) -> bool {
     }
 }
 
+/// Take instructions from a node, and keep what it takes to ask.
+///
+/// Two forms of the same secret, and they are not redundant. The hash
+/// is the record of what was granted. The clear copy is this node's
+/// **own credential** for calling that authority — errands are
+/// collected, not delivered, so this side is the one that has to prove
+/// who it is. See migration `0018`.
 pub async fn grant(database: &SqliteDatabase, node_id: &str, token: &str) -> NetworkResult<()> {
-    let (node_id, hash) = (node_id.to_string(), sha256_hex(token));
+    let (node_id, hash, secret) = (node_id.to_string(), sha256_hex(token), token.to_string());
     Ok(database
         .write(move |connection| {
             connection.execute(
-                "INSERT INTO authority (\"node_id\", \"token_hash\", \"granted_at\") \
-                 VALUES (?1, ?2, ?3) \
+                "INSERT INTO authority \
+                   (\"node_id\", \"token_hash\", \"secret\", \"granted_at\") \
+                 VALUES (?1, ?2, ?3, ?4) \
                  ON CONFLICT (\"node_id\") DO UPDATE SET \
                    \"token_hash\" = excluded.\"token_hash\", \
+                   \"secret\" = excluded.\"secret\", \
                    \"granted_at\" = excluded.\"granted_at\", \
                    \"revoked_at\" = NULL",
-                (node_id, hash, now_ms()),
+                (node_id, hash, secret, now_ms()),
             )?;
             Ok(())
         })
         .await?)
+}
+
+/// What this node presents when it asks `node_id` for work.
+///
+/// `None` for an authority granted before errands existed — there is
+/// nothing to derive it from, and re-joining is what fixes it. Also
+/// `None` once revoked, which is the point: a revoked authority is one
+/// this node stops asking.
+///
+/// Nothing reads it yet: the cron that collects errands is what does,
+/// and it lands with the meaning of a `host` errand.
+#[allow(dead_code)]
+pub async fn credential_for(database: &SqliteDatabase, node_id: &str) -> Option<String> {
+    let node_id = node_id.to_string();
+    let found: NetworkResult<Option<Option<String>>> = database
+        .read(move |connection| {
+            connection
+                .query_row(
+                    "SELECT \"secret\" FROM authority \
+                     WHERE \"node_id\" = ?1 AND \"revoked_at\" IS NULL",
+                    [node_id],
+                    |row| row.get(0),
+                )
+                .optional()
+        })
+        .await
+        .map_err(Into::into);
+
+    match found {
+        Ok(secret) => secret.flatten(),
+        Err(error) => {
+            tracing::warn!(%error, "could not read this node's credential for an authority");
+            None
+        }
+    }
 }
 
 /// Stop taking errands from a node, without forgetting that it once

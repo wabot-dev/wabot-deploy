@@ -61,11 +61,15 @@ pub async fn run(
     id: &str,
     image: &str,
     request: &ContainerRequest,
+    // Not part of `ContainerRequest`: that is what the container will
+    // *be*, and this is how its image is fetched. A registry credential
+    // has no business in an OCI spec.
+    credential: Option<&super::images::Credential>,
 ) -> ClientResult<TaskStatus> {
     // Whatever is there under this id is the previous deployment.
     remove(client, id).await?;
 
-    super::images::ensure(client, image).await?;
+    super::images::ensure(client, image, credential).await?;
     let config = super::images::config(client, image).await?;
     let diff_ids = super::images::diff_ids(client, image).await?;
 
