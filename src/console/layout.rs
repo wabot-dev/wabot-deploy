@@ -375,6 +375,24 @@ pre ::selection {
   flex-wrap: wrap;
 }
 
+/* Choosing who answers for a name. On its own line under the address
+   it belongs to — it is about that hostname and nothing else in the
+   row, and reading it beside the address is what makes that obvious. */
+.served-by {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  flex-wrap: wrap;
+  flex-basis: 100%;
+  font-family: var(--font-sans);
+}
+
+.served-by-node {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-1);
+}
+
 /* The design system styles `button[type="submit"]` as the primary
    action, and that selector outranks `.btn-secondary`, `.btn-ghost`
    and `.btn-danger` — so every submit came out black whatever variant

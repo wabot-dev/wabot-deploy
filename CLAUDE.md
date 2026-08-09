@@ -257,9 +257,24 @@ lands, the placement page lives on the service, and the node running a
 replica reports its state back to the node that placed it — and can
 throw it off.
 
-None of 4 to 6 has run on a node. Phase 3 taught what that is worth.
+Phase 7 — the edge — is written too. The node that owns a service picks
+which public nodes answer for each of its names, and they are told where
+to proxy. Three things about it:
 
-Next: phase 7, the edge. A request to a bare overlay address answers
-404 — the far node's edge routes by hostname — so a proxy leg to a
-replica elsewhere goes to the container's port, not through that node's
-edge.
+- **The errand carries one upstream per replica**, not per node. That is
+  the whole of the load balancing — the edge picks by turn, so a node
+  running two copies appears twice and gets twice the requests. The
+  weight *is* the repetition; nothing computes a ratio.
+- **An upstream is the node's overlay address and a port bound to it**,
+  never the container's own. A CNI bridge subnet is identical on every
+  node, so a container address names a different container on each
+  machine that reads it. The containers stay on the private bridge.
+- **A node dropped from the list is sent an errand too**, with an empty
+  upstream list. It keeps answering for the name, certificate and all,
+  until something says otherwise — `edges::set` returns who was dropped
+  so the caller cannot forget.
+
+None of 4 to 7 has run on a node. Phase 3 taught what that is worth.
+
+Next: phase 8, groups — health and failover across the upstreams of one
+name. Today a dead replica stays in the list until the owner notices.

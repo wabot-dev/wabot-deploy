@@ -21,6 +21,7 @@
 
 pub mod access;
 pub mod config_history;
+pub mod edges;
 pub mod images;
 pub mod ports;
 pub mod projects;

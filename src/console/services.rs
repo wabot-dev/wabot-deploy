@@ -182,6 +182,15 @@ impl ServicePages {
         let placements =
             crate::platform::replicas::of_service(&self.state.database, &service.id).await?;
         let nodes = crate::network::all(&self.state.database).await?;
+        // Who could answer for a name, and who was asked to. Only a
+        // node with an address the world can dial: sending a hostname
+        // to one without would publish a name that resolves to nothing.
+        let public_nodes: Vec<crate::network::Node> = nodes
+            .iter()
+            .filter(|node| node.may_be_edge())
+            .cloned()
+            .collect();
+        let serving = crate::platform::edges::of_service(&self.state.database, &service.id).await?;
         let deploying = crate::deploy::jobs::deploying(&self.state.container)
             .await
             .contains(&service.id);
@@ -377,6 +386,14 @@ impl ServicePages {
                                                     <span class="dot dot-info dot-pulse"></span>
                                                     ("Certificate on the way")
                                                 </span>
+                                            }
+                                            @if let Some(hostname) = &port.hostname {
+                                                @if service.is_ours() && !public_nodes.is_empty() {
+                                                    (served_by_form(
+                                                        &project, &service, hostname,
+                                                        &public_nodes, &serving,
+                                                    ))
+                                                }
                                             }
                                         </td>
                                     </tr>
@@ -923,6 +940,52 @@ fn node_option<'a>(
         } @else {
             <option value=(value)>(&node.name)</option>
         }
+    }
+}
+
+/// Which public nodes answer for one of this service's names.
+///
+/// Only the owner sees it: an edge is part of administering the service,
+/// and the whole point of the origin rule is that this is decided in one
+/// place. A node that merely runs a replica has nothing to choose here.
+///
+/// Every choice is a checkbox rather than a single selector because a
+/// name can be served from several nodes at once — that is what makes it
+/// survive one of them going away.
+fn served_by_form<'a>(
+    project: &'a crate::platform::projects::Project,
+    service: &'a services::Service,
+    hostname: &'a str,
+    public: &'a [crate::network::Node],
+    serving: &'a [(String, String)],
+) -> impl Renderable + 'a {
+    let chosen: Vec<&str> = serving
+        .iter()
+        .filter(|(name, _)| name == hostname)
+        .map(|(_, node)| node.as_str())
+        .collect();
+    rsx! {
+        <form method="post" class="served-by"
+              action=(format!(
+                  "/projects/{}/services/{}/edges",
+                  project.slug, service.slug
+              ))>
+            <input type="hidden" name="hostname" value=(hostname)>
+            <p class="tile-detail">("Served by")</p>
+            @for node in public {
+                <label class="served-by-node">
+                    @if chosen.contains(&node.id.as_str()) {
+                        <input type="checkbox"
+                               name=(format!("edge-{}", node.id)) value="1" checked>
+                    } @else {
+                        <input type="checkbox"
+                               name=(format!("edge-{}", node.id)) value="1">
+                    }
+                    <span>(&node.name)</span>
+                </label>
+            }
+            <button class="btn btn-secondary btn-sm" type="submit">("Save")</button>
+        </form>
     }
 }
 
@@ -1674,6 +1737,73 @@ impl ServiceApi {
             .await?;
         Ok(see_other(&here))
     }
+
+    /// Choose which public nodes answer for one of this service's
+    /// names.
+    ///
+    /// A node dropped from the list is told too, with an empty upstream
+    /// list — it keeps answering for the name until something says
+    /// otherwise, and nothing else in the system would notice.
+    #[post("/projects/:project/services/:service/edges")]
+    #[raw]
+    #[middleware(SessionMiddleware)]
+    async fn set_edges(&self, request: Request) -> RestResult<Response> {
+        let path = request.uri().path().to_string();
+        let Some((project, service, _)) = self.locate(&path).await? else {
+            return Ok(see_other("/"));
+        };
+        let here = format!("/projects/{}/services/{}", project.slug, service.slug);
+
+        let form = match read_form(request).await {
+            Ok(form) => form,
+            Err(response) => return Ok(response),
+        };
+        let hostname = field(&form, "hostname").to_string();
+        if hostname.is_empty() {
+            return Ok(back_with_error(&here, "that names no hostname"));
+        }
+
+        // A checkbox sends its value only when ticked, so the chosen
+        // set is what arrived and the rest is what was cleared.
+        let public: Vec<String> = crate::network::all(&self.state.database)
+            .await?
+            .into_iter()
+            .filter(|node| node.may_be_edge())
+            .map(|node| node.id)
+            .collect();
+        let chosen: Vec<String> = public
+            .into_iter()
+            .filter(|id| form.contains_key(&format!("edge-{id}")))
+            .collect();
+
+        let dropped =
+            crate::platform::edges::set(&self.state.database, &service.id, &hostname, &chosen)
+                .await?;
+
+        let placements =
+            crate::platform::replicas::of_service(&self.state.database, &service.id).await?;
+        self.dispatch_edges(&service, &placements).await?;
+
+        // The ones no longer chosen, told to stop: an empty list
+        // releases the name there rather than leaving it answering for
+        // something nobody asked it to serve.
+        for node_id in dropped {
+            let payload = serde_json::to_value(crate::network::errand::Edge {
+                hostname: hostname.clone(),
+                upstreams: Vec::new(),
+            })
+            .unwrap_or_default();
+            crate::network::errand::queue(
+                &self.state.database,
+                &node_id,
+                crate::network::errand::Kind::Edge,
+                &payload,
+            )
+            .await?;
+        }
+
+        Ok(see_other(&here))
+    }
 }
 
 impl ServiceApi {
@@ -1852,6 +1982,41 @@ impl ServiceApi {
 
         if placements.iter().any(|replica| replica.is_here()) {
             self.enqueue(&service.id, None).await;
+        }
+
+        self.dispatch_edges(service, &placements).await?;
+        Ok(())
+    }
+
+    /// Tell every node serving a name where its replicas are now.
+    ///
+    /// Sent whenever the placement changes, because that is when the
+    /// answer changes: a replica moved, added or gone is a different
+    /// upstream list, and an edge holding the old one would send
+    /// requests to a container that is not there.
+    async fn dispatch_edges(
+        &self,
+        service: &services::Service,
+        placements: &[crate::platform::replicas::Replica],
+    ) -> RestResult<()> {
+        let chosen = crate::platform::edges::of_service(&self.state.database, &service.id).await?;
+        let nodes = crate::network::all(&self.state.database).await?;
+        let upstreams = crate::platform::edges::upstreams(placements, &nodes);
+
+        for (hostname, node_id) in chosen {
+            let payload = serde_json::to_value(crate::network::errand::Edge {
+                hostname,
+                upstreams: upstreams.clone(),
+            })
+            .unwrap_or_default();
+
+            crate::network::errand::queue(
+                &self.state.database,
+                &node_id,
+                crate::network::errand::Kind::Edge,
+                &payload,
+            )
+            .await?;
         }
         Ok(())
     }

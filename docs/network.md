@@ -61,15 +61,17 @@ Three consequences that shape everything below:
   about where a service is.
 
 This document is the plan and the record of what was decided and why.
-Phases 0 to 6 are in the tree. Phases 0 to 3 are verified between two
-real nodes; 4 to 6 have not run on one yet.
+Phases 0 to 7 are in the tree. Phases 0 to 3 are verified between two
+real nodes; 4 to 7 have not run on one yet.
 
-**One thing 5 and 6 left open.** A replica placed on another node cannot
-be *removed* from the page that placed it — nothing can tell that node
-to stop, so dropping the row would leave its container running with
-nothing naming it. Eviction works in the other direction, from the
-machine running it. The reverse errand is what closes that, and it is
-the same shape as everything else here.
+**What 5 and 6 left open is closed.** A replica placed on another node
+and then brought home used to leave its container running there with
+nothing naming it — the page that placed it had no way to say stop. Both
+errand kinds now carry the *whole* of what a node should be running: a
+`host` errand names every slot that node holds, and an `edge` errand
+every upstream for that name. **An empty list is a real instruction**,
+not a reason to skip sending one, which is how a node finds out that its
+last replica went home or that it no longer serves a name.
 
 ## The shape
 
@@ -272,8 +274,13 @@ Still open:
 | 4 | Replicas | A service is *n* placements; the container id carries the index | **done** |
 | 5 | Placement | The form moves to the service; provenance, read-only, eviction | **done** |
 | 6 | Reporting | The poll carries each replica's state back to the node that placed it | **done** |
-| 7 | Errand: edge | The owner picks public nodes to serve a name; they claim it, get the certificate, and proxy to the replicas | next |
-| 8 | Groups | Health and failover across the upstreams of one name | |
+| 7 | Errand: edge | The owner picks public nodes to serve a name; they claim it, get the certificate, and proxy to the replicas | **done** |
+| 8 | Groups | Health and failover across the upstreams of one name | next |
+
+Phases 4 to 7 are written and **none of them has run on a node**. Phase
+3 is what that is worth: everything passed locally and the receiving
+node still ended up with an orphaned container, for a reason the model
+in my head did not contain.
 
 Phase 3 works and is in the wrong place, which is worth saying plainly
 rather than quietly reshaping. Its form lives on the *node* page — pick
@@ -420,3 +427,49 @@ Three things only the nodes showed:
 And one still open: nothing pings a joined node, so its badge says
 "Joined" and never changes. `last_seen_at` is written once, at the join.
 The first thing phase 2 makes possible is for that to mean something.
+
+## What phase 7 decided
+
+A name is served by **a set of public nodes**, chosen on the service
+page by the node that owns the service — the same hand that decides
+where the replicas run. Not one edge: several, because a name that
+survives one node going away is the point, and choosing them one at a
+time is the same choice made worse.
+
+`service_edge` is the choice (migration `0023`), and it is keyed by
+`(hostname, node_id)` rather than by service, because the constraint
+that matters is that **one name has one authority**. The receiving node
+claims the name before it serves it and refuses a second authority
+asking for the same one.
+
+The errand carries **one upstream entry per replica**, not per node.
+That is the whole of the load balancing: the edge picks by turn, so a
+node running two copies appears twice in the list and receives twice the
+requests. Nothing weights anything; the weight *is* the repetition,
+which means a replica moving or dying changes the share without anything
+recomputing a ratio.
+
+Each entry is the node's **overlay address and a port bound to it** —
+`replicas::overlay_port`, from a range disjoint from the published one.
+Never the container's own address: that is on a CNI bridge whose subnet
+is identical on every node, so `10.88.0.3` names a different container
+on each machine reading it. The containers stay where they are, on the
+private bridge, reachable only through the port their own node opened on
+the overlay.
+
+Three things follow that are easy to get wrong:
+
+- **A node dropped from the list has to be told.** It keeps answering
+  for the name, with a certificate, until an errand says otherwise, and
+  nothing else in the system would notice. `edges::set` returns exactly
+  who was dropped so the caller cannot forget; an empty upstream list is
+  the instruction to release the name.
+- **The list is re-sent on every placement change**, not only when the
+  set of edges changes. A replica that moved is a different upstream
+  list, and an edge holding the old one proxies to a container that is
+  not there.
+- **A replica with no overlay port is left out.** It has reported none,
+  so nothing can reach it. An invented address there is a request that
+  hangs rather than one that fails over.
+
+Nothing here has run on a node.
