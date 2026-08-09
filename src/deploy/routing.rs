@@ -47,29 +47,37 @@ pub async fn sync(
         // 404 from the edge is a truthful answer, and a proxy attempt
         // to a dead address is a hung request.
         //
-        // The first running copy, because `Upstream` names one address.
-        // Spreading a name across several is the phase that comes with
-        // health checks — sending traffic to a second replica without
-        // knowing whether it answers would be worse than not sending
-        // it.
-        let Some(address) = placements
+        // **One entry per replica**, not per node. A node running two
+        // copies contributes two, so a plain round-robin sends it twice
+        // the requests — which is what "two there and one here" is
+        // asking for, without anything having to carry a weight.
+        let upstreams: Vec<SocketAddr> = placements
             .iter()
             .filter(|replica| replica.service_id == service.id)
-            .find_map(|replica| replica.address.as_deref())
-        else {
-            continue;
-        };
+            .filter_map(|replica| replica.address.as_deref())
+            .filter_map(|address| {
+                match format!("{address}:{}", port.container_port).parse::<SocketAddr>() {
+                    Ok(upstream) => Some(upstream),
+                    Err(_) => {
+                        tracing::warn!(%address, port = port.container_port, "unroutable");
+                        None
+                    }
+                }
+            })
+            .collect();
 
-        let Ok(upstream) = format!("{address}:{}", port.container_port).parse::<SocketAddr>()
-        else {
-            tracing::warn!(%address, port = port.container_port, "unroutable address");
+        // Nothing running: the route is dropped rather than kept
+        // pointing at where it used to be. A 404 from the edge is a
+        // truthful answer; a proxy attempt to a dead address is a hung
+        // request.
+        if upstreams.is_empty() {
             continue;
-        };
+        }
 
         routes::upsert(
             database,
             hostname,
-            &Upstream::Proxy(upstream),
+            &Upstream::Proxy(upstreams),
             Some(&service.id),
         )
         .await?;
@@ -152,7 +160,7 @@ mod tests {
 
         assert_eq!(
             table.resolve("api.example.com"),
-            Some(Upstream::Proxy("10.42.1.5:80".parse().unwrap()))
+            Some(Upstream::Proxy(vec!["10.42.1.5:80".parse().unwrap()]))
         );
     }
 

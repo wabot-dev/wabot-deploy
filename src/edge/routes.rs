@@ -27,13 +27,46 @@ pub enum Upstream {
     /// is a `tower::Service`, so there is no socket and no second
     /// serialization.
     ControlPlane,
-    /// A container on this node.
-    Proxy(SocketAddr),
+    /// The replicas of one service, in the order they were placed.
+    ///
+    /// **One entry per replica, not per node.** A node running two
+    /// copies contributes two, so a plain round-robin sends it twice
+    /// the requests without anything having to carry a weight — which
+    /// is what "two replicas there and one here" is asking for.
+    ///
+    /// Never empty: a name with nothing behind it is dropped from the
+    /// table rather than kept pointing at nowhere, because a 404 from
+    /// the edge is a truthful answer and a proxy attempt to a dead
+    /// address is a hung request.
+    Proxy(Vec<SocketAddr>),
+}
+
+impl Upstream {
+    /// Which one takes this request.
+    ///
+    /// Round-robin, and the counter is per table rather than per name:
+    /// two names with two upstreams each would otherwise start every
+    /// request at the same index and send the whole first burst to the
+    /// same pair of containers.
+    ///
+    /// Not least-connections or latency-aware. Those need a health
+    /// signal this does not have yet — and picking a replica by a
+    /// measurement nothing updates would be worse than picking in turn.
+    pub fn pick(&self, turn: usize) -> Option<SocketAddr> {
+        match self {
+            Self::ControlPlane => None,
+            Self::Proxy(addresses) if addresses.is_empty() => None,
+            Self::Proxy(addresses) => Some(addresses[turn % addresses.len()]),
+        }
+    }
 }
 
 /// Hostname → upstream, replaced whole.
 pub struct RouteTable {
     by_host: ArcSwap<HashMap<String, Upstream>>,
+    /// Where the next request starts looking. Shared across names on
+    /// purpose — see [`Upstream::pick`].
+    turn: std::sync::atomic::AtomicUsize,
 }
 
 impl Default for RouteTable {
@@ -46,6 +79,7 @@ impl RouteTable {
     pub fn new() -> Self {
         Self {
             by_host: ArcSwap::from_pointee(HashMap::new()),
+            turn: std::sync::atomic::AtomicUsize::new(0),
         }
     }
 
@@ -54,6 +88,17 @@ impl RouteTable {
     /// The port is stripped first: `example.com` and `example.com:8443`
     /// are the same site, and a client is free to include the port
     /// even when it is the default one.
+    /// The next replica to take a request for this upstream.
+    ///
+    /// The counter is here rather than on the route because a route is
+    /// replaced whole on every change — a per-route counter would reset
+    /// to zero every time a deployment finished, and the first burst
+    /// after each one would all land on the same container.
+    pub fn next_upstream(&self, upstream: &Upstream) -> Option<SocketAddr> {
+        let turn = self.turn.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        upstream.pick(turn)
+    }
+
     pub fn resolve(&self, host: &str) -> Option<Upstream> {
         self.by_host.load().get(&normalize(host)).cloned()
     }
@@ -179,17 +224,33 @@ pub async fn load_all(database: &SqliteDatabase) -> SqliteResult<Vec<(String, Up
         .into_iter()
         .filter_map(|(host, kind, addr)| match kind.as_str() {
             "control_plane" => Some((host, Upstream::ControlPlane)),
-            "proxy" => match addr.as_deref().and_then(|a| a.parse().ok()) {
-                Some(addr) => Some((host, Upstream::Proxy(addr))),
-                None => {
-                    tracing::warn!(
-                        %host,
-                        addr = addr.unwrap_or_default(),
-                        "route skipped: unparseable upstream address"
-                    );
-                    None
+            // Comma-separated, because a route is now *n* replicas.
+            // One that will not parse is dropped and the rest kept: a
+            // service with three copies and one bad row should serve
+            // from the two that are fine, which is the whole reason
+            // there are three.
+            "proxy" => {
+                let addresses: Vec<SocketAddr> = addr
+                    .as_deref()
+                    .unwrap_or_default()
+                    .split(',')
+                    .filter(|part| !part.is_empty())
+                    .filter_map(|part| match part.parse() {
+                        Ok(address) => Some(address),
+                        Err(_) => {
+                            tracing::warn!(%host, part, "upstream skipped: not an address");
+                            None
+                        }
+                    })
+                    .collect();
+                match addresses.is_empty() {
+                    true => {
+                        tracing::warn!(%host, "route skipped: nothing to proxy to");
+                        None
+                    }
+                    false => Some((host, Upstream::Proxy(addresses))),
                 }
-            },
+            }
             other => {
                 tracing::warn!(%host, kind = other, "route skipped: unknown upstream kind");
                 None
@@ -212,7 +273,16 @@ pub async fn upsert(
     let host = normalize(host);
     let (kind, addr) = match upstream {
         Upstream::ControlPlane => ("control_plane".to_string(), None),
-        Upstream::Proxy(addr) => ("proxy".to_string(), Some(addr.to_string())),
+        Upstream::Proxy(addresses) => (
+            "proxy".to_string(),
+            Some(
+                addresses
+                    .iter()
+                    .map(|address| address.to_string())
+                    .collect::<Vec<_>>()
+                    .join(","),
+            ),
+        ),
     };
     let service_id = service_id.map(str::to_string);
     let now = std::time::SystemTime::now()
@@ -245,11 +315,64 @@ mod tests {
     use super::*;
 
     fn proxy(port: u16) -> Upstream {
-        Upstream::Proxy(SocketAddr::from(([127, 0, 0, 1], port)))
+        Upstream::Proxy(vec![SocketAddr::from(([127, 0, 0, 1], port))])
     }
 
     /// Everything a client can legitimately vary without meaning a
     /// different site.
+    /// One entry per replica, not per node — so a node running two
+    /// copies takes twice the requests without anything carrying a
+    /// weight. That is the whole of "two there and one here".
+    #[test]
+    fn requests_go_round_the_replicas_in_turn() {
+        let table = RouteTable::new();
+        let upstream = Upstream::Proxy(vec![
+            "10.42.0.3:20001".parse().unwrap(), // two on one node
+            "10.42.0.3:20002".parse().unwrap(),
+            "10.42.0.1:20001".parse().unwrap(), // one on another
+        ]);
+
+        let mut seen = std::collections::BTreeMap::new();
+        for _ in 0..30 {
+            let picked = table.next_upstream(&upstream).expect("an upstream");
+            *seen.entry(picked.to_string()).or_insert(0) += 1;
+        }
+
+        assert_eq!(seen["10.42.0.3:20001"], 10);
+        assert_eq!(seen["10.42.0.3:20002"], 10);
+        assert_eq!(seen["10.42.0.1:20001"], 10);
+        // Which is twice the traffic for the node holding two of them.
+        assert_eq!(seen["10.42.0.3:20001"] + seen["10.42.0.3:20002"], 20);
+    }
+
+    /// The counter lives on the table, not the route: a route is
+    /// replaced whole on every change, so a counter inside one would
+    /// reset every time a deployment finished and send the first burst
+    /// after each to the same container.
+    #[test]
+    fn replacing_a_route_does_not_send_everybody_back_to_the_first() {
+        let table = RouteTable::new();
+        let upstream = Upstream::Proxy(vec![
+            "10.42.0.1:1".parse().unwrap(),
+            "10.42.0.1:2".parse().unwrap(),
+        ]);
+
+        let first = table.next_upstream(&upstream).expect("one");
+        table.replace([("app.example".to_string(), upstream.clone())]);
+        let after = table.next_upstream(&upstream).expect("one");
+
+        assert_ne!(first, after, "the turn restarted");
+    }
+
+    /// A name with nothing behind it is not a route. The edge answering
+    /// 404 is truthful; proxying to a dead address is a hung request.
+    #[test]
+    fn an_upstream_with_no_replicas_picks_nothing() {
+        let table = RouteTable::new();
+        assert_eq!(table.next_upstream(&Upstream::Proxy(Vec::new())), None);
+        assert_eq!(table.next_upstream(&Upstream::ControlPlane), None);
+    }
+
     #[test]
     fn a_host_header_is_normalized_before_lookup() {
         let table = RouteTable::new();

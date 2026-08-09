@@ -214,7 +214,16 @@ async fn dispatch(State(state): State<EdgeState>, request: Request) -> Response 
                 Err(never) => match never {},
             }
         }
-        Upstream::Proxy(addr) => state.proxy.forward(addr, request).await,
+        Upstream::Proxy(_) => {
+            // Which copy takes it is the table's to decide — the
+            // counter lives there, so two requests in a row do not both
+            // land on the first replica.
+            let Some(addr) = state.routes.next_upstream(&upstream) else {
+                tracing::warn!("a route with nothing behind it");
+                return not_found();
+            };
+            state.proxy.forward(addr, request).await
+        }
     }
 }
 
@@ -348,7 +357,7 @@ mod tests {
         // Port 1 on loopback: reserved, and nothing will be there.
         state.routes.replace([(
             "app.example.com".to_string(),
-            Upstream::Proxy(SocketAddr::from(([127, 0, 0, 1], 1))),
+            Upstream::Proxy(vec![SocketAddr::from(([127, 0, 0, 1], 1))]),
         )]);
 
         let response = harness(state)
@@ -549,9 +558,10 @@ mod tests {
     /// `upstream`.
     async fn edge_on_a_port(upstream: SocketAddr) -> (SocketAddr, Cancel) {
         let state = state(false);
-        state
-            .routes
-            .replace([("app.example.com".to_string(), Upstream::Proxy(upstream))]);
+        state.routes.replace([(
+            "app.example.com".to_string(),
+            Upstream::Proxy(vec![upstream]),
+        )]);
 
         let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
         let address = listener.local_addr().expect("addr");

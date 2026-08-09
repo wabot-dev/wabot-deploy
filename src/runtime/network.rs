@@ -170,8 +170,15 @@ impl ProjectNetwork {
         let ports: Vec<String> = mappings
             .iter()
             .map(|mapping| {
+                // `hostIP` omitted rather than sent empty: portmap
+                // reads an empty string as an address and refuses it,
+                // where an absent key is what means "every interface".
+                let host_ip = match &mapping.host_ip {
+                    Some(address) => format!(r#", "hostIP": "{address}""#),
+                    None => String::new(),
+                };
                 format!(
-                    r#"{{ "hostPort": {}, "containerPort": {}, "protocol": "tcp" }}"#,
+                    r#"{{ "hostPort": {}, "containerPort": {}, "protocol": "tcp"{host_ip} }}"#,
                     mapping.host_port, mapping.container_port
                 )
             })
@@ -222,10 +229,13 @@ impl ProjectNetwork {
 /// silent in the way these are — a warning in the journal, a rule left
 /// behind, and a node port still answering for a container that had
 /// moved.
-const TEARDOWN_MAPPING: PortMapping = PortMapping {
-    host_port: 1,
-    container_port: 1,
-};
+fn teardown_mapping() -> PortMapping {
+    PortMapping {
+        host_port: 1,
+        container_port: 1,
+        host_ip: None,
+    }
+}
 
 /// The path of a container's network namespace.
 pub fn netns_path(container_id: &str) -> PathBuf {
@@ -234,10 +244,19 @@ pub fn netns_path(container_id: &str) -> PathBuf {
 
 /// One published port: a port on the node, forwarded to one inside
 /// the container.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PortMapping {
     pub host_port: u16,
     pub container_port: u16,
+    /// Which of the node's addresses to listen on. `None` is all of
+    /// them, which is what publishing a port to the world means.
+    ///
+    /// The overlay needs the other case. A replica another node's edge
+    /// has to reach is published on **this node's overlay address and
+    /// nowhere else** — the internet has no business with it, and a
+    /// port on `0.0.0.0` would hand it over to anybody who guessed the
+    /// number.
+    pub host_ip: Option<String>,
 }
 
 /// Create the namespace, put the container on the project's bridge,
@@ -326,7 +345,10 @@ pub async fn detach(network: &ProjectNetwork, container_id: &str) {
         for (name, config) in [
             // portmap first, so its rules go before the interface they
             // point at disappears.
-            ("portmap", network.portmap_config(&[TEARDOWN_MAPPING], "{}")),
+            (
+                "portmap",
+                network.portmap_config(&[teardown_mapping()], "{}"),
+            ),
             ("bridge", network.config()),
             ("loopback", network.loopback_config()),
         ] {
@@ -588,7 +610,7 @@ mod tests {
     fn the_teardown_config_is_never_an_empty_mapping_list() {
         let config = ProjectNetwork::new(1)
             .expect("valid")
-            .portmap_config(&[TEARDOWN_MAPPING], "{}");
+            .portmap_config(&[teardown_mapping()], "{}");
 
         let parsed: serde_json::Value = serde_json::from_str(&config).expect("valid JSON");
         assert_eq!(parsed["type"], "portmap");
@@ -601,12 +623,34 @@ mod tests {
         );
     }
 
+    /// A replica another node's edge has to reach is published on this
+    /// node's **overlay address and nowhere else**. On `0.0.0.0` it
+    /// would be handed to anybody on the internet who guessed the
+    /// number, which is not what placing a replica somewhere asked for.
+    #[test]
+    fn an_overlay_port_is_bound_to_one_address() {
+        let config = ProjectNetwork::new(1).expect("valid").portmap_config(
+            &[PortMapping {
+                host_port: 20002,
+                container_port: 80,
+                host_ip: Some("10.42.0.3".into()),
+            }],
+            r#"{"cniVersion":"1.0.0","ips":[{"address":"10.42.1.7/24"}]}"#,
+        );
+
+        let parsed: serde_json::Value = serde_json::from_str(&config).expect("valid JSON");
+        let mapping = &parsed["runtimeConfig"]["portMappings"][0];
+        assert_eq!(mapping["hostPort"], 20002);
+        assert_eq!(mapping["hostIP"], "10.42.0.3");
+    }
+
     #[test]
     fn a_published_port_becomes_a_mapping_the_plugin_understands() {
         let config = ProjectNetwork::new(1).expect("valid").portmap_config(
             &[PortMapping {
                 host_port: 20001,
                 container_port: 80,
+                host_ip: None,
             }],
             r#"{"cniVersion":"1.0.0","ips":[{"address":"10.42.1.7/24"}]}"#,
         );
@@ -616,6 +660,11 @@ mod tests {
         assert_eq!(mapping["hostPort"], 20001);
         assert_eq!(mapping["containerPort"], 80);
         assert_eq!(mapping["protocol"], "tcp");
+        assert!(
+            mapping.get("hostIP").is_none(),
+            "an absent key is what means every interface; portmap reads an \
+             empty string as an address and refuses it"
+        );
         // Chained: without the previous result the plugin does not know
         // which address to forward to.
         assert_eq!(parsed["prevResult"]["ips"][0]["address"], "10.42.1.7/24");

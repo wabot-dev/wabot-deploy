@@ -248,6 +248,10 @@ impl Deployer {
                 Some(PortMapping {
                     host_port: port.host_port?,
                     container_port: port.container_port,
+                    // Every interface: this is the operator asking for
+                    // the port to be reachable, which is what
+                    // publishing means.
+                    host_ip: None,
                 })
             })
             .collect();
