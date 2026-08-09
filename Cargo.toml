@@ -1,6 +1,6 @@
 [package]
 name = "wabot-deploy"
-version = "0.3.0"
+version = "0.3.1"
 edition = "2021"
 
 [dependencies]
@@ -177,27 +177,28 @@ anyhow = "1"
 toml = "0.8"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-# The overlay's key pair. A WireGuard key is a Curve25519 key whichever
-# implementation ends up carrying the packets — the kernel module and
-# `boringtun` read the same base64 — so this commits to nothing that the
-# phase 2 spike is meant to decide. It is here now because the public
-# key travels *in* the join token, and a field added to that token later
-# means every node that already joined has to join again.
+# The overlay: kernel WireGuard, configured over netlink from inside
+# this process.
 #
-# `ring` cannot do this: its X25519 private keys are ephemeral by
-# construction and cannot be exported, and a key regenerated on every
-# start would invalidate every token already handed out.
+# The phase 2 spike decided this against `boringtun`, and against what
+# `docs/network.md` had assumed. The argument for userspace was that
+# requiring a kernel module reopens the class of failure Alpine keeps
+# surfacing — but the module is in both nodes' kernels, and on Alpine
+# `/dev/net/tun` does *not* exist until `tun` is loaded. Userspace does
+# not avoid a module, it swaps `wireguard` for `tun` and adds the whole
+# data path. See the spike's record in `docs/network.md`.
 #
-# `static_secrets` for a key that can be stored, `getrandom` for
-# `StaticSecret::random`, `zeroize` so it does not linger in memory
-# after use. No `precomputed-tables`: that trades binary size for a
-# speed-up on repeated base-point multiplication, and this does exactly
-# one, once, ever.
-x25519-dalek = { version = "3", default-features = false, features = [
-    "static_secrets",
-    "getrandom",
-    "zeroize",
-] }
+# Netlink rather than shelling out to `wg`: the product is one file
+# copied to a machine, and `wireguard-tools` is absent on both nodes.
+# This crate also brings `Key`, which generates and derives exactly the
+# Curve25519 keys WireGuard reads — so `network::keys` has no separate
+# x25519 dependency and the binary carries one copy of curve25519
+# rather than two.
+#
+# `default-features = false` drops `serde` (nothing here serialises a
+# key) and `check_dependencies`, which looks for external WireGuard
+# binaries this deliberately does not use.
+defguard_wireguard_rs = { version = "0.11", default-features = false }
 
 [dev-dependencies]
 # The harnesses are a separate feature so a mock adapter can never

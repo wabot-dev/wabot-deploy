@@ -39,6 +39,19 @@ pub async fn run(config: Config) -> anyhow::Result<i32> {
     if let Err(error) = crate::network::ensure_self(&database, &config).await {
         tracing::warn!(%error, "could not record what this node is");
     }
+    // And the overlay it is on, if it is on one. Never fatal: a node
+    // whose kernel refuses the interface still serves its console,
+    // which is where somebody goes to find out why.
+    match crate::network::tunnel::ensure(&database, &config).await {
+        Ok(Some(overlay)) => tracing::info!(
+            address = %overlay.address,
+            port = overlay.port,
+            peers = overlay.peers,
+            "overlay up"
+        ),
+        Ok(None) => {}
+        Err(error) => tracing::warn!(%error, "could not bring the overlay up"),
+    }
 
     let container = Container::new();
     // The job handler resolves this. Nothing else registered it —
@@ -74,7 +87,7 @@ pub async fn run(config: Config) -> anyhow::Result<i32> {
     // rather than beside it, so it answers on the node's own hostname
     // and certificate — the endpoint in a join token is the same
     // address the console is at.
-    crate::network::api::register(&container);
+    crate::network::api::register(&container, config.clone());
     crate::console::register(
         &container,
         database.clone(),

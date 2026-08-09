@@ -5,7 +5,8 @@ node can be an edge for a name whose container lives on a private one,
 and a name can eventually be served by a group of them.
 
 This document is the plan and the record of what was decided and why.
-Phases 0 and 1 are in the tree; the rest is not.
+Phases 0 to 2 are in the tree; the rest is not. Phase 1 has run between
+two real nodes, phase 2 has not.
 
 ## The shape
 
@@ -60,18 +61,36 @@ public node can send packets back without ever having dialled. The
 condition is that the public node has a stable address — which is what
 makes it public.
 
-**Kernel when present, userspace when not.** The protocol is the same
-and the implementations interoperate, so this is not "proven versus
-experimental" — it is a kernel implementation against a userspace one.
-Kernel WireGuard is meaningfully faster (no context switch per packet)
-and far more rodded. But a one-core node that terminates TLS and proxies
-HTTP runs out of CPU somewhere else first, and requiring a kernel module
-or `wg-quick` reopens exactly the class of failure Alpine kept
-surfacing: no iptables, no cgroups mounted, no overlay module. `boringtun`
-is a Rust crate and keeps the one-binary promise.
+**Kernel, and the spike is why.** This section used to argue for
+`boringtun`: kernel WireGuard is faster, but a one-core node running TLS
+and HTTP runs out of CPU somewhere else first, and requiring a kernel
+module reopens the class of failure Alpine keeps surfacing — no
+iptables, no cgroups mounted, no overlay module. A userspace crate keeps
+the one-binary promise.
 
-This is a phase 2 decision and deserves a throwaway spike before
-anything is committed to.
+The spike, run on both nodes, said the premise was wrong:
+
+- The `wireguard` module is **in both kernels** (Ubuntu 26.04 / 7.0,
+  Alpine 3.23 / 6.18), and `ip link add type wireguard` creates the
+  interface with **no `wireguard-tools` installed**.
+- On Alpine, **`/dev/net/tun` does not exist** — it appears only after
+  `modprobe tun`. Userspace WireGuard needs it.
+
+So userspace does not avoid a kernel module. It swaps `wireguard` for
+`tun`, adds a device node that is not there, and carries the whole data
+path in this process. Every argument for it was an argument against a
+cost the kernel path turned out not to have.
+
+`wg-quick` was never on the table anyway: it is a bash script, and
+Alpine has no bash.
+
+**Netlink from inside the binary, not `wireguard-tools`.** Neither node
+had `wg` installed, and installing it would put a package manager in the
+path of joining — on Alpine especially. `defguard_wireguard_rs` speaks
+the kernel's generic-netlink API directly: no C, no packages, and its
+`Key` is the same Curve25519 key `network::keys` stores, so the binary
+carries one copy of curve25519 instead of the two a separate x25519
+dependency cost.
 
 ## Enrolment
 
@@ -166,15 +185,23 @@ Still open:
 |---|---|---|---|
 | 0 | Model | `node`, `authority`, `claim`; the claim rule | **done** |
 | 1 | Enrolment | Token, `join`, keys, B recording A as authority | **done** |
-| 2 | Overlay | Spike, then a real session. `doctor` proves it | next |
+| 2 | Overlay | Spike, then a real session. `doctor` proves it | **written** |
 | 3 | Errand: host | A queues a deploy on B | |
 | 4 | Errand: edge | A tells C to route a name to B; C obtains the certificate | |
 | 5 | Groups | Several upstreams per name, health, failover | |
 
-Phase 2 is where the throwaway spike belongs — kernel WireGuard against
-`boringtun`, on the Alpine node, before anything is committed to. Every
-piece it needs from phase 1 is already in the token: both public keys,
-both overlay addresses, and an endpoint.
+The spike is done and it reversed the overlay decision above. The
+interface comes up from the `node` table at every start and whenever a
+node joins or is enrolled, and `doctor` reads the peers back **from the
+kernel** rather than from what this process asked for — the question is
+whether packets move, and the only thing that knows is the kernel.
+
+Not run between the two nodes yet. Phase 1 taught what that is worth,
+and two things in particular are claims until it happens: that creating
+the interface autoloads the module on both (the kernel asks
+`rtnl-link-wireguard` through modprobe, which exists on both, but the
+spike created the interface *after* a manual `modprobe`), and that UDP
+51820 reaches the public node at all.
 
 ## Two things not to discover late
 
@@ -203,19 +230,31 @@ list of one, and `node::all()` is gone. What still carries an
 phase — `is_authorised` and the claim rule for phases 3 and 4, and the
 private key for phase 2.
 
-**Not verified on a node yet.** Everything here passes against the real
-migrations and the real router, and none of it has run between the
-Ubuntu box and the Alpine one. That is the check phase 1 was chosen for,
-and until it happens the certificate requirement in particular is a
-claim rather than a fact.
+**Verified between the two nodes**, on v0.3.0, installed at both ends
+by the updater — which also exercised that path for the first time,
+migration and all, including on OpenRC. The Alpine node joined from its
+own console, holds `10.42.0.2`, and lists the Ubuntu one as an
+authority; the Ubuntu one lists it back.
 
-Two things a node will show up:
+Three things only the nodes showed:
 
-- The Alpine node answers to a name, so its own row reads *public*. That
-  is correct — reachability, not policy — and it means "private node" on
-  the enrolling side is about how it was recorded, not about what the
-  joined machine thinks it is. Worth watching whether that reads as a
-  contradiction on the page.
-- Nothing pings a joined node, so its badge says "Joined" and never
-  changes. `last_seen_at` is written once, at the join. The first thing
-  phase 2 makes possible is for that to mean something.
+- **A row about another node describes the relationship, not the
+  machine.** The Alpine node answers to a name and has a real
+  certificate, so its own page said *public* — correctly — while the hub
+  listed it as *private* at the same moment. Both rows were right and
+  the pair was nonsense: the hub does not know what that machine is, it
+  knows it has nothing but an overlay address for it. Fixed as wording,
+  deliberately not as data. Having the joining node report an endpoint
+  would make the two agree and would store, on the hub, an address it
+  must never use for an errand — the overlay is the way it reaches that
+  node — which is a phase 3 bug waiting to be written.
+- **`doctor` contradicted itself.** It printed the config file's domain
+  under `configuration` and the stored one under `network`, and those
+  differ on any node renamed from the console — which is most of them,
+  since the file keeps whatever `install` was first given.
+- **This node was the second card**, because the list was ordered by
+  name alone. It is the row every other row is compared against.
+
+And one still open: nothing pings a joined node, so its badge says
+"Joined" and never changes. `last_seen_at` is written once, at the join.
+The first thing phase 2 makes possible is for that to mean something.

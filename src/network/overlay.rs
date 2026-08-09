@@ -31,6 +31,11 @@ use super::{NetworkError, NetworkResult};
 /// The overlay's address space, as an operator would write it.
 pub const SUBNET: &str = "10.42.0.0/16";
 
+/// How much of an address is the network. The interface carries this
+/// rather than a `/32`, which is what routes every other overlay
+/// address through it.
+pub const PREFIX_LENGTH: u8 = 16;
+
 /// The first two octets, which every address here shares.
 const PREFIX: (u8, u8) = (10, 42);
 

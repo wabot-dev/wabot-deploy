@@ -36,6 +36,7 @@ pub mod join;
 pub mod keys;
 pub mod overlay;
 pub mod token;
+pub mod tunnel;
 
 use serde::{Deserialize, Serialize};
 use wabot::sqlite::rusqlite::{OptionalExtension, Row};
@@ -226,8 +227,13 @@ pub async fn ensure_hub(database: &SqliteDatabase, config: &Config) -> NetworkRe
 pub async fn all(database: &SqliteDatabase) -> NetworkResult<Vec<Node>> {
     Ok(database
         .read(|connection| {
-            let mut statement =
-                connection.prepare(&format!("SELECT {COLUMNS} FROM node ORDER BY \"name\""))?;
+            // This node first, then by name. Alphabetical alone put the
+            // node somebody is looking at second on a list of two, and
+            // would bury it on a list of twenty — it is the one row
+            // every other row is being compared against.
+            let mut statement = connection.prepare(&format!(
+                "SELECT {COLUMNS} FROM node ORDER BY \"is_self\" DESC, \"name\""
+            ))?;
             let nodes: wabot::sqlite::rusqlite::Result<Vec<Node>> =
                 statement.query_map([], read)?.collect();
             nodes
@@ -616,6 +622,27 @@ pub(crate) mod tests {
         assert!(first.is_self);
         assert_eq!(all(&database).await.expect("query").len(), 1);
         assert_eq!(me(&database).await.expect("query").as_ref(), Some(&again));
+    }
+
+    /// The node somebody is looking at is the one every other row is
+    /// being compared against. Alphabetical alone put it second on a
+    /// list of two, which is where this was noticed.
+    #[tokio::test]
+    async fn the_node_you_are_on_comes_first() {
+        let database = database().await;
+        crate::node::settings::set_domain(&database, Some("wabot-deploy-testing.example"))
+            .await
+            .expect("set");
+        ensure_self(&database, &Config::default())
+            .await
+            .expect("seeded");
+        // Sorts before it by name, which is the case that caught this.
+        save(&database, &node("nd-joined", Kind::Private, None))
+            .await
+            .expect("save");
+
+        let listed = all(&database).await.expect("query");
+        assert!(listed[0].is_self, "{listed:?}");
     }
 
     /// Reachability, not a setting: a node with a name the world can

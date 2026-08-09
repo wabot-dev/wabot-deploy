@@ -70,6 +70,9 @@ const MAX_BODY: usize = 64 * 1024;
 #[injectable]
 pub struct NetworkApi {
     database: Arc<SqliteDatabase>,
+    /// For the overlay: a node that just joined is a peer, and the
+    /// interface has to be told before anything can reach it.
+    config: Arc<crate::config::Config>,
 }
 
 #[rest_controller("/api/network")]
@@ -188,6 +191,13 @@ impl NetworkApi {
             Err(error) => return Ok(unreadable(error)),
         };
 
+        // Same reason as the other side: the peer set changed. The
+        // join has already succeeded, so a kernel that refuses the
+        // interface is reported and not answered with a refusal.
+        if let Err(error) = super::tunnel::ensure(&self.database, &self.config).await {
+            tracing::warn!(%error, "a node joined, but the overlay did not come up");
+        }
+
         tracing::info!(
             node = %arriving.node,
             name = %arriving.name,
@@ -275,7 +285,8 @@ fn refuse(status: StatusCode, reason: &str) -> Response {
 }
 
 /// Nothing is discovered: a type left out here panics on resolve.
-pub fn register(container: &Container) {
+pub fn register(container: &Container, config: crate::config::Config) {
+    container.register_instance::<crate::config::Config>(Arc::new(config));
     register_transients!(container, NetworkApi);
 }
 
@@ -317,7 +328,7 @@ mod tests {
 
         let container = Container::new();
         container.register_instance::<SqliteDatabase>(database.clone());
-        register(&container);
+        register(&container, Config::default());
 
         Authority {
             harness: RestHarness::new(routes(&container)),

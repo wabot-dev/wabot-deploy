@@ -20,8 +20,15 @@ pub async fn run(config: Config, config_path: &Path) -> anyhow::Result<i32> {
         "  file      {}",
         describe(config_path.exists(), config_path)
     );
+    // The file's value, and said to be the file's value. What the node
+    // answers to is the stored one — the file only seeds it — so a node
+    // renamed from the console has a config file naming something it
+    // stopped answering to years ago. Printing that as `domain` made
+    // this report contradict its own `network` section a page later,
+    // which was found on a node and is exactly the kind of thing that
+    // can only be found there.
     println!(
-        "  domain    {}",
+        "  domain    {} (in the file)",
         config
             .node
             .domain
@@ -237,6 +244,18 @@ pub async fn run(config: Config, config_path: &Path) -> anyhow::Result<i32> {
     match crate::network::me(&database).await {
         Ok(Some(me)) => {
             println!("  this node   {} ({})", me.name, me.id);
+            // Said only when the two disagree. Agreement is the usual
+            // case and needs no line; disagreement is a node answering
+            // to a name its own config file does not mention, which
+            // reads as a mistake until somebody explains it.
+            if let Some(stored) = &domain {
+                if config.node.domain.as_deref() != Some(stored.as_str()) {
+                    println!(
+                        "              renamed since install — the file still says {}",
+                        config.node.domain.as_deref().unwrap_or("nothing")
+                    );
+                }
+            }
             println!("  kind        {}", me.kind.as_str());
             println!(
                 "  reachable   {}",
@@ -282,6 +301,52 @@ pub async fn run(config: Config, config_path: &Path) -> anyhow::Result<i32> {
         Err(error) => {
             println!("  authorities unreadable: {error}");
             problems += 1;
+        }
+    }
+
+    // What the kernel says, not what this process asked for. An
+    // overlay reported from a struct filled in at startup would answer
+    // "did I try", and the question is whether packets move.
+    println!(
+        "  interface   {} on udp/{}",
+        crate::network::tunnel::INTERFACE,
+        config.overlay.port
+    );
+    match crate::network::tunnel::observed() {
+        Ok(peers) if peers.is_empty() => {
+            println!("  no peers configured on it");
+        }
+        Ok(peers) => {
+            for peer in &peers {
+                println!(
+                    "  peer        {} {}",
+                    &peer.public_key,
+                    match peer.last_handshake {
+                        Some(at) => {
+                            let ago = (now_ms() / 1000).saturating_sub(at as i64);
+                            format!(
+                                "handshake {ago}s ago, {} in / {} out",
+                                peer.rx_bytes, peer.tx_bytes
+                            )
+                        }
+                        // The failure an operator most needs to tell
+                        // apart from working: configured, and never
+                        // once heard from.
+                        None => "NEVER SHAKEN HANDS".to_string(),
+                    }
+                );
+                if let Some(endpoint) = &peer.endpoint {
+                    println!("              at {endpoint}");
+                }
+            }
+            if peers.iter().any(|peer| !peer.live()) {
+                problems += 1;
+            }
+        }
+        Err(error) => {
+            // Not counted: a node on no overlay has no interface, and
+            // saying so is not the same as something being wrong.
+            println!("  not up: {error}");
         }
     }
 

@@ -22,29 +22,26 @@
 //! what is *knowable about a node* — every peer's public key lives
 //! there, and no peer's private one ever could.
 //!
-//! ## Clamping
+//! ## The same type the interface is configured with
 //!
-//! `wg genkey` clamps before printing; `x25519-dalek` clamps at use.
-//! Both arrive at the same public key from the same 32 bytes, and `wg`
-//! clamps again on anything handed to it — so what is stored here is
-//! interoperable with the tools without being pre-clamped.
+//! `Key` comes from the crate that talks netlink to the kernel, so the
+//! key this generates is the key that is handed to WireGuard without a
+//! conversion in between. It also means one copy of curve25519 in the
+//! binary instead of two — which is what a separate x25519 dependency
+//! cost, for the same arithmetic.
+//!
+//! The stored format is unchanged: 32 bytes, standard base64, exactly
+//! what `wg genkey` prints. Keys generated before this are still read.
 
+use defguard_wireguard_rs::key::Key;
 use wabot::sqlite::{SqliteDatabase, SqliteResult};
-
-use base64::Engine;
-use x25519_dalek::{PublicKey, StaticSecret};
 
 /// Where the private half lives in the `setting` table.
 const PRIVATE_KEY: &str = "network.private_key";
 
 /// This node's key pair, base64 as WireGuard writes it.
 pub struct Keys {
-    /// Nothing reads this yet. It is what phase 2 writes into a
-    /// WireGuard interface, and it is returned here rather than hidden
-    /// because a key pair is one thing — an accessor that hands out
-    /// half of it would be a shape chosen by what happens to be
-    /// implemented this week. The `allow` goes when the tunnel lands.
-    #[allow(dead_code)]
+    /// What the WireGuard interface is configured with.
     pub private: String,
     pub public: String,
 }
@@ -59,14 +56,30 @@ pub async fn ensure(database: &SqliteDatabase) -> SqliteResult<Keys> {
         return Ok(keys);
     }
 
-    let secret = StaticSecret::random();
-    let private = encode(&secret.to_bytes());
+    let secret = Key::generate();
+    let private = secret.to_string();
     crate::node::settings::write(database, PRIVATE_KEY, &private).await?;
 
     Ok(Keys {
-        public: encode(PublicKey::from(&secret).as_bytes()),
+        public: secret.public_key().to_string(),
         private,
     })
+}
+
+/// The private half, for the one caller that configures an interface
+/// with it.
+///
+/// Read-only and `Option`, like [`public_key`]: a node with no key is
+/// a node not on an overlay, and minting one here would be the tunnel
+/// deciding something enrolment owns.
+pub async fn private_key(database: &SqliteDatabase) -> Option<String> {
+    match read(database).await {
+        Ok(keys) => keys.map(|keys| keys.private),
+        Err(error) => {
+            tracing::warn!(%error, "could not read this node's overlay key");
+            None
+        }
+    }
 }
 
 /// What this node's public key is, if it has one yet.
@@ -93,28 +106,15 @@ async fn read(database: &SqliteDatabase) -> SqliteResult<Option<Keys>> {
     let Some(stored) = crate::node::settings::read(database, PRIVATE_KEY).await? else {
         return Ok(None);
     };
-    let Some(bytes) = decode(&stored) else {
+    let Ok(secret) = Key::try_from(stored.trim()) else {
         tracing::warn!("the stored overlay key is not 32 bytes of base64; generating another");
         return Ok(None);
     };
 
-    let secret = StaticSecret::from(bytes);
     Ok(Some(Keys {
-        public: encode(PublicKey::from(&secret).as_bytes()),
+        public: secret.public_key().to_string(),
         private: stored,
     }))
-}
-
-/// Standard base64 with padding — what `wg` prints and accepts.
-fn encode(bytes: &[u8; 32]) -> String {
-    base64::engine::general_purpose::STANDARD.encode(bytes)
-}
-
-fn decode(text: &str) -> Option<[u8; 32]> {
-    let bytes = base64::engine::general_purpose::STANDARD
-        .decode(text.trim())
-        .ok()?;
-    bytes.try_into().ok()
 }
 
 #[cfg(test)]
@@ -144,7 +144,7 @@ mod tests {
 
         for key in [&keys.private, &keys.public] {
             assert_eq!(key.len(), 44, "{key} is not 32 base64 bytes");
-            assert_eq!(decode(key).map(|bytes| bytes.len()), Some(32));
+            assert!(Key::try_from(key.as_str()).is_ok(), "{key}");
         }
         assert_ne!(keys.private, keys.public);
     }
@@ -170,6 +170,6 @@ mod tests {
             .expect("write");
 
         let keys = ensure(&database).await.expect("generated");
-        assert_eq!(decode(&keys.private).map(|bytes| bytes.len()), Some(32));
+        assert!(Key::try_from(keys.private.as_str()).is_ok());
     }
 }

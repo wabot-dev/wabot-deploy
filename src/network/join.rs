@@ -121,6 +121,13 @@ pub async fn join(
     };
     super::save(database, &me).await?;
 
+    // The peer set just changed, so the interface has to. Not fatal:
+    // the grant is written either way, and `doctor` reports an overlay
+    // that did not come up.
+    if let Err(error) = super::tunnel::ensure(database, config).await {
+        tracing::warn!(%error, "joined, but the overlay did not come up");
+    }
+
     tracing::info!(
         authority = %authority.id,
         name = %authority.name,

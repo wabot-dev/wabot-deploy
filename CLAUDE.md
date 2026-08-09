@@ -205,8 +205,20 @@ Two things about it that are easy to get wrong from the outside:
   *from* the joining node *to* the authority, once, at join time.
   Errands need the overlay, which is phase 2.
 
-Next: the phase 2 spike — kernel WireGuard against `boringtun`, on the
-Alpine node, before anything is committed to.
+Phase 1 is verified between both test nodes on v0.3.0. Three things only
+that showed — see the end of `docs/network.md` — and the one worth
+carrying forward: **a row about another node describes the relationship,
+not the machine.** A joined node may well be public and say so on its own
+page; what the enrolling node knows is that it has nothing but an overlay
+address for it.
 
-Phase 1 has not run between two real nodes yet. See the end of
-`docs/network.md` for what that check is expected to surface.
+Phase 2 — the overlay — is written, and its spike **reversed** the
+decision the plan had recorded: the `wireguard` module is in both nodes'
+kernels, and on Alpine `/dev/net/tun` is not there at all, so userspace
+WireGuard would swap one module for another and add the data path. It is
+kernel WireGuard, configured over netlink from inside the binary, with
+no `wireguard-tools` on the node.
+
+Next: run it between the two nodes. `doctor` reads the peers back from
+the kernel, so a peer that has never shaken hands says so — which is the
+failure that has to be distinguishable from working.

@@ -137,11 +137,11 @@ impl NodePages {
                             <p class="tile-detail">
                                 @if node.is_self {
                                     ("wabot-deploy ")(crate::api::VERSION)(" · this node")
+                                    @if let Some(address) = &node.overlay_ip {
+                                        (" · ")(address)
+                                    }
                                 } @else {
-                                    (kind_word(node.kind))
-                                }
-                                @if let Some(address) = &node.overlay_ip {
-                                    (" · ")(address)
+                                    (reach(node))
                                 }
                             </p>
                         </a>
@@ -231,7 +231,7 @@ impl NodePages {
                     <div class="split">
                         <div class="stack-sm">
                             <h1>(&node.name)</h1>
-                            <p class="slug-preview">(kind_word(node.kind))(" node")</p>
+                            <p class="slug-preview">("joined · ")(reach(&node))</p>
                         </div>
                         <a class="btn btn-ghost" href="/nodes">("All nodes")</a>
                     </div>
@@ -445,12 +445,36 @@ fn kind_word(kind: Kind) -> &'static str {
     }
 }
 
+/// How this node reaches another one — or, for itself, what it is.
+///
+/// Two questions, and they were being answered by one column. A node
+/// with a public address that joins a hub reads `public` on its own
+/// page, because it is, and the hub had it listed as `private` at the
+/// same moment. Both rows were right and the pair was nonsense: the
+/// hub does not know what that machine is, only that it has nothing
+/// but an overlay address for it.
+///
+/// So a row about somebody else describes the *relationship*. Found by
+/// looking at the two consoles side by side, which is the only place
+/// it is visible.
+fn reach(node: &network::Node) -> String {
+    if node.is_self {
+        return kind_word(node.kind).to_string();
+    }
+    match &node.overlay_ip {
+        // Not "reached over the overlay": nothing is, yet. Where it
+        // lives, which is all that has actually been settled.
+        Some(address) => format!("on the overlay at {address}"),
+        None => "no address for it yet".to_string(),
+    }
+}
+
 /// What is known about a node's place on the overlay.
 ///
 /// The same card for this node and for a joined one, because it is the
-/// same set of facts: an id other nodes use, a kind derived from
-/// reachability, an address, and a key. A node that has never enrolled
-/// anybody and never joined anything has neither of the last two, and
+/// same set of facts: an id other nodes use, an address, a key, and
+/// where this node would reach it. A node that has never enrolled
+/// anybody and never joined anything has neither of the middle two, and
 /// says so rather than showing an empty row.
 fn network_card(node: &network::Node) -> impl Renderable + '_ {
     rsx! {
@@ -458,14 +482,19 @@ fn network_card(node: &network::Node) -> impl Renderable + '_ {
             <div class="split">
                 <p class="card-label">("On this network")</p>
                 <span class="badge badge-info">
-                    <span class="dot dot-info"></span>(kind_word(node.kind))
+                    <span class="dot dot-info"></span>(reach(node))
                 </span>
             </div>
 
             <dl class="kv">
                 <dt>("Id")</dt>
                 <dd class="mono">(&node.id)</dd>
-                <dt>("Reachable at")</dt>
+                // "Reachable at" and not "endpoint": the empty case is
+                // the interesting one, and it means this node has no
+                // address to dial that one at — not that the machine
+                // is unreachable, which is not something this node
+                // knows. See `reach`.
+                <dt>("This node dials it at")</dt>
                 <dd class="mono">(node.endpoint.as_deref().unwrap_or("—"))</dd>
                 <dt>("Overlay address")</dt>
                 <dd class="mono">(node.overlay_ip.as_deref().unwrap_or("not on one"))</dd>
@@ -2192,7 +2221,7 @@ pub(crate) mod tests {
             .await
             .body;
         assert!(body.contains("10.42.0.9"), "its address: {body}");
-        assert!(body.contains("private node"), "{body}");
+        assert!(body.contains("on the overlay at"), "{body}");
         assert!(body.contains("Forget"), "and a way to stop listing it");
         assert!(
             !body.contains("Save domain") && !body.contains("data-cell=\"summary\""),
@@ -2264,6 +2293,67 @@ pub(crate) mod tests {
             !crate::network::is_authorised(&console.database, "nd-hub0000001").await,
             "it may still send this node errands"
         );
+    }
+
+    /// A row about another node describes the relationship, not the
+    /// machine.
+    ///
+    /// This shipped in v0.3.0 and was found by looking at the two test
+    /// nodes side by side: the Alpine node answers to a name and has a
+    /// real certificate, so its own page said `public` — correctly —
+    /// while at the same moment the hub listed it as `private`. Both
+    /// rows were right and the pair was nonsense. The hub does not know
+    /// what that machine is; it knows it has nothing but an overlay
+    /// address for it, and that is what it says now.
+    #[tokio::test]
+    async fn a_joined_node_is_not_described_as_something_it_may_not_be() {
+        let console = Console::new().await;
+        let cookie = console.signed_in().await;
+        joined(&console, "nd-elsewhere1").await;
+
+        let body = console
+            .harness
+            .get("/nodes")
+            .header("cookie", &cookie)
+            .send()
+            .await
+            .body;
+        // Scoped to that node's own card: "Add a private node" is a
+        // heading on this page, and an assertion over the whole body
+        // would be one that passes or fails on the wrong text.
+        let card = body
+            .split_once("/nodes/nd-elsewhere1")
+            .map(|(_, rest)| rest.split("</a>").next().unwrap_or_default())
+            .expect("the node is listed");
+
+        assert!(card.contains("on the overlay at 10.42.0.9"), "{card}");
+        assert!(
+            !card.contains("private"),
+            "the hub called a machine private that calls itself public: {card}"
+        );
+    }
+
+    /// The node somebody is looking at is the one every other row is
+    /// compared against, and alphabetical order put it second on a list
+    /// of two — which is how it was noticed.
+    #[tokio::test]
+    async fn this_node_is_the_first_card() {
+        let console = Console::new().await;
+        let cookie = console.signed_in().await;
+        // Sorts before this node's name, which has no domain and so is
+        // named after the machine.
+        joined(&console, "nd-elsewhere1").await;
+
+        let body = console
+            .harness
+            .get("/nodes")
+            .header("cookie", &cookie)
+            .send()
+            .await
+            .body;
+        let mine = body.find(&console.node_path).expect("this node is listed");
+        let theirs = body.find("/nodes/nd-elsewhere1").expect("and the other");
+        assert!(mine < theirs, "this node is not the first card");
     }
 
     /// The reason this form exists: a node that is already installed

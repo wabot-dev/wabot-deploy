@@ -61,7 +61,38 @@ pub struct Config {
     #[serde(default)]
     pub acme: AcmeConfig,
     #[serde(default)]
+    pub overlay: OverlayConfig,
+    #[serde(default)]
     pub log: LogConfig,
+}
+
+/// The private network between nodes.
+///
+/// One setting, because there is one decision: which UDP port this
+/// node's WireGuard listens on. Everything else about the overlay — the
+/// addresses, the keys, the peers — is allocated by whoever enrolled
+/// whom and lives in the database, where a config file cannot make two
+/// nodes disagree about it.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OverlayConfig {
+    /// WireGuard's assigned port. A node behind NAT never needs this
+    /// opened — it dials outbound — but a node that enrols others does,
+    /// because that is where their handshakes arrive.
+    #[serde(default = "default_overlay_port")]
+    pub port: u16,
+}
+
+fn default_overlay_port() -> u16 {
+    crate::network::tunnel::DEFAULT_PORT
+}
+
+impl Default for OverlayConfig {
+    fn default() -> Self {
+        Self {
+            port: default_overlay_port(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
