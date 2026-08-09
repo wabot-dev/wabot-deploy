@@ -176,6 +176,12 @@ impl ServicePages {
         // The address and the reason live on the copy that runs here —
         // a service is *n* of them now, and this page still shows one.
         let here = crate::platform::replicas::here_for(&self.state.database, &service.id).await?;
+        // Where every copy of it runs, and the nodes it could run on.
+        // Both only matter when this node is the one that decides — a
+        // service that arrived from elsewhere is placed from there.
+        let placements =
+            crate::platform::replicas::of_service(&self.state.database, &service.id).await?;
+        let nodes = crate::network::all(&self.state.database).await?;
         let deploying = crate::deploy::jobs::deploying(&self.state.container)
             .await
             .contains(&service.id);
@@ -231,6 +237,12 @@ impl ServicePages {
                         <p class="failure">(failure)</p>
                     }
                 </section>
+
+                @if service.is_ours() {
+                    (placement_card(&project, &service, &placements, &nodes))
+                } @else {
+                    (from_elsewhere_card(&service))
+                }
 
                 <section class="stack">
                     <div class="split">
@@ -739,6 +751,151 @@ fn reachable_at(port: &crate::platform::ports::Port, node_domain: Option<&str>) 
     where_from.join("  ")
 }
 
+/// Where every copy of this service runs, and how to change it.
+///
+/// One row per replica, each naming the node it is on. The first is
+/// this node by default and there is nothing special about it — "stays
+/// here" is a placement like any other, which is the whole point of
+/// administering a service from where it was created rather than from
+/// the machine it happens to be on.
+fn placement_card<'a>(
+    project: &'a crate::platform::projects::Project,
+    service: &'a services::Service,
+    placements: &'a [crate::platform::replicas::Replica],
+    nodes: &'a [crate::network::Node],
+) -> impl Renderable + 'a {
+    let action = format!(
+        "/projects/{}/services/{}/placement",
+        project.slug, service.slug
+    );
+    rsx! {
+        <section class="stack">
+            <div class="split">
+                <p class="card-label">("Where this runs")</p>
+                <span class="who">(format!("{} replica(s)", placements.len()))</span>
+            </div>
+
+            <form method="post" action=(&action) class="card stack">
+                <table>
+                    <thead>
+                        <tr><th>("Replica")</th><th>("Node")</th><th>("State")</th></tr>
+                    </thead>
+                    <tbody>
+                        @for replica in placements {
+                            <tr>
+                                <td class="mono">("#")(replica.slot)</td>
+                                <td>
+                                    <select name=(format!("slot-{}", replica.slot))>
+                                        @for node in nodes {
+                                            (node_option(node, replica))
+                                        }
+                                    </select>
+                                </td>
+                                <td>(placement_state(replica))</td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+
+                <label for="replicas">("How many")</label>
+                <input id="replicas" name="replicas" type="number" min="1" max="16"
+                       value=(placements.len().to_string())>
+                <p class="field-hint">(
+                    "Adding one puts it here; move it afterwards. Removing takes the \
+                     highest-numbered ones away, and a replica on another node cannot \
+                     be removed from here yet — nothing can tell that node to stop, so \
+                     removing the row would leave its container running with nothing \
+                     naming it."
+                )</p>
+                <div class="actions">
+                    <button type="submit">("Save placement")</button>
+                </div>
+            </form>
+        </section>
+    }
+}
+
+/// One node in a replica's selector.
+///
+/// This node is the **empty** value, because "here" is the absence of a
+/// placement elsewhere — the same shape the row has, so the form and
+/// the column agree without anything translating between them.
+fn node_option<'a>(
+    node: &'a crate::network::Node,
+    replica: &'a crate::platform::replicas::Replica,
+) -> impl Renderable + 'a {
+    let value = match node.is_self {
+        true => String::new(),
+        false => node.id.clone(),
+    };
+    let chosen = match node.is_self {
+        true => replica.is_here(),
+        false => replica.node_id.as_deref() == Some(node.id.as_str()),
+    };
+    rsx! {
+        @if chosen {
+            <option value=(value) selected>(&node.name)</option>
+        } @else {
+            <option value=(value)>(&node.name)</option>
+        }
+    }
+}
+
+/// What a replica is doing, in the words its own node reported.
+fn placement_state(replica: &crate::platform::replicas::Replica) -> impl Renderable + '_ {
+    rsx! {
+        @if replica.evicted() {
+            <span class="badge badge-warning">("Evicted there")</span>
+        } @else if let Some(failure) = &replica.last_error {
+            <span class="badge badge-danger">
+                <span class="dot dot-danger"></span>("Failed")
+            </span>
+            <p class="failure">(failure)</p>
+        } @else if let Some(address) = &replica.address {
+            <span class="badge badge-success">
+                <span class="dot dot-success"></span>("Running")
+            </span>
+            <span class="tile-detail">(" ")(address)</span>
+        } @else if replica.is_here() {
+            <span class="badge">("Not running")</span>
+        } @else {
+            // Placed elsewhere and nothing has come back about it. The
+            // node reports when it collects, so this is the honest word
+            // until it does — not "failed", which would be this page
+            // inventing an outcome nobody reported.
+            <span class="badge badge-info">
+                <span class="dot dot-info dot-pulse"></span>("Waiting for that node")
+            </span>
+        }
+    }
+}
+
+/// A service this node did not create.
+///
+/// Named rather than hidden: somebody looking at it needs to know which
+/// node to go and argue with, and a page that simply showed fewer
+/// buttons would leave them wondering what they had done wrong.
+fn from_elsewhere_card(service: &services::Service) -> impl Renderable + '_ {
+    rsx! {
+        <section class="card stack">
+            <p class="card-label">("From another node")</p>
+            <p>(
+                "This service is administered from the node that placed it here, and \
+                 nothing on this page will change it."
+            )</p>
+            <dl class="kv">
+                <dt>("Placed by")</dt>
+                <dd class="mono">(service.origin_node_id.as_deref().unwrap_or("—"))</dd>
+            </dl>
+            <p class="field-hint">(
+                "The machine is yours: throwing it out is something you can always do, \
+                 and it is the only thing here that is. That lives in the project's \
+                 danger zone."
+            )</p>
+        </section>
+    }
+}
+
 #[injectable]
 pub struct ServiceApi {
     state: Arc<ConsoleState>,
@@ -1211,6 +1368,85 @@ impl ServiceApi {
         services::delete(&self.state.database, &service.id).await?;
         Ok(see_other(&back))
     }
+    /// How many copies of this service run, and where each one goes.
+    ///
+    /// One form for both, because they are one decision: a replica is a
+    /// slot with a node in it, and asking for three of them while
+    /// naming where two go would be a page that could be submitted
+    /// half-answered.
+    ///
+    /// The errand for a replica placed elsewhere is queued here rather
+    /// than by a background pass. The operator pressed a button, and
+    /// the thing they asked for should exist before the response comes
+    /// back — a queue that noticed later would leave the page showing
+    /// nothing happened.
+    #[post("/projects/:project/services/:service/placement")]
+    #[raw]
+    #[middleware(SessionMiddleware)]
+    async fn set_placement(&self, request: Request) -> RestResult<Response> {
+        // Needed for the credential below: a push token is minted *by*
+        // somebody, and the column that says who is a foreign key to an
+        // account. A placeholder there fails the insert, which
+        // `dispatch` then reports as a warning nobody reads — so the
+        // errand simply never appeared.
+        let Some(account) = signed_in(&self.auth) else {
+            return Ok(see_other("/sign-in"));
+        };
+        let path = request.uri().path().to_string();
+        let Some((project, service, back)) = self.locate(&path).await? else {
+            return Ok(see_other("/"));
+        };
+        let here = format!("/projects/{}/services/{}", project.slug, service.slug);
+        let _ = back;
+
+        let form = match read_form(request).await {
+            Ok(form) => form,
+            Err(response) => return Ok(response),
+        };
+
+        let placements =
+            crate::platform::replicas::of_service(&self.state.database, &service.id).await?;
+
+        // Where each existing replica should be. An unnamed slot keeps
+        // what it had: a form that arrived without a field is a form
+        // that said nothing about it, not one asking for "here".
+        for replica in &placements {
+            let Some(chosen) = form.get(&format!("slot-{}", replica.slot)) else {
+                continue;
+            };
+            let chosen = chosen.trim();
+            let wanted = (!chosen.is_empty()).then_some(chosen);
+            if wanted == replica.node_id.as_deref() {
+                continue;
+            }
+            if let Some(node) = wanted {
+                if crate::network::find(&self.state.database, node)
+                    .await?
+                    .is_none()
+                {
+                    return Ok(back_with_error(&here, "no such node"));
+                }
+            }
+            crate::platform::replicas::move_to(&self.state.database, &replica.id, wanted).await?;
+        }
+
+        // Then the count. After the moves, so that a form which both
+        // moves slot 2 away and drops it removes the one it moved
+        // rather than a different one.
+        let wanted: u32 = field(&form, "replicas").parse().unwrap_or(1);
+        if !(1..=16).contains(&wanted) {
+            return Ok(back_with_error(
+                &here,
+                "a service runs between 1 and 16 replicas",
+            ));
+        }
+        if let Err(error) = self.resize(&service.id, wanted).await {
+            return Ok(back_with_error(&here, &error));
+        }
+
+        self.dispatch(&project, &service, &account.id).await?;
+        Ok(see_other(&here))
+    }
 }
 
 impl ServiceApi {
@@ -1292,6 +1528,116 @@ impl ServiceApi {
     /// Takes the path rather than the request: holding a `&Request`
     /// across an `await` would need `Body: Sync`, which it is not, and
     /// the handler quietly stops being one axum will accept.
+    /// Add slots here, or take the highest-numbered ones away.
+    ///
+    /// A replica on another node is refused rather than removed:
+    /// nothing can tell that node to stop yet, so dropping the row
+    /// would leave its container running with nothing naming it — the
+    /// worst of both, and invisible from either end.
+    async fn resize(&self, service_id: &str, wanted: u32) -> Result<(), String> {
+        let placements = crate::platform::replicas::of_service(&self.state.database, service_id)
+            .await
+            .map_err(|error| error.to_string())?;
+
+        for replica in placements.iter().filter(|r| r.slot > wanted) {
+            if !replica.is_here() {
+                return Err(format!(
+                    "replica #{} runs on another node, and nothing can tell it to stop yet",
+                    replica.slot
+                ));
+            }
+            crate::platform::replicas::remove(&self.state.database, &replica.id)
+                .await
+                .map_err(|error| error.to_string())?;
+        }
+
+        crate::platform::replicas::ensure_here(&self.state.database, service_id, wanted)
+            .await
+            .map_err(|error| error.to_string())?;
+        Ok(())
+    }
+
+    /// Ask every node holding a replica of this service to run it, and
+    /// deploy the ones that are here.
+    ///
+    /// Convergent on both sides: a `host` errand sent twice points one
+    /// service at one image there, and a local deploy is the deploy the
+    /// button already queues.
+    async fn dispatch(
+        &self,
+        project: &crate::platform::projects::Project,
+        service: &services::Service,
+        by: &str,
+    ) -> RestResult<()> {
+        let placements =
+            crate::platform::replicas::of_service(&self.state.database, &service.id).await?;
+
+        for node_id in placements
+            .iter()
+            .filter(|replica| !replica.evicted())
+            .filter_map(|replica| replica.node_id.clone())
+            .collect::<std::collections::BTreeSet<_>>()
+        {
+            if let Err(error) = self.send_there(project, service, &node_id, by).await {
+                // Reported and not fatal: the other placements are
+                // still worth making, and the page shows a replica
+                // nobody has answered for.
+                tracing::warn!(node = %node_id, %error, "could not queue a host errand");
+            }
+        }
+
+        if placements.iter().any(|replica| replica.is_here()) {
+            self.enqueue(&service.id, None).await;
+        }
+        Ok(())
+    }
+
+    /// One `host` errand, with a credential for this node's registry.
+    async fn send_there(
+        &self,
+        project: &crate::platform::projects::Project,
+        service: &services::Service,
+        node_id: &str,
+        by: &str,
+    ) -> Result<(), String> {
+        let Some(registry) = crate::platform::registry_credentials::host_of(&service.image) else {
+            return Err(
+                "that image does not name a registry, so there is nothing to pull it from".into(),
+            );
+        };
+
+        let (_, secret) = crate::platform::tokens::create(
+            &self.state.database,
+            &project.id,
+            &format!("errand to {node_id}"),
+            by,
+        )
+        .await
+        .map_err(|error| error.to_string())?;
+
+        let payload = serde_json::to_value(crate::network::errand::Host {
+            project: project.name.clone(),
+            service: service.name.clone(),
+            image: service.image.clone(),
+            registry,
+            username: "errand".into(),
+            secret,
+            env: service.env.clone(),
+            port: None,
+        })
+        .map_err(|error| error.to_string())?;
+
+        crate::network::errand::queue(
+            &self.state.database,
+            node_id,
+            crate::network::errand::Kind::Host,
+            &payload,
+        )
+        .await
+        .map(|_| ())
+        .map_err(|error| error.to_string())
+    }
+
     async fn locate(
         &self,
         path: &str,
@@ -1436,6 +1782,179 @@ mod tests {
     use crate::console::tests::Console;
     use crate::platform::projects;
     use wabot::rest::axum::http::StatusCode;
+
+    /// A project and a service to place, made the way the console does.
+    async fn placed_service(console: &Console, cookie: &str) -> services::Service {
+        console
+            .harness
+            .post("/projects")
+            .header("cookie", cookie)
+            .form(&[("name", "shared")])
+            .send()
+            .await;
+        let project = projects::all(&console.database)
+            .await
+            .expect("projects")
+            .into_iter()
+            .find(|project| project.slug == "shared")
+            .expect("made");
+        services::create(
+            &console.database,
+            &project.id,
+            "web",
+            "hub.example.com/shared/web@sha256:abc",
+            &[],
+        )
+        .await
+        .expect("service")
+    }
+
+    /// The page the whole goal hangs off: a service is administered
+    /// from the node that created it, and that is where somebody says
+    /// how many copies run and where each of them goes.
+    #[tokio::test]
+    async fn a_replica_is_placed_on_another_node_from_the_service_page() {
+        let console = Console::new().await;
+        let cookie = console.signed_in().await;
+        let service = placed_service(&console, &cookie).await;
+        crate::network::save(
+            &console.database,
+            &crate::network::Node {
+                id: "nd-elsewhere1".into(),
+                name: "alpine.example".into(),
+                kind: crate::network::Kind::Private,
+                endpoint: None,
+                public_key: Some("k".into()),
+                overlay_ip: Some("10.42.0.9".into()),
+                is_self: false,
+                last_seen_at: None,
+            },
+        )
+        .await
+        .expect("node");
+
+        console
+            .harness
+            .post("/projects/shared/services/web/placement")
+            .header("cookie", &cookie)
+            .form(&[("replicas", "2")])
+            .send()
+            .await
+            .assert_status(StatusCode::SEE_OTHER);
+        console
+            .harness
+            .post("/projects/shared/services/web/placement")
+            .header("cookie", &cookie)
+            .form(&[
+                ("replicas", "2"),
+                ("slot-1", ""),
+                ("slot-2", "nd-elsewhere1"),
+            ])
+            .send()
+            .await
+            .assert_status(StatusCode::SEE_OTHER);
+
+        let placements = crate::platform::replicas::of_service(&console.database, &service.id)
+            .await
+            .expect("replicas");
+        assert_eq!(placements.len(), 2);
+        assert!(placements[0].is_here());
+        assert_eq!(placements[1].node_id.as_deref(), Some("nd-elsewhere1"));
+
+        // And that node has been asked to run it, with something to
+        // pull the image with.
+        let queued = crate::network::errand::all(&console.database)
+            .await
+            .expect("errands");
+        assert_eq!(queued.len(), 1, "{queued:?}");
+        assert_eq!(queued[0].node_id, "nd-elsewhere1");
+
+        let waiting = crate::network::errand::waiting(&console.database, "nd-elsewhere1")
+            .await
+            .expect("waiting");
+        let host: crate::network::errand::Host =
+            serde_json::from_value(waiting[0].payload.clone()).expect("a host errand");
+        assert_eq!(host.service, "web");
+        assert!(!host.secret.is_empty(), "nothing to pull it with");
+    }
+
+    /// Removing a replica that runs somewhere else would leave its
+    /// container running with nothing naming it — invisible from both
+    /// ends. Refused with the reason until something can tell that node
+    /// to stop.
+    #[tokio::test]
+    async fn a_replica_on_another_node_cannot_be_dropped_from_here_yet() {
+        let console = Console::new().await;
+        let cookie = console.signed_in().await;
+        let service = placed_service(&console, &cookie).await;
+        crate::platform::replicas::place(&console.database, &service.id, Some("nd-elsewhere1"), 2)
+            .await
+            .expect("placed");
+
+        let response = console
+            .harness
+            .post("/projects/shared/services/web/placement")
+            .header("cookie", &cookie)
+            .form(&[("replicas", "1")])
+            .send()
+            .await;
+
+        let location = response.header("location").unwrap_or_default();
+        assert!(location.contains("error="), "{location}");
+        assert_eq!(
+            crate::platform::replicas::of_service(&console.database, &service.id)
+                .await
+                .expect("replicas")
+                .len(),
+            2,
+            "it was dropped anyway"
+        );
+    }
+
+    /// A service that arrived on an errand is administered from the
+    /// node that sent it, and this is the boundary rather than a hidden
+    /// button: every mutation goes through `locate`, so a foreign
+    /// service answers the way a stranger's does.
+    ///
+    /// This was claimed in the commit that added the guard and was not
+    /// actually there — a text replacement whose anchor did not exist
+    /// failed silently. Hence the test, and hence this note.
+    #[tokio::test]
+    async fn a_service_from_another_node_cannot_be_changed_here() {
+        let console = Console::new().await;
+        let cookie = console.signed_in().await;
+        let service = placed_service(&console, &cookie).await;
+        services::set_origin(&console.database, &service.id, "nd-elsewhere1")
+            .await
+            .expect("origin");
+
+        // Stopping is the smallest mutation there is, and it goes
+        // through the same door as every other.
+        let response = console
+            .harness
+            .post("/projects/shared/services/web/stop")
+            .header("cookie", &cookie)
+            .send()
+            .await;
+        // "No such service" is the answer on purpose: a foreign one
+        // reads exactly the way a stranger's does, which is what makes
+        // this a boundary rather than a hidden button.
+        let location = response.header("location").unwrap_or_default();
+        assert!(
+            location.starts_with("/?error="),
+            "a foreign service was changed from here: {location}"
+        );
+
+        let stored = services::in_project(&console.database, &service.project_id, "web")
+            .await
+            .expect("query")
+            .expect("there");
+        assert_eq!(
+            stored.desired_state,
+            services::DesiredState::Running,
+            "the intent was changed"
+        );
+    }
 
     async fn project(console: &Console, cookie: &str) -> String {
         console
