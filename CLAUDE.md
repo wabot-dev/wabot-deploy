@@ -250,7 +250,16 @@ wrong page — and it makes a **replica** the unit rather than a service.
 A container id therefore has to carry a replica index, which reaches the
 runtime, the boot reconciliation and routing.
 
-Next: phase 4, replicas. A request to a bare overlay address answers
+Phases 4 to 6 are written: a **replica** is the unit (a service is *n*
+placements, and a slot number belongs to the service rather than the
+node it lands on), what arrives on an errand is not editable where it
+lands, the placement page lives on the service, and the node running a
+replica reports its state back to the node that placed it — and can
+throw it off.
+
+None of 4 to 6 has run on a node. Phase 3 taught what that is worth.
+
+Next: phase 7, the edge. A request to a bare overlay address answers
 404 — the far node's edge routes by hostname — so a proxy leg to a
 replica elsewhere goes to the container's port, not through that node's
 edge.
