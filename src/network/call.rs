@@ -85,41 +85,59 @@ pub async fn announce(
     }
 }
 
+/// Ask an authority what it wants done.
+pub async fn errands(
+    endpoint: &str,
+    secret: &str,
+) -> Result<Vec<super::errand::Errand>, CallError> {
+    let url = format!("https://{endpoint}/api/network/errands");
+    match tokio::time::timeout(TIMEOUT, send(&url, secret, None)).await {
+        Ok(bytes) => {
+            let bytes = bytes?;
+            serde_json::from_slice(&bytes)
+                .map_err(|error| CallError::Unreadable(url, error.to_string()))
+        }
+        Err(_) => Err(CallError::TimedOut { url }),
+    }
+}
+
+/// Say how one went. `None` is success.
+pub async fn settle(
+    endpoint: &str,
+    secret: &str,
+    id: &str,
+    error: Option<String>,
+) -> Result<(), CallError> {
+    let url = format!("https://{endpoint}/api/network/errands/{id}/done");
+    let body =
+        serde_json::to_string(&super::api::Outcome { error }).expect("an outcome is plain data");
+
+    match tokio::time::timeout(TIMEOUT, send(&url, secret, Some(body))).await {
+        Ok(result) => result.map(|_| ()),
+        Err(_) => Err(CallError::TimedOut { url }),
+    }
+}
+
+/// One request, with the bearer this node holds for that authority.
+///
+/// `None` is a GET, `Some` a POST — the two shapes this speaks, and
+/// splitting them into two near-identical functions would be two places
+/// for the TLS configuration to drift apart.
+async fn send(url: &str, secret: &str, body: Option<String>) -> Result<Vec<u8>, CallError> {
+    let (status, bytes) = round_trip(url, secret, body).await?;
+
+    if status.is_success() {
+        return Ok(bytes.to_vec());
+    }
+    match serde_json::from_slice::<Refusal>(&bytes) {
+        Ok(refusal) => Err(CallError::Refused(url.into(), refusal.error)),
+        Err(_) => Err(CallError::Unexpected(url.into(), status)),
+    }
+}
+
 async fn post(url: &str, secret: &str, arriving: &Arriving) -> Result<Accepted, CallError> {
-    let tls = hyper_rustls::HttpsConnectorBuilder::new()
-        .with_webpki_roots()
-        .https_only()
-        .enable_http1()
-        .build();
-    let client = Client::builder(TokioExecutor::new()).build(tls);
-
     let body = serde_json::to_string(arriving).expect("a node describes itself in plain data");
-    let bearer = HeaderValue::from_str(&format!("Bearer {secret}"))
-        .map_err(|_| CallError::Address(url.into(), "that token cannot go in a header".into()))?;
-
-    let request = Request::post(url)
-        .header(USER_AGENT, HeaderValue::from_static(AGENT))
-        .header(CONTENT_TYPE, HeaderValue::from_static("application/json"))
-        .header(AUTHORIZATION, bearer)
-        .body(body)
-        .map_err(|error| CallError::Address(url.into(), error.to_string()))?;
-
-    let response = client
-        .request(request)
-        .await
-        .map_err(|error| CallError::Unreachable(url.into(), error.to_string()))?;
-
-    let status = response.status();
-    // Bounded before it is read, not after: a chunked body has no
-    // length to check, and this node dialled an address out of a pasted
-    // string. Reading it all and then measuring it is the same as not
-    // measuring it.
-    let bytes = http_body_util::Limited::new(response.into_body(), MAX_BODY)
-        .collect()
-        .await
-        .map_err(|error| CallError::Unreadable(url.into(), error.to_string()))?
-        .to_bytes();
-
+    let (status, bytes) = round_trip(url, secret, Some(body)).await?;
     if status.is_success() {
         return serde_json::from_slice(&bytes)
             .map_err(|error| CallError::Unreadable(url.into(), error.to_string()));
@@ -132,6 +150,52 @@ async fn post(url: &str, secret: &str, arriving: &Arriving) -> Result<Accepted, 
         Ok(refusal) => Err(CallError::Refused(url.into(), refusal.error)),
         Err(_) => Err(CallError::Unexpected(url.into(), status)),
     }
+}
+
+/// The wire, once. Everything above it decides what to say and what to
+/// make of the answer; this is the only place the TLS and the bounds
+/// are configured, so they cannot drift between the calls.
+async fn round_trip(
+    url: &str,
+    secret: &str,
+    body: Option<String>,
+) -> Result<(StatusCode, hyper::body::Bytes), CallError> {
+    let tls = hyper_rustls::HttpsConnectorBuilder::new()
+        .with_webpki_roots()
+        .https_only()
+        .enable_http1()
+        .build();
+    let client = Client::builder(TokioExecutor::new()).build(tls);
+
+    let bearer = HeaderValue::from_str(&format!("Bearer {secret}"))
+        .map_err(|_| CallError::Address(url.into(), "that token cannot go in a header".into()))?;
+    let builder = match body {
+        Some(_) => Request::post(url),
+        None => Request::get(url),
+    };
+    let request = builder
+        .header(USER_AGENT, HeaderValue::from_static(AGENT))
+        .header(CONTENT_TYPE, HeaderValue::from_static("application/json"))
+        .header(AUTHORIZATION, bearer)
+        .body(body.unwrap_or_default())
+        .map_err(|error| CallError::Address(url.into(), error.to_string()))?;
+
+    let response = client
+        .request(request)
+        .await
+        .map_err(|error| CallError::Unreachable(url.into(), error.to_string()))?;
+    let status = response.status();
+
+    // Bounded before it is read, not after: a chunked body has no length
+    // to check, and this node dialled an address out of a pasted string.
+    // Reading it all and then measuring it is the same as not measuring.
+    let bytes = http_body_util::Limited::new(response.into_body(), MAX_BODY)
+        .collect()
+        .await
+        .map_err(|error| CallError::Unreadable(url.into(), error.to_string()))?
+        .to_bytes();
+
+    Ok((status, bytes))
 }
 
 #[cfg(test)]

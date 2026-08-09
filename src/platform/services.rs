@@ -257,6 +257,31 @@ fn decode(row: &wabot::sqlite::rusqlite::Row<'_>) -> wabot::sqlite::rusqlite::Re
 }
 
 #[allow(dead_code)]
+/// Point a service at a different image.
+///
+/// Separate from `create` because the reason to call it is that the
+/// service already exists — an errand asking for a service that is
+/// already there is convergent, and creating a second one under the
+/// same name would be the retry making a mess rather than nothing.
+pub async fn set_image(
+    database: &SqliteDatabase,
+    service_id: &str,
+    image: &str,
+) -> PlatformResult<()> {
+    validate_image(image)?;
+    let (service_id, image) = (service_id.to_string(), image.to_string());
+    database
+        .write(move |connection| {
+            connection.execute(
+                "UPDATE service SET \"image\" = ?2 WHERE \"id\" = ?1",
+                (service_id, image),
+            )?;
+            Ok(())
+        })
+        .await?;
+    Ok(())
+}
+
 pub async fn set_desired_state(
     database: &SqliteDatabase,
     service_id: &str,

@@ -31,6 +31,7 @@
 
 pub mod api;
 pub mod call;
+pub mod collect;
 pub mod enrolment;
 pub mod errand;
 pub mod join;

@@ -233,7 +233,16 @@ run over it. `doctor` reads the peers back from the kernel, so one that
 has never shaken hands says so — the failure that has to be
 distinguishable from working.
 
-Next: phase 3, an errand that hosts a container on another node. Note
-that a request to a bare overlay address answers 404 — the far node's
+Phase 3 — errands — is written. Two shapes worth knowing before reading
+it: the node **collects** its errands rather than the authority
+delivering them (an authority cannot reach a private node over TLS), and
+an errand is an *instruction*, not a job — the node that collects one
+writes its own service row and its own local deploy from it.
+
+A node that joined before v0.4.0 has no credential to ask with and must
+**re-join**: the direction inverted, and a hash cannot be presented.
+
+Next: phase 4, telling an edge to route a name to a container on another
+node. A request to a bare overlay address answers 404 — the far node's
 edge routes by hostname — so the proxy leg goes to the container's port,
 not through that edge.

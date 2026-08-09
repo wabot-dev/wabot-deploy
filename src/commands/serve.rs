@@ -151,6 +151,8 @@ pub async fn run(config: Config) -> anyhow::Result<i32> {
     let acme_resolver = resolver.clone();
     let acme_wake = wake.clone();
     let http_database = database.clone();
+    let errands_database = database.clone();
+    let errands_config = config.clone();
     let https_port = config.edge.https_port;
 
     let outcome = ProjectRunner::new(container.clone())
@@ -208,6 +210,16 @@ pub async fn run(config: Config) -> anyhow::Result<i32> {
         })
         .service_with_cancel("edge-http", move |cancel| {
             crate::edge::serve_http(https_port, http_database, http, cancel)
+        })
+        // Errands, asked for on a timer. Beside the listeners for the
+        // same reason as everything else here: a node whose authority
+        // is unreachable must still serve its own console, which is
+        // where somebody goes to find out why.
+        .service_with_cancel("errands", {
+            let database = errands_database.clone();
+            let config = errands_config.clone();
+            let container = container.clone();
+            move |cancel| crate::network::collect::loop_forever(database, config, container, cancel)
         })
         // Certificates are obtained *beside* the listeners, never
         // before them: the HTTP-01 challenge is a request this node has

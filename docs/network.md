@@ -5,8 +5,8 @@ node can be an edge for a name whose container lives on a private one,
 and a name can eventually be served by a group of them.
 
 This document is the plan and the record of what was decided and why.
-Phases 0 to 2 are in the tree and verified between two real nodes; the
-rest is not.
+Phases 0 to 3 are in the tree. Phases 0 to 2 are verified between two
+real nodes; phase 3 is not yet.
 
 ## The shape
 
@@ -186,7 +186,7 @@ Still open:
 | 0 | Model | `node`, `authority`, `claim`; the claim rule | **done** |
 | 1 | Enrolment | Token, `join`, keys, B recording A as authority | **done** |
 | 2 | Overlay | Spike, then a real session. `doctor` proves it | **done** |
-| 3 | Errand: host | A queues a deploy on B | in progress |
+| 3 | Errand: host | A queues a deploy on B | **done** |
 | 4 | Errand: edge | A tells C to route a name to B; C obtains the certificate | |
 | 5 | Groups | Several upstreams per name, health, failover | |
 

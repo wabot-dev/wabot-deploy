@@ -74,9 +74,40 @@ impl Kind {
 pub struct Errand {
     pub id: String,
     pub kind: Kind,
-    /// The kind's own arguments. Opaque here on purpose: this module
-    /// carries errands, it does not know what any of them mean.
+    /// The kind's own arguments, still as JSON. This module knows the
+    /// *shape* of an errand — both ends have to agree on that — and
+    /// deliberately not what to do about one. Carrying and obeying are
+    /// different jobs.
     pub payload: serde_json::Value,
+}
+
+/// The arguments of a [`Kind::Host`] errand: run this service here.
+///
+/// Everything the far node needs and nothing it can look up, because it
+/// cannot look anything up — it has never heard of this project, this
+/// service or this registry until the errand arrives.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Host {
+    /// What to call the project there. Its own project, with its own
+    /// bridge and its own rows — nothing is shared, which is the whole
+    /// model.
+    pub project: String,
+    pub service: String,
+    /// Pinned by digest by whoever queued it. A tag would mean the two
+    /// nodes could resolve the same errand to different bytes.
+    pub image: String,
+    /// The registry host in `image`, and what to send it. The far node
+    /// stores this against the host — see
+    /// `platform::registry_credentials`.
+    pub registry: String,
+    pub username: String,
+    pub secret: String,
+    #[serde(default)]
+    pub env: std::collections::BTreeMap<String, String>,
+    /// What the container should listen on. `None` leaves it to the
+    /// image's own declaration.
+    #[serde(default)]
+    pub port: Option<u16>,
 }
 
 /// An errand and what became of it, for the page that lists them.

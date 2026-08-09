@@ -224,6 +224,27 @@ impl NodePages {
         // is known rather than rendering cards full of "unknown".
         if !node.is_self {
             let path = format!("/nodes/{}", node.id);
+            // Everything this node could ask that one to run, named the
+            // way somebody picking from a list would recognise.
+            let projects_here = crate::platform::projects::all(&self.state.database).await?;
+            let hostable: Vec<(String, String)> =
+                crate::platform::services::all(&self.state.database, None)
+                    .await?
+                    .into_iter()
+                    .map(|service| {
+                        let project = projects_here
+                            .iter()
+                            .find(|project| project.id == service.project_id)
+                            .map(|project| project.name.as_str())
+                            .unwrap_or("?");
+                        (service.id.clone(), format!("{project} · {}", service.name))
+                    })
+                    .collect();
+            let orders: Vec<network::errand::Record> = network::errand::all(&self.state.database)
+                .await?
+                .into_iter()
+                .filter(|record| record.node_id == node.id)
+                .collect();
             layout::head(&node.name);
             let frame = Frame::new(&account, Area::Nodes, &projects, None, path);
             let body = rsx! {
@@ -239,6 +260,59 @@ impl NodePages {
                         (layout::error_note(message))
                     }
                     (network_card(&node))
+
+                    <section class="stack">
+                        <p class="card-label">("Run a service there")</p>
+                        @if hostable.is_empty() {
+                            <section class="card stack">
+                                <p>(
+                                    "This node has no services to send. Deploy one here \
+                                     first — what travels is an instruction to run the \
+                                     same image, pulled from this node's registry."
+                                )</p>
+                            </section>
+                        } @else {
+                            <form method="post"
+                                  action=(format!("/nodes/{}/host", node.id))
+                                  class="card stack">
+                                <label for="service">("Service")</label>
+                                <select id="service" name="service">
+                                    @for (id, label) in &hostable {
+                                        <option value=(id)>(label)</option>
+                                    }
+                                </select>
+                                <p class="field-hint">(
+                                    "That node writes its own project, its own service \
+                                     row and its own deployment — nothing is shared. It \
+                                     pulls the image from this node's registry with a \
+                                     credential this puts in the instruction, so the \
+                                     image travels only when it is needed."
+                                )</p>
+                                <p class="field-hint">(
+                                    "Nothing routes to it yet: telling an edge to serve \
+                                     a name from there is the next piece. This runs the \
+                                     container."
+                                )</p>
+                                <div class="actions">
+                                    <button type="submit">("Ask it to run this")</button>
+                                </div>
+                            </form>
+                        }
+                        @if !orders.is_empty() {
+                            <table>
+                                <thead>
+                                    <tr>
+                                        <th>("Asked")</th><th>("State")</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    @for order in &orders {
+                                        (errand_row(order))
+                                    }
+                                </tbody>
+                            </table>
+                        }
+                    </section>
 
                     <section class="card stack">
                         <p class="card-label">("Forget this node")</p>
@@ -517,6 +591,42 @@ fn network_card(node: &network::Node) -> impl Renderable + '_ {
                 )</p>
             }
         </section>
+    }
+}
+
+/// One instruction, and what became of it.
+///
+/// A failure is an *answer*, and it says what it was — the state worth
+/// worrying about is the one that never came back, which is why "asked
+/// for and never settled" is its own word rather than an absence.
+fn errand_row(order: &network::errand::Record) -> impl Renderable + '_ {
+    rsx! {
+        <tr>
+            <td>
+                (order.kind.as_str())
+                <span class="tile-detail">(" ")(&order.id)</span>
+            </td>
+            <td>
+                @if let Some(reason) = &order.error {
+                    <span class="badge badge-danger">
+                        <span class="dot dot-danger"></span>("Refused")
+                    </span>
+                    <p class="failure">(reason)</p>
+                } @else if order.done() {
+                    <span class="badge badge-success">
+                        <span class="dot dot-success"></span>("Done")
+                    </span>
+                } @else if order.taken_at.is_some() {
+                    <span class="badge badge-info">
+                        <span class="dot dot-info dot-pulse"></span>("Collected")
+                    </span>
+                } @else {
+                    <span class="badge badge-info">
+                        <span class="dot dot-info"></span>("Waiting to be collected")
+                    </span>
+                }
+            </td>
+        </tr>
     }
 }
 
@@ -1327,6 +1437,104 @@ impl NodeApi {
             network::enrolment::withdraw(&self.state.database, id).await?;
         }
         Ok(super::auth::see_other("/nodes"))
+    }
+
+    /// Ask another node to run one of this node's services.
+    ///
+    /// The image reference is used as it stands: it already names this
+    /// node's registry, because that is where the push landed. So the
+    /// far node pulls the same bytes this one runs, rather than
+    /// resolving a tag of its own and getting whatever is current
+    /// there — which would be two nodes running "the same" service and
+    /// disagreeing about what that is.
+    #[post("/nodes/:node/host")]
+    #[raw]
+    #[middleware(SessionMiddleware)]
+    async fn host_there(&self, request: Request) -> RestResult<Response> {
+        let Some(account) = signed_in(&self.auth) else {
+            return Ok(super::auth::see_other("/sign-in"));
+        };
+        // Putting work on another machine is not a project-level
+        // decision.
+        if !account.is_admin() {
+            return Ok(super::auth::see_other("/"));
+        }
+
+        let path = request.uri().path().to_string();
+        let Some(node_id) = super::auth::segments(&path).get(1).map(|id| id.to_string()) else {
+            return Ok(super::auth::see_other("/nodes"));
+        };
+        let here = format!("/nodes/{node_id}");
+
+        let form = match super::auth::read_form(request).await {
+            Ok(form) => form,
+            Err(response) => return Ok(response),
+        };
+        let service_id = super::auth::field(&form, "service");
+
+        let Some(service) = crate::platform::services::all(&self.state.database, None)
+            .await?
+            .into_iter()
+            .find(|service| service.id == service_id)
+        else {
+            return Ok(super::auth::back_with_error(&here, "no such service"));
+        };
+        let Some(project) =
+            crate::platform::projects::find(&self.state.database, &service.project_id).await?
+        else {
+            return Ok(super::auth::back_with_error(&here, "no such project"));
+        };
+        // The registry is the host in the reference, read by the same
+        // rule the pull path reads it by — one copy, because two
+        // diverged the first time and `alpine:3.23` came out as a
+        // registry called `alpine` on port `3.23`. A service whose image
+        // names no registry is one the far node can pull without
+        // anything from here, and the credential below would be going
+        // somewhere it does not belong.
+        let Some(registry) = crate::platform::registry_credentials::host_of(&service.image) else {
+            return Ok(super::auth::back_with_error(
+                &here,
+                "that image does not name a registry, so there is nothing to pull it from",
+            ));
+        };
+
+        // A credential for that one project, minted for this errand. It
+        // is a push token because that is what this registry reads, and
+        // it is more than a pull needs — a read-only scope belongs in
+        // the registry and is not this change.
+        let (_, secret) = match crate::platform::tokens::create(
+            &self.state.database,
+            &project.id,
+            &format!("errand to {node_id}"),
+            &account.id,
+        )
+        .await
+        {
+            Ok(minted) => minted,
+            Err(error) => return Ok(super::auth::back_with_error(&here, &error.to_string())),
+        };
+
+        let payload = serde_json::to_value(network::errand::Host {
+            project: project.name.clone(),
+            service: service.name.clone(),
+            image: service.image.clone(),
+            registry: registry.clone(),
+            username: "errand".into(),
+            secret,
+            env: service.env.clone(),
+            port: None,
+        })
+        .unwrap_or_default();
+
+        network::errand::queue(
+            &self.state.database,
+            &node_id,
+            network::errand::Kind::Host,
+            &payload,
+        )
+        .await?;
+
+        Ok(super::auth::see_other(&here))
     }
 
     /// Stop listing a node.
@@ -2438,6 +2646,105 @@ pub(crate) mod tests {
 
         response.assert_status(StatusCode::SEE_OTHER);
         assert_eq!(response.header("location"), Some("/"));
+    }
+
+    /// The console's half of phase 3: asking another node to run a
+    /// service this one has, and seeing what became of the asking.
+    #[tokio::test]
+    async fn a_service_can_be_sent_to_a_joined_node() {
+        let console = Console::new().await;
+        let cookie = console.signed_in().await;
+        joined(&console, "nd-elsewhere1").await;
+
+        let project = crate::platform::projects::create(&console.database, "shared")
+            .await
+            .expect("project");
+        let service = crate::platform::services::create(
+            &console.database,
+            &project.id,
+            "web",
+            "hub.example.com/shared/web@sha256:abc",
+            &[],
+        )
+        .await
+        .expect("service");
+
+        console
+            .harness
+            .post("/nodes/nd-elsewhere1/host")
+            .header("cookie", &cookie)
+            .form(&[("service", service.id.as_str())])
+            .send()
+            .await
+            .assert_status(StatusCode::SEE_OTHER);
+
+        let queued = crate::network::errand::all(&console.database)
+            .await
+            .expect("errands");
+        assert_eq!(queued.len(), 1);
+        assert_eq!(queued[0].node_id, "nd-elsewhere1");
+        assert!(!queued[0].done(), "nothing has collected it yet");
+
+        // The far node pulls the same bytes this one runs, with a
+        // credential minted for the errand — a tag it resolved itself
+        // would be two nodes disagreeing about one service.
+        let waiting = crate::network::errand::waiting(&console.database, "nd-elsewhere1")
+            .await
+            .expect("waiting");
+        let host: crate::network::errand::Host =
+            serde_json::from_value(waiting[0].payload.clone()).expect("a host errand");
+        assert_eq!(host.image, "hub.example.com/shared/web@sha256:abc");
+        assert_eq!(host.registry, "hub.example.com");
+        assert!(!host.secret.is_empty(), "nothing to pull it with");
+
+        // And the page says what became of it.
+        let body = console
+            .harness
+            .get("/nodes/nd-elsewhere1")
+            .header("cookie", &cookie)
+            .send()
+            .await
+            .body;
+        assert!(body.contains("Collected"), "{body}");
+    }
+
+    /// An image from somebody else's registry is one the far node can
+    /// pull without anything from here — and sending it a credential
+    /// for *this* registry would be sending it somewhere it does not
+    /// belong.
+    #[tokio::test]
+    async fn a_service_whose_image_names_no_registry_is_refused() {
+        let console = Console::new().await;
+        let cookie = console.signed_in().await;
+        joined(&console, "nd-elsewhere1").await;
+
+        let project = crate::platform::projects::create(&console.database, "shared")
+            .await
+            .expect("project");
+        let service = crate::platform::services::create(
+            &console.database,
+            &project.id,
+            "web",
+            "alpine:3.23",
+            &[],
+        )
+        .await
+        .expect("service");
+
+        let response = console
+            .harness
+            .post("/nodes/nd-elsewhere1/host")
+            .header("cookie", &cookie)
+            .form(&[("service", service.id.as_str())])
+            .send()
+            .await;
+
+        let location = response.header("location").unwrap_or_default();
+        assert!(location.contains("error="), "{location}");
+        assert!(crate::network::errand::all(&console.database)
+            .await
+            .expect("errands")
+            .is_empty());
     }
 
     /// A node that arrived through a join, as the API writes it.
