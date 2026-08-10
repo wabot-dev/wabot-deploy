@@ -47,7 +47,7 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 use wabot::prelude::*;
 
-use crate::platform::{projects, releases, services};
+use crate::platform::{projects, releases, replicas, services};
 
 /// Bring one service's container in line with its rows.
 #[command("deploy-service")]
@@ -108,6 +108,24 @@ impl DeployHandler {
             tracing::warn!(service = %service.slug, "no project for this service");
             return Ok(());
         };
+
+        // Every copy of it lives on another node. Nothing to deploy and
+        // nothing wrong — the same shape as a service deleted while the
+        // job waited, and for the same reason: retrying cannot make a
+        // replica appear here, so a job that fails on it fails for ever
+        // and fills the journal with an ERROR for a node that is doing
+        // exactly what it was told.
+        if replicas::here_for(&self.database, &service.id)
+            .await
+            .map_err(|error| AsyncError::Handler(error.to_string()))?
+            .is_none()
+        {
+            tracing::info!(
+                service = %service.slug,
+                "every copy of this service runs on another node; nothing to deploy here"
+            );
+            return Ok(());
+        }
 
         match &data.release_id {
             None => {
