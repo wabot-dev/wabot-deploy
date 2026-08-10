@@ -107,8 +107,14 @@ async fn from_one(
     // asking for more work — so an authority queueing something has
     // just heard the truth about what is already there, and a replica
     // evicted here stops being asked for in the same round trip.
+    // Always, even holding nothing. This used to skip an empty report
+    // as a request with nothing in it, and that stopped being true when
+    // the report started carrying where the world can dial this node: a
+    // node holding no replicas is exactly the one that has never been
+    // chosen as an edge, so it stayed private on the authority for ever
+    // and could never be chosen — which is the whole of what the field
+    // was added for.
     match report_for(database, node_id).await {
-        Ok(report) if report.replicas.is_empty() => {}
         Ok(report) => {
             if let Err(error) = super::call::report(&endpoint, &secret, &report).await {
                 tracing::debug!(%error, authority = %node_id, "could not report");
@@ -477,6 +483,28 @@ async fn ensure_project(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A node holding nothing still has something to say: where the
+    /// world can dial it. The report used to be skipped when it carried
+    /// no replicas, which was true of the only thing in it at the time
+    /// — and it meant a node that had never been given work stayed
+    /// private on its authority for ever, so it could never be chosen
+    /// as an edge, which is the one thing that field exists for.
+    #[tokio::test]
+    async fn a_node_holding_nothing_still_says_where_it_can_be_reached() {
+        let database = crate::db::open_in_memory().await.expect("open");
+        crate::node::settings::set_domain(&database, Some("alpine.example"))
+            .await
+            .expect("domain");
+        crate::network::ensure_self(&database, &Config::default())
+            .await
+            .expect("self");
+
+        let report = report_for(&database, "nd-authority").await.expect("report");
+
+        assert!(report.replicas.is_empty(), "nothing was placed here");
+        assert_eq!(report.endpoint.as_deref(), Some("alpine.example:443"));
+    }
 
     /// An instruction this version does not know is refused with a
     /// reason, not dropped. The authority learns that this node is the
