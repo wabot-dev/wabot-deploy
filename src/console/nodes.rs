@@ -97,8 +97,29 @@ impl NodePages {
             .as_deref()
             .and_then(|nonce| self.state.reveals.take(nonce));
         // Whether this node has an address another one could be told to
-        // call back on. Not a setting — see `network::Node::may_be_edge`.
+        // call back on. Derived rather than set — see
+        // `network::Node::may_be_edge`.
         let may_enrol = nodes.iter().any(|node| node.is_self && node.may_be_edge());
+        // What it is willing to do at all, for anybody including itself.
+        let hosts = network::capability::provides(
+            &self.state.database,
+            network::capability::Capability::Host,
+        )
+        .await;
+        let edges = network::capability::provides(
+            &self.state.database,
+            network::capability::Capability::Edge,
+        )
+        .await;
+        // An address the world could dial, whatever this node has
+        // decided to do with it. The difference between "cannot" and
+        // "will not" is the whole of what the switch says.
+        let reachable = nodes
+            .iter()
+            .any(|node| node.is_self && node.endpoint.is_some())
+            || crate::node::settings::domain(&self.state.database, &self.state.config)
+                .await
+                .is_some();
         let now = super::now_ms();
 
         layout::head("Nodes");
@@ -113,6 +134,8 @@ impl NodePages {
                 @if let Some(message) = &query.error {
                     (layout::error_note(message))
                 }
+
+                (capabilities_card(hosts, edges, reachable))
 
                 <div class="grid">
                     @for node in &nodes {
@@ -397,6 +420,72 @@ impl NodePages {
         .into_inner();
 
         Ok(frame.render(body).into_view().into())
+    }
+}
+
+/// What this node is willing to do, for anybody — itself included.
+///
+/// Two switches rather than a "private node" one, because private is not
+/// a mode: it is what a node *is* when it does not offer to answer for
+/// names, whether it cannot or would rather not. Naming the second
+/// switch "private" would make the first one look like something else.
+///
+/// The edge switch is disabled without a domain, with the reason
+/// showing. Offering to answer for names needs an address the world can
+/// dial, and a switch that could be turned on to no effect is a promise
+/// the node cannot keep.
+fn capabilities_card(hosts: bool, edges: bool, reachable: bool) -> impl Renderable {
+    rsx! {
+        <section class="stack">
+            <p class="card-label">("What this node does")</p>
+            <form method="post" action="/nodes/capabilities" class="card stack">
+                <label class="capability">
+                    @if hosts {
+                        <input type="checkbox" name="host" value="1" checked>
+                    } @else {
+                        <input type="checkbox" name="host" value="1">
+                    }
+                    <span>
+                        <strong>("Run containers")</strong>
+                        <span class="tile-detail">(
+                            "Replicas can be placed here — its own services \
+                             included. A small node can own projects and run \
+                             none of them."
+                        )</span>
+                    </span>
+                </label>
+
+                <label class="capability">
+                    @if !reachable {
+                        <input type="checkbox" name="edge" value="1" disabled>
+                    } @else if edges {
+                        <input type="checkbox" name="edge" value="1" checked>
+                    } @else {
+                        <input type="checkbox" name="edge" value="1">
+                    }
+                    <span>
+                        <strong>("Answer for hostnames")</strong>
+                        @if reachable {
+                            <span class="tile-detail">(
+                                "It terminates TLS for names, its own and other \
+                                 nodes'. Turning this off makes it a private \
+                                 node — that is all private has ever meant."
+                            )</span>
+                        } @else {
+                            <span class="tile-detail">(
+                                "Needs a domain that resolves here. Without an \
+                                 address the world can dial, this node is \
+                                 private whatever it would prefer."
+                            )</span>
+                        }
+                    </span>
+                </label>
+
+                <div class="actions">
+                    <button type="submit">("Save")</button>
+                </div>
+            </form>
+        </section>
     }
 }
 
@@ -1282,6 +1371,63 @@ impl NodeApi {
                 .append_pair("checked", &format!("{domain} resolves here."))
                 .finish()
         )))
+    }
+
+    /// Say what this node is willing to do, for anybody at all.
+    ///
+    /// Not "for these other nodes" — that is a grant, and it is decided
+    /// when two nodes agree to know each other. This is one layer above
+    /// and it binds this node too: a machine small enough to prefer
+    /// running nothing places every copy of its own services elsewhere,
+    /// and a machine with a perfectly good address can decline to answer
+    /// for names.
+    ///
+    /// Turning `edge` off makes this node **private**, which is not a
+    /// separate switch and must not become one: private has never meant
+    /// anything except "does not offer to answer for names".
+    #[post("/nodes/capabilities")]
+    #[raw]
+    #[middleware(SessionMiddleware)]
+    async fn set_capabilities(&self, request: Request) -> RestResult<Response> {
+        let here = "/nodes";
+        if signed_in(&self.auth).is_none() {
+            return Ok(super::auth::see_other("/sign-in"));
+        }
+        let form = match super::auth::read_form(request).await {
+            Ok(form) => form,
+            Err(response) => return Ok(response),
+        };
+
+        for capability in crate::network::capability::Capability::ALL {
+            // A checkbox arrives only when ticked, so its absence is the
+            // answer rather than a missing field.
+            let wanted = form.contains_key(capability.name());
+            if let Err(error) =
+                crate::network::capability::set_provides(&self.state.database, capability, wanted)
+                    .await
+            {
+                tracing::warn!(%error, capability = capability.name(), "could not save it");
+                return Ok(super::auth::back_with_error(
+                    here,
+                    "that could not be saved",
+                ));
+            }
+        }
+
+        // The self row carries the answer: `kind` is derived from the
+        // edge capability, and every other node learns this one's kind
+        // from the endpoint it reports. Rewriting it now is what makes
+        // the change travel rather than wait for a restart.
+        if let Err(error) =
+            crate::network::ensure_self(&self.state.database, &self.state.config).await
+        {
+            tracing::warn!(%error, "could not bring this node's own row up to date");
+        }
+        // And the routes: a node that has just stopped being an edge is
+        // still answering for every name it held a moment ago.
+        self.state.deployer.sync_routes().await;
+
+        Ok(super::auth::see_other(here))
     }
 
     /// Mint a join token for a node that does not exist here yet.

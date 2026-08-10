@@ -198,6 +198,23 @@ impl ServicePages {
             .filter(|node| node.may_be_edge())
             .cloned()
             .collect();
+        // Somewhere a copy could actually run. A node that does not
+        // offer to host runs nothing — **including this node's own
+        // services**, which is the case a small machine that owns its
+        // projects and places every copy elsewhere is asking for.
+        //
+        // Only this node is filtered for now: what another node offers
+        // is what it granted, and grants are phase 8.
+        let hosts_here = crate::network::capability::provides(
+            &self.state.database,
+            crate::network::capability::Capability::Host,
+        )
+        .await;
+        let placement_nodes: Vec<crate::network::Node> = nodes
+            .iter()
+            .filter(|node| hosts_here || !node.is_self)
+            .cloned()
+            .collect();
         let serving = crate::platform::edges::of_service(&self.state.database, &service.id).await?;
         let deploying = crate::deploy::jobs::deploying(&self.state.container)
             .await
@@ -294,7 +311,7 @@ impl ServicePages {
                 </section>
 
                 @if service.is_ours() {
-                    (placement_card(&project, &service, &placements, &nodes))
+                    (placement_card(&project, &service, &placements, &placement_nodes))
                 } @else {
                     (from_elsewhere_card(
                         &project,

@@ -375,6 +375,21 @@ pre ::selection {
   flex-wrap: wrap;
 }
 
+/* A switch and what it means, side by side. The explanation is not a
+   hint under a field — it is the difference between "cannot" and "will
+   not", which is the whole of what the switch decides. */
+.capability {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--sp-3);
+}
+
+.capability > span {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+}
+
 /* How many copies, and where new ones go. Side by side because they
    are one decision read left to right — a count with a destination —
    and stacked on a narrow screen rather than squeezed. */

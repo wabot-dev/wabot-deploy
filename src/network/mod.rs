@@ -21,16 +21,21 @@
 //! dialled — an errand has no way to travel until the overlay exists,
 //! which is the next phase. See `docs/network.md`.
 //!
-//! ## Public and private is about reachability, not policy
+//! ## Private is a consequence, not a category
 //!
-//! A public node has an address the internet can dial, which is what
-//! lets it terminate TLS for a name whose container runs elsewhere. A
-//! private node does not. That is the entire difference, and it is why
-//! [`Kind`] is derived from the endpoint rather than trusted from a
-//! setting somebody could set wrongly.
+//! A public node offers to answer for names, which takes an address the
+//! internet can dial *and* a node willing to use it. A private node is
+//! one that does not offer it — because it cannot, or because it would
+//! rather not. See [`capability`].
+//!
+//! [`Kind`] is still derived rather than trusted, and the property that
+//! matters is unchanged: a node can only ever **reduce** what it claims.
+//! Offering `Edge` requires the endpoint, so no setting can make a node
+//! look reachable when it is not.
 
 pub mod api;
 pub mod call;
+pub mod capability;
 pub mod collect;
 pub mod enrolment;
 pub mod errand;
@@ -112,8 +117,10 @@ pub struct Node {
     pub id: String,
     pub name: String,
     pub kind: Kind,
-    /// Where the world dials it. `None` for a private node — that
-    /// absence *is* what makes it private.
+    /// Where the world dials it, when it offers to be dialled. `None`
+    /// for a private node — including one with a perfectly good address
+    /// that has turned the capability off, which is a decision and not
+    /// a limitation.
     pub endpoint: Option<String>,
     /// Filled when it joins the overlay.
     pub public_key: Option<String>,
@@ -125,11 +132,16 @@ pub struct Node {
 impl Node {
     /// Whether this node can be asked to serve traffic for a name.
     ///
-    /// Both halves are required and neither is a setting: an endpoint
-    /// the world can dial, and a kind that says so. A public node
-    /// without an endpoint is one that has not finished being set up,
-    /// and sending a hostname to it would be a name that resolves to
-    /// nothing.
+    /// Both halves are required: an endpoint the world can dial, and a
+    /// kind that says so. A row with one and not the other is a node
+    /// part-way through being set up, and sending a hostname to it
+    /// would publish a name that resolves to nothing.
+    ///
+    /// For this node's own row the kind already carries its answer to
+    /// [`capability::Capability::Edge`], and for any other node it
+    /// carries what that node reported about itself — so a node that
+    /// declines to be an edge stops being offered as one everywhere,
+    /// from the one place it decided.
     pub fn may_be_edge(&self) -> bool {
         self.kind == Kind::Public && self.endpoint.is_some()
     }
@@ -172,9 +184,22 @@ pub async fn ensure_self(database: &SqliteDatabase, config: &Config) -> NetworkR
     let endpoint = domain
         .as_ref()
         .map(|domain| format!("{domain}:{}", config.edge.https_port));
-    let kind = match endpoint {
-        Some(_) => Kind::Public,
-        None => Kind::Private,
+    // Public means *offering* to answer for names, which takes both an
+    // address the world can dial and a node willing to use it. An
+    // operator who turned the capability off has made this node private
+    // as surely as one who cleared the domain — see `capability`.
+    let kind = match endpoint.is_some()
+        && capability::provides(database, capability::Capability::Edge).await
+    {
+        true => Kind::Public,
+        false => Kind::Private,
+    };
+    // And the row says so: a node that will not be an edge must not
+    // carry an address that invites one, here or on any node it
+    // reports to.
+    let endpoint = match kind {
+        Kind::Public => endpoint,
+        _ => None,
     };
 
     let node = Node {

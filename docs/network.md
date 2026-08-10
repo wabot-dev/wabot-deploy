@@ -555,6 +555,31 @@ nodes agree to know each other:
 - Each side then holds only the grants it agreed to, and either can
   revoke one without revoking the rest.
 
+### A capability is a property of the node first
+
+Before it is something one node grants another, it is something the node
+**provides at all — to anybody, itself included**. That layer came out
+of Jorge's reading and it simplifies rather than adds:
+
+- **Private stops being a category.** A private node is a node that does
+  not provide `edge`, which covers the one that *cannot* — no address
+  the world can dial — and the one that *will not*, with a perfectly
+  good address it has decided not to expose services from. There is no
+  "private" switch and there must never be one: naming it that would
+  make the other switch look like something else.
+- **A node can provide no `host` either.** Small and cheap, owning its
+  projects and placing every copy on machines with more room. It is not
+  a placement target for its own services, which is exactly what "prefer
+  to host elsewhere" means.
+- **`Kind` stays derived, never trusted.** Providing `edge` requires the
+  endpoint, so a setting can only ever *reduce* what a node claims — no
+  switch can make a node look reachable when it is not, which is why
+  `Kind` came from the endpoint in the first place.
+
+A capability the node does not provide cannot be granted to anyone. So
+the grant negotiation below is bounded by this, and a token cannot offer
+what the node has turned off.
+
 ### The capabilities
 
 Small on purpose. Each one is a thing one node can ask another to do,
