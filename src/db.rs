@@ -83,6 +83,10 @@ fn migrations() -> Vec<Migration> {
             "0023_service_edge",
             include_str!("../migrations/0023_service_edge.sql"),
         ),
+        Migration::new(
+            "0024_own_names",
+            include_str!("../migrations/0024_own_names.sql"),
+        ),
     ]
 }
 

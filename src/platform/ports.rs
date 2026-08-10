@@ -89,7 +89,49 @@ pub async fn create(
         .await
         .map_err(|error| refusal(error, container_port, &port.hostname))?;
 
+    if let Some(hostname) = port.hostname.as_deref() {
+        serve_here(database, service_id, hostname).await?;
+    }
     Ok(port)
+}
+
+/// Answer for a new name here, if this node can.
+///
+/// Being an edge is a row, including for the node that owns the service
+/// — see migration `0024`. A name arrives with nobody answering for it,
+/// and a name nobody answers for is a name that resolves to nothing, so
+/// the node it was declared on takes it: that is what somebody typing a
+/// hostname here meant, and what a node on its own has always done.
+///
+/// It lives here rather than in the console because the trap is
+/// otherwise silent. A caller that made a port and did not know to write
+/// the row would get a hostname stored, shown on the page, and served by
+/// no one — which is exactly what the first version of this did, and a
+/// routing test caught it only because it happened to assert the route.
+///
+/// Skipped on a node with no address the world can dial. Nothing is
+/// wrong: it simply cannot be the one answering, and the picker on the
+/// service page is where somebody chooses who does.
+async fn serve_here(
+    database: &SqliteDatabase,
+    service_id: &str,
+    hostname: &str,
+) -> PlatformResult<()> {
+    let Some(me) = crate::network::me(database)
+        .await
+        .ok()
+        .flatten()
+        .filter(|me| me.may_be_edge())
+    else {
+        return Ok(());
+    };
+
+    let mut serving = super::edges::nodes_for(database, hostname).await?;
+    if !serving.contains(&me.id) {
+        serving.push(me.id);
+        super::edges::set(database, service_id, hostname, &serving).await?;
+    }
+    Ok(())
 }
 
 /// Turn the one constraint that can fail into something actionable.
@@ -283,6 +325,57 @@ mod tests {
             .expect("created");
 
         assert_ne!(first.host_port, second.host_port);
+    }
+
+    /// A name arrives with nobody answering for it, and a name nobody
+    /// answers for resolves to nothing. The node it was declared on
+    /// takes it — which is what a node on its own has always done, and
+    /// now says so in a row that can be unticked.
+    #[tokio::test]
+    async fn a_new_hostname_is_served_from_the_node_it_was_declared_on() {
+        let database = crate::db::open_in_memory().await.expect("open");
+        crate::node::settings::set_domain(&database, Some("node.example"))
+            .await
+            .expect("domain");
+        let me = crate::network::ensure_self(&database, &crate::config::Config::default())
+            .await
+            .expect("self");
+        let project = super::super::projects::create(&database, "demo")
+            .await
+            .expect("project");
+        let service =
+            super::super::services::create(&database, &project.id, "web", "alpine:3.23", &[])
+                .await
+                .expect("service");
+
+        create(&database, &service.id, 80, false, Some("api.example.com"))
+            .await
+            .expect("created");
+
+        assert_eq!(
+            super::super::edges::nodes_for(&database, "api.example.com")
+                .await
+                .expect("query"),
+            vec![me.id]
+        );
+    }
+
+    /// A private node can own projects and services perfectly well; what
+    /// it cannot do is answer for their names. Writing the row anyway
+    /// would have the console showing it doing something it has no
+    /// address to do.
+    #[tokio::test]
+    async fn a_node_with_no_public_address_does_not_take_the_name() {
+        let (database, service) = service().await;
+
+        create(&database, &service, 80, false, Some("api.example.com"))
+            .await
+            .expect("created");
+
+        assert!(super::super::edges::nodes_for(&database, "api.example.com")
+            .await
+            .expect("query")
+            .is_empty());
     }
 
     #[tokio::test]

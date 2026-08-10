@@ -329,9 +329,16 @@ pub async fn wanted_names(database: &SqliteDatabase, config: &Config) -> Vec<Str
         .await
         .into_iter()
         .collect();
-    match crate::platform::ports::all(database).await {
-        Ok(ports) => names.extend(ports.into_iter().filter_map(|port| port.hostname)),
-        Err(error) => tracing::warn!(%error, "could not read the service hostnames"),
+    // The names on this node's own services that it was **chosen** to
+    // answer for. Not every hostname it stores: a node can own a service
+    // exposed from somewhere else entirely, and ordering a certificate
+    // for a name that resolves to another machine is a challenge that
+    // cannot pass — repeated twice a day, against an authority that
+    // locks the account out after five failures.
+    let me = crate::network::me(database).await.ok().flatten();
+    match crate::platform::edges::of_node(database, me.as_ref().map(|node| &*node.id)).await {
+        Ok(serving) => names.extend(serving),
+        Err(error) => tracing::warn!(%error, "could not read which names this node serves"),
     }
     // And the names this node serves for somebody else. They have no
     // port row here — the route arrived on an errand — so reading the

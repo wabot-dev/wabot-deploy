@@ -82,17 +82,23 @@ pub async fn ensure_here(
     of_service(database, service_id).await
 }
 
-/// Bring the number of copies to `wanted`, adding here.
+/// Bring the number of copies to `wanted`, adding on `node`.
 ///
 /// Counts rather than filling `1..=wanted`, which is the difference
 /// that matters after something was removed: a service left holding
 /// slots 1 and 3 already *has* two copies, and filling the range would
 /// put slot 2 back — undoing the removal that just happened. New ones
 /// take the lowest free slot, so the numbering stays dense.
-pub async fn ensure_count_here(
+///
+/// `node` is where the new ones go — `None` for here. Asked for rather
+/// than assumed: putting a copy where it is wanted is one instruction,
+/// and "add it here, then move it" is two, with a container started and
+/// stopped on this machine in between for nothing.
+pub async fn ensure_count(
     database: &SqliteDatabase,
     service_id: &str,
     wanted: u32,
+    node: Option<&str>,
 ) -> PlatformResult<Vec<Replica>> {
     loop {
         let existing = of_service(database, service_id).await?;
@@ -102,7 +108,7 @@ pub async fn ensure_count_here(
         let free = (1u32..)
             .find(|slot| !existing.iter().any(|replica| replica.slot == *slot))
             .expect("the naturals do not run out");
-        place(database, service_id, None, free).await?;
+        place(database, service_id, node, free).await?;
     }
 }
 

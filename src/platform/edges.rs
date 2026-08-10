@@ -59,6 +59,29 @@ pub async fn nodes_for(database: &SqliteDatabase, hostname: &str) -> PlatformRes
         .await?)
 }
 
+/// Every name one node was chosen to answer for.
+///
+/// `None` for the node id — a node with no row of its own yet — answers
+/// for nothing, which is the honest reading: a node that does not know
+/// who it is cannot have been chosen.
+pub async fn of_node(
+    database: &SqliteDatabase,
+    node_id: Option<&str>,
+) -> PlatformResult<Vec<String>> {
+    let Some(node_id) = node_id.map(str::to_string) else {
+        return Ok(Vec::new());
+    };
+    Ok(database
+        .read(move |connection| {
+            let mut statement = connection
+                .prepare("SELECT \"hostname\" FROM service_edge WHERE \"node_id\" = ?1")?;
+            let names: wabot::sqlite::rusqlite::Result<Vec<String>> =
+                statement.query_map([node_id], |row| row.get(0))?.collect();
+            names
+        })
+        .await?)
+}
+
 /// Every (hostname, node) this service has asked for.
 pub async fn of_service(
     database: &SqliteDatabase,

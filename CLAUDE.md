@@ -299,9 +299,24 @@ skips every derived service.
 Phase 3 taught what a node run is worth. This was the second and third
 time.
 
-**One thing in phase 7 has still never run**: choosing another node as
-an edge. Everything under it is verified — the claim, the errand, the
-route, the release — and the button itself has not been pressed once.
+**Being an edge is a row, including for the node that owns the
+service.** It used to be automatic — this node routed every hostname on
+its own ports — and that read the model backwards. The only thing
+separating a private node from a public one is **whether it exposes its
+own address**, so a private node can own projects and services perfectly
+well and have them served from somewhere else entirely. Three things
+follow, and all three were wrong before migration `0024`:
+
+- `routing::sync` builds a route for one of this node's own names only
+  if `service_edge` says this node answers for it.
+- `acme::wanted_names` asks for a certificate on the same condition. A
+  private owner ordering one for a name pointing at another machine is a
+  challenge that cannot pass, twice a day, against an authority that
+  locks the account after five failures.
+- `ports::create` writes the default row itself rather than the console
+  doing it. A caller that made a port and did not know to write it got a
+  hostname stored, shown, and served by nobody — which is what the first
+  version did, caught only because a routing test asserted the route.
 
 Next: phase 8, groups — health and failover across the upstreams of one
 name. Today a dead replica keeps its share of the traffic until the

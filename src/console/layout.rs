@@ -375,6 +375,22 @@ pre ::selection {
   flex-wrap: wrap;
 }
 
+/* How many copies, and where new ones go. Side by side because they
+   are one decision read left to right — a count with a destination —
+   and stacked on a narrow screen rather than squeezed. */
+.placement-count {
+  display: flex;
+  gap: var(--sp-4);
+  flex-wrap: wrap;
+  align-items: flex-end;
+}
+
+.placement-count > div {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+}
+
 /* Choosing who answers for a name. On its own line under the address
    it belongs to — it is about that hostname and nothing else in the
    row, and reading it beside the address is what makes that obvious. */

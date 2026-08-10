@@ -186,14 +186,16 @@ impl ServicePages {
         // node with an address the world can dial: sending a hostname
         // to one without would publish a name that resolves to nothing.
         //
-        // This node is not among them, and it is not an omission. It
-        // already serves the names of the services it owns — that is
-        // what it did before any of this, and the route is recomputed
-        // from the ports after every deploy. A checkbox for it would be
-        // one that changes nothing when unticked.
+        // This node among them, like any other. It used to be left out
+        // on the grounds that it always serves its own names — which
+        // read the model backwards. The only thing separating a private
+        // node from a public one is whether it exposes its own address,
+        // so a node can own a service and have it served from somewhere
+        // else entirely, and whether it answers for its own names is a
+        // decision like every other one on this page.
         let public_nodes: Vec<crate::network::Node> = nodes
             .iter()
-            .filter(|node| node.may_be_edge() && !node.is_self)
+            .filter(|node| node.may_be_edge())
             .cloned()
             .collect();
         let serving = crate::platform::edges::of_service(&self.state.database, &service.id).await?;
@@ -905,15 +907,31 @@ fn placement_card<'a>(
                     </tbody>
                 </table>
 
-                <label for="replicas">("How many")</label>
-                <input id="replicas" name="replicas" type="number" min="1" max="16"
-                       value=(placements.len().to_string())>
+                <div class="placement-count">
+                    <div>
+                        <label for="replicas">("How many")</label>
+                        <input id="replicas" name="replicas" type="number" min="1" max="16"
+                               value=(placements.len().to_string())>
+                    </div>
+                    <div>
+                        <label for="new-on">("New ones on")</label>
+                        <select id="new-on" name="new-on">
+                            @for node in nodes {
+                                @if node.is_self {
+                                    <option value="" selected>(&node.name)</option>
+                                } @else {
+                                    <option value=(&node.id)>(&node.name)</option>
+                                }
+                            }
+                        </select>
+                    </div>
+                </div>
                 <p class="field-hint">(
-                    "Adding one puts it here; move it afterwards. Removing takes the \
-                     highest-numbered ones away, and a replica on another node cannot \
-                     be removed from here yet — nothing can tell that node to stop, so \
-                     removing the row would leave its container running with nothing \
-                     naming it."
+                    "A new copy is created on the node you pick, rather than here and \
+                     moved after — which would start a container on this machine and \
+                     stop it again for nothing. Removing takes the ones already thrown \
+                     out first, then the highest-numbered; the node running one is told \
+                     to stop it."
                 )</p>
                 <div class="actions">
                     <button type="submit">("Save placement")</button>
@@ -1759,7 +1777,26 @@ impl ServiceApi {
                 "a service runs between 1 and 16 replicas",
             ));
         }
-        if let Err(error) = self.resize(&project, &service, wanted).await {
+        // Where the new ones go. Asked for rather than assumed: adding a
+        // copy here and moving it afterwards starts a container on this
+        // machine and stops it again for nothing, and the operator
+        // already knows where they want it.
+        //
+        // An empty field is this node, the same value the per-slot
+        // selectors use, so the two controls speak one language.
+        let on = field(&form, "new-on");
+        let on = (!on.trim().is_empty()).then(|| on.trim().to_string());
+        if let Some(node) = &on {
+            if crate::network::find(&self.state.database, node)
+                .await?
+                .is_none()
+            {
+                return Ok(back_with_error(&here, "no such node"));
+            }
+            touched.insert(node.clone());
+        }
+
+        if let Err(error) = self.resize(&project, &service, wanted, on.as_deref()).await {
             return Ok(back_with_error(&here, &error));
         }
 
@@ -1797,12 +1834,11 @@ impl ServiceApi {
         // set is what arrived and the rest is what was cleared. Read
         // from the node table rather than from the form, so a field
         // naming something that is not a public node cannot put a row
-        // in — and this node never among them: an errand queued for
-        // itself is one nobody ever collects.
+        // in.
         let public: Vec<String> = crate::network::all(&self.state.database)
             .await?
             .into_iter()
-            .filter(|node| node.may_be_edge() && !node.is_self)
+            .filter(|node| node.may_be_edge())
             .map(|node| node.id)
             .collect();
         let chosen: Vec<String> = public
@@ -1930,6 +1966,7 @@ impl ServiceApi {
         project: &crate::platform::projects::Project,
         service: &services::Service,
         wanted: u32,
+        on: Option<&str>,
     ) -> Result<(), String> {
         let service_id = &service.id;
         let placements = crate::platform::replicas::of_service(&self.state.database, service_id)
@@ -1985,7 +2022,7 @@ impl ServiceApi {
         // slots 1 and 3, which is already two copies. Filling
         // `1..=wanted` would put slot 2 back and undo the removal that
         // just happened — which is exactly what it did.
-        crate::platform::replicas::ensure_count_here(&self.state.database, service_id, wanted)
+        crate::platform::replicas::ensure_count(&self.state.database, service_id, wanted, on)
             .await
             .map_err(|error| error.to_string())?;
         Ok(())
@@ -2065,8 +2102,16 @@ impl ServiceApi {
         let chosen = crate::platform::edges::of_service(&self.state.database, &service.id).await?;
         let nodes = crate::network::all(&self.state.database).await?;
         let upstreams = crate::platform::edges::upstreams(placements, &nodes);
+        let me = nodes.iter().find(|node| node.is_self).map(|node| &*node.id);
 
         for (hostname, node_id) in chosen {
+            // This node's own choice needs no errand — an errand queued
+            // for itself is one nobody ever collects, because a node
+            // does not poll itself. Its route comes from the local sync
+            // below, off the same rows.
+            if Some(&*node_id) == me {
+                continue;
+            }
             let payload = serde_json::to_value(crate::network::errand::Edge {
                 hostname,
                 upstreams: upstreams.clone(),
@@ -2081,6 +2126,12 @@ impl ServiceApi {
             )
             .await?;
         }
+
+        // And this node's own, whether or not it was chosen: the choice
+        // that just changed may have been to stop answering, and a route
+        // left behind is a name still being served by a node nobody
+        // asked.
+        self.state.deployer.sync_routes().await;
         Ok(())
     }
 

@@ -33,19 +33,35 @@ pub async fn sync(
     // Addresses are per replica now: a service is *n* running copies,
     // and which of them a name reaches is the route table's question.
     let placements = crate::platform::replicas::here(database).await?;
-    // And the copies that are *not* here. This node is the edge for its
-    // own services' names — that is what it was before any of this —
-    // so a name whose service has a replica elsewhere has to reach it
-    // from here too, or placing one on another node would quietly halve
-    // what the name serves rather than doubling it.
+    // And the copies that are *not* here: a name this node answers for
+    // reaches every copy of its service, wherever it runs, or placing
+    // one elsewhere would quietly halve what the name serves rather
+    // than doubling it.
     let nodes = crate::network::all(database).await.unwrap_or_default();
     let elsewhere = crate::platform::replicas::elsewhere(database).await?;
+    // Which of this node's own names it was asked to answer for.
+    //
+    // It used to answer for all of them, automatically, because the
+    // node that owns a service was assumed to be the one exposing it.
+    // That is not the model: the only thing separating a private node
+    // from a public one is whether it exposes its own address, so a
+    // node can perfectly well own a service that is served from
+    // somewhere else — and building a route here for a name pointing at
+    // another machine would mean this node answering for a name it was
+    // not chosen for.
+    let me = crate::network::me(database).await.ok().flatten();
+    let serving = crate::platform::edges::of_node(database, me.as_ref().map(|node| &*node.id))
+        .await
+        .unwrap_or_default();
 
     let mut hosts = Vec::new();
     for port in &ports {
         let Some(hostname) = &port.hostname else {
             continue;
         };
+        if !serving.contains(hostname) {
+            continue;
+        }
         let Some(service) = services.iter().find(|s| s.id == port.service_id) else {
             continue;
         };
@@ -157,8 +173,18 @@ mod tests {
     use super::*;
     use crate::platform::projects;
 
+    /// A node with a name of its own, which is what makes it able to
+    /// answer for one. Without the self row nothing here is an edge for
+    /// anything — correctly, a node that does not know who it is cannot
+    /// have been chosen — and every route would be skipped.
     async fn node() -> (SqliteDatabase, String, String) {
         let database = crate::db::open_in_memory().await.expect("open");
+        crate::node::settings::set_domain(&database, Some("node.example"))
+            .await
+            .expect("domain");
+        crate::network::ensure_self(&database, &crate::config::Config::default())
+            .await
+            .expect("self");
         let project = projects::create(&database, "demo").await.expect("project");
         let service = services::create(
             &database,
@@ -170,6 +196,37 @@ mod tests {
         .await
         .expect("service");
         (database, project.id, service.id)
+    }
+
+    /// A node can own a service and not be the one exposing it — the
+    /// only thing separating a private node from a public one is
+    /// whether it exposes its own address. So a name this node was not
+    /// chosen to answer for gets no route here, however local the
+    /// service is: building one would be this node answering for a name
+    /// somebody pointed at another machine.
+    #[tokio::test]
+    async fn a_name_this_node_was_not_chosen_for_is_not_routed_here() {
+        let (database, _, service) = node().await;
+        ports::create(&database, &service, 80, false, Some("api.example.com"))
+            .await
+            .expect("port");
+        running_at(&database, &service, Some("10.42.1.5")).await;
+
+        // Somebody else answers for it now.
+        crate::platform::edges::set(&database, &service, "api.example.com", &["nd-other".into()])
+            .await
+            .expect("set");
+
+        let table = Arc::new(RouteTable::new());
+        sync(&database, Some("node.example"), Some(&table))
+            .await
+            .expect("sync");
+
+        assert_eq!(
+            table.resolve("api.example.com"),
+            None,
+            "this node answered for a name it was not chosen for"
+        );
     }
 
     #[tokio::test]
