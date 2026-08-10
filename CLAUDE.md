@@ -274,22 +274,35 @@ to proxy. Three things about it:
   until something says otherwise — `edges::set` returns who was dropped
   so the caller cannot forget.
 
-**What the nodes showed the moment 4 to 7 met them**, none of which any
-test could have caught, because in a test both ends are one database
-and the rows are the ones I wrote:
+**Phases 4 to 7 are verified between the two nodes on v0.6.6.** A
+service owned by one node, two copies on the other and a third at home:
+the node with two took 1.89× the traffic of the node with one, measured
+as packets into each container's own interface. Nothing carries a
+weight — a node appears once per replica, and the ratio falls out.
 
-- **A joined node is recorded as private**, correctly — it arrived
-  through a token and the enrolling node has no address for it but the
-  overlay. `may_be_edge` needs an endpoint, so the picker could never
-  offer it: "any public node on the network" was "this one". The node's
-  own report now carries where the world can dial it.
-- **A replica that moved kept running where it left.** Reconciliation
-  only ever *starts* things — a container no row claims is left alone
-  rather than destroyed, which is right — so nothing stopped it, and
-  the Ubuntu node was running two containers the page said were on
-  Alpine. Moving a replica away, and dropping one, now stop it here.
+**Getting there took seven fixes, and no test could have found any of
+them**: in a test both ends are one database and the rows are the ones I
+wrote, so nothing exercises what one node *knows about another*.
+`docs/network.md` lists all seven. Six share a shape worth carrying into
+phase 8:
 
-Phase 3 taught what that is worth. This is the second time.
+> **Derived state that nothing recomputes when its input arrives over
+> the network.** On one node the local reconciliation covered it. With
+> two, the input comes from outside and nobody was listening.
+
+The two that will catch the next person: a joined node is recorded as
+*private* and stays that way until it reports otherwise, and a service
+that arrived on an errand has **no hostname here** — the name belongs to
+the node that placed it, so anything keyed on "has a hostname" silently
+skips every derived service.
+
+Phase 3 taught what a node run is worth. This was the second and third
+time.
+
+**One thing in phase 7 has still never run**: choosing another node as
+an edge. Everything under it is verified — the claim, the errand, the
+route, the release — and the button itself has not been pressed once.
 
 Next: phase 8, groups — health and failover across the upstreams of one
-name. Today a dead replica stays in the list until the owner notices.
+name. Today a dead replica keeps its share of the traffic until the
+owner notices.

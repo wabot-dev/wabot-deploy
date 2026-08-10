@@ -472,4 +472,61 @@ Three things follow that are easy to get wrong:
   so nothing can reach it. An invented address there is a request that
   hangs rather than one that fails over.
 
-Nothing here has run on a node.
+## What the nodes said about 4 to 7
+
+**Verified between the two nodes on v0.6.6**, and it took seven fixes to
+get there. Every one of them was invisible to a green suite for the same
+reason: in a test both ends are one database and the rows are the ones
+the test wrote, so nothing ever exercises what one node *knows about
+another*.
+
+The measurement that matters, on a service owned by the Ubuntu node with
+two copies on the Alpine one and a third at home — packets into each
+container's own interface, read from its netns, over 60 requests:
+
+| | replica | packets |
+|---|---|---|
+| Alpine | slot 1 | +51 |
+| Alpine | slot 2 | +51 |
+| Ubuntu | slot 3 | +54 |
+
+**1.89 : 1.** The node holding two copies takes twice the traffic, and
+nothing carries a weight — it appears twice in the list. Per replica the
+split is even, which is what makes the ratio fall out on its own.
+
+The isolation held with it: the local copy is reached at its bridge
+address, the remote ones only at `10.42.0.3:30000` and `:30001`, ports
+bound to that node's overlay address. No container has anything open to
+the world.
+
+The seven, in the order the nodes gave them up:
+
+1. **A joined node is recorded as private** — correctly, by the rule
+   enrolment follows — so `may_be_edge` was false and the picker could
+   never offer it. Reachability now travels on the report.
+2. **A replica that moved kept running where it left.** Reconciliation
+   only ever starts things, on purpose, so the stop belongs where the
+   decision is made.
+3. **The fix for (1) shipped dead**: the report was skipped when it
+   carried no replicas, and a node holding none is exactly the one never
+   chosen as an edge.
+4. **A copy placed elsewhere had no way in.** The console filled the
+   errand's port with `None` always, the receiving node made a service
+   with no port row, and the overlay port was opened only for a port
+   with a hostname *here* — which a derived service never has.
+5. **A service running entirely elsewhere is not a failed deployment.**
+   The job retried it for ever, once every fifteen seconds.
+6. **Routes were not recomputed when the last copy left**, because the
+   deployment that recomputes them was correctly skipped.
+7. **Nor when a report arrived** with the port a copy answers on
+   elsewhere — the deployment that would notice runs on the other
+   machine.
+
+Six of the seven are the same shape: **derived state that nothing
+recomputes when its input arrives over the network.** On one node the
+local reconciliation covered it. With two, the input comes from outside
+and nobody was listening.
+
+**Still not run once:** choosing another node as an edge. Everything
+under it is verified — the claim, the errand, the route, the release —
+and the button itself has never been pressed.
