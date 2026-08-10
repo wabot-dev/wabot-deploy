@@ -61,8 +61,7 @@ Three consequences that shape everything below:
   about where a service is.
 
 This document is the plan and the record of what was decided and why.
-Phases 0 to 7 are in the tree. Phases 0 to 3 are verified between two
-real nodes; 4 to 7 have not run on one yet.
+Phases 0 to 7 are in the tree and verified between two real nodes.
 
 **What 5 and 6 left open is closed.** A replica placed on another node
 and then brought home used to leave its container running there with
@@ -275,12 +274,11 @@ Still open:
 | 5 | Placement | The form moves to the service; provenance, read-only, eviction | **done** |
 | 6 | Reporting | The poll carries each replica's state back to the node that placed it | **done** |
 | 7 | Errand: edge | The owner picks public nodes to serve a name; they claim it, get the certificate, and proxy to the replicas | **done** |
-| 8 | Groups | Health and failover across the upstreams of one name | next |
+| 8 | Consent | What a join requires and offers, per capability, shown before it is spent | next |
+| 9 | Groups | Health and failover across the upstreams of one name | |
 
-Phases 4 to 7 are written and **none of them has run on a node**. Phase
-3 is what that is worth: everything passed locally and the receiving
-node still ended up with an orphaned container, for a reason the model
-in my head did not contain.
+Phases 4 to 7 are **verified between the two nodes** on v0.6.6 — see
+"What the nodes said about 4 to 7" below, and the seven fixes it took.
 
 Phase 3 works and is in the wrong place, which is worth saying plainly
 rather than quietly reshaping. Its form lives on the *node* page — pick
@@ -530,3 +528,69 @@ and nobody was listening.
 **Still not run once:** choosing another node as an edge. Everything
 under it is verified — the claim, the errand, the route, the release —
 and the button itself has never been pressed.
+
+## Phase 8: what is required, and what is offered
+
+Authority is directed, and until now it was also **whole**: joining
+granted the enrolling node everything it might ever ask for. That was
+never stated as a decision — it fell out of there being only one kind of
+errand — and the moment there were two it started lying in both
+directions at once.
+
+The Alpine node showed it. Its console offered the Ubuntu node as an
+edge for a service of its own, wrote the row, queued the errand — and
+the errand will sit there for ever, because Ubuntu takes orders from
+nobody. The page says "served by Ubuntu". Nothing is. Nothing ever
+will be.
+
+The fix is not to hide nodes that cannot be told. It is to say **what
+is being asked for and what is being given**, at the moment the two
+nodes agree to know each other:
+
+- The node minting a token declares what it **requires** of the joiner
+  and what it **offers** to it.
+- The joiner, spending the token, is shown both lists **before** it
+  commits, and accepts or refuses. A join is not a click on a token; it
+  is a click on a sentence somebody can read.
+- Each side then holds only the grants it agreed to, and either can
+  revoke one without revoking the rest.
+
+### The capabilities
+
+Small on purpose. Each one is a thing one node can ask another to do,
+and each is refusable on its own:
+
+| | What holding it lets the other node do |
+|---|---|
+| `host` | Place replicas of its services here, and pull the images to run them |
+| `edge` | Ask this node to answer for one of its hostnames |
+
+`host` carries the registry pull with it rather than being a third
+capability: a node that may run your containers must be able to fetch
+them, and a grant that cannot be used is not a smaller grant, it is a
+broken one.
+
+### What it changes
+
+- **The selectors stop lying.** The placement selector offers nodes
+  that granted `host`; the edge picker offers nodes that granted `edge`,
+  plus this node itself, which needs no grant to instruct itself.
+- **A refusal is visible.** A capability not granted is shown with the
+  reason and the way to ask for it, rather than the node quietly not
+  appearing — the difference between "there is nobody" and "I did not
+  ask them".
+- **Revoking is partial.** Today revoking a node's grant is all or
+  nothing. A node that will serve your names but no longer run your
+  containers is an ordinary thing to want.
+
+Existing joins are backfilled with **both** capabilities. They work
+today, and a migration that quietly took something away would break a
+running network to make a table tidier.
+
+### The one thing to get right
+
+The joiner has to see the terms **before** the token is spent, which
+means the terms travel with the token rather than being asked for
+afterwards. A join that showed the terms after committing would be a
+consent screen for a decision already made — which is worse than no
+screen at all, because it looks like one.
