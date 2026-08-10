@@ -341,6 +341,7 @@ mod tests {
                     overlay_ip: Some(address.into()),
                     is_self: false,
                     last_seen_at: None,
+                    allows: Vec::new(),
                 },
             )
             .await
@@ -387,6 +388,7 @@ mod tests {
                 overlay_ip: Some("10.42.0.1".into()),
                 is_self: false,
                 last_seen_at: None,
+                allows: Vec::new(),
             },
         )
         .await
@@ -428,6 +430,7 @@ mod tests {
                     overlay_ip: address.map(str::to_string),
                     is_self: false,
                     last_seen_at: None,
+                    allows: Vec::new(),
                 },
             )
             .await

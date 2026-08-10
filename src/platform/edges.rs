@@ -234,6 +234,7 @@ mod tests {
             overlay_ip: Some(overlay.into()),
             is_self,
             last_seen_at: None,
+            allows: Vec::new(),
         }
     }
 

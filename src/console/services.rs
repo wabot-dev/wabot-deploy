@@ -194,20 +194,20 @@ impl ServicePages {
         // else entirely, and whether it answers for its own names is a
         // decision like every other one on this page.
         //
+        let (host, edge) = (
+            crate::network::capability::Capability::Host,
+            crate::network::capability::Capability::Edge,
+        );
+        let hosts_here = crate::network::capability::provides(&self.state.database, host).await;
         // And only nodes that agreed to it. A node that never granted
         // `edge` cannot be told to serve a name — the errand would sit
         // in its queue for ever while this page said it was served,
         // which is what the Alpine node did for an hour before anybody
         // noticed. This node needs no grant to instruct itself.
-        let may_edge = crate::network::capability::may_be_asked(
-            &self.state.database,
-            crate::network::capability::Capability::Edge,
-        )
-        .await;
         let public_nodes: Vec<crate::network::Node> = nodes
             .iter()
             .filter(|node| node.may_be_edge())
-            .filter(|node| node.is_self || may_edge.contains(&node.id))
+            .filter(|node| node.is_self || node.allows.contains(&edge))
             .cloned()
             .collect();
         // Somewhere a copy could actually run. A node that does not
@@ -215,21 +215,11 @@ impl ServicePages {
         // services**, which is the case a small machine that owns its
         // projects and places every copy elsewhere is asking for.
         //
-        let hosts_here = crate::network::capability::provides(
-            &self.state.database,
-            crate::network::capability::Capability::Host,
-        )
-        .await;
-        let may_host = crate::network::capability::may_be_asked(
-            &self.state.database,
-            crate::network::capability::Capability::Host,
-        )
-        .await;
         let placement_nodes: Vec<crate::network::Node> = nodes
             .iter()
             .filter(|node| match node.is_self {
                 true => hosts_here,
-                false => may_host.contains(&node.id),
+                false => node.allows.contains(&host),
             })
             .cloned()
             .collect();
@@ -1870,16 +1860,12 @@ impl ServiceApi {
         // from the node table rather than from the form, so a field
         // naming something that is not a public node cannot put a row
         // in.
-        let may_edge = crate::network::capability::may_be_asked(
-            &self.state.database,
-            crate::network::capability::Capability::Edge,
-        )
-        .await;
+        let edge = crate::network::capability::Capability::Edge;
         let public: Vec<String> = crate::network::all(&self.state.database)
             .await?
             .into_iter()
             .filter(|node| node.may_be_edge())
-            .filter(|node| node.is_self || may_edge.contains(&node.id))
+            .filter(|node| node.is_self || node.allows.contains(&edge))
             .map(|node| node.id)
             .collect();
         let chosen: Vec<String> = public
@@ -2698,6 +2684,7 @@ mod tests {
                 overlay_ip: Some("10.42.0.9".into()),
                 is_self: false,
                 last_seen_at: None,
+                allows: Vec::new(),
             },
         )
         .await
@@ -2771,6 +2758,7 @@ mod tests {
                 overlay_ip: Some("10.42.0.9".into()),
                 is_self: false,
                 last_seen_at: None,
+                allows: Vec::new(),
             },
         )
         .await

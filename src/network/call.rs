@@ -226,6 +226,7 @@ mod tests {
             node: "nd-abc".into(),
             name: "alpine".into(),
             public_key: "0hEr0DzTvMDTRfPPmYFCVCQ1cA0nnUnP+2fFqZBBBGQ=".into(),
+            accepted: None,
         }
     }
 

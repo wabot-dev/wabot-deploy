@@ -3163,6 +3163,7 @@ pub(crate) mod tests {
                 overlay_ip: Some("10.42.0.9".into()),
                 is_self: false,
                 last_seen_at: Some(super::super::now_ms()),
+                allows: Vec::new(),
             },
         )
         .await

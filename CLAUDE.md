@@ -329,10 +329,23 @@ there is nobody at a terminal to show a screen to, and typing the
 command is the consent.
 
 Two capabilities, `host` and `edge`, each granted and revoked on its
-own. `node_grant` lives on the node being asked, like the authority row
-and for the same reason. A grant is filtered through what the node
-provides *now*, so turning a switch off withdraws what was granted of
-it — the switch is the more recent decision.
+own, and **two tables, because the answer has to travel**:
+
+- `node_grant` is what **this** node agreed to do, for whom. It lives on
+  the machine the decision binds, like the authority row and for the
+  same reason, and it is what `carry_out` checks before obeying an
+  errand — a grant nothing enforces is decoration.
+- `node.allows` is what **another** node lets this one ask of it. A
+  learned fact on that node's row, beside `endpoint`, arriving on the
+  join callback and refreshed by every report. It has to be learned:
+  the decision is a row on the other machine and this one has no access
+  to it, which is the trap the first version of this walked into — the
+  selector read the local grant table, which answers the opposite
+  question.
+
+A grant is read through what the node provides *now*, so turning a
+switch off withdraws what was granted of it — the switch is the more
+recent decision.
 
 Both selectors read the grants. A node that never agreed to run your
 containers is not somewhere you can place a replica, and offering it

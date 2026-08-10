@@ -152,25 +152,6 @@ pub async fn granted_to(database: &SqliteDatabase, node_id: &str) -> Vec<Capabil
     held
 }
 
-/// Every node this one may send `capability` to.
-///
-/// The question both selectors ask, and the one they were getting wrong:
-/// a node that never agreed to run your containers is not somewhere you
-/// can place a replica, and offering it produces an errand nobody will
-/// ever collect.
-pub async fn may_be_asked(database: &SqliteDatabase, capability: Capability) -> Vec<String> {
-    let name = capability.name().to_string();
-    database
-        .read(move |connection| {
-            connection
-                .prepare("SELECT \"node_id\" FROM node_grant WHERE \"capability\" = ?1")?
-                .query_map([name], |row| row.get(0))?
-                .collect()
-        })
-        .await
-        .unwrap_or_default()
-}
-
 /// Read a comma-separated list back, dropping anything this version does
 /// not know.
 ///
@@ -231,9 +212,10 @@ mod tests {
             granted_to(&database, "nd-them").await,
             vec![Capability::Edge]
         );
-        assert_eq!(may_be_asked(&database, Capability::Edge).await, ["nd-them"]);
         assert!(
-            may_be_asked(&database, Capability::Host).await.is_empty(),
+            !granted_to(&database, "nd-them")
+                .await
+                .contains(&Capability::Host),
             "it never agreed to run anything"
         );
     }

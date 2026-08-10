@@ -96,6 +96,12 @@ pub async fn join(
             node: me.id.clone(),
             name: me.name.clone(),
             public_key: keys.public.clone(),
+            accepted: Some(
+                agreed
+                    .iter()
+                    .map(|capability| capability.name().to_string())
+                    .collect(),
+            ),
         },
     )
     .await?;
@@ -119,6 +125,12 @@ pub async fn join(
         overlay_ip: Some(token.overlay_ip.clone()),
         is_self: false,
         last_seen_at: Some(now_ms()),
+        // What it said it would let this node ask of it, out of its own
+        // mouth and in the token this node just used. Not a promise
+        // this node can check — but it is the only source there is, and
+        // a wrong one shows up as an errand that node refuses rather
+        // than as anything silent.
+        allows: token.offers(),
     };
     super::save(database, &authority).await?;
 

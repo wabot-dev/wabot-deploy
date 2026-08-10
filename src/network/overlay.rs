@@ -147,6 +147,7 @@ mod tests {
                 overlay_ip: Some(overlay_ip.into()),
                 is_self: false,
                 last_seen_at: None,
+                allows: Vec::new(),
             },
         )
         .await

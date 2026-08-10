@@ -202,7 +202,19 @@ async fn report_for(
         .map_err(|error| error.to_string())?
         .and_then(|me| me.endpoint);
 
-    Ok(super::api::Report { replicas, endpoint })
+    // And what this node has agreed that authority may ask of it. It
+    // travels on every report rather than only at join time, for the
+    // same reason the endpoint does: a node that revoked something an
+    // hour ago should stop being offered for it, and the alternative is
+    // the other end finding out from an errand it refuses.
+    let allows =
+        super::capability::to_list(&super::capability::granted_to(database, authority).await);
+
+    Ok(super::api::Report {
+        replicas,
+        endpoint,
+        allows: Some(allows),
+    })
 }
 
 /// Do what one errand says, or say why not.
@@ -215,11 +227,13 @@ async fn carry_out(
 ) -> Result<(), String> {
     match order.kind {
         Kind::Host => {
+            allowed(database, authority, super::capability::Capability::Host).await?;
             let host: errand::Host = serde_json::from_value(order.payload)
                 .map_err(|error| format!("that is not a host errand: {error}"))?;
             host_service(database, config, container, authority, host).await
         }
         Kind::Edge => {
+            allowed(database, authority, super::capability::Capability::Edge).await?;
             let edge: errand::Edge = serde_json::from_value(order.payload)
                 .map_err(|error| format!("that is not an edge errand: {error}"))?;
             serve_name(database, container, authority, edge).await
@@ -230,6 +244,34 @@ async fn carry_out(
         Kind::Unknown => {
             Err("this node is older than that instruction and does not know it".into())
         }
+    }
+}
+
+/// Refuse an errand this node never agreed to take.
+///
+/// The grant is only a decision until something checks it. Without this
+/// the terms screen is decoration: a node could tick nothing, and the
+/// authority would keep sending errands that were carried out anyway.
+///
+/// Refused with the reason rather than dropped, and the reason reaches
+/// the other node's errand row — so the operator who chose this sees
+/// their own choice quoted back rather than a silence they have to guess
+/// at. It is also how a node says "I revoked that", without needing a
+/// message of its own.
+async fn allowed(
+    database: &SqliteDatabase,
+    authority: &str,
+    capability: super::capability::Capability,
+) -> Result<(), String> {
+    match super::capability::granted_to(database, authority)
+        .await
+        .contains(&capability)
+    {
+        true => Ok(()),
+        false => Err(format!(
+            "this node has not agreed to `{}` for that node",
+            capability.name()
+        )),
     }
 }
 
@@ -542,6 +584,16 @@ mod tests {
     async fn a_hosted_copy_knows_what_its_container_listens_on() {
         let database = crate::db::open_in_memory().await.expect("open");
         let container = Container::new();
+        // The precondition the whole phase is about: an errand from a
+        // node this one never agreed to host for is refused before it
+        // is even read.
+        crate::network::capability::grant(
+            &database,
+            "nd-a",
+            &[super::super::capability::Capability::Host],
+        )
+        .await
+        .expect("grant");
 
         let order = Errand {
             id: "er-one".into(),
@@ -597,6 +649,52 @@ mod tests {
 
         assert!(report.replicas.is_empty(), "nothing was placed here");
         assert_eq!(report.endpoint.as_deref(), Some("alpine.example:443"));
+    }
+
+    /// A grant is only a decision until something checks it. Without
+    /// this the terms screen is decoration: a node could tick nothing
+    /// and the errands would be carried out anyway.
+    ///
+    /// Refused with the reason, which travels back to the other node's
+    /// errand row — so the operator who chose this reads their own
+    /// choice quoted at them rather than guessing at a silence. It is
+    /// also how a node says "I revoked that" with no message of its
+    /// own.
+    #[tokio::test]
+    async fn an_errand_this_node_never_agreed_to_is_refused() {
+        let database = crate::db::open_in_memory().await.expect("open");
+        let container = Container::new();
+        // It agreed to serve names, and to nothing else.
+        crate::network::capability::grant(
+            &database,
+            "nd-a",
+            &[super::super::capability::Capability::Edge],
+        )
+        .await
+        .expect("grant");
+
+        let error = carry_out(
+            &database,
+            &Config::default(),
+            &container,
+            "nd-a",
+            Errand {
+                id: "er-1".into(),
+                kind: Kind::Host,
+                payload: serde_json::json!({ "project": "anything" }),
+            },
+        )
+        .await
+        .expect_err("refused");
+
+        assert!(error.contains("has not agreed to `host`"), "{error}");
+        assert!(
+            services::all(&database, None)
+                .await
+                .expect("services")
+                .is_empty(),
+            "it was refused before anything was written"
+        );
     }
 
     /// An instruction this version does not know is refused with a
@@ -710,6 +808,13 @@ mod tests {
     async fn a_host_errand_that_makes_no_sense_is_refused() {
         let database = crate::db::open_in_memory().await.expect("open");
         let container = Container::new();
+        crate::network::capability::grant(
+            &database,
+            "nd-authority",
+            &super::super::capability::Capability::ALL,
+        )
+        .await
+        .expect("grant");
 
         let error = carry_out(
             &database,

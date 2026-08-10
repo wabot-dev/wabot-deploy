@@ -127,6 +127,11 @@ pub struct Node {
     pub overlay_ip: Option<String>,
     pub is_self: bool,
     pub last_seen_at: Option<i64>,
+    /// What this node lets **us** ask of it — learned, never decided
+    /// here. The decision lives on that machine, in its own
+    /// `node_grant`, and it travels on the report it already sends. See
+    /// migration `0026`.
+    pub allows: Vec<capability::Capability>,
 }
 
 impl Node {
@@ -157,11 +162,12 @@ fn read(row: &Row<'_>) -> wabot::sqlite::rusqlite::Result<Node> {
         overlay_ip: row.get(5)?,
         is_self: row.get::<_, i64>(6)? != 0,
         last_seen_at: row.get(7)?,
+        allows: capability::parse_list(&row.get::<_, Option<String>>(8)?.unwrap_or_default()),
     })
 }
 
 const COLUMNS: &str = "\"id\", \"name\", \"kind\", \"endpoint\", \"public_key\", \
-                       \"overlay_ip\", \"is_self\", \"last_seen_at\"";
+                       \"overlay_ip\", \"is_self\", \"last_seen_at\", \"allows\"";
 
 /// Write, or bring up to date, the row for the node this process is.
 ///
@@ -221,6 +227,10 @@ pub async fn ensure_self(database: &SqliteDatabase, config: &Config) -> NetworkR
         // itself, and answering it would put a heartbeat on the page
         // that only ever says now.
         last_seen_at: None,
+        // A node needs no permission from itself. What it will do for
+        // anybody is `capability::provides`, and the selectors read
+        // that for the self row rather than this.
+        allows: Vec::new(),
     };
 
     save(database, &node).await?;
@@ -309,15 +319,16 @@ pub async fn save(database: &SqliteDatabase, node: &Node) -> NetworkResult<()> {
             connection.execute(
                 "INSERT INTO node \
                    (\"id\", \"name\", \"kind\", \"endpoint\", \"public_key\", \"overlay_ip\", \
-                    \"is_self\", \"joined_at\", \"last_seen_at\") \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9) \
+                    \"is_self\", \"joined_at\", \"last_seen_at\", \"allows\") \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10) \
                  ON CONFLICT (\"id\") DO UPDATE SET \
                    \"name\" = excluded.\"name\", \
                    \"kind\" = excluded.\"kind\", \
                    \"endpoint\" = excluded.\"endpoint\", \
                    \"public_key\" = excluded.\"public_key\", \
                    \"overlay_ip\" = excluded.\"overlay_ip\", \
-                   \"last_seen_at\" = excluded.\"last_seen_at\"",
+                   \"last_seen_at\" = excluded.\"last_seen_at\", \
+                   \"allows\" = excluded.\"allows\"",
                 (
                     node.id,
                     node.name,
@@ -328,6 +339,7 @@ pub async fn save(database: &SqliteDatabase, node: &Node) -> NetworkResult<()> {
                     i64::from(node.is_self),
                     now_ms(),
                     node.last_seen_at,
+                    capability::to_list(&node.allows),
                 ),
             )?;
             Ok(())
@@ -656,6 +668,7 @@ pub(crate) mod tests {
             overlay_ip: None,
             is_self: false,
             last_seen_at: None,
+            allows: Vec::new(),
         }
     }
 

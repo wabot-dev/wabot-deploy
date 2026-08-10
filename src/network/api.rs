@@ -45,6 +45,15 @@ pub struct Arriving {
     /// Its overlay public key, so the authority has everything it needs
     /// to build a tunnel when there is one to build.
     pub public_key: String,
+    /// What it agreed the enrolling node may ask of it, out of what the
+    /// token asked for.
+    ///
+    /// It travels because it has to: the decision is a row on the
+    /// joining machine, and the node that will be doing the asking has
+    /// no way to read it. Absent from an older node, and read as
+    /// everything — the terms a join carried before it carried any.
+    #[serde(default)]
+    pub accepted: Option<Vec<String>>,
 }
 
 /// What the authority answers with.
@@ -99,6 +108,18 @@ pub struct Report {
     /// the operator can see is public.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub endpoint: Option<String>,
+    /// What the reporting node has agreed the *reader* may ask of it.
+    ///
+    /// Comma-separated, stored on that node's row — see migration
+    /// `0026`. The decision is a row on the reporting machine and this
+    /// is the only way it can travel; on every report rather than only
+    /// at join, so revoking something stops it being offered within one
+    /// interval instead of at a next join that never comes.
+    ///
+    /// `None` from an older node, read as "no change" — the same rule
+    /// `endpoint` follows, and for the same reason.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allows: Option<String>,
 }
 
 /// One copy, as the node running it sees it.
@@ -285,8 +306,13 @@ impl NetworkApi {
 
         // Before the replicas, because it is about the node itself and
         // a failure to read one replica must not lose it.
-        if let Err(error) =
-            note_reachability(&self.database, &node, report.endpoint.as_deref()).await
+        if let Err(error) = note_reachability(
+            &self.database,
+            &node,
+            report.endpoint.as_deref(),
+            report.allows.as_deref(),
+        )
+        .await
         {
             return Ok(unreadable(error));
         }
@@ -412,6 +438,17 @@ impl NetworkApi {
                 ),
                 is_self: false,
                 last_seen_at: Some(now_ms()),
+                // What it agreed to, said by the node that agreed. This
+                // is the only way this side can ever know: the decision
+                // is a row on that machine, in a database this one has
+                // no access to and should not have.
+                //
+                // An older node sends nothing and is read as both — the
+                // terms every join was made under before there were any.
+                allows: match &arriving.accepted {
+                    Some(names) => super::capability::parse_list(&names.join(",")),
+                    None => super::capability::Capability::ALL.to_vec(),
+                },
             },
         )
         .await;
@@ -559,6 +596,7 @@ async fn note_reachability(
     database: &SqliteDatabase,
     node_id: &str,
     endpoint: Option<&str>,
+    allows: Option<&str>,
 ) -> NetworkResult<()> {
     let Some(node) = super::find(database, node_id).await? else {
         return Ok(());
@@ -575,9 +613,20 @@ async fn note_reachability(
         None => node.endpoint.clone(),
     };
 
+    // What it has agreed this node may ask of it. Its own answer, and
+    // the only one available — the grant is a row on that machine. An
+    // absent field is an older node and changes nothing; an **empty**
+    // one is a node that has revoked everything, which is a thing it is
+    // entitled to do and this side has to hear.
+    let allows = match allows {
+        Some(list) => super::capability::parse_list(list),
+        None => node.allows.clone(),
+    };
+
     super::save(
         database,
         &Node {
+            allows,
             // Derived from the endpoint rather than reported, the same
             // way this node decides its own: a kind somebody can send
             // is a kind somebody can send wrongly, and an unrecognised
@@ -991,6 +1040,51 @@ mod tests {
         assert_eq!(after.endpoint.as_deref(), Some("alpine.example:443"));
         assert!(after.may_be_edge());
         assert!(after.last_seen_at.is_some(), "it was just heard from");
+    }
+
+    /// The grant is a row on the *other* machine, so the node doing the
+    /// asking can only ever be told. It arrives on the report, which is
+    /// what lets a node revoke something and have the other side stop
+    /// offering it within one interval — rather than at a next join
+    /// that never comes.
+    #[tokio::test]
+    async fn what_a_node_allows_travels_on_its_report() {
+        let authority = authority().await;
+        authority
+            .harness
+            .post("/api/network/join")
+            .header("authorization", format!("Bearer {}", authority.secret))
+            .json(&arriving())
+            .send()
+            .await
+            .assert_ok();
+
+        for (reported, expected) in [
+            (
+                "host,edge",
+                vec![
+                    crate::network::capability::Capability::Host,
+                    crate::network::capability::Capability::Edge,
+                ],
+            ),
+            ("edge", vec![crate::network::capability::Capability::Edge]),
+            ("", Vec::new()),
+        ] {
+            authority
+                .harness
+                .post("/api/network/report")
+                .header("authorization", format!("Bearer {}", authority.secret))
+                .json(&serde_json::json!({ "replicas": [], "allows": reported }))
+                .send()
+                .await
+                .assert_ok();
+
+            let after = super::super::find(&authority.database, "nd-joining001")
+                .await
+                .expect("query")
+                .expect("joined");
+            assert_eq!(after.allows, expected, "after reporting {reported:?}");
+        }
     }
 
     /// A node whose domain was taken away is no longer somewhere to
