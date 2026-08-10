@@ -2037,6 +2037,14 @@ impl ServiceApi {
 
         if placements.iter().any(|replica| replica.is_here()) {
             self.enqueue(&service.id, None).await;
+        } else {
+            // Nothing here to deploy, and the routes are wrong anyway:
+            // a service whose last copy just left this node has a name
+            // pointing at a container that is gone. The deployment is
+            // what usually recomputes them, so with no deployment to
+            // queue this has to say so itself — otherwise the name
+            // proxies to an address nothing answers on, silently.
+            self.state.deployer.sync_routes().await;
         }
 
         self.dispatch_edges(service, &placements).await?;

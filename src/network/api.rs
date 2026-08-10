@@ -145,6 +145,12 @@ pub struct NetworkApi {
     /// For the overlay: a node that just joined is a peer, and the
     /// interface has to be told before anything can reach it.
     config: Arc<crate::config::Config>,
+    /// For the routes. A report is the only way this node learns the
+    /// port a copy elsewhere answers on, so it is also the moment the
+    /// name pointing at that copy becomes routable — and nothing else
+    /// would notice: the deployment that usually recomputes routes runs
+    /// on the *other* node.
+    deployer: Arc<crate::deploy::Deployer>,
 }
 
 #[rest_controller("/api/network")]
@@ -292,6 +298,13 @@ impl NetworkApi {
                 Ok(false) => {}
                 Err(error) => return Ok(unreadable(error)),
             }
+        }
+
+        // Only when something moved, so a node saying the same thing
+        // every fifteen seconds does not rebuild the table every
+        // fifteen seconds.
+        if recorded > 0 {
+            self.deployer.sync_routes().await;
         }
 
         tracing::debug!(node = %node, recorded, "a node reported");
@@ -706,6 +719,12 @@ mod tests {
 
         let container = Container::new();
         container.register_instance::<SqliteDatabase>(database.clone());
+        // The controller recomputes routes after a report, so it wants
+        // one. Without containerd it can only ever read rows, which is
+        // all these tests ask of it.
+        container.register_instance::<crate::deploy::Deployer>(Arc::new(
+            crate::deploy::Deployer::new(database.clone(), &Config::default()),
+        ));
         register(&container, Config::default());
 
         Authority {

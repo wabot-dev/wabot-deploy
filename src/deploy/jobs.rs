@@ -120,6 +120,14 @@ impl DeployHandler {
             .map_err(|error| AsyncError::Handler(error.to_string()))?
             .is_none()
         {
+            // The routes still have to be recomputed, and this is
+            // exactly the moment they are wrong: a service whose last
+            // copy just left this node has a route pointing at a
+            // container that is gone. Returning without it left the
+            // name proxying to an address nothing answers on — which is
+            // worse than the ERROR this replaced, because it fails
+            // silently.
+            self.deployer.sync_routes().await;
             tracing::info!(
                 service = %service.slug,
                 "every copy of this service runs on another node; nothing to deploy here"
