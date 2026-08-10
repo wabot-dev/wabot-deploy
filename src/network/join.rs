@@ -64,8 +64,23 @@ pub async fn join(
     database: &SqliteDatabase,
     config: &Config,
     token: &str,
+    accepting: Option<&[super::capability::Capability]>,
 ) -> Result<Joined, JoinError> {
     let token = JoinToken::decode(token)?;
+
+    // What this node agrees to, out of what the token asked for.
+    // `None` is "whatever it asked" — the terminal path, where there is
+    // nobody to show a screen to and running the command *is* the
+    // consent. The console passes what somebody ticked, which can be
+    // less and can be nothing at all.
+    let agreed: Vec<super::capability::Capability> = match accepting {
+        Some(chosen) => token
+            .requires()
+            .into_iter()
+            .filter(|capability| chosen.contains(capability))
+            .collect(),
+        None => token.requires(),
+    };
 
     // This node's own identity, and the key the other end is about to
     // record. Neither is a grant — nothing has been given away yet.
@@ -106,6 +121,15 @@ pub async fn join(
         last_seen_at: Some(now_ms()),
     };
     super::save(database, &authority).await?;
+
+    // What this node has agreed the authority may ask of it. Written
+    // before the grant, so there is never a moment where the authority
+    // may send errands and nothing says which — an empty grant refuses
+    // everything, which is a legible state, and the absence of rows
+    // would have read as one too.
+    super::capability::grant(database, &token.authority, &agreed)
+        .await
+        .map_err(super::NetworkError::from)?;
 
     // The row this whole thing exists to write. Revocable from here,
     // which is what makes joining not a one-way door.
@@ -157,6 +181,8 @@ mod tests {
             overlay_ip: "10.42.0.1".into(),
             assigned_ip: "10.42.0.2".into(),
             secret: "a-very-long-secret".into(),
+            requires: None,
+            offers: None,
         }
     }
 
@@ -167,7 +193,7 @@ mod tests {
         let database = crate::db::open_in_memory().await.expect("open");
         let config = Config::default();
 
-        let error = join(&database, &config, &token().encode())
+        let error = join(&database, &config, &token().encode(), None)
             .await
             .expect_err("nothing answered");
         assert!(matches!(error, JoinError::Call(_)), "{error}");
@@ -193,7 +219,7 @@ mod tests {
     #[tokio::test]
     async fn something_that_is_not_a_token_never_reaches_the_network() {
         let database = crate::db::open_in_memory().await.expect("open");
-        let error = join(&database, &Config::default(), "hunter2")
+        let error = join(&database, &Config::default(), "hunter2", None)
             .await
             .expect_err("not a token");
 

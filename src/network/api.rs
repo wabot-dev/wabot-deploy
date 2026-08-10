@@ -713,9 +713,16 @@ mod tests {
         let address = super::super::overlay::allocate(&database)
             .await
             .expect("allocate");
-        let (_, secret) = enrolment::create(&database, "alpine", &address, &admin)
-            .await
-            .expect("minted");
+        let (_, secret) = enrolment::create(
+            &database,
+            "alpine",
+            &address,
+            &admin,
+            &crate::network::capability::Capability::ALL,
+            &crate::network::capability::Capability::ALL,
+        )
+        .await
+        .expect("minted");
 
         let container = Container::new();
         container.register_instance::<SqliteDatabase>(database.clone());

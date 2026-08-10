@@ -25,7 +25,10 @@ pub async fn run(config: Config, token: &str) -> anyhow::Result<i32> {
     }
     let database = crate::db::open(&config.database_path()).await?;
 
-    let outcome = network::join::join(&database, &config, token).await;
+    // `None`: running the command is the consent. There is nobody here
+    // to show terms to, and somebody typing this has the token in their
+    // hand — the console is where the screen belongs.
+    let outcome = network::join::join(&database, &config, token, None).await;
     database.close().await?;
 
     match outcome {
@@ -90,6 +93,10 @@ mod tests {
             overlay_ip: "10.42.0.1".into(),
             assigned_ip: "10.42.0.2".into(),
             secret: "a-very-long-secret".into(),
+            // What a token minted before the terms existed carries, and
+            // what it therefore means: both capabilities.
+            requires: None,
+            offers: None,
         }
     }
 

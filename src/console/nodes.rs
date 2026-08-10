@@ -63,6 +63,10 @@ pub struct NodesPage {
     /// query string is the right place for it — the same rule
     /// `back_with_error` follows.
     pub joined: Option<String>,
+    /// Names a pasted token waiting to be read *once*, so its terms can
+    /// be shown before it is spent. Same store and same rule as
+    /// `shown`: the nonce travels, the token does not.
+    pub review: Option<String>,
 }
 
 #[injectable]
@@ -88,6 +92,17 @@ impl NodePages {
         let nodes = network::all(&self.state.database).await?;
         let enrolments = network::enrolment::all(&self.state.database).await?;
         let authorities = network::authorities(&self.state.database).await?;
+        // What each of them was actually agreed to, which is the whole
+        // point of the terms screen: a row saying only "takes
+        // instructions from" would hide the difference between a node
+        // that may do everything here and one that may do nothing.
+        let mut agreed: Vec<(String, Vec<network::capability::Capability>)> = Vec::new();
+        for authority in &authorities {
+            agreed.push((
+                authority.node_id.clone(),
+                network::capability::granted_to(&self.state.database, &authority.node_id).await,
+            ));
+        }
         let projects = access::projects_for(&self.state.database, &account).await?;
         // Spent on read: the token exists in clear for exactly this one
         // page load, and a query parameter would put it in the address
@@ -96,6 +111,19 @@ impl NodePages {
             .shown
             .as_deref()
             .and_then(|nonce| self.state.reveals.take(nonce));
+        // A token pasted a moment ago, held for exactly this render so
+        // its terms can be read before it is spent. Taken, not copied:
+        // a reload asks for it again, which is the same behaviour the
+        // minted token has and is the honest one for a secret.
+        let reviewing = query
+            .review
+            .as_deref()
+            .and_then(|nonce| self.state.reveals.take(nonce))
+            .and_then(|token| {
+                network::token::JoinToken::decode(&token)
+                    .ok()
+                    .map(|terms| (token, terms))
+            });
         // Whether this node has an address another one could be told to
         // call back on. Derived rather than set — see
         // `network::Node::may_be_edge`.
@@ -133,6 +161,10 @@ impl NodePages {
                 )</p>
                 @if let Some(message) = &query.error {
                     (layout::error_note(message))
+                }
+
+                @if let Some((token, terms)) = &reviewing {
+                    (review_card(token, terms))
                 }
 
                 (capabilities_card(hosts, edges, reachable))
@@ -208,11 +240,22 @@ impl NodePages {
                         )</p>
                         <table>
                             <thead>
-                                <tr><th>("Node")</th><th>("State")</th><th></th></tr>
+                                <tr>
+                                    <th>("Node")</th><th>("May")</th>
+                                    <th>("State")</th><th></th>
+                                </tr>
                             </thead>
                             <tbody>
                                 @for authority in &authorities {
-                                    (authority_row(authority, &nodes))
+                                    (authority_row(
+                                        authority,
+                                        &nodes,
+                                        agreed
+                                            .iter()
+                                            .find(|(id, _)| id == &authority.node_id)
+                                            .map(|(_, held)| held.as_slice())
+                                            .unwrap_or_default(),
+                                    ))
                                 }
                             </tbody>
                         </table>
@@ -423,6 +466,106 @@ impl NodePages {
     }
 }
 
+/// The terms of a join, before it is a join.
+///
+/// Two lists and a decision. What the other node is **asking** of this
+/// one, each item its own checkbox because each is refusable on its
+/// own — a node may agree to serve somebody's names and never run their
+/// containers — and what it **offers** in return, which is not a
+/// checkbox because it is not this node's to accept or decline: it is
+/// what the other node has already decided to allow.
+///
+/// Ticking nothing is a real answer and stays available. A node can
+/// join to *use* another one and agree to do nothing for it, and a
+/// screen that made the empty choice impossible would be asking for
+/// consent it had already decided to have.
+fn review_card<'a>(token: &'a str, terms: &'a network::token::JoinToken) -> impl Renderable + 'a {
+    let requires = terms.requires();
+    let offers = terms.offers();
+    rsx! {
+        <section class="stack">
+            <p class="card-label">("Before you join")</p>
+            <form method="post" action="/nodes/join" class="card stack">
+                <input type="hidden" name="token" value=(token)>
+                <input type="hidden" name="agreed" value="1">
+
+                <p class="tile-detail">
+                    (format!("{} is asking to be able to:", terms.name))
+                </p>
+                @if requires.is_empty() {
+                    <p class="tile-detail">(
+                        "Nothing. It is handing this node an address on its \
+                         overlay and asking for nothing back."
+                    )</p>
+                } @else {
+                    @for capability in &requires {
+                        <label class="capability">
+                            <input type="checkbox" name=(format!("accept-{}", capability.name()))
+                                   value="1" checked>
+                            <span>
+                                <strong>(asking(*capability))</strong>
+                                <span class="tile-detail">(why(*capability))</span>
+                            </span>
+                        </label>
+                    }
+                    <p class="field-hint">(
+                        "Untick anything you would rather not agree to. You can \
+                         revoke any of it later from this page, and this node \
+                         keeps working either way."
+                    )</p>
+                }
+
+                <p class="tile-detail">(format!("In return, {} lets this node:", terms.name))</p>
+                @if offers.is_empty() {
+                    <p class="tile-detail">(
+                        "Nothing. This node will take its instructions and give \
+                         it none."
+                    )</p>
+                } @else {
+                    <ul class="notes">
+                        @for capability in &offers {
+                            <li>(offering(*capability))</li>
+                        }
+                    </ul>
+                }
+
+                <div class="actions">
+                    <button type="submit">("Join")</button>
+                    <a class="btn btn-ghost" href="/nodes">("Cancel")</a>
+                </div>
+            </form>
+        </section>
+    }
+}
+
+/// What holding this capability lets the other node do here.
+fn asking(capability: network::capability::Capability) -> &'static str {
+    match capability {
+        network::capability::Capability::Host => "Run its containers on this node",
+        network::capability::Capability::Edge => "Have this node answer for its hostnames",
+    }
+}
+
+fn why(capability: network::capability::Capability) -> &'static str {
+    match capability {
+        network::capability::Capability::Host => {
+            "It can place replicas of its services here and pull the images \
+             for them. It cannot touch anything else on this node."
+        }
+        network::capability::Capability::Edge => {
+            "It can ask this node to terminate TLS for one of its names and \
+             proxy to wherever that service runs."
+        }
+    }
+}
+
+fn offering(capability: network::capability::Capability) -> &'static str {
+    match capability {
+        network::capability::Capability::Host => "Run this node's containers over there",
+        network::capability::Capability::Edge => "Answer for this node's hostnames",
+    }
+}
+
 /// What this node is willing to do, for anybody — itself included.
 ///
 /// Two switches rather than a "private node" one, because private is not
@@ -503,6 +646,33 @@ fn enrol_card(may_enrol: bool) -> impl Renderable {
                     <label for="name">("What to call it")</label>
                     <input id="name" name="name" type="text"
                            placeholder="alpine" required>
+
+                    <p class="tile-detail">("Ask that node to let this one:")</p>
+                    <label class="capability">
+                        <input type="checkbox" name="require-host" value="1" checked>
+                        <span>("Run this node's containers there")</span>
+                    </label>
+                    <label class="capability">
+                        <input type="checkbox" name="require-edge" value="1" checked>
+                        <span>("Have it answer for this node's hostnames")</span>
+                    </label>
+
+                    <p class="tile-detail">("And offer it, in return:")</p>
+                    <label class="capability">
+                        <input type="checkbox" name="offer-host" value="1">
+                        <span>("Run its containers on this node")</span>
+                    </label>
+                    <label class="capability">
+                        <input type="checkbox" name="offer-edge" value="1">
+                        <span>("Answer for its hostnames from this node")</span>
+                    </label>
+                    <p class="field-hint">(
+                        "Both lists travel inside the token and are shown on the \
+                         other machine before it is spent. Whoever holds it \
+                         accepts or refuses each one — so what is asked for here \
+                         is a request, not a setting."
+                    )</p>
+
                     <p class="field-hint">(
                         "This mints a token carrying this node's address, its overlay \
                          key and an address on the overlay for the new node. Joining \
@@ -762,6 +932,7 @@ fn enrolment_row(enrolment: &Enrolment, now: i64) -> impl Renderable + '_ {
 fn authority_row<'a>(
     authority: &'a network::Authority,
     nodes: &'a [network::Node],
+    held: &'a [network::capability::Capability],
 ) -> impl Renderable + 'a {
     let name = nodes
         .iter()
@@ -774,6 +945,15 @@ fn authority_row<'a>(
             <td>
                 (name)
                 <span class="tile-detail">(" ")(&authority.node_id)</span>
+            </td>
+            <td>
+                @if held.is_empty() {
+                    <span class="tile-detail">("nothing")</span>
+                } @else {
+                    @for capability in held {
+                        <span class="badge">(capability.name())</span>
+                    }
+                }
             </td>
             <td>
                 @if authority.live() {
@@ -1489,10 +1669,34 @@ impl NodeApi {
             ));
         };
 
+        // The terms, from the same checkboxes on both halves of the
+        // form. What this node will *ask* of the joiner, and what it
+        // will *let* the joiner ask of it — bounded, on the second
+        // half, by what this node provides at all: offering a
+        // capability it has turned off is a promise already declined.
+        let requires: Vec<network::capability::Capability> = network::capability::Capability::ALL
+            .into_iter()
+            .filter(|capability| form.contains_key(&format!("require-{}", capability.name())))
+            .collect();
+        let mut offers = Vec::new();
+        for capability in network::capability::Capability::ALL {
+            if form.contains_key(&format!("offer-{}", capability.name()))
+                && network::capability::provides(&self.state.database, capability).await
+            {
+                offers.push(capability);
+            }
+        }
+
         let assigned_ip = network::overlay::allocate(&self.state.database).await?;
-        let (_, secret) =
-            network::enrolment::create(&self.state.database, name, &assigned_ip, &account.id)
-                .await?;
+        let (_, secret) = network::enrolment::create(
+            &self.state.database,
+            name,
+            &assigned_ip,
+            &account.id,
+            &requires,
+            &offers,
+        )
+        .await?;
 
         let token = network::token::JoinToken {
             authority: me.id,
@@ -1502,6 +1706,18 @@ impl NodeApi {
             overlay_ip,
             assigned_ip,
             secret,
+            requires: Some(
+                requires
+                    .iter()
+                    .map(|capability| capability.name().to_string())
+                    .collect(),
+            ),
+            offers: Some(
+                offers
+                    .iter()
+                    .map(|capability| capability.name().to_string())
+                    .collect(),
+            ),
         };
 
         // The nonce travels, not the token. This is the only moment it
@@ -1553,10 +1769,46 @@ impl NodeApi {
             return Ok(super::auth::back_with_error(here, "paste the join token"));
         }
 
+        // Read before it is spent. The terms travel inside the token,
+        // so this costs nothing but a decode — and asking afterwards
+        // would be a consent screen for a decision already made.
+        //
+        // Decoded here only to refuse a bad paste before showing terms
+        // about it. Then the nonce travels and the token does not: the
+        // rule the minted one already follows, because a query string
+        // is read by the address bar, the history and every refresh.
+        if !form.contains_key("agreed") {
+            if let Err(error) = network::token::JoinToken::decode(token) {
+                return Ok(super::auth::back_with_error(here, &error.to_string()));
+            }
+            let nonce = self.state.reveals.stash(token.to_string());
+            return Ok(super::auth::see_other(&format!(
+                "{here}?{}",
+                form_urlencoded::Serializer::new(String::new())
+                    .append_pair("review", &nonce)
+                    .finish()
+            )));
+        }
+
+        // What was ticked, which can be less than was asked for and can
+        // be nothing at all — a node may join to *use* another without
+        // agreeing to do anything for it.
+        let accepted: Vec<network::capability::Capability> = network::capability::Capability::ALL
+            .into_iter()
+            .filter(|capability| form.contains_key(&format!("accept-{}", capability.name())))
+            .collect();
+
         // The token is never carried back — not into the query string,
         // not into the form's value. A refusal says what was wrong with
         // it, which is all somebody needs to paste it again.
-        match network::join::join(&self.state.database, &self.state.config, token).await {
+        match network::join::join(
+            &self.state.database,
+            &self.state.config,
+            token,
+            Some(&accepted),
+        )
+        .await
+        {
             Ok(joined) => Ok(super::auth::see_other(&format!(
                 "{here}?{}",
                 form_urlencoded::Serializer::new(String::new())

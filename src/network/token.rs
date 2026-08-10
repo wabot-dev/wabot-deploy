@@ -52,6 +52,44 @@ pub struct JoinToken {
     /// The one part worth protecting: what an errand from the authority
     /// will carry, and what the callback authenticates with.
     pub secret: String,
+    /// What the minting node will ask of whoever spends this.
+    ///
+    /// The terms travel *with* the token, deliberately, so the node
+    /// spending it can read them before it commits. Asking for them
+    /// afterwards would be a consent screen for a decision already
+    /// made — which is worse than no screen, because it looks like one.
+    ///
+    /// Absent on a token minted before this existed, and read as both
+    /// capabilities: that is what those tokens meant.
+    #[serde(default)]
+    pub requires: Option<Vec<String>>,
+    /// What the minting node offers in return — what it will let the
+    /// joining node ask of *it*.
+    #[serde(default)]
+    pub offers: Option<Vec<String>>,
+}
+
+impl JoinToken {
+    /// What this token asks for, in capabilities this version knows.
+    pub fn requires(&self) -> Vec<super::capability::Capability> {
+        Self::read(&self.requires)
+    }
+
+    /// What it hands over.
+    pub fn offers(&self) -> Vec<super::capability::Capability> {
+        Self::read(&self.offers)
+    }
+
+    /// An absent list is both, because a token minted before the terms
+    /// existed granted everything. An *empty* list is empty — somebody
+    /// chose that, and reading their "nothing" as "everything" would be
+    /// the one mistake this whole phase exists to prevent.
+    fn read(field: &Option<Vec<String>>) -> Vec<super::capability::Capability> {
+        match field {
+            None => super::capability::Capability::ALL.to_vec(),
+            Some(names) => super::capability::parse_list(&names.join(",")),
+        }
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -115,7 +153,49 @@ mod tests {
             overlay_ip: "10.42.0.1".into(),
             assigned_ip: "10.42.0.2".into(),
             secret: "a-very-long-secret".into(),
+            requires: Some(vec!["host".into()]),
+            offers: Some(vec!["edge".into()]),
         }
+    }
+
+    /// A token from before the terms existed granted everything, so
+    /// that is what an absent list means. An **empty** one means empty:
+    /// somebody chose that, and reading their "nothing" as "everything"
+    /// is the one mistake this whole phase exists to prevent.
+    #[test]
+    fn an_absent_list_is_both_and_an_empty_one_is_neither() {
+        let old = JoinToken {
+            requires: None,
+            offers: None,
+            ..token()
+        };
+        assert_eq!(old.requires().len(), 2);
+        assert_eq!(old.offers().len(), 2);
+
+        let refused = JoinToken {
+            requires: Some(Vec::new()),
+            offers: Some(Vec::new()),
+            ..token()
+        };
+        assert!(refused.requires().is_empty());
+        assert!(refused.offers().is_empty());
+    }
+
+    /// A capability a newer node knows and this one does not is left
+    /// out, not refused: the rest of the terms are still readable, and
+    /// a join that failed because one word was new would make every
+    /// upgrade a flag day.
+    #[test]
+    fn a_capability_this_version_does_not_know_is_dropped() {
+        let ahead = JoinToken {
+            requires: Some(vec!["host".into(), "telepathy".into()]),
+            ..token()
+        };
+
+        assert_eq!(
+            ahead.requires(),
+            vec![crate::network::capability::Capability::Host]
+        );
     }
 
     #[test]

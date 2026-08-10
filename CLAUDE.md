@@ -318,6 +318,27 @@ follow, and all three were wrong before migration `0024`:
   hostname stored, shown, and served by nobody — which is what the first
   version did, caught only because a routing test asserted the route.
 
-Next: phase 8, groups — health and failover across the upstreams of one
+**A join states its terms, and the joiner reads them first.** The token
+carries what the minting node *requires* and what it *offers*, per
+capability; the joining console shows both lists and lets each required
+one be ticked or refused before the token is spent. That order is the
+whole point — terms shown after committing are a consent screen for a
+decision already made, which is worse than none because it looks like
+one. `wabot-deploy join` passes `None`, meaning "whatever it asked":
+there is nobody at a terminal to show a screen to, and typing the
+command is the consent.
+
+Two capabilities, `host` and `edge`, each granted and revoked on its
+own. `node_grant` lives on the node being asked, like the authority row
+and for the same reason. A grant is filtered through what the node
+provides *now*, so turning a switch off withdraws what was granted of
+it — the switch is the more recent decision.
+
+Both selectors read the grants. A node that never agreed to run your
+containers is not somewhere you can place a replica, and offering it
+produced an errand nobody would ever collect — which is exactly what the
+Alpine node did, silently, while its page said the name was served.
+
+Next: phase 9, groups — health and failover across the upstreams of one
 name. Today a dead replica keeps its share of the traffic until the
 owner notices.

@@ -63,6 +63,8 @@ pub async fn create(
     name: &str,
     overlay_ip: &str,
     created_by: &str,
+    requires: &[super::capability::Capability],
+    offers: &[super::capability::Capability],
 ) -> NetworkResult<(Enrolment, String)> {
     let secret = wabot::prelude::password::generate(40);
     let enrolment = Enrolment {
@@ -78,13 +80,17 @@ pub async fn create(
     let row = enrolment.clone();
     let hash = sha256_hex(&secret);
     let creator = created_by.to_string();
+    let (requires, offers) = (
+        super::capability::to_list(requires),
+        super::capability::to_list(offers),
+    );
     database
         .write(move |connection| {
             connection.execute(
                 "INSERT INTO enrolment \
                    (\"id\", \"name\", \"token_hash\", \"overlay_ip\", \"created_by\", \
-                    \"created_at\", \"expires_at\") \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                    \"created_at\", \"expires_at\", \"requires\", \"offers\") \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
                 (
                     row.id,
                     row.name,
@@ -93,6 +99,8 @@ pub async fn create(
                     creator,
                     row.created_at,
                     row.expires_at,
+                    requires,
+                    offers,
                 ),
             )?;
             Ok(())
@@ -224,9 +232,16 @@ mod tests {
     }
 
     async fn mint(database: &SqliteDatabase, admin: &str) -> (Enrolment, String) {
-        create(database, "alpine", "10.42.0.2", admin)
-            .await
-            .expect("minted")
+        create(
+            database,
+            "alpine",
+            "10.42.0.2",
+            admin,
+            &crate::network::capability::Capability::ALL,
+            &crate::network::capability::Capability::ALL,
+        )
+        .await
+        .expect("minted")
     }
 
     #[tokio::test]
@@ -383,9 +398,16 @@ mod tests {
     async fn the_list_says_which_ones_are_spent() {
         let (database, admin) = node().await;
         let (first, _) = mint(&database, &admin).await;
-        create(&database, "another", "10.42.0.3", &admin)
-            .await
-            .expect("minted");
+        create(
+            &database,
+            "another",
+            "10.42.0.3",
+            &admin,
+            &crate::network::capability::Capability::ALL,
+            &crate::network::capability::Capability::ALL,
+        )
+        .await
+        .expect("minted");
 
         spend(&database, &first.id, "nd-first")
             .await

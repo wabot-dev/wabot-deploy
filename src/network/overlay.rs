@@ -179,9 +179,16 @@ mod tests {
         let admin = crate::network::tests::admin(&database).await;
 
         let first = allocate(&database).await.expect("allocate");
-        crate::network::enrolment::create(&database, "alpine", &first, &admin)
-            .await
-            .expect("minted");
+        crate::network::enrolment::create(
+            &database,
+            "alpine",
+            &first,
+            &admin,
+            &crate::network::capability::Capability::ALL,
+            &crate::network::capability::Capability::ALL,
+        )
+        .await
+        .expect("minted");
 
         assert_ne!(allocate(&database).await.expect("allocate"), first);
     }
