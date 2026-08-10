@@ -23,7 +23,7 @@ use wabot::sqlite::SqliteDatabase;
 
 use super::errand::{self, Errand, Kind};
 use crate::config::Config;
-use crate::platform::{projects, registry_credentials, replicas, services, slugify};
+use crate::platform::{ports, projects, registry_credentials, replicas, services, slugify};
 use crate::runtime::images::Credential;
 
 /// How often a node asks. Short enough that a deployment somebody
@@ -290,6 +290,28 @@ async fn host_service(
         }
     };
 
+    // What the container listens on, so this node has something to
+    // bind on its overlay address for the edge that will proxy to it.
+    //
+    // Not published and with no hostname, and neither is an omission:
+    // the name belongs to the node that placed this, and answering for
+    // it here would be two nodes claiming one hostname. Reaching this
+    // copy goes through the port its own node opens on the overlay,
+    // which is the only address that is unique across nodes.
+    if let Some(container_port) = host.port {
+        let declared = ports::of_service(database, &service.id)
+            .await
+            .map_err(|error| error.to_string())?;
+        if !declared
+            .iter()
+            .any(|port| port.container_port == container_port)
+        {
+            ports::create(database, &service.id, container_port, false, None)
+                .await
+                .map_err(|error| error.to_string())?;
+        }
+    }
+
     // Exactly the copies it was told to run, in the service's own
     // numbering — and **only** those. A `host` errand is the whole of
     // what this node runs for that service, not an addition to it:
@@ -483,6 +505,54 @@ async fn ensure_project(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A copy placed on another node is reached through a port on that
+    /// node's overlay address, and that port can only be opened if the
+    /// node knows what the container listens on. The errand carried the
+    /// field and nothing filled it, so the copy ran and nothing could
+    /// reach it — which is the whole point of placing it.
+    ///
+    /// No hostname and not published, deliberately: the name belongs to
+    /// the node that placed this, and answering for it here would be
+    /// two nodes claiming one.
+    #[tokio::test]
+    async fn a_hosted_copy_knows_what_its_container_listens_on() {
+        let database = crate::db::open_in_memory().await.expect("open");
+        let container = Container::new();
+
+        let order = Errand {
+            id: "er-one".into(),
+            kind: Kind::Host,
+            payload: serde_json::json!({
+                "project": "shared",
+                "service": "web",
+                "image": "registry.example/web@sha256:abc",
+                "registry": "registry.example",
+                "username": "errand",
+                "secret": "s3cret",
+                "port": 80,
+                "slots": [3],
+            }),
+        };
+        // The deployment cannot run — there is no containerd here — but
+        // the rows it is queued from are written before that.
+        let _ = carry_out(&database, &Config::default(), &container, "nd-a", order).await;
+
+        let service = services::all(&database, None)
+            .await
+            .expect("services")
+            .pop()
+            .expect("the errand made one");
+        let declared = ports::of_service(&database, &service.id)
+            .await
+            .expect("ports")
+            .pop()
+            .expect("it knows what to bind");
+
+        assert_eq!(declared.container_port, 80);
+        assert!(declared.hostname.is_none(), "the name is not this node's");
+        assert!(declared.host_port.is_none(), "nothing published it here");
+    }
 
     /// A node holding nothing still has something to say: where the
     /// world can dial it. The report used to be skipped when it carried

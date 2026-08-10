@@ -262,11 +262,27 @@ impl Deployer {
         // what can reach it is a node on the overlay — not the
         // internet, which a `0.0.0.0` port would have handed it to.
         //
-        // Only for a port with a hostname. A service nothing serves by
-        // name has nothing an edge would proxy to, and opening a port
-        // for it would be opening one nobody asked for.
+        // A port with a hostname *here*, or any port at all on a
+        // service that belongs to another node. The second half is not
+        // a special case: a service that arrived on an errand has no
+        // hostname here — the name belongs to the node that placed it,
+        // and claiming it here would be this node answering for
+        // somebody else's name. Reading only the first condition left
+        // every replica placed on another node with no way in at all,
+        // which was the whole point of placing it.
+        //
+        // A service of this node's own with no name is still skipped:
+        // nothing would proxy to it, and opening a port for it would be
+        // opening one nobody asked for.
         let mut published = published;
-        if let Some(port) = ports.iter().find(|port| port.hostname.is_some()) {
+        let reachable = ports
+            .iter()
+            .find(|port| port.hostname.is_some())
+            .or_else(|| match service.is_ours() {
+                true => None,
+                false => ports.first(),
+            });
+        if let Some(port) = reachable {
             // Not on an overlay means nothing elsewhere can reach this
             // node anyway, so there is nothing to open a port for.
             if let Some(overlay) = self.overlay_address().await {

@@ -2108,7 +2108,17 @@ impl ServiceApi {
             username: "errand".into(),
             secret,
             env: service.env.clone(),
-            port: None,
+            // The port a name is served on, so the node running the
+            // copy has something to bind on its overlay address. Left
+            // empty when no port has a hostname: nothing would proxy to
+            // that service anyway, so a port there would be one nobody
+            // asked for.
+            port: crate::platform::ports::of_service(&self.state.database, &service.id)
+                .await
+                .map_err(|error| error.to_string())?
+                .into_iter()
+                .find(|port| port.hostname.is_some())
+                .map(|port| port.container_port),
             slots,
         })
         .map_err(|error| error.to_string())?;
