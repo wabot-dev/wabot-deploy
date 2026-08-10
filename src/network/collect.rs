@@ -222,7 +222,7 @@ async fn carry_out(
         Kind::Edge => {
             let edge: errand::Edge = serde_json::from_value(order.payload)
                 .map_err(|error| format!("that is not an edge errand: {error}"))?;
-            serve_name(database, authority, edge).await
+            serve_name(database, container, authority, edge).await
         }
         // An instruction from a newer node. Refused with the reason
         // rather than dropped — the authority learns that this node is
@@ -363,6 +363,7 @@ async fn host_service(
 /// sent twice must not fail the second time.
 async fn serve_name(
     database: &SqliteDatabase,
+    container: &Container,
     authority: &str,
     edge: errand::Edge,
 ) -> Result<(), String> {
@@ -400,6 +401,7 @@ async fn serve_name(
         crate::network::release(database, &edge.hostname)
             .await
             .map_err(|error| error.to_string())?;
+        reload_routes(container).await;
         return Ok(());
     }
 
@@ -415,6 +417,8 @@ async fn serve_name(
     .await
     .map_err(|error| error.to_string())?;
 
+    reload_routes(container).await;
+
     tracing::info!(
         hostname = %edge.hostname,
         upstreams = edge.upstreams.len(),
@@ -422,6 +426,25 @@ async fn serve_name(
         "serving a name for another node"
     );
     Ok(())
+}
+
+/// Put the table the listener reads in step with the rows.
+///
+/// Writing the route row is not serving the name: the edge answers from
+/// a table held in memory, and until something reloads it the node keeps
+/// proxying to whatever it had. It took a restart to see that — the row
+/// was right the whole time and the requests were going somewhere else
+/// entirely.
+///
+/// The deployer out of the container, not a new one: a `Deployer::new`
+/// has no handle on the live table, so it would write the database again
+/// and change nothing. A node with no deployer registered has no
+/// listener either, which is every test in this file.
+async fn reload_routes(container: &Container) {
+    match container.try_resolve::<crate::deploy::Deployer>() {
+        Ok(deployer) => deployer.sync_routes().await,
+        Err(_) => tracing::debug!("no deployer here; the routes stay as they are"),
+    }
 }
 
 /// Stop every copy of this service here that the errand did not name.
@@ -614,7 +637,7 @@ mod tests {
             upstreams: vec!["10.42.0.3:30000".into(), "10.42.0.3:30001".into()],
         };
 
-        serve_name(&database, "nd-first", edge.clone())
+        serve_name(&database, &Container::new(), "nd-first", edge.clone())
             .await
             .expect("served");
 
@@ -635,11 +658,11 @@ mod tests {
         );
 
         // Sent twice by the same authority is the same instruction.
-        serve_name(&database, "nd-first", edge.clone())
+        serve_name(&database, &Container::new(), "nd-first", edge.clone())
             .await
             .expect("again");
 
-        let refused = serve_name(&database, "nd-second", edge)
+        let refused = serve_name(&database, &Container::new(), "nd-second", edge)
             .await
             .expect_err("refused");
         assert!(
@@ -657,6 +680,7 @@ mod tests {
         let database = crate::db::open_in_memory().await.expect("open");
         serve_name(
             &database,
+            &Container::new(),
             "nd-first",
             errand::Edge {
                 hostname: "app.example.com".into(),
