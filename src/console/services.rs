@@ -2131,12 +2131,30 @@ impl ServiceApi {
         let upstreams = crate::platform::edges::upstreams(placements, &nodes);
         let me = nodes.iter().find(|node| node.is_self).map(|node| &*node.id);
 
+        let edge = crate::network::capability::Capability::Edge;
         for (hostname, node_id) in chosen {
             // This node's own choice needs no errand — an errand queued
             // for itself is one nobody ever collects, because a node
             // does not poll itself. Its route comes from the local sync
             // below, off the same rows.
             if Some(&*node_id) == me {
+                continue;
+            }
+            // And a node that no longer lets this one ask gets none
+            // either. The row outlives the permission — it was written
+            // when the answer was different, or under a version that
+            // never asked — and queueing against it produces errands
+            // that node refuses for ever while this page says the name
+            // is served.
+            if !nodes
+                .iter()
+                .any(|node| node.id == node_id && node.allows.contains(&edge))
+            {
+                tracing::debug!(
+                    node = %node_id,
+                    %hostname,
+                    "skipped: that node has not agreed to serve names for this one"
+                );
                 continue;
             }
             let payload = serde_json::to_value(crate::network::errand::Edge {
