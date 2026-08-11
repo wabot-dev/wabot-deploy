@@ -2198,7 +2198,7 @@ impl NodeApi {
                 let payload = serde_json::to_string(&Live {
                     inner: cells(&snapshot),
                     certificate: certificate_cells(&certificate, &facts, domain.as_deref()),
-                    errands: errand_cells(&state, &id).await,
+                    errands: errand_cells(&state.database, &id).await,
                 })
                 .unwrap_or_else(|_| "{}".into());
                 yield Ok::<_, std::convert::Infallible>(
@@ -2262,9 +2262,12 @@ struct ErrandCell {
 /// done, so "waiting to be collected" is precisely the state somebody
 /// stares at after pressing the button — and it used to stay on screen
 /// long after the far node had finished.
-async fn errand_cells(state: &ConsoleState, node_id: &str) -> BTreeMap<String, ErrandCell> {
+async fn errand_cells(
+    database: &wabot::sqlite::SqliteDatabase,
+    node_id: &str,
+) -> BTreeMap<String, ErrandCell> {
     let mut cells = BTreeMap::new();
-    let Ok(orders) = network::errand::all(&state.database).await else {
+    let Ok(orders) = network::errand::all(database).await else {
         return cells;
     };
 
@@ -2961,15 +2964,53 @@ pub(crate) mod tests {
             "it rendered this node's own cards: {body}"
         );
 
-        // The stream belongs to this node's page alone — it carries a
-        // memory reading, and there is nowhere to get that node's.
-        console
-            .harness
-            .get("/nodes/nd-elsewhere1/live")
-            .header("cookie", &cookie)
-            .send()
-            .await
-            .assert_status(StatusCode::NOT_FOUND);
+        // It has a stream now, and only the errands are in it: a node
+        // collects on a fifteen-second timer, so "waiting to be
+        // collected" is exactly the badge somebody watches after
+        // pressing the button. Memory and certificates stay behind
+        // `mine` — those are answers only that machine can give, and
+        // streaming this one's under its name would be invention.
+        //
+        // Asserted from the page rather than by calling `/live`: a
+        // successful stream never ends, and a test that asks for one
+        // waits for a body that will not come. That is what this test
+        // did for an hour when the endpoint stopped answering 404 —
+        // see `errands_are_reported_for_the_node_they_were_sent_to`
+        // for the contents, which is the part worth pinning anyway.
+        assert!(
+            body.contains("data-island=\"node-live\""),
+            "a joined node's page follows its errands: {body}"
+        );
+    }
+
+    /// What the joined node's page shows about each instruction, and
+    /// the reason it is tested here rather than through the stream: a
+    /// stream that works never ends, so asking for one in a test is
+    /// asking for a body that never arrives.
+    #[tokio::test]
+    async fn errands_are_reported_for_the_node_they_were_sent_to() {
+        let console = Console::new().await;
+        joined(&console, "nd-elsewhere1").await;
+
+        network::errand::queue(
+            &console.database,
+            "nd-elsewhere1",
+            network::errand::Kind::Host,
+            &serde_json::json!({ "project": "shared" }),
+        )
+        .await
+        .expect("queued");
+
+        let cells = errand_cells(&console.database, "nd-elsewhere1").await;
+        let (_, cell) = cells.iter().next().expect("one errand");
+        assert_eq!(cell.word, "Waiting to be collected");
+
+        assert!(
+            errand_cells(&console.database, "nd-somebody-else")
+                .await
+                .is_empty(),
+            "an errand belongs to the node it was sent to"
+        );
     }
 
     #[tokio::test]
