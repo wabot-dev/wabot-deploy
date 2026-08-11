@@ -686,6 +686,235 @@ fn role_means(role: ProjectRole) -> &'static str {
     }
 }
 
+/// Everything on a project's pages that changes without a click.
+///
+/// Three maps rather than one, because they are keyed by three
+/// different things and a page shows some or all of them: the overview
+/// has services, the service page has services *and* its replicas and
+/// its names.
+///
+/// It grew from the services map alone, and the gap was the point: a
+/// replica placed on another node and a certificate being issued are
+/// exactly the two things somebody presses a button and then waits for,
+/// and both left the page frozen with a badge that had been true when
+/// it rendered.
+#[derive(serde::Serialize)]
+pub(crate) struct Live {
+    services: std::collections::BTreeMap<String, StateCell>,
+    replicas: std::collections::BTreeMap<String, ReplicaCell>,
+    names: std::collections::BTreeMap<String, NameCell>,
+    edges: std::collections::BTreeMap<String, EdgeCell>,
+}
+
+/// One replica, as its row reads.
+#[derive(serde::Serialize)]
+pub(crate) struct ReplicaCell {
+    badge: &'static str,
+    dot: &'static str,
+    word: String,
+    /// The line under it: an address while it is up, a reason while it
+    /// is not, empty when there is nothing to add.
+    detail: String,
+}
+
+/// One hostname, as far as its certificate has got.
+#[derive(serde::Serialize)]
+pub(crate) struct NameCell {
+    /// Whether to show the "on the way" badge at all. The page renders
+    /// it either way and this hides it — the same mechanism the deploy
+    /// and stop controls use, so nothing has to be built client-side.
+    waiting: bool,
+}
+
+/// One node asked to serve one name, as far as the asking has got.
+#[derive(serde::Serialize)]
+pub(crate) struct EdgeCell {
+    badge: &'static str,
+    dot: &'static str,
+    word: &'static str,
+}
+
+/// How far each edge instruction has got.
+///
+/// Keyed `hostname|node`, which is what the row is: the same name can be
+/// asked of several nodes and each answers on its own.
+///
+/// Read from the errand, because the errand is the only thing that
+/// crosses. A tick used to be the end of what the page said — an errand
+/// went out, a name was claimed and a certificate ordered, and none of
+/// it came back — so the honest reading of a ticked box was "somebody
+/// asked for this once".
+async fn edge_cells(
+    state: &super::ConsoleState,
+    project: &crate::platform::projects::Project,
+) -> std::collections::BTreeMap<String, EdgeCell> {
+    let mut cells = std::collections::BTreeMap::new();
+    let Ok(services) = crate::platform::services::all(&state.database, Some(&project.id)).await
+    else {
+        return cells;
+    };
+    let orders = crate::network::errand::all(&state.database)
+        .await
+        .unwrap_or_default();
+
+    for service in services {
+        let Ok(chosen) = crate::platform::edges::of_service(&state.database, &service.id).await
+        else {
+            continue;
+        };
+        for (hostname, node_id) in chosen {
+            // The newest instruction to that node about that name.
+            // Older ones are history and saying "done" from one of them
+            // while a newer sits pending would be the page reporting the
+            // wrong round trip.
+            let latest = orders
+                .iter()
+                .filter(|order| order.node_id == node_id)
+                .filter(|order| order.kind == crate::network::errand::Kind::Edge)
+                .filter(|order| {
+                    order
+                        .payload
+                        .get("hostname")
+                        .and_then(|value| value.as_str())
+                        == Some(hostname.as_str())
+                })
+                .max_by_key(|order| order.created_at);
+
+            let cell = match latest {
+                Some(order) if order.error.is_some() => EdgeCell {
+                    badge: "badge badge-danger",
+                    dot: "dot dot-danger",
+                    word: "Refused",
+                },
+                Some(order) if order.done() => EdgeCell {
+                    badge: "badge badge-success",
+                    dot: "dot dot-success",
+                    word: "Serving",
+                },
+                Some(_) => EdgeCell {
+                    badge: "badge badge-info",
+                    dot: "dot dot-info dot-pulse",
+                    word: "Asked",
+                },
+                // No errand at all: this node itself, which needs none.
+                None => EdgeCell {
+                    badge: "badge badge-success",
+                    dot: "dot dot-success",
+                    word: "Serving",
+                },
+            };
+            cells.insert(format!("{hostname}|{node_id}"), cell);
+        }
+    }
+    cells
+}
+
+/// What every replica of every service in this project is doing.
+async fn replica_cells(
+    state: &super::ConsoleState,
+    project: &crate::platform::projects::Project,
+) -> std::collections::BTreeMap<String, ReplicaCell> {
+    let mut cells = std::collections::BTreeMap::new();
+    let Ok(services) = crate::platform::services::all(&state.database, Some(&project.id)).await
+    else {
+        return cells;
+    };
+
+    for service in services {
+        let Ok(replicas) =
+            crate::platform::replicas::of_service(&state.database, &service.id).await
+        else {
+            continue;
+        };
+        for replica in replicas {
+            cells.insert(replica.id.clone(), replica_cell(&replica));
+        }
+    }
+    cells
+}
+
+/// The words `placement_state` renders, as data.
+///
+/// Kept beside it deliberately: two places deciding what "evicted"
+/// looks like is how a page ends up saying one thing on load and
+/// another two seconds later.
+fn replica_cell(replica: &crate::platform::replicas::Replica) -> ReplicaCell {
+    if replica.evicted() {
+        return ReplicaCell {
+            badge: "badge badge-warning",
+            dot: "",
+            word: "Evicted there".into(),
+            detail: String::new(),
+        };
+    }
+    if let Some(failure) = &replica.last_error {
+        return ReplicaCell {
+            badge: "badge badge-danger",
+            dot: "dot dot-danger",
+            word: "Failed".into(),
+            detail: failure.clone(),
+        };
+    }
+    if let Some(address) = &replica.address {
+        return ReplicaCell {
+            badge: "badge badge-success",
+            dot: "dot dot-success",
+            word: "Running".into(),
+            detail: address.clone(),
+        };
+    }
+    match replica.is_here() {
+        true => ReplicaCell {
+            badge: "badge",
+            dot: "",
+            word: "Not running".into(),
+            detail: String::new(),
+        },
+        // Placed elsewhere and nothing has come back. The node reports
+        // when it collects, so this is the honest word until it does.
+        false => ReplicaCell {
+            badge: "badge badge-info",
+            dot: "dot dot-info dot-pulse",
+            word: "Waiting for that node".into(),
+            detail: String::new(),
+        },
+    }
+}
+
+/// Which of this project's hostnames are still waiting for a
+/// certificate.
+///
+/// The badge under an address used to be true only at the moment the
+/// page rendered, and an ACME order takes minutes — so the one thing
+/// somebody stares at after adding a hostname was the one thing that
+/// never changed on its own.
+async fn name_cells(
+    state: &super::ConsoleState,
+    project: &crate::platform::projects::Project,
+) -> std::collections::BTreeMap<String, NameCell> {
+    let mut cells = std::collections::BTreeMap::new();
+    let Ok(services) = crate::platform::services::all(&state.database, Some(&project.id)).await
+    else {
+        return cells;
+    };
+
+    for service in services {
+        let Ok(ports) = crate::platform::ports::of_service(&state.database, &service.id).await
+        else {
+            continue;
+        };
+        for hostname in ports.into_iter().filter_map(|port| port.hostname) {
+            let secured = crate::edge::certs::load(&state.database, &hostname)
+                .await
+                .ok()
+                .flatten()
+                .is_some();
+            cells.insert(hostname, NameCell { waiting: !secured });
+        }
+    }
+    cells
+}
+
 /// One service's state, as the three things the badge shows.
 ///
 /// Formatted here so the first paint and every update after it come
@@ -914,8 +1143,13 @@ impl ProjectApi {
                         );
                     }
                 }
-                let payload = serde_json::to_string(&cells)
-                    .unwrap_or_else(|_| "{}".into());
+                let payload = serde_json::to_string(&Live {
+                    services: cells,
+                    replicas: replica_cells(&state, &project).await,
+                    names: name_cells(&state, &project).await,
+                    edges: edge_cells(&state, &project).await,
+                })
+                .unwrap_or_else(|_| "{}".into());
                 yield Ok::<_, std::convert::Infallible>(
                     wabot::rest::axum::body::Bytes::from(format!("data: {payload}\n\n")),
                 );

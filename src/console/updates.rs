@@ -102,41 +102,7 @@ impl UpdatePages {
                 (layout::error_note(message))
             }
 
-            <section class="card stack">
-                <div class="split">
-                    <div class="stack-sm">
-                        <p class="card-label">("Running")</p>
-                        <p class="mono">("wabot-deploy ")(crate::api::VERSION)</p>
-                    </div>
-                    <form method="post" action="/updates/check">
-                        <button class="btn btn-secondary btn-sm" type="submit">
-                            ("Check again")
-                        </button>
-                    </form>
-                </div>
-
-                @match &available {
-                    Err(error) => {
-                        <p class="failure">
-                            ("Could not read the release list: ")(error.to_string())
-                        </p>
-                    }
-                    Ok(available) => {
-                        @if let Some(release) = &available.upgrade {
-                            <p>
-                                (&release.name)(" is available.")
-                            </p>
-                            (install_form(release, "btn", "Install this release"))
-                        } @else {
-                            <p class="note">("This is the newest release published.")</p>
-                        }
-                    }
-                }
-            </section>
-
-            @if let Some(run) = &latest {
-                (run_card(run))
-            }
+            (live_region(&available, latest.as_ref()))
 
             @if let Ok(available) = &available {
                 <h2>("Releases")</h2>
@@ -254,6 +220,51 @@ pub struct UpdateApi {
 
 #[rest_controller("/")]
 impl UpdateApi {
+    /// What the update is doing, until it takes the process with it.
+    ///
+    /// The one stream here whose *disconnection* carries meaning. See
+    /// [`live_region`].
+    #[get("/updates/live")]
+    #[raw]
+    #[middleware(SessionMiddleware)]
+    async fn live(&self, _request: Request) -> RestResult<Response> {
+        use wabot::rest::axum::body::{Body, Bytes};
+        use wabot::rest::axum::http::{header, StatusCode};
+
+        if !signed_in(&self.auth).is_some_and(|account| account.is_admin()) {
+            // A status rather than a redirect: an `EventSource` cannot
+            // follow one usefully.
+            return Ok(Response::builder()
+                .status(StatusCode::UNAUTHORIZED)
+                .body(Body::empty())
+                .expect("a constant response is well-formed"));
+        }
+
+        let state = self.state.clone();
+        let stream = async_stream::stream! {
+            loop {
+                let payload = serde_json::to_string(&live_cells(&state).await)
+                    .unwrap_or_else(|_| "{}".into());
+                yield Ok::<_, std::convert::Infallible>(
+                    Bytes::from(format!("data: {payload}\n\n")),
+                );
+                // A second, not two: an install moves through its steps
+                // quickly and this is the page somebody is watching
+                // precisely because they cannot do anything else.
+                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+            }
+        };
+
+        Ok(Response::builder()
+            .header(header::CONTENT_TYPE, "text/event-stream")
+            // Every hop has to be told, or a proxy holds the stream
+            // until it has "enough" and the page never updates.
+            .header(header::CACHE_CONTROL, "no-cache")
+            .header("x-accel-buffering", "no")
+            .body(Body::from_stream(stream))
+            .expect("a constant response is well-formed"))
+    }
+
     /// Ask GitHub again, rather than explaining the cache to somebody
     /// who just published a release.
     #[post("/updates/check")]
@@ -445,13 +456,88 @@ fn release_card(
     }
 }
 
+/// The parts of this page that change without anybody clicking.
+///
+/// One island around both cards, because an update changes both: the
+/// badge while it runs, and the **running version** when it is over.
+///
+/// This is the one page where a stream earns its keep twice. An update
+/// ends by replacing this process, so the socket does not merely go
+/// quiet — it dies, and an `EventSource` reconnects on its own when the
+/// new binary is listening. The page can then say "the node is
+/// restarting" while it is gone and fill in the version that came back,
+/// which is exactly what "reload this page in a few seconds" was asking
+/// a person to do by hand.
+fn live_region<'a>(
+    available: &'a crate::update::UpdateResult<crate::update::Availability>,
+    latest: Option<&'a Run>,
+) -> impl Renderable + 'a {
+    let inner = rsx! {
+        <section class="card stack">
+            <div class="split">
+                <div class="stack-sm">
+                    <p class="card-label">("Running")</p>
+                    <p class="mono" data-run="version">
+                        ("wabot-deploy ")(crate::api::VERSION)
+                    </p>
+                </div>
+                <form method="post" action="/updates/check">
+                    <button class="btn btn-secondary btn-sm" type="submit">
+                        ("Check again")
+                    </button>
+                </form>
+            </div>
+
+            @match available {
+                Err(error) => {
+                    <p class="failure">
+                        ("Could not read the release list: ")(error.to_string())
+                    </p>
+                }
+                Ok(available) => {
+                    @if let Some(release) = &available.upgrade {
+                        <p>(&release.name)(" is available.")</p>
+                        (install_form(release, "btn", "Install this release"))
+                    } @else {
+                        <p class="note">("This is the newest release published.")</p>
+                    }
+                }
+            }
+        </section>
+
+        @if let Some(run) = latest {
+            (run_card(run))
+        }
+    }
+    .render()
+    .into_inner();
+
+    wabot::ui::hypertext::island(
+        "updates-live",
+        &serde_json::json!({}),
+        hypertext::Raw::dangerously_create(&inner),
+    )
+}
+
+/// `is-hidden`, or nothing.
+///
+/// The server renders both halves and a class decides, so the stream
+/// never has to build markup — the island rule the whole console
+/// follows.
+fn hidden_unless(shown: bool) -> &'static str {
+    match shown {
+        true => "",
+        false => "is-hidden",
+    }
+}
+
 /// What the last attempt is doing, or did.
 fn run_card(run: &Run) -> impl Renderable + '_ {
     rsx! {
         <section class="card card-sunken stack-sm">
             <div class="split">
                 <p class="card-label">("Last update")</p>
-                (status_badge(run.status))
+                <span data-run="badge">(status_badge(run.status))</span>
             </div>
             <dl class="kv">
                 <dt>("Version")</dt>
@@ -462,12 +548,16 @@ fn run_card(run: &Run) -> impl Renderable + '_ {
                     <dt>("Finished")</dt>
                     <dd>(layout::when(finished))</dd>
                 }
-                @if let Some(step) = &run.step {
-                    @if run.status.in_flight() {
-                        <dt>("Now")</dt>
-                        <dd>(step)</dd>
-                    }
-                }
+                // Always rendered, so the stream has somewhere to
+                // write. Hidden while there is nothing to say rather
+                // than absent — markup that appears is markup the
+                // client would have to build.
+                <dt data-run="step-label"
+                    class=(hidden_unless(run.status.in_flight()))>("Now")</dt>
+                <dd data-run="step"
+                    class=(hidden_unless(run.status.in_flight()))>(
+                    run.step.as_deref().unwrap_or_default()
+                )</dd>
                 @if let Some(backup) = &run.backup_path {
                     <dt>("Backup")</dt>
                     <dd>(backup)</dd>
@@ -480,12 +570,11 @@ fn run_card(run: &Run) -> impl Renderable + '_ {
                     <p class="note">(detail)</p>
                 }
             }
-            @if run.status.in_flight() {
-                <p class="note">(
-                    "The node restarts on its own when the new binary is in place. \
-                     Reload this page in a few seconds."
-                )</p>
-            }
+            <p data-run="waiting"
+               class=(format!("note {}", hidden_unless(run.status.in_flight())))>(
+                "The node restarts on its own when the new binary is in place. \
+                 This page follows along — there is nothing to reload."
+            )</p>
         </section>
     }
 }
@@ -681,5 +770,52 @@ mod tests {
             body.contains("does not match the published checksum"),
             "{body}"
         );
+    }
+}
+
+/// What the update page writes where.
+///
+/// `version` matters as much as the badge: the same figure that renders
+/// on load, so a page that reconnected after the restart can say
+/// *which* binary answered rather than only that something did.
+#[derive(serde::Serialize, Default)]
+struct LiveRun {
+    badge: &'static str,
+    dot: &'static str,
+    word: &'static str,
+    step: String,
+    /// Whether it is still going, which decides what the page hides.
+    in_flight: bool,
+    version: &'static str,
+    /// No run at all, on a node that has never been updated. The page
+    /// renders no card, so saying so keeps the client from writing into
+    /// markup that is not there.
+    none: bool,
+}
+
+async fn live_cells(state: &super::ConsoleState) -> LiveRun {
+    let Ok(Some(run)) = crate::update::runs::latest(&state.database).await else {
+        return LiveRun {
+            none: true,
+            version: crate::api::VERSION,
+            ..Default::default()
+        };
+    };
+
+    let (badge, dot, word) = match run.status {
+        Status::Done => ("badge badge-success", "dot dot-success", "Installed"),
+        Status::Failed => ("badge badge-danger", "dot dot-danger", "Failed"),
+        Status::Restarting => ("badge badge-info", "dot dot-info dot-pulse", "Restarting"),
+        Status::Running => ("badge badge-info", "dot dot-info dot-pulse", "Installing"),
+    };
+
+    LiveRun {
+        badge,
+        dot,
+        word,
+        step: run.step.clone().unwrap_or_default(),
+        in_flight: run.status.in_flight(),
+        version: crate::api::VERSION,
+        none: false,
     }
 }

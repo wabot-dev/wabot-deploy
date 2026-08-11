@@ -380,20 +380,13 @@ impl NodePages {
                                 </div>
                             </form>
                         }
-                        @if !orders.is_empty() {
-                            <table>
-                                <thead>
-                                    <tr>
-                                        <th>("Asked")</th><th>("State")</th>
-                                    </tr>
-                                </thead>
-                                <tbody>
-                                    @for order in &orders {
-                                        (errand_row(order))
-                                    }
-                                </tbody>
-                            </table>
-                        }
+                        // Wrapped so the stream can reach it. A node
+                        // collects on a fifteen-second timer, so
+                        // "pending" is the state somebody stares at
+                        // after pressing the button — and it used to
+                        // stay pending on screen long after the far
+                        // node had done the work.
+                        (errands_card(&node.id, &orders))
                     </section>
 
                     <section class="card stack">
@@ -875,6 +868,41 @@ fn network_card(node: &network::Node) -> impl Renderable + '_ {
 /// A failure is an *answer*, and it says what it was — the state worth
 /// worrying about is the one that never came back, which is why "asked
 /// for and never settled" is its own word rather than an absence.
+/// What this node has asked that one to do, and how far it has got.
+///
+/// Its own island host because the errand table is on a *joined* node's
+/// page, and the live cards are on this node's own — two pages, so two
+/// hosts, both talking to the same stream.
+fn errands_card<'a>(
+    node_id: &'a str,
+    orders: &'a [network::errand::Record],
+) -> impl Renderable + 'a {
+    let inner = rsx! {
+        @if !orders.is_empty() {
+            <table>
+                <thead>
+                    <tr>
+                        <th>("Asked")</th><th>("State")</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @for order in orders {
+                        (errand_row(order))
+                    }
+                </tbody>
+            </table>
+        }
+    }
+    .render()
+    .into_inner();
+
+    wabot::ui::hypertext::island(
+        "node-live",
+        &serde_json::json!({ "node": node_id }),
+        hypertext::Raw::dangerously_create(&inner),
+    )
+}
+
 fn errand_row(order: &network::errand::Record) -> impl Renderable + '_ {
     rsx! {
         <tr>
@@ -882,7 +910,7 @@ fn errand_row(order: &network::errand::Record) -> impl Renderable + '_ {
                 (order.kind.as_str())
                 <span class="tile-detail">(" ")(&order.id)</span>
             </td>
-            <td>
+            <td data-errand=(&order.id)>
                 @if let Some(reason) = &order.error {
                     <span class="badge badge-danger">
                         <span class="dot dot-danger"></span>("Refused")
@@ -2127,7 +2155,18 @@ impl NodeApi {
             .await
             .unwrap_or_default()
             .is_some_and(|me| me.id == id);
-        if !mine {
+        // A joined node's page has a stream too now, and carries only
+        // what this node can honestly say about it: the errands it was
+        // sent, and how far each has got. Memory and certificates stay
+        // behind `mine` — those are answers only that machine can give,
+        // and streaming this one's figures under its name would be the
+        // page inventing them.
+        if !mine
+            && network::find(&self.state.database, &id)
+                .await
+                .unwrap_or_default()
+                .is_none()
+        {
             return Ok(Response::builder()
                 .status(StatusCode::NOT_FOUND)
                 .body(Body::empty())
@@ -2159,6 +2198,7 @@ impl NodeApi {
                 let payload = serde_json::to_string(&Live {
                     inner: cells(&snapshot),
                     certificate: certificate_cells(&certificate, &facts, domain.as_deref()),
+                    errands: errand_cells(&state, &id).await,
                 })
                 .unwrap_or_else(|_| "{}".into());
                 yield Ok::<_, std::convert::Infallible>(
@@ -2198,6 +2238,72 @@ struct Live {
     #[serde(flatten)]
     inner: Cells,
     certificate: CertificateCells,
+    /// One per errand this node sent that one, keyed by id.
+    ///
+    /// Empty on this node's own page — it sends itself none — and the
+    /// only thing on a joined node's, where the memory and certificate
+    /// figures would be this machine's own under somebody else's name.
+    errands: BTreeMap<String, ErrandCell>,
+}
+
+/// One errand row, as its badge reads.
+#[derive(serde::Serialize)]
+struct ErrandCell {
+    badge: &'static str,
+    dot: &'static str,
+    word: &'static str,
+    /// The reason, when it was refused. Empty otherwise.
+    failure: String,
+}
+
+/// How far each errand sent to `node_id` has got.
+///
+/// A node collects on a fifteen-second timer and reports when it is
+/// done, so "waiting to be collected" is precisely the state somebody
+/// stares at after pressing the button — and it used to stay on screen
+/// long after the far node had finished.
+async fn errand_cells(state: &ConsoleState, node_id: &str) -> BTreeMap<String, ErrandCell> {
+    let mut cells = BTreeMap::new();
+    let Ok(orders) = network::errand::all(&state.database).await else {
+        return cells;
+    };
+
+    for order in orders
+        .into_iter()
+        .filter(|record| record.node_id == node_id)
+    {
+        let cell = if let Some(reason) = &order.error {
+            ErrandCell {
+                badge: "badge badge-danger",
+                dot: "dot dot-danger",
+                word: "Refused",
+                failure: reason.clone(),
+            }
+        } else if order.done() {
+            ErrandCell {
+                badge: "badge badge-success",
+                dot: "dot dot-success",
+                word: "Done",
+                failure: String::new(),
+            }
+        } else if order.taken_at.is_some() {
+            ErrandCell {
+                badge: "badge badge-info",
+                dot: "dot dot-info dot-pulse",
+                word: "Collected",
+                failure: String::new(),
+            }
+        } else {
+            ErrandCell {
+                badge: "badge badge-info",
+                dot: "dot dot-info",
+                word: "Waiting to be collected",
+                failure: String::new(),
+            }
+        };
+        cells.insert(order.id.clone(), cell);
+    }
+    cells
 }
 
 /// What the script writes where.

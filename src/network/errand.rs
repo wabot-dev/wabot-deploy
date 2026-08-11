@@ -151,6 +151,13 @@ pub struct Record {
     pub id: String,
     pub node_id: String,
     pub kind: Kind,
+    /// What it was about, as it was queued.
+    ///
+    /// Carried on the record because the page that lists errands has to
+    /// say *which* one: "an edge errand to that node" is not an answer
+    /// when the same node serves two of this service's names, and the
+    /// row somebody is looking at is about one of them.
+    pub payload: serde_json::Value,
     pub created_at: i64,
     pub taken_at: Option<i64>,
     pub done_at: Option<i64>,
@@ -303,8 +310,9 @@ pub async fn all(database: &SqliteDatabase) -> NetworkResult<Vec<Record>> {
     Ok(database
         .read(|connection| {
             let mut statement = connection.prepare(
-                "SELECT \"id\", \"node_id\", \"kind\", \"created_at\", \"taken_at\", \
-                 \"done_at\", \"error\" FROM errand ORDER BY \"created_at\" DESC",
+                "SELECT \"id\", \"node_id\", \"kind\", \"payload\", \"created_at\", \
+                 \"taken_at\", \"done_at\", \"error\" FROM errand \
+                 ORDER BY \"created_at\" DESC",
             )?;
             let records: wabot::sqlite::rusqlite::Result<Vec<Record>> =
                 statement.query_map([], decode)?.collect();
@@ -320,8 +328,8 @@ pub async fn find(database: &SqliteDatabase, id: &str) -> NetworkResult<Option<R
         .read(move |connection| {
             connection
                 .query_row(
-                    "SELECT \"id\", \"node_id\", \"kind\", \"created_at\", \"taken_at\", \
-                     \"done_at\", \"error\" FROM errand WHERE \"id\" = ?1",
+                    "SELECT \"id\", \"node_id\", \"kind\", \"payload\", \"created_at\", \
+                     \"taken_at\", \"done_at\", \"error\" FROM errand WHERE \"id\" = ?1",
                     [id],
                     decode,
                 )
@@ -335,10 +343,15 @@ fn decode(row: &Row<'_>) -> wabot::sqlite::rusqlite::Result<Record> {
         id: row.get(0)?,
         node_id: row.get(1)?,
         kind: Kind::parse(&row.get::<_, String>(2)?),
-        created_at: row.get(3)?,
-        taken_at: row.get(4)?,
-        done_at: row.get(5)?,
-        error: row.get(6)?,
+        // A payload this version cannot parse reads as null rather than
+        // failing the row: the page still has an errand to show, and
+        // "something was asked and here is how it went" is more use
+        // than an empty table.
+        payload: serde_json::from_str(&row.get::<_, String>(3)?).unwrap_or_default(),
+        created_at: row.get(4)?,
+        taken_at: row.get(5)?,
+        done_at: row.get(6)?,
+        error: row.get(7)?,
     })
 }
 

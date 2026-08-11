@@ -413,9 +413,21 @@ impl ServicePages {
                                         <td class="mono">(port.container_port)</td>
                                         <td class="mono reach">
                                             <span>(reachable_at(port, domain.as_deref()))</span>
-                                            @if port.hostname.as_ref()
-                                                .is_some_and(|host| !secured.contains(host)) {
-                                                <span class="badge badge-info">
+                                            // Rendered whether or not it
+                                            // applies and hidden by a
+                                            // class, so the stream can
+                                            // show it without building
+                                            // markup — the rule every
+                                            // island here follows. An
+                                            // ACME order takes minutes,
+                                            // and this was true only at
+                                            // the instant it rendered.
+                                            @if let Some(hostname) = &port.hostname {
+                                                <span data-name=(hostname)
+                                                      class=(match secured.contains(hostname) {
+                                                          true => "badge badge-info is-hidden",
+                                                          false => "badge badge-info",
+                                                      })>
                                                     <span class="dot dot-info dot-pulse"></span>
                                                     ("Certificate on the way")
                                                 </span>
@@ -665,9 +677,21 @@ impl ServicePages {
                                         <td class="mono">(port.container_port)</td>
                                         <td class="mono reach">
                                             <span>(reachable_at(port, domain.as_deref()))</span>
-                                            @if port.hostname.as_ref()
-                                                .is_some_and(|host| !secured.contains(host)) {
-                                                <span class="badge badge-info">
+                                            // Rendered whether or not it
+                                            // applies and hidden by a
+                                            // class, so the stream can
+                                            // show it without building
+                                            // markup — the rule every
+                                            // island here follows. An
+                                            // ACME order takes minutes,
+                                            // and this was true only at
+                                            // the instant it rendered.
+                                            @if let Some(hostname) = &port.hostname {
+                                                <span data-name=(hostname)
+                                                      class=(match secured.contains(hostname) {
+                                                          true => "badge badge-info is-hidden",
+                                                          false => "badge badge-info",
+                                                      })>
                                                     <span class="dot dot-info dot-pulse"></span>
                                                     ("Certificate on the way")
                                                 </span>
@@ -926,7 +950,9 @@ fn placement_card<'a>(
                                         }
                                     </select>
                                 </td>
-                                <td>(placement_state(replica))</td>
+                                <td data-replica=(&replica.id)>
+                                    (placement_state(replica))
+                                </td>
                             </tr>
                         }
                     </tbody>
@@ -1031,6 +1057,19 @@ fn served_by_form<'a>(
                                name=(format!("edge-{}", node.id)) value="1">
                     }
                     <span>(&node.name)</span>
+                    // How far the instruction to that node has got.
+                    // Ticking a box used to be the end of what this
+                    // page said: an errand went out, a name was
+                    // claimed, a certificate was ordered, and none of
+                    // it came back here — so the only honest reading of
+                    // a ticked box was "somebody asked for this once".
+                    <span class=(match chosen.contains(&node.id.as_str()) {
+                              true => "badge badge-info",
+                              false => "badge badge-info is-hidden",
+                          })
+                          data-edge=(format!("{}|{}", hostname, node.id))>
+                        <span class="dot dot-info dot-pulse"></span>("Asked")
+                    </span>
                 </label>
             }
             <button class="btn btn-secondary btn-sm" type="submit">("Save")</button>
@@ -1103,7 +1142,9 @@ fn from_elsewhere_card<'a>(
                     @for replica in mine {
                         <tr>
                             <td class="mono">("#")(replica.slot)</td>
-                            <td>(placement_state(replica))</td>
+                            <td data-replica=(&replica.id)>
+                                (placement_state(replica))
+                            </td>
                         </tr>
                     }
                 </tbody>

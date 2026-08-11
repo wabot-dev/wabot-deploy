@@ -97,6 +97,16 @@
   // and a deployment finishing while somebody watches is exactly when
   // stale is worst.
 
+  // A hostname carries dots, and a dot in a selector is a class. The
+  // built-in is not everywhere yet, so this is the fallback rather than
+  // the plan.
+  var cssEscape = function (value) {
+    if (window.CSS && window.CSS.escape) return window.CSS.escape(value);
+    return String(value).replace(/[^a-zA-Z0-9_-]/g, function (ch) {
+      return '\\' + ch;
+    });
+  };
+
   wabot.island('project-live', function (host, props) {
     if (!props || !props.project) return null;
     var source = new EventSource(
@@ -104,12 +114,66 @@
     );
 
     source.onmessage = function (event) {
-      var states;
+      var live;
       try {
-        states = JSON.parse(event.data);
+        live = JSON.parse(event.data);
       } catch (e) {
         return;
       }
+
+      // Every copy of every service, wherever it runs. A replica placed
+      // on another node reports back seconds or minutes later, and this
+      // row used to be true only at the instant the page rendered — so
+      // "Waiting for that node" stayed on screen long after the node
+      // had answered.
+      var replicas = live.replicas || {};
+      Object.keys(replicas).forEach(function (id) {
+        var cell = host.querySelector('[data-replica="' + id + '"]');
+        if (!cell) return;
+        var state = replicas[id];
+        var badge = cell.querySelector('.badge');
+        if (badge) {
+          badge.className = state.badge;
+          var text = badge.lastChild;
+          if (text) text.textContent = state.word;
+          var dot = badge.querySelector('.dot');
+          // The dot is markup the server may not have rendered — a
+          // badge with no dot is a state that has none — so this only
+          // ever restyles one that is there.
+          if (dot) dot.className = state.dot;
+        }
+        var detail = cell.querySelector('.failure, .tile-detail');
+        if (detail) detail.textContent = state.detail;
+      });
+
+      // A certificate arrives minutes after the hostname is saved, and
+      // the badge saying so never changed on its own.
+      var names = live.names || {};
+      Object.keys(names).forEach(function (hostname) {
+        var badge = host.querySelector('[data-name="' + cssEscape(hostname) + '"]');
+        if (badge) badge.classList.toggle('is-hidden', !names[hostname].waiting);
+      });
+
+      // How far each edge instruction has got. A tick used to be the
+      // end of what the page said: an errand went out, a name was
+      // claimed and a certificate ordered, and none of it came back.
+      var edges = live.edges || {};
+      host.querySelectorAll('[data-edge]').forEach(function (badge) {
+        var state = edges[badge.getAttribute('data-edge')];
+        if (!state) {
+          // Not chosen: the box is unticked and there is nothing to
+          // report about it.
+          badge.classList.add('is-hidden');
+          return;
+        }
+        badge.className = state.badge;
+        var dot = badge.querySelector('.dot');
+        if (dot) dot.className = state.dot;
+        var text = badge.lastChild;
+        if (text) text.textContent = state.word;
+      });
+
+      var states = live.services || {};
       Object.keys(states).forEach(function (id) {
         var cell = host.querySelector('[data-state="' + id + '"]');
         if (!cell) return;
@@ -154,6 +218,86 @@
     };
   });
 
+  // ---- an update, across the restart it performs -----------------------
+  //
+  // The only island here whose *disconnection* is part of the message.
+  // Installing replaces this binary and restarts the node, so the socket
+  // dies mid-install; `EventSource` reconnects on its own, and the first
+  // payload after it comes back carries the version that answered.
+  //
+  // So the page says "the node is restarting" while it is gone and fills
+  // the new version in when it returns — which is exactly what the note
+  // telling somebody to reload was asking them to do by hand.
+  wabot.island('updates-live', function (host) {
+    var source = new EventSource('/updates/live');
+    var waiting = host.querySelector('[data-run="waiting"]');
+    var badge = host.querySelector('[data-run="badge"] .badge');
+    var restarting = false;
+
+    var put = function (key, value) {
+      var node = host.querySelector('[data-run="' + key + '"]');
+      if (node) node.textContent = value;
+    };
+
+    source.onerror = function () {
+      // Every disconnection, not only the one an install causes — a
+      // laptop that slept says the same thing and is equally true: this
+      // page is not in touch with the node.
+      restarting = true;
+      if (badge) {
+        badge.className = 'badge badge-info';
+        var dot = badge.querySelector('.dot');
+        if (dot) dot.className = 'dot dot-info dot-pulse';
+        var text = badge.lastChild;
+        if (text) text.textContent = 'Restarting';
+      }
+      if (waiting) {
+        waiting.classList.remove('is-hidden');
+        waiting.textContent = 'The node is not answering. This page reconnects on its own.';
+      }
+    };
+
+    source.onmessage = function (event) {
+      var run;
+      try {
+        run = JSON.parse(event.data);
+      } catch (e) {
+        return;
+      }
+
+      // The version always, because coming back with a new one is the
+      // outcome the whole page is about.
+      put('version', 'wabot-deploy ' + run.version);
+      if (restarting && waiting) {
+        waiting.textContent =
+          'The node restarted and is answering as ' + run.version + '.';
+      }
+      restarting = false;
+      if (run.none) return;
+
+      if (badge) {
+        badge.className = run.badge;
+        var dot = badge.querySelector('.dot');
+        if (dot) dot.className = run.dot;
+        var text = badge.lastChild;
+        if (text) text.textContent = run.word;
+      }
+      put('step', run.step);
+
+      ['step-label', 'step'].forEach(function (key) {
+        var node = host.querySelector('[data-run="' + key + '"]');
+        if (node) node.classList.toggle('is-hidden', !run.in_flight || !run.step);
+      });
+      if (waiting && !restarting) {
+        waiting.classList.toggle('is-hidden', !run.in_flight);
+      }
+    };
+
+    return function () {
+      source.close();
+    };
+  });
+
   // ---- the node's live figures ----------------------------------------
   //
   // Memory changes every second and a certificate request finishes
@@ -184,6 +328,30 @@
       Object.keys(data.bars || {}).forEach(function (key) {
         var bar = host.querySelector('[data-bar="' + key + '"]');
         if (bar) bar.style.width = data.bars[key];
+      });
+
+      // What this node asked that one to do. A collection happens on a
+      // fifteen-second timer and the answer comes back later still, so
+      // "waiting to be collected" is exactly the badge somebody watches
+      // after pressing the button.
+      var errands = data.errands || {};
+      Object.keys(errands).forEach(function (id) {
+        var cell = host.querySelector('[data-errand="' + id + '"]');
+        if (!cell) return;
+        var state = errands[id];
+        var badge = cell.querySelector('.badge');
+        if (badge) {
+          badge.className = state.badge;
+          var text = badge.lastChild;
+          if (text) text.textContent = state.word;
+          var dot = badge.querySelector('.dot');
+          if (dot) dot.className = state.dot;
+        }
+        // A refusal is a paragraph the server renders only when there
+        // is one, so this fills it when it exists and never invents it:
+        // a reload brings the full row.
+        var failure = cell.querySelector('.failure');
+        if (failure) failure.textContent = state.failure;
       });
 
       var cert = data.certificate;
