@@ -85,7 +85,7 @@ impl UpdatePages {
         let available = crate::update::availability(&self.state.catalogue).await;
 
         layout::head("Updates");
-        let frame = Frame::new(&account, Area::Nodes, &projects, None, "/updates");
+        let frame = Frame::new(&account, Area::Settings, &projects, None, "/updates");
         let body = rsx! {
             (layout::style_tag())
             <h1>("Updates")</h1>
@@ -203,7 +203,7 @@ impl UpdatePages {
         let current = crate::update::github::Version::current();
 
         layout::head(&format!("wabot-deploy {}", release.version));
-        let frame = Frame::new(&account, Area::Nodes, &projects, None, "/updates");
+        let frame = Frame::new(&account, Area::Settings, &projects, None, "/updates");
         let body = rsx! {
             (layout::style_tag())
             <p class="crumb"><a href="/updates">("Updates")</a></p>

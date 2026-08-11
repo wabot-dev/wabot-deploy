@@ -238,99 +238,16 @@ impl ProjectPages {
     ///
     /// Readable by anyone who can see the project — knowing who else is
     /// here is not privileged — while the forms need administration.
+    /// Where the people page went.
+    ///
+    /// Kept as a redirect rather than removed: it was a nav item for
+    /// months, so it is in somebody's history and somebody's bookmark,
+    /// and a 404 would tell them the feature was gone when it had only
+    /// moved one page over.
     #[view("/projects/:project/people")]
     #[middleware(SessionMiddleware)]
     async fn project_people(&self, query: ProjectQuery) -> UiResult<ViewOutcome> {
-        let Some(account) = signed_in(&self.auth) else {
-            return Ok(Redirect::found("/sign-in").into());
-        };
-        let Some((project, allowed)) =
-            access::find_project(&self.state.database, &account, &query.project).await?
-        else {
-            return Ok(Redirect::found("/?error=no+such+project").into());
-        };
-
-        let members = access::members(&self.state.database, &project.id).await?;
-        let all_projects = access::projects_for(&self.state.database, &account).await?;
-        let here = format!("/projects/{}", project.slug);
-        let frame = Frame::new(
-            &account,
-            Area::Projects,
-            &all_projects,
-            Some(&project),
-            format!("{here}/people"),
-        )
-        .allowing(allowed);
-
-        layout::head(&format!("{} people", project.name));
-        let body = rsx! {
-                (layout::style_tag())
-                <div class="split">
-                    <div class="stack-sm">
-                        <h1>("People")</h1>
-                        <p class="slug-preview">(&project.slug)</p>
-                    </div>
-                    <span class="who">("You are: ")(allowed.label())</span>
-                </div>
-                @if let Some(message) = &query.error {
-                    (layout::error_note(message))
-                }
-
-                <table>
-                    <tbody>
-                        @for member in &members {
-                            <tr>
-                                <td>(&member.username)</td>
-                                <td>(member.role.label())</td>
-                                <td>
-                                    @if allowed.may_administer() {
-                                        <form method="post"
-                                              action=(format!(
-                                                  "{here}/people/{}/remove", member.account_id
-                                              ))>
-                                            <button class="btn btn-ghost destructive btn-sm"
-                                                    type="submit">
-                                                ("Remove")
-                                            </button>
-                                        </form>
-                                    }
-                                </td>
-                            </tr>
-                        }
-                        @if members.is_empty() {
-                            <tr>
-                                <td class="tile-detail" colspan="3">(
-                                    "Nobody but administrators, who reach every project."
-                                )</td>
-                            </tr>
-                        }
-                    </tbody>
-                </table>
-
-                @if allowed.may_administer() {
-                    <form method="post" action=(format!("{here}/people")) class="card stack">
-                        <label for="username">("Username")</label>
-                        <div class="row">
-                            <input id="username" name="username" type="text"
-                                   placeholder="username" required>
-                            <select name="role">
-                                @for role in ProjectRole::ALL {
-                                    <option value=(role.as_str())>(role.label())</option>
-                                }
-                            </select>
-                            <button type="submit">("Add")</button>
-                        </div>
-                        <p class="field-hint">(
-                            "Somebody who already has an account on this node. To bring \
-                             in a new person, invite them from the people page."
-                        )</p>
-                    </form>
-                }
-        }
-        .render()
-        .into_inner();
-
-        Ok(frame.render(body).into_view().into())
+        Ok(Redirect::found(format!("/projects/{}/settings", query.project)).into())
     }
 
     /// What the project is configured with, and how to destroy it.
@@ -373,6 +290,7 @@ impl ProjectPages {
             .clone()
             .unwrap_or_else(|| "this node".into());
 
+        let members = access::members(&self.state.database, &project.id).await?;
         let all_projects = access::projects_for(&self.state.database, &account).await?;
         let frame = Frame::new(
             &account,
@@ -391,11 +309,18 @@ impl ProjectPages {
                         <h1>("Settings")</h1>
                         <p class="slug-preview">(&project.slug)</p>
                     </div>
-                    <a class="btn btn-ghost" href=(&here)>("Back to project")</a>
+                    // What this account may do here, said once at the
+                    // top. It used to be on the people page and is more
+                    // use beside the controls it explains: a button
+                    // that is not there reads as missing until
+                    // something says why.
+                    <span class="who">("You are: ")(allowed.label())</span>
                 </div>
                 @if let Some(message) = &query.error {
                     (layout::error_note(message))
                 }
+
+                (people_card(&here, &members, allowed))
 
                 <section class="card stack">
                     <div class="split">
@@ -665,6 +590,101 @@ fn action_button(label: &'static str, icon: &'static str, busy: bool) -> impl Re
 const PLAY: &str = r#"<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polygon points="6 3 20 12 6 21 6 3"/></svg>"#;
 
 const STOP: &str = r#"<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="1"/></svg>"#;
+
+/// Who is in this project, and how to change that.
+///
+/// A section of the settings page rather than a page of its own. It was
+/// three unlabelled columns and a wide row of fields under a heading
+/// that said "People" — a table with no headers reads as a list of
+/// facts nobody explained, and the role was a word floating beside a
+/// name with nothing saying what it was.
+///
+/// So: headers, the roles said in a sentence under the form, and the
+/// add form as a labelled row rather than three controls in a line.
+fn people_card<'a>(
+    here: &'a str,
+    members: &'a [access::Member],
+    allowed: crate::accounts::roles::Access,
+) -> impl Renderable + 'a {
+    rsx! {
+        <section class="card stack">
+            <p class="card-label">("People")</p>
+            @if members.is_empty() {
+                <p class="tile-detail">(
+                    "Nobody yet. Administrators of this node reach every project \
+                     without being added to it."
+                )</p>
+            } @else {
+                <table>
+                    <thead>
+                        <tr>
+                            <th>("Person")</th>
+                            <th>("Can")</th>
+                            <th></th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @for member in members {
+                            <tr>
+                                <td>(&member.username)</td>
+                                <td>
+                                    <span class="badge">(member.role.label())</span>
+                                    <span class="tile-detail">(" ")(role_means(member.role))</span>
+                                </td>
+                                <td class="row-actions">
+                                    @if allowed.may_administer() {
+                                        <form method="post"
+                                              action=(format!(
+                                                  "{here}/people/{}/remove", member.account_id
+                                              ))>
+                                            <button class="btn btn-ghost destructive btn-sm"
+                                                    type="submit">("Remove")</button>
+                                        </form>
+                                    }
+                                </td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            }
+
+            @if allowed.may_administer() {
+                <form method="post" action=(format!("{here}/people")) class="stack-sm">
+                    <div class="add-person">
+                        <div>
+                            <label for="username">("Username")</label>
+                            <input id="username" name="username" type="text"
+                                   placeholder="username" required>
+                        </div>
+                        <div>
+                            <label for="role">("Can")</label>
+                            <select id="role" name="role">
+                                @for role in ProjectRole::ALL {
+                                    <option value=(role.as_str())>(role.label())</option>
+                                }
+                            </select>
+                        </div>
+                        <button type="submit">("Add")</button>
+                    </div>
+                    <p class="field-hint">(
+                        "Somebody who already has an account on this node — adding \
+                         them here does not create one. A new person is invited from \
+                         Settings, People."
+                    )</p>
+                </form>
+            }
+        </section>
+    }
+}
+
+/// What a role lets somebody do, in the words the page can afford.
+fn role_means(role: ProjectRole) -> &'static str {
+    match role {
+        ProjectRole::Owner => "everything here, including who else is in it",
+        ProjectRole::Deployer => "deploy and change services",
+        ProjectRole::Viewer => "look, and change nothing",
+    }
+}
 
 /// One service's state, as the three things the badge shows.
 ///
@@ -1482,15 +1502,18 @@ mod tests {
         }
         assert!(overview.contains("No services yet"), "{overview}");
 
-        // Not empty: creating a project grants the creator Owner, so
-        // there is always at least one person to list.
-        let people = get("/projects/shipping/people").await;
-        assert!(people.contains("Owner"), "{people}");
-        assert!(people.contains("Username"), "and a way to add one");
-
+        // Everything about the project rather than the work on it, on
+        // one page. People used to be a page of its own holding a
+        // single table; it is a section here now, and the old address
+        // redirects rather than 404s — it was a nav item for months, so
+        // it is in somebody's history.
         let settings = get("/projects/shipping/settings").await;
         assert!(settings.contains("Push tokens"), "{settings}");
         assert!(settings.contains("Danger zone"), "{settings}");
+        // Not empty: creating a project grants the creator Owner, so
+        // there is always at least one person to list.
+        assert!(settings.contains("Owner"), "{settings}");
+        assert!(settings.contains("Username"), "and a way to add one");
     }
 
     /// Each form comes back to the page it is on, or the next edit

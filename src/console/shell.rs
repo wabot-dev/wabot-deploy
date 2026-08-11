@@ -63,8 +63,6 @@ impl Theme {
         }
     }
 
-    pub const ALL: [Self; 3] = [Self::System, Self::Light, Self::Dark];
-
     pub fn label(self) -> &'static str {
         match self {
             Self::System => "System",
@@ -72,15 +70,67 @@ impl Theme {
             Self::Dark => "Dark",
         }
     }
+
+    /// The one this button hands over to.
+    ///
+    /// Three states behind one control, so pressing it has to be a
+    /// cycle. System first because it is the default and the answer
+    /// that keeps up when a machine switches at sunset — somebody who
+    /// has overridden it should reach "let the machine decide" again
+    /// without hunting for it.
+    fn next(self) -> Self {
+        match self {
+            Self::System => Self::Light,
+            Self::Light => Self::Dark,
+            Self::Dark => Self::System,
+        }
+    }
+
+    /// The icon for the state it is *in*, not the one it goes to.
+    ///
+    /// A control that pictured its destination would be read as a
+    /// status by everybody who did not already know it was a button —
+    /// the sun would mean "this is light" to most people looking at a
+    /// dark page.
+    fn icon(self) -> &'static str {
+        match self {
+            Self::System => MONITOR,
+            Self::Light => SUN,
+            Self::Dark => MOON,
+        }
+    }
+
+    /// Said out loud, because an icon on its own is not.
+    fn title(self) -> String {
+        format!(
+            "Theme: {}. Switch to {}.",
+            self.label(),
+            self.next().label()
+        )
+    }
 }
+
+/// XSS SAFETY: constants in this file, never a value from a request.
+/// Raw because `rsx!` validates element names and does not know SVG's.
+const MONITOR: &str = r#"<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/></svg>"#;
+
+const SUN: &str = r#"<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M6.3 17.7l-1.4 1.4M19.1 4.9l-1.4 1.4"/></svg>"#;
+
+const MOON: &str = r#"<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>"#;
+
+const GEAR: &str = r#"<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.6a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9v0a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>"#;
 
 /// Which top-level area a page belongs to. Decides what the side nav
 /// shows and which top link is lit.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Area {
     Projects,
-    Nodes,
-    People,
+    /// Everything about the machine rather than about the work on it:
+    /// the nodes, the people, the updates. One word in the header
+    /// instead of three, because they are one question — "how is this
+    /// installation set up" — and none of them is somewhere anybody
+    /// spends the day.
+    Settings,
 }
 
 /// Everything the frame needs to draw itself.
@@ -171,25 +221,30 @@ impl Frame {
                 </a>
                 <nav>
                     <a href="/" class=(current(self.area == Area::Projects))>("Projects")</a>
-                    // The node and its people belong to whoever runs
-                    // the node. A member has projects and nothing else
-                    // to see here.
+                    // The node, its people and what it runs on belong to
+                    // whoever runs the node, and they are one place now
+                    // rather than three top-level words. A member has
+                    // projects and nothing else to see here.
                     @if self.admin {
-                        <a href="/nodes" class=(current(self.area == Area::Nodes))>("Nodes")</a>
-                        <a href="/people" class=(current(self.area == Area::People))>("People")</a>
+                        <a href="/settings" class=(current(self.area == Area::Settings))
+                           title="Settings">
+                            (hypertext::Raw::dangerously_create(GEAR))
+                            <span>("Settings")</span>
+                        </a>
                     }
                 </nav>
                 <div class="topbar-right">
-                    // Three submits in one form rather than a select
-                    // and a Go: one click either way, and the current
-                    // answer is visible instead of folded into a menu.
-                    <form method="post" action="/theme" class="segmented">
+                    // One control, cycling. Three side by side spent the
+                    // width of a menu on a preference somebody sets once
+                    // — and the state it is in is still visible, because
+                    // the icon shows *that* rather than where it goes.
+                    <form method="post" action="/theme">
                         <input type="hidden" name="from" value=(&self.path)>
-                        @for theme in Theme::ALL {
-                            <button class=(current(self.theme == theme))
-                                    type="submit" name="theme"
-                                    value=(theme.as_str())>(theme.label())</button>
-                        }
+                        <button class="btn btn-ghost btn-icon" type="submit"
+                                name="theme" value=(self.theme.next().as_str())
+                                title=(self.theme.title())>
+                            (hypertext::Raw::dangerously_create(self.theme.icon()))
+                        </button>
                     </form>
                     <span class="who">(&self.username)</span>
                     // A form, not a link: signing out changes state,
@@ -217,20 +272,15 @@ impl Frame {
                             (self.project_nav(slug))
                         }
                     }
-                    @if self.area == Area::Nodes {
-                        <p class="side-label">("Node")</p>
+                    @if self.area == Area::Settings {
+                        <p class="side-label">("Settings")</p>
                         <nav>
                             <a href="/nodes"
-                               class=(current(self.path == "/nodes"))>("All nodes")</a>
+                               class=(current(self.path.starts_with("/nodes")))>("Nodes")</a>
+                            <a href="/people"
+                               class=(current(self.path == "/people"))>("People")</a>
                             <a href="/updates"
                                class=(current(self.path == "/updates"))>("Updates")</a>
-                        </nav>
-                    }
-                    @if self.area == Area::People {
-                        <p class="side-label">("People")</p>
-                        <nav>
-                            <a href="/people"
-                               class=(current(self.path == "/people"))>("Accounts")</a>
                         </nav>
                     }
                 </div>
@@ -275,21 +325,20 @@ impl Frame {
     /// behind a button on the overview.
     fn project_nav(&self, slug: &str) -> impl Renderable + '_ {
         let base = format!("/projects/{slug}");
-        let services = format!("{base}/services/new");
-        let people = format!("{base}/people");
         let settings = format!("{base}/settings");
 
         rsx! {
             <nav>
                 <a href=(&base) class=(current(self.path == base))>("Overview")</a>
-                @if self.deploy {
-                    <a href=(&services)
-                       class=(current(self.path == services))>("Create service")</a>
-                }
-                // Readable by anybody in the project: who else is here
-                // is not privileged, and a viewer who cannot see it has
-                // no way to find out who to ask for more.
-                <a href=(&people) class=(current(self.path == people))>("People")</a>
+                // Two items, and both are places. "Create service" was
+                // neither — it was a button wearing a nav item's
+                // clothes, sitting in the list of pages you can be *on*
+                // while never being one you stay on. It belongs beside
+                // the services it adds to, which is the overview.
+                //
+                // People moved into settings: who is in a project is a
+                // setting of the project, and it was a page holding one
+                // table.
                 @if self.deploy {
                     <a href=(&settings)
                        class=(current(self.path == settings))>("Settings")</a>
@@ -494,7 +543,7 @@ mod tests {
             username: "someone".into(),
             role: crate::accounts::roles::NodeRole::Admin,
         };
-        let frame = Frame::new(&account, Area::People, &[], None, "/people");
+        let frame = Frame::new(&account, Area::Settings, &[], None, "/people");
         let html = frame.render(String::new()).render().into_inner();
 
         let (_, after) = html

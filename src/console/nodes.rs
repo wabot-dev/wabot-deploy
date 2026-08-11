@@ -77,6 +77,22 @@ pub struct NodePages {
 
 #[ui_controller("/", app)]
 impl NodePages {
+    /// Where the gear lands.
+    ///
+    /// A redirect rather than a page of its own: a landing page whose
+    /// whole content is links to the three pages already in the sidebar
+    /// is a click somebody has to make before doing anything. The nodes
+    /// are what this section is mostly about, so that is where it opens
+    /// — and the sidebar says what else is here.
+    #[view("/settings")]
+    #[middleware(SessionMiddleware)]
+    async fn settings(&self) -> UiResult<ViewOutcome> {
+        match signed_in(&self.auth).is_some_and(|account| account.is_admin()) {
+            true => Ok(Redirect::found("/nodes").into()),
+            false => Ok(Redirect::found("/").into()),
+        }
+    }
+
     #[view("/nodes")]
     #[middleware(SessionMiddleware)]
     async fn index(&self, query: NodesPage) -> UiResult<ViewOutcome> {
@@ -151,7 +167,7 @@ impl NodePages {
         let now = super::now_ms();
 
         layout::head("Nodes");
-        let frame = Frame::new(&account, Area::Nodes, &projects, None, "/nodes");
+        let frame = Frame::new(&account, Area::Settings, &projects, None, "/nodes");
         let body = rsx! {
                 (layout::style_tag())
                 <h1>("Nodes")</h1>
@@ -312,7 +328,7 @@ impl NodePages {
                 .filter(|record| record.node_id == node.id)
                 .collect();
             layout::head(&node.name);
-            let frame = Frame::new(&account, Area::Nodes, &projects, None, path);
+            let frame = Frame::new(&account, Area::Settings, &projects, None, path);
             let body = rsx! {
                     (layout::style_tag())
                     <div class="split">
@@ -435,7 +451,7 @@ impl NodePages {
         let path = format!("/nodes/{}", node.id);
 
         layout::head(&node.name);
-        let frame = Frame::new(&account, Area::Nodes, &projects, None, path);
+        let frame = Frame::new(&account, Area::Settings, &projects, None, path);
         let body = rsx! {
                 (layout::style_tag())
                 <div class="split">

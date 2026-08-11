@@ -61,7 +61,7 @@ impl PeoplePages {
         let projects = access::projects_for(&self.state.database, &account).await?;
         let now = crate::console::now_ms();
 
-        let frame = Frame::new(&account, Area::People, &projects, None, "/people");
+        let frame = Frame::new(&account, Area::Settings, &projects, None, "/people");
         layout::head("People");
 
         let body = rsx! {

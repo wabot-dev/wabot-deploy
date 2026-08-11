@@ -179,21 +179,35 @@ pub const CSS: &str = r#"
 }
 .who { color: rgb(var(--c-fg-muted)); font-size: var(--fs-sm); }
 
-/* Three submits reading as one control. Separation is the sunken tone
-   under them, not borders — same rule as everything else here. */
-.segmented { display: flex; gap: 2px; }
-.segmented button {
-  background: none;
-  padding: 0.3rem var(--sp-3);
-  border-radius: var(--r-md);
-  font-size: var(--fs-xs);
-  color: rgb(var(--c-fg-muted));
+/* A control that is only its icon. Square, so it reads as one thing to
+   press rather than a word that lost its label. */
+.btn-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2rem;
+  height: 2rem;
+  padding: 0;
 }
-.segmented button.active {
-  background: rgb(var(--c-bg-raised));
-  color: rgb(var(--c-fg));
-  font-weight: 500;
+
+/* The gear beside its word in the top nav. The word stays: an icon
+   alone in a two-item nav is a guess, and there is room for both. */
+.topbar nav a { display: inline-flex; align-items: center; gap: var(--sp-2); }
+
+/* Who is in a project, and what they may do. Two fields and a button,
+   each labelled — the row of three bare controls it replaces read as a
+   search box somebody had mislabelled. */
+.add-person {
+  display: flex;
+  gap: var(--sp-3);
+  align-items: flex-end;
+  flex-wrap: wrap;
 }
+.add-person > div { display: flex; flex-direction: column; gap: var(--sp-1); }
+.add-person > div:first-child { flex: 1 1 14rem; }
+
+/* The cell a destructive button sits in, so it does not stretch. */
+.row-actions { width: 1%; white-space: nowrap; }
 
 .mark { display: flex; align-items: center; gap: var(--sp-5); }
 .mark h1 { font-size: var(--fs-3xl); margin: 0; letter-spacing: -0.03em; }
