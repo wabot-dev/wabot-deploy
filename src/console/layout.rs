@@ -180,14 +180,29 @@ pub const CSS: &str = r#"
 .who { color: rgb(var(--c-fg-muted)); font-size: var(--fs-sm); }
 
 /* A control that is only its icon. Square, so it reads as one thing to
-   press rather than a word that lost its label. */
+   press rather than a word that lost its label.
+
+   Its glyph is larger than the gear's, and deliberately: the gear sits
+   beside its word and takes the word's size, while this one carries the
+   whole control on its own. Matching them made this look shrunken. */
 .btn-icon {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 2rem;
-  height: 2rem;
+  width: 2.25rem;
+  height: 2.25rem;
   padding: 0;
+}
+
+/* Which half of the theme toggle is real, while nobody has chosen.
+   Light or dark is the account's answer once it presses; until then the
+   machine's answer is the only one there is, and the *server* cannot
+   read it. CSS can — so both buttons are rendered and this picks, with
+   no JavaScript involved. See `Frame::toggle`. */
+.when-dark { display: none; }
+@media (prefers-color-scheme: dark) {
+  .when-light { display: none; }
+  .when-dark { display: inline-flex; }
 }
 
 /* The gear beside its word in the top nav. The word stays: an icon
