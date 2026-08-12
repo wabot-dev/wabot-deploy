@@ -89,6 +89,10 @@ fn migrations() -> Vec<Migration> {
         ),
         Migration::new("0025_grant", include_str!("../migrations/0025_grant.sql")),
         Migration::new("0026_allows", include_str!("../migrations/0026_allows.sql")),
+        Migration::new(
+            "0027_account_language",
+            include_str!("../migrations/0027_account_language.sql"),
+        ),
     ]
 }
 

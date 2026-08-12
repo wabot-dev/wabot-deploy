@@ -1,0 +1,18 @@
+-- Which language this person reads the console in.
+--
+-- Beside `theme` (migration `0014`) and for the same two reasons: it is
+-- a preference that should follow somebody between machines, and every
+-- view already loads the account to decide what it may show.
+--
+-- 'en' is the default because it is what every string in the source is
+-- written in — the English text *is* the key a translation is looked up
+-- by, so an account on English is the one path that cannot be missing a
+-- word.
+--
+-- Not derived from `Accept-Language`. A header is a good guess and a bad
+-- setting: somebody whose browser is in English and who wants the
+-- console in Spanish would have to change their browser, and somebody
+-- who chose here would have their choice overruled by a header they did
+-- not know they were sending. The toggle is one click and it is
+-- remembered.
+ALTER TABLE account ADD COLUMN language TEXT NOT NULL DEFAULT 'en';

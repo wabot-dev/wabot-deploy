@@ -88,6 +88,10 @@ pub struct Account {
     /// Which theme they read in. Travels with the account so the
     /// choice follows the person rather than the browser.
     pub theme: crate::console::shell::Theme,
+    /// Which language they read in. Beside the theme and for the same
+    /// reason: a preference that does not follow somebody between
+    /// machines is one they set again on each.
+    pub language: crate::console::language::Language,
 }
 
 impl Account {
@@ -222,6 +226,7 @@ async fn insert(
 ) -> AccountResult<Account> {
     let account = Account {
         theme: crate::console::shell::Theme::System,
+        language: crate::console::language::Language::En,
         id: format!("acc-{}", wabot::prelude::password::generate(16)),
         username: username.to_string(),
         role,
@@ -259,7 +264,8 @@ pub async fn all(database: &SqliteDatabase) -> AccountResult<Vec<Account>> {
         .read(|connection| {
             connection
                 .prepare(
-                    "SELECT \"id\", \"username\", \"role\", \"theme\" FROM account ORDER BY \"username\"",
+                    "SELECT \"id\", \"username\", \"role\", \"theme\", \"language\" \
+                     FROM account ORDER BY \"username\"",
                 )?
                 .query_map([], decode)?
                 .collect()
@@ -340,6 +346,7 @@ fn decode(row: &wabot::sqlite::rusqlite::Row<'_>) -> wabot::sqlite::rusqlite::Re
         username: row.get(1)?,
         role: roles::NodeRole::parse(&row.get::<_, String>(2)?),
         theme: crate::console::shell::Theme::parse(&row.get::<_, String>(3)?),
+        language: crate::console::language::Language::parse(&row.get::<_, String>(4)?),
     })
 }
 
@@ -362,6 +369,25 @@ pub async fn set_theme(
     Ok(())
 }
 
+/// Store which language somebody reads in.
+pub async fn set_language(
+    database: &SqliteDatabase,
+    id: &str,
+    language: crate::console::language::Language,
+) -> AccountResult<()> {
+    let (id, language) = (id.to_string(), language.as_str().to_string());
+    database
+        .write(move |connection| {
+            connection.execute(
+                "UPDATE account SET \"language\" = ?2 WHERE \"id\" = ?1",
+                (id, language),
+            )?;
+            Ok(())
+        })
+        .await?;
+    Ok(())
+}
+
 /// Check a username and password.
 ///
 /// `None` for both "no such user" and "wrong password", deliberately:
@@ -372,12 +398,12 @@ pub async fn authenticate(
     password: &str,
 ) -> AccountResult<Option<Account>> {
     let lookup = username.trim().to_lowercase();
-    let row: Option<(String, String, String, String, String)> = database
+    let row: Option<(String, String, String, String, String, String)> = database
         .read(move |connection| {
             connection
                 .query_row(
-                    "SELECT \"id\", \"username\", \"password_hash\", \"role\", \"theme\" FROM account \
-                     WHERE lower(\"username\") = ?1",
+                    "SELECT \"id\", \"username\", \"password_hash\", \"role\", \"theme\", \
+                     \"language\" FROM account WHERE lower(\"username\") = ?1",
                     [lookup],
                     |row| {
                         Ok((
@@ -386,6 +412,7 @@ pub async fn authenticate(
                             row.get(2)?,
                             row.get(3)?,
                             row.get(4)?,
+                            row.get(5)?,
                         ))
                     },
                 )
@@ -393,7 +420,7 @@ pub async fn authenticate(
         })
         .await?;
 
-    let Some((id, username, hash, role, theme)) = row else {
+    let Some((id, username, hash, role, theme, language)) = row else {
         // Hash anyway. Returning early on an unknown username makes
         // the response measurably faster, and that difference is a
         // list of which usernames exist.
@@ -418,6 +445,7 @@ pub async fn authenticate(
 
     Ok(Some(Account {
         theme: crate::console::shell::Theme::parse(&theme),
+        language: crate::console::language::Language::parse(&language),
         id,
         username,
         role: roles::NodeRole::parse(&role),

@@ -19,6 +19,7 @@ use crate::accounts::Account;
 use crate::platform::projects::Project;
 
 use super::assets;
+use super::language::t;
 
 /// Which theme to paint in.
 ///
@@ -142,6 +143,7 @@ pub struct Frame {
     /// offering an action they will be refused is the nav lying.
     pub deploy: bool,
     pub theme: Theme,
+    pub language: crate::console::language::Language,
 }
 
 impl Frame {
@@ -169,6 +171,7 @@ impl Frame {
             // channel from the middleware, and the choice follows the
             // person to whatever machine they open this on.
             theme: account.theme,
+            language: account.language,
         }
     }
 
@@ -186,11 +189,20 @@ impl Frame {
     /// it — and the closure `rsx!` builds captures by move. Rendering
     /// first ends the page's borrow before the frame takes its own.
     pub fn render(&self, inner: String) -> impl Renderable + '_ {
+        // The frame's own words, in the account's language. The page
+        // inside it is already a rendered string by the time it gets
+        // here — each view scopes its own, because that is where its
+        // strings are read. See `language::scoped`.
+        let language = self.language;
+        let top =
+            crate::console::language::scoped(language, || self.topbar().render().into_inner());
+        let side =
+            crate::console::language::scoped(language, || self.sidebar().render().into_inner());
         rsx! {
             <div class="app-shell" data-theme=(self.theme.attribute())>
-                (self.topbar())
+                (hypertext::Raw::dangerously_create(&top))
                 <div class="app-body">
-                    (self.sidebar())
+                    (hypertext::Raw::dangerously_create(&side))
                     <main>(hypertext::Raw::dangerously_create(&inner))</main>
                 </div>
             </div>
@@ -207,30 +219,49 @@ impl Frame {
                     <span>("wabot-deploy")</span>
                 </a>
                 <nav>
-                    <a href="/" class=(current(self.area == Area::Projects))>("Projects")</a>
+                    <a href="/" class=(current(self.area == Area::Projects))>(t("Projects"))</a>
                     // The node, its people and what it runs on belong to
                     // whoever runs the node, and they are one place now
                     // rather than three top-level words. A member has
                     // projects and nothing else to see here.
                     @if self.admin {
                         <a href="/settings" class=(current(self.area == Area::Settings))
-                           title="Settings">
+                           title=(t("Settings"))>
                             (hypertext::Raw::dangerously_create(GEAR))
-                            <span>("Settings")</span>
+                            <span>(t("Settings"))</span>
                         </a>
                     }
                 </nav>
                 <div class="topbar-right">
+                    (self.languages())
                     (self.toggle())
                     <span class="who">(&self.username)</span>
                     // A form, not a link: signing out changes state,
                     // and a GET that changes state is one a prefetcher
                     // can fire.
                     <form method="post" action="/sign-out">
-                        <button class="btn btn-ghost btn-sm" type="submit">("Sign out")</button>
+                        <button class="btn btn-ghost btn-sm" type="submit">(t("Sign out"))</button>
                     </form>
                 </div>
             </header>
+        }
+    }
+
+    /// English or Spanish, in the two letters somebody scans for.
+    ///
+    /// A word rather than a flag: a flag is a country and a language is
+    /// not one — Spanish is not Spain's, and picking any flag for
+    /// English starts an argument the console does not need to have.
+    fn languages(&self) -> impl Renderable + '_ {
+        rsx! {
+            <form method="post" action="/language">
+                <input type="hidden" name="from" value=(&self.path)>
+                <button class="btn btn-ghost btn-icon" type="submit" name="language"
+                        value=(self.language.other().as_str())
+                        title=(self.language.offer())>
+                    (self.language.other().short())
+                </button>
+            </form>
         }
     }
 
@@ -290,14 +321,14 @@ impl Frame {
                         }
                     }
                     @if self.area == Area::Settings {
-                        <p class="side-label">("Settings")</p>
+                        <p class="side-label">(t("Settings"))</p>
                         <nav>
                             <a href="/nodes"
-                               class=(current(self.path.starts_with("/nodes")))>("Nodes")</a>
+                               class=(current(self.path.starts_with("/nodes")))>(t("Nodes"))</a>
                             <a href="/people"
-                               class=(current(self.path == "/people"))>("People")</a>
+                               class=(current(self.path == "/people"))>(t("People"))</a>
                             <a href="/updates"
-                               class=(current(self.path == "/updates"))>("Updates")</a>
+                               class=(current(self.path == "/updates"))>(t("Updates"))</a>
                         </nav>
                     }
                 </div>
@@ -309,7 +340,7 @@ impl Frame {
     fn selector(&self) -> impl Renderable + '_ {
         rsx! {
             <form method="post" action="/select-project" class="workspace-field">
-                <label class="side-label" for="project">("Project")</label>
+                <label class="side-label" for="project">(t("Project"))</label>
                 <div class="workspace">
                     <select id="project" name="project">
                         // Same trap as everywhere else `selected` is
@@ -346,7 +377,7 @@ impl Frame {
 
         rsx! {
             <nav>
-                <a href=(&base) class=(current(self.path == base))>("Overview")</a>
+                <a href=(&base) class=(current(self.path == base))>(t("Overview"))</a>
                 // Two items, and both are places. "Create service" was
                 // neither — it was a button wearing a nav item's
                 // clothes, sitting in the list of pages you can be *on*
@@ -358,7 +389,7 @@ impl Frame {
                 // table.
                 @if self.deploy {
                     <a href=(&settings)
-                       class=(current(self.path == settings))>("Settings")</a>
+                       class=(current(self.path == settings))>(t("Settings"))</a>
                 }
             </nav>
         }
@@ -559,6 +590,7 @@ mod tests {
             id: "a".into(),
             username: "someone".into(),
             role: crate::accounts::roles::NodeRole::Admin,
+            language: crate::console::language::Language::En,
         };
         let frame = Frame::new(&account, Area::Settings, &[], None, "/people");
         let html = frame.render(String::new()).render().into_inner();

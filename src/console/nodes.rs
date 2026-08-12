@@ -649,7 +649,7 @@ fn capabilities_card(hosts: bool, edges: bool, reachable: bool) -> impl Renderab
 fn enrol_card(may_enrol: bool) -> impl Renderable {
     rsx! {
         <section class="stack">
-            <p class="card-label">("Add a private node")</p>
+            <p class="card-label">("Invite a node")</p>
             @if may_enrol {
                 <form method="post" action="/nodes/enrol" class="card stack">
                     <label for="name">("What to call it")</label>
@@ -3092,7 +3092,7 @@ pub(crate) mod tests {
             .send()
             .await
             .body;
-        // Scoped to that node's own card: "Add a private node" is a
+        // Scoped to that node's own card: "Invite a node" is a
         // heading on this page, and an assertion over the whole body
         // would be one that passes or fails on the wrong text.
         let card = body

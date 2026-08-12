@@ -23,6 +23,8 @@
 
 pub mod assets;
 pub mod auth;
+pub mod es;
+pub mod language;
 pub mod layout;
 pub mod nodes;
 pub mod people;

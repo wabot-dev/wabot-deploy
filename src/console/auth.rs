@@ -430,6 +430,32 @@ impl AuthApi {
         Ok(see_other(if back.starts_with('/') { back } else { "/" }))
     }
 
+    /// Which language they read in. The theme's twin, and deliberately
+    /// its twin: same store, same "back where they were", same one
+    /// click.
+    #[post("/language")]
+    #[raw]
+    #[middleware(SessionMiddleware)]
+    async fn set_language(&self, request: Request) -> RestResult<Response> {
+        let Some(account) = signed_in(&self.auth) else {
+            return Ok(see_other("/sign-in"));
+        };
+        let form = match read_form(request).await {
+            Ok(form) => form,
+            Err(response) => return Ok(response),
+        };
+
+        let language = super::language::Language::parse(field(&form, "language"));
+        if let Err(error) =
+            crate::accounts::set_language(&self.state.database, &account.id, language).await
+        {
+            tracing::warn!(%error, "could not store the language");
+        }
+
+        let back = field(&form, "from");
+        Ok(see_other(if back.starts_with('/') { back } else { "/" }))
+    }
+
     #[post("/sign-out")]
     #[raw]
     async fn sign_out(&self, request: Request) -> RestResult<Response> {
