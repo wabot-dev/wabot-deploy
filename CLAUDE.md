@@ -113,6 +113,36 @@ server already imposes**. It may not be needed to submit a form, fetch
 data the page did not have, or build a field. A rule the browser
 enforces is a courtesy; the check that counts is on the POST.
 
+## Two languages
+
+The console reads in English or Spanish, chosen by a toggle beside the
+theme and stored on the account. Three rules, and the tests enforce all
+three:
+
+**The English text is the key.** `t("Add a port")` returns the Spanish,
+or the English back when there is none. Symbolic keys would mean reading
+a table to find out what a page says. The cost is that changing a word
+orphans its translation — which is the right way round, because an
+orphan renders a page somebody can still use, and
+`every_string_the_console_asks_for_is_translated` names it by hand.
+
+**The language is scoped around the render, not threaded through it.** A
+`Language` parameter on every view, card and row would be hundreds of
+signatures carrying it to the leaves. A task-local was the obvious shape
+and cannot work: the middleware that knows the account returns *before*
+the handler runs, so it has no future to wrap. Each view ends in one
+`rsx!{…}.render()` with no `await` inside, so a thread-local set for
+exactly that call cannot be seen by another request.
+
+**Commands are not prose.** `docker login`, `wabot-deploy join` and
+their arguments render without `t()`: they are pasted into a terminal,
+and a terminal does not speak Spanish. The sentence around a command is
+translated; the command is not. The same goes for hostnames, ids, image
+names, slugs, and the words containerd uses for a container's state.
+
+`doctor` is not translated at all. It runs on a terminal and prints what
+somebody pastes into an issue.
+
 ## Design
 
 The console follows the Wabot design system: no borders, no shadows, no

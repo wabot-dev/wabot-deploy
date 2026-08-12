@@ -12,6 +12,7 @@ use wabot::rest::axum::response::Response;
 use wabot::rest::RestResult;
 use wabot::ui::hypertext::IntoView;
 
+use super::language::t;
 use crate::accounts::roles::ProjectRole;
 use crate::deploy::Observed;
 use crate::platform::{access, projects, services};
@@ -56,37 +57,41 @@ impl ProjectPages {
 
         layout::head("Projects");
         let frame = Frame::new(&account, Area::Projects, &projects, None, "/");
-        let body = rsx! {
-                (layout::style_tag())
-                <div class="split">
-                    <h1>("Projects")</h1>
-                    <a class="btn" href="/projects/new">("Create project")</a>
-                </div>
-                @if let Some(message) = &query.error {
-                    (layout::error_note(message))
-                }
-
-                @if projects.is_empty() {
-                    // No second "Create project" here: the one in the
-                    // header is on this page whether or not the list is
-                    // empty, and two buttons a hand's width apart that
-                    // do the same thing read as two different things.
-                    <section class="empty">
-                        <p>("No projects yet.")</p>
-                    </section>
-                } @else {
-                    <div class="grid">
-                        @for project in &projects {
-                            <a class="card tile" href=(format!("/projects/{}", project.slug))>
-                                <p class="tile-name">(&project.name)</p>
-                                <p class="tile-detail">(&project.slug)</p>
-                            </a>
-                        }
+        // The account's language, around the render and no wider:
+        // the strings are read here, and nothing awaits inside.
+        let body = super::language::scoped(account.language, || {
+            rsx! {
+                    (layout::style_tag())
+                    <div class="split">
+                        <h1>(t("Projects"))</h1>
+                        <a class="btn" href="/projects/new">(t("Create project"))</a>
                     </div>
-                }
-        }
-        .render()
-        .into_inner();
+                    @if let Some(message) = &query.error {
+                        (layout::error_note(message))
+                    }
+
+                    @if projects.is_empty() {
+                        // No second "Create project" here: the one in the
+                        // header is on this page whether or not the list is
+                        // empty, and two buttons a hand's width apart that
+                        // do the same thing read as two different things.
+                        <section class="empty">
+                            <p>(t("No projects yet."))</p>
+                        </section>
+                    } @else {
+                        <div class="grid">
+                            @for project in &projects {
+                                <a class="card tile" href=(format!("/projects/{}", project.slug))>
+                                    <p class="tile-name">(&project.name)</p>
+                                    <p class="tile-detail">(&project.slug)</p>
+                                </a>
+                            }
+                        </div>
+                    }
+            }
+            .render()
+            .into_inner()
+        });
 
         Ok(frame.render(body).into_view().into())
     }
@@ -102,28 +107,30 @@ impl ProjectPages {
 
         layout::head("Create project");
         let frame = Frame::new(&account, Area::Projects, &projects, None, "/projects/new");
-        let body = rsx! {
+        // The account's language, around the render and no wider:
+        // the strings are read here, and nothing awaits inside.
+        let body = super::language::scoped(account.language, || {
+            rsx! {
                 (layout::style_tag())
-                <h1>("Create project")</h1>
+                <h1>(t("Create project"))</h1>
                 @if let Some(message) = &query.error {
                     (layout::error_note(message))
                 }
                 <form method="post" action="/projects" class="card stack">
-                    <label for="name">("Name")</label>
+                    <label for="name">(t("Name"))</label>
                     <input id="name" name="name" type="text" required autofocus>
-                    <p class="field-hint">(
-                        "The slug is derived from the name, and it is what \
-                         hostnames and containerd labels are built from."
-                    )</p>
+                    <p class="field-hint">(t("The slug is derived from the name, and it is what \
+                         hostnames and containerd labels are built from."))</p>
 
                     <div class="actions">
-                        <button type="submit">("Create project")</button>
-                        <a class="btn btn-ghost" href="/">("Cancel")</a>
+                        <button type="submit">(t("Create project"))</button>
+                        <a class="btn btn-ghost" href="/">(t("Cancel"))</a>
                     </div>
                 </form>
         }
-        .render()
-        .into_inner();
+            .render()
+            .into_inner()
+        });
 
         Ok(frame.render(body).into_view().into())
     }
@@ -196,35 +203,39 @@ impl ProjectPages {
             path,
         )
         .allowing(allowed);
-        let body = rsx! {
-                (layout::style_tag())
-                <div class="split">
-                    <div class="stack-sm">
-                        <h1>(&project.name)</h1>
-                        <p class="slug-preview">(&project.slug)</p>
-                    </div>
-                    @if allowed.may_deploy() {
-                        <a class="btn" href=(&new_service)>("Create service")</a>
-                    }
-                </div>
-                @if let Some(message) = &query.error {
-                    (layout::error_note(message))
-                }
-
-                @if rows.is_empty() {
-                    <section class="empty">
-                        <p>("No services yet.")</p>
+        // The account's language, around the render and no wider:
+        // the strings are read here, and nothing awaits inside.
+        let body = super::language::scoped(account.language, || {
+            rsx! {
+                    (layout::style_tag())
+                    <div class="split">
+                        <div class="stack-sm">
+                            <h1>(&project.name)</h1>
+                            <p class="slug-preview">(&project.slug)</p>
+                        </div>
                         @if allowed.may_deploy() {
-                            <a class="btn" href=(&new_service)>("Create service")</a>
+                            <a class="btn" href=(&new_service)>(t("Create service"))</a>
                         }
-                    </section>
-                } @else {
-                    (service_table(&project, &rows, allowed))
-                }
+                    </div>
+                    @if let Some(message) = &query.error {
+                        (layout::error_note(message))
+                    }
 
-        }
-        .render()
-        .into_inner();
+                    @if rows.is_empty() {
+                        <section class="empty">
+                            <p>(t("No services yet."))</p>
+                            @if allowed.may_deploy() {
+                                <a class="btn" href=(&new_service)>(t("Create service"))</a>
+                            }
+                        </section>
+                    } @else {
+                        (service_table(&project, &rows, allowed))
+                    }
+
+            }
+            .render()
+            .into_inner()
+        });
 
         Ok(frame.render(body).into_view().into())
     }
@@ -302,11 +313,14 @@ impl ProjectPages {
         .allowing(allowed);
 
         layout::head(&format!("{} settings", project.name));
-        let body = rsx! {
+        // The account's language, around the render and no wider:
+        // the strings are read here, and nothing awaits inside.
+        let body = super::language::scoped(account.language, || {
+            rsx! {
                 (layout::style_tag())
                 <div class="split">
                     <div class="stack-sm">
-                        <h1>("Settings")</h1>
+                        <h1>(t("Settings"))</h1>
                         <p class="slug-preview">(&project.slug)</p>
                     </div>
                     // What this account may do here, said once at the
@@ -314,7 +328,7 @@ impl ProjectPages {
                     // use beside the controls it explains: a button
                     // that is not there reads as missing until
                     // something says why.
-                    <span class="who">("You are: ")(allowed.label())</span>
+                    <span class="who">(t("You are: "))(allowed.label())</span>
                 </div>
                 @if let Some(message) = &query.error {
                     (layout::error_note(message))
@@ -324,20 +338,16 @@ impl ProjectPages {
 
                 <section class="card stack">
                     <div class="split">
-                        <p class="card-label">("Push tokens")</p>
+                        <p class="card-label">(t("Push tokens"))</p>
                         <span class="who">(&registry_host)("/")(&project.slug)("/…")</span>
                     </div>
                     @if let Some(secret) = &revealed {
-                        <p class="field-hint">(
-                            "Shown once. Use it as the password: "
-                        )</p>
+                        <p class="field-hint">(t("Shown once. Use it as the password: "))</p>
                         <pre><code>("docker login ")(&registry_host)(" -u ci -p ")(secret)</code></pre>
                     }
                     @if tokens.is_empty() {
-                        <p class="tile-detail">(
-                            "None. A token is what CI authenticates with — it is nobody's \
-                             password, and revoking it changes nothing else."
-                        )</p>
+                        <p class="tile-detail">(t("None. A token is what CI authenticates with — it is nobody's \
+                             password, and revoking it changes nothing else."))</p>
                     } @else {
                         <table>
                             <tbody>
@@ -346,9 +356,9 @@ impl ProjectPages {
                                         <td>(&token.name)</td>
                                         <td class="tile-detail">
                                             @if token.last_used_at.is_some() {
-                                                ("used")
+                                                (t("used"))
                                             } @else {
-                                                ("never used")
+                                                (t("never used"))
                                             }
                                         </td>
                                         <td>
@@ -357,7 +367,7 @@ impl ProjectPages {
                                                       "{here}/tokens/{}/revoke", token.id
                                                   ))>
                                                 <button class="btn btn-ghost destructive btn-sm"
-                                                        type="submit">("Revoke")</button>
+                                                        type="submit">(t("Revoke"))</button>
                                             </form>
                                         </td>
                                     </tr>
@@ -367,25 +377,24 @@ impl ProjectPages {
                     }
                     <form method="post" action=(format!("{here}/tokens")) class="row">
                         <input name="name" type="text" placeholder="what it is for" required>
-                        <button class="btn btn-secondary" type="submit">("Create token")</button>
+                        <button class="btn btn-secondary" type="submit">(t("Create token"))</button>
                     </form>
                 </section>
 
                 @if allowed.may_administer() {
                     <section class="card stack">
-                        <p class="card-label">("Danger zone")</p>
-                        <p class="tile-detail">(
-                            "Deleting a project deletes every service under it. \
-                             Nothing is stopped first — do that yourself."
-                        )</p>
+                        <p class="card-label">(t("Danger zone"))</p>
+                        <p class="tile-detail">(t("Deleting a project deletes every service under it. \
+                             Nothing is stopped first — do that yourself."))</p>
                         <form method="post" action=(format!("{here}/delete"))>
-                            <button class="btn btn-danger" type="submit">("Delete project")</button>
+                            <button class="btn btn-danger" type="submit">(t("Delete project"))</button>
                         </form>
                     </section>
                 }
         }
-        .render()
-        .into_inner();
+            .render()
+            .into_inner()
+        });
 
         Ok(frame.render(body).into_view().into())
     }
@@ -448,9 +457,9 @@ fn service_table(
                     <table>
                         <thead>
                             <tr>
-                                <th>("Service")</th>
-                                <th class="address">("Address")</th>
-                                <th class="state">("State")</th>
+                                <th>(t("Service"))</th>
+                                <th class="address">(t("Address"))</th>
+                                <th class="state">(t("State"))</th>
                                 // The delete column. Headed by nothing,
                                 // because "Delete" over a column of
                                 // Delete buttons reads as a heading for
@@ -608,18 +617,16 @@ fn people_card<'a>(
 ) -> impl Renderable + 'a {
     rsx! {
         <section class="card stack">
-            <p class="card-label">("People")</p>
+            <p class="card-label">(t("People"))</p>
             @if members.is_empty() {
-                <p class="tile-detail">(
-                    "Nobody yet. Administrators of this node reach every project \
-                     without being added to it."
-                )</p>
+                <p class="tile-detail">(t("Nobody yet. Administrators of this node reach every project \
+                     without being added to it."))</p>
             } @else {
                 <table>
                     <thead>
                         <tr>
-                            <th>("Person")</th>
-                            <th>("Can")</th>
+                            <th>(t("Person"))</th>
+                            <th>(t("Can"))</th>
                             <th></th>
                         </tr>
                     </thead>
@@ -638,7 +645,7 @@ fn people_card<'a>(
                                                   "{here}/people/{}/remove", member.account_id
                                               ))>
                                             <button class="btn btn-ghost destructive btn-sm"
-                                                    type="submit">("Remove")</button>
+                                                    type="submit">(t("Remove"))</button>
                                         </form>
                                     }
                                 </td>
@@ -652,25 +659,23 @@ fn people_card<'a>(
                 <form method="post" action=(format!("{here}/people")) class="stack-sm">
                     <div class="add-person">
                         <div>
-                            <label for="username">("Username")</label>
+                            <label for="username">(t("Username"))</label>
                             <input id="username" name="username" type="text"
                                    placeholder="username" required>
                         </div>
                         <div>
-                            <label for="role">("Can")</label>
+                            <label for="role">(t("Can"))</label>
                             <select id="role" name="role">
                                 @for role in ProjectRole::ALL {
                                     <option value=(role.as_str())>(role.label())</option>
                                 }
                             </select>
                         </div>
-                        <button type="submit">("Add")</button>
+                        <button type="submit">(t("Add"))</button>
                     </div>
-                    <p class="field-hint">(
-                        "Somebody who already has an account on this node — adding \
+                    <p class="field-hint">(t("Somebody who already has an account on this node — adding \
                          them here does not create one. A new person is invited from \
-                         Settings, People."
-                    )</p>
+                         Settings, People."))</p>
                 </form>
             }
         </section>

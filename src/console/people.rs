@@ -17,6 +17,7 @@ use wabot::rest::axum::response::Response;
 use wabot::rest::RestResult;
 use wabot::ui::hypertext::IntoView;
 
+use super::language::t;
 use crate::accounts::roles::{NodeRole, ProjectRole};
 use crate::accounts::{self, invitations, sessions};
 use crate::platform::access;
@@ -64,29 +65,30 @@ impl PeoplePages {
         let frame = Frame::new(&account, Area::Settings, &projects, None, "/people");
         layout::head("People");
 
-        let body = rsx! {
+        // The account's language, around the render and no wider:
+        // the strings are read here, and nothing awaits inside.
+        let body = super::language::scoped(account.language, || {
+            rsx! {
             (layout::style_tag())
-            <h1>("People")</h1>
+            <h1>(t("People"))</h1>
             @if let Some(message) = &query.error {
                 (layout::error_note(message))
             }
             @if let Some(link) = &query.invited {
                 <section class="card stack">
-                    <p class="card-label">("Send this link")</p>
-                    <p class="field-hint">(
-                        "It works once and expires in seven days. The node will not \
+                    <p class="card-label">(t("Send this link"))</p>
+                    <p class="field-hint">(t("It works once and expires in seven days. The node will not \
                          show it again — it is not stored in a form anybody can read \
-                         back."
-                    )</p>
+                         back."))</p>
                     <pre><code>(link)</code></pre>
                 </section>
             }
 
             <section class="stack">
-                <p class="card-label">("Accounts")</p>
+                <p class="card-label">(t("Accounts"))</p>
                 <table>
                     <thead>
-                        <tr><th>("Name")</th><th>("On this node")</th><th></th></tr>
+                        <tr><th>(t("Name"))</th><th>(t("On this node"))</th><th></th></tr>
                     </thead>
                     <tbody>
                         @for person in &people {
@@ -102,9 +104,9 @@ impl PeoplePages {
                                             )>
                                             <button class="btn btn-secondary btn-sm" type="submit">
                                                 @if person.is_admin() {
-                                                    ("Make a member")
+                                                    (t("Make a member"))
                                                 } @else {
-                                                    ("Make an administrator")
+                                                    (t("Make an administrator"))
                                                 }
                                             </button>
                                         </form>
@@ -112,11 +114,11 @@ impl PeoplePages {
                                               action=(format!("/people/{}/delete", person.id))>
                                             <button class="btn btn-ghost destructive btn-sm"
                                                     type="submit">
-                                                ("Remove")
+                                                (t("Remove"))
                                             </button>
                                         </form>
                                     } @else {
-                                        <span class="tile-detail">("This is you")</span>
+                                        <span class="tile-detail">(t("This is you"))</span>
                                     }
                                 </td>
                             </tr>
@@ -126,48 +128,46 @@ impl PeoplePages {
             </section>
 
             <section class="stack">
-                <p class="card-label">("Invite somebody")</p>
+                <p class="card-label">(t("Invite somebody"))</p>
                 <form method="post" action="/people/invite" class="card stack">
-                    <label for="node_role">("On this node")</label>
+                    <label for="node_role">(t("On this node"))</label>
                     <select id="node_role" name="node_role">
-                        <option value="member">("Member — their own projects")</option>
-                        <option value="admin">("Administrator — everything")</option>
+                        <option value="member">(t("Member — their own projects"))</option>
+                        <option value="admin">(t("Administrator — everything"))</option>
                     </select>
 
-                    <label for="project">("Into a project")</label>
+                    <label for="project">(t("Into a project"))</label>
                     <select id="project" name="project">
-                        <option value="">("Nothing yet")</option>
+                        <option value="">(t("Nothing yet"))</option>
                         @for project in &projects {
                             <option value=(&project.slug)>(&project.name)</option>
                         }
                     </select>
 
-                    <label for="project_role">("As")</label>
+                    <label for="project_role">(t("As"))</label>
                     <select id="project_role" name="project_role">
                         @for role in ProjectRole::ALL {
                             <option value=(role.as_str())>(role.label())</option>
                         }
                     </select>
-                    <p class="field-hint">(
-                        "They choose their own username and password. Nobody here \
+                    <p class="field-hint">(t("They choose their own username and password. Nobody here \
                          ever sees it — which is the reason this is a link rather \
-                         than a form that sets one for them."
-                    )</p>
+                         than a form that sets one for them."))</p>
 
                     <div class="actions">
-                        <button type="submit">("Create invitation")</button>
+                        <button type="submit">(t("Create invitation"))</button>
                     </div>
                 </form>
             </section>
 
             <section class="stack">
-                <p class="card-label">("Invitations")</p>
+                <p class="card-label">(t("Invitations"))</p>
                 @if invitations.is_empty() {
-                    <p class="tile-detail">("None.")</p>
+                    <p class="tile-detail">(t("None."))</p>
                 } @else {
                     <table>
                         <thead>
-                            <tr><th>("For")</th><th>("State")</th><th></th></tr>
+                            <tr><th>(t("For"))</th><th>(t("State"))</th><th></th></tr>
                         </thead>
                         <tbody>
                             @for invitation in &invitations {
@@ -175,12 +175,12 @@ impl PeoplePages {
                                     <td>(invitation.node_role.label())</td>
                                     <td>
                                         @if invitation.spent() {
-                                            <span class="badge">("Used")</span>
+                                            <span class="badge">(t("Used"))</span>
                                         } @else if invitation.expired(now) {
-                                            <span class="badge badge-warning">("Expired")</span>
+                                            <span class="badge badge-warning">(t("Expired"))</span>
                                         } @else {
                                             <span class="badge badge-success">
-                                                <span class="dot dot-success"></span>("Open")
+                                                <span class="dot dot-success"></span>(t("Open"))
                                             </span>
                                         }
                                     </td>
@@ -193,7 +193,7 @@ impl PeoplePages {
                                                   ))>
                                                 <button class="btn btn-ghost destructive btn-sm"
                                                         type="submit">
-                                                    ("Withdraw")
+                                                    (t("Withdraw"))
                                                 </button>
                                             </form>
                                         }
@@ -205,8 +205,9 @@ impl PeoplePages {
                 }
             </section>
         }
-        .render()
-        .into_inner();
+            .render()
+            .into_inner()
+        });
 
         Ok(frame.render(body).into_view().into())
     }
@@ -234,32 +235,28 @@ impl PeoplePages {
                 }
                 @if let Some(invitation) = &invitation {
                     <p class="tagline">
-                        ("You were invited as ")(invitation.node_role.label().to_lowercase())(".")
+                        (t("You were invited as "))(invitation.node_role.label().to_lowercase())(".")
                     </p>
                     <form method="post" action=(format!("/join/{}", query.token))
                           class="card stack">
-                        <label for="username">("Username")</label>
+                        <label for="username">(t("Username"))</label>
                         <input id="username" name="username" type="text"
                                autocomplete="username" required autofocus>
 
-                        <label for="password">("Password")</label>
+                        <label for="password">(t("Password"))</label>
                         <input id="password" name="password" type="password"
                                autocomplete="new-password" required>
-                        <p class="field-hint">(
-                            "At least 12 characters. Nobody here will ever see it."
-                        )</p>
+                        <p class="field-hint">(t("At least 12 characters. Nobody here will ever see it."))</p>
 
                         <div class="actions">
-                            <button type="submit">("Create account")</button>
+                            <button type="submit">(t("Create account"))</button>
                         </div>
                     </form>
                 } @else {
                     <section class="card stack">
-                        <p>(
-                            "This invitation is not valid. It may have been used already, \
-                             withdrawn, or expired — they last seven days."
-                        )</p>
-                        <p class="field-hint">("Ask whoever invited you for another.")</p>
+                        <p>(t("This invitation is not valid. It may have been used already, \
+                             withdrawn, or expired — they last seven days."))</p>
+                        <p class="field-hint">(t("Ask whoever invited you for another."))</p>
                     </section>
                 }
             </main>

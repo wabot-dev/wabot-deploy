@@ -30,6 +30,11 @@
 //! names, slugs, container states as containerd reports them. And
 //! `doctor`, which runs on a terminal and prints what an operator will
 //! paste into an issue.
+//!
+//! **Commands are not prose.** `docker login`, `wabot-deploy join` and
+//! their arguments are rendered without `t()`, deliberately: they are
+//! pasted into a terminal, and a terminal does not speak Spanish. The
+//! sentence *around* a command is translated; the command is not.
 
 use serde::{Deserialize, Serialize};
 

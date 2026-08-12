@@ -37,6 +37,7 @@ use wabot::rest::axum::response::Response;
 use wabot::rest::{Middleware, RestResult};
 use wabot::ui::hypertext::IntoView;
 
+use super::language::t;
 use crate::accounts::{self, sessions, Account};
 
 use super::layout;
@@ -216,37 +217,31 @@ impl AuthPages {
                     (layout::error_note(message))
                 }
                 @if has_token {
-                    <p class="tagline">(
-                        "The setup token was printed by `wabot-deploy install`. \
-                         It works once, and it expires."
-                    )</p>
+                    <p class="tagline">(t("The setup token was printed by `wabot-deploy install`. \
+                         It works once, and it expires."))</p>
                     <form method="post" action="/setup" class="card stack">
-                        <label for="setup_token">("Setup token")</label>
+                        <label for="setup_token">(t("Setup token"))</label>
                         <input id="setup_token" name="setup_token" type="text"
                                autocomplete="off" required>
 
-                        <label for="username">("Username")</label>
+                        <label for="username">(t("Username"))</label>
                         <input id="username" name="username" type="text"
                                autocomplete="username" required>
 
-                        <label for="password">("Password")</label>
+                        <label for="password">(t("Password"))</label>
                         <input id="password" name="password" type="password"
                                autocomplete="new-password" required>
-                        <p class="field-hint">(
-                            "At least 12 characters. A phrase beats a puzzle — \
-                             this console can start containers on the machine."
-                        )</p>
+                        <p class="field-hint">(t("At least 12 characters. A phrase beats a puzzle — \
+                             this console can start containers on the machine."))</p>
 
                         <div class="actions">
-                            <button type="submit">("Create administrator")</button>
+                            <button type="submit">(t("Create administrator"))</button>
                         </div>
                     </form>
                 } @else {
                     <section class="card stack">
-                        <p>(
-                            "No setup token is outstanding, so nobody can be created \
-                             from here. Issue one on the node:"
-                        )</p>
+                        <p>(t("No setup token is outstanding, so nobody can be created \
+                             from here. Issue one on the node:"))</p>
                         <pre><code>("wabot-deploy setup-token")</code></pre>
                     </section>
                 }
@@ -278,16 +273,16 @@ impl AuthPages {
                     (layout::error_note(message))
                 }
                 <form method="post" action="/sign-in" class="card stack">
-                    <label for="username">("Username")</label>
+                    <label for="username">(t("Username"))</label>
                     <input id="username" name="username" type="text"
                            autocomplete="username" required>
 
-                    <label for="password">("Password")</label>
+                    <label for="password">(t("Password"))</label>
                     <input id="password" name="password" type="password"
                            autocomplete="current-password" required>
 
                     <div class="actions">
-                        <button type="submit">("Sign in")</button>
+                        <button type="submit">(t("Sign in"))</button>
                     </div>
                 </form>
             </main>

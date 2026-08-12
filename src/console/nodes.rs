@@ -169,13 +169,14 @@ impl NodePages {
 
         layout::head("Nodes");
         let frame = Frame::new(&account, Area::Settings, &projects, None, "/nodes");
-        let body = rsx! {
+        // The account's language, around the render and no wider:
+        // the strings are read here, and nothing awaits inside.
+        let body = super::language::scoped(account.language, || {
+            rsx! {
                 (layout::style_tag())
-                <h1>("Nodes")</h1>
-                <p class="tagline">(
-                    "This node, and the ones that have agreed to take instructions \
-                     from it."
-                )</p>
+                <h1>(t("Nodes"))</h1>
+                <p class="tagline">(t("This node, and the ones that have agreed to take instructions \
+                     from it."))</p>
                 @if let Some(message) = &query.error {
                     (layout::error_note(message))
                 }
@@ -193,7 +194,7 @@ impl NodePages {
                                 <p class="tile-name">(&node.name)</p>
                                 @if node.is_self {
                                     <span class="badge badge-success">
-                                        <span class="dot dot-success"></span>("Serving")
+                                        <span class="dot dot-success"></span>(t("Serving"))
                                     </span>
                                 } @else {
                                     // Not "up": nothing has asked it
@@ -202,13 +203,13 @@ impl NodePages {
                                     // be this page inventing a health
                                     // check it does not run.
                                     <span class="badge badge-info">
-                                        <span class="dot dot-info"></span>("Joined")
+                                        <span class="dot dot-info"></span>(t("Joined"))
                                     </span>
                                 }
                             </div>
                             <p class="tile-detail">
                                 @if node.is_self {
-                                    ("wabot-deploy ")(crate::api::VERSION)(" · this node")
+                                    ("wabot-deploy ")(crate::api::VERSION)(t(" · this node"))
                                     @if let Some(address) = &node.overlay_ip {
                                         (" · ")(address)
                                     }
@@ -222,14 +223,12 @@ impl NodePages {
 
                 @if let Some(token) = &revealed {
                     <section class="card stack">
-                        <p class="card-label">("Run this on the other node")</p>
+                        <p class="card-label">(t("Run this on the other node"))</p>
                         <pre><code>("wabot-deploy join ")(token)</code></pre>
-                        <p class="field-hint">(
-                            "It works once and expires in 24 hours. This node will not \
+                        <p class="field-hint">(t("It works once and expires in 24 hours. This node will not \
                              show it again — what is stored is its hash. The other \
                              machine has to be a node already: install it there first, \
-                             then join."
-                        )</p>
+                             then join."))</p>
                     </section>
                 }
 
@@ -249,17 +248,15 @@ impl NodePages {
 
                 @if !authorities.is_empty() {
                     <section class="stack">
-                        <p class="card-label">("Takes instructions from")</p>
-                        <p class="field-hint">(
-                            "Nodes this one has granted authority to. Revoking is one \
+                        <p class="card-label">(t("Takes instructions from"))</p>
+                        <p class="field-hint">(t("Nodes this one has granted authority to. Revoking is one \
                              row, and it takes effect here — a node that has been \
-                             revoked can ask for nothing."
-                        )</p>
+                             revoked can ask for nothing."))</p>
                         <table>
                             <thead>
                                 <tr>
-                                    <th>("Node")</th><th>("May")</th>
-                                    <th>("State")</th><th></th>
+                                    <th>(t("Node"))</th><th>(t("May"))</th>
+                                    <th>(t("State"))</th><th></th>
                                 </tr>
                             </thead>
                             <tbody>
@@ -279,8 +276,9 @@ impl NodePages {
                     </section>
                 }
         }
-        .render()
-        .into_inner();
+            .render()
+            .into_inner()
+        });
 
         Ok(frame.render(body).into_view().into())
     }
@@ -330,14 +328,17 @@ impl NodePages {
                 .collect();
             layout::head(&node.name);
             let frame = Frame::new(&account, Area::Settings, &projects, None, path);
-            let body = rsx! {
+            // The account's language, around the render and no wider:
+            // the strings are read here, and nothing awaits inside.
+            let body = super::language::scoped(account.language, || {
+                rsx! {
                     (layout::style_tag())
                     <div class="split">
                         <div class="stack-sm">
                             <h1>(&node.name)</h1>
-                            <p class="slug-preview">("joined · ")(reach(&node))</p>
+                            <p class="slug-preview">(t("joined · "))(reach(&node))</p>
                         </div>
-                        <a class="btn btn-ghost" href="/nodes">("All nodes")</a>
+                        <a class="btn btn-ghost" href="/nodes">(t("All nodes"))</a>
                     </div>
                     @if let Some(message) = &query.error {
                         (layout::error_note(message))
@@ -345,39 +346,33 @@ impl NodePages {
                     (network_card(&node))
 
                     <section class="stack">
-                        <p class="card-label">("Run a service there")</p>
+                        <p class="card-label">(t("Run a service there"))</p>
                         @if hostable.is_empty() {
                             <section class="card stack">
-                                <p>(
-                                    "This node has no services to send. Deploy one here \
+                                <p>(t("This node has no services to send. Deploy one here \
                                      first — what travels is an instruction to run the \
-                                     same image, pulled from this node's registry."
-                                )</p>
+                                     same image, pulled from this node's registry."))</p>
                             </section>
                         } @else {
                             <form method="post"
                                   action=(format!("/nodes/{}/host", node.id))
                                   class="card stack">
-                                <label for="service">("Service")</label>
+                                <label for="service">(t("Service"))</label>
                                 <select id="service" name="service">
                                     @for (id, label) in &hostable {
                                         <option value=(id)>(label)</option>
                                     }
                                 </select>
-                                <p class="field-hint">(
-                                    "That node writes its own project, its own service \
+                                <p class="field-hint">(t("That node writes its own project, its own service \
                                      row and its own deployment — nothing is shared. It \
                                      pulls the image from this node's registry with a \
                                      credential this puts in the instruction, so the \
-                                     image travels only when it is needed."
-                                )</p>
-                                <p class="field-hint">(
-                                    "This runs the container. Which nodes answer for \
+                                     image travels only when it is needed."))</p>
+                                <p class="field-hint">(t("This runs the container. Which nodes answer for \
                                      the service's name is chosen on the service itself, \
-                                     and can be this node, that one, or both."
-                                )</p>
+                                     and can be this node, that one, or both."))</p>
                                 <div class="actions">
-                                    <button type="submit">("Ask it to run this")</button>
+                                    <button type="submit">(t("Ask it to run this"))</button>
                                 </div>
                             </form>
                         }
@@ -391,22 +386,21 @@ impl NodePages {
                     </section>
 
                     <section class="card stack">
-                        <p class="card-label">("Forget this node")</p>
-                        <p class="field-hint">(
-                            "This node stops listing it. It is one direction only: the \
+                        <p class="card-label">(t("Forget this node"))</p>
+                        <p class="field-hint">(t("This node stops listing it. It is one direction only: the \
                              other node still holds this one as an authority until \
                              somebody revokes it there, from its own console. A grant \
-                             belongs to the node that made it."
-                        )</p>
+                             belongs to the node that made it."))</p>
                         <form method="post" action=(format!("/nodes/forget/{}", node.id))>
                             <button class="btn btn-ghost destructive" type="submit">
-                                ("Forget")
+                                (t("Forget"))
                             </button>
                         </form>
                     </section>
             }
-            .render()
-            .into_inner();
+                .render()
+                .into_inner()
+            });
 
             return Ok(frame.render(body).into_view().into());
         }
@@ -446,14 +440,17 @@ impl NodePages {
 
         layout::head(&node.name);
         let frame = Frame::new(&account, Area::Settings, &projects, None, path);
-        let body = rsx! {
+        // The account's language, around the render and no wider:
+        // the strings are read here, and nothing awaits inside.
+        let body = super::language::scoped(account.language, || {
+            rsx! {
                 (layout::style_tag())
                 <div class="split">
                     <div class="stack-sm">
                         <h1>(&node.name)</h1>
                         <p class="slug-preview">("wabot-deploy ")(crate::api::VERSION)</p>
                     </div>
-                    <a class="btn btn-ghost" href="/nodes">("All nodes")</a>
+                    <a class="btn btn-ghost" href="/nodes">(t("All nodes"))</a>
                 </div>
 
                 // One island around both cards: the stream replaces
@@ -469,8 +466,9 @@ impl NodePages {
                 // has nothing to say about it.
                 (network_card(&node))
         }
-        .render()
-        .into_inner();
+            .render()
+            .into_inner()
+        });
 
         Ok(frame.render(body).into_view().into())
     }
@@ -494,7 +492,7 @@ fn review_card<'a>(token: &'a str, terms: &'a network::token::JoinToken) -> impl
     let offers = terms.offers();
     rsx! {
         <section class="stack">
-            <p class="card-label">("Before you join")</p>
+            <p class="card-label">(t("Before you join"))</p>
             <form method="post" action="/nodes/join" class="card stack">
                 <input type="hidden" name="token" value=(token)>
                 <input type="hidden" name="agreed" value="1">
@@ -503,10 +501,8 @@ fn review_card<'a>(token: &'a str, terms: &'a network::token::JoinToken) -> impl
                     (format!("{} is asking to be able to:", terms.name))
                 </p>
                 @if requires.is_empty() {
-                    <p class="tile-detail">(
-                        "Nothing. It is handing this node an address on its \
-                         overlay and asking for nothing back."
-                    )</p>
+                    <p class="tile-detail">(t("Nothing. It is handing this node an address on its \
+                         overlay and asking for nothing back."))</p>
                 } @else {
                     @for capability in &requires {
                         <label class="capability">
@@ -518,19 +514,15 @@ fn review_card<'a>(token: &'a str, terms: &'a network::token::JoinToken) -> impl
                             </span>
                         </label>
                     }
-                    <p class="field-hint">(
-                        "Untick anything you would rather not agree to. You can \
+                    <p class="field-hint">(t("Untick anything you would rather not agree to. You can \
                          revoke any of it later from this page, and this node \
-                         keeps working either way."
-                    )</p>
+                         keeps working either way."))</p>
                 }
 
                 <p class="tile-detail">(format!("In return, {} lets this node:", terms.name))</p>
                 @if offers.is_empty() {
-                    <p class="tile-detail">(
-                        "Nothing. This node will take its instructions and give \
-                         it none."
-                    )</p>
+                    <p class="tile-detail">(t("Nothing. This node will take its instructions and give \
+                         it none."))</p>
                 } @else {
                     <ul class="notes">
                         @for capability in &offers {
@@ -540,8 +532,8 @@ fn review_card<'a>(token: &'a str, terms: &'a network::token::JoinToken) -> impl
                 }
 
                 <div class="actions">
-                    <button type="submit">("Join")</button>
-                    <a class="btn btn-ghost" href="/nodes">("Cancel")</a>
+                    <button type="submit">(t("Join"))</button>
+                    <a class="btn btn-ghost" href="/nodes">(t("Cancel"))</a>
                 </div>
             </form>
         </section>
@@ -590,7 +582,7 @@ fn offering(capability: network::capability::Capability) -> &'static str {
 fn capabilities_card(hosts: bool, edges: bool, reachable: bool) -> impl Renderable {
     rsx! {
         <section class="stack">
-            <p class="card-label">("What this node does")</p>
+            <p class="card-label">(t("What this node does"))</p>
             <form method="post" action="/nodes/capabilities" class="card stack">
                 <label class="capability">
                     @if hosts {
@@ -599,12 +591,10 @@ fn capabilities_card(hosts: bool, edges: bool, reachable: bool) -> impl Renderab
                         <input type="checkbox" name="host" value="1">
                     }
                     <span>
-                        <strong>("Run containers")</strong>
-                        <span class="tile-detail">(
-                            "Replicas can be placed here — its own services \
+                        <strong>(t("Run containers"))</strong>
+                        <span class="tile-detail">(t("Replicas can be placed here — its own services \
                              included. A small node can own projects and run \
-                             none of them."
-                        )</span>
+                             none of them."))</span>
                     </span>
                 </label>
 
@@ -617,25 +607,21 @@ fn capabilities_card(hosts: bool, edges: bool, reachable: bool) -> impl Renderab
                         <input type="checkbox" name="edge" value="1">
                     }
                     <span>
-                        <strong>("Answer for hostnames")</strong>
+                        <strong>(t("Answer for hostnames"))</strong>
                         @if reachable {
-                            <span class="tile-detail">(
-                                "It terminates TLS for names, its own and other \
+                            <span class="tile-detail">(t("It terminates TLS for names, its own and other \
                                  nodes'. Turning this off makes it a private \
-                                 node — that is all private has ever meant."
-                            )</span>
+                                 node — that is all private has ever meant."))</span>
                         } @else {
-                            <span class="tile-detail">(
-                                "Needs a domain that resolves here. Without an \
+                            <span class="tile-detail">(t("Needs a domain that resolves here. Without an \
                                  address the world can dial, this node is \
-                                 private whatever it would prefer."
-                            )</span>
+                                 private whatever it would prefer."))</span>
                         }
                     </span>
                 </label>
 
                 <div class="actions">
-                    <button type="submit">("Save")</button>
+                    <button type="submit">(t("Save"))</button>
                 </div>
             </form>
         </section>
@@ -650,71 +636,61 @@ fn capabilities_card(hosts: bool, edges: bool, reachable: bool) -> impl Renderab
 fn enrol_card(may_enrol: bool) -> impl Renderable {
     rsx! {
         <section class="stack">
-            <p class="card-label">("Invite a node")</p>
+            <p class="card-label">(t("Invite a node"))</p>
             @if may_enrol {
                 <form method="post" action="/nodes/enrol" class="card stack">
-                    <label for="name">("What to call it")</label>
+                    <label for="name">(t("What to call it"))</label>
                     <input id="name" name="name" type="text"
                            placeholder="alpine" required>
 
-                    <p class="tile-detail">("Ask that node to let this one:")</p>
+                    <p class="tile-detail">(t("Ask that node to let this one:"))</p>
                     <label class="capability">
                         <input type="checkbox" name="require-host" value="1" checked>
-                        <span>("Run this node's containers there")</span>
+                        <span>(t("Run this node's containers there"))</span>
                     </label>
                     <label class="capability">
                         <input type="checkbox" name="require-edge" value="1" checked>
-                        <span>("Have it answer for this node's hostnames")</span>
+                        <span>(t("Have it answer for this node's hostnames"))</span>
                     </label>
 
-                    <p class="tile-detail">("And offer it, in return:")</p>
+                    <p class="tile-detail">(t("And offer it, in return:"))</p>
                     <label class="capability">
                         <input type="checkbox" name="offer-host" value="1">
-                        <span>("Run its containers on this node")</span>
+                        <span>(t("Run its containers on this node"))</span>
                     </label>
                     <label class="capability">
                         <input type="checkbox" name="offer-edge" value="1">
-                        <span>("Answer for its hostnames from this node")</span>
+                        <span>(t("Answer for its hostnames from this node"))</span>
                     </label>
-                    <p class="field-hint">(
-                        "Both lists travel inside the token and are shown on the \
+                    <p class="field-hint">(t("Both lists travel inside the token and are shown on the \
                          other machine before it is spent. Whoever holds it \
                          accepts or refuses each one — so what is asked for here \
-                         is a request, not a setting."
-                    )</p>
+                         is a request, not a setting."))</p>
 
-                    <p class="field-hint">(
-                        "This mints a token carrying this node's address, its overlay \
+                    <p class="field-hint">(t("This mints a token carrying this node's address, its overlay \
                          key and an address on the overlay for the new node. Joining \
                          with it there records this node as an authority — which that \
-                         node can revoke at any time — and tells this one it arrived."
-                    )</p>
+                         node can revoke at any time — and tells this one it arrived."))</p>
                     // The failure that will actually happen, said beside
                     // the button rather than discovered on the far
                     // machine: joining calls back over this hostname,
                     // and a node serving its own authority's certificate
                     // is one nothing else trusts yet.
-                    <p class="field-hint">(
-                        "The other machine has to trust the certificate this console \
+                    <p class="field-hint">(t("The other machine has to trust the certificate this console \
                          is served on. Until this node has a public one, joining will \
-                         refuse rather than send its token to whatever answered."
-                    )</p>
+                         refuse rather than send its token to whatever answered."))</p>
                     <div class="actions">
-                        <button type="submit">("Create join token")</button>
+                        <button type="submit">(t("Create join token"))</button>
                     </div>
                 </form>
             } @else {
                 <section class="card stack">
-                    <p>(
-                        "This node has no address another one could call back on, so it \
-                         cannot enrol anybody yet."
-                    )</p>
-                    <p class="field-hint">(
-                        "Set a domain on this node's own page. A joining node reaches it \
+                    <p>(t("This node has no address another one could call back on, so it \
+                         cannot enrol anybody yet."))</p>
+                    <p class="field-hint">(t("Set a domain on this node's own page. A joining node reaches it \
                          over the same hostname and certificate this console is served \
                          on, and that certificate has to be one the other machine \
-                         already trusts."
-                    )</p>
+                         already trusts."))</p>
                 </section>
             }
         </section>
@@ -733,39 +709,35 @@ fn join_card<'a>(
 ) -> impl Renderable + 'a {
     rsx! {
         <section class="stack">
-            <p class="card-label">("Join a network")</p>
+            <p class="card-label">(t("Join a network"))</p>
             @if let Some(name) = joined {
                 <section class="card stack">
-                    <p>("This node now takes instructions from ")(name)(".")</p>
-                    <p class="field-hint">(
-                        "Only what it was granted, which is listed beside it below. \
-                         Revoking any of it takes effect here and immediately."
-                    )</p>
+                    <p>(t("This node now takes instructions from "))(name)(".")</p>
+                    <p class="field-hint">(t("Only what it was granted, which is listed beside it below. \
+                         Revoking any of it takes effect here and immediately."))</p>
                 </section>
             }
             <form method="post" action="/nodes/join" class="card stack">
-                <label for="token">("Join token")</label>
+                <label for="token">(t("Join token"))</label>
                 <input id="token" name="token" type="text" class="mono"
                        placeholder="wdj1.…" autocomplete="off" required>
-                <p class="field-hint">(
-                    "From the nodes page of the node you are joining: add a private \
-                     node there, and it shows one token, once. Pasting it here does \
+                <p class="field-hint">(t("From the nodes page of the node you are joining: invite a node \
+                     there, and it shows one token, once. Pasting it here does \
                      what `wabot-deploy join` does in a terminal — this node records \
                      that one as an authority and tells it so. The same token can be \
-                     pasted again if something goes wrong part-way."
-                )</p>
+                     pasted again if something goes wrong part-way."))</p>
                 <div class="actions">
-                    <button type="submit">("Join")</button>
+                    <button type="submit">(t("Join"))</button>
                 </div>
             </form>
 
             @if !enrolments.is_empty() {
-                <p class="card-label">("Tokens this node minted")</p>
+                <p class="card-label">(t("Tokens this node minted"))</p>
                 <table>
                     <thead>
                         <tr>
-                            <th>("For")</th><th>("Address")</th>
-                            <th>("State")</th><th></th>
+                            <th>(t("For"))</th><th>(t("Address"))</th>
+                            <th>(t("State"))</th><th></th>
                         </tr>
                     </thead>
                     <tbody>
@@ -829,42 +801,38 @@ fn network_card(node: &network::Node) -> impl Renderable + '_ {
     rsx! {
         <section class="card stack">
             <div class="split">
-                <p class="card-label">("On this network")</p>
+                <p class="card-label">(t("On this network"))</p>
                 <span class="badge badge-info">
                     <span class="dot dot-info"></span>(reach(node))
                 </span>
             </div>
 
             <dl class="kv">
-                <dt>("Id")</dt>
+                <dt>(t("Id"))</dt>
                 <dd class="mono">(&node.id)</dd>
                 // "Reachable at" and not "endpoint": the empty case is
                 // the interesting one, and it means this node has no
                 // address to dial that one at — not that the machine
                 // is unreachable, which is not something this node
                 // knows. See `reach`.
-                <dt>("This node dials it at")</dt>
+                <dt>(t("This node dials it at"))</dt>
                 <dd class="mono">(node.endpoint.as_deref().unwrap_or("—"))</dd>
-                <dt>("Overlay address")</dt>
+                <dt>(t("Overlay address"))</dt>
                 <dd class="mono">(node.overlay_ip.as_deref().unwrap_or("not on one"))</dd>
-                <dt>("Public key")</dt>
+                <dt>(t("Public key"))</dt>
                 <dd class="mono">(node.public_key.as_deref().unwrap_or("none yet"))</dd>
             </dl>
 
             @if node.is_self {
-                <p class="note">(
-                    "A key and an address appear the first time this node enrols \
-                     another one or joins one itself. Nothing travels over the overlay \
-                     yet — an errand has no way to reach a node until there is a tunnel \
-                     to carry it."
-                )</p>
+                <p class="note">(t("A key and an address appear the first time this node enrols \
+                     another one or joins one itself. The overlay is what carries \
+                     traffic between nodes — an edge here reaching a container that \
+                     runs somewhere else."))</p>
             } @else {
-                <p class="note">(
-                    "Recorded when this node joined — what it said about itself when it \
+                <p class="note">(t("Recorded when this node joined — what it said about itself when it \
                      arrived. Instructions do not travel over the overlay: that node \
                      collects them over the same connection it enrolled through, which \
-                     is why nothing here has to be able to reach it."
-                )</p>
+                     is why nothing here has to be able to reach it."))</p>
             }
         </section>
     }
@@ -889,7 +857,7 @@ fn errands_card<'a>(
             <table>
                 <thead>
                     <tr>
-                        <th>("Asked")</th><th>("State")</th>
+                        <th>(t("Asked"))</th><th>(t("State"))</th>
                     </tr>
                 </thead>
                 <tbody>
@@ -920,20 +888,20 @@ fn errand_row(order: &network::errand::Record) -> impl Renderable + '_ {
             <td data-errand=(&order.id)>
                 @if let Some(reason) = &order.error {
                     <span class="badge badge-danger">
-                        <span class="dot dot-danger"></span>("Refused")
+                        <span class="dot dot-danger"></span>(t("Refused"))
                     </span>
                     <p class="failure">(reason)</p>
                 } @else if order.done() {
                     <span class="badge badge-success">
-                        <span class="dot dot-success"></span>("Done")
+                        <span class="dot dot-success"></span>(t("Done"))
                     </span>
                 } @else if order.taken_at.is_some() {
                     <span class="badge badge-info">
-                        <span class="dot dot-info dot-pulse"></span>("Collected")
+                        <span class="dot dot-info dot-pulse"></span>(t("Collected"))
                     </span>
                 } @else {
                     <span class="badge badge-info">
-                        <span class="dot dot-info"></span>("Waiting to be collected")
+                        <span class="dot dot-info"></span>(t("Waiting to be collected"))
                     </span>
                 }
             </td>
@@ -954,12 +922,12 @@ fn enrolment_row(enrolment: &Enrolment, now: i64) -> impl Renderable + '_ {
                 // to answer.
                 @if enrolment.live(now) {
                     <span class="badge badge-success">
-                        <span class="dot dot-success"></span>("Waiting")
+                        <span class="dot dot-success"></span>(t("Waiting"))
                     </span>
                 } @else if spent {
-                    <span class="badge">("Used")</span>
+                    <span class="badge">(t("Used"))</span>
                 } @else {
-                    <span class="badge badge-warning">("Expired")</span>
+                    <span class="badge badge-warning">(t("Expired"))</span>
                 }
             </td>
             <td>
@@ -969,7 +937,7 @@ fn enrolment_row(enrolment: &Enrolment, now: i64) -> impl Renderable + '_ {
                     <form method="post"
                           action=(format!("/nodes/enrolments/{}/withdraw", enrolment.id))>
                         <button class="btn btn-ghost destructive btn-sm" type="submit">
-                            ("Withdraw")
+                            (t("Withdraw"))
                         </button>
                     </form>
                 }
@@ -999,7 +967,7 @@ fn authority_row<'a>(
             </td>
             <td>
                 @if held.is_empty() {
-                    <span class="tile-detail">("nothing")</span>
+                    <span class="tile-detail">(t("nothing"))</span>
                 } @else {
                     @for capability in held {
                         <span class="badge">(capability.name())</span>
@@ -1009,10 +977,10 @@ fn authority_row<'a>(
             <td>
                 @if authority.live() {
                     <span class="badge badge-success">
-                        <span class="dot dot-success"></span>("Allowed")
+                        <span class="dot dot-success"></span>(t("Allowed"))
                     </span>
                 } @else {
-                    <span class="badge">("Revoked")</span>
+                    <span class="badge">(t("Revoked"))</span>
                 }
             </td>
             <td>
@@ -1020,7 +988,7 @@ fn authority_row<'a>(
                     <form method="post"
                           action=(format!("/nodes/revoke/{}", authority.node_id))>
                         <button class="btn btn-ghost destructive btn-sm" type="submit">
-                            ("Revoke")
+                            (t("Revoke"))
                         </button>
                     </form>
                 }
@@ -1258,7 +1226,7 @@ fn certificate_card<'a>(
     rsx! {
         <section class="card stack">
             <div class="split">
-                <p class="card-label">("Certificate")</p>
+                <p class="card-label">(t("Certificate"))</p>
                 <span class=(cells.badge) data-cert="badge">
                     <span class=(cells.dot) data-cert="dot"></span>
                     <span data-cert="word">(cells.word)</span>
@@ -1266,11 +1234,11 @@ fn certificate_card<'a>(
             </div>
 
             <dl class="kv">
-                <dt>("Domain")</dt>
+                <dt>(t("Domain"))</dt>
                 <dd data-cert="domain">(&cells.domain)</dd>
-                <dt>("Issuer")</dt>
+                <dt>(t("Issuer"))</dt>
                 <dd data-cert="issuer">(&cells.issuer)</dd>
-                <dt>("Renews in")</dt>
+                <dt>(t("Renews in"))</dt>
                 <dd data-cert="renews">(&cells.renews)</dd>
             </dl>
 
@@ -1287,19 +1255,17 @@ fn certificate_card<'a>(
             }
 
             <form method="post" action="/nodes/certificate" class="stack">
-                <label for="domain">("Domain")</label>
+                <label for="domain">(t("Domain"))</label>
                 <input id="domain" name="domain" type="text" class="mono"
                        value=(domain.unwrap_or_default())
                        placeholder="node.example.com">
-                <p class="field-hint">(
-                    "It must resolve to this node, and this node must be reachable on \
+                <p class="field-hint">(t("It must resolve to this node, and this node must be reachable on \
                      port 80 — that is what the challenge answers on. Both are checked \
                      before anything is requested. Saving reissues: the node takes the \
                      new name on its own certificate straight away, then asks a public \
-                     authority for one."
-                )</p>
+                     authority for one."))</p>
                 <div class="actions">
-                    <button type="submit">("Save domain")</button>
+                    <button type="submit">(t("Save domain"))</button>
                     @if state.may_retry() {
                         // Asking again with the same name is its own
                         // action: the usual fix for a refusal is out
@@ -1307,7 +1273,7 @@ fn certificate_card<'a>(
                         // to re-type the domain to retry reads as
                         // though the domain were the problem.
                         <button class="btn btn-secondary" type="submit"
-                                name="retry" value="1">("Try again")</button>
+                                name="retry" value="1">(t("Try again"))</button>
                     }
                 </div>
             </form>
@@ -1345,7 +1311,7 @@ pub(crate) fn certificate_source_form(
         "fields",
         rsx! {
             <form method="post" action=(action) class="stack">
-                <label for=(field("source"))>("Where the certificate comes from")</label>
+                <label for=(field("source"))>(t("Where the certificate comes from"))</label>
                 <select id=(field("source")) name="renew_with">
                     @for (value, label) in SOURCES {
                         @if policy.renew_with.as_str() == *value {
@@ -1361,24 +1327,22 @@ pub(crate) fn certificate_source_form(
                 // and the form still works — the server reads them only
                 // when `renew_with` says `file`.
                 <div class="stack" data-when="renew_with=file">
-                    <label for=(field("cert"))>("Certificate file")</label>
+                    <label for=(field("cert"))>(t("Certificate file"))</label>
                     <input id=(field("cert")) name="cert_path" type="text" class="mono"
                            value=(cert_path) placeholder="/etc/ssl/name.crt"
                            data-required-when="renew_with=file">
-                    <label for=(field("key"))>("Key file")</label>
+                    <label for=(field("key"))>(t("Key file"))</label>
                     <input id=(field("key")) name="key_path" type="text" class="mono"
                            value=(key_path) placeholder="/etc/ssl/name.key"
                            data-required-when="renew_with=file">
-                    <p class="field-hint">(
-                        "Both are read now and refused if they do not match, do not cover \
+                    <p class="field-hint">(t("Both are read now and refused if they do not match, do not cover \
                          this name, or have already expired — a bad pair installed would \
                          break every handshake, including the one serving this page. After \
                          that the node rereads them and reinstalls whatever it finds, which \
-                         is how a certificate it cannot renew stays current."
-                    )</p>
+                         is how a certificate it cannot renew stays current."))</p>
                 </div>
                 <div class="actions">
-                    <button class="btn btn-secondary" type="submit">("Save source")</button>
+                    <button class="btn btn-secondary" type="submit">(t("Save source"))</button>
                 </div>
             </form>
         },
@@ -1398,9 +1362,9 @@ fn memory_card(snapshot: &Snapshot) -> impl Renderable + '_ {
     rsx! {
         <section class="card stack">
             <div class="split">
-                <p class="card-label">("Memory")</p>
+                <p class="card-label">(t("Memory"))</p>
                 <span class="mono" data-cell="summary">
-                    (memory::human(snapshot.used()))(" of ")(memory::human(snapshot.total))
+                    (memory::human(snapshot.used()))(t(" of "))(memory::human(snapshot.total))
                 </span>
             </div>
 
@@ -1432,18 +1396,16 @@ fn memory_card(snapshot: &Snapshot) -> impl Renderable + '_ {
                 </tbody>
             </table>
 
-            <p class="note">(
-                "The parts overlap slightly: a container's page cache counts both in its \
+            <p class="note">(t("The parts overlap slightly: a container's page cache counts both in its \
                  own reading and in the system's, and shared pages count for each process \
                  that maps them. \"Everything else\" is what is left over rather than a \
-                 measurement of its own."
-            )</p>
+                 measurement of its own."))</p>
 
             @if snapshot.swap_total > 0 {
                 <dl class="kv">
-                    <dt>("Swap")</dt>
+                    <dt>(t("Swap"))</dt>
                     <dd data-cell="swap">
-                        (memory::human(snapshot.swap_used))(" of ")
+                        (memory::human(snapshot.swap_used))(t(" of "))
                         (memory::human(snapshot.swap_total))
                     </dd>
                 </dl>

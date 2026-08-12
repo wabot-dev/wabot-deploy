@@ -7,6 +7,7 @@ use hypertext::prelude::*;
 use hypertext::Raw;
 
 use super::assets;
+use super::language::t;
 
 /// Declare the head every console page needs.
 ///
@@ -68,7 +69,7 @@ fn plural(count: i64, unit: &str) -> String {
 
 pub fn error_note(message: &str) -> impl Renderable + '_ {
     rsx! {
-        <p class="form-error"><strong>("Error: ")</strong>(message)</p>
+        <p class="form-error"><strong>(t("Error: "))</strong>(message)</p>
     }
 }
 

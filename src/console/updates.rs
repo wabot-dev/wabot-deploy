@@ -26,6 +26,7 @@ use wabot::rest::axum::response::Response;
 use wabot::rest::RestResult;
 use wabot::ui::hypertext::IntoView;
 
+use super::language::t;
 use crate::platform::access;
 use crate::update::github::Release;
 use crate::update::notes::{Block, Inline};
@@ -86,14 +87,15 @@ impl UpdatePages {
 
         layout::head("Updates");
         let frame = Frame::new(&account, Area::Settings, &projects, None, "/updates");
-        let body = rsx! {
+        // The account's language, around the render and no wider:
+        // the strings are read here, and nothing awaits inside.
+        let body = super::language::scoped(account.language, || {
+            rsx! {
             (layout::style_tag())
-            <h1>("Updates")</h1>
-            <p class="tagline">(
-                "This node installs a release when you ask it to, and never \
+            <h1>(t("Updates"))</h1>
+            <p class="tagline">(t("This node installs a release when you ask it to, and never \
                  on its own. Installing one restarts the node; the containers \
-                 on it keep running."
-            )</p>
+                 on it keep running."))</p>
 
             @if let Some(message) = &query.started {
                 <p class="note">(message)</p>
@@ -105,7 +107,7 @@ impl UpdatePages {
             (live_region(&available, latest.as_ref()))
 
             @if let Ok(available) = &available {
-                <h2>("Releases")</h2>
+                <h2>(t("Releases"))</h2>
                 <div class="stack">
                     @for release in &available.releases {
                         (release_card(release, available.current))
@@ -114,10 +116,10 @@ impl UpdatePages {
             }
 
             @if history.len() > 1 {
-                <h2>("Earlier attempts")</h2>
+                <h2>(t("Earlier attempts"))</h2>
                 <table>
                     <thead>
-                        <tr><th>("Version")</th><th>("When")</th><th>("Outcome")</th></tr>
+                        <tr><th>(t("Version"))</th><th>(t("When"))</th><th>(t("Outcome"))</th></tr>
                     </thead>
                     <tbody>
                         @for run in history.iter().skip(1) {
@@ -136,8 +138,9 @@ impl UpdatePages {
                 </table>
             }
         }
-        .render()
-        .into_inner();
+            .render()
+            .into_inner()
+        });
 
         Ok(frame.render(body).into_view().into())
     }
@@ -170,42 +173,46 @@ impl UpdatePages {
 
         layout::head(&format!("wabot-deploy {}", release.version));
         let frame = Frame::new(&account, Area::Settings, &projects, None, "/updates");
-        let body = rsx! {
-            (layout::style_tag())
-            <p class="crumb"><a href="/updates">("Updates")</a></p>
-            <h1>(&release.name)</h1>
-            <p class="tagline">
-                (&release.tag)
-                @if !release.published_at.is_empty() {
-                    (" · published ")(day_of(&release.published_at))
-                }
-            </p>
+        // The account's language, around the render and no wider:
+        // the strings are read here, and nothing awaits inside.
+        let body = super::language::scoped(account.language, || {
+            rsx! {
+                (layout::style_tag())
+                <p class="crumb"><a href="/updates">(t("Updates"))</a></p>
+                <h1>(&release.name)</h1>
+                <p class="tagline">
+                    (&release.tag)
+                    @if !release.published_at.is_empty() {
+                        (t(" · published "))(day_of(&release.published_at))
+                    }
+                </p>
 
-            @if let Some(message) = &query.error {
-                (layout::error_note(message))
+                @if let Some(message) = &query.error {
+                    (layout::error_note(message))
+                }
+
+                <section class="card stack">
+                    (state_line(&release, current))
+                    @if release.installable() && current != Some(release.version) {
+                        (install_form(&release, "btn", "Install this release"))
+                    }
+                </section>
+
+                <section class="card stack">
+                    <p class="card-label">(t("What is in it"))</p>
+                    (rendered_notes(&release.notes))
+                    @if !release.html_url.is_empty() {
+                        <p class="tile-detail">
+                            <a href=(&release.html_url) rel="noreferrer noopener" target="_blank">
+                                (t("Read it on GitHub"))
+                            </a>
+                        </p>
+                    }
+                </section>
             }
-
-            <section class="card stack">
-                (state_line(&release, current))
-                @if release.installable() && current != Some(release.version) {
-                    (install_form(&release, "btn", "Install this release"))
-                }
-            </section>
-
-            <section class="card stack">
-                <p class="card-label">("What is in it")</p>
-                (rendered_notes(&release.notes))
-                @if !release.html_url.is_empty() {
-                    <p class="tile-detail">
-                        <a href=(&release.html_url) rel="noreferrer noopener" target="_blank">
-                            ("Read it on GitHub")
-                        </a>
-                    </p>
-                }
-            </section>
-        }
-        .render()
-        .into_inner();
+            .render()
+            .into_inner()
+        });
 
         Ok(frame.render(body).into_view().into())
     }
@@ -400,22 +407,22 @@ fn state_line(
 
     rsx! {
         <dl class="kv">
-            <dt>("Version")</dt>
+            <dt>(t("Version"))</dt>
             <dd>(release.version.to_string())</dd>
-            <dt>("State")</dt>
+            <dt>(t("State"))</dt>
             <dd>
                 @if installed {
-                    ("running here")
+                    (t("running here"))
                 } @else if !release.installable() {
-                    ("no build for this machine")
+                    (t("no build for this machine"))
                 } @else if older {
-                    ("older than what is running")
+                    (t("older than what is running"))
                 } @else {
-                    ("newer than what is running")
+                    (t("newer than what is running"))
                 }
             </dd>
             @if let Some(binary) = &release.binary {
-                <dt>("Download")</dt>
+                <dt>(t("Download"))</dt>
                 <dd>(&binary.name)(" · ")(megabytes(binary.size))</dd>
             }
         </dl>
@@ -439,15 +446,15 @@ fn release_card(
                         @if !release.published_at.is_empty() {
                             (" · ")(day_of(&release.published_at))
                         }
-                        @if release.prerelease { (" · pre-release") }
+                        @if release.prerelease { (t(" · pre-release")) }
                     </p>
                 </div>
                 @if installed {
                     <span class="badge badge-success">
-                        <span class="dot dot-success"></span>("Running")
+                        <span class="dot dot-success"></span>(t("Running"))
                     </span>
                 } @else if !release.installable() {
-                    <span class="badge">("No build here")</span>
+                    <span class="badge">(t("No build here"))</span>
                 } @else {
                     (install_form(release, "btn btn-secondary btn-sm", "Install"))
                 }
@@ -476,14 +483,14 @@ fn live_region<'a>(
         <section class="card stack">
             <div class="split">
                 <div class="stack-sm">
-                    <p class="card-label">("Running")</p>
+                    <p class="card-label">(t("Running"))</p>
                     <p class="mono" data-run="version">
                         ("wabot-deploy ")(crate::api::VERSION)
                     </p>
                 </div>
                 <form method="post" action="/updates/check">
                     <button class="btn btn-secondary btn-sm" type="submit">
-                        ("Check again")
+                        (t("Check again"))
                     </button>
                 </form>
             </div>
@@ -491,15 +498,15 @@ fn live_region<'a>(
             @match available {
                 Err(error) => {
                     <p class="failure">
-                        ("Could not read the release list: ")(error.to_string())
+                        (t("Could not read the release list: "))(error.to_string())
                     </p>
                 }
                 Ok(available) => {
                     @if let Some(release) = &available.upgrade {
-                        <p>(&release.name)(" is available.")</p>
+                        <p>(&release.name)(t(" is available."))</p>
                         (install_form(release, "btn", "Install this release"))
                     } @else {
-                        <p class="note">("This is the newest release published.")</p>
+                        <p class="note">(t("This is the newest release published."))</p>
                     }
                 }
             }
@@ -536,16 +543,16 @@ fn run_card(run: &Run) -> impl Renderable + '_ {
     rsx! {
         <section class="card card-sunken stack-sm">
             <div class="split">
-                <p class="card-label">("Last update")</p>
+                <p class="card-label">(t("Last update"))</p>
                 <span data-run="badge">(status_badge(run.status))</span>
             </div>
             <dl class="kv">
-                <dt>("Version")</dt>
+                <dt>(t("Version"))</dt>
                 <dd>(&run.from_version)(" → ")(&run.to_version)</dd>
-                <dt>("Started")</dt>
+                <dt>(t("Started"))</dt>
                 <dd>(layout::when(run.started_at))</dd>
                 @if let Some(finished) = run.finished_at {
-                    <dt>("Finished")</dt>
+                    <dt>(t("Finished"))</dt>
                     <dd>(layout::when(finished))</dd>
                 }
                 // Always rendered, so the stream has somewhere to
@@ -553,13 +560,13 @@ fn run_card(run: &Run) -> impl Renderable + '_ {
                 // than absent — markup that appears is markup the
                 // client would have to build.
                 <dt data-run="step-label"
-                    class=(hidden_unless(run.status.in_flight()))>("Now")</dt>
+                    class=(hidden_unless(run.status.in_flight()))>(t("Now"))</dt>
                 <dd data-run="step"
                     class=(hidden_unless(run.status.in_flight()))>(
                     run.step.as_deref().unwrap_or_default()
                 )</dd>
                 @if let Some(backup) = &run.backup_path {
-                    <dt>("Backup")</dt>
+                    <dt>(t("Backup"))</dt>
                     <dd>(backup)</dd>
                 }
             </dl>
@@ -571,10 +578,8 @@ fn run_card(run: &Run) -> impl Renderable + '_ {
                 }
             }
             <p data-run="waiting"
-               class=(format!("note {}", hidden_unless(run.status.in_flight())))>(
-                "The node restarts on its own when the new binary is in place. \
-                 This page follows along — there is nothing to reload."
-            )</p>
+               class=(format!("note {}", hidden_unless(run.status.in_flight())))>(t("The node restarts on its own when the new binary is in place. \
+                 This page follows along — there is nothing to reload."))</p>
         </section>
     }
 }
@@ -597,7 +602,7 @@ fn rendered_notes(markdown: &str) -> impl Renderable + '_ {
     let blocks = crate::update::notes::parse(markdown);
     rsx! {
         @if blocks.is_empty() {
-            <p class="note">("This release came with no notes.")</p>
+            <p class="note">(t("This release came with no notes."))</p>
         }
         <div class="notes">
             @for block in &blocks {

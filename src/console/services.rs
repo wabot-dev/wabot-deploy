@@ -10,6 +10,7 @@ use wabot::rest::axum::response::Response;
 use wabot::rest::RestResult;
 use wabot::ui::hypertext::IntoView;
 
+use super::language::t;
 use crate::deploy::dns;
 use crate::platform::{access, config_history, ports, releases, services};
 
@@ -82,43 +83,43 @@ impl ServicePages {
         .allowing(allowed);
 
         layout::head("Create service");
-        let body = rsx! {
+        // The account's language, around the render and no wider:
+        // the strings are read here, and nothing awaits inside.
+        let body = super::language::scoped(account.language, || {
+            rsx! {
             (layout::style_tag())
                 <div class="stack-sm">
-                    <h1>("Create service")</h1>
+                    <h1>(t("Create service"))</h1>
                     <p class="slug-preview">(&project.slug)</p>
                 </div>
                 @if let Some(message) = &query.error {
                     (layout::error_note(message))
                 }
                 <form method="post" action=(&action) class="card stack">
-                    <label for="name">("Name")</label>
+                    <label for="name">(t("Name"))</label>
                     <input id="name" name="name" type="text" required autofocus>
 
-                    <label for="image">("Image")</label>
+                    <label for="image">(t("Image"))</label>
                     <input id="image" name="image" type="text" class="mono"
                            placeholder="docker.io/library/nginx:alpine" required>
-                    <p class="field-hint">(
-                        "A reference containerd can resolve. Fully qualified — \
-                         there is no implicit registry here."
-                    )</p>
+                    <p class="field-hint">(t("A reference containerd can resolve. Fully qualified — \
+                         there is no implicit registry here."))</p>
 
-                    <label for="env">("Environment")</label>
+                    <label for="env">(t("Environment"))</label>
                     <textarea id="env" name="env" rows="6" class="mono"
                               placeholder="KEY=value"></textarea>
-                    <p class="field-hint">(
-                        "One KEY=value per line. Everything after the first = is \
-                         the value, so a value may contain one."
-                    )</p>
+                    <p class="field-hint">(t("One KEY=value per line. Everything after the first = is \
+                         the value, so a value may contain one."))</p>
 
                     <div class="actions">
-                        <button type="submit">("Create service")</button>
-                        <a class="btn btn-ghost" href=(&back)>("Cancel")</a>
+                        <button type="submit">(t("Create service"))</button>
+                        <a class="btn btn-ghost" href=(&back)>(t("Cancel"))</a>
                     </div>
                 </form>
         }
-        .render()
-        .into_inner();
+            .render()
+            .into_inner()
+        });
 
         Ok(frame.render(body).into_view().into())
     }
@@ -255,7 +256,10 @@ impl ServicePages {
         .allowing(allowed);
 
         layout::head(&service.name);
-        let body = rsx! {
+        // The account's language, around the render and no wider:
+        // the strings are read here, and nothing awaits inside.
+        let body = super::language::scoped(account.language, || {
+            rsx! {
             (layout::style_tag())
                 <div class="split">
                     <div class="stack-sm">
@@ -264,9 +268,9 @@ impl ServicePages {
                     </div>
                     <div class="row">
                         @if allowed.may_deploy() {
-                            <a class="btn btn-secondary" href=(&settings)>("Settings")</a>
+                            <a class="btn btn-secondary" href=(&settings)>(t("Settings"))</a>
                         }
-                        <a class="btn btn-ghost" href=(&back)>("Back to project")</a>
+                        <a class="btn btn-ghost" href=(&back)>(t("Back to project"))</a>
                     </div>
                 </div>
 
@@ -276,7 +280,7 @@ impl ServicePages {
 
                 <section class="card stack">
                     <div class="split">
-                        <p class="card-label">("Container")</p>
+                        <p class="card-label">(t("Container"))</p>
                         // `data-state` and `data-address` are what the
                         // project's island writes into, keyed by service
                         // id — so this page joins that stream instead of
@@ -304,9 +308,9 @@ impl ServicePages {
                         </div>
                     </div>
                     <dl class="kv">
-                        <dt>("Image")</dt>
+                        <dt>(t("Image"))</dt>
                         <dd>(&service.image)</dd>
-                        <dt>("Address")</dt>
+                        <dt>(t("Address"))</dt>
                         <dd class="mono" data-address=(&service.id)>(
                             here.as_ref()
                                 .and_then(|r| r.address.clone())
@@ -335,7 +339,7 @@ impl ServicePages {
 
                 <section class="stack">
                     <div class="split">
-                        <p class="card-label">("Releases")</p>
+                        <p class="card-label">(t("Releases"))</p>
                         <span class="who">(
                             format!("watching :{}", crate::platform::images::tracked_tag(
                                 &service.image, service.track_tag.as_deref()
@@ -343,17 +347,15 @@ impl ServicePages {
                         )</span>
                     </div>
                     @if releases.is_empty() {
-                        <p class="tile-detail">(
-                            "Nothing has been pushed yet. Create a push token on the \
-                             project page and push an image to this repository."
-                        )</p>
+                        <p class="tile-detail">(t("Nothing has been pushed yet. Create a push token on the \
+                             project page and push an image to this repository."))</p>
                     } @else {
                         <table>
                             <thead>
                                 <tr>
-                                    <th>("Image")</th>
-                                    <th>("From")</th>
-                                    <th>("State")</th>
+                                    <th>(t("Image"))</th>
+                                    <th>(t("From"))</th>
+                                    <th>(t("State"))</th>
                                     <th></th>
                                 </tr>
                             </thead>
@@ -368,7 +370,7 @@ impl ServicePages {
                                             @if release.deployed_at.is_some() {
                                                 <span class="badge badge-success">
                                                     <span class="dot dot-success"></span>
-                                                    ("Running")
+                                                    (t("Running"))
                                                 </span>
                                             }
                                         </td>
@@ -381,7 +383,7 @@ impl ServicePages {
                                                           project.slug, service.slug, release.id
                                                       ))>
                                                     <button class="btn btn-secondary btn-sm"
-                                                            type="submit">("Deploy this")</button>
+                                                            type="submit">(t("Deploy this"))</button>
                                                 </form>
                                             }
                                         </td>
@@ -393,18 +395,16 @@ impl ServicePages {
                 </section>
 
                 <section class="stack">
-                    <p class="card-label">("Reachable at")</p>
+                    <p class="card-label">(t("Reachable at"))</p>
                     @if ports.is_empty() {
-                        <p class="tile-detail">(
-                            "This service exposes nothing. That is the right answer \
-                             for a worker; a port is added in settings."
-                        )</p>
+                        <p class="tile-detail">(t("This service exposes nothing. That is the right answer \
+                             for a worker; a port is added in settings."))</p>
                     } @else {
                         <table>
                             <thead>
                                 <tr>
-                                    <th>("Container")</th>
-                                    <th>("Reachable at")</th>
+                                    <th>(t("Container"))</th>
+                                    <th>(t("Reachable at"))</th>
                                 </tr>
                             </thead>
                             <tbody>
@@ -429,7 +429,7 @@ impl ServicePages {
                                                           false => "badge badge-info",
                                                       })>
                                                     <span class="dot dot-info dot-pulse"></span>
-                                                    ("Certificate on the way")
+                                                    (t("Certificate on the way"))
                                                 </span>
                                             }
                                             @if let Some(hostname) = &port.hostname {
@@ -448,8 +448,9 @@ impl ServicePages {
                     }
                 </section>
         }
-        .render()
-        .into_inner();
+            .render()
+            .into_inner()
+        });
 
         // The project's own island, on the project's own stream. It
         // writes by service id into `data-state` and `data-address`,
@@ -572,14 +573,17 @@ impl ServicePages {
         .allowing(allowed);
 
         layout::head(&format!("{} settings", service.name));
-        let body = rsx! {
+        // The account's language, around the render and no wider:
+        // the strings are read here, and nothing awaits inside.
+        let body = super::language::scoped(account.language, || {
+            rsx! {
             (layout::style_tag())
                 <div class="split">
                     <div class="stack-sm">
-                        <h1>("Settings")</h1>
+                        <h1>(t("Settings"))</h1>
                         <p class="slug-preview">(&project.slug)(" / ")(&service.slug)</p>
                     </div>
-                    <a class="btn btn-ghost" href=(&here)>("Back to service")</a>
+                    <a class="btn btn-ghost" href=(&here)>(t("Back to service"))</a>
                 </div>
 
                 @if let Some(message) = &query.error {
@@ -590,9 +594,9 @@ impl ServicePages {
                 }
 
                 <section class="stack">
-                    <p class="card-label">("Releases")</p>
+                    <p class="card-label">(t("Releases"))</p>
                     <form method="post" action=(format!("{here}/tracking")) class="card stack">
-                        <label for="track_tag">("Tag to watch")</label>
+                        <label for="track_tag">(t("Tag to watch"))</label>
                         <input id="track_tag" name="track_tag" type="text" class="mono"
                                value=(service.track_tag.clone().unwrap_or_default())
                                placeholder="latest">
@@ -605,29 +609,25 @@ impl ServicePages {
                             } @else {
                                 <input type="checkbox" name="auto_deploy" value="1">
                             }
-                            ("Deploy a push automatically")
+                            (t("Deploy a push automatically"))
                         </label>
-                        <p class="field-hint">(
-                            "Without this, a push is recorded as a release and waits \
-                             for somebody to deploy it from the service page."
-                        )</p>
+                        <p class="field-hint">(t("Without this, a push is recorded as a release and waits \
+                             for somebody to deploy it from the service page."))</p>
                         <div class="actions">
-                            <button type="submit">("Save")</button>
+                            <button type="submit">(t("Save"))</button>
                         </div>
                     </form>
                 </section>
 
                 <section class="stack">
-                    <p class="card-label">("Environment")</p>
+                    <p class="card-label">(t("Environment"))</p>
                     <form method="post" action=(format!("{here}/env")) class="card stack">
                         <textarea name="env" rows="6" class="mono"
                                   placeholder="KEY=value">(&env_text)</textarea>
-                        <p class="field-hint">(
-                            "Saving redeploys the service with these values. The image \
-                             it runs does not change."
-                        )</p>
+                        <p class="field-hint">(t("Saving redeploys the service with these values. The image \
+                             it runs does not change."))</p>
                         <div class="actions">
-                            <button type="submit">("Save environment")</button>
+                            <button type="submit">(t("Save environment"))</button>
                         </div>
                     </form>
 
@@ -637,7 +637,7 @@ impl ServicePages {
                                 @for revision in history.iter().skip(1) {
                                     <tr>
                                         <td class="tile-detail">
-                                            (revision.env.len())(" values · ")(&revision.reason)
+                                            (revision.env.len())(t(" values · "))(&revision.reason)
                                         </td>
                                         <td>
                                             <form method="post"
@@ -645,7 +645,7 @@ impl ServicePages {
                                                       "{here}/env/{}/revert", revision.id
                                                   ))>
                                                 <button class="btn btn-ghost btn-sm"
-                                                        type="submit">("Restore")</button>
+                                                        type="submit">(t("Restore"))</button>
                                             </form>
                                         </td>
                                     </tr>
@@ -656,18 +656,16 @@ impl ServicePages {
                 </section>
 
                 <section class="stack">
-                    <p class="card-label">("Ports")</p>
+                    <p class="card-label">(t("Ports"))</p>
                     @if ports.is_empty() {
-                        <p class="tile-detail">(
-                            "This service exposes nothing. That is the right answer for \
-                             a worker; add a port for anything that listens."
-                        )</p>
+                        <p class="tile-detail">(t("This service exposes nothing. That is the right answer for \
+                             a worker; add a port for anything that listens."))</p>
                     } @else {
                         <table>
                             <thead>
                                 <tr>
-                                    <th>("Container")</th>
-                                    <th>("Reachable at")</th>
+                                    <th>(t("Container"))</th>
+                                    <th>(t("Reachable at"))</th>
                                     <th></th>
                                 </tr>
                             </thead>
@@ -693,7 +691,7 @@ impl ServicePages {
                                                           false => "badge badge-info",
                                                       })>
                                                     <span class="dot dot-info dot-pulse"></span>
-                                                    ("Certificate on the way")
+                                                    (t("Certificate on the way"))
                                                 </span>
                                             }
                                         </td>
@@ -702,7 +700,7 @@ impl ServicePages {
                                                   action=(format!("{add}/{}/delete", port.id))>
                                                 <button class="btn btn-ghost destructive btn-sm"
                                                         type="submit">
-                                                    ("Remove")
+                                                    (t("Remove"))
                                                 </button>
                                             </form>
                                         </td>
@@ -716,24 +714,20 @@ impl ServicePages {
                 </section>
 
                 <section class="card stack">
-                    <p class="card-label">("Danger zone")</p>
-                    <p class="tile-detail">(
-                        "Deleting a service stops its container and removes it. The \
-                         images it was built from stay in the registry."
-                    )</p>
+                    <p class="card-label">(t("Danger zone"))</p>
+                    <p class="tile-detail">(t("Deleting a service stops its container and removes it. The \
+                         images it was built from stay in the registry."))</p>
                     <form method="post" action=(format!("{here}/delete"))>
-                        <button class="btn btn-danger" type="submit">("Delete service")</button>
+                        <button class="btn btn-danger" type="submit">(t("Delete service"))</button>
                     </form>
                 </section>
 
                 @if !certificates.is_empty() {
                     <section class="stack">
-                        <p class="card-label">("Certificates")</p>
-                        <p class="tile-detail">(
-                            "One per hostname. A node with no public DNS, or a name a \
+                        <p class="card-label">(t("Certificates"))</p>
+                        <p class="tile-detail">(t("One per hostname. A node with no public DNS, or a name a \
                              certificate authority cannot reach, is what the other two \
-                             answers are for."
-                        )</p>
+                             answers are for."))</p>
                         @for (port_id, hostname, cells, policy) in &certificates {
                             <div class="card stack">
                                 <div class="split">
@@ -744,9 +738,9 @@ impl ServicePages {
                                     </span>
                                 </div>
                                 <dl class="kv">
-                                    <dt>("Issuer")</dt>
+                                    <dt>(t("Issuer"))</dt>
                                     <dd>(&cells.issuer)</dd>
-                                    <dt>("Renews in")</dt>
+                                    <dt>(t("Renews in"))</dt>
                                     <dd>(&cells.renews)</dd>
                                 </dl>
                                 (super::nodes::certificate_source_form(
@@ -758,8 +752,9 @@ impl ServicePages {
                     </section>
                 }
         }
-        .render()
-        .into_inner();
+            .render()
+            .into_inner()
+        });
 
         Ok(frame.render(body).into_view().into())
     }
@@ -780,22 +775,18 @@ fn port_form<'a>(
         "fields",
         rsx! {
                         <form method="post" action=(add) class="card stack">
-                            <label for="container_port">("Container port")</label>
+                            <label for="container_port">(t("Container port"))</label>
                             <input id="container_port" name="container_port" type="number"
                                    min="1" max="65535" placeholder="80" required>
-                            <p class="field-hint">(
-                                "What the process listens on inside the container."
-                            )</p>
+                            <p class="field-hint">(t("What the process listens on inside the container."))</p>
 
                             <label class="check">
                                 <input type="checkbox" name="publish" value="1">
-                                ("Publish on the node's public address (raw TCP)")
+                                (t("Publish on the node's public address (raw TCP)"))
                             </label>
-                            <p class="field-hint">(
-                                "For a database or anything that is not HTTP. The node \
+                            <p class="field-hint">(t("For a database or anything that is not HTTP. The node \
                                  picks the outside port. It is reachable from the whole \
-                                 internet unless a firewall says otherwise."
-                            )</p>
+                                 internet unless a firewall says otherwise."))</p>
 
                             // Whether HTTPS is offered at all depends on the
                             // node having a domain. Without one, `add_port`
@@ -807,13 +798,11 @@ fn port_form<'a>(
                                 Some((name, true)) => {
                                     <label class="check">
                                         <input type="checkbox" name="https" value="1">
-                                        ("Serve over HTTPS at a hostname")
+                                        (t("Serve over HTTPS at a hostname"))
                                     </label>
                                     <div class="stack" data-when="https">
-                                        <p class="field-hint">(
-                                            "A wildcard record covers this node, so this \
-                                             name already resolves here. Leave it as it is."
-                                        )</p>
+                                        <p class="field-hint">(t("A wildcard record covers this node, so this \
+                                             name already resolves here. Leave it as it is."))</p>
                                         <input name="hostname" type="text" class="mono"
                                                value=(name) data-required-when="https">
                                     </div>
@@ -821,17 +810,13 @@ fn port_form<'a>(
                                 Some((name, false)) => {
                                     <label class="check">
                                         <input type="checkbox" name="https" value="1">
-                                        ("Serve over HTTPS at a hostname")
+                                        (t("Serve over HTTPS at a hostname"))
                                     </label>
                                     <div class="stack" data-when="https">
-                                        <p class="field-hint">(
-                                            "No wildcard record answers for this node, so "
-                                        )(name)(
-                                            " will not resolve. Either add \
+                                        <p class="field-hint">(t("No wildcard record answers for this node, so "))(name)(t(" will not resolve. Either add \
                                              *.<node domain> pointing at this node, or type \
                                              a hostname you have already pointed here — it \
-                                             is checked before it is accepted."
-                                        )</p>
+                                             is checked before it is accepted."))</p>
                                         <input name="hostname" type="text" class="mono"
                                                placeholder="api.example.com"
                                                data-required-when="https">
@@ -840,28 +825,22 @@ fn port_form<'a>(
                                 None => {
                                     <label class="check">
                                         <input type="checkbox" name="https" value="1" disabled>
-                                        ("Serve over HTTPS at a hostname")
+                                        (t("Serve over HTTPS at a hostname"))
                                     </label>
-                                    <p class="field-hint">(
-                                        "This node has no domain of its own, so it cannot \
+                                    <p class="field-hint">(t("This node has no domain of its own, so it cannot \
                                          check that a name points here — and it will not \
                                          route one it could not check. The node needs a \
-                                         domain before anything can be served over HTTPS."
-                                    )</p>
+                                         domain before anything can be served over HTTPS."))</p>
                                     @if admin {
-                                        <a class="btn btn-secondary btn-sm" href="/nodes">(
-                                            "Set the node's domain"
-                                        )</a>
+                                        <a class="btn btn-secondary btn-sm" href="/nodes">(t("Set the node's domain"))</a>
                                     } @else {
-                                        <p class="field-hint">(
-                                            "Ask whoever runs this node to set one."
-                                        )</p>
+                                        <p class="field-hint">(t("Ask whoever runs this node to set one."))</p>
                                     }
                                 }
                             }
 
                             <div class="actions">
-                                <button type="submit">("Add port")</button>
+                                <button type="submit">(t("Add port"))</button>
                             </div>
                         </form>
         },
@@ -930,14 +909,14 @@ fn placement_card<'a>(
     rsx! {
         <section class="stack">
             <div class="split">
-                <p class="card-label">("Where this runs")</p>
+                <p class="card-label">(t("Where this runs"))</p>
                 <span class="who">(format!("{} replica(s)", placements.len()))</span>
             </div>
 
             <form method="post" action=(&action) class="card stack">
                 <table>
                     <thead>
-                        <tr><th>("Replica")</th><th>("Node")</th><th>("State")</th></tr>
+                        <tr><th>(t("Replica"))</th><th>(t("Node"))</th><th>(t("State"))</th></tr>
                     </thead>
                     <tbody>
                         @for replica in placements {
@@ -960,12 +939,12 @@ fn placement_card<'a>(
 
                 <div class="placement-count">
                     <div>
-                        <label for="replicas">("How many")</label>
+                        <label for="replicas">(t("How many"))</label>
                         <input id="replicas" name="replicas" type="number" min="1" max="16"
                                value=(placements.len().to_string())>
                     </div>
                     <div>
-                        <label for="new-on">("New ones on")</label>
+                        <label for="new-on">(t("New ones on"))</label>
                         <select id="new-on" name="new-on">
                             @for node in nodes {
                                 @if node.is_self {
@@ -977,15 +956,13 @@ fn placement_card<'a>(
                         </select>
                     </div>
                 </div>
-                <p class="field-hint">(
-                    "A new copy is created on the node you pick, rather than here and \
+                <p class="field-hint">(t("A new copy is created on the node you pick, rather than here and \
                      moved after — which would start a container on this machine and \
                      stop it again for nothing. Removing takes the ones already thrown \
                      out first, then the highest-numbered; the node running one is told \
-                     to stop it."
-                )</p>
+                     to stop it."))</p>
                 <div class="actions">
-                    <button type="submit">("Save placement")</button>
+                    <button type="submit">(t("Save placement"))</button>
                 </div>
             </form>
         </section>
@@ -1046,7 +1023,7 @@ fn served_by_form<'a>(
                   project.slug, service.slug
               ))>
             <input type="hidden" name="hostname" value=(hostname)>
-            <p class="tile-detail">("Also served by")</p>
+            <p class="tile-detail">(t("Also served by"))</p>
             @for node in public {
                 <label class="served-by-node">
                     @if chosen.contains(&node.id.as_str()) {
@@ -1068,11 +1045,11 @@ fn served_by_form<'a>(
                               false => "badge badge-info is-hidden",
                           })
                           data-edge=(format!("{}|{}", hostname, node.id))>
-                        <span class="dot dot-info dot-pulse"></span>("Asked")
+                        <span class="dot dot-info dot-pulse"></span>(t("Asked"))
                     </span>
                 </label>
             }
-            <button class="btn btn-secondary btn-sm" type="submit">("Save")</button>
+            <button class="btn btn-secondary btn-sm" type="submit">(t("Save"))</button>
         </form>
     }
 }
@@ -1081,26 +1058,26 @@ fn served_by_form<'a>(
 fn placement_state(replica: &crate::platform::replicas::Replica) -> impl Renderable + '_ {
     rsx! {
         @if replica.evicted() {
-            <span class="badge badge-warning">("Evicted there")</span>
+            <span class="badge badge-warning">(t("Evicted there"))</span>
         } @else if let Some(failure) = &replica.last_error {
             <span class="badge badge-danger">
-                <span class="dot dot-danger"></span>("Failed")
+                <span class="dot dot-danger"></span>(t("Failed"))
             </span>
             <p class="failure">(failure)</p>
         } @else if let Some(address) = &replica.address {
             <span class="badge badge-success">
-                <span class="dot dot-success"></span>("Running")
+                <span class="dot dot-success"></span>(t("Running"))
             </span>
             <span class="tile-detail">(" ")(address)</span>
         } @else if replica.is_here() {
-            <span class="badge">("Not running")</span>
+            <span class="badge">(t("Not running"))</span>
         } @else {
             // Placed elsewhere and nothing has come back about it. The
             // node reports when it collects, so this is the honest word
             // until it does — not "failed", which would be this page
             // inventing an outcome nobody reported.
             <span class="badge badge-info">
-                <span class="dot dot-info dot-pulse"></span>("Waiting for that node")
+                <span class="dot dot-info dot-pulse"></span>(t("Waiting for that node"))
             </span>
         }
     }
@@ -1119,13 +1096,11 @@ fn from_elsewhere_card<'a>(
 ) -> impl Renderable + 'a {
     rsx! {
         <section class="card stack">
-            <p class="card-label">("From another node")</p>
-            <p>(
-                "This service is administered from the node that placed it here, and \
-                 nothing on this page will change it."
-            )</p>
+            <p class="card-label">(t("From another node"))</p>
+            <p>(t("This service is administered from the node that placed it here, and \
+                 nothing on this page will change it."))</p>
             <dl class="kv">
-                <dt>("Placed by")</dt>
+                <dt>(t("Placed by"))</dt>
                 <dd class="mono">(service.origin_node_id.as_deref().unwrap_or("—"))</dd>
             </dl>
 
@@ -1136,7 +1111,7 @@ fn from_elsewhere_card<'a>(
             // see about it that the other node cannot.
             <table>
                 <thead>
-                    <tr><th>("Running here")</th><th>("State")</th></tr>
+                    <tr><th>(t("Running here"))</th><th>(t("State"))</th></tr>
                 </thead>
                 <tbody>
                     @for replica in mine {
@@ -1149,35 +1124,27 @@ fn from_elsewhere_card<'a>(
                     }
                 </tbody>
             </table>
-            <p class="field-hint">(
-                "The machine is yours: throwing it out is something you can always do, \
-                 and it is the only thing here that is."
-            )</p>
+            <p class="field-hint">(t("The machine is yours: throwing it out is something you can always do, \
+                 and it is the only thing here that is."))</p>
         </section>
 
         <section class="card stack">
-            <p class="card-label">("Throw it off this node")</p>
+            <p class="card-label">(t("Throw it off this node"))</p>
             @if evicted {
-                <p>(
-                    "Already thrown out. Its containers are stopped and the node that \
-                     placed it has been told — or will be, the next time it asks."
-                )</p>
-                <p class="field-hint">(
-                    "The rows stay because they are what carries that news. Removing \
+                <p>(t("Already thrown out. Its containers are stopped and the node that \
+                     placed it has been told — or will be, the next time it asks."))</p>
+                <p class="field-hint">(t("The rows stay because they are what carries that news. Removing \
                      them here would leave the other node sending the same instruction \
-                     again."
-                )</p>
+                     again."))</p>
             } @else {
-                <p>(
-                    "Stops its containers here and tells the node that placed it to \
+                <p>(t("Stops its containers here and tells the node that placed it to \
                      stop asking. It cannot be undone from this side — that node \
-                     decides what happens next, and it may place it somewhere else."
-                )</p>
+                     decides what happens next, and it may place it somewhere else."))</p>
                 <form method="post" action=(format!(
                     "/projects/{}/services/{}/evict", project.slug, service.slug
                 ))>
                     <button class="btn btn-ghost destructive" type="submit">
-                        ("Throw it out")
+                        (t("Throw it out"))
                     </button>
                 </form>
             }
