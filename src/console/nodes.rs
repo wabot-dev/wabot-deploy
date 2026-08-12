@@ -36,6 +36,7 @@ use wabot::rest::axum::response::Response;
 use wabot::rest::RestResult;
 use wabot::ui::hypertext::IntoView;
 
+use super::language::t;
 use crate::network::{self, enrolment::Enrolment, Kind};
 use crate::node::memory::{self, Snapshot};
 use crate::platform::access;
@@ -371,9 +372,9 @@ impl NodePages {
                                      image travels only when it is needed."
                                 )</p>
                                 <p class="field-hint">(
-                                    "Nothing routes to it yet: telling an edge to serve \
-                                     a name from there is the next piece. This runs the \
-                                     container."
+                                    "This runs the container. Which nodes answer for \
+                                     the service's name is chosen on the service itself, \
+                                     and can be this node, that one, or both."
                                 )</p>
                                 <div class="actions">
                                     <button type="submit">("Ask it to run this")</button>
@@ -737,9 +738,8 @@ fn join_card<'a>(
                 <section class="card stack">
                     <p>("This node now takes instructions from ")(name)(".")</p>
                     <p class="field-hint">(
-                        "Nothing travels yet — errands need the overlay. It is listed \
-                         below, and revoking it there takes effect here and \
-                         immediately."
+                        "Only what it was granted, which is listed beside it below. \
+                         Revoking any of it takes effect here and immediately."
                     )</p>
                 </section>
             }
@@ -779,11 +779,17 @@ fn join_card<'a>(
     }
 }
 
-/// What a node is, in the one word the list has room for.
+/// What a node is, in the one line the list has room for.
+///
+/// Said as what it *does*, not as a category. "Private" is a word this
+/// console printed at somebody and expected them to know it meant "does
+/// not answer for names" — and since the capability switch it is not
+/// even a property of the machine, it is a decision. So the page says
+/// the decision.
 fn kind_word(kind: Kind) -> &'static str {
     match kind {
-        Kind::Public => "public",
-        Kind::Private => "private",
+        Kind::Public => t("answers for names"),
+        Kind::Private => t("runs containers only"),
     }
 }
 
@@ -804,8 +810,9 @@ fn reach(node: &network::Node) -> String {
         return kind_word(node.kind).to_string();
     }
     match &node.overlay_ip {
-        // Not "reached over the overlay": nothing is, yet. Where it
-        // lives, which is all that has actually been settled.
+        // Where it lives on the overlay, which is how everything
+        // reaches it: an errand over its control plane, a request from
+        // an edge to a container it runs.
         Some(address) => format!("on the overlay at {address}"),
         None => "no address for it yet".to_string(),
     }
