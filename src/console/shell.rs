@@ -159,6 +159,7 @@ fn verb(segment: &str) -> Option<String> {
     Some(match segment {
         "new" => t("New").to_string(),
         "settings" => t("Settings").to_string(),
+        "logs" => t("Logs").to_string(),
         "join" => t("Join").to_string(),
         _ => return None,
     })

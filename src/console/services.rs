@@ -5,7 +5,9 @@ use std::sync::Arc;
 use hypertext::prelude::*;
 use serde::Deserialize;
 use wabot::prelude::*;
+use wabot::rest::axum::body::Body;
 use wabot::rest::axum::extract::Request;
+use wabot::rest::axum::http::{header, StatusCode};
 use wabot::rest::axum::response::Response;
 use wabot::rest::RestResult;
 use wabot::ui::hypertext::IntoView;
@@ -29,6 +31,26 @@ pub struct ServicePage {
     pub project: String,
     pub service: String,
     pub error: Option<String>,
+}
+
+/// One instalment of a log, as the stream sends it.
+#[derive(Debug, serde::Serialize)]
+struct LogChunk {
+    text: String,
+    /// The file was emptied — a deployment — so what is on screen
+    /// belongs to a container that is gone and the reader is told rather
+    /// than having new output appended to old.
+    restarted: bool,
+}
+
+/// The log of one copy of a service.
+#[derive(Debug, Deserialize, Validate)]
+pub struct ServiceLogs {
+    pub project: String,
+    pub service: String,
+    /// Which copy. Absent means the lowest one running here, which is
+    /// the primary of a database and the only copy of most services.
+    pub slot: Option<u32>,
 }
 
 /// The same service, from the page that changes it.
@@ -270,6 +292,7 @@ impl ServicePages {
             "/projects/{}/services/{}/settings",
             project.slug, service.slug
         );
+        let logs = format!("/projects/{}/services/{}/logs", project.slug, service.slug);
         let domain = crate::node::settings::domain(&self.state.database, &self.state.config).await;
 
         let all_projects = access::projects_for(&self.state.database, &account).await?;
@@ -293,6 +316,11 @@ impl ServicePages {
                         <h1>(&service.name)</h1>
                     </div>
                     <div class="row">
+                        // Beside Settings, because "what is it saying"
+                        // is read as often as "how is it configured" —
+                        // and until now the only answer to the first was
+                        // the one line kept on the row after it died.
+                        <a class="btn btn-secondary" href=(&logs)>(t("Logs"))</a>
                         @if allowed.may_deploy() {
                             <a class="btn btn-secondary" href=(&settings)>(t("Settings"))</a>
                         }
@@ -502,6 +530,189 @@ impl ServicePages {
         )
         .render()
         .into_inner();
+
+        Ok(frame.render(body).into_view().into())
+    }
+
+    /// What one copy of this service is saying, now.
+    ///
+    /// Its own page rather than a panel on the service page: a log is
+    /// read for minutes at a time and wants the height, and the service
+    /// page is the one somebody keeps open while a deployment lands.
+    ///
+    /// **Complete without JavaScript.** The window of the log renders
+    /// into the page, so this works with scripting off — the stream only
+    /// adds what arrives after. That is the console's rule, and a log
+    /// viewer that needed a script would break in exactly the situation
+    /// somebody opens one: a node that is not well.
+    #[view("/projects/:project/services/:service/logs")]
+    #[middleware(SessionMiddleware)]
+    async fn logs(&self, query: ServiceLogs) -> UiResult<ViewOutcome> {
+        let Some(account) = signed_in(&self.auth) else {
+            return Ok(Redirect::found("/sign-in").into());
+        };
+        let Some((project, allowed)) =
+            access::find_project(&self.state.database, &account, &query.project).await?
+        else {
+            return Ok(Redirect::found("/?error=no+such+project").into());
+        };
+        let Some(service) =
+            services::in_project(&self.state.database, &project.id, &query.service).await?
+        else {
+            return Ok(Redirect::found(format!("/projects/{}", project.slug)).into());
+        };
+
+        // Only the copies that run **here**. A replica elsewhere writes
+        // its log on that machine, and this node has no way to read it —
+        // saying where to look is the honest answer, and the page does.
+        let mut mine: Vec<u32> =
+            crate::platform::replicas::of_service(&self.state.database, &service.id)
+                .await?
+                .into_iter()
+                .filter(|replica| replica.is_here() && !replica.evicted())
+                .map(|replica| replica.slot)
+                .collect();
+        mine.sort_unstable();
+        let elsewhere = crate::platform::replicas::of_service(&self.state.database, &service.id)
+            .await?
+            .into_iter()
+            .any(|replica| !replica.is_here() && !replica.evicted());
+
+        let slot = query
+            .slot
+            .filter(|slot| mine.contains(slot))
+            .or(mine.first().copied());
+        let opened = match slot {
+            Some(slot) => crate::deploy::logs::read_from(
+                &self.state.config.node.data_dir,
+                &crate::platform::replicas::container_id_for(&project.slug, &service.slug, slot),
+                0,
+            ),
+            None => None,
+        };
+        // Whether there is a file at all, kept apart from whether it
+        // has anything in it — see the page.
+        let kept = opened.is_some();
+        let (text, from) = match &opened {
+            Some(chunk) => (chunk.text.clone(), chunk.next),
+            None => (String::new(), 0),
+        };
+
+        let all_projects = access::projects_for(&self.state.database, &account).await?;
+        let frame = Frame::new(
+            &account,
+            Area::Projects,
+            &all_projects,
+            Some(&project),
+            format!("/projects/{}/services/{}/logs", project.slug, service.slug),
+        )
+        .allowing(allowed);
+
+        layout::head(&format!("{} logs", service.name));
+        let (project_slug, service_slug, service_name) = (
+            project.slug.clone(),
+            service.slug.clone(),
+            service.name.clone(),
+        );
+        let (for_island, service_for_island) = (project_slug.clone(), service_slug.clone());
+        let body = super::language::scoped(account.language, || {
+            rsx! {
+            (layout::style_tag())
+                <div class="stack-sm">
+                    <h1>(&service_name)</h1>
+                    <p class="tile-detail">(t("What this copy has written since it started. The file is \
+                         emptied on every deployment, so this is the current \
+                         attempt and not a history."))</p>
+                </div>
+
+                @if mine.len() > 1 {
+                    <div class="row">
+                        @for one in &mine {
+                            @if Some(*one) == slot {
+                                <span class="badge">(t("Copy "))(one)</span>
+                            } @else {
+                                <a class="btn btn-ghost btn-sm"
+                                   href=(format!(
+                                       "/projects/{project_slug}/services/{service_slug}/logs?slot={one}"
+                                   ))>(t("Copy "))(one)</a>
+                            }
+                        }
+                    </div>
+                }
+
+                @if let Some(slot) = slot {
+                    <section class="card stack">
+                        <div class="split">
+                            <p class="card-label">(t("Output"))</p>
+                            // Written by the island, and rendered
+                            // whether or not scripting is on: a label
+                            // that only appears with a script is one
+                            // somebody without a script cannot read.
+                            <span class="tile-detail" data-logs-state>
+                                (t("Not following — reload to see more"))
+                            </span>
+                        </div>
+                        <pre class="log" data-logs-out
+                             data-slot=(slot)
+                             data-from=(from)>(&text)</pre>
+                        // Three states, not two. "No file" and "an
+                        // empty file" look the same on the page and are
+                        // not the same thing: a container started before
+                        // its output was being kept has no file at all,
+                        // and telling that one "nothing yet" is a page
+                        // saying the container is quiet when the truth
+                        // is that nobody was listening. Found on a node
+                        // — a service running since before this shipped.
+                        @if !kept {
+                            <p class="tile-detail">(t("This container was started before its output \
+                                 was being kept. Deploy it again and it will \
+                                 write from then on."))</p>
+                        } @else if text.trim().is_empty() {
+                            <p class="tile-detail">(t("Nothing yet. A container that has only just \
+                                 started may not have written anything."))</p>
+                        }
+                    </section>
+                } @else if elsewhere {
+                    <section class="card stack">
+                        <p>(t("No copy of this service runs on this node."))</p>
+                        <p class="tile-detail">(t("A copy writes its log on the machine that runs it, and \
+                             this node cannot read another one's disk. Open the \
+                             console of the node holding it."))</p>
+                    </section>
+                } @else {
+                    <section class="card stack">
+                        <p>(t("This service is not running anywhere."))</p>
+                    </section>
+                }
+            }
+            .render()
+            .into_inner()
+        });
+
+        // One stream, for the copy being read. The island needs to know
+        // which — a page that opened the wrong slot's stream would show
+        // a log that did not match the one it rendered.
+        let body = match slot {
+            Some(slot) => wabot::ui::hypertext::island(
+                "logs-live",
+                &serde_json::json!({
+                    "project": for_island,
+                    "service": service_for_island,
+                    "slot": slot,
+                    "from": from,
+                    "following": super::language::scoped(account.language, || {
+                        t("Following").to_string()
+                    }),
+                    "reconnecting": super::language::scoped(account.language, || {
+                        t("Reconnecting…").to_string()
+                    }),
+                }),
+                hypertext::Raw::dangerously_create(&body),
+            )
+            .render()
+            .into_inner(),
+            None => body,
+        };
 
         Ok(frame.render(body).into_view().into())
     }
@@ -1242,6 +1453,116 @@ pub struct ServiceApi {
 
 #[rest_controller("/")]
 impl ServiceApi {
+    /// The same log, following.
+    ///
+    /// Sends only what arrived since the offset it was given, so a page
+    /// left open all afternoon costs one read of the tail of a file every
+    /// second — not the whole file, and not the part already on screen.
+    ///
+    /// A **restart** is said rather than smoothed over: a deployment
+    /// empties the file, and what is on the reader's screen at that
+    /// moment belongs to a container that no longer exists.
+    #[get("/projects/:project/services/:service/logs/live")]
+    #[raw]
+    #[middleware(SessionMiddleware)]
+    async fn logs_live(&self, request: Request) -> RestResult<Response> {
+        let empty = |status: StatusCode| {
+            Ok(Response::builder()
+                .status(status)
+                .body(Body::empty())
+                .expect("a constant response is well-formed"))
+        };
+        // A status, not a redirect: an EventSource cannot follow one
+        // usefully, and a stream is not a page.
+        let Some(account) = signed_in(&self.auth) else {
+            return empty(StatusCode::UNAUTHORIZED);
+        };
+
+        let path = request.uri().path().to_string();
+        let segments = super::auth::segments(&path);
+        let (Some(project_slug), Some(service_slug)) = (segments.get(1), segments.get(3)) else {
+            return empty(StatusCode::NOT_FOUND);
+        };
+        // The same check the page makes. A stream that skipped it would
+        // be a way to read the output of a project somebody has no
+        // access to, which is a worse hole than the page it belongs to.
+        let Some((project, _)) = access::find_project(&self.state.database, &account, project_slug)
+            .await
+            .ok()
+            .flatten()
+        else {
+            return empty(StatusCode::NOT_FOUND);
+        };
+        let Some(service) = services::in_project(&self.state.database, &project.id, service_slug)
+            .await
+            .ok()
+            .flatten()
+        else {
+            return empty(StatusCode::NOT_FOUND);
+        };
+
+        let query: std::collections::HashMap<String, String> =
+            form_urlencoded::parse(request.uri().query().unwrap_or_default().as_bytes())
+                .into_owned()
+                .collect();
+        let slot: u32 = query
+            .get("slot")
+            .and_then(|slot| slot.parse().ok())
+            .unwrap_or(1);
+        let from: u64 = query
+            .get("from")
+            .and_then(|from| from.parse().ok())
+            .unwrap_or(0);
+
+        // Only a copy that runs here, and only one that exists. Reading
+        // a log by slot number alone would let a query string name a
+        // container in another project.
+        let holds = crate::platform::replicas::of_service(&self.state.database, &service.id)
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .any(|replica| replica.is_here() && !replica.evicted() && replica.slot == slot);
+        if !holds {
+            return empty(StatusCode::NOT_FOUND);
+        }
+
+        let container =
+            crate::platform::replicas::container_id_for(&project.slug, &service.slug, slot);
+        let data_dir = self.state.config.node.data_dir.clone();
+        let stream = async_stream::stream! {
+            let mut at = from;
+            loop {
+                if let Some(chunk) = crate::deploy::logs::read_from(&data_dir, &container, at) {
+                    at = chunk.next;
+                    // Nothing to say is not an event. A heartbeat is not
+                    // needed either: the browser reconnects on its own,
+                    // and an empty event per second would be a page that
+                    // never idles.
+                    if !chunk.text.is_empty() || chunk.restarted {
+                        let payload = serde_json::to_string(&LogChunk {
+                            text: chunk.text,
+                            restarted: chunk.restarted,
+                        })
+                        .unwrap_or_else(|_| "{}".into());
+                        yield Ok::<_, std::convert::Infallible>(
+                            wabot::rest::axum::body::Bytes::from(format!("data: {payload}\n\n")),
+                        );
+                    }
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(700)).await;
+            }
+        };
+
+        Ok(Response::builder()
+            .header(header::CONTENT_TYPE, "text/event-stream")
+            // Every hop in between has to be told, or a proxy holds the
+            // stream until it has "enough" and the page never updates.
+            .header(header::CACHE_CONTROL, "no-cache")
+            .header("x-accel-buffering", "no")
+            .body(Body::from_stream(stream))
+            .expect("a constant response is well-formed"))
+    }
+
     #[post("/projects/:project/services")]
     #[raw]
     #[middleware(SessionMiddleware)]
@@ -2606,6 +2927,119 @@ mod tests {
         )
         .await
         .expect("service")
+    }
+
+    /// The one answer the console never had: what is it *saying*. Until
+    /// this page, the only output anywhere was the single line kept on
+    /// the row after a container died.
+    ///
+    /// Rendered into the page, not fetched: this works with scripting
+    /// off, which matters most here because somebody opens a log when a
+    /// node is unwell.
+    #[tokio::test]
+    async fn the_log_page_renders_the_copy_that_runs_here() {
+        let console = Console::new().await;
+        let cookie = console.signed_in().await;
+        let service = placed_service(&console, &cookie).await;
+        crate::platform::replicas::ensure_here(&console.database, &service.id, 1)
+            .await
+            .expect("a copy here");
+
+        let page = console
+            .ui
+            .with_header("cookie", cookie)
+            .get("/projects/shared/services/web/logs")
+            .await;
+        let html = page.html();
+
+        assert!(html.contains("data-logs-out"), "no panel: {html}");
+        assert!(
+            html.contains("data-logs-state"),
+            "nothing says whether it is following: {html}"
+        );
+        assert!(page.has_island("logs-live"), "{html}");
+    }
+
+    /// A copy elsewhere writes its log on the machine that runs it, and
+    /// this node cannot read another one's disk. Saying where to look is
+    /// the honest answer; an empty panel would read as a quiet
+    /// container.
+    #[tokio::test]
+    async fn a_log_that_lives_on_another_node_says_so_rather_than_showing_nothing() {
+        let console = Console::new().await;
+        let cookie = console.signed_in().await;
+        let service = placed_service(&console, &cookie).await;
+        // The copy this service already has, sent away — which is the
+        // real shape of it: a service with one copy, running elsewhere.
+        let here = crate::platform::replicas::of_service(&console.database, &service.id)
+            .await
+            .expect("copies");
+        for replica in &here {
+            crate::platform::replicas::move_to(
+                &console.database,
+                &replica.id,
+                Some("nd-elsewhere"),
+            )
+            .await
+            .expect("moved");
+        }
+
+        let page = console
+            .ui
+            .with_header("cookie", cookie)
+            .get("/projects/shared/services/web/logs")
+            .await;
+        let html = page.html();
+
+        assert!(!html.contains("data-logs-out"), "an empty panel: {html}");
+        assert!(
+            html.contains("Open the console of the node holding it"),
+            "{html}"
+        );
+    }
+
+    /// A slot number in a query string must not be a way to read a
+    /// container this service does not have — the id is built from the
+    /// project, the service and the slot, so an unchecked slot would
+    /// name somebody else's container.
+    ///
+    /// Refusals rather than a successful stream, deliberately: a stream
+    /// that works never ends, so a test that asked for one would wait
+    /// for a body that never comes. The reading itself is covered by
+    /// `deploy::logs`.
+    #[tokio::test]
+    async fn a_log_stream_refuses_a_copy_that_does_not_run_here() {
+        let console = Console::new().await;
+        let cookie = console.signed_in().await;
+        let service = placed_service(&console, &cookie).await;
+        crate::platform::replicas::ensure_here(&console.database, &service.id, 1)
+            .await
+            .expect("a copy here");
+
+        // A slot that does not exist, and a slot number of zero.
+        for slot in ["7", "0"] {
+            console
+                .harness
+                .get(&format!(
+                    "/projects/shared/services/web/logs/live?slot={slot}&from=0"
+                ))
+                .header("cookie", &cookie)
+                .send()
+                .await
+                .assert_status(StatusCode::NOT_FOUND);
+        }
+    }
+
+    /// And it is not a way past the session either.
+    #[tokio::test]
+    async fn a_log_stream_refuses_a_stranger() {
+        let console = Console::new().await;
+        console
+            .harness
+            .get("/projects/shared/services/web/logs/live?slot=1&from=0")
+            .send()
+            .await
+            .assert_status(StatusCode::UNAUTHORIZED);
     }
 
     /// The page you go to when a service is down was the one page you

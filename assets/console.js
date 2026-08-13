@@ -372,4 +372,94 @@
       source.close();
     };
   });
+
+  // What a container is saying, appended as it says it.
+  //
+  // The page already carries the window of the log it rendered — this
+  // works with scripting off, which is the console's rule and matters
+  // most here: somebody opens a log when a node is unwell. So this only
+  // adds what arrives *after* that render, starting from the offset the
+  // page was built at.
+  wabot.island('logs-live', function (host, props) {
+    if (!props || !props.project || !props.service) return null;
+    var out = host.querySelector('[data-logs-out]');
+    var state = host.querySelector('[data-logs-state]');
+    if (!out) return null;
+
+    // Where the page left off, from the markup rather than from props,
+    // so a boosted navigation that swapped in a new panel follows that
+    // panel's log and not the one before it.
+    var from = out.getAttribute('data-from') || props.from || 0;
+    var source = new EventSource(
+      '/projects/' + encodeURIComponent(props.project) +
+      '/services/' + encodeURIComponent(props.service) +
+      '/logs/live?slot=' + encodeURIComponent(props.slot) +
+      '&from=' + encodeURIComponent(from)
+    );
+
+    // The two words this can say arrive translated in the props: they
+    // are server-rendered like every other string on the page, and a
+    // script with English baked into it would be the one place the
+    // console reverted.
+    var say = function (words) {
+      if (state) state.textContent = words;
+    };
+    say(props.following);
+
+    // Only when it is already at the bottom. Somebody who scrolled up to
+    // read something must not be yanked back down by the next line.
+    var atEnd = function () {
+      return out.scrollHeight - out.scrollTop - out.clientHeight < 32;
+    };
+
+    source.onmessage = function (event) {
+      var data;
+      try {
+        data = JSON.parse(event.data);
+      } catch (e) {
+        return;
+      }
+
+      // A deployment emptied the file, so what is on screen belongs to a
+      // container that no longer exists. Appending to it would make one
+      // run look like the continuation of another.
+      if (data.restarted) {
+        out.textContent = '';
+      }
+      if (!data.text) return;
+
+      var stick = atEnd();
+      out.appendChild(document.createTextNode(data.text));
+
+      // A page left open for a day must not grow without limit. Trimmed
+      // from the front, in whole lines, because half a line is worse
+      // than a missing one.
+      var LIMIT = 400000;
+      if (out.textContent.length > LIMIT) {
+        var kept = out.textContent.slice(-LIMIT);
+        var cut = kept.indexOf('\n');
+        out.textContent = cut === -1 ? kept : kept.slice(cut + 1);
+      }
+      if (stick) out.scrollTop = out.scrollHeight;
+    };
+
+    source.onerror = function () {
+      // The browser reconnects on its own. Said because a log that has
+      // silently stopped following looks exactly like a container that
+      // has gone quiet, and those need telling apart.
+      say(props.reconnecting);
+    };
+    source.onopen = function () {
+      say(props.following);
+    };
+
+    // Start at the bottom: the newest line is the one somebody came for.
+    out.scrollTop = out.scrollHeight;
+
+    // Closed when the host leaves the DOM, or navigating away would
+    // leave the stream open and coming back would open a second one.
+    return function () {
+      source.close();
+    };
+  });
 })();

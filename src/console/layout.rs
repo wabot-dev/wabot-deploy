@@ -327,6 +327,33 @@ pub const CSS: &str = r#"
 .notes li { margin: 0 0 var(--sp-1); }
 .notes pre { margin: 0 0 var(--sp-3); overflow-x: auto; }
 
+/* What a container is saying.
+   Its own scroller rather than the page's, so the panel keeps its place
+   on the screen while the text moves inside it — a log that grew the
+   page would push everything else off and put the newest line wherever
+   the window happened to end.
+   `pre-wrap`, not `pre`: a stack trace or a long SQL statement wraps
+   rather than making the whole panel scroll sideways, and a horizontal
+   scrollbar under a live feed is a thing nobody ever reaches for. */
+.log {
+  margin: 0;
+  max-height: 60vh;
+  overflow-y: auto;
+  overflow-x: hidden;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-family: var(--font-mono);
+  font-size: var(--fs-sm);
+  line-height: 1.5;
+  color: rgb(var(--c-fg));
+  background: rgb(var(--c-bg-sunken));
+  padding: var(--sp-3);
+  border-radius: var(--r-sm);
+  /* Reading position is the bottom, and it should stay there while the
+     text grows. The script only scrolls when it was already there. */
+  scrollbar-gutter: stable;
+}
+
 /* Back to where this page was reached from. Small, above the title,
    because the title is what somebody came to read. */
 .crumb {

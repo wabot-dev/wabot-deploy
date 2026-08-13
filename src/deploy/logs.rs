@@ -27,9 +27,18 @@
 //! The file is truncated when the container starts. There is no
 //! rotation here and no log retention policy, so an append-only file is
 //! a disk leak with a slow fuse; what somebody needs when a container
-//! will not stay up is what *this* attempt said. A real log feature —
-//! following, searching, keeping — is a bigger thing than this and is
-//! not pretending to be it.
+//! will not stay up is what *this* attempt said.
+//!
+//! **Following exists now** — [`read_from`], and the page and stream on
+//! a service that use it. Searching and keeping still do not, and this
+//! is not pretending otherwise: a run is what there is, and a
+//! deployment is where it ends.
+//!
+//! One consequence, and it is visible on a node rather than in a test:
+//! a container started **before** any of this shipped has no file at
+//! all. That is not the same as a file with nothing in it, and the page
+//! says so rather than reporting a quiet container — it was the
+//! difference between "nothing to see" and "nobody was listening".
 
 use std::path::{Path, PathBuf};
 
@@ -83,6 +92,79 @@ pub fn tail(data_dir: &Path, container_id: &str, limit: usize) -> Option<String>
     Some(trimmed[start..].to_string())
 }
 
+/// How much of the end of a log a page opens on.
+///
+/// Enough to see why something is failing, small enough that the page
+/// arrives. A container in a crash loop writes megabytes and the useful
+/// part of a failure is the end of it — the same judgement as [`tail`],
+/// with more room because this one is what somebody came to read.
+pub const WINDOW: usize = 64 * 1024;
+
+/// Where a reader is up to, and what to ask for next.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Chunk {
+    pub text: String,
+    /// The byte to read from next time. Not `text.len()` added to the
+    /// old one: a chunk that ended mid-character keeps the partial bytes
+    /// unread rather than replacing them with `U+FFFD` for ever.
+    pub next: u64,
+    /// The file started again — a redeployment truncated it, so whatever
+    /// the reader has on screen belongs to a container that is gone.
+    pub restarted: bool,
+}
+
+/// Read from `offset` to the end.
+///
+/// The follower's half of this module. Returns `None` when there is no
+/// file, which is an ordinary state and not a failure: a service that
+/// has never run has never written one.
+///
+/// Two things it has to get right, and both were found by thinking about
+/// what the file *is* rather than by reading:
+///
+/// - **The file is truncated on every deployment** — see the module
+///   docs — so an offset from before one is past the end of a shorter
+///   file. Reading from it would return nothing for ever while the
+///   container was talking. That is `restarted`, and it starts over.
+/// - **A read can land mid-character.** The shim appends bytes and this
+///   can arrive between the two halves of a `ñ`. Splitting there and
+///   lossily converting would put a replacement character into the
+///   stream permanently, because the offset would have moved past it. So
+///   an incomplete tail stays unread until the rest of it arrives.
+pub fn read_from(data_dir: &Path, container_id: &str, offset: u64) -> Option<Chunk> {
+    use std::io::{Read, Seek, SeekFrom};
+
+    let path = path(data_dir, container_id);
+    let mut file = std::fs::File::open(&path).ok()?;
+    let length = file.metadata().ok()?.len();
+
+    let (from, restarted) = match offset > length {
+        true => (0, true),
+        false => (offset, false),
+    };
+    // Opening in the middle of a long log is opening at its end. A page
+    // that began at byte zero of a gigabyte would not arrive.
+    let from = from.max(length.saturating_sub(WINDOW as u64));
+
+    file.seek(SeekFrom::Start(from)).ok()?;
+    let mut bytes = Vec::new();
+    file.take((length - from) + 1)
+        .read_to_end(&mut bytes)
+        .ok()?;
+
+    let complete = match std::str::from_utf8(&bytes) {
+        Ok(_) => bytes.len(),
+        // Everything up to the first character that is not all here.
+        Err(error) => error.valid_up_to(),
+    };
+    let text = String::from_utf8_lossy(&bytes[..complete]).into_owned();
+    Some(Chunk {
+        text,
+        next: from + complete as u64,
+        restarted,
+    })
+}
+
 /// Throw away what a container said, when the container itself is going.
 pub fn discard(data_dir: &Path, container_id: &str) {
     let path = path(data_dir, container_id);
@@ -121,6 +203,101 @@ mod tests {
         // container will not stay up is what *this* attempt said.
         prepare(dir.path(), "demo.db").expect("prepared again");
         assert_eq!(tail(dir.path(), "demo.db", 4096), None);
+    }
+
+    /// A reader that has seen everything is told there is nothing new,
+    /// and its place does not move.
+    #[test]
+    fn following_returns_only_what_arrived_since() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        prepare(dir.path(), "demo.web").expect("prepared");
+        let log = path(dir.path(), "demo.web");
+
+        std::fs::write(&log, "listening on 8080\n").expect("write");
+        let first = read_from(dir.path(), "demo.web", 0).expect("read");
+        assert_eq!(first.text, "listening on 8080\n");
+        assert!(!first.restarted);
+
+        let again = read_from(dir.path(), "demo.web", first.next).expect("read");
+        assert_eq!(again.text, "", "it sent the same lines twice");
+        assert_eq!(again.next, first.next);
+
+        std::fs::write(&log, "listening on 8080\nGET /\n").expect("append");
+        let next = read_from(dir.path(), "demo.web", first.next).expect("read");
+        assert_eq!(next.text, "GET /\n");
+    }
+
+    /// A deployment truncates the file, so an offset from before one is
+    /// past the end of a shorter file. Reading from it would return
+    /// nothing for ever while the new container was talking — and
+    /// whatever is on the reader's screen belongs to a container that no
+    /// longer exists, which is why this is said rather than silently
+    /// corrected.
+    #[test]
+    fn a_redeployment_is_noticed_rather_than_read_past() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let log = prepare(dir.path(), "demo.web").expect("prepared");
+        std::fs::write(&log, "a long first run, several lines of it\n").expect("write");
+        let seen = read_from(dir.path(), "demo.web", 0).expect("read").next;
+
+        prepare(dir.path(), "demo.web").expect("again");
+        std::fs::write(&log, "starting\n").expect("write");
+
+        let after = read_from(dir.path(), "demo.web", seen).expect("read");
+        assert!(
+            after.restarted,
+            "the reader was left waiting on a dead file"
+        );
+        assert_eq!(after.text, "starting\n");
+    }
+
+    /// The shim appends bytes and a read can land between the two halves
+    /// of a `ñ`. Converting lossily there would put a replacement
+    /// character into the stream *permanently*, because the offset moves
+    /// past it and the real bytes are never read again.
+    #[test]
+    fn a_character_split_across_two_reads_survives_whole() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let log = prepare(dir.path(), "demo.web").expect("prepared");
+        let whole = "conexión\n";
+        let bytes = whole.as_bytes();
+
+        // Cut inside the ó, which is two bytes.
+        let split = whole.find('ó').expect("there") + 1;
+        std::fs::write(&log, &bytes[..split]).expect("write");
+        let first = read_from(dir.path(), "demo.web", 0).expect("read");
+        assert_eq!(first.text, "conexi", "a partial character was emitted");
+
+        std::fs::write(&log, bytes).expect("the rest");
+        let second = read_from(dir.path(), "demo.web", first.next).expect("read");
+        assert_eq!(
+            format!("{}{}", first.text, second.text),
+            whole,
+            "the character did not survive the join"
+        );
+        assert!(!second.text.contains('\u{fffd}'), "{:?}", second.text);
+    }
+
+    /// Opening in the middle of a long log is opening at its end: a page
+    /// that began at byte zero of a gigabyte would not arrive.
+    #[test]
+    fn a_long_log_is_opened_at_its_end() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let log = prepare(dir.path(), "demo.web").expect("prepared");
+        let long = "x".repeat(WINDOW * 2);
+        std::fs::write(&log, &long).expect("write");
+
+        let chunk = read_from(dir.path(), "demo.web", 0).expect("read");
+        assert_eq!(chunk.text.len(), WINDOW);
+        assert_eq!(chunk.next, (WINDOW * 2) as u64, "and it is the *end*");
+    }
+
+    /// A service that has never run has never written one. An ordinary
+    /// state, not a failure — the page says so rather than erroring.
+    #[test]
+    fn a_container_that_never_ran_has_no_log_and_that_is_not_an_error() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        assert!(read_from(dir.path(), "never.ran", 0).is_none());
     }
 
     /// A crash loop writes megabytes and this ends up in a column and on

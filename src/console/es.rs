@@ -35,6 +35,10 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
     (" · published ", " · publicada "),
     (" · this node", " · este nodo"),
     ("A ceiling on the container and the engine's own settings, together. Postgres is given a quarter of it for shared buffers and told to expect half of it as cache — its defaults alone would be killed on the smaller sizes.", "Un techo para el contenedor y los ajustes del propio motor, a la vez. A Postgres se le da un cuarto para los buffers compartidos y se le dice que espere la mitad como caché — sus valores por defecto solos morirían en los tamaños pequeños."),
+    (
+        "A copy writes its log on the machine that runs it, and this node cannot read another one's disk. Open the console of the node holding it.",
+        "Una copia escribe su log en la máquina que la ejecuta, y este nodo no puede leer el disco de otra. Abre la consola del nodo que la tiene.",
+    ),
     ("A key and an address appear the first time this node enrols another one or joins one itself. The overlay is what carries traffic between nodes — an edge here reaching a container that runs somewhere else.", "La clave y la dirección aparecen la primera vez que este nodo enrola a otro o se une a uno. La overlay es lo que lleva el tráfico entre nodos — un edge de aquí llegando a un contenedor que corre en otro sitio."),
     ("A new copy is created on the node you pick, rather than here and moved after — which would start a container on this machine and stop it again for nothing. Removing takes the ones already thrown out first, then the highest-numbered; the node running one is told to stop it.", "Una copia nueva se crea en el nodo que elijas, en vez de aquí y moverla después — lo que arrancaría un contenedor en esta máquina para pararlo acto seguido sin motivo. Al quitar se van primero las ya expulsadas, luego las de número más alto; al nodo que corre una se le dice que la pare."),
     ("A note, if you want one", "Una nota, si quieres"),
@@ -82,6 +86,7 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
     ("Container", "Contenedor"),
     ("Container port", "Puerto del contenedor"),
     ("Copies", "Copias"),
+    ("Copy ", "Copia "),
     ("Could not read the release list: ", "No se pudo leer la lista de versiones: "),
     ("Create account", "Crear cuenta"),
     ("Create administrator", "Crear administrador"),
@@ -112,6 +117,7 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
     ("Expired", "Caducada"),
     ("Failed", "Falló"),
     ("Finished", "Terminada"),
+    ("Following", "Siguiendo"),
     ("For", "Para"),
     ("For a database or anything that is not HTTP. The node picks the outside port. It is reachable from the whole internet unless a firewall says otherwise.", "Para una base de datos o cualquier cosa que no sea HTTP. El nodo elige el puerto de fuera. Se llega desde todo internet salvo que un cortafuegos diga lo contrario."),
     ("Forget", "Olvidar"),
@@ -149,6 +155,7 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
     ("Keep a copy of this node's data over there", "Guardar allí una copia de los datos de este nodo"),
     ("Key file", "Fichero de la clave"),
     ("Last update", "Última actualización"),
+    ("Logs", "Logs"),
     ("Make a member", "Hacer miembro"),
     ("Make an administrator", "Hacer administrador"),
     ("May", "Puede"),
@@ -159,6 +166,10 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
     ("New", "Nuevo"),
     ("New ones on", "Las nuevas en"),
     ("No build here", "Sin binario aquí"),
+    (
+        "No copy of this service runs on this node.",
+        "Ninguna copia de este servicio corre en este nodo.",
+    ),
     ("No projects yet.", "Todavía no hay proyectos."),
     ("No services yet.", "Todavía no hay servicios."),
     ("No setup token is outstanding, so nobody can be created from here. Issue one on the node:", "No hay ningún token de instalación pendiente, así que no se puede crear a nadie desde aquí. Emite uno en el nodo:"),
@@ -169,9 +180,14 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
     ("Nodes this one has granted authority to. Revoking is one row, and it takes effect here — a node that has been revoked can ask for nothing.", "Nodos a los que este ha concedido autoridad. Revocar es una fila, y surte efecto aquí — un nodo revocado no puede pedir nada."),
     ("None.", "Ninguno."),
     ("None. A token is what CI authenticates with — it is nobody's password, and revoking it changes nothing else.", "Ninguno. Un token es con lo que se autentica CI — no es la contraseña de nadie, y revocarlo no cambia nada más."),
+    ("Not following — reload to see more", "Sin seguir — recarga para ver más"),
     ("Not running", "No está corriendo"),
     ("Nothing has been pushed yet. Create a push token on the project page and push an image to this repository.", "Todavía no se ha subido nada. Crea un token de subida en la página del proyecto y sube una imagen a este repositorio."),
     ("Nothing yet", "Todavía nada"),
+    (
+        "Nothing yet. A container that has only just started may not have written anything.",
+        "Nada todavía. Un contenedor que acaba de arrancar puede no haber escrito nada.",
+    ),
     ("Nothing. It is handing this node an address on its overlay and asking for nothing back.", "Nada. Le está dando a este nodo una dirección en su overlay y no pide nada a cambio."),
     ("Nothing. This node will take its instructions and give it none.", "Nada. Este nodo tomará sus instrucciones y no le dará ninguna."),
     ("Now", "Ahora"),
@@ -188,6 +204,7 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
     ("Only what it was granted, which is listed beside it below. Revoking any of it takes effect here and immediately.", "Solo lo que se le concedió, que está listado a su lado abajo. Revocar cualquier parte surte efecto aquí y de inmediato."),
     ("Open", "Abrir"),
     ("Outcome", "Resultado"),
+    ("Output", "Salida"),
     ("Overlay address", "Dirección overlay"),
     ("Overview", "Resumen"),
     ("Password", "Contraseña"),
@@ -203,6 +220,7 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
     ("Reachable at", "Se llega en"),
     ("Reachable from any container in this project. The address is reserved for this copy, so it survives a redeployment.", "Alcanzable desde cualquier contenedor de este proyecto. La dirección está reservada para esta copia, así que sobrevive a un redespliegue."),
     ("Read it on GitHub", "Leerlo en GitHub"),
+    ("Reconnecting…", "Reconectando…"),
     ("Recorded when this node joined — what it said about itself when it arrived. Instructions do not travel over the overlay: that node collects them over the same connection it enrolled through, which is why nothing here has to be able to reach it.", "Anotado cuando este nodo se unió — lo que dijo de sí mismo al llegar. Las instrucciones no viajan por la overlay: ese nodo las recoge por la misma conexión con la que se enroló, que es por lo que nada de aquí tiene que poder alcanzarlo."),
     ("Refused", "Rechazado"),
     ("Releases", "Versiones"),
@@ -258,6 +276,10 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
     ("The setup token was printed by `wabot-deploy install`. It works once, and it expires.", "El token de instalación lo imprimió `wabot-deploy install`. Funciona una vez, y caduca."),
     ("The slug is derived from the name, and it is what hostnames and containerd labels are built from.", "El slug se deriva del nombre, y es con lo que se construyen los nombres de host y las etiquetas de containerd."),
     ("They choose their own username and password. Nobody here ever sees it — which is the reason this is a link rather than a form that sets one for them.", "Elige su propio usuario y su contraseña. Aquí nadie la ve nunca — que es la razón de que esto sea un enlace y no un formulario que se la ponga."),
+    (
+        "This container was started before its output was being kept. Deploy it again and it will write from then on.",
+        "Este contenedor se arrancó antes de que se guardara su salida. Despliégalo otra vez y escribirá desde ese momento.",
+    ),
     ("This invitation is not valid. It may have been used already, withdrawn, or expired — they last seven days.", "Esta invitación no vale. Puede que ya se usara, que se retirara o que caducara — duran siete días."),
     ("This is the newest release published.", "Esta es la versión más nueva publicada."),
     ("This is you", "Este eres tú"),
@@ -275,6 +297,7 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
     ("This service exposes nothing. That is the right answer for a worker; a port is added in settings.", "Este servicio no expone nada. Esa es la respuesta correcta para un worker; un puerto se añade en ajustes."),
     ("This service exposes nothing. That is the right answer for a worker; add a port for anything that listens.", "Este servicio no expone nada. Esa es la respuesta correcta para un worker; añade un puerto para cualquier cosa que escuche."),
     ("This service is administered from the node that placed it here, and nothing on this page will change it.", "Este servicio se administra desde el nodo que lo colocó aquí, y nada de esta página lo va a cambiar."),
+    ("This service is not running anywhere.", "Este servicio no corre en ningún sitio."),
     ("Throw it off this node", "Echarlo de este nodo"),
     ("Throw it out", "Echarlo fuera"),
     ("Tokens this node minted", "Tokens que acuñó este nodo"),
@@ -290,6 +313,10 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
     ("Waiting to be collected", "Esperando a ser recogido"),
     ("What is in it", "Qué lleva"),
     ("What the process listens on inside the container.", "En qué escucha el proceso dentro del contenedor."),
+    (
+        "What this copy has written since it started. The file is emptied on every deployment, so this is the current attempt and not a history.",
+        "Lo que esta copia ha escrito desde que arrancó. El fichero se vacía en cada despliegue, así que esto es el intento actual y no un historial.",
+    ),
     ("What this node does", "Qué hace este nodo"),
     ("When", "Cuándo"),
     ("Where the certificate comes from", "De dónde viene el certificado"),
@@ -349,7 +376,7 @@ mod tests {
     /// A word that is the same in both languages, listed rather than
     /// allowed silently. Otherwise "translated to itself" cannot tell a
     /// deliberate `Swap` from a line somebody pasted and forgot.
-    const THE_SAME_IN_BOTH: &[&str] = &["Error: ", "Id", "Swap"];
+    const THE_SAME_IN_BOTH: &[&str] = &["Error: ", "Id", "Logs", "Swap"];
 
     #[test]
     fn nothing_is_left_untranslated_by_accident() {

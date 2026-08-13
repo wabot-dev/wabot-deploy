@@ -64,10 +64,21 @@ impl Replica {
     /// nothing looks for any more. The suffix appears from slot 2, on
     /// containers that did not exist before this did.
     pub fn container_id(&self, project_slug: &str, service_slug: &str) -> String {
-        match self.slot {
-            1 => format!("{project_slug}.{service_slug}"),
-            slot => format!("{project_slug}.{service_slug}.{slot}"),
-        }
+        container_id_for(project_slug, service_slug, self.slot)
+    }
+}
+
+/// The same id, from a slot number rather than a row.
+///
+/// For a caller that has the slot and not the replica — the log stream,
+/// which is handed one in a query string and must build the same id the
+/// deploy did. One function so the two cannot drift: the rule that slot
+/// 1 keeps the old name is the sort that gets reimplemented slightly
+/// differently and then costs an afternoon.
+pub fn container_id_for(project_slug: &str, service_slug: &str, slot: u32) -> String {
+    match slot {
+        1 => format!("{project_slug}.{service_slug}"),
+        slot => format!("{project_slug}.{service_slug}.{slot}"),
     }
 }
 
