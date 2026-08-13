@@ -250,7 +250,16 @@ pub fn database_card<'a>(
     // naming something the certificate does not cover.
     names: &'a [String],
 ) -> impl Renderable + 'a {
-    let strings = Strings::of(row, names);
+    // Only once it has an address, which is only once it has been
+    // deployed. The names exist from the moment the database does — they
+    // are derived from the project and the node's domain — so without this
+    // the page would hand out a connection string for something that has
+    // never run.
+    //
+    // The address itself is not shown here: every copy's is in the
+    // placement table below, which is where somebody looking for one
+    // looks.
+    let strings = address.as_ref().and_then(|_| Strings::of(row, names));
     let copies = replicas.len();
     let standbys = replicas
         .iter()
@@ -280,7 +289,7 @@ pub fn database_card<'a>(
                 <dd>(format!("{copies} ({standbys} read-only)"))</dd>
             </dl>
             @if let Some(strings) = &strings {
-                (connection_block(strings, address.as_deref()))
+                (connection_block(strings))
             } @else {
                 <p class="tile-detail">(t("It has no address yet. A connection string appears once \
                      it has been deployed."))</p>
@@ -391,28 +400,39 @@ fn value<'a>(which: &'a str, dsn: &'a str, copy: &'a str, copied: &'a str) -> im
     }
 }
 
-fn connection_block<'a>(strings: &'a Strings, address: Option<&'a str>) -> impl Renderable + 'a {
+fn connection_block(strings: &Strings) -> impl Renderable + '_ {
     // The words the island puts on the button it makes. Passed as data
     // because the script has no language and the account has one — the same
     // rule the badge words follow.
     let (copy, copied) = (t("Copy"), t("Copied"));
     let inner = rsx! {
-        <details open>
+        <details>
             <summary>(t("Connection string"))</summary>
             <div class="dsn stack-sm">
-                <div class="row dsn-pick">
-                    <label class="check">
-                        <input type="radio" name="dsn-target" id="dsn-primary" checked>
-                        (t("Primary — reads and writes"))
-                    </label>
-                    <label class="check">
-                        <input type="radio" name="dsn-target" id="dsn-pool">
-                        (t("Read pool — refuses writes"))
-                    </label>
-                    <label class="check">
-                        <input type="checkbox" id="dsn-short">
-                        (t("Short name"))
-                    </label>
+                // Two groups, because they are two questions: which name,
+                // and which copy. One row mixing them read as three
+                // unrelated switches.
+                <div class="dsn-pick">
+                    <div class="dsn-group">
+                        <label class="check">
+                            <input type="radio" name="dsn-name" id="dsn-public" checked>
+                            (t("Public"))
+                        </label>
+                        <label class="check">
+                            <input type="radio" name="dsn-name" id="dsn-private">
+                            (t("Private"))
+                        </label>
+                    </div>
+                    <div class="dsn-group">
+                        <label class="check">
+                            <input type="radio" name="dsn-target" id="dsn-primary" checked>
+                            (t("Primary"))
+                        </label>
+                        <label class="check">
+                            <input type="radio" name="dsn-target" id="dsn-pool">
+                            (t("Read pool"))
+                        </label>
+                    </div>
                 </div>
 
                 // Every string, with the words the island puts on the button
@@ -427,21 +447,12 @@ fn connection_block<'a>(strings: &'a Strings, address: Option<&'a str>) -> impl 
                     (value("pool-short", &strings.pool_short, copy, copied))
                 </div>
 
-                <p class="field-hint">(t("Both names resolve in every container of this project, \
-                     on any node holding a copy. The long one is the same string everywhere and \
-                     the only form a certificate authority could sign; the short one means \
-                     nothing outside this project."))</p>
-                <p class="field-hint">(t("From outside the node, neither resolves — and there is \
-                     no edge to choose: an edge terminates TLS and proxies HTTP, while Postgres \
-                     speaks its own protocol with TLS inside the server. The domain is the \
-                     node's, inherited by every database it owns."))</p>
-                @if let Some(address) = address {
-                    <p class="field-hint">
-                        (t("This copy is on the project's bridge at "))(address)
-                        (t(" — reserved for it, and not something a certificate can vouch \
-                             for."))
-                    </p>
-                }
+                // One line, and it is the one that stops the labels lying:
+                // "public" is the name's form, not a promise that the
+                // internet can reach it.
+                <p class="field-hint">(t("Both resolve inside this project, on any node holding \
+                     a copy. Neither reaches the database from outside the node — that is a \
+                     published port, which is not built."))</p>
             </div>
         </details>
     }
@@ -526,11 +537,27 @@ mod tests {
         // identity, which is what this page used to hand out.
         // `&` arrives escaped, which is the markup being correct rather
         // than the string being wrong.
+        // `&` arrives escaped, which is the markup being correct rather
+        // than the string being wrong.
         assert_eq!(
             card.matches("sslmode=verify-full&amp;sslrootcert=/etc/wabot/ca.crt")
                 .count(),
             4,
             "one per choice: {card}"
+        );
+
+        // The ids the stylesheet selects on, and the closed section.
+        //
+        // A half-applied edit once shipped the CSS for these without the
+        // markup, so every rule matched nothing and the page showed no
+        // string at all — which looked, from outside, exactly like a
+        // deployment that had not happened.
+        for id in ["dsn-public", "dsn-private", "dsn-primary", "dsn-pool"] {
+            assert!(card.contains(&format!("id=\"{id}\"")), "no {id}: {card}");
+        }
+        assert!(
+            card.contains("<details>"),
+            "the section is closed until somebody opens it: {card}"
         );
     }
 
