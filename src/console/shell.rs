@@ -348,6 +348,23 @@ impl Frame {
                     continue;
                 }
             };
+            // The collection first, when it is a page of its own.
+            //
+            // Without this a pair swallowed it: `/nodes/nd-abc` read as
+            // "Settings / nd-abc", so the list the node came out of was
+            // not in the trail — and since "Settings" names an area
+            // rather than a page and carries no href, the way-back arrow
+            // had nothing to point at either. Every settings page one
+            // level deep was like that, and the only route back was the
+            // button each of those pages happens to draw for itself.
+            //
+            // `collection` answers `None` for `projects` and `services`,
+            // which is what keeps this from doubling the root crumb on a
+            // project page or linking to `/…/services`, which is not a
+            // page.
+            if let Some(label) = collection(segment) {
+                trail.push((label, Some(format!("/{}", segments[..=index].join("/")))));
+            }
             trail.push((
                 self.label_for(segment, id),
                 Some(format!("/{}", segments[..=index + 1].join("/"))),
@@ -502,13 +519,6 @@ impl Frame {
                         <nav>
                             <a href="/nodes"
                                class=(current(self.path.starts_with("/nodes")))>(t("Nodes"))</a>
-                            // Beside the nodes rather than under one:
-                            // it is about this machine, and it was
-                            // unfindable while it lived on a page you
-                            // reached by picking this node out of a list
-                            // of them.
-                            <a href="/memory"
-                               class=(current(self.path == "/memory"))>(t("Memory"))</a>
                             <a href="/people"
                                class=(current(self.path == "/people"))>(t("People"))</a>
                             <a href="/updates"
@@ -791,41 +801,6 @@ mod tests {
         );
     }
 
-    /// The memory reading is a page in the navigation, not something to
-    /// go looking for.
-    ///
-    /// It was built and then effectively lost: behind the gear, into the
-    /// list of nodes, into the tile for this one, below the certificate
-    /// card. A figure nobody can find is a figure nobody has — which is
-    /// how it was reported, as missing.
-    #[test]
-    fn the_memory_reading_has_a_name_in_the_navigation() {
-        let account = Account {
-            theme: Theme::System,
-            id: "a".into(),
-            username: "someone".into(),
-            role: crate::accounts::roles::NodeRole::Admin,
-            language: crate::console::language::Language::En,
-        };
-        let frame = Frame::new(&account, Area::Settings, &[], None, "/memory");
-        let html = frame.render(String::new()).render().into_inner();
-
-        let (_, after) = html
-            .split_once(r#"class="side-inner""#)
-            .expect("the sidebar wraps its nav in the sticky box");
-        let (inside, _) = after
-            .split_once("</aside>")
-            .expect("and the box closes with the column");
-        assert!(
-            inside.contains(r#"href="/memory""#),
-            "the link is inside it: {inside}"
-        );
-        assert!(
-            inside.contains(r#"href="/memory" class="active""#),
-            "and it is the current one while the page is open: {inside}"
-        );
-    }
-
     /// The shapes a trail takes, and the one it must never take.
     ///
     /// `/projects/x/services` is not a page, so `services` cannot be a
@@ -891,12 +866,29 @@ mod tests {
             nodes.last().expect("last"),
             &("Nodes".to_string(), Some("/nodes".to_string()))
         );
+        // A pair used to swallow the collection it came out of, so this
+        // read "Settings / nd-abc" — no list in the trail, and no way
+        // back either, since "Settings" names an area and carries no
+        // href for the arrow to use. Every settings page one level deep
+        // was like it.
         let one_node = trail_for(Area::Settings, "/nodes/nd-abc");
         assert_eq!(
-            one_node.last().expect("last").0,
-            "nd-abc",
-            "an id is not prettified"
+            one_node,
+            vec![
+                ("Settings".to_string(), None),
+                ("Nodes".to_string(), Some("/nodes".to_string())),
+                ("nd-abc".to_string(), Some("/nodes/nd-abc".to_string())),
+            ],
+            "an id is not prettified, and the list it came from is a crumb"
         );
+
+        // What the arrow reads: the crumb before the last, which has to
+        // be somewhere it can go.
+        for path in ["/nodes/nd-abc", "/updates/v0.9.0"] {
+            let trail = trail_for(Area::Settings, path);
+            let parent = &trail[trail.len() - 2];
+            assert!(parent.1.is_some(), "{path} has no way back: {:?}", trail);
+        }
 
         // The rule, over every shape at once: no crumb points at a
         // collection with nothing after it.

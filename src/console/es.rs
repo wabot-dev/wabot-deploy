@@ -341,10 +341,6 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
         "What this copy has written since it started. The file is emptied on every deployment, so this is the current attempt and not a history.",
         "Lo que esta copia ha escrito desde que arrancó. El fichero se vacía en cada despliegue, así que esto es el intento actual y no un historial.",
     ),
-    (
-        "What this machine's memory is going on, second by second.",
-        "En qué se va la memoria de esta máquina, segundo a segundo.",
-    ),
     ("What this node does", "Qué hace este nodo"),
     ("When", "Cuándo"),
     ("Where the certificate comes from", "De dónde viene el certificado"),

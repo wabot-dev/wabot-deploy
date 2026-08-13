@@ -283,62 +283,6 @@ impl NodePages {
         Ok(frame.render(body).into_view().into())
     }
 
-    /// What the machine's memory is going on, as a page of its own.
-    ///
-    /// The card itself is not new — it has been on this node's own page
-    /// since the console had figures at all. What was wrong is that
-    /// nobody could find it: behind the gear, into a list of nodes, into
-    /// the tile for *this* one, and below the certificate card. Jorge
-    /// reported it as lost, which is the honest description of something
-    /// three clicks deep with no name in the navigation.
-    ///
-    /// So it is one entry beside Nodes, People and Updates, and the same
-    /// `memory_card` rendered in the same island — one definition, so a
-    /// figure cannot mean one thing here and another there.
-    #[view("/memory")]
-    #[middleware(SessionMiddleware)]
-    async fn memory(&self) -> UiResult<ViewOutcome> {
-        let Some(account) = signed_in(&self.auth) else {
-            return Ok(Redirect::found("/sign-in").into());
-        };
-        // The machine belongs to whoever runs it — the same boundary the
-        // nodes list draws, and for the same reason: this says what is
-        // running on it and how much of it is left.
-        if !account.is_admin() {
-            return Ok(Redirect::found("/").into());
-        }
-
-        let snapshot = self.state.deployer.memory().await;
-        let projects = access::projects_for(&self.state.database, &account).await?;
-        // The stream is keyed on the node, because the island's URL is —
-        // and this page is about *this* machine, so it is this node's own
-        // row. A node with no row of its own has nothing to stream yet,
-        // and the card still renders: the figures come from the reading
-        // above, which needed no network.
-        let me = network::me(&self.state.database).await?.map(|node| node.id);
-
-        layout::head("Memory");
-        let frame = Frame::new(&account, Area::Settings, &projects, None, "/memory");
-        // The account's language, around the render and no wider:
-        // the strings are read here, and nothing awaits inside.
-        let body = super::language::scoped(account.language, || {
-            rsx! {
-                (layout::style_tag())
-                <h1>(t("Memory"))</h1>
-                <p class="tagline">(t("What this machine's memory is going on, second by second."))</p>
-                @if let Some(node) = &me {
-                    (live_memory(node, &snapshot))
-                } @else {
-                    (memory_card(&snapshot))
-                }
-            }
-            .render()
-            .into_inner()
-        });
-
-        Ok(frame.render(body).into_view().into())
-    }
-
     #[view("/nodes/:node")]
     #[middleware(SessionMiddleware)]
     async fn node(&self, query: NodePage) -> UiResult<ViewOutcome> {
@@ -1513,24 +1457,6 @@ fn percent(snapshot: &Snapshot, bytes: u64) -> String {
 /// The same share as a declaration, for the attribute in the first paint.
 fn width(snapshot: &Snapshot, bytes: u64) -> String {
     format!("width:{}", percent(snapshot, bytes))
-}
-
-/// The memory card on its own, in an island host that keeps it current.
-///
-/// Same card and same stream as the node page's, wrapped separately
-/// because that page has a certificate card in the host beside it and
-/// this page has nothing else to say. The stream writes into whatever
-/// `data-cell` and `data-bar` elements it finds inside the host, so the
-/// half that is not here is simply not written.
-fn live_memory<'a>(node_id: &'a str, snapshot: &'a Snapshot) -> impl Renderable + 'a {
-    let inner = memory_card(snapshot).render().into_inner();
-
-    // Rendered first, then wrapped, for the reason `live_cards` gives.
-    wabot::ui::hypertext::island(
-        "node-live",
-        &serde_json::json!({ "node": node_id }),
-        hypertext::Raw::dangerously_create(&inner),
-    )
 }
 
 /// The two cards that update themselves, in one island host.
