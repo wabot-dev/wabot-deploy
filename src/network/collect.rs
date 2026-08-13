@@ -106,24 +106,10 @@ async fn from_one(
     };
 
     // What this node's copies of that node's services are doing, before
-    // asking for more work — so an authority queueing something has
-    // just heard the truth about what is already there, and a replica
-    // evicted here stops being asked for in the same round trip.
-    // Always, even holding nothing. This used to skip an empty report
-    // as a request with nothing in it, and that stopped being true when
-    // the report started carrying where the world can dial this node: a
-    // node holding no replicas is exactly the one that has never been
-    // chosen as an edge, so it stayed private on the authority for ever
-    // and could never be chosen — which is the whole of what the field
-    // was added for.
-    match report_for(database, node_id).await {
-        Ok(report) => {
-            if let Err(error) = super::call::report(&endpoint, &secret, &report).await {
-                tracing::debug!(%error, authority = %node_id, "could not report");
-            }
-        }
-        Err(error) => tracing::warn!(%error, "could not read what this node is holding"),
-    }
+    // asking for more work — so an authority queueing something has just
+    // heard the truth about what is already there, and a replica evicted
+    // here stops being asked for in the same round trip.
+    report_to(database, node_id, &endpoint, &secret).await;
 
     let waiting = match super::call::errands(&endpoint, &secret).await {
         Ok(waiting) => waiting,
@@ -151,7 +137,70 @@ async fn from_one(
             Err(error) => tracing::warn!(%error, errand = %id, "could not report an errand"),
         }
     }
+
+    // And say what a *stop* did, now rather than in fifteen seconds: that
+    // one happens inside `carry_out`, so by here it has happened.
+    //
+    // A deployment has not. It is queued as this node's own job — which
+    // is the whole of "obeying is local" — and it reports itself when it
+    // finishes, from `deploy::jobs`. Reporting a deployment here would
+    // send the state from before it ran and call it news.
+    if settled > 0 {
+        report_to(database, node_id, &endpoint, &secret).await;
+    }
     settled
+}
+
+/// Tell every authority what this node is holding, right now.
+///
+/// The loop says it every fifteen seconds, which is the wrong latency for
+/// something somebody is watching: a copy that started a second ago reads
+/// as "waiting for that node" on the console that asked for it, and a
+/// quarter of a minute of that is indistinguishable from nothing having
+/// happened. So whatever changes what this node holds says so when it
+/// changes it — see `deploy::jobs`.
+///
+/// Quiet on failure by design: this is an extra, and the loop is what
+/// guarantees the state gets there eventually.
+pub async fn report_now(database: &SqliteDatabase) {
+    let authorities = match super::authorities(database).await {
+        Ok(authorities) => authorities,
+        Err(error) => {
+            tracing::debug!(%error, "could not read this node's authorities");
+            return;
+        }
+    };
+
+    for authority in authorities.iter().filter(|a| a.live()) {
+        let Some(secret) = super::credential_for(database, &authority.node_id).await else {
+            continue;
+        };
+        let endpoint = match super::find(database, &authority.node_id).await {
+            Ok(Some(node)) => node.endpoint,
+            _ => None,
+        };
+        let Some(endpoint) = endpoint else { continue };
+        report_to(database, &authority.node_id, &endpoint, &secret).await;
+    }
+}
+
+/// One report, to one authority.
+///
+/// Always sent, even holding nothing. This used to be skipped when it
+/// carried no replicas, which stopped being true the moment the report
+/// started carrying where the world can dial this node: a node holding
+/// nothing is exactly the one that has never been given work, so it
+/// stayed private on its authority for ever and could never be chosen as
+/// an edge — which is the whole of what that field was added for.
+async fn report_to(database: &SqliteDatabase, node_id: &str, endpoint: &str, secret: &str) {
+    match report_for(database, node_id).await {
+        Ok(report) => {
+            if let Err(error) = super::call::report(endpoint, secret, &report).await {
+                tracing::debug!(%error, authority = %node_id, "could not report");
+            }
+        }
+        Err(error) => tracing::warn!(%error, "could not read what this node is holding"),
+    }
 }
 
 /// What this node is running on behalf of `authority`.

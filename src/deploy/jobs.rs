@@ -137,14 +137,32 @@ impl DeployHandler {
 
         match &data.release_id {
             None => {
-                self.deployer
+                let outcome = self
+                    .deployer
                     .deploy(&project, &service)
                     .await
                     .map(|_| ())
                     // The reason is already on the service row —
                     // `deploy` puts it there — so this only decides
                     // whether the job retries.
-                    .map_err(|error| AsyncError::Handler(error.to_string()))
+                    .map_err(|error| AsyncError::Handler(error.to_string()));
+
+                // And whoever asked for this hears now.
+                //
+                // A deployment that arrived on an errand was settled
+                // before it ran — it is queued as this node's own job,
+                // which is what "obeying is local" means — so the
+                // authority's next scheduled report is up to fifteen
+                // seconds away, and until it lands the console that
+                // pressed the button says "waiting for that node" about
+                // a container that has been up the whole time. Reported
+                // whether it worked or not: a failure is the answer
+                // somebody is waiting for too.
+                //
+                // A no-op on a node that takes instructions from nobody,
+                // which is every single-node install.
+                crate::network::collect::report_now(&self.database).await;
+                outcome
             }
             Some(id) => {
                 let release = releases::find(&self.database, id)

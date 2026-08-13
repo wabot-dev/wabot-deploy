@@ -50,7 +50,14 @@ pub struct ServiceLogs {
     pub service: String,
     /// Which copy. Absent means the lowest one running here, which is
     /// the primary of a database and the only copy of most services.
-    pub slot: Option<u32>,
+    ///
+    /// A **string**, parsed below. A query parameter is text, and the
+    /// framework hands the field exactly what was in the URL — so a
+    /// `u32` here answered `?slot=2` with `invalid type: string "2",
+    /// expected u32` and a page of JSON where the log should have been.
+    /// This is the console's only numeric query parameter, which is why
+    /// nothing had found it.
+    pub slot: Option<String>,
 }
 
 /// The same service, from the page that changes it.
@@ -273,6 +280,21 @@ impl ServicePages {
             _ => None,
         };
 
+        // Which nodes still have an instruction about this service waiting
+        // to be collected. A copy elsewhere with no address is stopped, or
+        // not yet told, or told and not yet reporting — and the page had
+        // one word for all three.
+        let queued: Vec<String> = crate::network::errand::all(&self.state.database)
+            .await?
+            .into_iter()
+            .filter(|record| record.done_at.is_none())
+            .filter(|record| {
+                record.payload.get("service").and_then(|name| name.as_str())
+                    == Some(service.name.as_str())
+            })
+            .map(|record| record.node_id)
+            .collect();
+
         let serving = crate::platform::edges::of_service(&self.state.database, &service.id).await?;
         let deploying = crate::deploy::jobs::deploying(&self.state.container)
             .await
@@ -387,7 +409,7 @@ impl ServicePages {
                 }
 
                 @if service.is_ours() {
-                    (placement_card(&project, &service, &placements, &placement_nodes))
+                    (placement_card(&project, &service, &placements, &placement_nodes, &queued))
                 } @else {
                     (from_elsewhere_card(
                         &project,
@@ -579,8 +601,13 @@ impl ServicePages {
             .into_iter()
             .any(|replica| !replica.is_here() && !replica.evicted());
 
+        // Anything that is not a copy running here falls back to the
+        // first one rather than erroring: a stale link or a hand-typed
+        // number should show a log, not a refusal.
         let slot = query
             .slot
+            .as_deref()
+            .and_then(|slot| slot.parse::<u32>().ok())
             .filter(|slot| mine.contains(slot))
             .or(mine.first().copied());
         let opened = match slot {
@@ -619,27 +646,33 @@ impl ServicePages {
         let body = super::language::scoped(account.language, || {
             rsx! {
             (layout::style_tag())
-                <div class="stack-sm">
-                    <h1>(&service_name)</h1>
-                    <p class="tile-detail">(t("What this copy has written since it started. The file is \
-                         emptied on every deployment, so this is the current \
-                         attempt and not a history."))</p>
-                </div>
-
-                @if mine.len() > 1 {
-                    <div class="row">
-                        @for one in &mine {
-                            @if Some(*one) == slot {
-                                <span class="badge">(t("Copy "))(one)</span>
-                            } @else {
-                                <a class="btn btn-ghost btn-sm"
-                                   href=(format!(
-                                       "/projects/{project_slug}/services/{service_slug}/logs?slot={one}"
-                                   ))>(t("Copy "))(one)</a>
-                            }
-                        }
+                // Title and copy tabs on one line, the shape every
+                // other page here uses for a heading and its controls —
+                // and the tabs belong beside it rather than in a row of
+                // their own, because they select what the panel below
+                // shows.
+                <div class="split">
+                    <div class="stack-sm">
+                        <h1>(&service_name)</h1>
+                        <p class="tile-detail">(t("What this copy has written since it started. The \
+                             file is emptied on every deployment, so this is the \
+                             current attempt and not a history."))</p>
                     </div>
-                }
+                    @if mine.len() > 1 {
+                        <div class="row">
+                            @for one in &mine {
+                                @if Some(*one) == slot {
+                                    <span class="badge">(t("Copy "))(one)</span>
+                                } @else {
+                                    <a class="btn btn-ghost btn-sm"
+                                       href=(format!(
+                                           "/projects/{project_slug}/services/{service_slug}/logs?slot={one}"
+                                       ))>(t("Copy "))(one)</a>
+                                }
+                            }
+                        </div>
+                    }
+                </div>
 
                 @if let Some(slot) = slot {
                     <section class="card stack">
@@ -1195,6 +1228,10 @@ fn placement_card<'a>(
     service: &'a services::Service,
     placements: &'a [crate::platform::replicas::Replica],
     nodes: &'a [crate::network::Node],
+    // The nodes with an instruction about this service still waiting to
+    // be collected, so a copy that has been told reads apart from one
+    // that has not.
+    queued: &'a [String],
 ) -> impl Renderable + 'a {
     let action = format!(
         "/projects/{}/services/{}/placement",
@@ -1224,7 +1261,14 @@ fn placement_card<'a>(
                                     </select>
                                 </td>
                                 <td data-replica=(&replica.id)>
-                                    (placement_state(replica))
+                                    (placement_state(
+                                        replica,
+                                        service.desired_state == services::DesiredState::Stopped,
+                                        replica
+                                            .node_id
+                                            .as_ref()
+                                            .is_some_and(|node| queued.iter().any(|q| q == node)),
+                                    ))
                                 </td>
                             </tr>
                         }
@@ -1349,7 +1393,21 @@ fn served_by_form<'a>(
 }
 
 /// What a replica is doing, in the words its own node reported.
-fn placement_state(replica: &crate::platform::replicas::Replica) -> impl Renderable + '_ {
+///
+/// A copy with no address is **three** different things, and the page used
+/// to give one word to all of them: stopped, still waiting to be told, or
+/// told and not yet reporting. Jorge stopped a database and its remote copy
+/// said "waiting for that node" — nobody was waiting for anything; that
+/// node had said what it had done and the page had no word for it.
+///
+/// So the service's intent and the errand queue both reach here, and the
+/// only case left for "waiting" is the one it was written for: the
+/// instruction is gone and the answer has not come back.
+fn placement_state<'a>(
+    replica: &'a crate::platform::replicas::Replica,
+    stopped: bool,
+    queued: bool,
+) -> impl Renderable + 'a {
     rsx! {
         @if replica.evicted() {
             <span class="badge badge-warning">(t("Evicted there"))</span>
@@ -1363,13 +1421,23 @@ fn placement_state(replica: &crate::platform::replicas::Replica) -> impl Rendera
                 <span class="dot dot-success"></span>(t("Running"))
             </span>
             <span class="tile-detail">(" ")(address)</span>
-        } @else if replica.is_here() {
+        } @else if replica.is_here() || stopped {
+            // Nobody is waiting for news about a copy that is not meant to
+            // be running — here or anywhere else. The word is the same one
+            // the copies on this machine get, because the state is.
             <span class="badge">(t("Not running"))</span>
+        } @else if queued {
+            // The instruction is written and that node has not asked for
+            // it yet. Which is a different thing from silence, and the
+            // difference is most of what makes a wait feel long.
+            <span class="badge badge-info">
+                <span class="dot dot-info dot-pulse"></span>(t("Queued for that node"))
+            </span>
         } @else {
-            // Placed elsewhere and nothing has come back about it. The
-            // node reports when it collects, so this is the honest word
-            // until it does — not "failed", which would be this page
-            // inventing an outcome nobody reported.
+            // Told, and nothing has come back about it. The node reports
+            // when it collects, so this is the honest word until it does —
+            // not "failed", which would be this page inventing an outcome
+            // nobody reported.
             <span class="badge badge-info">
                 <span class="dot dot-info dot-pulse"></span>(t("Waiting for that node"))
             </span>
@@ -1412,7 +1480,11 @@ fn from_elsewhere_card<'a>(
                         <tr>
                             <td class="mono">("#")(replica.slot)</td>
                             <td data-replica=(&replica.id)>
-                                (placement_state(replica))
+                                (placement_state(
+                                    replica,
+                                    service.desired_state == services::DesiredState::Stopped,
+                                    false,
+                                ))
                             </td>
                         </tr>
                     }
@@ -2908,6 +2980,47 @@ mod tests {
     use crate::platform::projects;
     use wabot::rest::axum::http::StatusCode;
 
+    /// The three answers a copy with no address can have, and the two the
+    /// page used to collapse into one word.
+    ///
+    /// Jorge stopped a database and the copy on the other node read
+    /// "waiting for that node". Nobody was waiting: that node had said
+    /// what it had done and the page had no word for it — while the copies
+    /// on this machine, in the same state, correctly said "not running".
+    #[test]
+    fn a_copy_that_is_not_meant_to_run_is_not_a_copy_we_are_waiting_for() {
+        let replica = crate::platform::replicas::Replica {
+            id: "rp-1".into(),
+            service_id: "svc-1".into(),
+            node_id: Some("nd-far".into()),
+            slot: 3,
+            address: None,
+            overlay_port: Some(30001),
+            last_error: None,
+            evicted_at: None,
+            reserved_host: None,
+        };
+
+        let stopped = placement_state(&replica, true, false).render().into_inner();
+        assert!(stopped.contains("Not running"), "{stopped}");
+        assert!(
+            !stopped.contains("Waiting"),
+            "a stopped copy is not one we are waiting on: {stopped}"
+        );
+
+        // Told, and the instruction not yet collected. Legible rather than
+        // silent, which is most of what makes a wait feel long.
+        let queued = placement_state(&replica, false, true).render().into_inner();
+        assert!(queued.contains("Queued for that node"), "{queued}");
+
+        // And the case the word was written for: it has the instruction
+        // and the answer has not come back.
+        let waiting = placement_state(&replica, false, false)
+            .render()
+            .into_inner();
+        assert!(waiting.contains("Waiting for that node"), "{waiting}");
+    }
+
     /// A project and a service to place, made the way the console does.
     async fn placed_service(console: &Console, cookie: &str) -> services::Service {
         console
@@ -2963,6 +3076,55 @@ mod tests {
             "nothing says whether it is following: {html}"
         );
         assert!(page.has_island("logs-live"), "{html}");
+    }
+
+    /// `?slot=2` answered with a page of JSON: a query parameter is
+    /// text, the framework hands the field exactly what was in the URL,
+    /// and a `u32` there refused it — `invalid type: string "2",
+    /// expected u32`. The console's only numeric query parameter, which
+    /// is why nothing had found it.
+    ///
+    /// And a number that names no copy here shows the first one rather
+    /// than refusing: a stale link should show a log.
+    #[tokio::test]
+    async fn a_copy_can_be_chosen_by_number_in_the_url() {
+        let console = Console::new().await;
+        let cookie = console.signed_in().await;
+        let service = placed_service(&console, &cookie).await;
+        crate::platform::replicas::ensure_here(&console.database, &service.id, 2)
+            .await
+            .expect("two copies here");
+
+        for (slot, wanted) in [("2", "2"), ("1", "1")] {
+            let body = console
+                .harness
+                .get(&format!("/projects/shared/services/web/logs?slot={slot}"))
+                .header("cookie", &cookie)
+                .send()
+                .await
+                .body;
+            assert!(!body.contains("invalid type"), "{body}");
+            assert!(
+                body.contains(&format!("data-slot=\"{wanted}\"")),
+                "asked for copy {slot} and got: {body}"
+            );
+        }
+
+        for nonsense in ["9", "not-a-number", ""] {
+            let body = console
+                .harness
+                .get(&format!(
+                    "/projects/shared/services/web/logs?slot={nonsense}"
+                ))
+                .header("cookie", &cookie)
+                .send()
+                .await
+                .body;
+            assert!(
+                body.contains("data-slot=\"1\""),
+                "{nonsense:?} did not fall back to the first copy: {body}"
+            );
+        }
     }
 
     /// A copy elsewhere writes its log on the machine that runs it, and

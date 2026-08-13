@@ -223,6 +223,7 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
     ("Public key", "Clave pública"),
     ("Publish on the node's public address (raw TCP)", "Publicar en la dirección pública del nodo (TCP en crudo)"),
     ("Push tokens", "Tokens de subida"),
+    ("Queued for that node", "En cola para ese nodo"),
     ("Reachable at", "Se llega en"),
     ("Reachable from any container in this project. The address is reserved for this copy, so it survives a redeployment.", "Alcanzable desde cualquier contenedor de este proyecto. La dirección está reservada para esta copia, así que sobrevive a un redespliegue."),
     ("Read it on GitHub", "Leerlo en GitHub"),
