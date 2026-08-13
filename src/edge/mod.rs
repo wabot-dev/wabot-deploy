@@ -63,25 +63,18 @@ pub async fn build(
 ) -> anyhow::Result<(EdgeState, Arc<CertResolver>)> {
     // Every name this node can be reached by before ACME. `localhost`
     // is always present so a local `curl` works on a node with no DNS.
-    let mut names = vec![certs::FALLBACK_NAME.to_string()];
     // From the database, not the file: a domain set from the console
     // has to be the one this node presents a certificate for after a
     // restart, or the change lasts exactly until the next boot.
-    if let Some(domain) = crate::node::settings::domain(database, config).await {
-        names.push(domain);
-    }
-    // And the name this node has whatever else it has, so another node on
-    // the overlay can dial it and *verify* what answers. A node with no
-    // domain had only `localhost`, which is every node's name and
-    // therefore nobody's — so a call to it could be checked for
-    // encryption and not for identity. See `network::internal_name`.
-    //
-    // Never offered to ACME: `wanted_names` builds its list from the
-    // domain and the hostnames this node serves, and an authority asked to
-    // validate a `.node` name would fail for the right reason.
-    if let Some(me) = crate::network::me(database).await.ok().flatten() {
-        names.push(crate::network::internal_name(&me.id));
-    }
+    let domain: Vec<String> = crate::node::settings::domain(database, config)
+        .await
+        .into_iter()
+        .collect();
+    // `own_names` adds the rest — the fallback, and the name every node has
+    // whatever else it has. Through one function because the certificate
+    // loop builds this same certificate from its own list, and whichever
+    // ran last used to win.
+    let names = certs::own_names(database, domain).await;
     certs::ensure_self_signed(database, certs::FALLBACK_NAME, &names).await?;
 
     let resolver = Arc::new(CertResolver::new());

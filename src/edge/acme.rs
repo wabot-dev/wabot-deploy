@@ -372,10 +372,11 @@ pub async fn refresh_local(
     config: &Config,
     resolver: &certs::CertResolver,
 ) -> AcmeResult<()> {
-    let mut names = wanted_names(database, config).await;
-    // The fallback answers a handshake that asked for no name, and
-    // every certificate here is stored under it — see `CertResolver`.
-    names.push(certs::FALLBACK_NAME.to_string());
+    // The fallback, and the name another node dials over the overlay, come
+    // from `own_names` — the one definition both builders of this
+    // certificate share. Pushing the fallback here and nothing else is what
+    // dropped the internal name at this pass.
+    let names = certs::own_names(database, wanted_names(database, config).await).await;
 
     let before = certs::load(database, certs::FALLBACK_NAME).await?;
     let after = certs::ensure_self_signed(database, certs::FALLBACK_NAME, &names).await?;

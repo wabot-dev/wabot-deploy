@@ -44,6 +44,30 @@ const RENEW_WITHIN_DAYS: i64 = 30;
 /// The name a node answers to before it has a domain.
 pub const FALLBACK_NAME: &str = "localhost";
 
+/// Every name this node's own certificate has to cover.
+///
+/// One definition because **two places build that certificate** — the edge
+/// at startup and the certificate loop's local refresh — and each passes
+/// the whole list, so whichever runs last decides. A name added to one of
+/// them lasted until the other's first pass: that is how the internal name
+/// went missing minutes after being added, and it is invisible from here
+/// because both callers looked correct on their own.
+///
+/// `caller` supplies what it knows — the node's domain, the hostnames it
+/// serves — and this adds what is true of every node whatever else it has:
+/// the fallback, which answers a handshake that asked for no name, and the
+/// name derived from the node's id, which is what another node dials over
+/// the overlay. See `network::internal_name` and `docs/network.md` phase 9.
+pub async fn own_names(database: &SqliteDatabase, mut caller: Vec<String>) -> Vec<String> {
+    caller.push(FALLBACK_NAME.to_string());
+    if let Some(me) = crate::network::me(database).await.ok().flatten() {
+        caller.push(crate::network::internal_name(&me.id));
+    }
+    caller.sort();
+    caller.dedup();
+    caller
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum CertError {
     #[error("storage: {0}")]
@@ -720,6 +744,30 @@ fn now_ms() -> i64 {
 
 #[cfg(test)]
 mod tests {
+    /// The names a node's own certificate must cover, in one place because
+    /// two builders pass the whole list and the last one wins.
+    ///
+    /// The internal name went missing minutes after being added, on the
+    /// node: the edge put it in at startup and the certificate loop's first
+    /// local refresh rebuilt the same certificate from its own list. Both
+    /// call sites read correctly on their own.
+    #[tokio::test]
+    async fn a_nodes_own_certificate_covers_the_name_another_node_dials() {
+        let database = crate::db::open_in_memory().await.expect("open");
+        let me = crate::network::ensure_self(&database, &crate::config::Config::default())
+            .await
+            .expect("seeded");
+
+        let names = super::own_names(&database, vec!["node.example".to_string()]).await;
+
+        assert!(names.contains(&super::FALLBACK_NAME.to_string()));
+        assert!(names.contains(&"node.example".to_string()));
+        assert!(
+            names.contains(&crate::network::internal_name(&me.id)),
+            "another node dials this one by that name: {names:?}"
+        );
+    }
+
     use super::*;
 
     /// A certificate and key on disk, as something outside this node
