@@ -259,7 +259,13 @@ pub async fn to_node(
             "that node has no overlay address, or never sent its authority".into(),
         ));
     };
-    let name = super::internal_name(&node.id);
+    // Lowercased here, and only here. A URI's host is normalised to
+    // lower case by the `http` crate, so the name this client is *asked*
+    // to resolve is never the mixed-case one an id produces — the first
+    // version compared the two and every call died in `Connect` with the
+    // reason swallowed. rustls compares DNS names case-insensitively, so
+    // the certificate covering the mixed-case name still matches.
+    let name = super::internal_name(&node.id).to_ascii_lowercase();
     let url = format!("https://{name}{path}");
     let socket: std::net::SocketAddr = format!("{address}:443")
         .parse()
@@ -346,14 +352,21 @@ impl tower::Service<hyper_util::client::legacy::connect::dns::Name> for OneName 
     }
 
     fn call(&mut self, asked: hyper_util::client::legacy::connect::dns::Name) -> Self::Future {
-        let answer = match asked.as_str() == self.name {
+        let answer = match asked.as_str().eq_ignore_ascii_case(&self.name) {
             true => Ok(vec![self.address].into_iter()),
             // Refused rather than looked up. This client exists to reach
             // one node over the overlay; anything else it was asked for is
             // a bug that must not become a request to a stranger.
-            false => Err(std::io::Error::other(format!(
-                "{asked} is not the node this client was built for"
-            ))),
+            false => {
+                // Said out loud because hyper swallows it: a connector's
+                // error reaches the caller as "client error (Connect)"
+                // and nothing else, which is how the case mismatch above
+                // cost a node run.
+                tracing::debug!(asked = %asked, expected = %self.name, "refused to resolve");
+                Err(std::io::Error::other(format!(
+                    "{asked} is not the node this client was built for"
+                )))
+            }
         };
         std::future::ready(answer)
     }
