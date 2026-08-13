@@ -502,6 +502,13 @@ impl Frame {
                         <nav>
                             <a href="/nodes"
                                class=(current(self.path.starts_with("/nodes")))>(t("Nodes"))</a>
+                            // Beside the nodes rather than under one:
+                            // it is about this machine, and it was
+                            // unfindable while it lived on a page you
+                            // reached by picking this node out of a list
+                            // of them.
+                            <a href="/memory"
+                               class=(current(self.path == "/memory"))>(t("Memory"))</a>
                             <a href="/people"
                                class=(current(self.path == "/people"))>(t("People"))</a>
                             <a href="/updates"
@@ -781,6 +788,41 @@ mod tests {
         assert!(
             inside.contains(r#"href="/people""#),
             "the links are inside it: {inside}"
+        );
+    }
+
+    /// The memory reading is a page in the navigation, not something to
+    /// go looking for.
+    ///
+    /// It was built and then effectively lost: behind the gear, into the
+    /// list of nodes, into the tile for this one, below the certificate
+    /// card. A figure nobody can find is a figure nobody has — which is
+    /// how it was reported, as missing.
+    #[test]
+    fn the_memory_reading_has_a_name_in_the_navigation() {
+        let account = Account {
+            theme: Theme::System,
+            id: "a".into(),
+            username: "someone".into(),
+            role: crate::accounts::roles::NodeRole::Admin,
+            language: crate::console::language::Language::En,
+        };
+        let frame = Frame::new(&account, Area::Settings, &[], None, "/memory");
+        let html = frame.render(String::new()).render().into_inner();
+
+        let (_, after) = html
+            .split_once(r#"class="side-inner""#)
+            .expect("the sidebar wraps its nav in the sticky box");
+        let (inside, _) = after
+            .split_once("</aside>")
+            .expect("and the box closes with the column");
+        assert!(
+            inside.contains(r#"href="/memory""#),
+            "the link is inside it: {inside}"
+        );
+        assert!(
+            inside.contains(r#"href="/memory" class="active""#),
+            "and it is the current one while the page is open: {inside}"
         );
     }
 

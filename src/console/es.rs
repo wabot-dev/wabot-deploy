@@ -198,6 +198,10 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
     ("One KEY=value per line. Everything after the first = is the value, so a value may contain one.", "Un CLAVE=valor por línea. Todo lo que va tras el primer = es el valor, así que un valor puede llevar uno."),
     ("One per hostname. A node with no public DNS, or a name a certificate authority cannot reach, is what the other two answers are for.", "Uno por nombre. Un nodo sin DNS público, o un nombre al que una autoridad de certificación no llega, es para lo que están las otras dos respuestas."),
     (
+        "One per running container. The runtime's overhead, not the image's.",
+        "Uno por contenedor en marcha. El coste del runtime, no el de la imagen.",
+    ),
+    (
         "Only to tell one unspent token from another. The node names itself when it joins, and that \
          is the name this console shows.",
         "Sólo para distinguir un token sin gastar de otro. El nodo se nombra a sí mismo al unirse, \
@@ -270,7 +274,19 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
     ("Takes instructions from", "Toma instrucciones de"),
     ("That node writes its own project, its own service row and its own deployment — nothing is shared. It pulls the image from this node's registry with a credential this puts in the instruction, so the image travels only when it is needed.", "Ese nodo escribe su propio proyecto, su propia fila de servicio y su propio despliegue — no se comparte nada. Tira la imagen del registry de este nodo con una credencial que esto mete en la instrucción, así que la imagen viaja solo cuando hace falta."),
     ("The ceiling on the container and the engine's own settings, together. It takes effect at the next deployment: a cgroup limit is written when the container is created, and nothing reaches into a running one to change it.", "El techo del contenedor y los ajustes del propio motor, a la vez. Surte efecto en el siguiente despliegue: el límite del cgroup se escribe al crear el contenedor, y nada entra en uno que ya corre para cambiarlo."),
+    (
+        "The console, the edge and the deploy path — this process.",
+        "La consola, el edge y el camino de despliegue — este proceso.",
+    ),
+    (
+        "The container runtime, shared by every service.",
+        "El runtime de contenedores, compartido por todos los servicios.",
+    ),
     ("The image is pulled from Docker Hub. The major version is fixed once the database exists: changing it is a data migration, not an image change.", "La imagen se trae de Docker Hub. La versión mayor queda fija en cuanto la base existe: cambiarla es una migración de datos, no un cambio de imagen."),
+    (
+        "The kernel, the distribution, and anything else on this machine.",
+        "El kernel, la distribución y todo lo demás que haya en esta máquina.",
+    ),
     ("The machine is yours: throwing it out is something you can always do, and it is the only thing here that is.", "La máquina es tuya: echarlo fuera es algo que siempre puedes hacer, y es lo único aquí que lo es."),
     ("The node restarts on its own when the new binary is in place. This page follows along — there is nothing to reload.", "El nodo se reinicia solo cuando el binario nuevo está en su sitio. Esta página lo sigue — no hay nada que recargar."),
     ("The other machine has to trust the certificate this console is served on. Until this node has a public one, joining will refuse rather than send its token to whatever answered.", "La otra máquina tiene que confiar en el certificado con el que se sirve esta consola. Hasta que este nodo tenga uno público, unirse se negará en vez de mandarle su token a lo que sea que respondió."),
@@ -316,10 +332,18 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
     ("Waiting for that node", "Esperando a ese nodo"),
     ("Waiting to be collected", "Esperando a ser recogido"),
     ("What is in it", "Qué lleva"),
+    (
+        "What the images themselves are using, from their cgroups.",
+        "Lo que usan las imágenes mismas, leído de sus cgroups.",
+    ),
     ("What the process listens on inside the container.", "En qué escucha el proceso dentro del contenedor."),
     (
         "What this copy has written since it started. The file is emptied on every deployment, so this is the current attempt and not a history.",
         "Lo que esta copia ha escrito desde que arrancó. El fichero se vacía en cada despliegue, así que esto es el intento actual y no un historial.",
+    ),
+    (
+        "What this machine's memory is going on, second by second.",
+        "En qué se va la memoria de esta máquina, segundo a segundo.",
     ),
     ("What this node does", "Qué hace este nodo"),
     ("When", "Cuándo"),
@@ -330,6 +354,7 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
     ("You are: ", "Tu rol: "),
     ("You were invited as ", "Te invitaron como "),
     ("answers for names", "responde por nombres"),
+    ("everything else", "todo lo demás"),
     ("joined · ", "unido · "),
     ("never used", "sin usar"),
     ("newer than what is running", "más nueva que la que corre"),
