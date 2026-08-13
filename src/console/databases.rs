@@ -245,14 +245,31 @@ pub fn database_card<'a>(
     replicas: &'a [replicas::Replica],
     address: Option<String>,
     memory_limit: Option<u64>,
+    // Every name it answers to, from `deploy::certificate_names` — the same
+    // list the certificate is built from, so this page cannot name
+    // something the certificate does not cover.
+    names: &'a [String],
 ) -> impl Renderable + 'a {
-    let url = address.as_ref().map(|address| {
-        postgres::connection_url(
-            &row.admin_user,
-            &row.admin_password,
-            address,
-            postgres::PORT,
-            &row.database_name,
+    // By name, not by address.
+    //
+    // The address is this copy's on the project's bridge: right on this
+    // machine, meaningless on any other, and impossible to verify, because
+    // a certificate holds names. The qualified name is the same string on a
+    // laptop, in a container beside it, and on another node holding a copy.
+    //
+    // With `verify-full` and the authority, because both are true now: the
+    // certificate covers every name below, and the node places its CA in
+    // every container it starts.
+    let url = names.first().map(|name| {
+        format!(
+            "{}?sslmode=verify-full&sslrootcert=/etc/wabot/ca.crt",
+            postgres::connection_url(
+                &row.admin_user,
+                &row.admin_password,
+                name,
+                postgres::PORT,
+                &row.database_name,
+            )
         )
     });
     let copies = replicas.len();
@@ -287,13 +304,96 @@ pub fn database_card<'a>(
                 <details>
                     <summary>(t("Connection string"))</summary>
                     <p class="mono">(url)</p>
-                    <p class="field-hint">(t("Reachable from any container in this project. The \
-                         address is reserved for this copy, so it survives a redeployment."))</p>
+                    <p class="field-hint">(t("For any container in this project, on any node \
+                         holding a copy. It names the database rather than an address, so it \
+                         survives a redeployment and reads the same everywhere."))</p>
+                    @if let Some(address) = &address {
+                        <p class="field-hint">
+                            (t("This copy is on the project's bridge at "))(address)
+                            (t(" — reserved for it, and not something a certificate can \
+                                 vouch for."))
+                        </p>
+                    }
                 </details>
             } @else {
                 <p class="tile-detail">(t("It has no address yet. A connection string appears once \
                      it has been deployed."))</p>
             }
+        </section>
+    }
+}
+
+/// Every name this database answers to, and what each one reaches.
+///
+/// **Because none of it was anywhere.** The page showed a connection string
+/// built from a bridge address and named nothing, so the questions it left
+/// were the ones Jorge asked: where is a database's domain set, which edge
+/// serves it, what are its hostnames. Two of those have answers that are
+/// "nowhere, deliberately" — and a page that omits them reads as a page
+/// missing a feature rather than a design saying no.
+pub fn names_card<'a>(
+    service_slug: &'a str,
+    names: &'a [String],
+    // Whether a copy runs on another node: the pool is only worth
+    // explaining as spread when there is something to spread over.
+    elsewhere: bool,
+) -> impl Renderable + 'a {
+    let pool = format!("{service_slug}{}", crate::deploy::hosts::READ_ONLY);
+    let (writable, readable): (Vec<&String>, Vec<&String>) =
+        names.iter().partition(|name| !name.starts_with(&pool));
+
+    rsx! {
+        <section class="card stack">
+            <p class="card-label">(t("Names"))</p>
+            <p class="field-hint">(t("A database is reached by name, from inside the project. \
+                 The node writes these into every container it starts, so nothing in an \
+                 image has to be configured."))</p>
+
+            <table>
+                <thead>
+                    <tr><th>(t("Name"))</th><th>(t("Reaches"))</th></tr>
+                </thead>
+                <tbody>
+                    @for name in &writable {
+                        <tr>
+                            <td class="mono">(name)</td>
+                            <td>(t("The primary — reads and writes"))</td>
+                        </tr>
+                    }
+                    @for name in &readable {
+                        <tr>
+                            <td class="mono">(name)</td>
+                            <td>(t("The read pool — refuses writes"))</td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+
+            @if elsewhere {
+                <p class="field-hint">(t("The pool holds every read-only copy, and each \
+                     container is given them in its own order — so ten applications do not \
+                     all put the same copy first. That is spread rather than balance: one \
+                     client keeps using the copy it picked."))</p>
+            } @else {
+                <p class="field-hint">(t("The pool falls back to the primary while there is no \
+                     read-only copy, so an application written against it keeps working when \
+                     the last one is taken away."))</p>
+            }
+
+            <dl class="kv">
+                <dt>(t("Certificate"))</dt>
+                <dd>(t("Signed by this node, covering every name above. A container verifies \
+                     it with the authority the node places at /etc/wabot/ca.crt."))</dd>
+                <dt>(t("Its domain"))</dt>
+                <dd>(t("The node's, inherited — set a domain on the node and every database \
+                     it owns is named under it. A copy held on another machine keeps the \
+                     owner's domain, because the name belongs to the database."))</dd>
+                <dt>(t("From outside the node"))</dt>
+                <dd>(t("Nothing, and there is no edge to choose: an edge terminates TLS and \
+                     proxies HTTP, while Postgres speaks its own protocol with TLS inside \
+                     the server. Reaching one from outside is a published port, which is \
+                     not built yet."))</dd>
+            </dl>
         </section>
     }
 }
@@ -304,6 +404,69 @@ mod tests {
     use crate::console::tests::Console;
     use crate::platform::services;
     use wabot::rest::axum::http::StatusCode;
+
+    /// The card names exactly what the certificate covers, because the
+    /// names come from the function the certificate is built from.
+    ///
+    /// A page that named something else would be telling somebody to write
+    /// a connection string `verify-full` rejects — which is worse than
+    /// naming nothing, and naming nothing is what it did.
+    #[tokio::test]
+    async fn the_names_on_the_page_are_the_names_on_the_certificate() {
+        let database = crate::db::open_in_memory().await.expect("open");
+        crate::node::settings::set_domain(&database, Some("node.example"))
+            .await
+            .expect("domain");
+        let project = crate::platform::projects::create(&database, "db-test")
+            .await
+            .expect("project");
+        let (service, row) = crate::platform::databases::create(
+            &database,
+            &project.id,
+            "orders",
+            "17",
+            256 * 1024 * 1024,
+        )
+        .await
+        .expect("created");
+
+        let names = crate::deploy::certificate_names(
+            &database,
+            &crate::config::Config::default(),
+            &project,
+            &service,
+        )
+        .await;
+        let rendered = names_card(&service.slug, &names, false)
+            .render()
+            .into_inner();
+
+        for name in &names {
+            assert!(
+                rendered.contains(name.as_str()),
+                "the certificate covers {name} and the page does not say so"
+            );
+        }
+        // The qualified one first, which is what the connection string uses:
+        // an address is right on one machine and a name is right everywhere.
+        assert_eq!(
+            names.first().map(String::as_str),
+            Some("orders.db-test.node.example")
+        );
+
+        let replicas = crate::platform::replicas::of_service(&database, &service.id)
+            .await
+            .expect("replicas");
+        let card = database_card(&row, &replicas, Some("10.42.2.200".into()), None, &names)
+            .render()
+            .into_inner();
+        assert!(
+            card.contains("postgresql://orders:")
+                && card.contains("@orders.db-test.node.example:5432/orders")
+                && card.contains("sslrootcert=/etc/wabot/ca.crt"),
+            "the connection string names the database and can be verified: {card}"
+        );
+    }
 
     async fn project(console: &Console) -> String {
         crate::platform::projects::create(&console.database, "shared")

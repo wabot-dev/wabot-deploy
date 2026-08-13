@@ -295,6 +295,26 @@ impl ServicePages {
             .map(|record| record.node_id)
             .collect();
 
+        // Every name a managed database answers to, from the one function
+        // that decides them — the same list the certificate is built from,
+        // so the page cannot name something the certificate does not cover.
+        let names = match service.kind.is_managed() {
+            true => {
+                crate::deploy::certificate_names(
+                    &self.state.database,
+                    &self.state.config,
+                    &project,
+                    &service,
+                )
+                .await
+            }
+            false => Vec::new(),
+        };
+        let service_slug_for_names = service.slug.clone();
+        let placed_elsewhere = placements
+            .iter()
+            .any(|replica| !replica.is_here() && !replica.evicted());
+
         let serving = crate::platform::edges::of_service(&self.state.database, &service.id).await?;
         let deploying = crate::deploy::jobs::deploying(&self.state.container)
             .await
@@ -405,7 +425,9 @@ impl ServicePages {
                         &placements,
                         reserved_address.clone(),
                         service.memory_limit,
+                        &names,
                     ))
+                    (super::databases::names_card(&service_slug_for_names, &names, placed_elsewhere))
                 }
 
                 @if service.is_ours() {

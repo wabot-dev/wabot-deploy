@@ -308,7 +308,13 @@ pub fn discard(data_dir: &Path, container_id: &str) {
     }
 }
 
-fn config_dir(data_dir: &Path, container_id: &str) -> PathBuf {
+/// Where this copy reads the files the node writes for it.
+///
+/// `pub(crate)` because the node's certificate authority goes in here too,
+/// for **every** container and not only a database's: one destination, so a
+/// managed engine gets it through the mount it already has rather than a
+/// second bind on the same path.
+pub(crate) fn config_dir(data_dir: &Path, container_id: &str) -> PathBuf {
     data_dir.join("config").join(container_id).join("conf")
 }
 

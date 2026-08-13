@@ -524,6 +524,40 @@ impl Deployer {
             read_only: true,
         });
 
+        // This node's certificate authority, in every container it starts.
+        //
+        // Because a database's certificate is signed by it, and a client
+        // that cannot verify a certificate is a client using `require`
+        // instead of `verify-full` — which is encryption without identity.
+        // `docs/naming.md` decided this ("the node mounts `local-ca.crt`
+        // into every container it starts, so nothing in the image has to
+        // know anything") and it had never been built: a connection string
+        // naming `sslrootcert` would have pointed at a file that was not
+        // there.
+        //
+        // Into the same directory a managed engine's files arrive in, so
+        // there is one destination and one mount. Two binds on `/etc/wabot`
+        // would be a race about which one wins.
+        match crate::edge::certs::ca_certificate_pem(&self.database).await {
+            Ok(pem) => {
+                let dir = database::config_dir(&self.config.node.data_dir, &id);
+                std::fs::create_dir_all(&dir)?;
+                std::fs::write(dir.join("ca.crt"), pem)?;
+                // A database mounts this directory itself, below.
+                if !service.kind.is_managed() {
+                    mounts.push(BindMount {
+                        source: dir,
+                        destination: postgres::CONFIG_MOUNT.to_string(),
+                        read_only: true,
+                    });
+                }
+            }
+            // Not fatal. A container that cannot verify is a container
+            // using `sslmode=require`, which is what every one of them did
+            // until now.
+            Err(error) => tracing::warn!(%error, "could not place the node's authority"),
+        }
+
         // What only a managed engine needs: its generated files, its
         // tuning, its credentials and its role.
         let prepared = self.prepare_engine(project, service, replica, &net).await?;
