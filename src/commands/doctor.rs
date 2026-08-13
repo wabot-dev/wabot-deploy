@@ -405,6 +405,14 @@ pub async fn run(config: Config, config_path: &Path) -> anyhow::Result<i32> {
                         None => "no address for it yet".to_string(),
                     }
                 );
+
+                // And whether this node can *reach* it — which the design
+                // said was impossible until somebody measured it. A verified
+                // call over the overlay is what makes the doorbell work and
+                // what will make reading a remote copy's log possible, so
+                // the state of that channel belongs where somebody looking
+                // for a reason will find it.
+                println!("              channel   {}", channel_to(node).await);
             }
         }
         Err(error) => {
@@ -464,6 +472,28 @@ fn step_states(entries: &[ledger::Entry]) -> Vec<(&'static str, String, bool)> {
 /// A directory URL is what gets stored, and it is unreadable in a
 /// column. The well-known ones get a name; anything else keeps its
 /// host, which is the part that identifies it.
+/// Whether this node can reach that one over the overlay, verified.
+///
+/// Dialled by the name every node has and checked against the authority
+/// that node presented — so a private node with no domain is verified too,
+/// which is the whole of phase 9. The call is a plain `GET /`: what is
+/// being tested is the handshake and the name, and any answer at all
+/// proves both.
+async fn channel_to(node: &crate::network::Node) -> String {
+    if node.ca_pem.is_none() {
+        return "not yet — it has not reported since this version".to_string();
+    }
+    let started = std::time::Instant::now();
+    match crate::network::call::to_node(node, "/", None).await {
+        Ok(status) => format!(
+            "verified in {} ms (answered {})",
+            started.elapsed().as_millis(),
+            status.as_u16()
+        ),
+        Err(error) => format!("{error}"),
+    }
+}
+
 fn short_issuer(issuer: &str) -> String {
     match issuer {
         "self-signed" => "self-signed".to_string(),

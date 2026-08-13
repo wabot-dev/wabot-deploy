@@ -228,7 +228,7 @@ fn pem_blocks<'a>(pem: &'a str, label: &str) -> Vec<Vec<u8>> {
     blocks
 }
 
-fn pem_certificates(pem: &str) -> CertResult<Vec<CertificateDer<'static>>> {
+pub(crate) fn pem_certificates(pem: &str) -> CertResult<Vec<CertificateDer<'static>>> {
     Ok(pem_blocks(pem, "CERTIFICATE")
         .into_iter()
         .map(CertificateDer::from)

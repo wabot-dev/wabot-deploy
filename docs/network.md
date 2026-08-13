@@ -274,8 +274,9 @@ Still open:
 | 5 | Placement | The form moves to the service; provenance, read-only, eviction | **done** |
 | 6 | Reporting | The poll carries each replica's state back to the node that placed it | **done** |
 | 7 | Errand: edge | The owner picks public nodes to serve a name; they claim it, get the certificate, and proxy to the replicas | **done** |
-| 8 | Consent | What a join requires and offers, per capability, shown before it is spent | next |
-| 9 | Groups | Health and failover across the upstreams of one name | |
+| 8 | Consent | What a join requires and offers, per capability, shown before it is spent | **done** |
+| 9 | The channel | A verified call *to* a private node over the overlay, and the doorbell on top of it | next |
+| 10 | Groups | Health and failover across the upstreams of one name | |
 
 Phases 4 to 7 are **verified between the two nodes** on v0.6.6 — see
 "What the nodes said about 4 to 7" below, and the seven fixes it took.
@@ -806,3 +807,98 @@ proves a deployment did not cost anything.
 both of them at boot; both nodes report `already matches` on restart;
 and the remote standby's replication session survived three consecutive
 deployments, its `backend_start` unchanged across all of them.
+
+## Phase 9: the channel, and the premise that was false
+
+Everything above this is built on one sentence, which is in `collect.rs`
+and in the phases above it: *nothing can dial in to a private node, which
+is the reason private nodes exist.* It is true of the public internet. It
+is **false of the overlay**, and measured false — from the public node to
+the private one, on the nodes this was designed for:
+
+```
+https://10.42.0.4/                          404 in 0.118 s
+SNI deploy.alpine.tobaw.shop → 10.42.0.4    302 in 0.121 s, ssl_verify_result=0
+```
+
+Full certificate verification, 120 ms, into a node behind NAT with no
+port forwarded. It is not even novel: it is what the edge has been doing
+since phase 7 every time it proxies to a container on the private node.
+The 404 is the honest answer to a bare address — a hostname is what the
+resolver looks up, and an address is not one of its names.
+
+So a whole class of design was ruled out for three phases by a premise
+nobody re-measured. Errands are collected on a fifteen-second timer
+because "the authority cannot reach the node", and the authority can.
+
+### What this is for
+
+The immediate reason is latency. An errand waits up to fifteen seconds
+to be picked up, which is what makes the console's play control feel
+broken: the work takes no time — measured at 0–2 seconds from queue to
+carried out — and the waiting is all queue.
+
+The lasting reason is that **a verified channel to a private node is a
+capability, not an optimisation**. The first thing it unlocks is the one
+the logs page already admits it cannot do: read what a copy on another
+machine is saying. Today that page says "open the console of the node
+holding it", because there was no way to ask.
+
+### The piece that is easy to miss
+
+A name is not enough. A private node with no domain has a self-signed
+certificate, and a self-signed certificate for a name nobody trusts is a
+name that **cannot be verified** — so requiring every node to have a name
+buys nothing on its own.
+
+What makes it work is that `edge::certs` does not issue bare self-signed
+leaves: every node already has a **local CA**, in `local_ca`, created
+once and kept, precisely so that a leaf can be reissued when the node's
+names change without anybody re-trusting anything. The anchor exists. It
+has never travelled.
+
+### The shape
+
+- **Every node has a name it always has, derived from its id** —
+  `nd-pmmjr6xbsvjf.node`. Derived rather than stored: no column, no field
+  on the wire, and no two places that can disagree. It needs no DNS,
+  because the caller resolves it to the overlay address itself, which is
+  exactly what `--resolve` did above. Registered in the certificate store
+  like any other name, so the local CA issues a leaf for it — and never
+  offered to ACME, which could not validate it and should not be asked
+  to.
+- **The local CA travels on the join callback.** That is the right
+  moment: the authority minted the token, the callback is authenticated
+  by it, so what arrives is attributable to the node that was enrolled.
+  One column, `node.ca_pem`.
+- **And it refreshes on every report**, beside `endpoint` and `allows`,
+  for the reason those do: the answer has to travel. It also means the
+  nodes already joined heal themselves rather than needing the re-join
+  phase 4 demanded.
+- **`call::to_node`** dials a node by its internal name, resolved to its
+  overlay address, with that CA as the only root. Verification is full;
+  nothing is accepted on the grounds of being inconvenient to verify.
+- **The doorbell** is `POST /api/network/wake` on the node, whose whole
+  body is nothing: it says "come and ask me". Guarded to a source inside
+  the overlay, and rate-limited, because the worst a stranger who got
+  through both could do is ask this node to do what it was going to do
+  within fifteen seconds anyway. The errand itself still travels the
+  other way, over the control plane, with the credential — the doorbell
+  moves no data and needs no trust of its own.
+- **Ringing lives inside `queue`**, not beside it. Twice today an
+  instruction was correct and unsent because the *trigger* was the part
+  left out; a doorbell that each call site has to remember is the same
+  bug waiting.
+
+### What it does not become
+
+The pull loop stays, and not as redundancy. It is what delivers when the
+tunnel is down, when the node was off, when the ring was lost — and every
+one of those is ordinary. The doorbell is an accelerator, and a design
+that treated it as the mechanism would be broken on exactly the day it
+matters.
+
+Nor does it become a push of the errand itself. A node collects its own
+work and writes its own rows from it, which is what makes obeying local;
+sending the instruction inward would move the queue onto the authority
+and put two nodes' opinions in one place.

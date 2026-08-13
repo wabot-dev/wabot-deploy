@@ -107,6 +107,10 @@ fn migrations() -> Vec<Migration> {
             "0032_owner_domain",
             include_str!("../migrations/0032_owner_domain.sql"),
         ),
+        Migration::new(
+            "0033_node_ca",
+            include_str!("../migrations/0033_node_ca.sql"),
+        ),
     ]
 }
 

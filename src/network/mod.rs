@@ -132,6 +132,14 @@ pub struct Node {
     /// `node_grant`, and it travels on the report it already sends. See
     /// migration `0026`.
     pub allows: Vec<capability::Capability>,
+    /// The certificate authority it presented, so a call *to* it over the
+    /// overlay can be verified rather than merely encrypted.
+    ///
+    /// Learned like `allows` and for the same reason: it is a fact about
+    /// that machine, held by that machine. `None` is a node that joined
+    /// before this existed — dialled the old way, which is not at all. See
+    /// migration `0033`.
+    pub ca_pem: Option<String>,
 }
 
 impl Node {
@@ -163,11 +171,13 @@ fn read(row: &Row<'_>) -> wabot::sqlite::rusqlite::Result<Node> {
         is_self: row.get::<_, i64>(6)? != 0,
         last_seen_at: row.get(7)?,
         allows: capability::parse_list(&row.get::<_, Option<String>>(8)?.unwrap_or_default()),
+        ca_pem: row.get(9)?,
     })
 }
 
 const COLUMNS: &str = "\"id\", \"name\", \"kind\", \"endpoint\", \"public_key\", \
-                       \"overlay_ip\", \"is_self\", \"last_seen_at\", \"allows\"";
+                       \"overlay_ip\", \"is_self\", \"last_seen_at\", \"allows\", \
+                       \"ca_pem\"";
 
 /// Write, or bring up to date, the row for the node this process is.
 ///
@@ -180,6 +190,31 @@ const COLUMNS: &str = "\"id\", \"name\", \"kind\", \"endpoint\", \"public_key\",
 /// The id is minted once and then kept for ever. It is what other nodes
 /// call this one, so a new one on every start would be a node that
 /// looked like a stranger to everybody it had joined.
+/// The name every node has, whatever else it has.
+///
+/// **Derived from the id, never stored.** No column, nothing on the wire
+/// and no two places that can disagree about what a node is called — the
+/// id is already minted at install and kept for ever, which is exactly
+/// the lifetime this name needs.
+///
+/// It needs no DNS. A node dialling another resolves this to that node's
+/// overlay address itself, which is what makes the whole thing work for a
+/// node behind NAT with nothing forwarded: see `call::to_node`, and phase
+/// 9 in `docs/network.md` for why the premise that this was impossible was
+/// false.
+///
+/// `.node` is not a public suffix and is not meant to be. A name that
+/// could resolve in the world's DNS is a name somebody could be sent to by
+/// mistake, and this one is only ever looked up in a map this node wrote.
+///
+/// The id's case is left alone. DNS comparison is case-insensitive, so a
+/// name matches whatever the id's mixture, and two ids differing only in
+/// case would already be one name here — which is the same collision the
+/// id itself would have to survive.
+pub fn internal_name(id: &str) -> String {
+    format!("{id}.node")
+}
+
 pub async fn ensure_self(database: &SqliteDatabase, config: &Config) -> NetworkResult<Node> {
     let existing = me(database).await?;
     let domain = crate::node::settings::domain(database, config).await;
@@ -231,6 +266,7 @@ pub async fn ensure_self(database: &SqliteDatabase, config: &Config) -> NetworkR
         // anybody is `capability::provides`, and the selectors read
         // that for the self row rather than this.
         allows: Vec::new(),
+        ca_pem: None,
     };
 
     save(database, &node).await?;
@@ -319,8 +355,8 @@ pub async fn save(database: &SqliteDatabase, node: &Node) -> NetworkResult<()> {
             connection.execute(
                 "INSERT INTO node \
                    (\"id\", \"name\", \"kind\", \"endpoint\", \"public_key\", \"overlay_ip\", \
-                    \"is_self\", \"joined_at\", \"last_seen_at\", \"allows\") \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10) \
+                    \"is_self\", \"joined_at\", \"last_seen_at\", \"allows\", \"ca_pem\") \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11) \
                  ON CONFLICT (\"id\") DO UPDATE SET \
                    \"name\" = excluded.\"name\", \
                    \"kind\" = excluded.\"kind\", \
@@ -328,7 +364,8 @@ pub async fn save(database: &SqliteDatabase, node: &Node) -> NetworkResult<()> {
                    \"public_key\" = excluded.\"public_key\", \
                    \"overlay_ip\" = excluded.\"overlay_ip\", \
                    \"last_seen_at\" = excluded.\"last_seen_at\", \
-                   \"allows\" = excluded.\"allows\"",
+                   \"allows\" = excluded.\"allows\", \
+                   \"ca_pem\" = excluded.\"ca_pem\"",
                 (
                     node.id,
                     node.name,
@@ -340,6 +377,7 @@ pub async fn save(database: &SqliteDatabase, node: &Node) -> NetworkResult<()> {
                     now_ms(),
                     node.last_seen_at,
                     capability::to_list(&node.allows),
+                    node.ca_pem,
                 ),
             )?;
             Ok(())
@@ -724,6 +762,7 @@ pub(crate) mod tests {
             is_self: false,
             last_seen_at: None,
             allows: Vec::new(),
+            ca_pem: None,
         }
     }
 

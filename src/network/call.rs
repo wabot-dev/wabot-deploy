@@ -41,6 +41,13 @@ const AGENT: &str = concat!("wabot-deploy/", env!("CARGO_PKG_VERSION"));
 /// watching `join` in a terminal does not conclude it hung.
 const TIMEOUT: Duration = Duration::from_secs(30);
 
+/// A call over the overlay is a call to a machine one hop away with a
+/// handshake already established, and it is made while somebody waits for
+/// a page. Measured at 120 ms between the test nodes; anything past this
+/// is a tunnel that is not working, and saying so quickly is worth more
+/// than waiting for it.
+const OVERLAY_TIMEOUT: Duration = Duration::from_secs(5);
+
 /// Nothing this endpoint answers is large; a body past this is not a
 /// wabot-deploy node.
 const MAX_BODY: usize = 64 * 1024;
@@ -217,6 +224,141 @@ async fn round_trip(
     Ok((status, bytes))
 }
 
+/// Reach a node **over the overlay**, verified.
+///
+/// ## The premise this replaces
+///
+/// The module note above says the join is the only call that goes the
+/// other way round, and the phases were built on a stronger claim:
+/// nothing can dial *in* to a private node. That is true of the public
+/// internet and false of the overlay — measured at 120 ms into a node
+/// behind NAT with nothing forwarded, which is the same path the edge has
+/// used since phase 7 to reach a container on that machine.
+///
+/// ## What makes it verified rather than merely encrypted
+///
+/// Two halves that are useless apart. The node is dialled by
+/// [`super::internal_name`] — a name every node has, derived from its id,
+/// needing no DNS because the address is supplied here — and the only
+/// root accepted is the certificate authority that node presented when it
+/// joined. So a private node with no domain, whose certificate no public
+/// root will ever vouch for, is checked against the anchor it sent over a
+/// channel this node had already authenticated.
+///
+/// Not `with_webpki_roots`, deliberately, and not "accept anything"
+/// either: the first cannot work for a self-signed name and the second is
+/// what a bearer token must never be handed to.
+pub async fn to_node(
+    node: &super::Node,
+    path: &str,
+    body: Option<String>,
+) -> Result<StatusCode, CallError> {
+    let (Some(address), Some(ca)) = (&node.overlay_ip, &node.ca_pem) else {
+        return Err(CallError::Address(
+            node.id.clone(),
+            "that node has no overlay address, or never sent its authority".into(),
+        ));
+    };
+    let name = super::internal_name(&node.id);
+    let url = format!("https://{name}{path}");
+    let socket: std::net::SocketAddr = format!("{address}:443")
+        .parse()
+        .map_err(|_| CallError::Address(node.id.clone(), format!("{address} is not an address")))?;
+
+    // Parsed with the reader `edge::certs` already has, which is there
+    // because `rustls-pemfile` would risk a second copy of the pki-types
+    // that `CertificateDer` comes from.
+    let anchors = crate::edge::certs::pem_certificates(ca)
+        .map_err(|error| CallError::Address(node.id.clone(), error.to_string()))?;
+    let mut roots = wabot::rest::rustls::RootCertStore::empty();
+    for certificate in anchors {
+        roots
+            .add(certificate)
+            .map_err(|error| CallError::Address(node.id.clone(), error.to_string()))?;
+    }
+    if roots.is_empty() {
+        return Err(CallError::Address(
+            node.id.clone(),
+            "what that node sent as its authority holds no certificate".into(),
+        ));
+    }
+
+    let tls = wabot::rest::rustls::ClientConfig::builder()
+        .with_root_certificates(roots)
+        .with_no_client_auth();
+    let https = hyper_rustls::HttpsConnectorBuilder::new()
+        .with_tls_config(tls)
+        .https_only()
+        .enable_http1()
+        // One name, one address. The overlay is where that node answers,
+        // and a resolver that could reach anywhere else would be a name
+        // this node trusts pointing at a machine it did not mean.
+        .wrap_connector(fixed_connector(&name, socket));
+    let client = Client::builder(TokioExecutor::new()).build(https);
+
+    let builder = match body {
+        Some(_) => Request::post(&url),
+        None => Request::get(&url),
+    };
+    let request = builder
+        .header(USER_AGENT, HeaderValue::from_static(AGENT))
+        .header(CONTENT_TYPE, HeaderValue::from_static("application/json"))
+        .body(body.unwrap_or_default())
+        .map_err(|error| CallError::Address(url.clone(), error.to_string()))?;
+
+    let response = tokio::time::timeout(OVERLAY_TIMEOUT, client.request(request))
+        .await
+        .map_err(|_| CallError::Unreachable(url.clone(), "it did not answer in time".into()))?
+        .map_err(|error| CallError::Unreachable(url.clone(), error.to_string()))?;
+    Ok(response.status())
+}
+
+/// An HTTP connector that resolves one name to one address.
+fn fixed_connector(
+    name: &str,
+    address: std::net::SocketAddr,
+) -> hyper_util::client::legacy::connect::HttpConnector<OneName> {
+    let mut http = hyper_util::client::legacy::connect::HttpConnector::new_with_resolver(OneName {
+        name: name.to_string(),
+        address,
+    });
+    http.enforce_http(false);
+    http
+}
+
+/// The resolver behind [`to_node`]: this name, that address, nothing else.
+#[derive(Clone)]
+pub struct OneName {
+    name: String,
+    address: std::net::SocketAddr,
+}
+
+impl tower::Service<hyper_util::client::legacy::connect::dns::Name> for OneName {
+    type Response = std::vec::IntoIter<std::net::SocketAddr>;
+    type Error = std::io::Error;
+    type Future = std::future::Ready<Result<Self::Response, Self::Error>>;
+
+    fn poll_ready(
+        &mut self,
+        _: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<(), Self::Error>> {
+        std::task::Poll::Ready(Ok(()))
+    }
+
+    fn call(&mut self, asked: hyper_util::client::legacy::connect::dns::Name) -> Self::Future {
+        let answer = match asked.as_str() == self.name {
+            true => Ok(vec![self.address].into_iter()),
+            // Refused rather than looked up. This client exists to reach
+            // one node over the overlay; anything else it was asked for is
+            // a bug that must not become a request to a stranger.
+            false => Err(std::io::Error::other(format!(
+                "{asked} is not the node this client was built for"
+            ))),
+        };
+        std::future::ready(answer)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -227,6 +369,7 @@ mod tests {
             name: "alpine".into(),
             public_key: "0hEr0DzTvMDTRfPPmYFCVCQ1cA0nnUnP+2fFqZBBBGQ=".into(),
             accepted: None,
+            ca: None,
         }
     }
 

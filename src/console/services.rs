@@ -3503,6 +3503,7 @@ mod tests {
                 is_self: false,
                 last_seen_at: None,
                 allows: Vec::new(),
+                ca_pem: None,
             },
         )
         .await
@@ -3596,6 +3597,7 @@ mod tests {
                 is_self: false,
                 last_seen_at: None,
                 allows: Vec::new(),
+                ca_pem: None,
             },
         )
         .await
@@ -3643,6 +3645,7 @@ mod tests {
                 is_self: false,
                 last_seen_at: None,
                 allows: Vec::new(),
+                ca_pem: None,
             },
         )
         .await

@@ -265,6 +265,11 @@ async fn report_for(
         replicas,
         endpoint,
         allows: Some(allows),
+        // And this node's own authority, so the node reading this can dial
+        // back over the overlay. On every report for the reason `allows`
+        // is: a node enrolled before phase 9 becomes reachable on its next
+        // poll rather than needing to join again.
+        ca: crate::edge::certs::ca_certificate_pem(database).await.ok(),
     })
 }
 

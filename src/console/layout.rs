@@ -177,6 +177,28 @@ input[type="radio"]::after {
   flex-direction: column;
   gap: var(--sp-8);
 }
+
+/* The framework's two wrappers are unknown elements, so a browser lays
+   them out **inline and unstyled**. That matters because a whole page
+   body goes inside them: the outlet holds the view during boosted
+   navigation, and a page with an island wraps everything in the host. So
+   the page's sections stopped being children of `.shell` and the stack
+   gap above never applied between them — the title row sat flush against
+   the first card, on every page that had an island.
+
+   `display: contents` rather than restating the flex column: these are
+   hosts for behaviour, not layout boxes, and their children belong to
+   whatever surrounds them. Restating it would be a second column that
+   has to be kept in step with the first.
+
+   Safe for the scripts: the elements stay in the DOM and
+   `host.querySelector` still finds everything. Nothing here measures the
+   host itself — `logs-live` measures the `<pre>` inside it. */
+wabot-island,
+wabot-outlet {
+  display: contents;
+}
+
 .narrow { max-width: 30rem; }
 
 .topbar {
@@ -672,6 +694,34 @@ mod tests {
     /// design system's single global `::selection` paints near-black
     /// text on it. An invitation link nobody can see while selecting
     /// it is one they cannot copy.
+    /// The framework's wrappers are unknown elements, so a browser lays
+    /// them out inline and unstyled — and a page with an island puts its
+    /// whole body inside one. Without this the page's sections stop
+    /// being children of `.shell`, the stack gap never applies between
+    /// them, and the title row sits flush against the first card. It was
+    /// like that on every island page until somebody looked at one.
+    ///
+    /// Losing this rule is silent in exactly the same way, which is why
+    /// it is asserted rather than trusted.
+    #[test]
+    fn the_frameworks_wrappers_do_not_break_the_page_stack() {
+        let rule = super::CSS
+            .split("wabot-island")
+            .nth(1)
+            .expect("the wrappers are styled");
+        assert!(
+            rule.contains("wabot-outlet"),
+            "only one of the two: {rule:.80}"
+        );
+        assert!(
+            rule.split('}')
+                .next()
+                .unwrap_or_default()
+                .contains("display: contents"),
+            "they generate a box again: {rule:.120}"
+        );
+    }
+
     #[test]
     fn a_dark_surface_has_its_own_selection_colour() {
         assert!(super::CSS.contains("pre ::selection"));

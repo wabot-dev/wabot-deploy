@@ -235,6 +235,7 @@ mod tests {
             is_self,
             last_seen_at: None,
             allows: Vec::new(),
+            ca_pem: None,
         }
     }
 

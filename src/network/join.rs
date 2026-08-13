@@ -102,6 +102,12 @@ pub async fn join(
                     .map(|capability| capability.name().to_string())
                     .collect(),
             ),
+            // This node's own certificate authority, so the node being
+            // joined can dial it back over the overlay and verify what
+            // answers. Quiet if it cannot be read: a join that failed for
+            // want of a field that only makes later calls faster would be
+            // the wrong thing to refuse.
+            ca: crate::edge::certs::ca_certificate_pem(database).await.ok(),
         },
     )
     .await?;
@@ -131,6 +137,7 @@ pub async fn join(
         // a wrong one shows up as an errand that node refuses rather
         // than as anything silent.
         allows: token.offers(),
+        ca_pem: None,
     };
     super::save(database, &authority).await?;
 

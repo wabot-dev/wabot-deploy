@@ -1,0 +1,33 @@
+-- The certificate authority another node presented at join.
+--
+-- ## Why a node needs this about another one
+--
+-- `docs/network.md` phase 9: the sentence this design was built on —
+-- "nothing can dial in to a private node" — is true of the public
+-- internet and false of the overlay. A node behind NAT with nothing
+-- forwarded answers on its overlay address, with full certificate
+-- verification, in about a tenth of a second. Measured, not reasoned.
+--
+-- What was missing was never reachability. It was **trust in the other
+-- direction**: a private node with no domain serves a self-signed
+-- certificate, and a self-signed certificate for a name nobody trusts is
+-- a name that cannot be verified. Requiring every node to have a name
+-- buys nothing on its own.
+--
+-- Every node already has a local certificate authority — `local_ca`,
+-- created once and kept, so a leaf can be reissued when its names change
+-- without anybody re-trusting anything. The anchor existed and had never
+-- travelled. This is where it lands.
+--
+-- ## Why it arrives on the join and is refreshed by every report
+--
+-- The join callback is the right moment: this node minted the token, the
+-- callback is authenticated by it, so what arrives is attributable to the
+-- node that was enrolled. And the report refreshes it for the reason
+-- `endpoint` and `allows` are refreshed there — the answer has to travel,
+-- and a node that reissued its authority would otherwise be unreachable
+-- until somebody re-joined it.
+--
+-- Null is every node that joined before this, and every node running an
+-- older version. They are dialled the old way: not at all.
+ALTER TABLE node ADD COLUMN ca_pem TEXT;

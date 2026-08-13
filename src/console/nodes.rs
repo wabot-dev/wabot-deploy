@@ -3181,6 +3181,7 @@ pub(crate) mod tests {
                 is_self: false,
                 last_seen_at: Some(super::super::now_ms()),
                 allows: Vec::new(),
+                ca_pem: None,
             },
         )
         .await

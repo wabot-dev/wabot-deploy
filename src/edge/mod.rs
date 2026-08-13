@@ -70,6 +70,18 @@ pub async fn build(
     if let Some(domain) = crate::node::settings::domain(database, config).await {
         names.push(domain);
     }
+    // And the name this node has whatever else it has, so another node on
+    // the overlay can dial it and *verify* what answers. A node with no
+    // domain had only `localhost`, which is every node's name and
+    // therefore nobody's — so a call to it could be checked for
+    // encryption and not for identity. See `network::internal_name`.
+    //
+    // Never offered to ACME: `wanted_names` builds its list from the
+    // domain and the hostnames this node serves, and an authority asked to
+    // validate a `.node` name would fail for the right reason.
+    if let Some(me) = crate::network::me(database).await.ok().flatten() {
+        names.push(crate::network::internal_name(&me.id));
+    }
     certs::ensure_self_signed(database, certs::FALLBACK_NAME, &names).await?;
 
     let resolver = Arc::new(CertResolver::new());

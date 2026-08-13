@@ -54,6 +54,15 @@ pub struct Arriving {
     /// everything — the terms a join carried before it carried any.
     #[serde(default)]
     pub accepted: Option<Vec<String>>,
+    /// Its own certificate authority, in PEM, so this node can dial it
+    /// back over the overlay and verify what answers.
+    ///
+    /// The join is the first moment it can travel and the right one: this
+    /// node minted the token, the callback is authenticated by it, so what
+    /// arrives is attributable to the node that was enrolled. Refreshed by
+    /// every report afterwards.
+    #[serde(default)]
+    pub ca: Option<String>,
 }
 
 /// What the authority answers with.
@@ -120,6 +129,18 @@ pub struct Report {
     /// `endpoint` follows, and for the same reason.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub allows: Option<String>,
+    /// The reporting node's own certificate authority, in PEM.
+    ///
+    /// So the reader can dial it back over the overlay and verify what
+    /// answers — see `docs/network.md` phase 9, and `call::to_node`. On
+    /// every report rather than only at join, so a node enrolled before
+    /// this existed becomes dialable on its next poll instead of needing
+    /// to join again.
+    ///
+    /// It is not a secret: a certificate authority's certificate is the
+    /// public half, which is the whole point of publishing it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ca: Option<String>,
 }
 
 /// One copy, as the node running it sees it.
@@ -311,6 +332,7 @@ impl NetworkApi {
             &node,
             report.endpoint.as_deref(),
             report.allows.as_deref(),
+            report.ca.as_deref(),
         )
         .await
         {
@@ -449,6 +471,16 @@ impl NetworkApi {
                     Some(names) => super::capability::parse_list(&names.join(",")),
                     None => super::capability::Capability::ALL.to_vec(),
                 },
+                // What it will present when this node dials it back over
+                // the overlay. Kept from the row when a re-join says
+                // nothing — an older node must not lose an anchor it
+                // already sent, and a re-join is the one call most likely
+                // to come from a node mid-upgrade.
+                ca_pem: arriving
+                    .ca
+                    .clone()
+                    .filter(|pem| !pem.trim().is_empty())
+                    .or_else(|| known.as_ref().and_then(|node| node.ca_pem.clone())),
             },
         )
         .await;
@@ -597,6 +629,7 @@ async fn note_reachability(
     node_id: &str,
     endpoint: Option<&str>,
     allows: Option<&str>,
+    ca: Option<&str>,
 ) -> NetworkResult<()> {
     let Some(node) = super::find(database, node_id).await? else {
         return Ok(());
@@ -623,10 +656,23 @@ async fn note_reachability(
         None => node.allows.clone(),
     };
 
+    // The authority it presented, so a call *to* it over the overlay can
+    // be verified and not merely encrypted. Refreshed here and not only at
+    // join for the reason the two above are: the answer has to travel, and
+    // a node already joined would otherwise stay undialable until somebody
+    // joined it again. `None` is an older node — left alone, never cleared,
+    // because a report that omits a field must not take away what arrived
+    // when the node was enrolled.
+    let ca_pem = match ca {
+        Some(pem) if !pem.trim().is_empty() => Some(pem.to_string()),
+        _ => node.ca_pem.clone(),
+    };
+
     super::save(
         database,
         &Node {
             allows,
+            ca_pem,
             // Derived from the endpoint rather than reported, the same
             // way this node decides its own: a kind somebody can send
             // is a kind somebody can send wrongly, and an unrecognised
