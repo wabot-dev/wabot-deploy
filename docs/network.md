@@ -275,7 +275,7 @@ Still open:
 | 6 | Reporting | The poll carries each replica's state back to the node that placed it | **done** |
 | 7 | Errand: edge | The owner picks public nodes to serve a name; they claim it, get the certificate, and proxy to the replicas | **done** |
 | 8 | Consent | What a join requires and offers, per capability, shown before it is spent | **done** |
-| 9 | The channel | A verified call *to* a private node over the overlay, and the doorbell on top of it | next |
+| 9 | The channel | A verified call *to* a private node over the overlay, and the doorbell on top of it | **done**, verified on the nodes |
 | 10 | Groups | Health and failover across the upstreams of one name | |
 
 Phases 4 to 7 are **verified between the two nodes** on v0.6.6 — see
@@ -902,3 +902,57 @@ Nor does it become a push of the errand itself. A node collects its own
 work and writes its own rows from it, which is what makes obeying local;
 sending the instruction inward would move the queue onto the authority
 and put two nodes' opinions in one place.
+
+### What the nodes said
+
+Verified between the two, from the public node into the private one behind
+NAT with nothing forwarded:
+
+| | |
+|---|---|
+| `doctor`, per known node | `channel   verified in 77 ms (answered 302)` |
+| The doorbell, rung by hand | `200`, and the node reported back **127 ms** later |
+| What that replaced | 10.1 seconds still to run of its fifteen-second cycle |
+
+The 302 is worth reading: it means the request reached the *console*, which
+redirected to the sign-in page. An earlier attempt answered 404 — from the
+edge, by hostname, because the name had no route. Which is the shape of
+every mistake this phase produced.
+
+### Four halves, and none of them visible from the others
+
+Every failure here was a piece that was individually correct.
+
+- **The name was registered in one of the two places that build the node's
+  own certificate.** The edge builds it at startup and the certificate
+  loop's local refresh rebuilds it, each passing the whole list, so
+  whichever ran last decided. The name lasted minutes. `certs::own_names`
+  is now the one definition.
+- **The name had no route.** The endpoint existed, the certificate covered
+  it, the tunnel was up, and the edge answered 404 by hostname — so the
+  request never reached the API and the 404 read as "that endpoint is not
+  registered".
+- **The resolver refused the name it was built for.** The `http` crate
+  lowercases a URI's host and an id is mixed case, so the comparison never
+  matched. It surfaced as `client error (Connect)` and nothing else,
+  because hyper keeps the cause in the source chain — which is now printed
+  in full, and is what named the next two problems in one run.
+- **And the route table lowercases what it stores**, so a test looking for
+  the mixed-case spelling found nothing that was, in fact, there.
+
+The last two are the same mistake twice: a name normalised by whatever
+touched it last. `internal_name` is lower case at birth now, and nothing
+downstream has a decision to make.
+
+### What is still unauthenticated, and why it is written down
+
+The plan promised the doorbell would be guarded to a source inside the
+overlay. A handler cannot see its caller's address — the framework builds
+the server without `ConnectInfo` — so that guard is a change to
+`wabot-rust`, not to this repository, and it is not pretended in the code.
+What bounds the endpoint instead is that it carries nothing, does nothing
+but shorten a wait, and will not do that more than once every two seconds.
+
+The tightening, when it is worth it: the node mints a doorbell token at
+join and the authority presents it. The anchor for that already travels —
+this phase built exactly that road.
