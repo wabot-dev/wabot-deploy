@@ -207,12 +207,21 @@ const COLUMNS: &str = "\"id\", \"name\", \"kind\", \"endpoint\", \"public_key\",
 /// could resolve in the world's DNS is a name somebody could be sent to by
 /// mistake, and this one is only ever looked up in a map this node wrote.
 ///
-/// The id's case is left alone. DNS comparison is case-insensitive, so a
-/// name matches whatever the id's mixture, and two ids differing only in
-/// case would already be one name here — which is the same collision the
-/// id itself would have to survive.
+/// **Lower case, because everything that touches a hostname normalises
+/// it and they do not all normalise at the same moment.** An id is mixed
+/// case; a URI's host is lowercased by the `http` crate, the route table
+/// lowercases what it stores, and rustls compares DNS names
+/// case-insensitively. Producing the mixed-case form and letting each
+/// layer fix it cost two node runs — a resolver that refused the name it
+/// was built for, and a route that existed under a spelling the test did
+/// not look for. So the name is lower case at birth and nobody downstream
+/// has a decision to make.
+///
+/// Two ids differing only in case would be one name here. That is the
+/// collision the id itself would already have to survive, and the join
+/// refuses an id this node is using.
 pub fn internal_name(id: &str) -> String {
-    format!("{id}.node")
+    format!("{}.node", id.to_ascii_lowercase())
 }
 
 pub async fn ensure_self(database: &SqliteDatabase, config: &Config) -> NetworkResult<Node> {

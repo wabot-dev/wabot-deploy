@@ -259,13 +259,7 @@ pub async fn to_node(
             "that node has no overlay address, or never sent its authority".into(),
         ));
     };
-    // Lowercased here, and only here. A URI's host is normalised to
-    // lower case by the `http` crate, so the name this client is *asked*
-    // to resolve is never the mixed-case one an id produces — the first
-    // version compared the two and every call died in `Connect` with the
-    // reason swallowed. rustls compares DNS names case-insensitively, so
-    // the certificate covering the mixed-case name still matches.
-    let name = super::internal_name(&node.id).to_ascii_lowercase();
+    let name = super::internal_name(&node.id);
     let url = format!("https://{name}{path}");
     let socket: std::net::SocketAddr = format!("{address}:443")
         .parse()

@@ -137,11 +137,27 @@ pub async fn sync(
     // exists, so the first service hostname would otherwise take the
     // console off the air — on the node's own domain, which is where
     // somebody would go to undo it.
+    // And the name every node has, which is how another node reaches this
+    // one's control plane over the overlay — the doorbell, and whatever
+    // phase 9 builds on it. Without a route the edge answers 404 by
+    // hostname and the request never reaches the API at all: measured, by
+    // ringing a doorbell that could not be reached.
+    //
+    // The certificate half of this is `certs::own_names`. Both halves are
+    // needed and neither is visible from the other, which is what made the
+    // 404 read as "the endpoint is not registered".
+    let internal = crate::network::me(database)
+        .await
+        .ok()
+        .flatten()
+        .map(|me| crate::network::internal_name(&me.id));
     for name in node_domain
+        .map(str::to_string)
         .into_iter()
-        .chain(Some(crate::edge::certs::FALLBACK_NAME))
+        .chain(internal)
+        .chain(Some(crate::edge::certs::FALLBACK_NAME.to_string()))
     {
-        routes::upsert(database, name, &Upstream::ControlPlane, None).await?;
+        routes::upsert(database, &name, &Upstream::ControlPlane, None).await?;
     }
 
     if let Some(table) = table {
@@ -226,6 +242,37 @@ mod tests {
             table.resolve("api.example.com"),
             None,
             "this node answered for a name it was not chosen for"
+        );
+    }
+
+    /// The name another node dials this one by has to reach the control
+    /// plane, or the edge answers 404 by hostname and the request never
+    /// gets to the API.
+    ///
+    /// Found by ringing a doorbell that could not be reached: the endpoint
+    /// was registered, the certificate covered the name, the tunnel was up,
+    /// and the answer was 404 — because routing is a separate half and
+    /// neither half is visible from the other.
+    #[tokio::test]
+    async fn the_name_another_node_dials_reaches_the_control_plane() {
+        let database = crate::db::open_in_memory().await.expect("open");
+        let me = crate::network::ensure_self(&database, &crate::config::Config::default())
+            .await
+            .expect("seeded");
+
+        sync(&database, None, None).await.expect("synced");
+
+        let name = crate::network::internal_name(&me.id);
+        let routed = crate::edge::routes::load_all(&database)
+            .await
+            .expect("routes")
+            .into_iter()
+            .find(|(host, _)| host == &name)
+            .map(|(_, upstream)| upstream)
+            .expect("the name another node dials has no route");
+        assert!(
+            matches!(routed, crate::edge::routes::Upstream::ControlPlane),
+            "it has to reach this node's own API: {routed:?}"
         );
     }
 
