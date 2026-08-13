@@ -265,10 +265,11 @@ Publishing a release is outward-facing. Ask first.
 - `doctor` prints the overlay port from the config under a comment
   promising what the kernel says. The peers below it are read from the
   kernel; the port is not.
-- **A fix to `assets/wabot.css` has to go upstream to the design system**
-  or the next vendoring takes it back out. One is there now: a checked
-  checkbox painted its mark a fixed white on a box coloured `--c-fg`,
-  which in dark mode is cream on cream. The mark is `--c-fg-inverse` now.
+- **Two design-system fixes are held in `layout.rs` rather than in the
+  vendored stylesheet**, and both belong upstream: the muted and faint
+  ramps, which failed contrast for body text, and a checked checkbox
+  whose mark was a fixed white on a box coloured `--c-fg` — cream on
+  cream in dark mode, a checked box indistinguishable from an empty one.
 - A value the stream assigns has to be the shape the CSSOM takes, and
   the CSSOM refuses silently: `style.width = "width:12%"` does nothing
   at all. The meter on the memory page froze that way for as long as it

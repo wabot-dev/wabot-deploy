@@ -115,6 +115,23 @@ pub const CSS: &str = r#"
   --c-fg-faint: 158 152 143;  /* worst case 5.00:1, up from 2.60 */
 }
 
+/* A checked box, in either theme.
+ *
+ * The design system paints the mark a fixed `--c-n-0` on a box coloured
+ * `--c-fg` — near-black in light, cream in dark. So in dark mode it was
+ * white on cream: a checked box nobody could tell from an empty one,
+ * which is a control that lies about the thing it controls. Reported on
+ * the join terms screen, where every box is a decision.
+ *
+ * The mark is the inverse of its box, which is what it always meant. Here
+ * rather than in `assets/wabot.css` for the reason the ramp above gives:
+ * that file is vendored, and the real fix belongs upstream.
+ */
+input[type="checkbox"]::after,
+input[type="radio"]::after {
+  background: rgb(var(--c-fg-inverse));
+}
+
 /* Dark, followed from the operating system when nobody has chosen.
  *
  * The tokens are restated because the design system ships its dark
