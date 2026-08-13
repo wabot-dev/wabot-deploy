@@ -630,6 +630,44 @@ pub async fn ensure(
         }
     }
 
+    // Does this name still point here?
+    //
+    // **Asked before anything is spent, and asked every time.** A
+    // challenge for a name that does not resolve to this node cannot
+    // pass, and the attempt is counted either way: Let's Encrypt allows
+    // five failed validations an hour per account and then locks it — for
+    // every name on the node, not just the one that moved.
+    //
+    // The form asks this when a hostname is typed. That was the only
+    // place it was asked, and a hostname is typed once while this loop
+    // runs for as long as the node does: a domain that expires, a record
+    // somebody repoints, a database whose name was chosen under a domain
+    // they later moved. Each of those became two failed orders a day
+    // against an account shared with every working name.
+    //
+    // After the freshness check above, deliberately: a certificate that
+    // does not need renewing needs no lookup, and a name whose DNS moved
+    // while its certificate is still valid is not yet a problem to
+    // report.
+    if let Some(node_domain) = crate::node::settings::domain(database, config).await {
+        let resolution = crate::deploy::dns::resolves_here(&domain, &node_domain).await;
+        match resolution {
+            crate::deploy::dns::Resolution::Here => {}
+            // The node's own domain does not resolve, so there is nothing
+            // to compare against. Not a reason to refuse: the authority
+            // validates the *name being asked for*, which may resolve
+            // perfectly well while this node's own does not — and refusing
+            // on "cannot tell" would stop a renewal that would have
+            // worked.
+            crate::deploy::dns::Resolution::NoReference => {
+                tracing::debug!(%domain, "ordering without a DNS check: this node's domain does not resolve")
+            }
+            elsewhere => {
+                return Err(AcmeError::Refused(elsewhere.explain(&domain)));
+            }
+        }
+    }
+
     obtain(database, config, &domain).await?;
     // Reloaded from storage rather than pushed in: the resolver then
     // serves exactly what a restart would, so there is no state that
@@ -1068,6 +1106,40 @@ mod tests {
             outcome.is_err(),
             "a certificate from a different authority must not be kept: {outcome:?}"
         );
+    }
+
+    /// An attempt is spent whether or not it could pass, so it is not
+    /// made.
+    ///
+    /// Let's Encrypt counts failed validations and locks the account at
+    /// five in an hour — for every name on the node, not only the one
+    /// that moved. This loop retries twice a day for ever, so a domain
+    /// that expired or a record somebody repointed was two burnt attempts
+    /// a day against an account shared with every working name.
+    ///
+    /// The question was already being asked, once, by the form where a
+    /// hostname is typed. A hostname is typed once; this runs for as long
+    /// as the node does.
+    #[tokio::test]
+    async fn a_name_that_does_not_point_here_is_never_ordered() {
+        let database = database().await;
+        let resolver = certs::CertResolver::new();
+        let mut config = Config::default();
+        // `localhost` resolves, so there is something to compare against;
+        // `.invalid` is reserved by RFC 2606 so that it never can.
+        config.node.domain = Some("localhost".into());
+        config.acme.directory = "staging".into();
+
+        match ensure(&database, &config, &resolver, "nothing.invalid").await {
+            // The refusal names the reason and reads like the form's,
+            // because it is the form's — one explanation of what DNS
+            // said, wherever somebody meets it.
+            Err(AcmeError::Refused(reason)) => assert!(
+                reason.contains("does not resolve"),
+                "the reason has to be the one somebody can act on: {reason}"
+            ),
+            other => panic!("it asked the authority anyway: {other:?}"),
+        }
     }
 
     /// The same check must not reissue on every pass when nothing

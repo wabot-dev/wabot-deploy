@@ -276,6 +276,17 @@ Publishing a release is outward-facing. Ask first.
   has existed, and the numbers beside it kept moving, so it read as
   working. There is a test on the payload's shape now.
 
+**Nothing asks a certificate authority for a name that does not point
+here.** The check existed — `dns::resolves_here`, with four answers and a
+sentence for each — and it was asked in one place: the form where a
+hostname is typed. A hostname is typed once; the renewal loop runs for as
+long as the node does. So a domain that expired, or a record somebody
+repointed, was two failed validations a day against an authority that
+locks the account at five an hour — and the lock is per account, so one
+moved name takes every other name on the node with it. `acme::ensure`
+asks before it spends anything, after the freshness check so a certificate
+that needs nothing costs no lookup.
+
 ## The network work
 
 [`docs/network.md`](docs/network.md) is the plan and the record of what
