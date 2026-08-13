@@ -1498,8 +1498,21 @@ fn row<'a>(
     }
 }
 
+/// One part's share, as a value the CSSOM will take.
+///
+/// A bare percentage, not a declaration. It used to be `width:12.34%`,
+/// which is right as an attribute and **inert** as an assignment: the
+/// stream does `bar.style.width = value`, the CSSOM refuses a value it
+/// cannot parse, and it refuses silently. So the meter froze at whatever
+/// the first paint drew while the figures beside it went on changing —
+/// visible only as a page where the numbers moved and the bar did not.
+fn percent(snapshot: &Snapshot, bytes: u64) -> String {
+    format!("{:.2}%", snapshot.percent_of_total(bytes))
+}
+
+/// The same share as a declaration, for the attribute in the first paint.
 fn width(snapshot: &Snapshot, bytes: u64) -> String {
-    format!("width:{:.2}%", snapshot.percent_of_total(bytes))
+    format!("width:{}", percent(snapshot, bytes))
 }
 
 /// The memory card on its own, in an island host that keeps it current.
@@ -2303,10 +2316,10 @@ fn cells(snapshot: &Snapshot) -> Cells {
     ]);
 
     let bars = BTreeMap::from([
-        ("node".to_string(), width(snapshot, snapshot.node)),
-        ("runtime".to_string(), width(snapshot, runtime)),
-        ("containers".to_string(), width(snapshot, containers)),
-        ("rest".to_string(), width(snapshot, snapshot.rest())),
+        ("node".to_string(), percent(snapshot, snapshot.node)),
+        ("runtime".to_string(), percent(snapshot, runtime)),
+        ("containers".to_string(), percent(snapshot, containers)),
+        ("rest".to_string(), percent(snapshot, snapshot.rest())),
     ]);
 
     Cells { cells, bars }
@@ -2357,6 +2370,34 @@ pub(crate) mod tests {
                 "no bar for {key}"
             );
         }
+    }
+
+    /// A bar the browser will actually take.
+    ///
+    /// The stream assigns these to `style.width`, which refuses anything
+    /// it cannot parse and refuses it silently — so `width:12.34%`, right
+    /// as an attribute, was a meter that never moved after the first
+    /// paint while the numbers beside it changed every second. The
+    /// attribute and the assignment want different strings, and only one
+    /// of them says so out loud.
+    #[test]
+    fn a_streamed_bar_is_a_value_and_the_attribute_is_a_declaration() {
+        let snapshot = snapshot();
+
+        for (key, value) in &cells(&snapshot).bars {
+            assert!(
+                !value.contains("width"),
+                "{key} carries a declaration where a value belongs: {value}"
+            );
+            assert!(value.ends_with('%'), "{key} is not a percentage: {value}");
+        }
+
+        // And the first paint still needs the whole declaration, because
+        // there it is the attribute.
+        assert!(memory_card(&snapshot)
+            .render()
+            .into_inner()
+            .contains("style=\"width:"));
     }
 
     /// The figures are formatted once, on the server, so the first

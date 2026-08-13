@@ -309,9 +309,19 @@
     if (!props || !props.node) return null;
     var source = new EventSource('/nodes/' + encodeURIComponent(props.node) + '/live');
 
+    // Written only when it differs.
+    //
+    // Assigning the same text replaces the node's text anyway, and a
+    // page doing that to seven cells a second reads as a page fidgeting:
+    // reported from the memory view as "nothing changes but something
+    // moves". Nothing here decides *what* to show — the server does
+    // that — this only declines to repaint what is already right.
+    var set = function (node, value) {
+      if (node && node.textContent !== value) node.textContent = value;
+    };
+
     var put = function (key, value) {
-      var node = host.querySelector('[data-cert="' + key + '"]');
-      if (node) node.textContent = value;
+      set(host.querySelector('[data-cert="' + key + '"]'), value);
     };
 
     source.onmessage = function (event) {
@@ -322,12 +332,16 @@
         return;
       }
       Object.keys(data.cells || {}).forEach(function (key) {
-        var cell = host.querySelector('[data-cell="' + key + '"]');
-        if (cell) cell.textContent = data.cells[key];
+        set(host.querySelector('[data-cell="' + key + '"]'), data.cells[key]);
       });
       Object.keys(data.bars || {}).forEach(function (key) {
         var bar = host.querySelector('[data-bar="' + key + '"]');
-        if (bar) bar.style.width = data.bars[key];
+        // A bare percentage, and only when it moved: the part carries a
+        // width transition, so writing the same figure again would start
+        // an animation from a value to itself.
+        if (bar && bar.style.width !== data.bars[key]) {
+          bar.style.width = data.bars[key];
+        }
       });
 
       // What this node asked that one to do. A collection happens on a
@@ -341,17 +355,15 @@
         var state = errands[id];
         var badge = cell.querySelector('.badge');
         if (badge) {
-          badge.className = state.badge;
-          var text = badge.lastChild;
-          if (text) text.textContent = state.word;
+          if (badge.className !== state.badge) badge.className = state.badge;
+          set(badge.lastChild, state.word);
           var dot = badge.querySelector('.dot');
-          if (dot) dot.className = state.dot;
+          if (dot && dot.className !== state.dot) dot.className = state.dot;
         }
         // A refusal is a paragraph the server renders only when there
         // is one, so this fills it when it exists and never invents it:
         // a reload brings the full row.
-        var failure = cell.querySelector('.failure');
-        if (failure) failure.textContent = state.failure;
+        set(cell.querySelector('.failure'), state.failure);
       });
 
       var cert = data.certificate;

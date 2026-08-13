@@ -560,10 +560,14 @@ input[type='checkbox'], input[type='radio'] {
 }
 input[type='radio'] { border-radius: 50%; }
 
+/* The mark is the *inverse* of the box, never a fixed white.
+   `--c-fg` is near-black in light and cream in dark, so a hard-coded
+   `--c-n-0` glyph was white-on-white the moment the theme flipped — a
+   checked box you could not tell from an empty one. */
 input[type='checkbox']::after {
   content: '';
   width: 0.55rem; height: 0.55rem;
-  background: rgb(var(--c-n-0));
+  background: rgb(var(--c-fg-inverse));
   clip-path: polygon(14% 44%, 0 65%, 50% 100%, 100% 16%, 80% 0%, 43% 62%);
   transform: scale(0);
   transition: transform var(--motion-fast);
@@ -571,7 +575,7 @@ input[type='checkbox']::after {
 input[type='radio']::after {
   content: '';
   width: 0.45rem; height: 0.45rem; border-radius: 50%;
-  background: rgb(var(--c-n-0));
+  background: rgb(var(--c-fg-inverse));
   transform: scale(0);
   transition: transform var(--motion-fast);
 }
