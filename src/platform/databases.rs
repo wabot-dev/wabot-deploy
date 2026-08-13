@@ -357,6 +357,10 @@ pub async fn dispatch(
             // the copy has to answer to *its* name, not to one built
             // from the domain of whichever machine is holding it.
             qualified_domain: domain.clone(),
+            // The intent travels with the instruction. A database stopped
+            // here whose standbys went on following was the same bug a
+            // plain service had, and the copies are the same rows.
+            running: service.desired_state == super::services::DesiredState::Running,
         })
         .map_err(|error| PlatformError::Refused(error.to_string()))?;
 
@@ -614,6 +618,7 @@ mod tests {
             slots: vec![3],
             primary_slot: 1,
             qualified_domain: Some("owner.example".into()),
+            running: true,
         };
         adopt(&database, &service.id, &told).await.expect("adopt");
 

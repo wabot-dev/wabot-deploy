@@ -409,6 +409,31 @@ async fn host_service(
             .map_err(|error| error.to_string())?;
         return Ok(());
     }
+
+    // Stopped, and still placed here. Distinct from the branch above in
+    // the way that matters: the rows stay, so the copies come back where
+    // they were when the owner starts the service again, with their
+    // volumes and their slots. Written as this node's own intent — a
+    // `desired_state` the local reconciliation reads — because otherwise
+    // the next boot here would start back what the other node just said
+    // to stop.
+    if !host.running {
+        return match container.try_resolve::<crate::deploy::Deployer>() {
+            Ok(deployer) => deployer
+                .stop(&project, &service)
+                .await
+                .map_err(|error| error.to_string()),
+            // No deployer is no containerd: the intent is still worth
+            // recording, and the next start here will read it.
+            Err(_) => services::set_desired_state(
+                database,
+                &service.id,
+                crate::platform::services::DesiredState::Stopped,
+            )
+            .await
+            .map_err(|error| error.to_string()),
+        };
+    }
     // Its own job, on its own queue. This is the whole of "deploying is
     // local": the authority asked, and what runs is this node's own
     // deployment, indistinguishable from one somebody clicked here.
@@ -542,6 +567,26 @@ async fn hold_standby(
             .await
             .map_err(|error| error.to_string())?;
         return Ok(());
+    }
+
+    // Stopped, and still held. The volume stays where it is, so starting
+    // the database again resumes from the copy on this disk rather than
+    // seeding a new one over the network — which for a database is the
+    // difference between a restart and a base backup.
+    if !standby.running {
+        return match container.try_resolve::<crate::deploy::Deployer>() {
+            Ok(deployer) => deployer
+                .stop(&project, &service)
+                .await
+                .map_err(|error| error.to_string()),
+            Err(_) => services::set_desired_state(
+                database,
+                &service.id,
+                crate::platform::services::DesiredState::Stopped,
+            )
+            .await
+            .map_err(|error| error.to_string()),
+        };
     }
 
     let command = crate::deploy::jobs::DeployService {
@@ -797,6 +842,92 @@ mod tests {
         assert_eq!(declared.container_port, 80);
         assert!(declared.hostname.is_none(), "the name is not this node's");
         assert!(declared.host_port.is_none(), "nothing published it here");
+    }
+
+    /// A stop has to arrive as a stop, not as a removal.
+    ///
+    /// `slots: []` already meant "take this service off that machine" and
+    /// deletes the rows there, so the owner had no way to say "stop it and
+    /// keep it" — and said nothing at all, which is how a service the
+    /// console showed as stopped went on serving traffic somewhere else.
+    /// Found by Jorge on the test nodes.
+    ///
+    /// What this pins is the difference: the rows survive and the intent
+    /// is recorded here, so the copies come back in the same slots, with
+    /// their volumes, when the owner starts the service again.
+    #[tokio::test]
+    async fn a_stopped_service_is_stopped_here_and_kept() {
+        let database = crate::db::open_in_memory().await.expect("open");
+        let container = Container::new();
+        crate::network::capability::grant(
+            &database,
+            "nd-a",
+            &[super::super::capability::Capability::Host],
+        )
+        .await
+        .expect("grant");
+
+        let placed = serde_json::json!({
+            "project": "shared",
+            "service": "web",
+            "image": "registry.example/web@sha256:abc",
+            "registry": "registry.example",
+            "port": 80,
+            "slots": [3],
+        });
+        let _ = carry_out(
+            &database,
+            &Config::default(),
+            &container,
+            "nd-a",
+            Errand {
+                id: "er-placed".into(),
+                kind: Kind::Host,
+                payload: placed.clone(),
+            },
+        )
+        .await;
+
+        let service = services::all(&database, None)
+            .await
+            .expect("services")
+            .pop()
+            .expect("the errand made one");
+        assert_eq!(service.desired_state, services::DesiredState::Running);
+
+        let mut stopped = placed;
+        stopped["running"] = serde_json::json!(false);
+        let _ = carry_out(
+            &database,
+            &Config::default(),
+            &container,
+            "nd-a",
+            Errand {
+                id: "er-stopped".into(),
+                kind: Kind::Host,
+                payload: stopped,
+            },
+        )
+        .await;
+
+        let after = services::all(&database, None)
+            .await
+            .expect("services")
+            .pop()
+            .expect("the service is still here");
+        assert_eq!(
+            after.desired_state,
+            services::DesiredState::Stopped,
+            "a stop the local reconciliation will read"
+        );
+        assert_eq!(
+            replicas::of_service(&database, &after.id)
+                .await
+                .expect("replicas")
+                .len(),
+            1,
+            "the placement survives a stop — only `slots: []` takes it away"
+        );
     }
 
     /// A node holding nothing still has something to say: where the
@@ -1214,6 +1345,7 @@ mod tests {
                 env: Default::default(),
                 port: None,
                 slots: vec![1],
+                running: true,
             };
             // The rows, without the queue — `run_command` wants a
             // container this test has no reason to build, and what is

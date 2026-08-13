@@ -150,10 +150,34 @@ pub struct Host {
     /// this field existed, which meant exactly one copy.
     #[serde(default = "one_slot")]
     pub slots: Vec<u32>,
+
+    /// Whether the service is meant to be running at all.
+    ///
+    /// **A stop has to travel.** Stopping a service took down the copies
+    /// on the owning node and said nothing to the machines running the
+    /// others, so a service the console showed as stopped went on serving
+    /// traffic somewhere else — found on the test nodes. The owner had no
+    /// way to say it: `slots: []` is a different instruction, meaning
+    /// "take this service off that machine", and it deletes the rows
+    /// there.
+    ///
+    /// So this is the intent and the slots are the placement. `false`
+    /// stops what that node holds and **keeps** it, which is what makes
+    /// starting the service again a matter of saying so rather than of
+    /// placing every copy a second time.
+    ///
+    /// Defaulted to running for a payload written before the field
+    /// existed: every errand ever queued asked for a deployment.
+    #[serde(default = "running")]
+    pub running: bool,
 }
 
 fn one_slot() -> Vec<u32> {
     vec![1]
+}
+
+fn running() -> bool {
+    true
 }
 
 /// The arguments of a [`Kind::Edge`] errand: answer for this name here.
@@ -229,6 +253,14 @@ pub struct Standby {
     /// a qualified name. Absent when the owner has no domain.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub qualified_domain: Option<String>,
+
+    /// Whether the database is meant to be running. The same field a
+    /// `host` errand carries and for the same reason — a stopped service
+    /// whose copies went on running was the bug — and it matters more
+    /// here: a standby left following a primary that is meant to be down
+    /// is a copy nobody is watching.
+    #[serde(default = "running")]
+    pub running: bool,
 }
 
 /// An errand and what became of it, for the page that lists them.

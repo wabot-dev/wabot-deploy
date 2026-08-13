@@ -2744,6 +2744,10 @@ impl ServiceApi {
                 .find(|port| port.hostname.is_some())
                 .map(|port| port.container_port),
             slots,
+            // Placing a copy is asking for it to run. Whether the service
+            // stays running afterwards travels on its own, derived from
+            // the row — see `Deployer::tell_holders`.
+            running: true,
         })
         .map_err(|error| error.to_string())?;
 

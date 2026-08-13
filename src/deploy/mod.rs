@@ -245,13 +245,28 @@ impl Deployer {
     /// Returns the address of the first one, which is what a caller
     /// that used to get "the" address wants — and what routing used to
     /// read before it learned to gather them.
-    pub async fn deploy(&self, project: &Project, service: &Service) -> DeployResult<Ipv4Addr> {
+    ///
+    /// `None` when no copy of it runs **here**, which is a service placed
+    /// entirely on other nodes. That used to be a refusal — "has no
+    /// replica on this node" — and it was wrong in the way a page shows:
+    /// the service exists, it runs, and the one thing its owner could not
+    /// do was start it again after stopping it, because the only door
+    /// refused before reaching the nodes that hold it.
+    pub async fn deploy(
+        &self,
+        project: &Project,
+        service: &Service,
+    ) -> DeployResult<Option<Ipv4Addr>> {
         let mine = self.mine(service).await?;
         let Some(first) = mine.first().cloned() else {
-            return Err(DeployError::Refused(format!(
-                "{} has no replica on this node",
-                service.slug
-            )));
+            services::set_desired_state(&self.database, &service.id, DesiredState::Running).await?;
+            self.tell_holders(project, service).await;
+            self.dispatch_standbys(service).await;
+            tracing::info!(
+                service = %service.slug,
+                "no copy here: the nodes holding this service were told to run it"
+            );
+            return Ok(None);
         };
 
         // The intent is the service's, not one copy's: `stopped` has to
@@ -279,9 +294,14 @@ impl Deployer {
         // carried an address that had not been assigned yet, which is
         // the whole reason this is recomputed rather than emitted.
         self.dispatch_standbys(service).await;
+        // And the nodes holding plain copies are told the same thing: what
+        // to run, and that it is meant to be running. This is also how a
+        // new image reaches them — the errand is the whole of what that
+        // node runs for the service.
+        self.tell_holders(project, service).await;
 
         match (first_address, failure) {
-            (Some(address), _) => Ok(address),
+            (Some(address), _) => Ok(Some(address)),
             (None, Some(error)) => Err(error),
             (None, None) => Err(DeployError::Refused(format!(
                 "{} did not start anywhere",
@@ -737,6 +757,10 @@ impl Deployer {
             replicas::set_last_error(&self.database, &replica.id, None).await?;
         }
         self.sync_routes().await;
+        // The copies on other machines, which is the whole of the bug this
+        // call fixes: without it they went on running and serving, and the
+        // console said the service was stopped.
+        self.tell_holders(project, service).await;
 
         tracing::info!(service = %service.slug, project = %project.slug, "stopped");
         Ok(())
@@ -873,6 +897,11 @@ impl Deployer {
             }
         }
 
+        // And the copies this node no longer agrees to run, for the same
+        // reason and by the same rule: the grant is the more recent
+        // decision, and nothing else will come and act on it.
+        self.evict_ungranted().await;
+
         // Names held for a node this one no longer serves, before the
         // routes are built rather than after: the point is that the
         // table the listener reads comes up without them.
@@ -903,6 +932,14 @@ impl Deployer {
         // same, which it is on almost every boot.
         for service in &services {
             self.dispatch_standbys(service).await;
+            // The same pass for plain copies. A node that was unreachable
+            // when somebody pressed stop is told here instead — `stop`
+            // reaches a node that answers, and this reaches the one that
+            // did not, which between them is the only way an instruction
+            // arrives at a machine that was off.
+            if let Some(project) = projects.iter().find(|p| p.id == service.project_id) {
+                self.tell_holders(project, service).await;
+            }
         }
 
         if started > 0 {
@@ -932,6 +969,213 @@ impl Deployer {
         let domain = crate::node::settings::domain(&self.database, &self.config).await;
         if let Err(error) = databases::dispatch(&self.database, service, primary, domain).await {
             tracing::warn!(service = %service.slug, %error, "could not tell a node to hold a copy");
+        }
+    }
+
+    /// Throw off what this node no longer agrees to run.
+    ///
+    /// **Because stopping a copy needs the same permission as placing
+    /// one.** That is the right rule — the same consent both ways, so an
+    /// authority cannot reach into a machine that has shut the door on
+    /// it — and it leaves exactly one hole: a node that revokes `host`
+    /// can no longer be told to stop what it is running, so without this
+    /// those containers would run for ever. Which is the phase 8 lesson
+    /// again: the withdrawing errand arrives only if the other node is
+    /// still there, still knows and still reaches this one, and a node
+    /// revoking a grant is often doing it because one of those stopped
+    /// being true.
+    ///
+    /// So it is local and convergent, at boot, asking only about now —
+    /// the shape `network::release_ungranted` already has for names.
+    ///
+    /// **Evicted, not stopped.** Somebody did throw this out; the row is
+    /// the tombstone that says so, and the next report tells the node
+    /// that placed it to stop asking. A copy merely stopped would be
+    /// started again by whoever placed it, which is the argument all over
+    /// again with extra steps.
+    async fn evict_ungranted(&self) {
+        let (services, projects) = match (
+            services::all(&self.database, None).await,
+            projects::all(&self.database).await,
+        ) {
+            (Ok(services), Ok(projects)) => (services, projects),
+            _ => {
+                tracing::warn!("could not read what this node is running for others");
+                return;
+            }
+        };
+
+        for service in services.iter().filter(|service| !service.is_ours()) {
+            let Some(authority) = &service.origin_node_id else {
+                continue;
+            };
+            // Holding somebody's data and running somebody's container
+            // are different favours, and each is withdrawn on its own.
+            let needed = match service.kind.is_managed() {
+                true => crate::network::capability::Capability::Store,
+                false => crate::network::capability::Capability::Host,
+            };
+            // Read through what this node provides *now*, so a switch
+            // turned off withdraws what was granted of it — the switch is
+            // the more recent decision.
+            if crate::network::capability::granted_to(&self.database, authority)
+                .await
+                .contains(&needed)
+            {
+                continue;
+            }
+            let Some(project) = projects.iter().find(|p| p.id == service.project_id) else {
+                continue;
+            };
+            let Ok(mine) = self.mine(service).await else {
+                continue;
+            };
+
+            for replica in mine {
+                if let Err(error) = self.stop_replica(project, service, &replica).await {
+                    // Said out loud and then evicted anyway: the row has
+                    // to stop claiming a copy this node is refusing to
+                    // run, whether or not the container could be reached.
+                    tracing::warn!(service = %service.slug, %error, "could not stop a copy");
+                }
+                let _ = replicas::set_last_error(
+                    &self.database,
+                    &replica.id,
+                    Some("this node no longer agrees to run it"),
+                )
+                .await;
+                if let Err(error) = replicas::evict(&self.database, &replica.id).await {
+                    tracing::warn!(service = %service.slug, %error, "could not evict a copy");
+                    continue;
+                }
+                tracing::info!(
+                    service = %service.slug,
+                    slot = replica.slot,
+                    authority = %authority,
+                    capability = needed.name(),
+                    "threw off a copy this node no longer agrees to run"
+                );
+            }
+        }
+    }
+
+    /// Tell every node holding a copy what to run for this service, and
+    /// whether it is meant to be running at all.
+    ///
+    /// **A stop has to travel.** `stop` took down the copies here and said
+    /// nothing to the machines running the others, so a service the
+    /// console showed as stopped went on serving traffic somewhere else.
+    /// Found by Jorge on the test nodes, and it is the same shape as every
+    /// other bug this network has had: derived state that nothing
+    /// recomputes when the thing it derives from changes.
+    ///
+    /// Derived and queued only when it differs, like `dispatch_standbys` —
+    /// so the pass costs nothing on the boots where nothing moved, and a
+    /// node that was unreachable when somebody pressed stop is told the
+    /// next time it is asked.
+    ///
+    /// A managed database is **not** dispatched here. What a standby needs
+    /// is not what a container needs, and a `host` errand would recreate
+    /// it as a plain container without its volume or its engine
+    /// arguments; those travel on `Kind::Database`, which carries the same
+    /// intent for the same reason.
+    async fn tell_holders(&self, project: &Project, service: &Service) {
+        if service.kind.is_managed() || !service.is_ours() {
+            return;
+        }
+        let Some(registry) = crate::platform::registry_credentials::host_of(&service.image) else {
+            return;
+        };
+        let (placements, ports, nodes) = match (
+            replicas::of_service(&self.database, &service.id).await,
+            crate::platform::ports::of_service(&self.database, &service.id).await,
+            crate::network::all(&self.database).await,
+        ) {
+            (Ok(placements), Ok(ports), Ok(nodes)) => (placements, ports, nodes),
+            _ => {
+                tracing::warn!(service = %service.slug, "could not read who holds a copy");
+                return;
+            }
+        };
+
+        // Which node holds which slots. One instruction per node, naming
+        // every copy it holds: an errand *is* the whole of what that node
+        // runs for this service, which is what lets a copy be taken away
+        // and the far side find out.
+        let mut by_node: std::collections::BTreeMap<String, Vec<u32>> = Default::default();
+        for replica in placements.iter().filter(|replica| !replica.evicted()) {
+            if let Some(node_id) = &replica.node_id {
+                by_node
+                    .entry(node_id.clone())
+                    .or_default()
+                    .push(replica.slot);
+            }
+        }
+
+        let host = crate::network::capability::Capability::Host;
+        for (node_id, mut slots) in by_node {
+            slots.sort_unstable();
+            // A node that has taken `host` away is not sent this, and not
+            // because the stop is unwelcome: it would refuse it. Stopping
+            // needs the same permission as placing — the far side checks
+            // it either way — and what a node no longer consents to run is
+            // for that node to throw off, which it does at its own boot
+            // without asking anybody. See `evict_ungranted`.
+            if !nodes
+                .iter()
+                .any(|node| node.id == node_id && node.allows.contains(&host))
+            {
+                tracing::debug!(node = %node_id, "skipped: it no longer runs containers for us");
+                continue;
+            }
+
+            let payload = match serde_json::to_value(crate::network::errand::Host {
+                project: project.name.clone(),
+                service: service.name.clone(),
+                image: service.image.clone(),
+                registry: registry.clone(),
+                // No credential in a derived instruction. The one the far
+                // node stored when the copy was placed is still there, and
+                // minting a fresh token on every pass would make every
+                // payload differ from the last — which is the comparison
+                // this relies on to stay quiet.
+                username: None,
+                secret: None,
+                env: service.env.clone(),
+                port: ports
+                    .iter()
+                    .find(|port| port.hostname.is_some())
+                    .map(|port| port.container_port),
+                slots,
+                running: service.desired_state == DesiredState::Running,
+            }) {
+                Ok(payload) => payload,
+                Err(error) => {
+                    tracing::warn!(%error, "could not build a placement instruction");
+                    continue;
+                }
+            };
+
+            match crate::network::errand::queue_if_changed(
+                &self.database,
+                &node_id,
+                crate::network::errand::Kind::Host,
+                &format!("placement:{}", service.id),
+                &payload,
+            )
+            .await
+            {
+                Ok(Some(_)) => tracing::info!(
+                    service = %service.slug,
+                    node = %node_id,
+                    running = service.desired_state == DesiredState::Running,
+                    "told a node what it holds for this service"
+                ),
+                Ok(None) => {}
+                Err(error) => {
+                    tracing::warn!(%error, node = %node_id, "could not queue a placement")
+                }
+            }
         }
     }
 
@@ -1734,6 +1978,228 @@ mod tests {
             Some(3000)
         );
         assert_eq!(primary_port(&[]), None);
+    }
+
+    /// A service, a node that has agreed to run containers for us, and a
+    /// copy placed there.
+    async fn placed_elsewhere() -> (SqliteDatabase, Project, Service) {
+        let database = crate::db::open_in_memory().await.expect("open");
+        let project = projects::create(&database, "shared")
+            .await
+            .expect("project");
+        let service = services::create(
+            &database,
+            &project.id,
+            "web",
+            "registry.example/web@sha256:abc",
+            &[],
+        )
+        .await
+        .expect("service");
+
+        crate::network::save(
+            &database,
+            &crate::network::Node {
+                id: "nd-far".into(),
+                name: "far.example".into(),
+                kind: crate::network::Kind::Private,
+                overlay_ip: Some("10.42.0.9".into()),
+                public_key: None,
+                endpoint: None,
+                allows: vec![crate::network::capability::Capability::Host],
+                last_seen_at: None,
+                is_self: false,
+            },
+        )
+        .await
+        .expect("node");
+
+        // Creating a service already places its first copy here, so this
+        // moves that one rather than adding a second in the same slot.
+        let here = replicas::of_service(&database, &service.id)
+            .await
+            .expect("replicas")
+            .pop()
+            .expect("a service is created with one copy");
+        replicas::move_to(&database, &here.id, Some("nd-far"))
+            .await
+            .expect("moved");
+        (database, project, service)
+    }
+
+    /// **A stop has to travel.** Stopping a service took down the copies
+    /// on this node and said nothing to the machines running the others,
+    /// so a service the console showed as stopped went on serving traffic
+    /// somewhere else. Found by Jorge on the test nodes.
+    #[tokio::test]
+    async fn stopping_a_service_tells_the_nodes_holding_its_other_copies() {
+        let (database, project, service) = placed_elsewhere().await;
+        let deployer = Deployer::new(
+            std::sync::Arc::new(database.clone()),
+            &crate::config::Config::default(),
+        );
+
+        services::set_desired_state(&database, &service.id, DesiredState::Stopped)
+            .await
+            .expect("stopped");
+        let service = services::find(&database, &service.id)
+            .await
+            .expect("query")
+            .expect("there");
+        deployer.tell_holders(&project, &service).await;
+
+        let waiting = crate::network::errand::waiting(&database, "nd-far")
+            .await
+            .expect("errands");
+        assert_eq!(waiting.len(), 1, "the far node was told nothing");
+        assert_eq!(waiting[0].payload["running"], serde_json::json!(false));
+        assert_eq!(
+            waiting[0].payload["slots"],
+            serde_json::json!([1]),
+            "stopped, and still placed there — `slots: []` would delete it"
+        );
+    }
+
+    /// Queued only when it differs, because this runs at every boot: the
+    /// shape `dispatch_standbys` already uses, and a pass that queued
+    /// every time would be a new errand every fifteen seconds.
+    #[tokio::test]
+    async fn saying_the_same_thing_again_queues_nothing() {
+        let (database, project, service) = placed_elsewhere().await;
+        let deployer = Deployer::new(
+            std::sync::Arc::new(database.clone()),
+            &crate::config::Config::default(),
+        );
+
+        deployer.tell_holders(&project, &service).await;
+        deployer.tell_holders(&project, &service).await;
+
+        assert_eq!(
+            crate::network::errand::waiting(&database, "nd-far")
+                .await
+                .expect("errands")
+                .len(),
+            1
+        );
+    }
+
+    /// A node that has taken `host` away is not sent the instruction —
+    /// stopping needs the same permission as placing, so it would refuse
+    /// it. What that node does instead is throw the copy off itself, at
+    /// its own boot, which needs nobody's permission.
+    #[tokio::test]
+    async fn a_node_that_no_longer_runs_our_containers_is_not_told() {
+        let (database, project, service) = placed_elsewhere().await;
+        let deployer = Deployer::new(
+            std::sync::Arc::new(database.clone()),
+            &crate::config::Config::default(),
+        );
+
+        let mut far = crate::network::find(&database, "nd-far")
+            .await
+            .expect("query")
+            .expect("there");
+        far.allows = Vec::new();
+        crate::network::save(&database, &far).await.expect("saved");
+
+        deployer.tell_holders(&project, &service).await;
+        assert!(crate::network::errand::waiting(&database, "nd-far")
+            .await
+            .expect("errands")
+            .is_empty());
+    }
+
+    /// The other half of that rule: what this node no longer agrees to
+    /// run, it throws off — because the owner can no longer be the one to
+    /// stop it, and a copy nobody can stop would run for ever.
+    #[tokio::test]
+    async fn a_copy_this_node_no_longer_agrees_to_run_is_thrown_off() {
+        let database = crate::db::open_in_memory().await.expect("open");
+        let project = projects::create(&database, "theirs")
+            .await
+            .expect("project");
+        let service = services::create(
+            &database,
+            &project.id,
+            "web",
+            "registry.example/web@sha256:abc",
+            &[],
+        )
+        .await
+        .expect("service");
+        services::set_origin(&database, &service.id, "nd-authority")
+            .await
+            .expect("origin");
+        let replica = replicas::of_service(&database, &service.id)
+            .await
+            .expect("replicas")
+            .pop()
+            .expect("a service is created with one copy");
+
+        let deployer = Deployer::new(
+            std::sync::Arc::new(database.clone()),
+            &crate::config::Config::default(),
+        );
+        // No grant to that authority at all, which is what revoking one
+        // leaves behind.
+        deployer.evict_ungranted().await;
+
+        let after = replicas::find(&database, &replica.id)
+            .await
+            .expect("query")
+            .expect("the row is the tombstone");
+        assert!(after.evicted(), "it is still claimed as something we run");
+        assert_eq!(
+            after.last_error.as_deref(),
+            Some("this node no longer agrees to run it"),
+            "and the row says why"
+        );
+    }
+
+    /// And it asks about now, not about history: a copy whose authority
+    /// still has the grant is left exactly alone.
+    #[tokio::test]
+    async fn a_copy_this_node_still_agrees_to_run_is_left_alone() {
+        let database = crate::db::open_in_memory().await.expect("open");
+        let project = projects::create(&database, "theirs")
+            .await
+            .expect("project");
+        let service = services::create(
+            &database,
+            &project.id,
+            "web",
+            "registry.example/web@sha256:abc",
+            &[],
+        )
+        .await
+        .expect("service");
+        services::set_origin(&database, &service.id, "nd-authority")
+            .await
+            .expect("origin");
+        let replica = replicas::of_service(&database, &service.id)
+            .await
+            .expect("replicas")
+            .pop()
+            .expect("a service is created with one copy");
+        crate::network::capability::grant(
+            &database,
+            "nd-authority",
+            &[crate::network::capability::Capability::Host],
+        )
+        .await
+        .expect("grant");
+
+        let deployer = Deployer::new(
+            std::sync::Arc::new(database.clone()),
+            &crate::config::Config::default(),
+        );
+        deployer.evict_ungranted().await;
+
+        assert!(!replicas::find(&database, &replica.id)
+            .await
+            .expect("query")
+            .expect("there")
+            .evicted());
     }
 
     #[test]

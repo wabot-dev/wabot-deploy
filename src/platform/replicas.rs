@@ -521,7 +521,6 @@ pub async fn set_last_error(
 /// Recorded rather than deleted: the node that placed it has to be able
 /// to see that this happened and stop asking, and a row that vanished
 /// would look like one that was never placed.
-#[allow(dead_code)]
 pub async fn evict(database: &SqliteDatabase, id: &str) -> PlatformResult<()> {
     let id = id.to_string();
     database
