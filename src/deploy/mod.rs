@@ -104,6 +104,21 @@ pub struct Deployer {
     certificates: Option<Arc<crate::edge::acme::Wake>>,
 }
 
+/// What an instruction to a node holding copies says about the placement.
+///
+/// Two instructions, not a flag: `slots: []` means "this service is not
+/// yours to run any more" — the far node stops what it holds and deletes
+/// its own rows — which is exactly right for a deletion and data loss for
+/// a stop. Naming them keeps the empty vector from being something a
+/// caller passes by accident.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Holding {
+    /// What that node holds, and whether the service is meant to run.
+    AsPlaced,
+    /// Nothing.
+    LetGo,
+}
+
 impl Deployer {
     pub fn new(database: Arc<SqliteDatabase>, config: &crate::config::Config) -> Self {
         Self {
@@ -260,7 +275,7 @@ impl Deployer {
         let mine = self.mine(service).await?;
         let Some(first) = mine.first().cloned() else {
             services::set_desired_state(&self.database, &service.id, DesiredState::Running).await?;
-            self.tell_holders(project, service).await;
+            self.tell_holders(project, service, Holding::AsPlaced).await;
             self.dispatch_standbys(service).await;
             tracing::info!(
                 service = %service.slug,
@@ -298,7 +313,7 @@ impl Deployer {
         // to run, and that it is meant to be running. This is also how a
         // new image reaches them — the errand is the whole of what that
         // node runs for the service.
-        self.tell_holders(project, service).await;
+        self.tell_holders(project, service, Holding::AsPlaced).await;
 
         match (first_address, failure) {
             (Some(address), _) => Ok(Some(address)),
@@ -754,9 +769,21 @@ impl Deployer {
         // followed by a standby on another machine: `tell_holders` returns
         // at once for a managed kind, `dispatch_standbys` is what carries
         // its intent, and nothing here called it.
-        self.tell_holders(project, service).await;
+        self.tell_holders(project, service, Holding::AsPlaced).await;
         self.dispatch_standbys(service).await;
 
+        self.stop_here(project, service).await?;
+        tracing::info!(service = %service.slug, project = %project.slug, "stopped");
+        Ok(())
+    }
+
+    /// Take down the copies that run on **this** machine.
+    ///
+    /// The half of a stop that has nothing to say to anybody else, split
+    /// out because a deletion needs it and must not send a stop's
+    /// instruction on the way: "stop and keep it" is the opposite of what
+    /// a deletion means.
+    async fn stop_here(&self, project: &Project, service: &Service) -> DeployResult<()> {
         let client = Containerd::connect().await?;
         let net = self.network_of(project).await;
 
@@ -772,8 +799,6 @@ impl Deployer {
             replicas::set_last_error(&self.database, &replica.id, None).await?;
         }
         self.sync_routes().await;
-
-        tracing::info!(service = %service.slug, project = %project.slug, "stopped");
         Ok(())
     }
 
@@ -782,9 +807,29 @@ impl Deployer {
     /// Best effort by design: the row is going either way, and a
     /// container we could not reach must not keep the operator from
     /// deleting the service they asked to delete. What it must not do
-    /// is fail *silently* — hence the logs inside `stop`.
+    /// is fail *silently* — hence the logs.
+    ///
+    /// **The withdrawal goes first, and it is not a stop.** It is built
+    /// from the rows, so it has to leave before they do — and a deletion
+    /// is the one case with no convergent fallback: after the rows are
+    /// gone there is nothing here to recompute from, so a copy this never
+    /// reached would run on somewhere else with nobody left to contradict
+    /// it. Every other instruction in this file gets a second chance at
+    /// the next boot. This one does not.
     pub async fn tear_down(&self, project: &Project, service: &Service) {
-        if let Err(error) = self.stop(project, service).await {
+        self.tell_holders(project, service, Holding::LetGo).await;
+        if let Err(error) = crate::platform::databases::withdraw(
+            &self.database,
+            service,
+            self.primary_overlay(service).await.ok().flatten(),
+            crate::node::settings::domain(&self.database, &self.config).await,
+        )
+        .await
+        {
+            tracing::warn!(service = %service.slug, %error, "letting go of a standby elsewhere");
+        }
+
+        if let Err(error) = self.stop_here(project, service).await {
             tracing::warn!(service = %service.slug, %error, "tearing down");
         }
     }
@@ -949,7 +994,7 @@ impl Deployer {
             // did not, which between them is the only way an instruction
             // arrives at a machine that was off.
             if let Some(project) = projects.iter().find(|p| p.id == service.project_id) {
-                self.tell_holders(project, service).await;
+                self.tell_holders(project, service, Holding::AsPlaced).await;
             }
         }
 
@@ -1073,6 +1118,12 @@ impl Deployer {
     /// Tell every node holding a copy what to run for this service, and
     /// whether it is meant to be running at all.
     ///
+    /// [`Holding::LetGo`] is the other instruction: nothing, which the far
+    /// node reads as "this service is not yours to run any more" — it stops
+    /// what it holds and deletes its own rows. That is right for a deletion
+    /// and would be data loss for a stop, which is why the two are a named
+    /// argument rather than an empty vector somebody passes by accident.
+    ///
     /// **A stop has to travel.** `stop` took down the copies here and said
     /// nothing to the machines running the others, so a service the
     /// console showed as stopped went on serving traffic somewhere else.
@@ -1090,7 +1141,7 @@ impl Deployer {
     /// it as a plain container without its volume or its engine
     /// arguments; those travel on `Kind::Database`, which carries the same
     /// intent for the same reason.
-    async fn tell_holders(&self, project: &Project, service: &Service) {
+    async fn tell_holders(&self, project: &Project, service: &Service, holding: Holding) {
         if service.kind.is_managed() || !service.is_ours() {
             return;
         }
@@ -1140,6 +1191,12 @@ impl Deployer {
         let host = crate::network::capability::Capability::Host;
         for (node_id, mut slots) in by_node {
             slots.sort_unstable();
+            let (slots, running) = match holding {
+                Holding::AsPlaced => (slots, running),
+                // Nothing left to hold, and nothing to run while it is
+                // being taken away.
+                Holding::LetGo => (Vec::new(), false),
+            };
             // A node that has taken `host` away is not sent this, and not
             // because the stop is unwelcome: it would refuse it. Stopping
             // needs the same permission as placing — the far side checks
@@ -1194,6 +1251,7 @@ impl Deployer {
                     service = %service.slug,
                     node = %node_id,
                     running,
+                    letting_go = holding == Holding::LetGo,
                     "told a node what it holds for this service"
                 ),
                 Ok(None) => {}
@@ -2093,24 +2151,43 @@ mod tests {
         );
     }
 
-    /// A database is told by the other dispatcher, and stopping one has to
-    /// reach it.
+    /// Deleting a service has to reach the machines running its copies,
+    /// and it is the one instruction with no second chance.
     ///
-    /// This is the test that was missing. The `running` field, the payload
-    /// that carries it and the far node's handling of it all shipped
-    /// together — and nothing called `dispatch_standbys` on the way out of
-    /// `stop`, so Jorge stopped a database from the console and the standby
-    /// on the other machine went on following it. `tell_holders` declines a
-    /// managed kind at its first line, which is correct and was the whole
-    /// of the coverage.
-    ///
-    /// It runs `stop` rather than the dispatcher directly: what was wrong
-    /// was the wiring, and a test of the dispatcher would have passed
-    /// before the fix. Containerd is not here, so the local half fails —
-    /// which is why the dispatch happens before it, and asserting on the
-    /// errand is asserting exactly that.
+    /// Everything else in this file is recomputed at the next boot from
+    /// rows that are still here. After a deletion there are none, so a
+    /// copy this never reached would go on running somewhere else with
+    /// nobody left to contradict it — which is why the withdrawal leaves
+    /// before the rows do, and why it is `slots: []` rather than a stop:
+    /// "stop and keep it" is the opposite of what a deletion means.
     #[tokio::test]
-    async fn stopping_a_database_tells_the_node_holding_its_standby() {
+    async fn deleting_a_service_tells_the_holders_to_let_it_go() {
+        let (database, project, service) = placed_elsewhere().await;
+        let deployer = Deployer::new(
+            std::sync::Arc::new(database.clone()),
+            &crate::config::Config::default(),
+        );
+
+        // Through `tear_down`, which is what the delete handler calls, and
+        // whose local half needs a containerd that is not here.
+        deployer.tear_down(&project, &service).await;
+
+        let waiting = crate::network::errand::waiting(&database, "nd-far")
+            .await
+            .expect("errands");
+        let told = waiting.last().expect("the far node was told nothing");
+        assert_eq!(
+            told.payload["slots"],
+            serde_json::json!([]),
+            "a deletion is not a stop: nothing is left to hold"
+        );
+        assert_eq!(told.payload["running"], serde_json::json!(false));
+    }
+
+    /// A managed database owned here, with a standby on a node that has
+    /// agreed to keep data, and this node on the overlay so the errand can
+    /// say where the primary answers.
+    async fn database_with_a_standby_elsewhere() -> (SqliteDatabase, Project, Service) {
         let database = crate::db::open_in_memory().await.expect("open");
         let project = projects::create(&database, "db-test")
             .await
@@ -2166,7 +2243,28 @@ mod tests {
         replicas::place(&database, &service.id, Some("nd-far"), 3)
             .await
             .expect("placed");
+        (database, project, service)
+    }
 
+    /// A database is told by the other dispatcher, and stopping one has to
+    /// reach it.
+    ///
+    /// This is the test that was missing. The `running` field, the payload
+    /// that carries it and the far node's handling of it all shipped
+    /// together — and nothing called `dispatch_standbys` on the way out of
+    /// `stop`, so Jorge stopped a database from the console and the standby
+    /// on the other machine went on following it. `tell_holders` declines a
+    /// managed kind at its first line, which is correct and was the whole
+    /// of the coverage.
+    ///
+    /// It runs `stop` rather than the dispatcher directly: what was wrong
+    /// was the wiring, and a test of the dispatcher would have passed
+    /// before the fix. Containerd is not here, so the local half fails —
+    /// which is why the dispatch happens before it, and asserting on the
+    /// errand is asserting exactly that.
+    #[tokio::test]
+    async fn stopping_a_database_tells_the_node_holding_its_standby() {
+        let (database, project, service) = database_with_a_standby_elsewhere().await;
         let deployer = Deployer::new(
             std::sync::Arc::new(database.clone()),
             &crate::config::Config::default(),
@@ -2190,6 +2288,30 @@ mod tests {
         );
     }
 
+    /// And deleting one says the other thing: nothing left to hold, which
+    /// is what lets the far node take the copy off its own disk. A stop
+    /// would leave it there for ever, following a primary that no longer
+    /// exists.
+    #[tokio::test]
+    async fn deleting_a_database_tells_the_holder_to_let_the_copy_go() {
+        let (database, project, service) = database_with_a_standby_elsewhere().await;
+        let deployer = Deployer::new(
+            std::sync::Arc::new(database.clone()),
+            &crate::config::Config::default(),
+        );
+
+        deployer.tear_down(&project, &service).await;
+
+        let told = crate::network::errand::waiting(&database, "nd-far")
+            .await
+            .expect("errands")
+            .into_iter()
+            .rfind(|errand| errand.kind == crate::network::errand::Kind::Database)
+            .expect("the node holding the standby was told nothing");
+        assert_eq!(told.payload["slots"], serde_json::json!([]));
+        assert_eq!(told.payload["running"], serde_json::json!(false));
+    }
+
     /// Queued only when it differs, because this runs at every boot: the
     /// shape `dispatch_standbys` already uses, and a pass that queued
     /// every time would be a new errand every fifteen seconds.
@@ -2201,8 +2323,12 @@ mod tests {
             &crate::config::Config::default(),
         );
 
-        deployer.tell_holders(&project, &service).await;
-        deployer.tell_holders(&project, &service).await;
+        deployer
+            .tell_holders(&project, &service, Holding::AsPlaced)
+            .await;
+        deployer
+            .tell_holders(&project, &service, Holding::AsPlaced)
+            .await;
 
         assert_eq!(
             crate::network::errand::waiting(&database, "nd-far")
@@ -2232,7 +2358,9 @@ mod tests {
         far.allows = Vec::new();
         crate::network::save(&database, &far).await.expect("saved");
 
-        deployer.tell_holders(&project, &service).await;
+        deployer
+            .tell_holders(&project, &service, Holding::AsPlaced)
+            .await;
         assert!(crate::network::errand::waiting(&database, "nd-far")
             .await
             .expect("errands")
