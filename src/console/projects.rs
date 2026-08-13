@@ -188,6 +188,7 @@ impl ProjectPages {
                 &observed,
                 deploying.contains(&service.id),
                 Some(where_it_runs.as_str()),
+                elsewhere_of(&placements),
             );
             rows.push((service, cell, here.and_then(|replica| replica.last_error)));
         }
@@ -996,7 +997,53 @@ pub(crate) fn where_it_runs(placements: &[crate::platform::replicas::Replica]) -
     }
 }
 
-pub(crate) fn state_cell(observed: &Observed, deploying: bool, address: Option<&str>) -> StateCell {
+/// What the service's own node can see, when nothing of it runs there.
+///
+/// A service placed entirely on other machines used to read `Absent`
+/// here, which the badge says as **"Not deployed"** — and it is deployed,
+/// it is running, just not on the machine being asked. Reported by Jorge
+/// with the page beside it: a copy `Running` on another node, and a badge
+/// over it saying the service had never been deployed.
+///
+/// Two answers rather than one, because the page must not invent an
+/// outcome nobody reported: a copy elsewhere is only known to be up once
+/// that node has said so, which it does when it collects.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Elsewhere {
+    /// Some copy on another node has reported an address.
+    Running,
+    /// Placed, and nothing has come back about it yet.
+    Silent,
+}
+
+/// What the copies on other nodes amount to, when none of them is here.
+///
+/// `None` the moment a copy runs on this node: `observed` is the answer
+/// then, and this is not. One definition because three places ask —
+/// the project's list, its stream, and the service's own page — and a
+/// badge that disagreed with itself between a first paint and the swap
+/// that followed is the failure `StateCell` exists to prevent.
+pub(crate) fn elsewhere_of(placements: &[crate::platform::replicas::Replica]) -> Option<Elsewhere> {
+    let live = placements.iter().filter(|replica| !replica.evicted());
+    if live.clone().any(|replica| replica.is_here()) {
+        return None;
+    }
+    let mut away = live.filter(|replica| !replica.is_here()).peekable();
+    away.peek()?;
+    match away.any(|replica| replica.address.is_some()) {
+        true => Some(Elsewhere::Running),
+        false => Some(Elsewhere::Silent),
+    }
+}
+
+pub(crate) fn state_cell(
+    observed: &Observed,
+    deploying: bool,
+    address: Option<&str>,
+    // `None` when copies run on this node, which is the ordinary case and
+    // the one `observed` already answers for.
+    elsewhere: Option<Elsewhere>,
+) -> StateCell {
     let address = address.unwrap_or("—").to_string();
     if deploying {
         return StateCell {
@@ -1025,13 +1072,36 @@ pub(crate) fn state_cell(observed: &Observed, deploying: bool, address: Option<&
             busy: false,
             address: address.clone(),
         },
-        Observed::Absent => StateCell {
-            word: "Not deployed".into(),
-            badge: "badge badge-warning",
-            dot: "dot dot-warning",
-            action: "deploy",
-            busy: false,
-            address: address.clone(),
+        // Nothing here. Which is not the same as nothing anywhere, and
+        // the difference is the whole of what this argument is for — the
+        // action included: stopping it is what its owner can do about a
+        // service running on somebody else's machine, and the instruction
+        // travels now.
+        Observed::Absent => match elsewhere {
+            Some(Elsewhere::Running) => StateCell {
+                word: "Running elsewhere".into(),
+                badge: "badge badge-success",
+                dot: "dot dot-success",
+                action: "stop",
+                busy: false,
+                address: address.clone(),
+            },
+            Some(Elsewhere::Silent) => StateCell {
+                word: "Waiting for that node".into(),
+                badge: "badge badge-info",
+                dot: "dot dot-info dot-pulse",
+                action: "stop",
+                busy: false,
+                address: address.clone(),
+            },
+            None => StateCell {
+                word: "Not deployed".into(),
+                badge: "badge badge-warning",
+                dot: "dot dot-warning",
+                action: "deploy",
+                busy: false,
+                address: address.clone(),
+            },
         },
         Observed::Unknown(_) => StateCell {
             word: "Unknown".into(),
@@ -1053,7 +1123,7 @@ pub(crate) fn state_cell(observed: &Observed, deploying: bool, address: Option<&
 pub(crate) fn state_badge(cell: &StateCell) -> impl Renderable + '_ {
     rsx! {
         <span class=(cell.badge)>
-            <span class=(cell.dot)></span>(&cell.word)
+            <span class=(cell.dot)></span>(super::language::word(&cell.word))
         </span>
     }
 }
@@ -1156,22 +1226,19 @@ impl ProjectApi {
                     for service in services {
                         let observed = state.deployer.observe_service(&project, &service).await;
                         let busy = deploying.contains(&service.id);
+                        let placements = crate::platform::replicas::of_service(
+                            &state.database,
+                            &service.id,
+                        )
+                        .await
+                        .unwrap_or_default();
                         cells.insert(
                             service.id.clone(),
                             state_cell(
                                 &observed,
                                 busy,
-                                Some(
-                                    where_it_runs(
-                                        &crate::platform::replicas::of_service(
-                                            &state.database,
-                                            &service.id,
-                                        )
-                                        .await
-                                        .unwrap_or_default(),
-                                    )
-                                    .as_str(),
-                                ),
+                                Some(where_it_runs(&placements).as_str()),
+                                elsewhere_of(&placements),
                             ),
                         );
                     }
@@ -1592,12 +1659,49 @@ mod tests {
         );
     }
 
+    /// A badge is prose, and the page around it is in the account's
+    /// language — so a Spanish console with an English badge on it is the
+    /// page contradicting itself, which is what Jorge's screenshot showed.
+    ///
+    /// The source scan in `es.rs` cannot find these: they are picked here
+    /// as values and carried to the render on a `StateCell`, not asked for
+    /// with `t`. So this is the guard, and it has to name every word the
+    /// function can produce — bar `Exited n`, which is containerd's word
+    /// and a number.
+    #[test]
+    fn a_state_word_is_a_word_somebody_reads() {
+        let placed = [
+            state_cell(&Observed::Absent, true, None, None),
+            state_cell(&Observed::Absent, false, None, None),
+            state_cell(&Observed::Absent, false, None, Some(Elsewhere::Running)),
+            state_cell(&Observed::Absent, false, None, Some(Elsewhere::Silent)),
+            state_cell(
+                &Observed::Running {
+                    pid: 1,
+                    address: None,
+                },
+                false,
+                None,
+                None,
+            ),
+            state_cell(&Observed::Unknown("busy".into()), false, None, None),
+        ];
+
+        for cell in &placed {
+            assert!(
+                crate::console::es::lookup(&cell.word).is_some(),
+                "no Spanish for the state word {:?}",
+                cell.word
+            );
+        }
+    }
+
     /// During a deployment containerd's answer is a half-truth — the
     /// old container is gone and the new one is not up — so "absent"
     /// there reads as a fault. The job is what knows.
     #[test]
     fn a_deployment_in_flight_outranks_what_containerd_says() {
-        let busy = state_cell(&Observed::Absent, true, None);
+        let busy = state_cell(&Observed::Absent, true, None, None);
         assert_eq!(busy.word, "Deploying");
         // Shown, not hidden: a control that vanishes takes the column's
         // width with it. Disabled says the same thing and keeps the row
@@ -1605,7 +1709,7 @@ mod tests {
         assert_eq!(busy.action, "stop");
         assert!(busy.busy, "and it cannot be pressed yet");
 
-        let idle = state_cell(&Observed::Absent, false, None);
+        let idle = state_cell(&Observed::Absent, false, None, None);
         assert_eq!(idle.word, "Not deployed");
         assert_eq!(idle.action, "deploy");
         assert!(!idle.busy);
@@ -1619,6 +1723,7 @@ mod tests {
             },
             false,
             Some("10.42.1.5"),
+            None,
         );
         assert_eq!(running.action, "stop");
         // The address rides with the state: a deployment ends by

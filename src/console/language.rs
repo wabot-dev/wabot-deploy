@@ -131,6 +131,26 @@ pub fn t(english: &'static str) -> &'static str {
     }
 }
 
+/// The Spanish for a word that was chosen before the render.
+///
+/// [`t`] takes a `&'static str` so the test in `es.rs` can find every
+/// string the console asks for by reading the source. A state word is
+/// picked in a handler and carried to the render on a `StateCell`, so it
+/// arrives as a value and cannot go through that door — while the page
+/// around it is in the account's language, which is how a Spanish
+/// console came to have an English badge on it.
+///
+/// Same table. The words themselves are literals in
+/// `projects::state_cell`, and `a_state_word_is_a_word_somebody_reads`
+/// is what keeps them in the table, since the source scan cannot see
+/// them here.
+pub fn word(text: &str) -> &str {
+    match current() {
+        Language::En => text,
+        Language::Es => es(text).unwrap_or(text),
+    }
+}
+
 /// The Spanish for one English string, when there is one.
 ///
 /// A `match` rather than a map: it compiles to a jump table, needs no

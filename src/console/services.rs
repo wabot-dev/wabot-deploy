@@ -286,6 +286,7 @@ impl ServicePages {
             &observed,
             deploying,
             here.as_ref().and_then(|replica| replica.address.as_deref()),
+            super::projects::elsewhere_of(&placements),
         );
         let back = format!("/projects/{}", project.slug);
         let settings = format!(
