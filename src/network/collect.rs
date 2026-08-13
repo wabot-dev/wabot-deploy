@@ -35,6 +35,54 @@ use crate::runtime::images::Credential;
 /// answers an empty list.
 const EVERY: std::time::Duration = std::time::Duration::from_secs(15);
 
+/// The doorbell: how an authority says "come and ask me".
+///
+/// ## Why this can exist at all
+///
+/// Because the premise it was ruled out by is false. See
+/// `docs/network.md` phase 9: a private node behind NAT answers on its
+/// overlay address, verified, in about a tenth of a second — which is
+/// what the edge has been doing since phase 7. The authority rings, and
+/// the node collects the way it always has.
+///
+/// ## Why it carries nothing
+///
+/// The errand still travels the other way, over the control plane, with
+/// the credential. This says only "there is something" — so the worst a
+/// stranger who reached it could do is ask this node to do what it was
+/// going to do within fifteen seconds anyway, and [`WAKE_FLOOR`] bounds
+/// even that.
+///
+/// The plan promised a source guard as well — only from inside the
+/// overlay — and a handler here cannot see its caller's address: the
+/// framework builds the server without `ConnectInfo`, so that guard is a
+/// change to `wabot-rust` rather than to this file. The honest tightening
+/// is a token the node mints at join and the authority presents; until
+/// then this is unauthenticated on purpose and says so.
+#[derive(Default)]
+pub struct Doorbell {
+    notify: tokio::sync::Notify,
+}
+
+impl Doorbell {
+    /// Ask the loop to collect now. Never blocks.
+    pub fn ring(&self) {
+        self.notify.notify_one();
+    }
+
+    async fn rung(&self) {
+        self.notify.notified().await;
+    }
+}
+
+/// The most often a ring can shorten the wait.
+///
+/// A doorbell nobody can authenticate is an amplifier without one: an
+/// inbound request that costs this node a round trip to each authority.
+/// This is the floor, so however often it is rung the traffic stays in
+/// the same order as the loop's own.
+const WAKE_FLOOR: std::time::Duration = std::time::Duration::from_secs(2);
+
 /// The loop, for the runner to hold beside the others.
 ///
 /// A service that returns ends the process, so this waits on the cancel
@@ -44,12 +92,26 @@ pub async fn loop_forever(
     database: std::sync::Arc<SqliteDatabase>,
     config: Config,
     container: Container,
+    doorbell: std::sync::Arc<Doorbell>,
     cancel: wabot::lifecycle::Cancel,
 ) -> anyhow::Result<()> {
+    let mut last = None;
     loop {
         tokio::select! {
             _ = cancel.cancelled() => return Ok(()),
             _ = tokio::time::sleep(EVERY) => {}
+            // Somebody queued something and said so. The whole of what
+            // this buys is the fifteen seconds an instruction used to
+            // spend waiting to be noticed, which is what made the
+            // console's play control feel broken while the work itself
+            // took no time at all.
+            _ = doorbell.rung() => {
+                if last.is_some_and(|at: tokio::time::Instant| at.elapsed() < WAKE_FLOOR) {
+                    continue;
+                }
+                last = Some(tokio::time::Instant::now());
+                tracing::debug!("woken: collecting now");
+            }
         }
         let settled = run_once(&database, &config, &container).await;
         if settled > 0 {

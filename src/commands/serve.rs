@@ -26,6 +26,11 @@ pub async fn run(config: Config) -> anyhow::Result<i32> {
     // appeared. Created here because both halves need it and neither
     // owns the other.
     let wake = Arc::new(crate::edge::acme::Wake::default());
+    // And how an authority tells this node an errand is waiting, rather
+    // than it finding out on its next fifteen-second pass. Created here
+    // for the same reason: the endpoint that rings it and the loop that
+    // answers are two halves and neither owns the other.
+    let doorbell = Arc::new(crate::network::collect::Doorbell::default());
 
     // Whatever the last process was in the middle of. An update ends
     // by replacing that process, so the only one who can say whether
@@ -134,6 +139,8 @@ pub async fn run(config: Config) -> anyhow::Result<i32> {
     );
     // The job handler resolves this one rather than building a third.
     container.register_instance::<crate::deploy::Deployer>(deployer.clone());
+    // The doorbell endpoint rings this; the collector loop answers it.
+    container.register_instance::<crate::network::collect::Doorbell>(doorbell.clone());
 
     let https: SocketAddr = (bind_address(&config), config.edge.https_port).into();
     let http: SocketAddr = (bind_address(&config), config.edge.http_port).into();
@@ -249,7 +256,10 @@ pub async fn run(config: Config) -> anyhow::Result<i32> {
             let database = errands_database.clone();
             let config = errands_config.clone();
             let container = container.clone();
-            move |cancel| crate::network::collect::loop_forever(database, config, container, cancel)
+            let doorbell = doorbell.clone();
+            move |cancel| {
+                crate::network::collect::loop_forever(database, config, container, doorbell, cancel)
+            }
         })
         // Certificates are obtained *beside* the listeners, never
         // before them: the HTTP-01 challenge is a request this node has

@@ -315,8 +315,25 @@ pub async fn to_node(
     let response = tokio::time::timeout(OVERLAY_TIMEOUT, client.request(request))
         .await
         .map_err(|_| CallError::Unreachable(url.clone(), "it did not answer in time".into()))?
-        .map_err(|error| CallError::Unreachable(url.clone(), error.to_string()))?;
+        .map_err(|error| CallError::Unreachable(url.clone(), chain(&error)))?;
     Ok(response.status())
+}
+
+/// Every reason, not just the outermost one.
+///
+/// hyper says `client error (Connect)` and keeps what actually happened —
+/// a refused resolution, a certificate whose name did not match, a
+/// handshake with no shared protocol — in the source chain. The outer
+/// sentence alone sent this into two node runs looking for the wrong
+/// thing, so the whole chain reaches the reader.
+fn chain(error: &(dyn std::error::Error + 'static)) -> String {
+    let mut reasons = vec![error.to_string()];
+    let mut source = error.source();
+    while let Some(next) = source {
+        reasons.push(next.to_string());
+        source = next.source();
+    }
+    reasons.join(": ")
 }
 
 /// An HTTP connector that resolves one name to one address.

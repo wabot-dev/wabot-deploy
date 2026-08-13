@@ -324,6 +324,15 @@ async fn queue_about(
         payload: payload.clone(),
     };
 
+    // Ring the node's doorbell — from here, not from the callers.
+    //
+    // Twice in one afternoon an instruction was correct and unsent because
+    // the *trigger* was the part left out, so a doorbell each call site had
+    // to remember would be that bug with a new name. Spawned and ignored:
+    // the errand is queued either way and the fifteen-second loop is what
+    // guarantees delivery. This only removes the waiting.
+    ring(database, node_id).await;
+
     let (id, node, kind) = (
         errand.id.clone(),
         node_id.to_string(),
@@ -398,6 +407,35 @@ pub async fn queue_if_changed(
     queue_about(database, node_id, kind, Some(subject), payload)
         .await
         .map(Some)
+}
+
+/// Tell a node there is something for it, if this node can reach it.
+///
+/// Quiet about everything: a node with no overlay address, no authority of
+/// this node's on file, or a tunnel that is down is a node that will find
+/// out on its next pass — which is the design, not a failure. The ring is
+/// the difference between fifteen seconds and none.
+async fn ring(database: &SqliteDatabase, node_id: &str) {
+    let (Ok(Some(node)), Ok(Some(me))) = (
+        super::find(database, node_id).await,
+        super::me(database).await,
+    ) else {
+        return;
+    };
+    if node.overlay_ip.is_none() || node.ca_pem.is_none() {
+        return;
+    }
+
+    // Not awaited to completion by the caller's clock: whoever queued this
+    // is usually a request somebody is waiting on, and the ring is worth
+    // milliseconds to them and nothing at all if the far node is asleep.
+    let path = format!("/api/network/wake/{}", me.id);
+    tokio::spawn(async move {
+        match super::call::to_node(&node, &path, Some(String::new())).await {
+            Ok(status) => tracing::debug!(node = %node.id, %status, "rang"),
+            Err(error) => tracing::debug!(node = %node.id, %error, "could not ring"),
+        }
+    });
 }
 
 /// What is waiting for a node, oldest first.

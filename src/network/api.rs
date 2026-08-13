@@ -193,18 +193,61 @@ pub struct NetworkApi {
     /// would notice: the deployment that usually recomputes routes runs
     /// on the *other* node.
     deployer: Arc<crate::deploy::Deployer>,
+    /// Rung by an authority with something to hand over; answered by the
+    /// collector loop.
+    doorbell: Arc<super::collect::Doorbell>,
 }
 
 #[rest_controller("/api/network")]
 impl NetworkApi {
+    /// Come and ask me: an authority saying an errand is waiting.
+    ///
+    /// The one endpoint here that is called *by* an authority rather than
+    /// by a node that takes orders from one, and it exists because the
+    /// premise below turned out to be false — see `docs/network.md` phase
+    /// 9, and `collect::Doorbell` for what it carries and does not.
+    ///
+    /// The id in the path is read, not trusted: it bounds the effect to
+    /// authorities this node actually has, and gives the log line a name.
+    /// A stranger who reached this can ask this node to do what it was
+    /// going to do within fifteen seconds anyway.
+    #[post("/wake/:authority")]
+    #[raw]
+    async fn wake(&self, request: Request) -> RestResult<Response> {
+        let authority = request
+            .uri()
+            .path()
+            .rsplit('/')
+            .next()
+            .unwrap_or_default()
+            .to_string();
+
+        let known = super::authorities(&self.database)
+            .await
+            .map(|list| list.iter().any(|held| held.node_id == authority))
+            .unwrap_or(false);
+        if !known {
+            // Not an error worth a status code of its own: a node that
+            // was forgotten here is a node whose authority is still
+            // ringing, and it will stop when it next reads its own rows.
+            tracing::debug!(%authority, "rung by a node this one takes no orders from");
+            return Ok(json(StatusCode::OK, &Settled { settled: false }));
+        }
+
+        self.doorbell.ring();
+        tracing::debug!(%authority, "rung");
+        Ok(json(StatusCode::OK, &Settled { settled: true }))
+    }
+
     /// What this node has asked the caller to do.
     ///
-    /// Collected rather than delivered: the authority cannot reach a
-    /// private node over TLS — it has a certificate for a name, not for
-    /// an overlay address — so the node that takes instructions is the
-    /// one that dials, over the certificate it enrolled through. The
-    /// authority still decides; the model is who gives orders, not who
-    /// makes the call.
+    /// Collected rather than delivered, and that is still the model: the
+    /// node that takes instructions is the one that dials, over the
+    /// certificate it enrolled through, and writes its own rows from what
+    /// it is told. What changed is only *when* it finds out — the
+    /// doorbell above — because the reason given here for the pull was
+    /// that an authority cannot reach a private node, and it can. See
+    /// `docs/network.md` phase 9.
     ///
     /// Handing the same errand over twice is normal. A node that
     /// collected one and then died has to be given it again, and
@@ -858,6 +901,13 @@ mod tests {
         container.register_instance::<crate::deploy::Deployer>(Arc::new(
             crate::deploy::Deployer::new(database.clone(), &Config::default()),
         ));
+        // The controller holds one so an authority can ring it. Nothing in
+        // these tests answers it: a ring with no loop behind it is a
+        // notification nobody is waiting on, which is exactly what it is
+        // on a node whose collector is between passes.
+        container.register_instance::<super::super::collect::Doorbell>(Arc::new(
+            super::super::collect::Doorbell::default(),
+        ));
         register(&container, Config::default());
 
         Authority {
@@ -914,6 +964,24 @@ mod tests {
 
     /// A response that never arrived is re-sent, and the same node
     /// arriving twice is one join.
+    /// The doorbell answers an authority this node takes orders from, and
+    /// declines one it does not — which bounds what an unauthenticated ring
+    /// can set in motion to a round trip this node was going to make
+    /// anyway. See `collect::Doorbell` for why it carries nothing.
+    #[tokio::test]
+    async fn only_an_authority_this_node_answers_to_can_ring_it() {
+        let authority = authority().await;
+
+        // Nobody is this node's authority: it is the one enrolling.
+        let response = authority
+            .harness
+            .post("/api/network/wake/nd-stranger")
+            .send()
+            .await;
+        response.assert_ok();
+        assert_eq!(response.value()["settled"], serde_json::json!(false));
+    }
+
     #[tokio::test]
     async fn the_same_node_may_arrive_twice() {
         let authority = authority().await;
