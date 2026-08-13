@@ -280,13 +280,20 @@ Still open:
 Phases 4 to 7 are **verified between the two nodes** on v0.6.6 — see
 "What the nodes said about 4 to 7" below, and the seven fixes it took.
 
-Phase 3 works and is in the wrong place, which is worth saying plainly
-rather than quietly reshaping. Its form lives on the *node* page — pick
-a service, send it there — and the goal above puts it on the *service*
-page: how many replicas, and where each goes. What the receiving node
-writes is also a full project and service, editable, indistinguishable
-from its own. Phases 4 and 5 are what fix both; the errand mechanism
-underneath them does not change.
+Phase 3 worked and was in the wrong place — its form lived on the
+*node* page, pick a service and send it there, while the goal put it on
+the *service* page: how many replicas, and where each goes. Phases 4 and
+5 fixed that, and **the old form is now gone**, which took longer than
+it should have: it stayed for three phases after the thing that replaced
+it.
+
+Leaving it was not harmless. It queued a `host` errand with `slots:
+[1]`, and a receiving node reads that list as the whole of what it runs
+for a service — so pressing it on a node already holding slots 2 and 3
+would have stopped those and left it slot 1, silently. And for a managed
+database it sent the wrong *kind* of errand entirely: a plain container,
+no volume, no engine row, initialising into a layer thrown away at the
+next deployment. It would have looked like it worked.
 
 What used to be phases 4 and 5 — an edge routing a name to a container
 elsewhere, then groups — is still two, but both moved and the first one
@@ -619,3 +626,41 @@ means the terms travel with the token rather than being asked for
 afterwards. A join that showed the terms after committing would be a
 consent screen for a decision already made — which is worse than no
 screen at all, because it looks like one.
+
+### What revoking turned out to need
+
+Phase 8 built consent and did not build its opposite. Withdrawing
+`edge` from a node left behind everything that consent had produced: the
+claim on the name, the proxy route, and an ACME order repeating twice a
+day for a name the node would never answer for again — against an
+authority that locks the account after five failed authorizations. Found
+by revoking one on a real pair of nodes, and measured five minutes later
+still answering an http-01 challenge for it.
+
+Three causes, each sufficient on its own:
+
+- **The grant was checked before the errand was read.** So revoking it
+  blocked the empty-upstream errand that exists to release the name: the
+  owner detected the drop, correctly sent the withdrawal, and the node
+  refused it — `this node has not agreed to 'edge' for that node`. A
+  withdrawal needs no permission. Consent is for taking work on, not for
+  putting it down.
+- **Nothing convergent released the claim.** The withdrawing errand
+  arrives only if the other node is still there, still knows and still
+  reaches this one — and a node revoking a grant is quite often doing it
+  because one of those stopped being true. `release_ungranted` runs at
+  boot beside the other convergent passes and asks only about now: a
+  claim whose authority does not grant `edge` today is a claim to
+  release, however it was made.
+- **Nothing ever deleted an errand-written route.** `retain_proxies`
+  skips a row with no `service_id` deliberately — pruning it would take
+  somebody else's name off the air every time anything deployed
+  locally — and `forget_control_plane` touches only control-plane rows.
+  A proxy row with no service was in neither set, so even the
+  *successful* withdrawal path had been leaving the route behind since
+  phase 7. `routes::forget_for_other` is scoped to exactly that shape.
+
+The lesson generalises past this feature: **every switch that grants
+needs the path that ungrants tested with it.** All three of these are
+the same omission, and none is visible from the granting side — the node
+that revokes sees its own table change and assumes the rest followed.

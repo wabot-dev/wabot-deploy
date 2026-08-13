@@ -97,7 +97,7 @@ pub async fn run(pull: Option<String>, run: Option<String>, port: u16) -> anyhow
         };
 
         let status =
-            crate::runtime::containers::run(&client, ID, &reference, &request, None).await?;
+            crate::runtime::containers::run(&client, ID, &reference, &request, None, None).await?;
         println!("  pid        {}", status.pid);
         println!("  status     {}", status.status);
 

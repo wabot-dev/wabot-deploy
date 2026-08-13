@@ -307,20 +307,6 @@ impl NodePages {
             let path = format!("/nodes/{}", node.id);
             // Everything this node could ask that one to run, named the
             // way somebody picking from a list would recognise.
-            let projects_here = crate::platform::projects::all(&self.state.database).await?;
-            let hostable: Vec<(String, String)> =
-                crate::platform::services::all(&self.state.database, None)
-                    .await?
-                    .into_iter()
-                    .map(|service| {
-                        let project = projects_here
-                            .iter()
-                            .find(|project| project.id == service.project_id)
-                            .map(|project| project.name.as_str())
-                            .unwrap_or("?");
-                        (service.id.clone(), format!("{project} · {}", service.name))
-                    })
-                    .collect();
             let orders: Vec<network::errand::Record> = network::errand::all(&self.state.database)
                 .await?
                 .into_iter()
@@ -345,45 +331,12 @@ impl NodePages {
                     }
                     (network_card(&node))
 
-                    <section class="stack">
-                        <p class="card-label">(t("Run a service there"))</p>
-                        @if hostable.is_empty() {
-                            <section class="card stack">
-                                <p>(t("This node has no services to send. Deploy one here \
-                                     first — what travels is an instruction to run the \
-                                     same image, pulled from this node's registry."))</p>
-                            </section>
-                        } @else {
-                            <form method="post"
-                                  action=(format!("/nodes/{}/host", node.id))
-                                  class="card stack">
-                                <label for="service">(t("Service"))</label>
-                                <select id="service" name="service">
-                                    @for (id, label) in &hostable {
-                                        <option value=(id)>(label)</option>
-                                    }
-                                </select>
-                                <p class="field-hint">(t("That node writes its own project, its own service \
-                                     row and its own deployment — nothing is shared. It \
-                                     pulls the image from this node's registry with a \
-                                     credential this puts in the instruction, so the \
-                                     image travels only when it is needed."))</p>
-                                <p class="field-hint">(t("This runs the container. Which nodes answer for \
-                                     the service's name is chosen on the service itself, \
-                                     and can be this node, that one, or both."))</p>
-                                <div class="actions">
-                                    <button type="submit">(t("Ask it to run this"))</button>
-                                </div>
-                            </form>
-                        }
-                        // Wrapped so the stream can reach it. A node
-                        // collects on a fifteen-second timer, so
-                        // "pending" is the state somebody stares at
-                        // after pressing the button — and it used to
-                        // stay pending on screen long after the far
-                        // node had done the work.
-                        (errands_card(&node.id, &orders))
-                    </section>
+                    // What was asked of this node and how it went. It
+                    // stays: the form above it — "run a service there" —
+                    // is what went, and this is the record of every
+                    // instruction, including the ones the service page
+                    // now sends.
+                    (errands_card(&node.id, &orders))
 
                     <section class="card stack">
                         <p class="card-label">(t("Forget this node"))</p>
@@ -541,14 +494,15 @@ fn review_card<'a>(token: &'a str, terms: &'a network::token::JoinToken) -> impl
 }
 
 /// What holding this capability lets the other node do here.
-fn asking(capability: network::capability::Capability) -> &'static str {
+pub(crate) fn asking(capability: network::capability::Capability) -> &'static str {
     match capability {
         network::capability::Capability::Host => "Run its containers on this node",
         network::capability::Capability::Edge => "Have this node answer for its hostnames",
+        network::capability::Capability::Store => "Keep a copy of its data on this node",
     }
 }
 
-fn why(capability: network::capability::Capability) -> &'static str {
+pub(crate) fn why(capability: network::capability::Capability) -> &'static str {
     match capability {
         network::capability::Capability::Host => {
             "It can place replicas of its services here and pull the images \
@@ -558,13 +512,20 @@ fn why(capability: network::capability::Capability) -> &'static str {
             "It can ask this node to terminate TLS for one of its names and \
              proxy to wherever that service runs."
         }
+        network::capability::Capability::Store => {
+            "It can place a read-only copy of one of its databases here, and \
+             that copy is every row of it — on this node's disk, taking this \
+             node's space. Running somebody's container is not the same \
+             favour, which is why this is asked for separately."
+        }
     }
 }
 
-fn offering(capability: network::capability::Capability) -> &'static str {
+pub(crate) fn offering(capability: network::capability::Capability) -> &'static str {
     match capability {
         network::capability::Capability::Host => "Run this node's containers over there",
         network::capability::Capability::Edge => "Answer for this node's hostnames",
+        network::capability::Capability::Store => "Keep a copy of this node's data over there",
     }
 }
 
@@ -640,28 +601,38 @@ fn enrol_card(may_enrol: bool) -> impl Renderable {
             @if may_enrol {
                 <form method="post" action="/nodes/enrol" class="card stack">
                     <label for="name">(t("What to call it"))</label>
-                    <input id="name" name="name" type="text"
+                    <input id="name" name="name" type="text" autocomplete="off"
                            placeholder="alpine" required>
 
+                    // Both lists are drawn from `Capability::ALL`, not
+                    // written out. The *handler* has always read them by
+                    // name — `require-{name}` — and the form had two
+                    // boxes typed by hand, so adding a third capability
+                    // left it unaskable: the code that granted it was
+                    // complete and the only screen that could request it
+                    // did not know it existed.
                     <p class="tile-detail">(t("Ask that node to let this one:"))</p>
-                    <label class="capability">
-                        <input type="checkbox" name="require-host" value="1" checked>
-                        <span>(t("Run this node's containers there"))</span>
-                    </label>
-                    <label class="capability">
-                        <input type="checkbox" name="require-edge" value="1" checked>
-                        <span>(t("Have it answer for this node's hostnames"))</span>
-                    </label>
+                    @for capability in network::capability::Capability::ALL {
+                        <label class="capability">
+                            <input type="checkbox" name=(format!("require-{}", capability.name()))
+                                   value="1" checked>
+                            // `offering`, not `asking`: these two are
+                            // written from the granting node's side, and
+                            // this list is what *this* node wants to be
+                            // allowed to do over there. Swapping them
+                            // reads plausibly and says the opposite.
+                            <span>(t(offering(capability)))</span>
+                        </label>
+                    }
 
                     <p class="tile-detail">(t("And offer it, in return:"))</p>
-                    <label class="capability">
-                        <input type="checkbox" name="offer-host" value="1">
-                        <span>(t("Run its containers on this node"))</span>
-                    </label>
-                    <label class="capability">
-                        <input type="checkbox" name="offer-edge" value="1">
-                        <span>(t("Answer for its hostnames from this node"))</span>
-                    </label>
+                    @for capability in network::capability::Capability::ALL {
+                        <label class="capability">
+                            <input type="checkbox" name=(format!("offer-{}", capability.name()))
+                                   value="1">
+                            <span>(t(asking(capability)))</span>
+                        </label>
+                    }
                     <p class="field-hint">(t("Both lists travel inside the token and are shown on the \
                          other machine before it is spent. Whoever holds it \
                          accepts or refuses each one — so what is asked for here \
@@ -1256,7 +1227,7 @@ fn certificate_card<'a>(
 
             <form method="post" action="/nodes/certificate" class="stack">
                 <label for="domain">(t("Domain"))</label>
-                <input id="domain" name="domain" type="text" class="mono"
+                <input id="domain" name="domain" type="text" autocomplete="off" class="mono"
                        value=(domain.unwrap_or_default())
                        placeholder="node.example.com">
                 <p class="field-hint">(t("It must resolve to this node, and this node must be reachable on \
@@ -1328,11 +1299,11 @@ pub(crate) fn certificate_source_form(
                 // when `renew_with` says `file`.
                 <div class="stack" data-when="renew_with=file">
                     <label for=(field("cert"))>(t("Certificate file"))</label>
-                    <input id=(field("cert")) name="cert_path" type="text" class="mono"
+                    <input id=(field("cert")) name="cert_path" type="text" autocomplete="off" class="mono"
                            value=(cert_path) placeholder="/etc/ssl/name.crt"
                            data-required-when="renew_with=file">
                     <label for=(field("key"))>(t("Key file"))</label>
-                    <input id=(field("key")) name="key_path" type="text" class="mono"
+                    <input id=(field("key")) name="key_path" type="text" autocomplete="off" class="mono"
                            value=(key_path) placeholder="/etc/ssl/name.key"
                            data-required-when="renew_with=file">
                     <p class="field-hint">(t("Both are read now and refused if they do not match, do not cover \
@@ -1851,109 +1822,6 @@ impl NodeApi {
         Ok(super::auth::see_other("/nodes"))
     }
 
-    /// Ask another node to run one of this node's services.
-    ///
-    /// The image reference is used as it stands: it already names this
-    /// node's registry, because that is where the push landed. So the
-    /// far node pulls the same bytes this one runs, rather than
-    /// resolving a tag of its own and getting whatever is current
-    /// there — which would be two nodes running "the same" service and
-    /// disagreeing about what that is.
-    #[post("/nodes/:node/host")]
-    #[raw]
-    #[middleware(SessionMiddleware)]
-    async fn host_there(&self, request: Request) -> RestResult<Response> {
-        let Some(account) = signed_in(&self.auth) else {
-            return Ok(super::auth::see_other("/sign-in"));
-        };
-        // Putting work on another machine is not a project-level
-        // decision.
-        if !account.is_admin() {
-            return Ok(super::auth::see_other("/"));
-        }
-
-        let path = request.uri().path().to_string();
-        let Some(node_id) = super::auth::segments(&path).get(1).map(|id| id.to_string()) else {
-            return Ok(super::auth::see_other("/nodes"));
-        };
-        let here = format!("/nodes/{node_id}");
-
-        let form = match super::auth::read_form(request).await {
-            Ok(form) => form,
-            Err(response) => return Ok(response),
-        };
-        let service_id = super::auth::field(&form, "service");
-
-        let Some(service) = crate::platform::services::all(&self.state.database, None)
-            .await?
-            .into_iter()
-            .find(|service| service.id == service_id)
-        else {
-            return Ok(super::auth::back_with_error(&here, "no such service"));
-        };
-        let Some(project) =
-            crate::platform::projects::find(&self.state.database, &service.project_id).await?
-        else {
-            return Ok(super::auth::back_with_error(&here, "no such project"));
-        };
-        // The registry is the host in the reference, read by the same
-        // rule the pull path reads it by — one copy, because two
-        // diverged the first time and `alpine:3.23` came out as a
-        // registry called `alpine` on port `3.23`. A service whose image
-        // names no registry is one the far node can pull without
-        // anything from here, and the credential below would be going
-        // somewhere it does not belong.
-        let Some(registry) = crate::platform::registry_credentials::host_of(&service.image) else {
-            return Ok(super::auth::back_with_error(
-                &here,
-                "that image does not name a registry, so there is nothing to pull it from",
-            ));
-        };
-
-        // A credential for that one project, minted for this errand. It
-        // is a push token because that is what this registry reads, and
-        // it is more than a pull needs — a read-only scope belongs in
-        // the registry and is not this change.
-        let (_, secret) = match crate::platform::tokens::create(
-            &self.state.database,
-            &project.id,
-            &format!("errand to {node_id}"),
-            &account.id,
-        )
-        .await
-        {
-            Ok(minted) => minted,
-            Err(error) => return Ok(super::auth::back_with_error(&here, &error.to_string())),
-        };
-
-        let payload = serde_json::to_value(network::errand::Host {
-            project: project.name.clone(),
-            service: service.name.clone(),
-            image: service.image.clone(),
-            registry: registry.clone(),
-            username: "errand".into(),
-            secret,
-            env: service.env.clone(),
-            port: None,
-            // One copy. This form predates placement and is the one on
-            // the wrong page — the service's own page is where a
-            // replica count is chosen.
-            slots: vec![1],
-        })
-        .unwrap_or_default();
-
-        network::errand::queue(
-            &self.state.database,
-            &node_id,
-            network::errand::Kind::Host,
-            &payload,
-        )
-        .await?;
-
-        Ok(super::auth::see_other(&here))
-    }
-
-    /// Stop listing a node.
     #[post("/nodes/forget/:node")]
     #[raw]
     #[middleware(SessionMiddleware)]
@@ -3181,105 +3049,6 @@ pub(crate) mod tests {
 
         response.assert_status(StatusCode::SEE_OTHER);
         assert_eq!(response.header("location"), Some("/"));
-    }
-
-    /// The console's half of phase 3: asking another node to run a
-    /// service this one has, and seeing what became of the asking.
-    #[tokio::test]
-    async fn a_service_can_be_sent_to_a_joined_node() {
-        let console = Console::new().await;
-        let cookie = console.signed_in().await;
-        joined(&console, "nd-elsewhere1").await;
-
-        let project = crate::platform::projects::create(&console.database, "shared")
-            .await
-            .expect("project");
-        let service = crate::platform::services::create(
-            &console.database,
-            &project.id,
-            "web",
-            "hub.example.com/shared/web@sha256:abc",
-            &[],
-        )
-        .await
-        .expect("service");
-
-        console
-            .harness
-            .post("/nodes/nd-elsewhere1/host")
-            .header("cookie", &cookie)
-            .form(&[("service", service.id.as_str())])
-            .send()
-            .await
-            .assert_status(StatusCode::SEE_OTHER);
-
-        let queued = crate::network::errand::all(&console.database)
-            .await
-            .expect("errands");
-        assert_eq!(queued.len(), 1);
-        assert_eq!(queued[0].node_id, "nd-elsewhere1");
-        assert!(!queued[0].done(), "nothing has collected it yet");
-
-        // The far node pulls the same bytes this one runs, with a
-        // credential minted for the errand — a tag it resolved itself
-        // would be two nodes disagreeing about one service.
-        let waiting = crate::network::errand::waiting(&console.database, "nd-elsewhere1")
-            .await
-            .expect("waiting");
-        let host: crate::network::errand::Host =
-            serde_json::from_value(waiting[0].payload.clone()).expect("a host errand");
-        assert_eq!(host.image, "hub.example.com/shared/web@sha256:abc");
-        assert_eq!(host.registry, "hub.example.com");
-        assert!(!host.secret.is_empty(), "nothing to pull it with");
-
-        // And the page says what became of it.
-        let body = console
-            .harness
-            .get("/nodes/nd-elsewhere1")
-            .header("cookie", &cookie)
-            .send()
-            .await
-            .body;
-        assert!(body.contains("Collected"), "{body}");
-    }
-
-    /// An image from somebody else's registry is one the far node can
-    /// pull without anything from here — and sending it a credential
-    /// for *this* registry would be sending it somewhere it does not
-    /// belong.
-    #[tokio::test]
-    async fn a_service_whose_image_names_no_registry_is_refused() {
-        let console = Console::new().await;
-        let cookie = console.signed_in().await;
-        joined(&console, "nd-elsewhere1").await;
-
-        let project = crate::platform::projects::create(&console.database, "shared")
-            .await
-            .expect("project");
-        let service = crate::platform::services::create(
-            &console.database,
-            &project.id,
-            "web",
-            "alpine:3.23",
-            &[],
-        )
-        .await
-        .expect("service");
-
-        let response = console
-            .harness
-            .post("/nodes/nd-elsewhere1/host")
-            .header("cookie", &cookie)
-            .form(&[("service", service.id.as_str())])
-            .send()
-            .await;
-
-        let location = response.header("location").unwrap_or_default();
-        assert!(location.contains("error="), "{location}");
-        assert!(crate::network::errand::all(&console.database)
-            .await
-            .expect("errands")
-            .is_empty());
     }
 
     /// A node that arrived through a join, as the API writes it.

@@ -118,7 +118,7 @@ impl ProjectPages {
                 }
                 <form method="post" action="/projects" class="card stack">
                     <label for="name">(t("Name"))</label>
-                    <input id="name" name="name" type="text" required autofocus>
+                    <input id="name" name="name" type="text" autocomplete="off" required autofocus>
                     <p class="field-hint">(t("The slug is derived from the name, and it is what \
                          hostnames and containerd labels are built from."))</p>
 
@@ -153,6 +153,7 @@ impl ProjectPages {
         };
         let services = services::all(&self.state.database, Some(&project.id)).await?;
         let new_service = format!("/projects/{}/services/new", project.slug);
+        let new_database = format!("/projects/{}/databases/new", project.slug);
 
         // Asked of containerd, one service at a time. Sequential
         // because a project has a handful of services and each answer
@@ -211,10 +212,18 @@ impl ProjectPages {
                     <div class="split">
                         <div class="stack-sm">
                             <h1>(&project.name)</h1>
-                            <p class="slug-preview">(&project.slug)</p>
                         </div>
                         @if allowed.may_deploy() {
-                            <a class="btn" href=(&new_service)>(t("Create service"))</a>
+                            <div class="row">
+                                // Secondary, and beside rather than
+                                // above: a database is a service of a
+                                // particular kind, not a second thing
+                                // this page is about.
+                                <a class="btn btn-secondary" href=(&new_database)>(
+                                    t("Create database")
+                                )</a>
+                                <a class="btn" href=(&new_service)>(t("Create service"))</a>
+                            </div>
                         }
                     </div>
                     @if let Some(message) = &query.error {
@@ -225,7 +234,12 @@ impl ProjectPages {
                         <section class="empty">
                             <p>(t("No services yet."))</p>
                             @if allowed.may_deploy() {
-                                <a class="btn" href=(&new_service)>(t("Create service"))</a>
+                                <div class="row">
+                                    <a class="btn btn-secondary" href=(&new_database)>(
+                                        t("Create database")
+                                    )</a>
+                                    <a class="btn" href=(&new_service)>(t("Create service"))</a>
+                                </div>
                             }
                         </section>
                     } @else {
@@ -321,7 +335,6 @@ impl ProjectPages {
                 <div class="split">
                     <div class="stack-sm">
                         <h1>(t("Settings"))</h1>
-                        <p class="slug-preview">(&project.slug)</p>
                     </div>
                     // What this account may do here, said once at the
                     // top. It used to be on the people page and is more
@@ -376,7 +389,7 @@ impl ProjectPages {
                         </table>
                     }
                     <form method="post" action=(format!("{here}/tokens")) class="row">
-                        <input name="name" type="text" placeholder="what it is for" required>
+                        <input name="name" type="text" autocomplete="off" placeholder="what it is for" required>
                         <button class="btn btn-secondary" type="submit">(t("Create token"))</button>
                     </form>
                 </section>
@@ -659,9 +672,24 @@ fn people_card<'a>(
                 <form method="post" action=(format!("{here}/people")) class="stack-sm">
                     <div class="add-person">
                         <div>
-                            <label for="username">(t("Username"))</label>
-                            <input id="username" name="username" type="text"
-                                   placeholder="username" required>
+                            <label for="member">(t("Username"))</label>
+                            // Named `member`, not `username`, and with
+                            // no placeholder repeating the word.
+                            //
+                            // `autocomplete="off"` is a request, and
+                            // Safari refuses it here: it decides a field
+                            // is a login from the *name, id and
+                            // placeholder*, and all three said
+                            // `username`. So the keychain offered the
+                            // operator their own account for a field
+                            // asking who to add — reported twice, with
+                            // the arrow pointing at it.
+                            //
+                            // The name is also the truer one. This is
+                            // not your username; it is the person you
+                            // are adding.
+                            <input id="member" name="member" type="text" autocomplete="off"
+                                   required>
                         </div>
                         <div>
                             <label for="role">(t("Can"))</label>
@@ -1194,7 +1222,7 @@ impl ProjectApi {
             Ok(form) => form,
             Err(response) => return Ok(response),
         };
-        let username = field(&form, "username");
+        let username = field(&form, "member");
         let role = ProjectRole::parse(field(&form, "role"));
 
         let Some(found) = crate::accounts::all(&self.state.database)
@@ -1538,6 +1566,7 @@ mod tests {
                 overlay_port: None,
                 last_error: None,
                 evicted_at: None,
+                reserved_host: None,
             };
 
         // The ordinary case, and the useful one.
@@ -1777,7 +1806,7 @@ mod tests {
             ),
             (
                 "people",
-                vec![("username", "nobody"), ("role", "viewer")],
+                vec![("member", "nobody"), ("role", "viewer")],
                 "/projects/shipping/people",
             ),
         ] {

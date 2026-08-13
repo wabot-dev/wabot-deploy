@@ -23,7 +23,9 @@ use wabot::sqlite::SqliteDatabase;
 
 use super::errand::{self, Errand, Kind};
 use crate::config::Config;
-use crate::platform::{ports, projects, registry_credentials, replicas, services, slugify};
+use crate::platform::{
+    databases, ports, projects, registry_credentials, replicas, services, slugify,
+};
 use crate::runtime::images::Credential;
 
 /// How often a node asks. Short enough that a deployment somebody
@@ -232,10 +234,34 @@ async fn carry_out(
                 .map_err(|error| format!("that is not a host errand: {error}"))?;
             host_service(database, config, container, authority, host).await
         }
+        Kind::Database => {
+            // `Store`, not `Host`. Keeping somebody's data is a
+            // different favour from running somebody's container, and a
+            // node that agreed to the second never agreed to the first.
+            allowed(database, authority, super::capability::Capability::Store).await?;
+            let standby: errand::Standby = serde_json::from_value(order.payload)
+                .map_err(|error| format!("that is not a database errand: {error}"))?;
+            hold_standby(database, config, container, authority, standby).await
+        }
         Kind::Edge => {
-            allowed(database, authority, super::capability::Capability::Edge).await?;
             let edge: errand::Edge = serde_json::from_value(order.payload)
                 .map_err(|error| format!("that is not an edge errand: {error}"))?;
+            // **A withdrawal needs no permission.** An edge errand with
+            // no upstreams asks this node to *stop* answering for a
+            // name, and consent is for taking work on, not for putting
+            // it down.
+            //
+            // Checking the grant first made revoking one self-blocking,
+            // which is how this was found: the owner dropped the node,
+            // correctly sent the empty errand, and the node refused the
+            // one message that would have cleaned up after it. The
+            // claim, the route and the certificate order all survived
+            // the withdrawal of the consent they rested on — and that
+            // last one repeats twice a day against an authority that
+            // locks the account after five failures.
+            if !edge.upstreams.is_empty() {
+                allowed(database, authority, super::capability::Capability::Edge).await?;
+            }
             serve_name(database, container, authority, edge).await
         }
         // An instruction from a newer node. Refused with the reason
@@ -285,16 +311,23 @@ async fn host_service(
 ) -> Result<(), String> {
     // The credential first: without it the deploy fails at the pull,
     // and the pull is the last thing to run.
-    registry_credentials::set(
-        database,
-        &host.registry,
-        &Credential {
-            username: host.username.clone(),
-            secret: host.secret.clone(),
-        },
-    )
-    .await
-    .map_err(|error| error.to_string())?;
+    //
+    // When there is one. An errand naming a registry that serves
+    // anybody — Docker Hub, for every managed database — carries none,
+    // and storing an empty one would turn an anonymous pull that works
+    // into an authenticated one that does not.
+    if let (Some(username), Some(secret)) = (&host.username, &host.secret) {
+        registry_credentials::set(
+            database,
+            &host.registry,
+            &Credential {
+                username: username.clone(),
+                secret: secret.clone(),
+            },
+        )
+        .await
+        .map_err(|error| error.to_string())?;
+    }
 
     let project = ensure_project(database, &host.project, authority).await?;
 
@@ -391,6 +424,143 @@ async fn host_service(
     Ok(())
 }
 
+/// Keep a read-only copy of somebody's database here.
+///
+/// The same shape as `host_service` and a different set of rows: a
+/// database needs its engine row, its volume and its port before the
+/// deploy path will do anything but refuse. Convergent throughout, like
+/// every other errand — carried out twice it means what it meant once.
+///
+/// **The primary's address is stored, not derived.** This node has no
+/// row for the primary and never will; what it has is what it was told.
+/// See migration `0031`.
+async fn hold_standby(
+    database: &SqliteDatabase,
+    config: &Config,
+    container: &Container,
+    authority: &str,
+    standby: errand::Standby,
+) -> Result<(), String> {
+    if standby.slots.contains(&standby.primary_slot) {
+        // The one instruction this node must refuse rather than obey.
+        // A second primary is two databases taking writes under one
+        // name, and nothing downstream could reconcile them.
+        return Err(format!(
+            "slot {} is the primary's, and a primary is not something to place here",
+            standby.primary_slot
+        ));
+    }
+    if let (Some(username), Some(secret)) = (&standby.username, &standby.secret) {
+        registry_credentials::set(
+            database,
+            &standby.registry,
+            &Credential {
+                username: username.clone(),
+                secret: secret.clone(),
+            },
+        )
+        .await
+        .map_err(|error| error.to_string())?;
+    }
+
+    let project = ensure_project(database, &standby.project, authority).await?;
+    let slug = slugify(&standby.service);
+    let existing = services::in_project(database, &project.id, &slug)
+        .await
+        .map_err(|error| error.to_string())?;
+
+    let service = match existing {
+        Some(service) => {
+            services::set_image(database, &service.id, &standby.image)
+                .await
+                .map_err(|error| error.to_string())?;
+            service
+        }
+        None => {
+            let made =
+                services::create(database, &project.id, &standby.service, &standby.image, &[])
+                    .await
+                    .map_err(|error| error.to_string())?;
+            services::set_origin(database, &made.id, authority)
+                .await
+                .map_err(|error| error.to_string())?;
+            made
+        }
+    };
+
+    services::set_kind(database, &service.id, services::Kind::Postgres)
+        .await
+        .map_err(|error| error.to_string())?;
+    services::set_memory_limit(database, &service.id, Some(standby.memory_limit))
+        .await
+        .map_err(|error| error.to_string())?;
+    databases::adopt(database, &service.id, &standby)
+        .await
+        .map_err(|error| error.to_string())?;
+
+    // The volume and the port, which the deploy path reads rather than
+    // assumes. Both convergent: a second errand finds them there.
+    if crate::platform::volumes::of_service(database, &service.id)
+        .await
+        .map_err(|error| error.to_string())?
+        .is_empty()
+    {
+        crate::platform::volumes::create(
+            database,
+            &service.id,
+            crate::platform::postgres::VOLUME,
+            crate::platform::postgres::DATA_MOUNT,
+        )
+        .await
+        .map_err(|error| error.to_string())?;
+    }
+    let declared = ports::of_service(database, &service.id)
+        .await
+        .map_err(|error| error.to_string())?;
+    if declared.is_empty() {
+        ports::create(
+            database,
+            &service.id,
+            crate::platform::postgres::PORT,
+            false,
+            None,
+        )
+        .await
+        .map_err(|error| error.to_string())?;
+    }
+
+    replicas::ensure_slots(database, &service.id, &standby.slots)
+        .await
+        .map_err(|error| error.to_string())?;
+    stop_unnamed(database, config, &project, &service, &standby.slots).await?;
+
+    if standby.slots.is_empty() {
+        // Nothing left to hold. The rows go, and so does the copy —
+        // which for a standby is safe in a way it would not be for a
+        // primary: every row of it is still on the node that owns it.
+        services::delete(database, &service.id)
+            .await
+            .map_err(|error| error.to_string())?;
+        return Ok(());
+    }
+
+    let command = crate::deploy::jobs::DeployService {
+        service_id: service.id.clone(),
+        release_id: None,
+    };
+    wabot::async_jobs::run_command(container, &command)
+        .await
+        .map_err(|error| format!("could not queue the deployment: {error}"))?;
+
+    tracing::info!(
+        service = %service.slug,
+        slots = ?standby.slots,
+        primary = %standby.primary,
+        "an errand asked this node to hold a standby"
+    );
+    Ok(())
+}
+
 /// Answer for a name here, proxying to the replicas the errand named.
 ///
 /// **The claim comes first.** A name belongs to one authority, and a
@@ -437,7 +607,7 @@ async fn serve_name(
     // a name pointing at an empty list is a hung request waiting to
     // happen.
     if upstreams.is_empty() {
-        crate::edge::routes::forget_control_plane(database, &edge.hostname)
+        crate::edge::routes::forget_for_other(database, &edge.hostname)
             .await
             .map_err(|error| error.to_string())?;
         crate::network::release(database, &edge.hostname)
@@ -697,6 +867,110 @@ mod tests {
         );
     }
 
+    /// Revoking a grant must not block the message that cleans up after
+    /// it. Consent is for taking work on, not for putting it down.
+    ///
+    /// This shipped and was found on a node. The owner dropped Alpine
+    /// as an edge and correctly sent the empty-upstream errand; Alpine
+    /// had just revoked `edge`, so it refused the one instruction that
+    /// would have released the claim — leaving the name held, the route
+    /// in place, and a certificate ordered for it twice a day against
+    /// an authority that locks the account after five failures.
+    #[tokio::test]
+    async fn a_name_can_be_taken_back_from_a_node_that_revoked_the_grant() {
+        let database = crate::db::open_in_memory().await.expect("open");
+        let container = Container::new();
+
+        // It agreed once, and the name was claimed under that.
+        crate::network::capability::grant(
+            &database,
+            "nd-a",
+            &[super::super::capability::Capability::Edge],
+        )
+        .await
+        .expect("grant");
+        carry_out(
+            &database,
+            &Config::default(),
+            &container,
+            "nd-a",
+            Errand {
+                id: "er-1".into(),
+                kind: Kind::Edge,
+                payload: serde_json::json!({
+                    "hostname": "shop.example",
+                    "upstreams": ["10.42.0.1:30001"],
+                }),
+            },
+        )
+        .await
+        .expect("served");
+        assert_eq!(
+            crate::network::claimed_for_others(&database)
+                .await
+                .expect("claims"),
+            vec!["shop.example".to_string()]
+        );
+
+        // Then it changed its mind, and the owner is telling it to stop.
+        crate::network::capability::grant(&database, "nd-a", &[])
+            .await
+            .expect("revoke");
+        carry_out(
+            &database,
+            &Config::default(),
+            &container,
+            "nd-a",
+            Errand {
+                id: "er-2".into(),
+                kind: Kind::Edge,
+                payload: serde_json::json!({ "hostname": "shop.example", "upstreams": [] }),
+            },
+        )
+        .await
+        .expect("a withdrawal needs no permission");
+
+        assert!(
+            crate::network::claimed_for_others(&database)
+                .await
+                .expect("claims")
+                .is_empty(),
+            "the name is still held, so a certificate is still ordered for it"
+        );
+    }
+
+    /// And the other direction: withdrawing is free, taking on is not.
+    /// A revoked grant must still refuse an errand that asks this node
+    /// to *start* answering for a name.
+    #[tokio::test]
+    async fn a_revoked_grant_still_refuses_a_name_it_is_asked_to_serve() {
+        let database = crate::db::open_in_memory().await.expect("open");
+        let container = Container::new();
+
+        let error = carry_out(
+            &database,
+            &Config::default(),
+            &container,
+            "nd-a",
+            Errand {
+                id: "er-1".into(),
+                kind: Kind::Edge,
+                payload: serde_json::json!({
+                    "hostname": "shop.example",
+                    "upstreams": ["10.42.0.1:30001"],
+                }),
+            },
+        )
+        .await
+        .expect_err("refused");
+
+        assert!(error.contains("has not agreed to `edge`"), "{error}");
+        assert!(crate::network::claimed_for_others(&database)
+            .await
+            .expect("claims")
+            .is_empty());
+    }
+
     /// An instruction this version does not know is refused with a
     /// reason, not dropped. The authority learns that this node is the
     /// old one, which is something somebody can act on — an errand that
@@ -802,6 +1076,91 @@ mod tests {
         );
     }
 
+    /// The one instruction a node must refuse rather than obey.
+    ///
+    /// Two primaries is two databases taking writes under one name, and
+    /// nothing downstream could reconcile them — not the replication
+    /// slot, not the reader, not the operator. A `database` errand only
+    /// ever asks for standbys, so naming the primary's slot in it is a
+    /// mistake on the sending side and this is where it stops.
+    #[tokio::test]
+    async fn an_errand_that_asks_for_a_second_primary_is_refused() {
+        let database = crate::db::open_in_memory().await.expect("open");
+        let container = Container::new();
+        crate::network::capability::grant(
+            &database,
+            "nd-a",
+            &[super::super::capability::Capability::Store],
+        )
+        .await
+        .expect("grant");
+
+        let error = carry_out(
+            &database,
+            &Config::default(),
+            &container,
+            "nd-a",
+            Errand {
+                id: "er-1".into(),
+                kind: Kind::Database,
+                payload: serde_json::json!({
+                    "project": "shared", "service": "orders",
+                    "image": "docker.io/library/postgres:17-alpine",
+                    "registry": "docker.io",
+                    "memory_limit": 268435456u64,
+                    "engine": "postgres", "version": "17",
+                    "database_name": "orders", "admin_user": "orders",
+                    "admin_password": "a", "replication_user": "r",
+                    "replication_password": "b",
+                    "primary": "10.42.0.1:30002",
+                    "slots": [1, 2],
+                    "primary_slot": 1,
+                }),
+            },
+        )
+        .await
+        .expect_err("refused");
+
+        assert!(error.contains("not something to place here"), "{error}");
+        assert!(
+            services::all(&database, None)
+                .await
+                .expect("services")
+                .is_empty(),
+            "it was refused before anything was written"
+        );
+    }
+
+    /// Keeping somebody's data is a different favour from running
+    /// somebody's container, so `host` does not buy it.
+    #[tokio::test]
+    async fn a_node_that_only_agreed_to_host_will_not_hold_a_database() {
+        let database = crate::db::open_in_memory().await.expect("open");
+        let container = Container::new();
+        crate::network::capability::grant(
+            &database,
+            "nd-a",
+            &[super::super::capability::Capability::Host],
+        )
+        .await
+        .expect("grant");
+
+        let error = carry_out(
+            &database,
+            &Config::default(),
+            &container,
+            "nd-a",
+            Errand {
+                id: "er-1".into(),
+                kind: Kind::Database,
+                payload: serde_json::json!({}),
+            },
+        )
+        .await
+        .expect_err("refused");
+        assert!(error.contains("has not agreed to `store`"), "{error}");
+    }
+
     /// A payload that will not parse is a refusal with a reason too,
     /// and not a panic on the node that received it.
     #[tokio::test]
@@ -850,8 +1209,8 @@ mod tests {
                 service: "web".into(),
                 image: image.into(),
                 registry: "hub.example.com".into(),
-                username: "wabot".into(),
-                secret: "a-push-token".into(),
+                username: Some("wabot".into()),
+                secret: Some("a-push-token".into()),
                 env: Default::default(),
                 port: None,
                 slots: vec![1],

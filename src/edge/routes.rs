@@ -185,6 +185,31 @@ pub async fn retain_proxies(database: &SqliteDatabase, keep: &[String]) -> Sqlit
         .await
 }
 
+/// Forget a name this node was answering **for another node**.
+///
+/// The gap between the two functions above, and nothing filled it:
+/// `retain_proxies` skips a row with no `service_id` on purpose, and
+/// `forget_control_plane` touches only control-plane rows. A route
+/// written by an edge errand is a proxy row with no service, so it was
+/// in neither set — the owner could take the name back and this node
+/// would go on proxying it for ever.
+///
+/// Scoped to exactly that shape: never a local service's route, never
+/// the console's.
+pub async fn forget_for_other(database: &SqliteDatabase, host: &str) -> SqliteResult<usize> {
+    let host = normalize(host);
+    database
+        .write(move |connection| {
+            connection.execute(
+                "DELETE FROM route \
+                 WHERE \"host\" = ?1 AND \"upstream_kind\" = 'proxy' \
+                   AND \"service_id\" IS NULL",
+                [host],
+            )
+        })
+        .await
+}
+
 /// Forget one control-plane name.
 ///
 /// For the node that was renamed: the old name keeps answering the
@@ -192,7 +217,7 @@ pub async fn retain_proxies(database: &SqliteDatabase, keep: &[String]) -> Sqlit
 /// serve and stopped having a certificate for.
 ///
 /// Proxy rows are left alone — those belong to `retain_proxies`, which
-/// derives them from the services.
+/// derives them from the services, and to [`forget_for_other`].
 pub async fn forget_control_plane(database: &SqliteDatabase, host: &str) -> SqliteResult<()> {
     let host = normalize(host);
     // Never the fallback: `localhost` is how somebody reaches the

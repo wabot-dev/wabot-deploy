@@ -248,6 +248,7 @@ mod tests {
             overlay_port: port,
             last_error: None,
             evicted_at: None,
+            reserved_host: None,
         }
     }
 

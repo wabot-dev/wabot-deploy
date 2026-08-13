@@ -46,7 +46,13 @@ ssh_run 'set -e
   command -v protoc >/dev/null 2>&1 || missing="$missing protobuf-compiler"
   if [[ -n "$missing" ]]; then
     echo "    installing:$missing"
-    (apt-get update -qq && apt-get install -y -qq $missing) >/dev/null 2>&1 \
+    # apk is listed because the second node this is tested on is
+    # Alpine, and the script knowing about apt and dnf but not apk is
+    # how a build there fails at the preparation step with a message
+    # about `build-essential` — a package name that machine has never
+    # heard of.
+    (apk add --no-cache build-base protobuf-dev) >/dev/null 2>&1 \
+      || (apt-get update -qq && apt-get install -y -qq $missing) >/dev/null 2>&1 \
       || (dnf install -y -q gcc make protobuf-compiler) >/dev/null 2>&1 \
       || { echo "    could not install$missing; do it by hand"; exit 1; }
   fi

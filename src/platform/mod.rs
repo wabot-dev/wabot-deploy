@@ -21,15 +21,19 @@
 
 pub mod access;
 pub mod config_history;
+pub mod databases;
 pub mod edges;
 pub mod images;
 pub mod ports;
+pub mod postgres;
+pub mod presets;
 pub mod projects;
 pub mod registry_credentials;
 pub mod releases;
 pub mod replicas;
 pub mod services;
 pub mod tokens;
+pub mod volumes;
 
 #[derive(Debug, thiserror::Error)]
 pub enum PlatformError {

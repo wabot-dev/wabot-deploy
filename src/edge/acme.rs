@@ -528,12 +528,70 @@ pub async fn ensure_all(
         }
     }
 
+    if prune_unwanted(database, config, resolver).await {
+        changed = true;
+    }
+
     match failure {
         // Reported only after everything that could work has been
         // tried, so one bad hostname costs the others nothing.
         Some(error) if !changed => Err(error),
         _ => Ok(changed),
     }
+}
+
+/// Forget the certificates for names this node has stopped answering
+/// for.
+///
+/// Here rather than beside the other convergent passes for one reason:
+/// the resolver is here. Deleting the row without rebuilding the
+/// resolver would leave the node serving from memory a certificate it no
+/// longer stores — gone at the next restart, which is the sort of
+/// difference nobody can explain a week later.
+///
+/// **The wanted set has to be complete or this must not run.** Three
+/// sources feed it and they do not overlap: the names the edge answers
+/// for, the fallback the resolver needs for a handshake that asked for
+/// nothing, and the databases — whose names were never edge names at
+/// all, which is exactly how one came to be listed twice. A source that
+/// cannot be read is a short list, and a short list here deletes working
+/// certificates, so that case gives up instead.
+async fn prune_unwanted(
+    database: &SqliteDatabase,
+    config: &Config,
+    resolver: &certs::CertResolver,
+) -> bool {
+    let mut wanted = wanted_names(database, config).await;
+    wanted.push(certs::FALLBACK_NAME.to_string());
+    match crate::deploy::database_certificate_keys(database, config).await {
+        Ok(keys) => wanted.extend(keys),
+        Err(error) => {
+            tracing::warn!(%error, "not pruning certificates: could not read the databases");
+            return false;
+        }
+    }
+
+    let gone = match certs::prune(database, &wanted).await {
+        Ok(gone) if gone.is_empty() => return false,
+        Ok(gone) => gone,
+        Err(error) => {
+            tracing::warn!(%error, "could not prune the certificate store");
+            return false;
+        }
+    };
+
+    match certs::load_all(database)
+        .await
+        .map_err(AcmeError::from)
+        .and_then(|all| resolver.replace(&all).map_err(AcmeError::from))
+    {
+        Ok(()) => tracing::info!(
+            names = gone.join(", "),
+            "forgot certificates for names this node no longer serves"
+        ),
+        Err(error) => tracing::warn!(%error, "could not reload the resolver after pruning"),
+    }
+    true
 }
 
 pub async fn ensure(

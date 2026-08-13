@@ -163,14 +163,15 @@ mod tests {
     /// somebody chose that, and reading their "nothing" as "everything"
     /// is the one mistake this whole phase exists to prevent.
     #[test]
-    fn an_absent_list_is_both_and_an_empty_one_is_neither() {
+    fn an_absent_list_is_everything_and_an_empty_one_is_nothing() {
         let old = JoinToken {
             requires: None,
             offers: None,
             ..token()
         };
-        assert_eq!(old.requires().len(), 2);
-        assert_eq!(old.offers().len(), 2);
+        let all = crate::network::capability::Capability::ALL.len();
+        assert_eq!(old.requires().len(), all);
+        assert_eq!(old.offers().len(), all);
 
         let refused = JoinToken {
             requires: Some(Vec::new()),

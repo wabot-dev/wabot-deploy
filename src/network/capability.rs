@@ -35,6 +35,20 @@ pub enum Capability {
     Host,
     /// Answer for a hostname, terminating TLS for it.
     Edge,
+    /// Hold a copy of somebody's **data**: a database's standby, and the
+    /// volume it lives in.
+    ///
+    /// Its own capability rather than part of `Host`, because running
+    /// somebody's container and keeping somebody's data are different
+    /// things to agree to. A node with room to spare and a disk it does
+    /// not want filled is an ordinary thing to be, and under one
+    /// capability there would be no way to say so.
+    ///
+    /// **Not backfilled onto existing joins.** A node that agreed to run
+    /// containers last month did not agree to keep a copy of a database,
+    /// and a migration that decided otherwise would be the wrong kind of
+    /// quiet. Granting it needs a re-join.
+    Store,
 }
 
 impl Capability {
@@ -43,6 +57,7 @@ impl Capability {
         match self {
             Capability::Host => "node.provides.host",
             Capability::Edge => "node.provides.edge",
+            Capability::Store => "node.provides.store",
         }
     }
 
@@ -50,10 +65,11 @@ impl Capability {
         match self {
             Capability::Host => "host",
             Capability::Edge => "edge",
+            Capability::Store => "store",
         }
     }
 
-    pub const ALL: [Capability; 2] = [Capability::Host, Capability::Edge];
+    pub const ALL: [Capability; 3] = [Capability::Host, Capability::Edge, Capability::Store];
 }
 
 /// Whether this node offers a capability at all.
@@ -255,10 +271,14 @@ mod tests {
             .await
             .expect("set");
 
-        assert_eq!(
-            granted_to(&database, "nd-them").await,
-            vec![Capability::Edge]
-        );
+        // Everything that was granted except the one withdrawn — said
+        // that way rather than as a literal list, so adding a fourth
+        // capability does not make this test wrong instead of the code.
+        let expected: Vec<Capability> = Capability::ALL
+            .into_iter()
+            .filter(|capability| *capability != Capability::Host)
+            .collect();
+        assert_eq!(granted_to(&database, "nd-them").await, expected);
     }
 
     /// Private is not a separate switch and must never become one: it

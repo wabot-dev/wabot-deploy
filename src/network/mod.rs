@@ -631,6 +631,61 @@ pub async fn release(database: &SqliteDatabase, name: &str) -> NetworkResult<()>
         .await?)
 }
 
+/// Let go of every name held for an authority this node no longer
+/// serves, and forget its route.
+///
+/// Revoking `edge` withdraws the consent, and until this existed it left
+/// behind everything that consent had produced: the claim, the proxy
+/// route, and — the one that costs — a certificate order repeating twice
+/// a day for a name this node will never answer for, against an
+/// authority that locks the account after five failed authorizations.
+///
+/// The withdrawing errand is the tidy path and it is not enough on its
+/// own. It arrives only if the other node is still there, still knows,
+/// and still reaches this one; a node revoking a grant is quite often
+/// doing it *because* one of those stopped being true. So this is
+/// convergent and asks only about now: a claim whose authority does not
+/// grant `edge` today is a claim to release, however it was made.
+///
+/// Returns what it let go of, because a node quietly dropping a name it
+/// was answering for is the kind of thing somebody should be able to
+/// read in the log.
+pub async fn release_ungranted(database: &SqliteDatabase) -> NetworkResult<Vec<String>> {
+    let held: Vec<(String, String)> = database
+        .read(|connection| {
+            connection
+                .prepare(
+                    "SELECT \"name\", \"authority_id\" FROM claim \
+                     WHERE \"authority_id\" IS NOT NULL ORDER BY \"name\"",
+                )?
+                .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+                .collect()
+        })
+        .await?;
+
+    let mut released = Vec::new();
+    for (name, authority) in held {
+        // `granted_to` reads the grant through what this node provides
+        // now, so a switch turned off releases what was granted of it
+        // without anybody revoking anything.
+        if capability::granted_to(database, &authority)
+            .await
+            .contains(&capability::Capability::Edge)
+        {
+            continue;
+        }
+        crate::edge::routes::forget_for_other(database, &name).await?;
+        release(database, &name).await?;
+        tracing::info!(
+            %name,
+            %authority,
+            "let go of a name: this node no longer serves that node"
+        );
+        released.push(name);
+    }
+    Ok(released)
+}
+
 fn sha256_hex(value: &str) -> String {
     use sha2::{Digest, Sha256};
     let mut hasher = Sha256::new();
@@ -921,6 +976,66 @@ pub(crate) mod tests {
                 .expect("claim")
                 .is_ok(),
             "and releasing lets somebody else have it"
+        );
+    }
+
+    /// The withdrawing errand is the tidy path and it cannot be the only
+    /// one: it arrives only if the other node is still there, still
+    /// knows and still reaches this one — and a node revoking a grant
+    /// is often doing it because one of those stopped being true.
+    ///
+    /// So this asks about now. A name held for a node this one no
+    /// longer serves is let go of at the next boot, and the certificate
+    /// loop stops ordering for it.
+    #[tokio::test]
+    async fn a_name_held_for_a_node_this_one_no_longer_serves_is_let_go_of() {
+        let database = database().await;
+
+        capability::grant(&database, "pub-1", &[capability::Capability::Edge])
+            .await
+            .expect("grant");
+        capability::grant(&database, "pub-2", &[capability::Capability::Edge])
+            .await
+            .expect("grant");
+        for (name, authority) in [("gone.example", "pub-1"), ("kept.example", "pub-2")] {
+            claim(&database, name, Some(authority))
+                .await
+                .expect("claim")
+                .expect("free");
+            crate::edge::routes::upsert(
+                &database,
+                name,
+                &crate::edge::routes::Upstream::Proxy(vec!["10.42.0.1:30001".parse().expect("ok")]),
+                None,
+            )
+            .await
+            .expect("route");
+        }
+
+        capability::grant(&database, "pub-1", &[])
+            .await
+            .expect("revoke");
+        let released = release_ungranted(&database).await.expect("released");
+
+        assert_eq!(released, vec!["gone.example".to_string()]);
+        assert_eq!(
+            claimed_for_others(&database).await.expect("claims"),
+            vec!["kept.example".to_string()],
+            "a name held for a node this one still serves was taken too"
+        );
+        let routes: Vec<String> = crate::edge::routes::load_all(&database)
+            .await
+            .expect("routes")
+            .into_iter()
+            .map(|(host, _)| host)
+            .collect();
+        assert!(
+            !routes.iter().any(|host| host == "gone.example"),
+            "the listener would still proxy for it: {routes:?}"
+        );
+        assert!(
+            routes.iter().any(|host| host == "kept.example"),
+            "and the one still granted was dropped too: {routes:?}"
         );
     }
 }

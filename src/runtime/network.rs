@@ -62,6 +62,55 @@ const IFNAME: &str = "eth0";
 /// cloud hands out.
 const NETWORK_BASE: [u8; 2] = [10, 42];
 
+/// Every address `host-local` may allocate in a project's `/24`.
+///
+/// `.1` is the bridge itself and `.255` the broadcast; everything
+/// between is the plugin's, **including the band the node hands out
+/// itself** — see [`RESERVED_HOSTS`] for why they share one range
+/// rather than being separated.
+const ALLOCATABLE_HOSTS: std::ops::RangeInclusive<u8> = 2..=254;
+
+/// The part the node reserves, for a container whose address is written
+/// down somewhere.
+///
+/// A connection string lives in an application's environment and in
+/// somebody's notes, so the address behind it cannot move every time
+/// the container is recreated — and left to itself `host-local` hands
+/// out the lowest free one, which is stable only while nothing else
+/// churns.
+///
+/// ## One range, and the guarantee comes from the allocator's own books
+///
+/// Two wrong versions of this shipped in one afternoon, and both were
+/// found on a node. They are worth keeping because each is the obvious
+/// idea:
+///
+/// 1. **Bound `host-local` to the low band and keep the high one out of
+///    its sight** — the construction the published and overlay port
+///    ranges use, where two allocators cannot collide because their
+///    ranges do not overlap. It does not work here: `host-local` matches
+///    a *requested* address against its configured ranges rather than
+///    against the subnet, so asking for one outside them is refused with
+///    `requested IP … not in range set`.
+/// 2. **Declare both bands as two ranges in one set, low first**, and
+///    let the order do the separating. That is legal, and the
+///    separation lasts exactly one allocation: the plugin's automatic
+///    cursor is `last_reserved_ip`, so handing out a requested `.200`
+///    moves it there and the next automatic address is `.201` — inside
+///    the reserved band. Observed on a node: a database took `.200`,
+///    and the very next container took `.201`.
+///
+/// So there is **one range covering everything**, and this band is a
+/// convention about which end the node picks from rather than a fence.
+/// What stops two containers sharing an address is that both go through
+/// `host-local`, which keeps one reservation file per address and will
+/// not hand out one that exists — a guarantee from its books instead of
+/// from arithmetic. The node counts down from the top while the plugin
+/// counts up from the bottom, so they meet only after ~250 containers
+/// in one project, and when they do the ADD fails by name rather than
+/// two containers quietly answering on one address.
+pub const RESERVED_HOSTS: std::ops::RangeInclusive<u8> = 200..=254;
+
 #[derive(Debug, thiserror::Error)]
 pub enum NetworkError {
     #[error("{0}")]
@@ -122,6 +171,24 @@ impl ProjectNetwork {
         format!("{a}.{b}.{}.0/24", self.index)
     }
 
+    /// An address in the band the node hands out itself.
+    ///
+    /// Refuses anything outside it, so a caller cannot ask for an
+    /// address `host-local` might also give to somebody else — the
+    /// separation is only worth having if nothing can cross it.
+    pub fn reserved_address(&self, host: u8) -> NetworkResult<Ipv4Addr> {
+        if !RESERVED_HOSTS.contains(&host) {
+            return Err(NetworkError::Refused(format!(
+                "{host} is not in the range this node reserves ({}-{}) — an address \
+                 outside it is one the automatic allocator may hand to something else",
+                RESERVED_HOSTS.start(),
+                RESERVED_HOSTS.end(),
+            )));
+        }
+        let [a, b] = NETWORK_BASE;
+        Ok(Ipv4Addr::new(a, b, self.index, host))
+    }
+
     /// The config handed to the `bridge` plugin.
     ///
     /// * `isGateway` — the bridge gets `gateway()`, so containers have
@@ -133,7 +200,32 @@ impl ProjectNetwork {
     /// * `hairpinMode` — a container can reach the bridge address it
     ///   was itself NATed to. Off by default, and its absence shows up
     ///   as a service that can reach every peer except itself.
-    pub fn config(&self) -> String {
+    ///
+    /// ## Asking for one address in particular
+    ///
+    /// Through `args.cni.ips`, in this config, and **not** through
+    /// `CNI_ARGS=IP=`. Both are documented ways to reach `host-local`,
+    /// and only one of them survives the chain: the `bridge` plugin
+    /// parses `CNI_ARGS` first, into a struct that knows about `MAC=`
+    /// and nothing else, and a key it does not recognise is a hard
+    /// error — `ARGS: unknown args`. So the environment variable never
+    /// reaches the allocator it was meant for.
+    ///
+    /// Found on a node, by asking the plugin. It would have failed the
+    /// first deployment of every database.
+    pub fn config(&self, wanted: Option<Ipv4Addr>) -> String {
+        // `args` is passed down to the IPAM plugin with the rest of the
+        // config, which is how `host-local` sees it at all.
+        let args = match wanted {
+            Some(address) => {
+                format!("\"args\": {{ \"cni\": {{ \"ips\": [\"{address}\"] }} }},\n  ")
+            }
+            None => String::new(),
+        };
+        self.config_with(&args)
+    }
+
+    fn config_with(&self, args: &str) -> String {
         format!(
             r#"{{
   "cniVersion": "{CNI_SPEC_VERSION}",
@@ -143,16 +235,33 @@ impl ProjectNetwork {
   "isGateway": true,
   "ipMasq": true,
   "hairpinMode": true,
-  "ipam": {{
+  {args}"ipam": {{
     "type": "host-local",
-    "ranges": [[{{ "subnet": "{subnet}" }}]],
+    "ranges": [[{{ "subnet": "{subnet}", "rangeStart": "{start}", "rangeEnd": "{end}" }}]],
     "routes": [{{ "dst": "0.0.0.0/0" }}]
   }}
 }}"#,
+            args = args,
             name = self.name(),
             bridge = self.bridge,
             subnet = self.subnet(),
+            // One range over everything the plugin may allocate,
+            // including the band the node picks from — see
+            // `RESERVED_HOSTS`. Sharing the range is what makes
+            // `host-local`'s own reservation files the thing that stops
+            // a collision.
+            //
+            // The gateway stays `.1`, outside the range and what
+            // `host-local` derives by default — a range bounds what it
+            // *allocates*, not what the network contains.
+            start = self.host(*ALLOCATABLE_HOSTS.start()),
+            end = self.host(*ALLOCATABLE_HOSTS.end()),
         )
+    }
+
+    fn host(&self, host: u8) -> String {
+        let [a, b] = NETWORK_BASE;
+        format!("{a}.{b}.{}.{host}", self.index)
     }
 
     /// The config handed to the `portmap` plugin.
@@ -275,6 +384,7 @@ pub async fn attach(
     network: &ProjectNetwork,
     container_id: &str,
     published: &[PortMapping],
+    wanted: Option<Ipv4Addr>,
 ) -> NetworkResult<Ipv4Addr> {
     detach(network, container_id).await;
 
@@ -291,7 +401,19 @@ pub async fn attach(
     )
     .await?;
 
-    let output = plugin("bridge", "ADD", &network.config(), container_id, IFNAME).await?;
+    // The wanted address rides in the *config*, not in `CNI_ARGS` —
+    // see `ProjectNetwork::config`. Safe to ask for because the band it
+    // comes from is declared as a range of its own, and because the DEL
+    // above released whatever this container held last time, which is
+    // the reservation it would otherwise collide with.
+    let output = plugin(
+        "bridge",
+        "ADD",
+        &network.config(wanted),
+        container_id,
+        IFNAME,
+    )
+    .await?;
 
     let address = first_address(&output).ok_or_else(|| NetworkError::Result {
         plugin: "bridge",
@@ -349,10 +471,16 @@ pub async fn detach(network: &ProjectNetwork, container_id: &str) {
                 "portmap",
                 network.portmap_config(&[teardown_mapping()], "{}"),
             ),
-            ("bridge", network.config()),
+            // No address on the way out: `host-local` releases what
+            // this container holds by its id, and naming one it never
+            // got would be asking it to free somebody else's.
+            ("bridge", network.config(None)),
             ("loopback", network.loopback_config()),
         ] {
             let ifname = if name == "bridge" { IFNAME } else { "lo" };
+            // No `IP=` on the way out: `host-local` releases what this
+            // container holds by its id, and naming an address it never
+            // got would be asking it to free somebody else's.
             if let Err(error) = plugin(name, "DEL", &config, container_id, ifname).await {
                 tracing::warn!(container = container_id, %error, "cni DEL");
             }
@@ -426,6 +554,10 @@ async fn plugin(
     // own thread keeps the runtime's executor free rather than parking
     // a worker on a pipe.
     let output = tokio::task::spawn_blocking(move || -> std::io::Result<std::process::Output> {
+        // No `CNI_ARGS`. The `bridge` plugin refuses a key it does not
+        // recognise, so the one thing a caller might want to say
+        // through it — which address to allocate — has to travel in the
+        // config instead. See `ProjectNetwork::config`.
         let mut child = Command::new(&binary)
             .env("CNI_COMMAND", command)
             .env("CNI_CONTAINERID", &container_id)
@@ -549,7 +681,7 @@ mod tests {
     /// with a network and a container with an address and nothing else.
     #[test]
     fn the_config_carries_what_makes_the_network_work() {
-        let config = ProjectNetwork::new(3).expect("valid").config();
+        let config = ProjectNetwork::new(3).expect("valid").config(None);
         for setting in [
             r#""isGateway": true"#,
             r#""ipMasq": true"#,
@@ -561,9 +693,52 @@ mod tests {
         }
     }
 
+    /// The band the node picks from has to be **inside** the range
+    /// `host-local` allocates, because the plugin matches a requested
+    /// address against its configured ranges and not against the
+    /// subnet: outside them it answers `requested IP … not in range
+    /// set`, which would be every database's first deployment.
+    ///
+    /// One range over everything, then — see `RESERVED_HOSTS` for the
+    /// two tidier separations that were tried and what each did on a
+    /// node.
+    #[test]
+    fn the_node_picks_from_inside_the_range_the_plugin_allocates() {
+        let network = ProjectNetwork::new(7).expect("valid");
+        let parsed: serde_json::Value =
+            serde_json::from_str(&network.config(None)).expect("valid JSON");
+
+        let sets = parsed["ipam"]["ranges"].as_array().expect("ranges");
+        assert_eq!(sets.len(), 1, "two sets would be two addresses");
+        let ranges = sets[0].as_array().expect("a set of ranges");
+        assert_eq!(
+            ranges.len(),
+            1,
+            "one range, so the plugin's books are the guarantee"
+        );
+        assert_eq!(ranges[0]["rangeStart"], "10.42.7.2");
+        assert_eq!(ranges[0]["rangeEnd"], "10.42.7.254");
+
+        // Every address the node may hand out is one the plugin would
+        // accept a request for. That is the property the first version
+        // broke.
+        for host in [*RESERVED_HOSTS.start(), 220, *RESERVED_HOSTS.end()] {
+            let reserved = network.reserved_address(host).expect("reserved");
+            assert!(
+                ALLOCATABLE_HOSTS.contains(&host),
+                "{reserved} is outside what the plugin allocates, so a request for it \
+                 would be refused"
+            );
+        }
+        assert!(
+            network.reserved_address(199).is_err(),
+            "the node hands out the top of the range and nothing else"
+        );
+    }
+
     #[test]
     fn the_config_is_json_a_plugin_can_read() {
-        let config = ProjectNetwork::new(7).expect("valid").config();
+        let config = ProjectNetwork::new(7).expect("valid").config(None);
         let parsed: serde_json::Value = serde_json::from_str(&config).expect("valid JSON");
         assert_eq!(parsed["type"], "bridge");
         assert_eq!(parsed["ipam"]["type"], "host-local");

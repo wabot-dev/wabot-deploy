@@ -1,0 +1,21 @@
+-- The most memory a service's containers may have.
+--
+-- ## Why nothing had one
+--
+-- The OCI spec this node builds never wrote `linux.resources`, so every
+-- container has always been able to take the whole machine. On a node
+-- with one core and no swap — which is the node this is tested on —
+-- that is one process away from the console being unreachable.
+--
+-- ## Bytes, and nullable
+--
+-- Bytes rather than a preset name, because the ceiling is a number the
+-- runtime needs and a preset is a *choice somebody made* that also
+-- picks a dozen engine settings. Storing the name would make the
+-- runtime look the table up; storing the number keeps the preset where
+-- it belongs, which is the page and the engine's arguments.
+--
+-- NULL is no ceiling, and it is what every existing service gets. A
+-- default would be this migration deciding that somebody's service now
+-- gets OOM-killed at a number nobody chose.
+ALTER TABLE service ADD COLUMN memory_limit INTEGER;

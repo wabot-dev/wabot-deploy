@@ -42,6 +42,54 @@ impl DesiredState {
     }
 }
 
+/// What kind of thing this service is.
+///
+/// Not a hint. The deploy path reads it to decide what a container
+/// needs — a volume, a ceiling, tuning arguments, a role — and the
+/// console reads it to decide which page to show, because a managed
+/// database has no image field and no environment editor: the node
+/// writes both.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Kind {
+    /// An image somebody chose, run as it is. Everything, until there
+    /// were databases.
+    Container,
+    Postgres,
+    /// A kind from a newer node. Held and refused rather than parsed
+    /// into a panic — the same shape `errand::Kind` uses, and for the
+    /// same reason: a row outlives the version that wrote it.
+    Unknown,
+}
+
+impl Kind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Kind::Container => "container",
+            Kind::Postgres => "postgres",
+            Kind::Unknown => "unknown",
+        }
+    }
+
+    fn parse(text: &str) -> Self {
+        match text {
+            "container" => Kind::Container,
+            "postgres" => Kind::Postgres,
+            _ => Kind::Unknown,
+        }
+    }
+
+    /// Whether the node writes this service's image, environment and
+    /// arguments rather than the operator.
+    ///
+    /// The question every console page asks, and the one that must not
+    /// be spelled `kind == Postgres` in a dozen places: a second engine
+    /// would make every one of them wrong.
+    pub fn is_managed(self) -> bool {
+        !matches!(self, Kind::Container)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Service {
     pub id: String,
@@ -66,6 +114,13 @@ pub struct Service {
     /// The node that asked for this, when it was not this one. `None`
     /// is ours — see migration `0021`.
     pub origin_node_id: Option<String>,
+    /// The most memory each of its containers may have, in bytes.
+    ///
+    /// `None` is no ceiling, which is what every container had before
+    /// there were presets. A number here reaches the OCI spec as
+    /// `memory.max` with swap turned off — see `runtime::spec`.
+    pub memory_limit: Option<u64>,
+    pub kind: Kind,
 }
 
 impl Service {
@@ -141,6 +196,15 @@ pub async fn create(
         // to push, once to deploy — is one where the second half gets
         // forgotten and somebody debugs a version that never went out.
         auto_deploy: true,
+        // No ceiling, which is what every service had before there
+        // were presets. Choosing one is `set_memory_limit`, and a
+        // database picks one at creation.
+        memory_limit: None,
+        // A plain container. `databases::create` calls `set_kind`
+        // straight after this, for the same reason `set_origin` is
+        // separate: the default is the honest one, and forgetting to
+        // say otherwise cannot silently make something managed.
+        kind: Kind::Container,
     };
 
     let row = service.clone();
@@ -233,7 +297,8 @@ pub async fn in_project(
                 .query_row(
                     "SELECT \"id\", \"project_id\", \"name\", \"slug\", \"image\", \
                      \"env\", \"desired_state\", \"last_error\", \"address\", \
-                     \"track_tag\", \"auto_deploy\", \"origin_node_id\" \
+                     \"track_tag\", \"auto_deploy\", \"origin_node_id\", \"memory_limit\", \
+                     \"kind\" \
                      FROM service WHERE \"project_id\" = ?1 AND \"slug\" = ?2",
                     (project_id, slug),
                     decode,
@@ -252,7 +317,8 @@ pub async fn all(
         .read(move |connection| {
             let sql = "SELECT \"id\", \"project_id\", \"name\", \"slug\", \"image\", \
                        \"env\", \"desired_state\", \"last_error\", \"address\", \
-                       \"track_tag\", \"auto_deploy\", \"origin_node_id\" FROM service";
+                       \"track_tag\", \"auto_deploy\", \"origin_node_id\", \
+                       \"memory_limit\", \"kind\" FROM service";
             match filter {
                 Some(project) => connection
                     .prepare(&format!(
@@ -286,6 +352,8 @@ fn decode(row: &wabot::sqlite::rusqlite::Row<'_>) -> wabot::sqlite::rusqlite::Re
         track_tag: row.get(9)?,
         auto_deploy: row.get::<_, i64>(10)? != 0,
         origin_node_id: row.get(11)?,
+        memory_limit: row.get::<_, Option<i64>>(12)?.map(|bytes| bytes as u64),
+        kind: Kind::parse(&row.get::<_, String>(13)?),
     })
 }
 
@@ -403,6 +471,83 @@ pub async fn set_tracking(
     Ok(())
 }
 
+/// One service by its id.
+///
+/// What a caller holding an id has, as against `in_project`, which is
+/// what a caller holding a URL has.
+pub async fn find(database: &SqliteDatabase, id: &str) -> PlatformResult<Option<Service>> {
+    let id = id.to_string();
+    Ok(database
+        .read(move |connection| {
+            connection
+                .query_row(
+                    "SELECT \"id\", \"project_id\", \"name\", \"slug\", \"image\", \
+                     \"env\", \"desired_state\", \"last_error\", \"address\", \
+                     \"track_tag\", \"auto_deploy\", \"origin_node_id\", \"memory_limit\", \
+                     \"kind\" FROM service WHERE \"id\" = ?1",
+                    [id],
+                    decode,
+                )
+                .optional()
+        })
+        .await?)
+}
+
+/// Record that the node manages this service rather than the operator.
+///
+/// Separate from `create` for the reason `set_origin` is: the default
+/// is the honest one. A service that was a plain container for even a
+/// moment is one the deploy path would have started without its
+/// volume — an empty database that looks like it worked.
+pub async fn set_kind(
+    database: &SqliteDatabase,
+    service_id: &str,
+    kind: Kind,
+) -> PlatformResult<()> {
+    let id = service_id.to_string();
+    database
+        .write(move |connection| {
+            connection.execute(
+                "UPDATE service SET \"kind\" = ?2, \"updated_at\" = ?3 WHERE \"id\" = ?1",
+                (id, kind.as_str(), now_ms()),
+            )?;
+            Ok(())
+        })
+        .await?;
+    Ok(())
+}
+
+/// How much memory each of its containers may have.
+///
+/// Takes effect at the next deployment, like everything else in the OCI
+/// spec: a cgroup limit is written when the container is created, and
+/// nothing here reaches into a running one to change it. The page says
+/// so rather than the operator finding out.
+pub async fn set_memory_limit(
+    database: &SqliteDatabase,
+    service_id: &str,
+    bytes: Option<u64>,
+) -> PlatformResult<()> {
+    if let Some(bytes) = bytes {
+        if !super::presets::LADDER.contains(&bytes) {
+            return Err(PlatformError::Refused(
+                "that is not one of the sizes on offer".into(),
+            ));
+        }
+    }
+    let (id, bytes) = (service_id.to_string(), bytes.map(|bytes| bytes as i64));
+    database
+        .write(move |connection| {
+            connection.execute(
+                "UPDATE service SET \"memory_limit\" = ?2, \"updated_at\" = ?3 WHERE \"id\" = ?1",
+                (id, bytes, now_ms()),
+            )?;
+            Ok(())
+        })
+        .await?;
+    Ok(())
+}
+
 /// Replace a service's environment.
 pub async fn set_env(
     database: &SqliteDatabase,
@@ -454,6 +599,8 @@ mod tests {
             track_tag: None,
             origin_node_id: None,
             auto_deploy: true,
+            memory_limit: None,
+            kind: Kind::Container,
         };
 
         let id = service.container_id("first-project");
@@ -618,6 +765,50 @@ mod tests {
             .await
             .expect("created");
         assert_eq!(service.container_id("demo"), "demo.my-api");
+    }
+
+    /// No ceiling is what every service had before there were presets,
+    /// and a size off the ladder is refused rather than stored — a
+    /// number nothing offers is one nothing can show back.
+    #[tokio::test]
+    async fn a_memory_ceiling_is_one_of_the_sizes_on_offer() {
+        let (database, project_id) = project().await;
+        let service = create(&database, &project_id, "api", "nginx:alpine", &[])
+            .await
+            .expect("created");
+        assert_eq!(service.memory_limit, None);
+
+        let rung = super::super::presets::LADDER[1];
+        set_memory_limit(&database, &service.id, Some(rung))
+            .await
+            .expect("set");
+        assert_eq!(
+            in_project(&database, &project_id, &service.slug)
+                .await
+                .unwrap()
+                .unwrap()
+                .memory_limit,
+            Some(rung)
+        );
+
+        assert!(
+            set_memory_limit(&database, &service.id, Some(100))
+                .await
+                .is_err(),
+            "a size nothing offers was stored"
+        );
+
+        set_memory_limit(&database, &service.id, None)
+            .await
+            .expect("clear");
+        assert_eq!(
+            in_project(&database, &project_id, &service.slug)
+                .await
+                .unwrap()
+                .unwrap()
+                .memory_limit,
+            None
+        );
     }
 
     /// A row with unreadable JSON should list without its environment

@@ -65,6 +65,9 @@ pub async fn run(
     // *be*, and this is how its image is fetched. A registry credential
     // has no business in an OCI spec.
     credential: Option<&super::images::Credential>,
+    // Where the container's output goes, if anywhere. Also not the
+    // spec's: it is how the task is created, not what runs.
+    log: Option<&std::path::Path>,
 ) -> ClientResult<TaskStatus> {
     // Whatever is there under this id is the previous deployment.
     remove(client, id).await?;
@@ -107,13 +110,29 @@ pub async fn run(
             source,
         })?;
 
+    // A `file://` URI, or nothing. containerd's default is to discard,
+    // which is right for a container whose configuration somebody else
+    // wrote — and wrong for one the node configured itself, where
+    // "exit 1" with no reason is the node hiding its own mistake.
+    //
+    // A file rather than a FIFO: the original comment here warned that
+    // a FIFO nobody reads fills and blocks the container's first write,
+    // and that is true. The shim appends to a file with no reader
+    // involved.
+    let (stdout, stderr) = match log {
+        Some(path) => {
+            let uri = super::super::deploy::logs::uri(path);
+            (uri.clone(), uri)
+        }
+        None => (String::new(), String::new()),
+    };
+
     TasksClient::new(client.channel())
         .create(client.request(CreateTaskRequest {
             container_id: id.to_string(),
             rootfs: mounts,
-            // No stdio paths. containerd defaults to discarding, which
-            // is right until logs are a feature: a FIFO nobody reads
-            // fills and blocks the container's first write.
+            stdout,
+            stderr,
             ..Default::default()
         }))
         .await
@@ -137,6 +156,49 @@ pub async fn run(
     status(client, id)
         .await?
         .ok_or_else(|| ClientError::Other(format!("{id} started and then vanished")))
+}
+
+/// Run a container and wait for it to finish.
+///
+/// For the work a deployment has to do *before* the thing it deploys —
+/// seeding a standby's data directory from its primary, which is a
+/// `pg_basebackup` that either completes or explains itself. Returns the
+/// exit code; zero is the only success.
+///
+/// The container is removed either way. What survives it is the log,
+/// which is the whole reason this is worth having over a task nobody
+/// watches: a base backup that failed silently is a standby nobody can
+/// explain.
+pub async fn run_to_completion(
+    client: &Containerd,
+    id: &str,
+    image: &str,
+    request: &ContainerRequest,
+    credential: Option<&super::images::Credential>,
+    log: Option<&std::path::Path>,
+    deadline: std::time::Duration,
+) -> ClientResult<u32> {
+    run(client, id, image, request, credential, log).await?;
+
+    let until = std::time::Instant::now() + deadline;
+    let outcome = loop {
+        match status(client, id).await? {
+            // Gone before it was asked about. Its exit code went with
+            // it, so this cannot claim it succeeded.
+            None => break Err("it vanished before it finished".to_string()),
+            Some(task) if !task.running() => break Ok(task.exit_code),
+            Some(_) if std::time::Instant::now() >= until => {
+                break Err(format!("it was still going after {}s", deadline.as_secs()))
+            }
+            Some(_) => tokio::time::sleep(std::time::Duration::from_millis(500)).await,
+        }
+    };
+
+    // Always, and before the error is returned: a one-shot container
+    // left behind holds a snapshot, and the next attempt would find its
+    // own id already taken.
+    remove(client, id).await?;
+    outcome.map_err(ClientError::Other)
 }
 
 /// What containerd says about a container's task, or `None` if it has
@@ -185,6 +247,15 @@ pub async fn stop(client: &Containerd, id: &str, grace: std::time::Duration) -> 
 
     tracing::warn!(container = id, ?grace, "did not stop; killing");
     kill(client, id, 9).await
+}
+
+/// Send a signal to a container's main process.
+///
+/// `SIGHUP` is the one that matters outside of stopping: Postgres
+/// re-reads its configuration *and* its TLS files on it, so a renewed
+/// certificate reaches a running server without an outage.
+pub async fn signal(client: &Containerd, id: &str, signal: u32) -> ClientResult<()> {
+    kill(client, id, signal).await
 }
 
 async fn kill(client: &Containerd, id: &str, signal: u32) -> ClientResult<()> {

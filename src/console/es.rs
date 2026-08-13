@@ -34,6 +34,7 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
     (" · pre-release", " · versión previa"),
     (" · published ", " · publicada "),
     (" · this node", " · este nodo"),
+    ("A ceiling on the container and the engine's own settings, together. Postgres is given a quarter of it for shared buffers and told to expect half of it as cache — its defaults alone would be killed on the smaller sizes.", "Un techo para el contenedor y los ajustes del propio motor, a la vez. A Postgres se le da un cuarto para los buffers compartidos y se le dice que espere la mitad como caché — sus valores por defecto solos morirían en los tamaños pequeños."),
     ("A key and an address appear the first time this node enrols another one or joins one itself. The overlay is what carries traffic between nodes — an edge here reaching a container that runs somewhere else.", "La clave y la dirección aparecen la primera vez que este nodo enrola a otro o se une a uno. La overlay es lo que lleva el tráfico entre nodos — un edge de aquí llegando a un contenedor que corre en otro sitio."),
     ("A new copy is created on the node you pick, rather than here and moved after — which would start a container on this machine and stop it again for nothing. Removing takes the ones already thrown out first, then the highest-numbered; the node running one is told to stop it.", "Una copia nueva se crea en el nodo que elijas, en vez de aquí y moverla después — lo que arrancaría un contenedor en esta máquina para pararlo acto seguido sin motivo. Al quitar se van primero las ya expulsadas, luego las de número más alto; al nodo que corre una se le dice que la pare."),
     ("A reference containerd can resolve. Fully qualified — there is no implicit registry here.", "Una referencia que containerd pueda resolver. Completa — aquí no hay registry implícito."),
@@ -50,6 +51,7 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
     ("And offer it, in return:", "Y ofrecerle, a cambio:"),
     ("Answer for hostnames", "Responder por nombres"),
     ("Answer for its hostnames from this node", "Responder por sus nombres desde este nodo"),
+    ("Answer for this node's hostnames", "Responder por los nombres de este nodo"),
     ("As", "Como"),
     ("Ask it to run this", "Pedirle que lo ejecute"),
     ("Ask that node to let this one:", "Pedirle a ese nodo que deje a este:"),
@@ -58,12 +60,14 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
     ("Asked", "Pedido"),
     ("At least 12 characters. A phrase beats a puzzle — this console can start containers on the machine.", "Doce caracteres como mínimo. Una frase vale más que un acertijo — esta consola puede arrancar contenedores en la máquina."),
     ("At least 12 characters. Nobody here will ever see it.", "Doce caracteres como mínimo. Aquí nadie va a verla nunca."),
+    ("Back to", "Volver a"),
     ("Back to project", "Volver al proyecto"),
     ("Back to service", "Volver al servicio"),
     ("Backup", "Copia de seguridad"),
     ("Before you join", "Antes de unirte"),
     ("Both are read now and refused if they do not match, do not cover this name, or have already expired — a bad pair installed would break every handshake, including the one serving this page. After that the node rereads them and reinstalls whatever it finds, which is how a certificate it cannot renew stays current.", "Se leen ahora los dos y se rechazan si no casan, si no cubren este nombre o si ya caducaron — un par malo instalado rompería cada handshake, incluido el que sirve esta página. Después el nodo los relee y reinstala lo que encuentre, que es como sigue al día un certificado que no puede renovar."),
     ("Both lists travel inside the token and are shown on the other machine before it is spent. Whoever holds it accepts or refuses each one — so what is asked for here is a request, not a setting.", "Las dos listas viajan dentro del token y se muestran en la otra máquina antes de gastarlo. Quien lo tenga acepta o rechaza cada una — así que lo que se pide aquí es una petición, no un ajuste."),
+    ("Breadcrumb", "Ruta de navegación"),
     ("Can", "Puede"),
     ("Cancel", "Cancelar"),
     ("Certificate", "Certificado"),
@@ -72,19 +76,27 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
     ("Certificates", "Certificados"),
     ("Check again", "Comprobar de nuevo"),
     ("Collected", "Recogido"),
+    ("Connection string", "Cadena de conexión"),
+    ("Connections", "Conexiones"),
     ("Container", "Contenedor"),
     ("Container port", "Puerto del contenedor"),
+    ("Copies", "Copias"),
     ("Could not read the release list: ", "No se pudo leer la lista de versiones: "),
     ("Create account", "Crear cuenta"),
     ("Create administrator", "Crear administrador"),
+    ("Create database", "Crear base de datos"),
     ("Create invitation", "Crear invitación"),
     ("Create join token", "Crear token de unión"),
     ("Create project", "Crear proyecto"),
     ("Create service", "Crear servicio"),
     ("Create token", "Crear token"),
     ("Danger zone", "Zona de peligro"),
+    ("Database", "Base de datos"),
+    ("Database name", "Nombre de la base"),
+    ("Delete database and its data", "Eliminar la base de datos y sus datos"),
     ("Delete project", "Borrar proyecto"),
     ("Delete service", "Borrar servicio"),
+    ("Deleting a database stops it and removes everything it stored on this node. There is no undo and there is no backup — a read-only copy is not one, because a deletion reaches it too.", "Eliminar una base de datos la para y borra todo lo que guardó en este nodo. No hay vuelta atrás y no hay copia de seguridad — una réplica de solo lectura no lo es, porque el borrado también llega hasta ella."),
     ("Deleting a project deletes every service under it. Nothing is stopped first — do that yourself.", "Borrar un proyecto borra todos sus servicios. No se para nada antes — eso hazlo tú."),
     ("Deleting a service stops its container and removes it. The images it was built from stay in the registry.", "Borrar un servicio para su contenedor y lo quita. Las imágenes con las que se construyó siguen en el registry."),
     ("Deploy a push automatically", "Desplegar automáticamente al subir"),
@@ -107,6 +119,7 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
     ("From another node", "De otro nodo"),
     ("From the nodes page of the node you are joining: invite a node there, and it shows one token, once. Pasting it here does what `wabot-deploy join` does in a terminal — this node records that one as an authority and tells it so. The same token can be pasted again if something goes wrong part-way.", "Desde la página de nodos del nodo al que te unes: invita un nodo allí, y enseña un token, una vez. Pegarlo aquí hace lo que hace `wabot-deploy join` en una terminal — este nodo anota aquel como autoridad y se lo dice. El mismo token se puede volver a pegar si algo sale mal a medias."),
     ("Have it answer for this node's hostnames", "Que responda por los nombres de este nodo"),
+    ("Have this node answer for its hostnames", "Que este nodo responda por sus nombres"),
     ("How many", "Cuántas"),
     ("Id", "Id"),
     ("Image", "Imagen"),
@@ -119,6 +132,10 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
     ("Invite a node", "Invitar un nodo"),
     ("Invite somebody", "Invitar a alguien"),
     ("Issuer", "Emisor"),
+    ("It can ask this node to terminate TLS for one of its names and proxy to wherever that service runs.", "Puede pedirle a este nodo que termine TLS para uno de sus nombres y haga de proxy hacia donde corra ese servicio."),
+    ("It can place a read-only copy of one of its databases here, and that copy is every row of it — on this node's disk, taking this node's space. Running somebody's container is not the same favour, which is why this is asked for separately.", "Puede colocar aquí una copia de solo lectura de una de sus bases de datos, y esa copia es cada fila de ella — en el disco de este nodo, ocupando su espacio. Correr el contenedor de alguien no es el mismo favor, y por eso esto se pide aparte."),
+    ("It can place replicas of its services here and pull the images for them. It cannot touch anything else on this node.", "Puede colocar aquí réplicas de sus servicios y traerse las imágenes para ellas. No puede tocar nada más de este nodo."),
+    ("It has no address yet. A connection string appears once it has been deployed.", "Todavía no tiene dirección. La cadena de conexión aparece cuando se haya desplegado."),
     ("It must resolve to this node, and this node must be reachable on port 80 — that is what the challenge answers on. Both are checked before anything is requested. Saving reissues: the node takes the new name on its own certificate straight away, then asks a public authority for one.", "Tiene que resolver a este nodo, y este nodo tiene que ser alcanzable en el puerto 80 — que es donde responde el reto. Se comprueban las dos cosas antes de pedir nada. Guardar reemite: el nodo toma el nombre nuevo en su propio certificado de inmediato, y luego se lo pide a una autoridad pública."),
     ("It terminates TLS for names, its own and other nodes'. Turning this off makes it a private node — that is all private has ever meant.", "Termina TLS para nombres, los suyos y los de otros nodos. Apagar esto lo convierte en un nodo privado — que es lo único que privado ha significado nunca."),
     ("It works once and expires in 24 hours. This node will not show it again — what is stored is its hash. The other machine has to be a node already: install it there first, then join.", "Funciona una vez y caduca en 24 horas. Este nodo no volverá a mostrarlo — lo que se guarda es su hash. La otra máquina tiene que ser ya un nodo: instálalo allí primero, y luego únelo."),
@@ -127,6 +144,8 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
     ("Join a network", "Unirse a una red"),
     ("Join token", "Token de unión"),
     ("Joined", "Unido"),
+    ("Keep a copy of its data on this node", "Guardar una copia de sus datos en este nodo"),
+    ("Keep a copy of this node's data over there", "Guardar allí una copia de los datos de este nodo"),
     ("Key file", "Fichero de la clave"),
     ("Last update", "Última actualización"),
     ("Make a member", "Hacer miembro"),
@@ -136,6 +155,7 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
     ("Memory", "Memoria"),
     ("Name", "Nombre"),
     ("Needs a domain that resolves here. Without an address the world can dial, this node is private whatever it would prefer.", "Necesita un dominio que resuelva aquí. Sin una dirección que el mundo pueda marcar, este nodo es privado quiera o no."),
+    ("New", "Nuevo"),
     ("New ones on", "Las nuevas en"),
     ("No build here", "Sin binario aquí"),
     ("No projects yet.", "Todavía no hay proyectos."),
@@ -174,6 +194,7 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
     ("Publish on the node's public address (raw TCP)", "Publicar en la dirección pública del nodo (TCP en crudo)"),
     ("Push tokens", "Tokens de subida"),
     ("Reachable at", "Se llega en"),
+    ("Reachable from any container in this project. The address is reserved for this copy, so it survives a redeployment.", "Alcanzable desde cualquier contenedor de este proyecto. La dirección está reservada para esta copia, así que sobrevive a un redespliegue."),
     ("Read it on GitHub", "Leerlo en GitHub"),
     ("Recorded when this node joined — what it said about itself when it arrived. Instructions do not travel over the overlay: that node collects them over the same connection it enrolled through, which is why nothing here has to be able to reach it.", "Anotado cuando este nodo se unió — lo que dijo de sí mismo al llegar. Las instrucciones no viajan por la overlay: ese nodo las recoge por la misma conexión con la que se enroló, que es por lo que nada de aquí tiene que poder alcanzarlo."),
     ("Refused", "Rechazado"),
@@ -189,6 +210,7 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
     ("Run a service there", "Ejecutar un servicio allí"),
     ("Run containers", "Ejecutar contenedores"),
     ("Run its containers on this node", "Ejecutar sus contenedores en este nodo"),
+    ("Run this node's containers over there", "Correr allí los contenedores de este nodo"),
     ("Run this node's containers there", "Ejecutar allí los contenedores de este nodo"),
     ("Run this on the other node", "Ejecutar esto en el otro nodo"),
     ("Running", "Corriendo"),
@@ -219,6 +241,8 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
     ("Tag to watch", "Etiqueta a vigilar"),
     ("Takes instructions from", "Toma instrucciones de"),
     ("That node writes its own project, its own service row and its own deployment — nothing is shared. It pulls the image from this node's registry with a credential this puts in the instruction, so the image travels only when it is needed.", "Ese nodo escribe su propio proyecto, su propia fila de servicio y su propio despliegue — no se comparte nada. Tira la imagen del registry de este nodo con una credencial que esto mete en la instrucción, así que la imagen viaja solo cuando hace falta."),
+    ("The ceiling on the container and the engine's own settings, together. It takes effect at the next deployment: a cgroup limit is written when the container is created, and nothing reaches into a running one to change it.", "El techo del contenedor y los ajustes del propio motor, a la vez. Surte efecto en el siguiente despliegue: el límite del cgroup se escribe al crear el contenedor, y nada entra en uno que ya corre para cambiarlo."),
+    ("The image is pulled from Docker Hub. The major version is fixed once the database exists: changing it is a data migration, not an image change.", "La imagen se trae de Docker Hub. La versión mayor queda fija en cuanto la base existe: cambiarla es una migración de datos, no un cambio de imagen."),
     ("The machine is yours: throwing it out is something you can always do, and it is the only thing here that is.", "La máquina es tuya: echarlo fuera es algo que siempre puedes hacer, y es lo único aquí que lo es."),
     ("The node restarts on its own when the new binary is in place. This page follows along — there is nothing to reload.", "El nodo se reinicia solo cuando el binario nuevo está en su sitio. Esta página lo sigue — no hay nada que recargar."),
     ("The other machine has to trust the certificate this console is served on. Until this node has a public one, joining will refuse rather than send its token to whatever answered.", "La otra máquina tiene que confiar en el certificado con el que se sirve esta consola. Hasta que este nodo tenga uno público, unirse se negará en vez de mandarle su token a lo que sea que respondió."),
@@ -251,6 +275,7 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
     ("Untick anything you would rather not agree to. You can revoke any of it later from this page, and this node keeps working either way.", "Desmarca lo que prefieras no aceptar. Puedes revocar cualquier parte más tarde desde esta página, y este nodo sigue funcionando igual."),
     ("Updates", "Actualizaciones"),
     ("Used", "Usada"),
+    ("User", "Usuario"),
     ("Username", "Usuario"),
     ("Version", "Versión"),
     ("Waiting", "Esperando"),
@@ -272,6 +297,7 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
     ("never used", "sin usar"),
     ("newer than what is running", "más nueva que la que corre"),
     ("no build for this machine", "no hay binario para esta máquina"),
+    ("no ceiling", "sin techo"),
     ("nothing", "nada"),
     ("older than what is running", "más vieja que la que corre"),
     ("running here", "corriendo aquí"),
@@ -346,6 +372,7 @@ mod tests {
             include_str!("layout.rs"),
             include_str!("auth.rs"),
             include_str!("people.rs"),
+            include_str!("databases.rs"),
             include_str!("projects.rs"),
             include_str!("services.rs"),
             include_str!("nodes.rs"),
@@ -367,6 +394,38 @@ mod tests {
             "no Spanish for {} string(s): {missing:#?}",
             missing.len()
         );
+    }
+
+    /// Every string that reaches `t` through a *variable* rather than
+    /// as a literal.
+    ///
+    /// `calls` below scans for `t("…")`, which is what almost every
+    /// string is — and it cannot see `t(asking(capability))`, where the
+    /// English lives in a `match` somewhere else. Adding a capability
+    /// put two new strings on the join screen and the suite stayed
+    /// green, which is a test passing for a reason that has nothing to
+    /// do with the thing being right.
+    ///
+    /// So the indirect ones are named here by hand. A list that has to
+    /// be maintained is worse than one that does not, and it is a great
+    /// deal better than a check that quietly stops covering things.
+    #[test]
+    fn the_words_that_reach_t_through_a_variable_are_translated_too() {
+        use crate::network::capability::Capability;
+
+        let mut missing = Vec::new();
+        for capability in Capability::ALL {
+            for word in [
+                crate::console::nodes::asking(capability),
+                crate::console::nodes::why(capability),
+                crate::console::nodes::offering(capability),
+            ] {
+                if lookup(word).is_none() {
+                    missing.push(word.to_string());
+                }
+            }
+        }
+        assert!(missing.is_empty(), "no Spanish for {missing:#?}");
     }
 
     /// Every `t("…")` in one file, as the string `t` receives.

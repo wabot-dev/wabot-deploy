@@ -93,6 +93,20 @@ fn migrations() -> Vec<Migration> {
             "0027_account_language",
             include_str!("../migrations/0027_account_language.sql"),
         ),
+        Migration::new("0028_volume", include_str!("../migrations/0028_volume.sql")),
+        Migration::new("0029_memory", include_str!("../migrations/0029_memory.sql")),
+        Migration::new(
+            "0030_database",
+            include_str!("../migrations/0030_database.sql"),
+        ),
+        Migration::new(
+            "0031_remote_standby",
+            include_str!("../migrations/0031_remote_standby.sql"),
+        ),
+        Migration::new(
+            "0032_owner_domain",
+            include_str!("../migrations/0032_owner_domain.sql"),
+        ),
     ]
 }
 

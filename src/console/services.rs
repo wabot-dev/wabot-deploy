@@ -90,23 +90,22 @@ impl ServicePages {
             (layout::style_tag())
                 <div class="stack-sm">
                     <h1>(t("Create service"))</h1>
-                    <p class="slug-preview">(&project.slug)</p>
                 </div>
                 @if let Some(message) = &query.error {
                     (layout::error_note(message))
                 }
                 <form method="post" action=(&action) class="card stack">
                     <label for="name">(t("Name"))</label>
-                    <input id="name" name="name" type="text" required autofocus>
+                    <input id="name" name="name" type="text" autocomplete="off" required autofocus>
 
                     <label for="image">(t("Image"))</label>
-                    <input id="image" name="image" type="text" class="mono"
+                    <input id="image" name="image" type="text" autocomplete="off" class="mono"
                            placeholder="docker.io/library/nginx:alpine" required>
                     <p class="field-hint">(t("A reference containerd can resolve. Fully qualified — \
                          there is no implicit registry here."))</p>
 
                     <label for="env">(t("Environment"))</label>
-                    <textarea id="env" name="env" rows="6" class="mono"
+                    <textarea id="env" name="env" autocomplete="off" rows="6" class="mono"
                               placeholder="KEY=value"></textarea>
                     <p class="field-hint">(t("One KEY=value per line. Everything after the first = is \
                          the value, so a value may contain one."))</p>
@@ -224,6 +223,34 @@ impl ServicePages {
             })
             .cloned()
             .collect();
+        // The engine's own row, when this service is one. The card it
+        // fills in stands in for the image field and the environment
+        // editor, neither of which a managed database has.
+        let engine = match service.kind.is_managed() {
+            true => {
+                crate::platform::databases::of_service(&self.state.database, &service.id).await?
+            }
+            false => None,
+        };
+        // The address a connection string names. Reserved rather than
+        // observed, so the page shows the same one whether or not the
+        // container happens to be up — which is the whole point of
+        // reserving it.
+        let reserved_address = match (&engine, here.as_ref().and_then(|r| r.reserved_host)) {
+            (Some(_), Some(host)) => {
+                let index = crate::platform::projects::ensure_network_index(
+                    &self.state.database,
+                    &project.id,
+                )
+                .await?;
+                crate::runtime::network::ProjectNetwork::new(index)
+                    .and_then(|net| net.reserved_address(host))
+                    .ok()
+                    .map(|address| address.to_string())
+            }
+            _ => None,
+        };
+
         let serving = crate::platform::edges::of_service(&self.state.database, &service.id).await?;
         let deploying = crate::deploy::jobs::deploying(&self.state.container)
             .await
@@ -264,7 +291,6 @@ impl ServicePages {
                 <div class="split">
                     <div class="stack-sm">
                         <h1>(&service.name)</h1>
-                        <p class="slug-preview">(&project.slug)(" / ")(&service.slug)</p>
                     </div>
                     <div class="row">
                         @if allowed.may_deploy() {
@@ -321,6 +347,15 @@ impl ServicePages {
                         <p class="failure">(failure)</p>
                     }
                 </section>
+
+                @if let Some(row) = &engine {
+                    (super::databases::database_card(
+                        row,
+                        &placements,
+                        reserved_address.clone(),
+                        service.memory_limit,
+                    ))
+                }
 
                 @if service.is_ours() {
                     (placement_card(&project, &service, &placements, &placement_nodes))
@@ -581,7 +616,6 @@ impl ServicePages {
                 <div class="split">
                     <div class="stack-sm">
                         <h1>(t("Settings"))</h1>
-                        <p class="slug-preview">(&project.slug)(" / ")(&service.slug)</p>
                     </div>
                     <a class="btn btn-ghost" href=(&here)>(t("Back to service"))</a>
                 </div>
@@ -593,67 +627,101 @@ impl ServicePages {
                     <p class="note">(message)</p>
                 }
 
-                <section class="stack">
-                    <p class="card-label">(t("Releases"))</p>
-                    <form method="post" action=(format!("{here}/tracking")) class="card stack">
-                        <label for="track_tag">(t("Tag to watch"))</label>
-                        <input id="track_tag" name="track_tag" type="text" class="mono"
-                               value=(service.track_tag.clone().unwrap_or_default())
-                               placeholder="latest">
-                        <label class="check">
-                            // `checked="false"` checks it. This box read
-                            // as on whatever the row said, and saving the
-                            // form then turned it on for real.
-                            @if service.auto_deploy {
-                                <input type="checkbox" name="auto_deploy" value="1" checked>
-                            } @else {
-                                <input type="checkbox" name="auto_deploy" value="1">
-                            }
-                            (t("Deploy a push automatically"))
-                        </label>
-                        <p class="field-hint">(t("Without this, a push is recorded as a release and waits \
-                             for somebody to deploy it from the service page."))</p>
-                        <div class="actions">
-                            <button type="submit">(t("Save"))</button>
-                        </div>
-                    </form>
-                </section>
-
-                <section class="stack">
-                    <p class="card-label">(t("Environment"))</p>
-                    <form method="post" action=(format!("{here}/env")) class="card stack">
-                        <textarea name="env" rows="6" class="mono"
-                                  placeholder="KEY=value">(&env_text)</textarea>
-                        <p class="field-hint">(t("Saving redeploys the service with these values. The image \
-                             it runs does not change."))</p>
-                        <div class="actions">
-                            <button type="submit">(t("Save environment"))</button>
-                        </div>
-                    </form>
-
-                    @if !history.is_empty() {
-                        <table>
-                            <tbody>
-                                @for revision in history.iter().skip(1) {
-                                    <tr>
-                                        <td class="tile-detail">
-                                            (revision.env.len())(t(" values · "))(&revision.reason)
-                                        </td>
-                                        <td>
-                                            <form method="post"
-                                                  action=(format!(
-                                                      "{here}/env/{}/revert", revision.id
-                                                  ))>
-                                                <button class="btn btn-ghost btn-sm"
-                                                        type="submit">(t("Restore"))</button>
-                                            </form>
-                                        </td>
-                                    </tr>
+                // A managed database has no image to point at, no tag to
+                // watch and no environment to edit: the node writes all
+                // three from the engine's row, and a form here would be
+                // one whose value the next deployment overwrites. What
+                // is left to choose is the size.
+                @if service.kind.is_managed() {
+                    <section class="stack">
+                        <p class="card-label">(t("Memory"))</p>
+                        <form method="post" action=(format!("{here}/memory")) class="card stack">
+                            <label for="memory">(t("Memory"))</label>
+                            <select id="memory" name="memory">
+                                @for rung in crate::platform::presets::LADDER {
+                                    @if Some(rung) == service.memory_limit {
+                                        <option value=(rung.to_string()) selected>(
+                                            crate::platform::presets::label(rung)
+                                        )</option>
+                                    } @else {
+                                        <option value=(rung.to_string())>(
+                                            crate::platform::presets::label(rung)
+                                        )</option>
+                                    }
                                 }
-                            </tbody>
-                        </table>
-                    }
-                </section>
+                            </select>
+                            <p class="field-hint">(t("The ceiling on the container and the engine's \
+                                 own settings, together. It takes effect at the next deployment: a \
+                                 cgroup limit is written when the container is created, and nothing \
+                                 reaches into a running one to change it."))</p>
+                            <div class="actions">
+                                <button type="submit">(t("Save"))</button>
+                            </div>
+                        </form>
+                    </section>
+                } @else {
+                    <section class="stack">
+                        <p class="card-label">(t("Releases"))</p>
+                        <form method="post" action=(format!("{here}/tracking")) class="card stack">
+                            <label for="track_tag">(t("Tag to watch"))</label>
+                            <input id="track_tag" name="track_tag" type="text" autocomplete="off" class="mono"
+                                   value=(service.track_tag.clone().unwrap_or_default())
+                                   placeholder="latest">
+                            <label class="check">
+                                // `checked="false"` checks it. This box read
+                                // as on whatever the row said, and saving the
+                                // form then turned it on for real.
+                                @if service.auto_deploy {
+                                    <input type="checkbox" name="auto_deploy" value="1" checked>
+                                } @else {
+                                    <input type="checkbox" name="auto_deploy" value="1">
+                                }
+                                (t("Deploy a push automatically"))
+                            </label>
+                            <p class="field-hint">(t("Without this, a push is recorded as a release and waits \
+                                 for somebody to deploy it from the service page."))</p>
+                            <div class="actions">
+                                <button type="submit">(t("Save"))</button>
+                            </div>
+                        </form>
+                    </section>
+
+                    <section class="stack">
+                        <p class="card-label">(t("Environment"))</p>
+                        <form method="post" action=(format!("{here}/env")) class="card stack">
+                            <textarea name="env" autocomplete="off" rows="6" class="mono"
+                                      placeholder="KEY=value">(&env_text)</textarea>
+                            <p class="field-hint">(t("Saving redeploys the service with these values. The image \
+                                 it runs does not change."))</p>
+                            <div class="actions">
+                                <button type="submit">(t("Save environment"))</button>
+                            </div>
+                        </form>
+
+                        @if !history.is_empty() {
+                            <table>
+                                <tbody>
+                                    @for revision in history.iter().skip(1) {
+                                        <tr>
+                                            <td class="tile-detail">
+                                                (revision.env.len())(t(" values · "))(&revision.reason)
+                                            </td>
+                                            <td>
+                                                <form method="post"
+                                                      action=(format!(
+                                                          "{here}/env/{}/revert", revision.id
+                                                      ))>
+                                                    <button class="btn btn-ghost btn-sm"
+                                                            type="submit">(t("Restore"))</button>
+                                                </form>
+                                            </td>
+                                        </tr>
+                                    }
+                                </tbody>
+                            </table>
+                        }
+                    </section>
+                }
 
                 <section class="stack">
                     <p class="card-label">(t("Ports"))</p>
@@ -715,11 +783,25 @@ impl ServicePages {
 
                 <section class="card stack">
                     <p class="card-label">(t("Danger zone"))</p>
-                    <p class="tile-detail">(t("Deleting a service stops its container and removes it. The \
-                         images it was built from stay in the registry."))</p>
-                    <form method="post" action=(format!("{here}/delete"))>
-                        <button class="btn btn-danger" type="submit">(t("Delete service"))</button>
-                    </form>
+                    // A database's data goes with it, and that sentence
+                    // is the whole reason this branch exists: the
+                    // generic wording says the images stay in the
+                    // registry, which is true and reads as reassurance
+                    // about the wrong thing entirely.
+                    @if service.kind.is_managed() {
+                        <p class="tile-detail">(t("Deleting a database stops it and removes everything \
+                             it stored on this node. There is no undo and there is no backup — a \
+                             read-only copy is not one, because a deletion reaches it too."))</p>
+                        <form method="post" action=(format!("{here}/delete"))>
+                            <button class="btn btn-danger" type="submit">(t("Delete database and its data"))</button>
+                        </form>
+                    } @else {
+                        <p class="tile-detail">(t("Deleting a service stops its container and removes it. The \
+                             images it was built from stay in the registry."))</p>
+                        <form method="post" action=(format!("{here}/delete"))>
+                            <button class="btn btn-danger" type="submit">(t("Delete service"))</button>
+                        </form>
+                    }
                 </section>
 
                 @if !certificates.is_empty() {
@@ -776,7 +858,7 @@ fn port_form<'a>(
         rsx! {
                         <form method="post" action=(add) class="card stack">
                             <label for="container_port">(t("Container port"))</label>
-                            <input id="container_port" name="container_port" type="number"
+                            <input id="container_port" name="container_port" type="number" autocomplete="off"
                                    min="1" max="65535" placeholder="80" required>
                             <p class="field-hint">(t("What the process listens on inside the container."))</p>
 
@@ -803,7 +885,7 @@ fn port_form<'a>(
                                     <div class="stack" data-when="https">
                                         <p class="field-hint">(t("A wildcard record covers this node, so this \
                                              name already resolves here. Leave it as it is."))</p>
-                                        <input name="hostname" type="text" class="mono"
+                                        <input name="hostname" type="text" autocomplete="off" class="mono"
                                                value=(name) data-required-when="https">
                                     </div>
                                 }
@@ -817,7 +899,7 @@ fn port_form<'a>(
                                              *.<node domain> pointing at this node, or type \
                                              a hostname you have already pointed here — it \
                                              is checked before it is accepted."))</p>
-                                        <input name="hostname" type="text" class="mono"
+                                        <input name="hostname" type="text" autocomplete="off" class="mono"
                                                placeholder="api.example.com"
                                                data-required-when="https">
                                     </div>
@@ -940,7 +1022,7 @@ fn placement_card<'a>(
                 <div class="placement-count">
                     <div>
                         <label for="replicas">(t("How many"))</label>
-                        <input id="replicas" name="replicas" type="number" min="1" max="16"
+                        <input id="replicas" name="replicas" type="number" autocomplete="off" min="1" max="16"
                                value=(placements.len().to_string())>
                     </div>
                     <div>
@@ -1490,6 +1572,17 @@ impl ServiceApi {
             project.slug, service.slug
         );
 
+        // The check that counts. The settings page does not show this
+        // form for a managed database, and a rule the browser enforces
+        // is a courtesy — what the node writes from the engine's row
+        // must not be settable from a request somebody constructed.
+        if service.kind.is_managed() {
+            return Ok(back_with_error(
+                &here,
+                "the node writes this for a managed database",
+            ));
+        }
+
         let form = match read_form(request).await {
             Ok(form) => form,
             Err(response) => return Ok(response),
@@ -1507,6 +1600,46 @@ impl ServiceApi {
     }
 
     /// Change the environment, and redeploy with it.
+    /// How much memory this service's containers may have.
+    ///
+    /// Redeploys, because a cgroup limit is written when a container is
+    /// created and there is nothing to change on a running one. Saying
+    /// so and doing nothing would be a page that shows a number the
+    /// container does not have.
+    #[post("/projects/:project/services/:service/memory")]
+    #[raw]
+    #[middleware(SessionMiddleware)]
+    async fn set_memory(&self, request: Request) -> RestResult<Response> {
+        let path = request.uri().path().to_string();
+        let Some((project, service, _)) = self.locate(&path).await? else {
+            return Ok(see_other("/"));
+        };
+        let here = format!(
+            "/projects/{}/services/{}/settings",
+            project.slug, service.slug
+        );
+
+        let form = match read_form(request).await {
+            Ok(form) => form,
+            Err(response) => return Ok(response),
+        };
+        let wanted = match crate::platform::presets::parse(field(&form, "memory")) {
+            Ok(wanted) => wanted,
+            Err(reason) => return Ok(back_with_error(&here, &reason)),
+        };
+
+        services::set_memory_limit(&self.state.database, &service.id, wanted).await?;
+
+        let command = crate::deploy::jobs::DeployService {
+            service_id: service.id.clone(),
+            release_id: None,
+        };
+        if let Err(error) = wabot::async_jobs::run_command(&self.state.container, &command).await {
+            tracing::error!(%error, "could not queue the deployment");
+        }
+        Ok(see_other(&here))
+    }
+
     #[post("/projects/:project/services/:service/env")]
     #[raw]
     #[middleware(SessionMiddleware)]
@@ -1521,6 +1654,17 @@ impl ServiceApi {
             "/projects/{}/services/{}/settings",
             project.slug, service.slug
         );
+
+        // The check that counts. The settings page does not show this
+        // form for a managed database, and a rule the browser enforces
+        // is a courtesy — what the node writes from the engine's row
+        // must not be settable from a request somebody constructed.
+        if service.kind.is_managed() {
+            return Ok(back_with_error(
+                &here,
+                "the node writes this for a managed database",
+            ));
+        }
         let account = signed_in(&self.auth);
 
         let form = match read_form(request).await {
@@ -1625,6 +1769,15 @@ impl ServiceApi {
         // is a container nothing will ever clean up: the id is derived
         // from the row, so losing the row loses the handle.
         self.state.deployer.tear_down(&project, &service).await;
+        // And the storage, before the rows: the directory is derived
+        // from the container id, which is derived from the rows, so
+        // deleting them first would leave data on the disk that nothing
+        // can name. This is the one caller of `volumes::discard` and
+        // the danger zone is the confirmation it needs.
+        self.state
+            .deployer
+            .discard_storage(&project, &service)
+            .await;
         services::delete(&self.state.database, &service.id).await?;
         Ok(see_other(&back))
     }
@@ -2099,6 +2252,21 @@ impl ServiceApi {
                 .map(|replica| replica.slot)
                 .collect();
 
+            // A managed database is **not** sent this way. A `host`
+            // errand says "run this image here", and a receiving node
+            // obeying it starts a Postgres with no volume, no engine
+            // row and no TLS — initialising into a layer thrown away at
+            // the next deployment, and looking like it worked. Its own
+            // errand carries the rest, and `databases::dispatch` queues
+            // it after the primary deploys, which is when the address it
+            // has to carry exists.
+            //
+            // Found on a node: the placement page sent both, and the
+            // database errand only won because it happened to arrive
+            // second and is convergent.
+            if service.kind.is_managed() {
+                continue;
+            }
             if let Err(error) = self.send_there(project, service, &node_id, by, slots).await {
                 // Reported and not fatal: the other placements are
                 // still worth making, and the page shows a replica
@@ -2203,21 +2371,44 @@ impl ServiceApi {
             );
         };
 
-        let (_, secret) = crate::platform::tokens::create(
-            &self.state.database,
-            &project.id,
-            &format!("errand to {node_id}"),
-            by,
-        )
-        .await
-        .map_err(|error| error.to_string())?;
+        // A token for **this node's** registry, and only when the image
+        // is in it.
+        //
+        // The registry in the reference used to be sent a credential
+        // whatever it was, which for `docker.io/library/postgres` means
+        // handing a wabot push token to Docker Hub. It never happened
+        // because nobody had placed a public image on another node —
+        // and that is the ordinary case for a database, so it would
+        // have.
+        //
+        // No credential is the honest payload for a registry that
+        // serves anybody: the far node pulls anonymously, which is what
+        // it would do with a credential Docker Hub does not know.
+        let mine = crate::node::settings::domain(&self.state.database, &self.state.config).await;
+        let secret = match mine.as_deref() == Some(registry.as_str()) {
+            true => Some(
+                crate::platform::tokens::create(
+                    &self.state.database,
+                    &project.id,
+                    &format!("errand to {node_id}"),
+                    by,
+                )
+                .await
+                .map_err(|error| error.to_string())?
+                .1,
+            ),
+            false => None,
+        };
 
         let payload = serde_json::to_value(crate::network::errand::Host {
             project: project.name.clone(),
             service: service.name.clone(),
             image: service.image.clone(),
             registry,
-            username: "errand".into(),
+            // Both or neither: a username with no secret is a
+            // credential that cannot authenticate, and the collector
+            // reads the pair.
+            username: secret.as_ref().map(|_| "errand".to_string()),
             secret,
             env: service.env.clone(),
             // The port a name is served on, so the node running the
@@ -2320,7 +2511,7 @@ fn service_path(path: &str) -> Option<(&str, &str)> {
 }
 
 /// The project slug out of `/projects/{slug}/services…`.
-fn project_slug(path: &str) -> Option<&str> {
+pub fn project_slug(path: &str) -> Option<&str> {
     let segments = super::auth::segments(path);
     match segments.as_slice() {
         ["projects", slug, ..] if !slug.is_empty() => Some(slug),
@@ -2744,8 +2935,7 @@ mod tests {
         assert!(placements[0].is_here());
         assert_eq!(placements[1].node_id.as_deref(), Some("nd-elsewhere1"));
 
-        // And that node has been asked to run it, with something to
-        // pull the image with.
+        // And that node has been asked to run it.
         let queued = crate::network::errand::all(&console.database)
             .await
             .expect("errands");
@@ -2758,7 +2948,74 @@ mod tests {
         let host: crate::network::errand::Host =
             serde_json::from_value(waiting[0].payload.clone()).expect("a host errand");
         assert_eq!(host.service, "web");
-        assert!(!host.secret.is_empty(), "nothing to pull it with");
+        // And with no credential, because the image names a registry
+        // that is not this node's. A token minted here means nothing
+        // there, and sending one to `docker.io` would be handing a
+        // wabot push token to Docker Hub — which is the ordinary case
+        // for a managed database, whose image comes from exactly there.
+        assert!(
+            host.secret.is_none(),
+            "a credential for this node's registry was sent to {}",
+            host.registry
+        );
+    }
+
+    /// The other half of the rule: an image in **this node's own**
+    /// registry does travel with something to pull it, or the far node
+    /// gets a 401 instead of a container.
+    #[tokio::test]
+    async fn an_image_in_this_nodes_registry_travels_with_a_credential() {
+        let console = Console::new().await;
+        let cookie = console.signed_in().await;
+        crate::node::settings::set_domain(&console.database, Some("hub.example"))
+            .await
+            .expect("domain");
+
+        let project = crate::platform::projects::create(&console.database, "shared")
+            .await
+            .expect("project");
+        crate::platform::services::create(
+            &console.database,
+            &project.id,
+            "web",
+            "hub.example/shared/web:latest",
+            &[],
+        )
+        .await
+        .expect("service");
+        crate::network::save(
+            &console.database,
+            &crate::network::Node {
+                id: "nd-elsewhere2".into(),
+                name: "alpine.example".into(),
+                kind: crate::network::Kind::Private,
+                endpoint: None,
+                public_key: Some("k".into()),
+                overlay_ip: Some("10.42.0.9".into()),
+                is_self: false,
+                last_seen_at: None,
+                allows: Vec::new(),
+            },
+        )
+        .await
+        .expect("node");
+
+        console
+            .harness
+            .post("/projects/shared/services/web/placement")
+            .header("cookie", &cookie)
+            .form(&[("replicas", "2"), ("new-on", "nd-elsewhere2")])
+            .send()
+            .await
+            .assert_status(StatusCode::SEE_OTHER);
+
+        let waiting = crate::network::errand::waiting(&console.database, "nd-elsewhere2")
+            .await
+            .expect("waiting");
+        let host: crate::network::errand::Host =
+            serde_json::from_value(waiting[0].payload.clone()).expect("a host errand");
+        assert!(host.secret.is_some(), "nothing to pull it with");
+        assert_eq!(host.username.as_deref(), Some("errand"));
     }
 
     /// Bringing a replica home has to tell the node it left.

@@ -177,20 +177,53 @@ still have to run on a node — see the rule below.
 ## Working on the node
 
 ```sh
-scripts/deploy.sh root@<host>            # builds on the node over SSH, installs the binary
-ssh root@<host> systemctl restart wabot-deploy
+scripts/cross.sh root@<host> [root@<host>…]   # build here, install there, restart
 ssh root@<host> 'journalctl -u wabot-deploy -f'
 ssh root@<host> wabot-deploy doctor
 ```
 
-It builds **on** the node because that removes the whole class of "the
-binary does not run there". Two things to respect: the test node has one
-core and no swap, so a `--release` build there takes the machine down —
-`deploy.sh` uses the `node` profile for that reason — and `deploy.sh`
-only installs the binary, it does not restart the service.
+**One static musl binary, built here, for every node.** `cross.sh` uses
+`zig cc` through `cargo-zigbuild`; the prerequisites are
+`brew install zig protobuf` and `cargo install cargo-zigbuild`.
+
+This replaced building **on** the node, which was the rule here for a
+long time and for a good reason — it removed the whole class of "the
+binary does not run there". Three things ended it, and the third is the
+one that cannot be worked around:
+
+- **It stopped fitting.** `rustc` on the final crate was OOM-killed on
+  the one-core box (2026-08-12), and had taken `clippy-driver` three
+  days earlier. It builds again with `CARGO_PROFILE_NODE_LTO=false` and
+  sixteen codegen units, which is the profile degraded to fit.
+- **It takes the machine away.** sshd cannot fork while the build holds
+  the memory, so for three or four minutes the node answers HTTPS and
+  refuses logins — and once, for two and a half hours. Use the console
+  over HTTPS to tell "busy" from "gone"; retrying SSH only adds load.
+- **One binary cannot serve both nodes.** Ubuntu is glibc, Alpine is
+  musl. Building on each is two artifacts, and the Alpine box could not
+  build this one at all — 972 MB of RAM, and it filled all 512 MB of its
+  swap on the final crate.
+
+Cross-building is ~2 minutes on eight cores with the profile *intact*,
+and both test nodes now run the identical artifact — verified by sha256
+on each. `deploy.sh` is still there for building on a node when that is
+what you want; it now knows `apk` as well as `apt` and `dnf`.
+
+Two things it does not do: it does not touch the systemd unit, and it
+keeps the binary it replaced at `/usr/local/bin/wabot-deploy.previous`,
+which is the way back if the new one does not start.
+
+**And check `/tmp` before believing a node is out of memory.** It is
+tmpfs. A forgotten source tree with its `target/` sat there for three
+days holding 702 MB — 37 % of the machine — and that, not the size of
+the binary, is what had made building impossible.
 
 Never fabricate a session or a token in the node's database to test a
-page. Ask for the click.
+page. Ask for the click. That is also why **anything visual has to be
+looked at by somebody**: without a session the console answers 302, so
+four UI faults in one afternoon — a repeated word, a hard-to-hit
+control, a misaligned icon, a password manager hijacking a field — were
+all found by Jorge and none by the tests.
 
 ## Releasing
 
@@ -216,10 +249,11 @@ Publishing a release is outward-facing. Ask first.
   file operation, which is what the database copy is for.
 - Wildcard certificates are refused by name: the resolver looks names up
   in a map, so accepting one would store a certificate never served.
-- Building happens on the node, ~25 minutes on the one-core box.
-  Compiling locally against a static musl target is the clean way out,
-  and it contradicts the "Working on the node" rationale above — so it
-  needs that section rewritten, not quietly ignored.
+- `scripts/deploy.sh` knew `apt-get` and `dnf` and not `apk`, so a
+  build on the Alpine node failed at the preparation step asking for
+  `build-essential`. Fixed; `build-base protobuf-dev` is what that
+  machine calls them. Building there is no longer the way in — see
+  "Working on the node" — but the script is still the one that does it.
 - `scripts/deploy.sh` prints `line 76: release: command not found` on
   every run. Harmless, and it is exactly where somebody looks when
   something is wrong.
@@ -382,6 +416,117 @@ containers is not somewhere you can place a replica, and offering it
 produced an errand nobody would ever collect — which is exactly what the
 Alpine node did, silently, while its page said the name was served.
 
+**Revoking has to work, and it took three fixes to.** Jorge withdrew
+`edge` from one node, and everything that consent had produced stayed
+exactly where it was: the claim, the proxy route, and a Let's Encrypt
+order repeating twice a day for a name that node would never answer for
+again. Three separate causes, and each one alone was enough:
+
+- **A withdrawal needs no permission.** The grant was checked before the
+  errand was read, so revoking it blocked the empty-upstream errand that
+  exists to clean up — the owner did the right thing and was refused.
+  Consent is for taking work on, not for putting it down.
+- **Nothing convergent released the claim.** The withdrawing errand
+  arrives only if the other node is still there, still knows and still
+  reaches this one — and a node revoking a grant is often doing it
+  because one of those stopped being true. `network::release_ungranted`
+  runs at boot and asks only about now.
+- **Nothing ever deleted an errand-written route.** `retain_proxies`
+  skips a row with no `service_id` on purpose and
+  `forget_control_plane` touches only control-plane rows, so the proxy
+  row an errand writes was in neither set. Even the *successful*
+  withdrawal path had been leaving it behind. That is
+  `routes::forget_for_other` now.
+
+Verified on the node: the claim, the route and the order all gone at the
+next boot, `no problems found`.
+
 Next: phase 9, groups — health and failover across the upstreams of one
 name. Today a dead replica keeps its share of the traffic until the
 owner notices.
+
+## Databases
+
+[`docs/databases.md`](docs/databases.md) is the plan and the record.
+Postgres first, on top of `service` and `replica` rather than beside
+them: slot 1 accepts writes, every other slot follows it.
+
+Three things it needed that the platform had never had, and all three
+are generic:
+
+- **A volume.** `containers::run` removes the container and its
+  snapshot before it starts, so everything a container wrote is gone at
+  the next deployment — right for a stateless service and total loss
+  for anything else. `platform::volumes`: the row is the service's, the
+  directory is the *replica's*, and the directory is derived from the
+  container id rather than stored.
+- **A memory ceiling.** Nothing ever wrote `linux.resources`, so a
+  container could take the machine. `service.memory_limit` reaches the
+  spec as `memory.max` with swap off, and `/dev/shm` — which was a
+  hard-coded 64 MB — follows it.
+- **`ContainerRequest.args`.** Appended to the image's own command,
+  where `command` replaces it. That is how `postgres -c
+  shared_buffers=32MB` keeps the entrypoint that runs `initdb`.
+
+**A preset is not only a cgroup limit.** It also sets the engine's
+arithmetic, because 64 MB of ceiling with the stock `shared_buffers` of
+128 MB is a container killed before it starts. `platform::postgres` is
+pure and holds the table.
+
+**Two traps the errand path had, both found writing this:**
+
+- A `host` errand minted a token for *this* node's registry and sent it
+  to whatever host the image named — so placing
+  `docker.io/library/postgres` elsewhere would have handed a wabot push
+  token to Docker Hub. The credential is optional now and is minted
+  only when the registry is this node's own.
+- **The overlay is a star, not a mesh.** A join writes one row on each
+  side, so two nodes enrolled by the same authority have never heard of
+  each other and have no WireGuard session. Phase 7 did not notice
+  because the verified topology always had the authority at one end. A
+  standby dialling a primary on a third node is the case with no path,
+  and the fix — the peer travelling in the errand — is phase 4 there.
+
+**Phases 0 to 2 are verified on the Ubuntu node** (2026-08-12, a 256 MB
+PostgreSQL 17 created from the console): `memory.max` and
+`memory.swap.max` read back out of the cgroup, `shared_buffers` and
+`hba_file` read back out of the running server, `initdb` into the bind
+mount, the reserved address held across a redeployment, and a row
+written before a `SIGKILL` still there afterwards with `PG_VERSION`
+untouched.
+
+**Phases 3 and 4 are verified across both nodes** (2026-08-13): a
+standby beside the primary and a second on the other machine, both
+`streaming` in `pg_stat_replication`, the remote one read-only, and
+`sslmode=verify-full` against the database's own qualified name working
+on either. Phase 5 — noticing a standby that stopped following — is not
+written.
+
+**A name belongs to the database, not to the machine holding a copy.**
+The long name used to be built from the local node's domain for
+everything on the node, so the same database answered to a different
+qualified name on each machine and its certificate matched neither. The
+owner's domain travels on the errand and lives on the row
+(`database.owner_domain`); `hosts::entries_for` takes the suffix per
+service, and `certificate_names` prefers the row's. `docs/naming.md`
+has the measurement.
+
+That fix then reached nobody, twice, and both are worth carrying:
+`adopt` bound the value and left the column out of the `INSERT` — **a
+parameter nobody uses is not a warning** — and the errand was recomputed
+only by a deployment, so a payload that gained a field stayed the
+payload from before the upgrade. Reconciliation dispatches the standby
+errands at boot now, which is phase 7's lesson again.
+
+**Two bugs came out of the node, and both were invisible locally:**
+
+- **`CNI_ARGS=IP=` does not reach `host-local`.** The `bridge` plugin
+  parses `CNI_ARGS` into a struct that knows `MAC=` and nothing else,
+  and a key it does not recognise is a hard error — `ARGS: unknown
+  args`. A wanted address travels in `args.cni.ips` inside the config.
+  Every database's first deployment would have failed.
+- **A requested address must be inside a configured `host-local`
+  range**, not merely inside the subnet. Bounding the allocator to the
+  low band and reserving the high one out of its sight — the two-port-
+  range construction — is refused with `requested IP … not in range
+  set`. Both bands are declared, in one range set, low first.

@@ -1,0 +1,21 @@
+-- Whose domain a database's qualified name is built from.
+--
+-- ## The name belongs to the database, not to the machine
+--
+-- A copy held on another node was naming itself under *that node's*
+-- domain: the same database answered to
+-- `orders.db-test.deploy.alpine.tobaw.shop` on one machine and
+-- `orders.db-test.wabot-deploy-testing.dev.tobaw.shop` on the other,
+-- with a certificate for each. Which defeats the point of a qualified
+-- name — a client cannot write one connection string, and a read pool
+-- spread over two nodes would need a different name per node.
+--
+-- Found on a node: `server certificate for "orders" (and 5 other names)
+-- does not match host name
+-- "orders-ro.db-test.wabot-deploy-testing.dev.tobaw.shop"`.
+--
+-- So the owner's domain travels in the errand and lands here. NULL
+-- means "this node's own", which is what a database this node owns
+-- uses — the same shape `primary_endpoint` has, and for the same
+-- reason: derived here, told there.
+ALTER TABLE database ADD COLUMN owner_domain TEXT;

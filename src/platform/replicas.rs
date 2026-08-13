@@ -34,6 +34,15 @@ pub struct Replica {
     /// Set when the node running it threw it out. The node that placed
     /// it stops asking.
     pub evicted_at: Option<i64>,
+    /// The last octet of the address this copy keeps on its project's
+    /// bridge, for as long as the copy exists.
+    ///
+    /// `None` is every copy that does not need one — which is all of
+    /// them except a database's. See migration `0030`: a connection
+    /// string is written down somewhere, so the address behind it
+    /// cannot move when the container is recreated, and `host-local`
+    /// hands out the lowest free one.
+    pub reserved_host: Option<u8>,
 }
 
 impl Replica {
@@ -157,6 +166,7 @@ pub async fn place(
         overlay_port: None,
         last_error: None,
         evicted_at: None,
+        reserved_host: None,
     };
 
     let row = replica.clone();
@@ -364,6 +374,76 @@ pub async fn ensure_overlay_port(database: &SqliteDatabase, id: &str) -> Platfor
     Ok(port)
 }
 
+/// Give this copy an address on its project's bridge that will not
+/// move, if it has none.
+///
+/// Convergent, and it keeps the one it already had — the number is in a
+/// connection string somebody wrote into an application, so recreating
+/// the container must not change it.
+///
+/// Allocated per **project**, because that is the scope of a bridge:
+/// two projects each have a `10.42.x.200` and they are different
+/// machines' worth of network.
+///
+/// **From the top down**, which is the whole of the separation from
+/// `host-local`'s automatic allocation — that one counts up from the
+/// bottom of the same range. Not a fence: the plugin's reservation
+/// files are what actually stop a collision, and this only keeps the
+/// two ends apart until a project has ~250 containers. See
+/// `runtime::network::RESERVED_HOSTS`, where two tidier constructions
+/// were tried and both failed on a node.
+pub async fn reserve_host(
+    database: &SqliteDatabase,
+    project_id: &str,
+    id: &str,
+) -> PlatformResult<u8> {
+    if let Some(existing) = find(database, id).await?.and_then(|r| r.reserved_host) {
+        return Ok(existing);
+    }
+
+    let project = project_id.to_string();
+    let taken: Vec<u8> = database
+        .read(move |connection| {
+            let mut statement = connection.prepare(
+                "SELECT replica.\"reserved_host\" FROM replica \
+                 JOIN service ON service.\"id\" = replica.\"service_id\" \
+                 WHERE service.\"project_id\" = ?1 AND replica.\"reserved_host\" IS NOT NULL",
+            )?;
+            let hosts: wabot::sqlite::rusqlite::Result<Vec<i64>> =
+                statement.query_map([project], |row| row.get(0))?.collect();
+            hosts
+        })
+        .await?
+        .into_iter()
+        .map(|host| host as u8)
+        .collect();
+
+    // Cloned rather than iterated in place: a `const` is a value, so
+    // every mention of it is a fresh temporary and `find` would be
+    // advancing one nobody else can see.
+    let host = crate::runtime::network::RESERVED_HOSTS
+        .clone()
+        .rev()
+        .find(|candidate| !taken.contains(candidate))
+        .ok_or_else(|| {
+            super::PlatformError::Refused(
+                "every reserved address in this project's subnet is in use".into(),
+            )
+        })?;
+
+    let (id, stored) = (id.to_string(), i64::from(host));
+    database
+        .write(move |connection| {
+            connection.execute(
+                "UPDATE replica SET \"reserved_host\" = ?2 WHERE \"id\" = ?1",
+                (id, stored),
+            )?;
+            Ok(())
+        })
+        .await?;
+    Ok(host)
+}
+
 /// Where this copy's container answers, while it is up.
 pub async fn set_address(
     database: &SqliteDatabase,
@@ -459,7 +539,7 @@ pub async fn remove(database: &SqliteDatabase, id: &str) -> PlatformResult<()> {
 }
 
 const COLUMNS: &str = "\"id\", \"service_id\", \"node_id\", \"slot\", \"address\", \
-                       \"last_error\", \"evicted_at\", \"overlay_port\"";
+                       \"last_error\", \"evicted_at\", \"overlay_port\", \"reserved_host\"";
 
 fn decode(row: &Row<'_>) -> wabot::sqlite::rusqlite::Result<Replica> {
     Ok(Replica {
@@ -471,6 +551,7 @@ fn decode(row: &Row<'_>) -> wabot::sqlite::rusqlite::Result<Replica> {
         last_error: row.get(5)?,
         evicted_at: row.get(6)?,
         overlay_port: row.get::<_, Option<i64>>(7)?.map(|port| port as u16),
+        reserved_host: row.get::<_, Option<i64>>(8)?.map(|host| host as u8),
     })
 }
 
@@ -503,6 +584,7 @@ mod tests {
             overlay_port: None,
             last_error: None,
             evicted_at: None,
+            reserved_host: None,
         };
 
         assert_eq!(replica(1).container_id("demo", "web"), "demo.web");

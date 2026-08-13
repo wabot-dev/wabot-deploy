@@ -46,6 +46,17 @@ pub enum Kind {
     Host,
     /// Serve this name from here, proxying to the replicas named.
     Edge,
+    /// Keep a read-only copy of a database here.
+    ///
+    /// A kind of its own rather than a field on [`Kind::Host`], and the
+    /// reason is what an older node would do with it: serde ignores a
+    /// field it does not know, so a `host` errand carrying database
+    /// arguments would be run as a plain container — a Postgres with no
+    /// volume, initialising into a layer that is thrown away at the next
+    /// deployment. It would look like it worked. An unknown *kind* is
+    /// refused with a reason instead, which is what that machinery is
+    /// for.
+    Database,
     /// Anything this version does not know about.
     #[serde(other)]
     Unknown,
@@ -56,6 +67,7 @@ impl Kind {
         match self {
             Self::Host => "host",
             Self::Edge => "edge",
+            Self::Database => "database",
             Self::Unknown => "unknown",
         }
     }
@@ -68,6 +80,7 @@ impl Kind {
         match text {
             "host" => Self::Host,
             "edge" => Self::Edge,
+            "database" => Self::Database,
             _ => Self::Unknown,
         }
     }
@@ -100,12 +113,28 @@ pub struct Host {
     /// Pinned by digest by whoever queued it. A tag would mean the two
     /// nodes could resolve the same errand to different bytes.
     pub image: String,
-    /// The registry host in `image`, and what to send it. The far node
-    /// stores this against the host — see
-    /// `platform::registry_credentials`.
+    /// The registry host in `image`. The far node stores the credential
+    /// below against it — see `platform::registry_credentials`.
     pub registry: String,
-    pub username: String,
-    pub secret: String,
+    /// What to present there, when there is anything to present.
+    ///
+    /// **Absent for a registry that is not this node's own.** These
+    /// used to be required, and what went into them was a token for
+    /// *this* node's registry whatever host the image named — so
+    /// placing `docker.io/library/postgres` on another node would have
+    /// handed a wabot push token to Docker Hub. Nobody had placed a
+    /// public image elsewhere, so nobody had; a database pulls from
+    /// Docker Hub by default, so somebody would have.
+    ///
+    /// Omitted rather than sent empty. A node old enough to require
+    /// them refuses the errand and says so, which is a reason somebody
+    /// can act on — where an empty password is a pull that fails at the
+    /// registry with an authentication error about a credential nobody
+    /// meant to send.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub username: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub secret: Option<String>,
     #[serde(default)]
     pub env: std::collections::BTreeMap<String, String>,
     /// What the container should listen on. `None` leaves it to the
@@ -143,6 +172,63 @@ pub struct Edge {
     /// Each is an overlay address and a port bound to it, never a
     /// container's own: a bridge address is not unique across nodes.
     pub upstreams: Vec<String>,
+}
+
+/// The arguments of a [`Kind::Database`] errand: hold a copy here.
+///
+/// Everything the far node needs and nothing it can look up. It has
+/// never heard of this database, and — unlike a `host` errand — it
+/// cannot work out the one thing that matters most from its own rows:
+/// **where the primary answers**. That address is on the sending node's
+/// overlay, and the port came out of that node's own port space.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Standby {
+    pub project: String,
+    pub service: String,
+    /// Pinned by whoever queued it, like a `host` errand's.
+    pub image: String,
+    pub registry: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub username: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub secret: Option<String>,
+
+    /// The ceiling, in bytes. Sent rather than chosen there: a copy that
+    /// ran with different settings from its primary would be a different
+    /// database wearing the same name.
+    pub memory_limit: u64,
+    pub engine: String,
+    pub version: String,
+
+    /// The credentials, in full. A standby is seeded by connecting to
+    /// the primary as the replication role, and it serves reads to
+    /// clients that authenticate as the ordinary one — so it needs both,
+    /// and both have to be the *same* as the primary's or the copy is
+    /// not the same database.
+    pub database_name: String,
+    pub admin_user: String,
+    pub admin_password: String,
+    pub replication_user: String,
+    pub replication_password: String,
+
+    /// Where the primary answers, as `host:port` — the sending node's
+    /// overlay address and a port bound to it. Never a container's own:
+    /// a bridge address names a different container on every machine,
+    /// which is the rule phase 7 already learned.
+    pub primary: String,
+    /// Which copies to hold, in the **service's** numbering. Never the
+    /// primary's slot: this errand only ever asks for standbys.
+    pub slots: Vec<u32>,
+    pub primary_slot: u32,
+    /// The **owner's** domain, so the copy answers to the database's own
+    /// qualified name rather than to one built from the holding node's.
+    ///
+    /// Without it the same database had a different long name on every
+    /// machine that held a copy, each with its own certificate — so no
+    /// single connection string reached it, which is the whole point of
+    /// a qualified name. Absent when the owner has no domain.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub qualified_domain: Option<String>,
 }
 
 /// An errand and what became of it, for the page that lists them.
@@ -190,6 +276,16 @@ pub async fn queue(
     kind: Kind,
     payload: &serde_json::Value,
 ) -> NetworkResult<Errand> {
+    queue_about(database, node_id, kind, None, payload).await
+}
+
+async fn queue_about(
+    database: &SqliteDatabase,
+    node_id: &str,
+    kind: Kind,
+    subject: Option<&str>,
+    payload: &serde_json::Value,
+) -> NetworkResult<Errand> {
     let errand = Errand {
         id: format!("er-{}", wabot::prelude::password::generate(12)),
         kind,
@@ -201,19 +297,75 @@ pub async fn queue(
         node_id.to_string(),
         errand.kind.as_str().to_string(),
     );
-    let body = payload.to_string();
+    let (body, about) = (payload.to_string(), subject.map(str::to_string));
     database
         .write(move |connection| {
             connection.execute(
-                "INSERT INTO errand (\"id\", \"node_id\", \"kind\", \"payload\", \"created_at\") \
-                 VALUES (?1, ?2, ?3, ?4, ?5)",
-                (id, node, kind, body, now_ms()),
+                "INSERT INTO errand \
+                   (\"id\", \"node_id\", \"kind\", \"payload\", \"subject\", \"created_at\") \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                (id, node, kind, body, about, now_ms()),
             )?;
             Ok(())
         })
         .await?;
 
     Ok(errand)
+}
+
+/// Ask a node to do something, unless it was already asked the same
+/// thing.
+///
+/// **Because a database's errands are recomputed rather than emitted.**
+/// Every other errand is queued by somebody pressing a button, once. A
+/// database's cannot be: the port its primary answers on comes out of
+/// the other node's port space and arrives home on a report, so the
+/// instruction has to be rebuilt whenever the facts settle — and a pass
+/// that rebuilt it every fifteen seconds would queue an errand every
+/// fifteen seconds.
+///
+/// `subject` is what the instruction is about, so "the same thing" is
+/// answerable: one node can hold standbys of two databases, and the most
+/// recent errand of a kind is not enough to tell them apart.
+///
+/// An unchanged payload is skipped **whatever became of the last one**,
+/// including a failure. A failure is an answer and this node's rule is
+/// that retrying is something somebody asks for; requeueing it here
+/// would be an automatic retry loop wearing a different name.
+pub async fn queue_if_changed(
+    database: &SqliteDatabase,
+    node_id: &str,
+    kind: Kind,
+    subject: &str,
+    payload: &serde_json::Value,
+) -> NetworkResult<Option<Errand>> {
+    let (node, about) = (node_id.to_string(), subject.to_string());
+    let last: Option<String> = database
+        .read(move |connection| {
+            connection
+                .query_row(
+                    "SELECT \"payload\" FROM errand \
+                     WHERE \"node_id\" = ?1 AND \"subject\" = ?2 \
+                     ORDER BY \"created_at\" DESC LIMIT 1",
+                    (node, about),
+                    |row| row.get(0),
+                )
+                .optional()
+        })
+        .await?;
+
+    if let Some(last) = last {
+        if serde_json::from_str::<serde_json::Value>(&last)
+            .ok()
+            .as_ref()
+            == Some(payload)
+        {
+            return Ok(None);
+        }
+    }
+    queue_about(database, node_id, kind, Some(subject), payload)
+        .await
+        .map(Some)
 }
 
 /// What is waiting for a node, oldest first.

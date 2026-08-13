@@ -23,6 +23,7 @@
 
 pub mod assets;
 pub mod auth;
+pub mod databases;
 pub mod es;
 pub mod language;
 pub mod layout;
@@ -280,6 +281,8 @@ pub fn register(
         people::PeopleApi,
         projects::ProjectPages,
         projects::ProjectApi,
+        databases::DatabaseApi,
+        databases::DatabasePages,
         services::ServicePages,
         services::ServiceApi,
         updates::UpdatePages,
@@ -290,6 +293,7 @@ pub fn register(
 pub fn routes(container: &Container) -> Router {
     let pages = wabot::ui::ui_router();
     let pages = auth::AuthPages::register_ui_routes(container, pages);
+    let pages = databases::DatabasePages::register_ui_routes(container, pages);
     let pages = nodes::NodePages::register_ui_routes(container, pages);
     let pages = people::PeoplePages::register_ui_routes(container, pages);
     let pages = projects::ProjectPages::register_ui_routes(container, pages);
@@ -298,6 +302,7 @@ pub fn routes(container: &Container) -> Router {
 
     let forms = Router::new();
     let forms = auth::AuthApi::register_routes(container, forms);
+    let forms = databases::DatabaseApi::register_routes(container, forms);
     let forms = nodes::NodeApi::register_routes(container, forms);
     let forms = people::PeopleApi::register_routes(container, forms);
     let forms = projects::ProjectApi::register_routes(container, forms);
@@ -749,6 +754,139 @@ pub(crate) mod tests {
         assert!(
             !body.contains("Certificate"),
             "the certificate lives on the node's own page: {body}"
+        );
+    }
+
+    /// Every field somebody types into says what may be filled into it.
+    ///
+    /// A field that declares nothing gets the browser's guess, and the
+    /// guess is made from its name: a text input called `username` on
+    /// the project settings page had the keychain offering the operator's
+    /// own login for "who to add to this project". Reported from a real
+    /// console, with a screenshot.
+    ///
+    /// So the rule is that there is no default. Either a field names the
+    /// purpose autofill should serve — `username`, `current-password`,
+    /// `new-password`, on the four forms that are genuinely about the
+    /// person filling them in — or it says `off`. A new field cannot
+    /// quietly inherit a heuristic, because this test fails until it
+    /// chooses.
+    ///
+    /// What this **cannot** promise is that a browser obeys: `off` is a
+    /// request, and Safari and Chrome both override it for some fields.
+    /// It promises that the console asked.
+    #[test]
+    fn every_field_says_what_may_be_autofilled_into_it() {
+        const SOURCES: &[(&str, &str)] = &[
+            ("auth.rs", include_str!("auth.rs")),
+            ("databases.rs", include_str!("databases.rs")),
+            ("nodes.rs", include_str!("nodes.rs")),
+            ("people.rs", include_str!("people.rs")),
+            ("projects.rs", include_str!("projects.rs")),
+            ("services.rs", include_str!("services.rs")),
+            ("shell.rs", include_str!("shell.rs")),
+            ("updates.rs", include_str!("updates.rs")),
+        ];
+
+        let mut silent = Vec::new();
+        for (name, source) in SOURCES {
+            for element in fields(source) {
+                if !element.contains("autocomplete=") {
+                    silent.push(format!("{name}: {}", element.trim()));
+                }
+            }
+        }
+        assert!(
+            silent.is_empty(),
+            "{} field(s) let the browser guess:\n{}",
+            silent.len(),
+            silent.join("\n")
+        );
+    }
+
+    /// Every `<input>` and `<textarea>` a person types into.
+    ///
+    /// Hidden fields, checkboxes and radios are left out: nothing is
+    /// filled into them, and `autocomplete` has no meaning there.
+    fn fields(source: &str) -> Vec<String> {
+        let mut found = Vec::new();
+        for tag in ["<input", "<textarea"] {
+            let mut rest = source;
+            while let Some(start) = rest.find(tag) {
+                rest = &rest[start..];
+                let Some(end) = rest.find('>') else { break };
+                let element = &rest[..=end];
+                let typed = |kind: &str| element.contains(&format!("type=\"{kind}\""));
+                if !typed("hidden") && !typed("checkbox") && !typed("radio") && !typed("submit") {
+                    found.push(element.to_string());
+                }
+                rest = &rest[end + 1..];
+            }
+        }
+        found
+    }
+
+    /// A field only *looks* like a credential where it is one.
+    ///
+    /// `autocomplete="off"` is a request, and Safari refuses it: it
+    /// decides a text field is a login from the **name, the id and the
+    /// placeholder**, not from what the field asks for. A box named
+    /// `username`, with `id="username"` and `placeholder="username"`,
+    /// had the keychain offering the operator their own account — on a
+    /// form asking which *other* person to add to a project. Turning
+    /// autofill off changed nothing; renaming the field did.
+    ///
+    /// So the rule is about the words, not the attribute: a field may
+    /// carry a credential's vocabulary only if it declares a
+    /// credential's purpose, which is the four forms that really are
+    /// about the person filling them in.
+    #[test]
+    fn only_a_real_credential_field_is_named_like_one() {
+        const SOURCES: &[(&str, &str)] = &[
+            ("auth.rs", include_str!("auth.rs")),
+            ("databases.rs", include_str!("databases.rs")),
+            ("nodes.rs", include_str!("nodes.rs")),
+            ("people.rs", include_str!("people.rs")),
+            ("projects.rs", include_str!("projects.rs")),
+            ("services.rs", include_str!("services.rs")),
+            ("shell.rs", include_str!("shell.rs")),
+            ("updates.rs", include_str!("updates.rs")),
+        ];
+        // What a browser reads as "this is a sign-in".
+        const CREDENTIAL_WORDS: &[&str] = &["username", "password", "email"];
+        // What a field says when autofill is genuinely wanted.
+        const PURPOSES: &[&str] = &[
+            r#"autocomplete="username""#,
+            r#"autocomplete="current-password""#,
+            r#"autocomplete="new-password""#,
+        ];
+
+        let mut pretending = Vec::new();
+        for (name, source) in SOURCES {
+            for element in fields(source) {
+                let declares = PURPOSES.iter().any(|purpose| element.contains(purpose));
+                if declares {
+                    continue;
+                }
+                for word in CREDENTIAL_WORDS {
+                    let named = [
+                        format!("name=\"{word}\""),
+                        format!("id=\"{word}\""),
+                        format!("placeholder=\"{word}\""),
+                    ];
+                    if named.iter().any(|shape| element.contains(shape)) {
+                        pretending.push(format!("{name}: {}", element.trim()));
+                        break;
+                    }
+                }
+            }
+        }
+        assert!(
+            pretending.is_empty(),
+            "{} field(s) are named like a login and are not one, so a password manager \
+             will offer to fill them whatever `autocomplete` says:\n{}",
+            pretending.len(),
+            pretending.join("\n")
         );
     }
 }

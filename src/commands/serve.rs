@@ -193,6 +193,36 @@ pub async fn run(config: Config) -> anyhow::Result<i32> {
                 Ok::<(), anyhow::Error>(())
             }
         })
+        // A renewed certificate reaching a running database.
+        //
+        // Its own loop rather than a step of the certificate loop: that
+        // one belongs to `edge`, and having it reach into the deploy
+        // path would tie the two together for a check that costs a file
+        // comparison. Convergent either way — it asks whether the file
+        // matches the store, not whether anything renewed.
+        .service_with_cancel("database-certificates", {
+            let deployer = deployer.clone();
+            move |cancel| async move {
+                loop {
+                    // Once at start, before the first wait. A node that
+                    // was down while a certificate was renewed should
+                    // hand it over when it comes back, not a quarter of
+                    // an hour later.
+                    match deployer.refresh_certificates().await {
+                        Ok(0) => {}
+                        Ok(refreshed) => {
+                            tracing::info!(refreshed, "certificates handed to running databases")
+                        }
+                        Err(error) => tracing::warn!(%error, "could not refresh certificates"),
+                    }
+
+                    tokio::select! {
+                        _ = cancel.cancelled() => return Ok::<(), anyhow::Error>(()),
+                        _ = tokio::time::sleep(std::time::Duration::from_secs(900)) => {}
+                    }
+                }
+            }
+        })
         // Deploys land here. A service that returns ends the process,
         // so the runner's own loop is what keeps this one alive.
         .service(

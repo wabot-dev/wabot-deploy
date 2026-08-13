@@ -32,9 +32,9 @@
 //! container seeing the host's ports.
 
 use oci_spec::runtime::{
-    Capability, LinuxBuilder, LinuxCapabilitiesBuilder, LinuxNamespace, LinuxNamespaceBuilder,
-    LinuxNamespaceType, Mount, MountBuilder, ProcessBuilder, RootBuilder, Spec, SpecBuilder,
-    UserBuilder,
+    Capability, LinuxBuilder, LinuxCapabilitiesBuilder, LinuxMemoryBuilder, LinuxNamespace,
+    LinuxNamespaceBuilder, LinuxNamespaceType, LinuxResourcesBuilder, Mount, MountBuilder,
+    ProcessBuilder, RootBuilder, Spec, SpecBuilder, UserBuilder,
 };
 
 use super::images::ImageConfig;
@@ -49,11 +49,34 @@ pub enum SpecError {
 
 type SpecResult<T> = Result<T, SpecError>;
 
+/// A directory on the node, mounted into the container.
+///
+/// The node's half of `platform::volumes`: that module decides *which*
+/// directory, this one puts it in the spec.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BindMount {
+    /// A path on the node. It has to exist — a bind of something that
+    /// is not there fails inside the shim, where the message is about a
+    /// mount rather than about the directory nobody created.
+    pub source: std::path::PathBuf,
+    /// Where it appears inside the container.
+    pub destination: String,
+    pub read_only: bool,
+}
+
 /// What the node knows about a container beyond what its image says.
 #[derive(Debug, Clone, Default)]
 pub struct ContainerRequest {
     /// Overrides the image's command when set.
     pub command: Vec<String>,
+    /// Appended to whatever command runs, image's or overridden.
+    ///
+    /// The difference from `command` is the whole reason both exist: an
+    /// image whose entrypoint ends in `exec postgres "$@"` is
+    /// configured by adding `-c shared_buffers=32MB`, and replacing the
+    /// command to do it would throw away the entrypoint that runs
+    /// `initdb` on an empty data directory.
+    pub args: Vec<String>,
     /// Added to the image's environment. Later wins on a repeated key,
     /// so these override the image's.
     pub env: Vec<(String, String)>,
@@ -71,11 +94,28 @@ pub struct ContainerRequest {
     /// the host's loopback, which is what `/etc/resolv.conf` names on
     /// any machine running systemd-resolved.
     pub resolv_conf: Option<std::path::PathBuf>,
+    /// Directories from the node, mounted after everything else — so a
+    /// destination inside one of the standard mounts would win, which
+    /// is why `platform::volumes` refuses those destinations.
+    pub mounts: Vec<BindMount>,
+    /// The most memory this container may have, in bytes.
+    ///
+    /// `None` is what every container had until there were presets: no
+    /// ceiling, and one process can take the machine.
+    pub memory_limit: Option<u64>,
+    /// The size of `/dev/shm`, in bytes. `None` is [`DEFAULT_SHM`].
+    ///
+    /// Its own field rather than a fraction of `memory_limit`, because
+    /// the two answer to different things: the limit is what the
+    /// operator chose, and this is what the engine inside needs. A
+    /// database using parallel query is the case that cares, and 64 MB
+    /// is the number it fails at.
+    pub shm_size: Option<u64>,
 }
 
 /// Build the spec for one container.
 pub fn build(image: &ImageConfig, request: &ContainerRequest) -> SpecResult<Spec> {
-    let command = if request.command.is_empty() {
+    let mut command = if request.command.is_empty() {
         image.command.clone()
     } else {
         request.command.clone()
@@ -85,6 +125,7 @@ pub fn build(image: &ImageConfig, request: &ContainerRequest) -> SpecResult<Spec
             "neither the image nor the deployment says what to run".into(),
         ));
     }
+    command.extend(request.args.iter().cloned());
 
     let process = ProcessBuilder::default()
         .args(command)
@@ -106,10 +147,15 @@ pub fn build(image: &ImageConfig, request: &ContainerRequest) -> SpecResult<Spec
         .build()
         .map_err(|error| SpecError::Build(error.to_string()))?;
 
-    let linux = LinuxBuilder::default()
+    let mut linux = LinuxBuilder::default();
+    linux = linux
         .namespaces(namespaces(request.network_ns.as_deref())?)
         .masked_paths(masked_paths())
-        .readonly_paths(readonly_paths())
+        .readonly_paths(readonly_paths());
+    if let Some(limit) = request.memory_limit {
+        linux = linux.resources(resources(limit)?);
+    }
+    let linux = linux
         .build()
         .map_err(|error| SpecError::Build(error.to_string()))?;
 
@@ -126,7 +172,7 @@ pub fn build(image: &ImageConfig, request: &ContainerRequest) -> SpecResult<Spec
                 .map_err(|error| SpecError::Build(error.to_string()))?,
         )
         .hostname("wabot")
-        .mounts(mounts(request.resolv_conf.as_deref()))
+        .mounts(mounts(request))
         .linux(linux)
         .build()
         .map_err(|error| SpecError::Build(error.to_string()))
@@ -199,11 +245,44 @@ fn user(image: &ImageConfig) -> SpecResult<oci_spec::runtime::User> {
         .map_err(|error| SpecError::Build(error.to_string()))
 }
 
-/// The mounts every Linux container needs.
+/// Docker's `/dev/shm`, and so everybody's.
+///
+/// Small enough to matter to anything using shared memory seriously,
+/// large enough that nothing falls over on startup — which is exactly
+/// the size at which Postgres running a parallel query fails, and the
+/// reason [`ContainerRequest::shm_size`] exists.
+pub const DEFAULT_SHM: u64 = 64 * 1024 * 1024;
+
+/// What the container may take.
+///
+/// `swap` is set to the same number as `limit`, which is how the OCI
+/// spec says "no swap": the field is memory **plus** swap, so crun
+/// writes `memory.swap.max = 0`. Left unset, a container over its
+/// ceiling starts swapping instead of failing, and a database that is
+/// quietly swapping is worse than one that was refused the memory —
+/// the first is invisible until everything on the node is slow.
+fn resources(limit: u64) -> SpecResult<oci_spec::runtime::LinuxResources> {
+    let limit = i64::try_from(limit).map_err(|_| {
+        SpecError::Invalid("that memory limit does not fit in the spec's own type".into())
+    })?;
+
+    let memory = LinuxMemoryBuilder::default()
+        .limit(limit)
+        .swap(limit)
+        .build()
+        .map_err(|error| SpecError::Build(error.to_string()))?;
+
+    LinuxResourcesBuilder::default()
+        .memory(memory)
+        .build()
+        .map_err(|error| SpecError::Build(error.to_string()))
+}
+
+/// The mounts every Linux container needs, then the node's own.
 ///
 /// Not a preference — `/proc` alone is the difference between a
 /// container that runs and one that exits before its first instruction.
-fn mounts(resolv_conf: Option<&std::path::Path>) -> Vec<Mount> {
+fn mounts(request: &ContainerRequest) -> Vec<Mount> {
     let mount = |destination: &str, kind: &str, source: &str, options: &[&str]| {
         MountBuilder::default()
             .destination(destination)
@@ -235,14 +314,20 @@ fn mounts(resolv_conf: Option<&std::path::Path>) -> Vec<Mount> {
                 "gid=5",
             ],
         ),
-        // 64 MB, which is Docker's default. Small enough to matter to
-        // anything using shared memory seriously, and large enough
-        // that nothing falls over on startup.
+        // Sized by the caller. A tmpfs page is charged to the cgroup
+        // that wrote it, so this is a cap and not a reservation — a
+        // container with a memory limit cannot escape it through here.
         mount(
             "/dev/shm",
             "tmpfs",
             "shm",
-            &["nosuid", "noexec", "nodev", "mode=1777", "size=65536k"],
+            &[
+                "nosuid",
+                "noexec",
+                "nodev",
+                "mode=1777",
+                &format!("size={}k", request.shm_size.unwrap_or(DEFAULT_SHM) / 1024),
+            ],
         ),
         mount(
             "/dev/mqueue",
@@ -260,12 +345,34 @@ fn mounts(resolv_conf: Option<&std::path::Path>) -> Vec<Mount> {
 
     // Read-only: the file is the node's, shared by every container,
     // and one of them rewriting it would change every other's DNS.
-    if let Some(path) = resolv_conf {
+    if let Some(path) = request.resolv_conf.as_deref() {
         mounts.push(mount(
             "/etc/resolv.conf",
             "bind",
             &path.to_string_lossy(),
             &["rbind", "ro", "nosuid", "noexec", "nodev"],
+        ));
+    }
+
+    // Last, so a volume lands on top of the rootfs rather than under
+    // one of the mounts above. `platform::volumes` refuses those
+    // destinations for that reason; this is the half that makes the
+    // refusal necessary.
+    //
+    // `nosuid` and `nodev` on every one: storage a container writes has
+    // no business carrying a setuid binary or a device node, and
+    // neither does storage the node hands it.
+    for bind in &request.mounts {
+        let mut options = vec!["rbind", "nosuid", "nodev"];
+        options.push(match bind.read_only {
+            true => "ro",
+            false => "rw",
+        });
+        mounts.push(mount(
+            &bind.destination,
+            "bind",
+            &bind.source.to_string_lossy(),
+            &options,
         ));
     }
     mounts
@@ -630,6 +737,201 @@ mod tests {
         )
         .expect("spec");
         assert_eq!(named.process().as_ref().unwrap().user().clone().uid(), 0);
+    }
+
+    /// A volume is what makes a database possible: the snapshot is
+    /// removed on every deployment, and this is the part that is not.
+    #[test]
+    fn a_volume_is_bound_in_after_the_mounts_a_container_needs() {
+        let spec = build(
+            &nginx(),
+            &ContainerRequest {
+                mounts: vec![BindMount {
+                    source: "/var/lib/wabot-deploy/volumes/demo.db/data".into(),
+                    destination: "/var/lib/postgresql/data".into(),
+                    read_only: false,
+                }],
+                ..Default::default()
+            },
+        )
+        .expect("spec");
+
+        let mounts = spec.mounts().clone().expect("mounts");
+        let volume = mounts
+            .iter()
+            .find(|mount| mount.destination().ends_with("postgresql/data"))
+            .expect("the volume is mounted");
+
+        assert_eq!(volume.typ().as_deref(), Some("bind"));
+        assert_eq!(
+            volume.source().as_deref().map(|p| p.display().to_string()),
+            Some("/var/lib/wabot-deploy/volumes/demo.db/data".to_string())
+        );
+        let options = volume.options().clone().expect("options");
+        assert!(options.contains(&"rbind".to_string()));
+        assert!(options.contains(&"rw".to_string()));
+        assert!(
+            options.contains(&"nosuid".to_string()) && options.contains(&"nodev".to_string()),
+            "storage has no business carrying a setuid binary or a device node"
+        );
+
+        // After `/proc` and the rest: mounts are applied in order, so a
+        // volume listed first could be shadowed by one of them.
+        let position = |destination: &str| {
+            mounts
+                .iter()
+                .position(|mount| mount.destination().display().to_string() == destination)
+        };
+        assert!(position("/var/lib/postgresql/data") > position("/proc"));
+    }
+
+    #[test]
+    fn a_read_only_mount_says_so() {
+        let spec = build(
+            &nginx(),
+            &ContainerRequest {
+                mounts: vec![BindMount {
+                    source: "/var/lib/wabot-deploy/config/demo.db".into(),
+                    destination: "/etc/wabot".into(),
+                    read_only: true,
+                }],
+                ..Default::default()
+            },
+        )
+        .expect("spec");
+
+        let options = spec
+            .mounts()
+            .clone()
+            .expect("mounts")
+            .into_iter()
+            .find(|mount| mount.destination().display().to_string() == "/etc/wabot")
+            .expect("mounted")
+            .options()
+            .clone()
+            .expect("options");
+        assert!(options.contains(&"ro".to_string()));
+        assert!(!options.contains(&"rw".to_string()), "both would be a lie");
+    }
+
+    /// The ceiling the presets exist to set. `swap` carries the same
+    /// number because the field is memory *plus* swap — so equal means
+    /// none, and a container over its limit fails rather than quietly
+    /// swapping the node into the ground.
+    #[test]
+    fn a_memory_limit_reaches_the_spec_with_swap_turned_off() {
+        let spec = build(
+            &nginx(),
+            &ContainerRequest {
+                memory_limit: Some(128 * 1024 * 1024),
+                ..Default::default()
+            },
+        )
+        .expect("spec");
+
+        let memory = spec
+            .linux()
+            .as_ref()
+            .expect("linux")
+            .resources()
+            .as_ref()
+            .expect("resources")
+            .memory()
+            .expect("memory");
+
+        assert_eq!(memory.limit(), Some(134_217_728));
+        assert_eq!(
+            memory.swap(),
+            Some(134_217_728),
+            "memory + swap equal to memory is what no swap means"
+        );
+    }
+
+    /// No preset is still the old behaviour, deliberately: every
+    /// service that exists today runs without a ceiling, and a default
+    /// would take a node's containers down to introduce a setting.
+    ///
+    /// The assertion is on the *memory*, not on `resources` being
+    /// absent: `LinuxBuilder` fills that in with an empty block of its
+    /// own, and an empty block is what "no limits" looks like in the
+    /// spec.
+    #[test]
+    fn a_container_with_no_preset_has_no_ceiling() {
+        let spec = build(&nginx(), &ContainerRequest::default()).expect("spec");
+        let memory = spec
+            .linux()
+            .as_ref()
+            .expect("linux")
+            .resources()
+            .as_ref()
+            .and_then(|resources| resources.memory().as_ref().and_then(|m| m.limit()));
+        assert!(
+            memory.is_none(),
+            "a service that never asked for a ceiling was given one"
+        );
+    }
+
+    /// 64 MB of `/dev/shm` is where Postgres running a parallel query
+    /// fails, and it was hard-coded.
+    #[test]
+    fn dev_shm_follows_the_preset_and_defaults_to_dockers_size() {
+        let size_of = |request| {
+            build(&nginx(), &request)
+                .expect("spec")
+                .mounts()
+                .clone()
+                .expect("mounts")
+                .into_iter()
+                .find(|mount| mount.destination().display().to_string() == "/dev/shm")
+                .expect("shm")
+                .options()
+                .clone()
+                .expect("options")
+                .into_iter()
+                .find_map(|option| {
+                    option
+                        .strip_prefix("size=")
+                        .map(|size| size.trim_end_matches('k').to_string())
+                })
+                .expect("a size")
+        };
+
+        assert_eq!(size_of(ContainerRequest::default()), "65536");
+        assert_eq!(
+            size_of(ContainerRequest {
+                shm_size: Some(256 * 1024 * 1024),
+                ..Default::default()
+            }),
+            "262144"
+        );
+    }
+
+    /// The difference between the two command fields, and the reason
+    /// both exist: `postgres -c shared_buffers=32MB` has to keep the
+    /// entrypoint that runs `initdb` on an empty data directory.
+    #[test]
+    fn arguments_are_appended_to_the_images_own_command() {
+        let spec = build(
+            &ImageConfig {
+                command: vec!["docker-entrypoint.sh".into(), "postgres".into()],
+                ..Default::default()
+            },
+            &ContainerRequest {
+                args: vec!["-c".into(), "shared_buffers=32MB".into()],
+                ..Default::default()
+            },
+        )
+        .expect("spec");
+
+        assert_eq!(
+            spec.process().as_ref().unwrap().args().clone().unwrap(),
+            vec![
+                "docker-entrypoint.sh",
+                "postgres",
+                "-c",
+                "shared_buffers=32MB"
+            ]
+        );
     }
 
     #[test]

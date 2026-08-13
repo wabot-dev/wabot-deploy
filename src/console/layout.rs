@@ -194,6 +194,15 @@ pub const CSS: &str = r#"
   height: 2.25rem;
   padding: 0;
 }
+/* And the glyph is sized here rather than by the `width` on each SVG.
+   The box was widened once without the glyph following it, so an
+   18-pixel icon sat in a 36-pixel button and read as shrunken — twice.
+   One rule that every icon button obeys is the fix; the attributes on
+   the SVGs are what a browser uses before this stylesheet arrives. */
+.btn-icon svg {
+  width: 1.375rem;
+  height: 1.375rem;
+}
 
 /* Which half of the theme toggle is real, while nobody has chosen.
    Light or dark is the account's answer once it presses; until then the
@@ -324,6 +333,66 @@ pub const CSS: &str = r#"
   margin: 0 0 var(--sp-2);
   font-size: var(--fs-sm);
   color: rgb(var(--c-fg-muted));
+}
+
+/* Where this page sits, and the way out. Above the title for the same
+   reason `.crumb` is: it is orientation, not content, so it must not
+   compete with the heading somebody came to read.
+
+   The frame draws it on every page from the path — see `shell::crumbs`
+   — so this is the only place its shape is decided. */
+/* Centred, not baseline-aligned. The back control holds an SVG and no
+   text, so it has no baseline of its own — a browser falls back to its
+   bottom edge, and the arrow floated above the trail it belongs to. The
+   bug arrived the moment the control stopped being a word. */
+.crumbs {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  margin: 0 0 var(--sp-4);
+  font-size: var(--fs-sm);
+  color: rgb(var(--c-fg-muted));
+}
+.crumbs ol {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  min-width: 0;
+}
+/* The separator is generated rather than written into the markup: a
+   `/` between two links is punctuation, and punctuation that is part of
+   the document gets read out and selected with the text. */
+.crumbs li + li::before {
+  content: "/";
+  margin-right: var(--sp-2);
+  color: rgb(var(--c-fg-faint));
+}
+.crumbs a { color: rgb(var(--c-fg-muted)); }
+/* Where you are, in the trail. Not a link, and not louder than the
+   heading right underneath it either. */
+.crumbs [aria-current="page"] { color: rgb(var(--c-fg)); }
+
+/* The one control in the bar, and an icon rather than a word: its
+   destination is always the crumb it sits next to, so spelling it out
+   printed the same name twice on every page one level deep.
+
+   It carries `.btn-icon` for the hit area — a bare arrow beside a text
+   link is a few pixels wide next to something far easier to hit — and
+   is pulled left so the square sits flush with the page's edge instead
+   of indenting the trail. */
+.crumb-back {
+  flex: none;
+  margin-left: calc(var(--sp-3) * -1);
+}
+
+/* A long trail on a narrow screen wraps rather than pushing the page
+   sideways; the back link stays on the first line. */
+@media (max-width: 40rem) {
+  .crumbs { flex-wrap: wrap; gap: var(--sp-2); }
 }
 
 .empty {

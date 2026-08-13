@@ -505,6 +505,52 @@ pub async fn save(database: &SqliteDatabase, stored: &StoredCert) -> CertResult<
     Ok(())
 }
 
+/// Forget every stored certificate this node no longer has a name for.
+///
+/// Renaming a node, clearing its domain, dropping an edge, or a database
+/// learning it belongs to somebody else all leave a certificate keyed
+/// under the old name. Nothing removed them, so each one was reissued
+/// for ever and listed by `doctor` — a page of names the node does not
+/// answer for, which is the sort of report that teaches people to skip
+/// reading the report.
+///
+/// Two rules keep this from being the mistake it could be:
+///
+/// - **`Source::File` is never touched.** A self-signed one this node
+///   can make again and an ACME one it can order again; a file somebody
+///   put here it cannot recreate, and a convergent pass must not be able
+///   to destroy something unrecoverable.
+/// - **The caller must know the full answer.** `wanted` is every name
+///   this node still wants a certificate under, from every source of
+///   them — and a caller that could not read one of those sources must
+///   pass nothing rather than a short list, because a short list here
+///   deletes working certificates. Hence [`prune`] returning early on an
+///   empty `wanted`: there is no node that legitimately wants none, so
+///   an empty list is a failure upstream rather than an instruction.
+pub async fn prune(database: &SqliteDatabase, wanted: &[String]) -> CertResult<Vec<String>> {
+    if wanted.is_empty() {
+        return Ok(Vec::new());
+    }
+    let stale: Vec<String> = load_all(database)
+        .await?
+        .into_iter()
+        .filter(|stored| stored.source != Source::File)
+        .filter(|stored| !wanted.iter().any(|name| name == &stored.domain))
+        .map(|stored| stored.domain)
+        .collect();
+
+    for domain in &stale {
+        let domain = domain.clone();
+        database
+            .write(move |connection| {
+                connection.execute("DELETE FROM certificate WHERE \"domain\" = ?1", [domain])?;
+                Ok(())
+            })
+            .await?;
+    }
+    Ok(stale)
+}
+
 /// When a certificate expires, in epoch millis.
 ///
 /// Read from the leaf rather than assumed, because an ACME certificate
@@ -856,6 +902,77 @@ mod tests {
             resolver.fallback.load().is_some(),
             "a handshake with no SNI still needs an answer"
         );
+    }
+
+    /// The store used to keep a certificate for ever once it had one.
+    /// Renaming a node, clearing a domain, dropping an edge or a
+    /// database learning it belongs to somebody else all left a row
+    /// behind, reissued twice a day for a name the node does not answer
+    /// for — and `doctor` listed every one of them.
+    #[tokio::test]
+    async fn a_certificate_for_a_name_this_node_stopped_serving_is_forgotten() {
+        let database = crate::db::open_in_memory().await.expect("open");
+        for name in ["kept.example", "gone.example"] {
+            ensure_self_signed(&database, name, &[name.to_string()])
+                .await
+                .expect("issued");
+        }
+
+        let gone = prune(&database, &["kept.example".to_string()])
+            .await
+            .expect("pruned");
+
+        assert_eq!(gone, vec!["gone.example".to_string()]);
+        let left: Vec<String> = load_all(&database)
+            .await
+            .expect("load")
+            .into_iter()
+            .map(|stored| stored.domain)
+            .collect();
+        assert_eq!(left, vec!["kept.example".to_string()]);
+    }
+
+    /// A certificate somebody put on this node is the one thing here it
+    /// cannot make again. A self-signed one it can reissue and an ACME
+    /// one it can re-order; a file it can only lose. So a convergent
+    /// pass may not be able to destroy it, however unwanted the name.
+    #[tokio::test]
+    async fn a_certificate_from_a_file_is_never_pruned() {
+        let database = crate::db::open_in_memory().await.expect("open");
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (cert_path, key_path) = write_pair(dir.path(), &["theirs.example"]);
+        let found = from_files("theirs.example", &cert_path, &key_path).expect("read");
+        save(&database, &found).await.expect("save");
+
+        let gone = prune(&database, &["something.else".to_string()])
+            .await
+            .expect("pruned");
+
+        assert!(gone.is_empty(), "{gone:?}");
+        assert!(load(&database, "theirs.example")
+            .await
+            .expect("load")
+            .is_some());
+    }
+
+    /// The dangerous case, and the reason the empty list is a special
+    /// one. Three unrelated sources feed the wanted set; a caller that
+    /// failed to read one of them has a *short* list, and a short list
+    /// deletes certificates that were working. There is no node that
+    /// legitimately wants none, so an empty list is a bug upstream
+    /// rather than an instruction to empty the store.
+    #[tokio::test]
+    async fn an_empty_wanted_list_deletes_nothing() {
+        let database = crate::db::open_in_memory().await.expect("open");
+        ensure_self_signed(&database, "live.example", &["live.example".to_string()])
+            .await
+            .expect("issued");
+
+        assert!(prune(&database, &[]).await.expect("pruned").is_empty());
+        assert!(load(&database, "live.example")
+            .await
+            .expect("load")
+            .is_some());
     }
 
     #[test]

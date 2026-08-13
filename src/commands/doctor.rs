@@ -153,6 +153,44 @@ pub async fn run(config: Config, config_path: &Path) -> anyhow::Result<i32> {
         println!("  (no containers can run until all three are present)");
     }
 
+    // A memory ceiling is a cgroup, and a cgroup v2 tree with the
+    // memory controller is what crun writes it into. Where there is
+    // none the limit is *silently ignored* — the container starts,
+    // the page says 128 MB, and the process takes the machine. That is
+    // the failure this line exists to make visible, and it is one this
+    // report can answer without asking containerd anything.
+    println!("  cgroups     {}", cgroup_memory());
+    if !cgroup_memory_works() {
+        problems += 1;
+    }
+
+    println!();
+    println!("storage");
+    match live_containers(&database).await {
+        Ok(live) => {
+            // What is on the disk, not how many containers were asked
+            // about. The first version printed the container count under
+            // the word `volumes`, so a node with two containers and no
+            // storage at all reported `volumes 2` — a report that says
+            // something untrue is worse than one that says nothing.
+            let root = crate::platform::volumes::root(&config.node.data_dir);
+            let stored = std::fs::read_dir(&root)
+                .map(|entries| entries.flatten().filter(|e| e.path().is_dir()).count())
+                .unwrap_or(0);
+            println!("  volumes     {stored} in {}", root.display());
+            // Listed, never removed. A directory whose rows are missing
+            // for a reason nobody has understood yet is one somebody can
+            // still recover from — the same rule reconciliation follows
+            // about a container no row claims. Not counted as a problem
+            // for the same reason: it is disk to reclaim, by hand, once
+            // somebody has looked.
+            for orphan in crate::platform::volumes::orphans(&config.node.data_dir, &live) {
+                println!("  orphan      {} (no replica claims it)", orphan.display());
+            }
+        }
+        Err(error) => println!("  volumes     unreadable: {error}"),
+    }
+
     println!();
     println!("service");
     let init = crate::bootstrap::init::Init::detect();
@@ -462,6 +500,61 @@ fn finish(problems: usize) -> anyhow::Result<i32> {
     } else {
         println!("{problems} problem(s) found");
         Ok(1)
+    }
+}
+
+/// The container id of every copy this node runs.
+///
+/// What `volumes::orphans` compares the disk against, and the same
+/// derivation the deploy path uses: project slug, service slug, slot.
+/// Reading it any other way would let the two disagree, and the
+/// disagreement would read as "this data belongs to nothing".
+async fn live_containers(database: &wabot::sqlite::SqliteDatabase) -> anyhow::Result<Vec<String>> {
+    let projects = crate::platform::projects::all(database).await?;
+    let services = crate::platform::services::all(database, None).await?;
+    let mut ids = Vec::new();
+
+    for replica in crate::platform::replicas::here(database).await? {
+        let Some(service) = services.iter().find(|s| s.id == replica.service_id) else {
+            continue;
+        };
+        let Some(project) = projects.iter().find(|p| p.id == service.project_id) else {
+            continue;
+        };
+        ids.push(replica.container_id(&project.slug, &service.slug));
+    }
+    Ok(ids)
+}
+
+/// Whether a memory ceiling written into the spec will be honoured.
+///
+/// cgroup v2, mounted, with the `memory` controller available to a
+/// child cgroup. All three matter and the third is the one that catches
+/// people out: a v2 tree exists, and `memory` is missing from
+/// `cgroup.subtree_control`, so crun writes `memory.max` into a
+/// directory that has no such file.
+///
+/// Where this is false the limit is not refused — it is **ignored**.
+/// The container starts, the page says 128 MB, and the process takes
+/// the machine.
+fn cgroup_memory_works() -> bool {
+    // v2 is a single hierarchy at this path with this file in it. On a
+    // v1 machine the path exists and the file does not.
+    std::fs::read_to_string("/sys/fs/cgroup/cgroup.controllers")
+        .map(|controllers| controllers.split_whitespace().any(|name| name == "memory"))
+        .unwrap_or(false)
+}
+
+fn cgroup_memory() -> String {
+    match std::fs::read_to_string("/sys/fs/cgroup/cgroup.controllers") {
+        Ok(controllers) => match controllers.split_whitespace().any(|name| name == "memory") {
+            true => "v2, memory controller available".to_string(),
+            false => format!(
+                "v2, but no memory controller ({}) — a memory ceiling would be ignored",
+                controllers.trim()
+            ),
+        },
+        Err(_) => "not cgroup v2 — a memory ceiling would be ignored".to_string(),
     }
 }
 

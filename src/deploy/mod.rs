@@ -18,8 +18,11 @@
 //! not. So the recovery after a reboot is the operation that was
 //! tested by every deployment before it.
 
+pub mod database;
 pub mod dns;
+pub mod hosts;
 pub mod jobs;
+pub mod logs;
 pub mod routing;
 
 use std::net::Ipv4Addr;
@@ -28,16 +31,19 @@ use std::sync::Arc;
 
 use wabot::sqlite::SqliteDatabase;
 
+use crate::platform::databases;
 use crate::platform::ports::{self, Port};
+use crate::platform::postgres;
 use crate::platform::projects::Project;
 use crate::platform::releases::{self, Release};
 use crate::platform::replicas::{self, Replica};
 use crate::platform::services::{self, DesiredState, Service};
+use crate::platform::volumes::{self, Volume};
 use crate::platform::{projects, PlatformError};
 use crate::runtime::client::Containerd;
 use crate::runtime::containers::{self, TaskStatus};
 use crate::runtime::network::{self, PortMapping, ProjectNetwork};
-use crate::runtime::spec::ContainerRequest;
+use crate::runtime::spec::{BindMount, ContainerRequest};
 
 #[derive(Debug, thiserror::Error)]
 pub enum DeployError {
@@ -45,6 +51,10 @@ pub enum DeployError {
     Runtime(#[from] crate::runtime::client::ClientError),
     #[error("network: {0}")]
     Network(#[from] network::NetworkError),
+    /// The overlay's, not the bridge's. Reading which node holds a
+    /// copy of a database is a question about the network of nodes.
+    #[error("{0}")]
+    Nodes(#[from] crate::network::NetworkError),
     #[error(transparent)]
     Platform(#[from] PlatformError),
     #[error("{0}")]
@@ -140,6 +150,93 @@ impl Deployer {
         if let Some(wake) = &self.certificates {
             wake.now();
         }
+
+        // And the names *inside* the containers, which answer the same
+        // question one layer down. Here rather than in the deploy path
+        // because every caller of this is something that moved a
+        // container, and a container that moved is a name that points
+        // somewhere else.
+        self.sync_hosts().await;
+    }
+
+    /// Rewrite every local container's `/etc/hosts` from the rows.
+    ///
+    /// Every one of them, not only the service that changed: a
+    /// deployment changes what its *neighbours* can reach, and a file
+    /// that only the moved container had rewritten would leave the rest
+    /// of the project pointing at where it used to be.
+    ///
+    /// In place, so a running container sees it at once — see
+    /// `deploy::hosts`. That is the whole reason this is worth doing on
+    /// every change rather than only at start.
+    pub(crate) async fn sync_hosts(&self) {
+        if let Err(error) = self.write_hosts().await {
+            tracing::error!(%error, "could not update the names inside containers");
+        }
+    }
+
+    async fn write_hosts(&self) -> DeployResult<()> {
+        let domain = crate::node::settings::domain(&self.database, &self.config).await;
+        let data_dir = &self.config.node.data_dir;
+
+        for project in projects::all(&self.database).await? {
+            let services = services::all(&self.database, Some(&project.id)).await?;
+
+            // What each copy answers on. The reserved address when there
+            // is one — a database's, which does not move — and otherwise
+            // where it was last seen.
+            let index = projects::ensure_network_index(&self.database, &project.id).await?;
+            let net = ProjectNetwork::new(index)?;
+            let mut addresses = std::collections::BTreeMap::new();
+            let mut named = Vec::new();
+
+            for service in &services {
+                let row = match service.kind.is_managed() {
+                    true => databases::of_service(&self.database, &service.id).await?,
+                    false => None,
+                };
+                // The owner's domain, when this is somebody's copy. A
+                // qualified name built from *this* machine's domain is
+                // one no client would write — the database is not this
+                // node's and neither is its name.
+                let suffix = row
+                    .as_ref()
+                    .and_then(|r| r.owner_domain.clone())
+                    .or_else(|| domain.clone());
+                named.push((
+                    service.slug.clone(),
+                    row.as_ref().map(|r| r.primary_slot),
+                    suffix,
+                ));
+
+                for replica in replicas::of_service(&self.database, &service.id).await? {
+                    if !replica.is_here() || replica.evicted() {
+                        continue;
+                    }
+                    let address = match replica.reserved_host {
+                        Some(host) => Some(net.reserved_address(host)?.to_string()),
+                        None => replica.address.clone(),
+                    };
+                    if let Some(address) = address {
+                        addresses.insert((service.slug.clone(), replica.slot), address);
+                    }
+                }
+            }
+
+            for service in &services {
+                for replica in replicas::of_service(&self.database, &service.id).await? {
+                    if !replica.is_here() || replica.evicted() {
+                        continue;
+                    }
+                    let id = replica.container_id(&project.slug, &service.slug);
+                    // Per reader, because the read pool is ordered for
+                    // whoever is going to read it.
+                    let entries = hosts::entries_for(&named, &addresses, &project.slug, &id);
+                    hosts::write(data_dir, &id, &entries)?;
+                }
+            }
+        }
+        Ok(())
     }
 
     /// Start (or restart) every copy of a service that runs here.
@@ -175,6 +272,13 @@ impl Deployer {
         // The routes go up once, after all of them: rebuilding per
         // replica would publish a half-deployed service n times.
         self.sync_routes().await;
+
+        // And the nodes holding standbys are told where the primary
+        // answers — *after* it deployed, which is when its overlay port
+        // exists. An errand written when somebody clicked would have
+        // carried an address that had not been assigned yet, which is
+        // the whole reason this is recomputed rather than emitted.
+        self.dispatch_standbys(service).await;
 
         match (first_address, failure) {
             (Some(address), _) => Ok(address),
@@ -212,7 +316,47 @@ impl Deployer {
                 replicas::set_last_error(&self.database, &replica.id, Some(&message)).await?;
             }
         }
+
+        // A container that started and then died. The deployment
+        // *worked* — containerd took it — so nothing above records
+        // anything, and the console said `Stopped (exit 1)` with no
+        // reason for an hour on a real node.
+        //
+        // Only for a managed engine, which is the case where the node
+        // wrote the configuration and therefore owes an account of what
+        // its own choices did.
+        if result.is_ok() && service.kind.is_managed() {
+            if let Some(reason) = self.died_saying(project, service, replica).await {
+                replicas::set_last_error(&self.database, &replica.id, Some(&reason)).await?;
+            }
+        }
         result
+    }
+
+    /// What a container said, if it has already stopped saying it.
+    ///
+    /// Asked a moment after starting, which is when the configuration
+    /// failures land: a `pg_hba.conf` Postgres will not parse, an
+    /// argument it does not know, a data directory it refuses. A
+    /// container that is still up after this answers `None` and is left
+    /// alone — nothing here watches for a crash later, and the page
+    /// reads the same log when it finds one stopped.
+    async fn died_saying(
+        &self,
+        project: &Project,
+        service: &Service,
+        replica: &Replica,
+    ) -> Option<String> {
+        tokio::time::sleep(SETTLE).await;
+        let Observed::Stopped { exit_code } = self.observe(project, service, replica).await else {
+            return None;
+        };
+
+        let id = replica.container_id(&project.slug, &service.slug);
+        Some(match logs::tail(&self.config.node.data_dir, &id, 1_000) {
+            Some(said) => format!("it started and exited {exit_code}: {said}"),
+            None => format!("it started and exited {exit_code}, saying nothing"),
+        })
     }
 
     /// The copies of a service this node is the one running.
@@ -274,6 +418,17 @@ impl Deployer {
         // A service of this node's own with no name is still skipped:
         // nothing would proxy to it, and opening a port for it would be
         // opening one nobody asked for.
+        //
+        // And a managed database with a copy on another node, which is
+        // the third reason and arrived with them: what has to reach it
+        // is not an edge but a standby, dialling the primary to follow
+        // it. Same port, same address, same reason it is not `0.0.0.0`.
+        let dialled_by_a_copy_elsewhere = service.kind.is_managed()
+            && replicas::of_service(&self.database, &service.id)
+                .await?
+                .iter()
+                .any(|other| !other.is_here() && !other.evicted());
+
         let mut published = published;
         let reachable = ports
             .iter()
@@ -281,6 +436,10 @@ impl Deployer {
             .or_else(|| match service.is_ours() {
                 true => None,
                 false => ports.first(),
+            })
+            .or_else(|| match dialled_by_a_copy_elsewhere {
+                true => ports.first(),
+                false => None,
             });
         if let Some(port) = reachable {
             // Not on an overlay means nothing elsewhere can reach this
@@ -296,19 +455,85 @@ impl Deployer {
             }
         }
 
-        let address = network::attach(&net, &id, &published).await?;
+        // Before the container, and before the network is even torn
+        // down on a failure: a bind of a directory that is not there
+        // fails inside the shim, where the message is about a mount
+        // rather than about the directory nobody created.
+        let declared = volumes::of_service(&self.database, &service.id).await?;
+        let mut mounts = self.mounts_for(&id, &declared)?;
+
+        // The names of this project. The file has to exist before the
+        // container does — a bind of something that is not there fails
+        // inside the shim — and `sync_hosts` rewrites it in place from
+        // then on, so a neighbour that appears later is reachable
+        // without redeploying this.
+        let hosts_file = hosts::path(&self.config.node.data_dir, &id);
+        if !hosts_file.exists() {
+            hosts::write(&self.config.node.data_dir, &id, &[])?;
+        }
+        if service.kind.is_managed() {
+            // Inside the volume, and mounted writable: the one-shot
+            // `chown` above works on this same directory, and a
+            // read-only mount would refuse it.
+            mounts.push(BindMount {
+                source: database::tls_dir(&self.config.node.data_dir, &id),
+                destination: postgres::TLS_DIR.to_string(),
+                read_only: false,
+            });
+        }
+        mounts.push(BindMount {
+            source: hosts_file,
+            destination: "/etc/hosts".to_string(),
+            // The node writes it. A container editing its own would be
+            // editing something the next change overwrites anyway.
+            read_only: true,
+        });
+
+        // What only a managed engine needs: its generated files, its
+        // tuning, its credentials and its role.
+        let prepared = self.prepare_engine(project, service, replica, &net).await?;
+        if let Some(prepared) = &prepared {
+            mounts.extend(prepared.mounts.iter().cloned());
+        }
+
+        // An address that will not move, for a container whose address
+        // somebody wrote into a connection string. `None` for
+        // everything else, which is every service that is not a
+        // database — see `runtime::network::RESERVED_HOSTS`.
+        let wanted = replica
+            .reserved_host
+            .map(|host| net.reserved_address(host))
+            .transpose()?;
+
+        let address = network::attach(&net, &id, &published, wanted).await?;
 
         self.write_resolv_conf()?;
+        let mut env: Vec<(String, String)> = service
+            .env
+            .iter()
+            .map(|(key, value)| (key.clone(), value.clone()))
+            .collect();
+        // After the operator's, so the engine's own settings win. A
+        // managed database's environment is the node's to write, and a
+        // `POSTGRES_PASSWORD` from anywhere else is one the console
+        // would then be showing the wrong value for.
+        if let Some(prepared) = &prepared {
+            env.extend(prepared.env.iter().cloned());
+        }
+
         let request = ContainerRequest {
             command: Vec::new(),
-            env: service
-                .env
-                .iter()
-                .map(|(key, value)| (key.clone(), value.clone()))
-                .collect(),
+            args: prepared
+                .as_ref()
+                .map(|prepared| prepared.args.clone())
+                .unwrap_or_default(),
+            env,
             port: primary_port(&ports),
             network_ns: Some(network::netns_path(&id)),
             resolv_conf: Some(self.resolv_conf.clone()),
+            mounts,
+            memory_limit: service.memory_limit,
+            shm_size: prepared.as_ref().and_then(|prepared| prepared.shm_size),
         };
 
         // What this node presents to the registry the image lives on,
@@ -318,7 +543,76 @@ impl Deployer {
             crate::platform::registry_credentials::for_reference(&self.database, &service.image)
                 .await;
 
-        match containers::run(&client, &id, &service.image, &request, credential.as_ref()).await {
+        // The certificate, before the server that reads it. The names
+        // it covers are the ones a client can connect to and still have
+        // `verify-full` pass: the short ones inside the project, and the
+        // qualified one that is also the public name when there is a
+        // domain.
+        if prepared.is_some() {
+            let mut names = vec![
+                service.slug.clone(),
+                format!("{}.{}", service.slug, project.slug),
+            ];
+            if let Some(domain) = crate::node::settings::domain(&self.database, &self.config).await
+            {
+                // First, so it is the certificate's common name: it is
+                // the one a public authority can sign, and the one a
+                // client outside this node would use.
+                names.insert(0, format!("{}.{}.{domain}", service.slug, project.slug));
+            }
+            self.place_certificate(&client, service, &names, &id)
+                .await?;
+        }
+
+        // A standby with an empty volume gets the primary copied into
+        // it first. Before the container, because the container is the
+        // server that expects to find a data directory there — and
+        // before the network, because the seed has none of its own.
+        if let Some(prepared) = &prepared {
+            if prepared.role == postgres::Role::Standby
+                && !database::seeded(&self.config.node.data_dir, &id)
+            {
+                let row = databases::of_service(&self.database, &service.id)
+                    .await?
+                    .ok_or_else(|| DeployError::Refused("no engine row".into()))?;
+                let endpoint = prepared.primary_endpoint.clone().ok_or_else(|| {
+                    DeployError::Refused(format!(
+                        "the primary of {} has no address this node can reach yet",
+                        service.slug
+                    ))
+                })?;
+                self.seed_standby(&client, service, &row, &id, endpoint, replica.slot)
+                    .await?;
+            }
+            // From the rows, every time. A standby that was promoted
+            // would have had this deleted by Postgres, and recreating it
+            // is how a promotion gets undone — which is why promoting
+            // has to move `primary_slot` rather than touch the volume.
+            if prepared.role == postgres::Role::Standby {
+                database::write_standby_signal(&self.config.node.data_dir, &id)?;
+            }
+        }
+
+        // The log first, emptied: what a container says while failing
+        // is the only thing that explains it, and containerd discards
+        // it unless it is given somewhere to put it. Managed engines
+        // only — the node writes their configuration, so it owes an
+        // account of what happened to it.
+        let log = match service.kind.is_managed() {
+            true => logs::prepare(&self.config.node.data_dir, &id).ok(),
+            false => None,
+        };
+
+        match containers::run(
+            &client,
+            &id,
+            &service.image,
+            &request,
+            credential.as_ref(),
+            log.as_deref(),
+        )
+        .await
+        {
             Ok(status) => {
                 tracing::info!(
                     service = %service.slug,
@@ -579,15 +873,630 @@ impl Deployer {
             }
         }
 
+        // Names held for a node this one no longer serves, before the
+        // routes are built rather than after: the point is that the
+        // table the listener reads comes up without them.
+        match crate::network::release_ungranted(&self.database).await {
+            Ok(released) if !released.is_empty() => {
+                tracing::info!(names = released.join(", "), "released names");
+            }
+            Ok(_) => {}
+            Err(error) => tracing::warn!(%error, "could not release the names held for others"),
+        }
+
         // Always, not only when something started: a node whose
         // containers all survived still needs its routes built, and
         // the control-plane rows are written here too.
         self.sync_routes().await;
 
+        // And what the nodes holding standbys were told, for the same
+        // reason. That errand is *derived* — from the primary's overlay
+        // port, from this node's domain, from what the payload has room
+        // to say — and until now nothing recomputed it except a
+        // deployment. So a domain set after the fact, or a field added
+        // by an upgrade, reached nobody: the copy went on answering to
+        // a name built from the wrong domain, on a node that had no way
+        // to learn better. Measured, on Alpine, after this very field
+        // was added.
+        //
+        // `queue_if_changed` makes the pass free when the answer is the
+        // same, which it is on almost every boot.
+        for service in &services {
+            self.dispatch_standbys(service).await;
+        }
+
         if started > 0 {
             tracing::info!(started, "reconciled");
         }
         Ok(started)
+    }
+
+    /// Tell the nodes holding standbys where this database's primary
+    /// answers.
+    ///
+    /// Reads the address the same way a standby *here* would: the
+    /// primary's overlay port on this node. Nothing is sent while there
+    /// is no address — a standby with nowhere to follow would come up
+    /// as a primary of its own.
+    async fn dispatch_standbys(&self, service: &Service) {
+        if !service.kind.is_managed() || !service.is_ours() {
+            return;
+        }
+        let primary = match self.primary_overlay(service).await {
+            Ok(primary) => primary,
+            Err(error) => {
+                tracing::warn!(service = %service.slug, %error, "could not read the primary");
+                return;
+            }
+        };
+        let domain = crate::node::settings::domain(&self.database, &self.config).await;
+        if let Err(error) = databases::dispatch(&self.database, service, primary, domain).await {
+            tracing::warn!(service = %service.slug, %error, "could not tell a node to hold a copy");
+        }
+    }
+
+    /// Where this database's primary can be reached **from another
+    /// node**: this node's overlay address, and the port bound to it.
+    ///
+    /// Never the container's own address. A bridge subnet is identical
+    /// on every node, so a container address names a different container
+    /// on each machine that reads it — the rule phase 7 already learned
+    /// the hard way.
+    async fn primary_overlay(&self, service: &Service) -> DeployResult<Option<(String, u16)>> {
+        let Some(row) = databases::of_service(&self.database, &service.id).await? else {
+            return Ok(None);
+        };
+        let Some(overlay) = self.overlay_address().await else {
+            return Ok(None);
+        };
+        let primary = replicas::of_service(&self.database, &service.id)
+            .await?
+            .into_iter()
+            .find(|replica| replica.slot == row.primary_slot && replica.is_here());
+
+        Ok(primary
+            .and_then(|replica| replica.overlay_port)
+            .map(|port| (overlay, port)))
+    }
+
+    /// Notice a renewed certificate and hand it to the servers running
+    /// on it, without restarting them.
+    ///
+    /// Convergent, and it asks about the thing rather than about the
+    /// history: for every managed copy here, is the certificate on its
+    /// volume the one the store holds? A renewal is then just a
+    /// difference, whether it came from ACME twelve hours ago or from a
+    /// name that changed a minute ago.
+    ///
+    /// `SIGHUP`, not a redeployment. Postgres re-reads its TLS files on
+    /// it, so a certificate that expires every ninety days does not cost
+    /// an outage every ninety days.
+    pub async fn refresh_certificates(&self) -> DeployResult<usize> {
+        let client = Containerd::connect().await?;
+        let data_dir = &self.config.node.data_dir;
+        let projects = projects::all(&self.database).await?;
+        let mut refreshed = 0;
+
+        for service in services::all(&self.database, None).await? {
+            if !service.kind.is_managed() {
+                continue;
+            }
+            let Some(project) = projects.iter().find(|p| p.id == service.project_id) else {
+                continue;
+            };
+            let names = self.certificate_names(project, &service).await;
+            let Some(primary) = names.first() else {
+                continue;
+            };
+            // What the store holds, or a new leaf from the node's CA.
+            //
+            // Read from **where the certificate came from** rather than
+            // from the policy: `source` exists because the renewal loop
+            // used to read `issuer` as a decision and silently replaced
+            // anything it did not recognise. ACME's and a file's belong
+            // to whoever keeps them fresh; ours is ours to reissue, and
+            // `ensure_self_signed` is convergent — it returns the stored
+            // one untouched while it is fresh and still covers the
+            // names.
+            //
+            // Without this a self-signed database certificate simply
+            // expired: nothing else on the node reissues one, because a
+            // database's internal name is not a name the edge was asked
+            // to serve.
+            use crate::edge::certs::Source;
+            let stored = match crate::edge::certs::load(&self.database, primary).await {
+                Ok(Some(found)) if matches!(found.source, Source::Acme | Source::File) => found,
+                _ => match crate::edge::certs::ensure_self_signed(&self.database, primary, &names)
+                    .await
+                {
+                    Ok(issued) => issued,
+                    Err(error) => {
+                        tracing::warn!(name = %primary, %error, "could not issue a certificate");
+                        continue;
+                    }
+                },
+            };
+
+            for replica in replicas::of_service(&self.database, &service.id).await? {
+                if !replica.is_here() || replica.evicted() {
+                    continue;
+                }
+                let id = replica.container_id(&project.slug, &service.slug);
+                let on_disk =
+                    std::fs::read_to_string(database::tls_dir(data_dir, &id).join("server.crt"))
+                        .unwrap_or_default();
+                if on_disk == stored.cert_pem {
+                    continue;
+                }
+
+                database::write_tls(data_dir, &id, &stored.cert_pem, &stored.key_pem)?;
+                match containers::signal(&client, &id, 1).await {
+                    Ok(()) => {
+                        tracing::info!(service = %service.slug, slot = replica.slot,
+                            "handed a renewed certificate to a running server");
+                        refreshed += 1;
+                    }
+                    // Not running is not a failure: the file is in
+                    // place, and the next start reads it.
+                    Err(error) => {
+                        tracing::debug!(container = %id, %error, "could not signal")
+                    }
+                }
+            }
+        }
+        Ok(refreshed)
+    }
+
+    async fn certificate_names(&self, project: &Project, service: &Service) -> Vec<String> {
+        certificate_names(&self.database, &self.config, project, service).await
+    }
+
+    /// Put this copy's certificate in its volume, and make sure the
+    /// server can read it.
+    ///
+    /// The certificate comes from the store when the name has one —
+    /// which is where ACME puts it, and where `edge::policy` decides
+    /// what "renew" means for that name — and is signed by the node's
+    /// own CA otherwise. So a database has TLS from its first second,
+    /// under whichever source somebody chose, and giving it a public
+    /// name later replaces the certificate without changing anything
+    /// here.
+    ///
+    /// Ownership is settled by **asking the image**. Postgres reads the
+    /// key as its own unprivileged user, that user is 70 on the alpine
+    /// variant and 999 on the debian one, and a node that hard-coded
+    /// either would be right until somebody changed the tag. A one-shot
+    /// container runs `chown` instead, and only when the file still
+    /// belongs to root.
+    async fn place_certificate(
+        &self,
+        client: &Containerd,
+        service: &Service,
+        names: &[String],
+        container_id: &str,
+    ) -> DeployResult<()> {
+        let Some(primary) = names.first() else {
+            return Err(DeployError::Refused(
+                "a database needs a name to have a certificate for".into(),
+            ));
+        };
+        let data_dir = &self.config.node.data_dir;
+
+        // What the store holds for this name, or a leaf from the node's
+        // CA. `ensure_self_signed` is convergent: it reissues only when
+        // the names change or expiry is near.
+        let stored = match crate::edge::certs::load(&self.database, primary).await {
+            Ok(Some(found)) => found,
+            _ => crate::edge::certs::ensure_self_signed(&self.database, primary, names)
+                .await
+                .map_err(|error| DeployError::Refused(error.to_string()))?,
+        };
+        database::write_tls(data_dir, container_id, &stored.cert_pem, &stored.key_pem)?;
+
+        if database::tls_owner_is_wrong(data_dir, container_id) {
+            let fixer = format!("{container_id}.chown");
+            let request = ContainerRequest {
+                // `postgres` by name, resolved inside the image by the
+                // image. That is the whole point of doing this here.
+                command: vec![
+                    "sh".into(),
+                    "-c".into(),
+                    format!(
+                        "chown -R postgres:postgres {dir} && chmod 0600 {key}",
+                        dir = postgres::TLS_DIR,
+                        key = postgres::key_path()
+                    ),
+                ],
+                mounts: vec![BindMount {
+                    source: volumes::ensure(data_dir, container_id, postgres::VOLUME)?,
+                    destination: postgres::DATA_MOUNT.to_string(),
+                    read_only: false,
+                }],
+                ..Default::default()
+            };
+            let credential = crate::platform::registry_credentials::for_reference(
+                &self.database,
+                &service.image,
+            )
+            .await;
+            let log = logs::prepare(data_dir, &fixer).ok();
+            let code = containers::run_to_completion(
+                client,
+                &fixer,
+                &service.image,
+                &request,
+                credential.as_ref(),
+                log.as_deref(),
+                std::time::Duration::from_secs(120),
+            )
+            .await?;
+            if code != 0 {
+                let said = logs::tail(data_dir, &fixer, 500).unwrap_or_default();
+                return Err(DeployError::Refused(format!(
+                    "could not give the key to the server's own user (exit {code}): {said}"
+                )));
+            }
+            logs::discard(data_dir, &fixer);
+        }
+        Ok(())
+    }
+
+    /// Copy the primary's data directory into a standby's empty volume.
+    ///
+    /// A container of its own, run to completion before the standby is
+    /// started: the same image, `pg_basebackup` instead of the server,
+    /// the volume mounted where the server will find it.
+    ///
+    /// ## On the host's network, not the project's
+    ///
+    /// It reaches the primary at the address it will use for ever after
+    /// — a bridge address when the primary is here, an overlay one when
+    /// it is elsewhere — and the node can reach both without a namespace
+    /// of its own. Attaching it to the project's bridge would mean a CNI
+    /// address allocated and released for a container that lives for a
+    /// minute.
+    ///
+    /// ## Retried, and then given up on with a reason
+    ///
+    /// The primary is running before a standby is asked for, but running
+    /// is not accepting connections: `initdb` takes seconds and the
+    /// first attempt usually lands inside them. So it tries again for a
+    /// bounded while and then stops — a failure is an answer, and this
+    /// node's rule is that retrying past that is something somebody
+    /// asks for.
+    async fn seed_standby(
+        &self,
+        client: &Containerd,
+        service: &Service,
+        row: &crate::platform::databases::Database,
+        container_id: &str,
+        endpoint: (String, u16),
+        slot: u32,
+    ) -> DeployResult<()> {
+        let data_dir = &self.config.node.data_dir;
+        if database::seeded(data_dir, container_id) {
+            return Ok(());
+        }
+
+        let source = volumes::ensure(data_dir, container_id, postgres::VOLUME)?;
+        let seeder = format!("{container_id}.seed");
+        let request = ContainerRequest {
+            command: postgres::base_backup(
+                &endpoint.0,
+                endpoint.1,
+                &row.replication_user,
+                &postgres::slot_name(slot),
+            ),
+            env: vec![
+                // In the environment, not the command: a command is in
+                // the container's spec on disk and in `ctr containers
+                // info`.
+                ("PGPASSWORD".to_string(), row.replication_password.clone()),
+            ],
+            mounts: vec![BindMount {
+                source,
+                destination: postgres::DATA_MOUNT.to_string(),
+                read_only: false,
+            }],
+            // The host's network — see above — and so no `resolv.conf`
+            // of the node's either: it already has the host's.
+            ..Default::default()
+        };
+
+        let credential =
+            crate::platform::registry_credentials::for_reference(&self.database, &service.image)
+                .await;
+
+        let mut last = String::new();
+        for attempt in 1..=SEED_ATTEMPTS {
+            let log = logs::prepare(data_dir, &seeder).ok();
+            let outcome = containers::run_to_completion(
+                client,
+                &seeder,
+                &service.image,
+                &request,
+                credential.as_ref(),
+                log.as_deref(),
+                SEED_DEADLINE,
+            )
+            .await;
+
+            match outcome {
+                Ok(0) => {
+                    tracing::info!(service = %service.slug, slot, attempt, "seeded a standby");
+                    logs::discard(data_dir, &seeder);
+                    return Ok(());
+                }
+                // What the tool said, which is the whole reason the log
+                // exists: an exit code alone sends somebody to read a
+                // container that has already been removed.
+                Ok(code) => {
+                    last = logs::tail(data_dir, &seeder, 1_000)
+                        .unwrap_or_else(|| format!("pg_basebackup exited {code}"));
+                }
+                Err(error) => last = error.to_string(),
+            }
+
+            tracing::warn!(
+                service = %service.slug, slot, attempt, reason = %last,
+                "could not seed a standby yet"
+            );
+            if attempt < SEED_ATTEMPTS {
+                tokio::time::sleep(SEED_PAUSE).await;
+            }
+        }
+
+        Err(DeployError::Refused(format!(
+            "could not copy the primary into this replica after {SEED_ATTEMPTS} attempts: {last}"
+        )))
+    }
+
+    /// Throw away everything this service's copies here stored.
+    ///
+    /// **Irreversible, and the only caller is a deletion somebody
+    /// confirmed.** Nothing else on the node removes a volume: a
+    /// directory whose rows went away is an orphan `doctor` reports and
+    /// somebody can still recover from, and that is the right side to
+    /// err on for the one copy of a database.
+    ///
+    /// Before the rows, always. The directory is named after the
+    /// container id, which is derived from the rows — so deleting them
+    /// first leaves bytes on the disk that nothing can name.
+    pub async fn discard_storage(&self, project: &Project, service: &Service) {
+        let placements = match replicas::of_service(&self.database, &service.id).await {
+            Ok(placements) => placements,
+            Err(error) => {
+                tracing::warn!(service = %service.slug, %error, "could not read what to discard");
+                return;
+            }
+        };
+
+        for replica in placements.iter().filter(|replica| replica.is_here()) {
+            let id = replica.container_id(&project.slug, &service.slug);
+            if let Err(error) = volumes::discard(&self.config.node.data_dir, &id) {
+                // Said out loud and carried on from: the rows are going
+                // either way, and storage this node could not remove is
+                // something `doctor` will list rather than something
+                // that should stop a deletion somebody asked for.
+                tracing::warn!(container = %id, %error, "could not discard a copy's data");
+            }
+            database::discard(&self.config.node.data_dir, &id);
+            // The names it was given and what it said. Neither is data
+            // anybody wants back — both are rebuilt from the rows — but
+            // a file per container that ever existed is a directory
+            // nobody prunes.
+            hosts::discard(&self.config.node.data_dir, &id);
+            logs::discard(&self.config.node.data_dir, &id);
+        }
+    }
+
+    /// What a managed engine needs, or `None` for an ordinary
+    /// container.
+    ///
+    /// Reads the rows and writes the generated files. The arithmetic is
+    /// `platform::postgres`, which is pure; this is the part that has
+    /// to know where the other copies are.
+    async fn prepare_engine(
+        &self,
+        project: &Project,
+        service: &Service,
+        replica: &Replica,
+        net: &ProjectNetwork,
+    ) -> DeployResult<Option<database::Preparation>> {
+        if !service.kind.is_managed() {
+            return Ok(None);
+        }
+        let Some(row) = databases::of_service(&self.database, &service.id).await? else {
+            // A managed service with no engine row is a service this
+            // node cannot start correctly, and starting it as a plain
+            // container would be an empty database that looks like it
+            // worked.
+            return Err(DeployError::Refused(format!(
+                "{} is a managed database with no engine row",
+                service.slug
+            )));
+        };
+
+        // An address of its own, for any copy that has not got one yet.
+        //
+        // Here rather than only in `databases::create`, because a copy
+        // added afterwards — from the placement form, or by an errand —
+        // goes through neither. On a node, the second replica of a
+        // database came up on whatever `host-local` had next and with no
+        // reservation at all, so its address was one nothing would keep.
+        if replica.is_here() && replica.reserved_host.is_none() {
+            replicas::reserve_host(&self.database, &project.id, &replica.id).await?;
+        }
+        // Read after reserving, so `wanted` below sees it on the first
+        // deployment rather than the second.
+        let placements = replicas::of_service(&self.database, &service.id).await?;
+        let nodes = crate::network::all(&self.database).await?;
+        let role = row.role_of(replica.slot);
+
+        // Where a standby dials. Refused rather than started without
+        // one: a standby with nowhere to follow would come up holding a
+        // copy of somebody's data and answering as though it were
+        // current.
+        let primary = match role {
+            postgres::Role::Primary => None,
+            postgres::Role::Standby => {
+                let endpoint = self.primary_endpoint(&row, &placements, &nodes, net)?;
+                if endpoint.is_none() {
+                    return Err(DeployError::Refused(format!(
+                        "the primary of {} has no address this node can reach yet",
+                        service.slug
+                    )));
+                }
+                endpoint
+            }
+        };
+
+        // Everywhere a standby of this database may dial in from.
+        //
+        // The remote ones are their nodes' overlay addresses. A copy
+        // *here* is the one that caught this out: its data directory is
+        // seeded by a `pg_basebackup` running in the host's network
+        // namespace, so the primary sees the **bridge gateway** — and
+        // the subnet line above does not help, because `all` in the
+        // database column does not match a replication connection. On a
+        // node that was six identical refusals in a row, each naming
+        // `10.42.2.1`.
+        let standbys = || {
+            placements
+                .iter()
+                .filter(|other| row.role_of(other.slot) == postgres::Role::Standby)
+                .filter(|other| !other.evicted())
+        };
+        let mut replication_from: Vec<String> = standbys()
+            .filter_map(|other| other.node_id.as_deref())
+            .filter_map(|node_id| {
+                nodes
+                    .iter()
+                    .find(|node| node.id == node_id)
+                    .and_then(|node| node.overlay_ip.clone())
+                    .map(|address| format!("{address}/32"))
+            })
+            .collect();
+        if standbys().any(|other| other.is_here()) {
+            replication_from.push(net.subnet());
+        }
+        replication_from.sort();
+        replication_from.dedup();
+
+        let published = ports::of_service(&self.database, &service.id)
+            .await?
+            .iter()
+            .any(|port| port.host_port.is_some());
+
+        // Said out loud, because the two are the same image and the
+        // same page and they are not the same container: one accepts
+        // writes and the other refuses them. On a node run this line is
+        // how you tell which one just started.
+        tracing::info!(
+            service = %service.slug,
+            slot = replica.slot,
+            role = role.as_str(),
+            standbys = replication_from.len(),
+            "preparing a database copy"
+        );
+
+        Ok(Some(database::prepare(&database::Plan {
+            data_dir: &self.config.node.data_dir,
+            container_id: &replica.container_id(&project.slug, &service.slug),
+            database: &row,
+            role,
+            memory_limit: service.memory_limit,
+            subnet: net.subnet(),
+            replication_from,
+            published,
+            primary,
+        })?))
+    }
+
+    /// Where this database's primary answers, from here.
+    ///
+    /// Two cases, and they are different addresses rather than two ways
+    /// of writing one:
+    ///
+    /// * **The primary is on this node.** Its own address on the
+    ///   project's bridge, which is reserved and so does not move.
+    /// * **The primary is elsewhere.** That node's overlay address and
+    ///   the port *it* bound for this copy. Never the container's own:
+    ///   a bridge address names a different container on every machine,
+    ///   which is the rule phase 7 already records.
+    ///
+    /// `None` when the second case has not settled yet: the port comes
+    /// out of the other node's port space and travels home on a report,
+    /// so there is a window where the answer is honestly not known.
+    fn primary_endpoint(
+        &self,
+        row: &crate::platform::databases::Database,
+        placements: &[Replica],
+        nodes: &[crate::network::Node],
+        net: &ProjectNetwork,
+    ) -> DeployResult<Option<(String, u16)>> {
+        // What this node was told, when it was told. A node holding a
+        // standby has no row for the primary and never will — the
+        // errand carried the address, and reading rows here would find
+        // nothing and refuse a deployment that is perfectly possible.
+        if let Some(told) = &row.primary_endpoint {
+            let (host, port) = told
+                .rsplit_once(':')
+                .ok_or_else(|| DeployError::Refused(format!("{told:?} is not host:port")))?;
+            let port: u16 = port
+                .parse()
+                .map_err(|_| DeployError::Refused(format!("{told:?} is not host:port")))?;
+            return Ok(Some((host.to_string(), port)));
+        }
+
+        let Some(primary) = placements
+            .iter()
+            .find(|replica| replica.slot == row.primary_slot)
+        else {
+            return Ok(None);
+        };
+
+        match &primary.node_id {
+            None => match primary.reserved_host {
+                Some(host) => Ok(Some((
+                    net.reserved_address(host)?.to_string(),
+                    postgres::PORT,
+                ))),
+                None => Ok(None),
+            },
+            Some(node_id) => {
+                let overlay = nodes
+                    .iter()
+                    .find(|node| &node.id == node_id)
+                    .and_then(|node| node.overlay_ip.clone());
+                Ok(match (overlay, primary.overlay_port) {
+                    (Some(address), Some(port)) => Some((address, port)),
+                    _ => None,
+                })
+            }
+        }
+    }
+
+    /// The directories this copy's volumes live in, made if they are
+    /// not there.
+    ///
+    /// Keyed on the container id, so two copies on one node get two
+    /// directories — the rule `platform::volumes` exists to hold, and
+    /// the one that stops two database servers writing one data
+    /// directory.
+    fn mounts_for(&self, container_id: &str, declared: &[Volume]) -> DeployResult<Vec<BindMount>> {
+        declared
+            .iter()
+            .map(|volume| {
+                let source =
+                    volumes::ensure(&self.config.node.data_dir, container_id, &volume.name)?;
+                Ok(BindMount {
+                    source,
+                    destination: volume.path.clone(),
+                    read_only: false,
+                })
+            })
+            .collect()
     }
 
     /// This node's own address on the overlay, if it is on one.
@@ -673,8 +1582,105 @@ fn primary_port(ports: &[Port]) -> Option<u16> {
     with_hostname.or_else(|| ports.iter().map(|port| port.container_port).min())
 }
 
+/// The names a database's certificate has to cover.
+///
+/// The short ones a container in the project would use, and the
+/// qualified one that is also the public name — the only one a public
+/// authority can sign, and so the only one that verifies when the policy
+/// for it is `Acme`.
+///
+/// A free function because the certificate loop needs the same answer
+/// and has no `Deployer`: a database's names are not names the edge was
+/// asked to serve, so anything reasoning about what this node still
+/// wants a certificate for has to ask here too.
+pub async fn certificate_names(
+    database: &SqliteDatabase,
+    config: &crate::config::Config,
+    project: &Project,
+    service: &Service,
+) -> Vec<String> {
+    // The **owner's** domain when this copy is held for somebody else. A
+    // certificate for a name built from this machine's domain would be a
+    // name no client writes: the database is not this node's, and
+    // neither is what it is called.
+    let domain = match databases::of_service(database, &service.id).await {
+        Ok(Some(row)) if row.owner_domain.is_some() => row.owner_domain,
+        _ => crate::node::settings::domain(database, config).await,
+    };
+    let mut names = Vec::new();
+
+    // Both names, and the read pool's is not optional: a client
+    // connecting to `orders-ro` with `verify-full` checks the name it
+    // dialled against the certificate, and a certificate that covered
+    // only the primary's name would fail every read. The pool is the
+    // same database, so it is the same certificate with one more name on
+    // it rather than a second certificate.
+    for slug in [
+        service.slug.clone(),
+        format!("{}{}", service.slug, hosts::READ_ONLY),
+    ] {
+        if let Some(domain) = &domain {
+            // First, so the qualified one is the common name: it is the
+            // only one a public authority could sign, and the one a
+            // client outside this node would use.
+            names.push(format!("{slug}.{}.{domain}", project.slug));
+        }
+        names.push(slug.clone());
+        names.push(format!("{slug}.{}", project.slug));
+    }
+    names
+}
+
+/// Every name this node stores a **database** certificate under.
+///
+/// The first name of each managed service's set, because that is the key
+/// `refresh_certificates` writes it under — see there.
+pub async fn database_certificate_keys(
+    database: &SqliteDatabase,
+    config: &crate::config::Config,
+) -> DeployResult<Vec<String>> {
+    let projects = projects::all(database).await?;
+    let mut keys = Vec::new();
+    for service in services::all(database, None).await? {
+        if !service.kind.is_managed() {
+            continue;
+        }
+        let Some(project) = projects.iter().find(|p| p.id == service.project_id) else {
+            continue;
+        };
+        if let Some(primary) = certificate_names(database, config, project, &service)
+            .await
+            .into_iter()
+            .next()
+        {
+            keys.push(primary);
+        }
+    }
+    Ok(keys)
+}
+
 /// How long a container gets to exit before it is killed.
 const STOP_GRACE: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// How many times a standby's seed is tried, and how long it waits
+/// between.
+///
+/// The primary is up before a standby is asked for, but running is not
+/// accepting connections — `initdb` takes seconds, and the first attempt
+/// lands inside them. Six tries over a minute covers that without
+/// holding a job for the five minutes a real outage would take.
+/// How long a container gets to fail at starting before the deploy path
+/// stops watching. Long enough for Postgres to read its configuration
+/// and refuse it, short enough not to hold the job.
+const SETTLE: std::time::Duration = std::time::Duration::from_secs(3);
+
+const SEED_ATTEMPTS: u32 = 6;
+const SEED_PAUSE: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// How long one `pg_basebackup` gets. Generous, because it is copying a
+/// database over a network — and bounded, because a job that never ends
+/// is a queue that never moves.
+const SEED_DEADLINE: std::time::Duration = std::time::Duration::from_secs(1800);
 
 /// The nameservers in a `resolv.conf` that a container could use.
 ///
