@@ -37,6 +37,7 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
     ("A ceiling on the container and the engine's own settings, together. Postgres is given a quarter of it for shared buffers and told to expect half of it as cache — its defaults alone would be killed on the smaller sizes.", "Un techo para el contenedor y los ajustes del propio motor, a la vez. A Postgres se le da un cuarto para los buffers compartidos y se le dice que espere la mitad como caché — sus valores por defecto solos morirían en los tamaños pequeños."),
     ("A key and an address appear the first time this node enrols another one or joins one itself. The overlay is what carries traffic between nodes — an edge here reaching a container that runs somewhere else.", "La clave y la dirección aparecen la primera vez que este nodo enrola a otro o se une a uno. La overlay es lo que lleva el tráfico entre nodos — un edge de aquí llegando a un contenedor que corre en otro sitio."),
     ("A new copy is created on the node you pick, rather than here and moved after — which would start a container on this machine and stop it again for nothing. Removing takes the ones already thrown out first, then the highest-numbered; the node running one is told to stop it.", "Una copia nueva se crea en el nodo que elijas, en vez de aquí y moverla después — lo que arrancaría un contenedor en esta máquina para pararlo acto seguido sin motivo. Al quitar se van primero las ya expulsadas, luego las de número más alto; al nodo que corre una se le dice que la pare."),
+    ("A note, if you want one", "Una nota, si quieres"),
     ("A reference containerd can resolve. Fully qualified — there is no implicit registry here.", "Una referencia que containerd pueda resolver. Completa — aquí no hay registry implícito."),
     ("A wildcard record covers this node, so this name already resolves here. Leave it as it is.", "Un registro comodín cubre este nodo, así que este nombre ya resuelve aquí. Déjalo como está."),
     ("Accounts", "Cuentas"),
@@ -178,6 +179,12 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
     ("On this node", "En este nodo"),
     ("One KEY=value per line. Everything after the first = is the value, so a value may contain one.", "Un CLAVE=valor por línea. Todo lo que va tras el primer = es el valor, así que un valor puede llevar uno."),
     ("One per hostname. A node with no public DNS, or a name a certificate authority cannot reach, is what the other two answers are for.", "Uno por nombre. Un nodo sin DNS público, o un nombre al que una autoridad de certificación no llega, es para lo que están las otras dos respuestas."),
+    (
+        "Only to tell one unspent token from another. The node names itself when it joins, and that \
+         is the name this console shows.",
+        "Sólo para distinguir un token sin gastar de otro. El nodo se nombra a sí mismo al unirse, \
+         y ese es el nombre que muestra esta consola.",
+    ),
     ("Only what it was granted, which is listed beside it below. Revoking any of it takes effect here and immediately.", "Solo lo que se le concedió, que está listado a su lado abajo. Revocar cualquier parte surte efecto aquí y de inmediato."),
     ("Open", "Abrir"),
     ("Outcome", "Resultado"),
@@ -284,7 +291,6 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
     ("What is in it", "Qué lleva"),
     ("What the process listens on inside the container.", "En qué escucha el proceso dentro del contenedor."),
     ("What this node does", "Qué hace este nodo"),
-    ("What to call it", "Cómo llamarlo"),
     ("When", "Cuándo"),
     ("Where the certificate comes from", "De dónde viene el certificado"),
     ("Where this runs", "Dónde corre"),
@@ -302,6 +308,10 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
     ("older than what is running", "más vieja que la que corre"),
     ("running here", "corriendo aquí"),
     ("runs containers only", "solo ejecuta contenedores"),
+    (
+        "the box in the rack by the window",
+        "la máquina del rack junto a la ventana",
+    ),
     ("used", "usada"),
 ];
 

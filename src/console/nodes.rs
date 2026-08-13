@@ -240,9 +240,9 @@ impl NodePages {
                 // the only action it has second.
                 @if may_enrol {
                     (enrol_card(true))
-                    (join_card(query.joined.as_deref(), &enrolments, now))
+                    (join_card(query.joined.as_deref(), &enrolments, &nodes, now))
                 } @else {
-                    (join_card(query.joined.as_deref(), &enrolments, now))
+                    (join_card(query.joined.as_deref(), &enrolments, &nodes, now))
                     (enrol_card(false))
                 }
 
@@ -600,9 +600,18 @@ fn enrol_card(may_enrol: bool) -> impl Renderable {
             <p class="card-label">(t("Invite a node"))</p>
             @if may_enrol {
                 <form method="post" action="/nodes/enrol" class="card stack">
-                    <label for="name">(t("What to call it"))</label>
+                    // Not "what to call it". A node's name is its own —
+                    // it says what it is on the join callback, and that
+                    // is what the nodes list shows. Asking for one here
+                    // produced a second name for one machine, differing
+                    // by which table you read: the same fault the
+                    // databases had, one floor up.
+                    <label for="name">(t("A note, if you want one"))</label>
                     <input id="name" name="name" type="text" autocomplete="off"
-                           placeholder="alpine" required>
+                           placeholder=(t("the box in the rack by the window"))>
+                    <p class="field-hint">(t("Only to tell one unspent token from another. The node \
+                         names itself when it joins, and that is the name this \
+                         console shows."))</p>
 
                     // Both lists are drawn from `Capability::ALL`, not
                     // written out. The *handler* has always read them by
@@ -676,6 +685,7 @@ fn enrol_card(may_enrol: bool) -> impl Renderable {
 fn join_card<'a>(
     joined: Option<&'a str>,
     enrolments: &'a [Enrolment],
+    nodes: &'a [network::Node],
     now: i64,
 ) -> impl Renderable + 'a {
     rsx! {
@@ -713,7 +723,7 @@ fn join_card<'a>(
                     </thead>
                     <tbody>
                         @for enrolment in enrolments {
-                            (enrolment_row(enrolment, now))
+                            (enrolment_row(enrolment, nodes, now))
                         }
                     </tbody>
                 </table>
@@ -881,11 +891,33 @@ fn errand_row(order: &network::errand::Record) -> impl Renderable + '_ {
 }
 
 /// One join token, and what became of it.
-fn enrolment_row(enrolment: &Enrolment, now: i64) -> impl Renderable + '_ {
+///
+/// `nodes` is every node this one knows, so a spent token can be shown
+/// under the name of the machine that spent it. The note the operator
+/// left is a stand-in until then, and it stops being shown the moment
+/// there is something truer: a machine has one name, and it is the one
+/// it gives itself.
+fn enrolment_row<'a>(
+    enrolment: &'a Enrolment,
+    nodes: &'a [network::Node],
+    now: i64,
+) -> impl Renderable + 'a {
     let spent = enrolment.spent();
+    let called = enrolment
+        .used_by
+        .as_deref()
+        .and_then(|id| nodes.iter().find(|node| node.id == id))
+        .map(|node| node.name.as_str())
+        .unwrap_or(match enrolment.name.is_empty() {
+            // Nothing to say rather than an empty cell: the address
+            // beside it is what identifies an unspent token, and it is
+            // already there.
+            true => "—",
+            false => enrolment.name.as_str(),
+        });
     rsx! {
         <tr>
-            <td>(&enrolment.name)</td>
+            <td>(called)</td>
             <td class="mono">(&enrolment.overlay_ip)</td>
             <td>
                 // "Is it still worth carrying to a machine" first,
@@ -1619,11 +1651,16 @@ impl NodeApi {
             Ok(form) => form,
             Err(response) => return Ok(response),
         };
+        // Optional, and it is **not** the node's name: a node's name is
+        // its own, arrives on the join callback, and is what the list of
+        // nodes shows. This is a note on a token that has not been spent
+        // yet, for the operator who minted three of them this afternoon
+        // — so it is bounded, and it is not required.
         let name = super::auth::field(&form, "name");
-        if name.is_empty() || name.chars().count() > 60 {
+        if name.chars().count() > 60 {
             return Ok(super::auth::back_with_error(
                 here,
-                "give the node a name — a list of unnamed tokens is unreadable",
+                "that note is too long for the column it goes in",
             ));
         }
 
@@ -2715,6 +2752,38 @@ pub(crate) mod tests {
             again.contains("Waiting"),
             "but the token is listed: {again}"
         );
+    }
+
+    /// **A node's name is its own.** It says what it is on the join
+    /// callback, and that is the name the nodes list shows — so the
+    /// mint form has nothing to ask for. It used to require one, which
+    /// gave one machine two names differing by which table you read:
+    /// the same fault the databases had, one floor up.
+    ///
+    /// What is left is a note for the operator with three unspent
+    /// tokens, and a note is not something to be stopped by.
+    #[tokio::test]
+    async fn a_token_can_be_minted_without_naming_the_node() {
+        let console = Console::new().await;
+        let cookie = console.signed_in().await;
+
+        let body = enrol(&console, &cookie, "").await;
+        assert!(
+            body.contains("wabot-deploy join "),
+            "an unnamed token was refused: {body}"
+        );
+
+        let listed = console
+            .harness
+            .get("/nodes")
+            .header("cookie", &cookie)
+            .send()
+            .await
+            .body;
+        assert!(listed.contains("Waiting"), "{listed}");
+        // The address is what identifies an unspent token, and it is
+        // already in the row beside the empty note.
+        assert!(listed.contains("10.42.0.2"), "{listed}");
     }
 
     /// Withdrawing gives the address back, so a token minted by mistake
