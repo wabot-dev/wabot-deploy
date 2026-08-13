@@ -18,6 +18,34 @@
 //! called at every start, and again whenever a node joins or is
 //! enrolled, because both change the answer.
 //!
+//! **What it must not do is answer that question by rebuilding.**
+//! Nothing takes the interface down when this process stops: `wabot0`,
+//! its address, its peers and the kernel's live sessions outlive the
+//! binary, and so does the port mapping into a container, which is
+//! iptables. So while this node is being replaced, packets between two
+//! containers on different machines keep moving with nothing running to
+//! carry them — and the only thing that can break that is this file.
+//!
+//! `configure_interface` breaks it: it sets `ReplacePeers`, so the
+//! kernel drops every peer along with its session keys and, for a peer
+//! this node did not dial, the endpoint it had *learned* from the last
+//! handshake. A public node configures no endpoint for a private peer on
+//! purpose — see below — so after a restart it holds a peer it cannot
+//! send to and a session it cannot read, until the other end notices and
+//! starts again.
+//!
+//! Measured between the two test nodes: every restart of this binary
+//! cost the overlay 45–55 seconds of silence — 30 of drain, then up to
+//! 25 more before the private node's keepalive rebuilt the session — and
+//! `wal_receiver_timeout` is 60, so a database standby on the other
+//! machine lost its replication stream on every single deployment. It
+//! reconnected by itself twenty seconds later and nothing anywhere
+//! recorded that it had happened.
+//!
+//! So [`needed`] compares first, and a start that changes nothing tells
+//! the kernel nothing. A peer that *has* changed is set on its own,
+//! which leaves the sessions of the peers either side of it alone.
+//!
 //! ## Who dials whom
 //!
 //! A private node sets an endpoint for its authority and a keepalive; a
@@ -30,7 +58,7 @@
 
 use std::net::SocketAddr;
 
-use defguard_wireguard_rs::{key::Key, net::IpAddrMask, peer::Peer};
+use defguard_wireguard_rs::{host::Host, key::Key, net::IpAddrMask, peer::Peer};
 #[cfg(target_os = "linux")]
 use defguard_wireguard_rs::{InterfaceConfiguration, Kernel, WGApi, WireguardInterfaceApi};
 use wabot::sqlite::SqliteDatabase;
@@ -172,6 +200,158 @@ fn interface_address(address: &str) -> String {
     format!("{address}/{}", super::overlay::PREFIX_LENGTH)
 }
 
+/// What the kernel has to be told, given what it already holds.
+///
+/// Pure, and above the Linux line, because this is the whole of the
+/// decision the module note is about: the netlink calls below are three
+/// lines each and this is the part that can be wrong.
+// Above the Linux line, so a machine that is not a node still compiles
+// and still runs the tests for it — and on that machine `apply` is not
+// there to call it.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+#[derive(Debug, PartialEq)]
+enum Change {
+    /// The interface already says this. Telling it again is what used to
+    /// cost a database standby its replication stream on every restart.
+    Nothing,
+    /// These peers differ and these are no longer wanted. One call each,
+    /// so a node joining does not disturb the sessions of the peers that
+    /// were already there.
+    Peers { set: Vec<Peer>, gone: Vec<Key> },
+    /// The interface itself is wrong — a different key or a different
+    /// port, which is this node's own identity on the overlay and not
+    /// something that changes without somebody meaning it. Everything is
+    /// rebuilt, sessions included, because there is nothing to preserve:
+    /// a peer's session is derived from the key that just changed.
+    ///
+    /// It carries **why**. This is the one branch that costs a database
+    /// standby on another machine its replication stream, and the first
+    /// version of this decided it silently — so the node did the
+    /// expensive thing on every start and the journal said only that an
+    /// interface had been configured, which it says either way.
+    Everything(&'static str),
+}
+
+/// Compare what the rows want against what the kernel reports.
+///
+/// `None` for the host is an interface that could not be read, which is
+/// an interface that has not been configured — the full path covers it.
+// Above the Linux line, so a machine that is not a node still compiles
+// and still runs the tests for it — and on that machine `apply` is not
+// there to call it.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn needed(host: Option<&Host>, private: &str, port: u16, wanted: &[Peer]) -> Change {
+    let Some(host) = host else {
+        return Change::Everything("the interface could not be read");
+    };
+    // The parse failing means the stored key is not a key, and the only
+    // thing that reports that usefully is the configure below trying it.
+    let Ok(private) = Key::try_from(private) else {
+        return Change::Everything("the stored private key is not a key");
+    };
+    if host.listen_port != port {
+        return Change::Everything("a different listen port");
+    }
+    match &host.private_key {
+        // Compared as public halves, never as the stored bytes.
+        //
+        // WireGuard **clamps** a private key when it takes it — `[0] &=
+        // 248` and the top two bits of `[31]` — and `Key::generate` does
+        // not, so what reads back differs from what the database holds by
+        // up to three bits on every node that ever existed. The first
+        // version of this compared the bytes, concluded the interface
+        // belonged to somebody else and rebuilt it at every start: the
+        // precise failure the comparison was added to prevent,
+        // reintroduced by the comparison, and invisible until a node said
+        // `reason="a different private key" keyed=true`.
+        //
+        // The clamp happens inside the curve multiplication anyway, so
+        // both forms have the same public half. Which is also the honest
+        // question — whether this is the same identity, not whether two
+        // encodings match.
+        Some(held) if held.public_key() != private.public_key() => {
+            return Change::Everything("a different key")
+        }
+        Some(_) => {}
+        // The read did not come back with one, which is not the same as a
+        // key that differs and must not be treated as it: one is a node
+        // whose identity changed, the other is the kernel — or the crate
+        // reading it — declining to hand a private key back.
+        //
+        // A **completed handshake proves the key** anyway, and proves it
+        // better than comparing bytes: the peer on the other side did it
+        // against this node's public half, so an interface somebody has
+        // spoken to is carrying the key the rows say it holds. Only when
+        // every configured peer has never once answered is there reason to
+        // suspect the interface itself — and then there is no session left
+        // to lose by rebuilding it.
+        None if !host.peers.is_empty()
+            && host
+                .peers
+                .values()
+                .all(|peer| peer.last_handshake.is_none()) =>
+        {
+            return Change::Everything("no peer has ever completed a handshake")
+        }
+        None => {}
+    }
+
+    let set: Vec<Peer> = wanted
+        .iter()
+        .filter(|peer| {
+            !host
+                .peers
+                .get(&peer.public_key)
+                .is_some_and(|k| holds(k, peer))
+        })
+        .cloned()
+        .collect();
+    let gone: Vec<Key> = host
+        .peers
+        .keys()
+        .filter(|key| !wanted.iter().any(|peer| &peer.public_key == *key))
+        .cloned()
+        .collect();
+
+    match set.is_empty() && gone.is_empty() {
+        true => Change::Nothing,
+        false => Change::Peers { set, gone },
+    }
+}
+
+/// Whether the kernel's peer already says what this node wants it to.
+///
+/// Only the fields this node writes. The handshake and the counters are
+/// the kernel's answer to a different question, and an endpoint this node
+/// deliberately left unset is one it *learned* — comparing that against
+/// `None` would call every working peer wrong and rebuild it, which is
+/// the bug this function exists to avoid.
+// Above the Linux line, so a machine that is not a node still compiles
+// and still runs the tests for it — and on that machine `apply` is not
+// there to call it.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn holds(existing: &Peer, wanted: &Peer) -> bool {
+    let allowed = |peer: &Peer| {
+        let mut ips: Vec<String> = peer.allowed_ips.iter().map(ToString::to_string).collect();
+        ips.sort();
+        ips
+    };
+    // Nought and nothing are the same keepalive. WireGuard reads zero as
+    // off and the kernel hands `0` back for a peer that was configured
+    // without one, so comparing the options directly called every peer on
+    // a public node different at every start — which cost a netlink write
+    // that was not needed and, more to the point, made "already matches"
+    // a line that never printed.
+    let keepalive = |peer: &Peer| peer.persistent_keepalive_interval.unwrap_or(0);
+
+    allowed(existing) == allowed(wanted)
+        && keepalive(existing) == keepalive(wanted)
+        && match wanted.endpoint {
+            Some(endpoint) => existing.endpoint == Some(endpoint),
+            None => true,
+        }
+}
+
 /// The part that talks to the kernel.
 ///
 /// Separated for two reasons. Everything above it is async and this is
@@ -192,20 +372,65 @@ fn apply(address: &str, private: &str, port: u16, peers: Vec<Peer>) -> Result<()
         tracing::debug!(%error, "the overlay interface was already there");
     }
 
-    let addresses = vec![interface_address(address)
+    let wanted = interface_address(address)
         .parse::<IpAddrMask>()
-        .map_err(|error| format!("{address} is not an address: {error}"))?];
+        .map_err(|error| format!("{address} is not an address: {error}"))?;
 
-    api.configure_interface(&InterfaceConfiguration {
-        name: INTERFACE.to_string(),
-        prvkey: private.to_string(),
-        addresses,
-        port,
-        peers,
-        mtu: None,
-        fwmark: None,
-    })
-    .map_err(|error| format!("could not configure {INTERFACE}: {error}"))
+    // Read before writing. An interface that cannot be read is one that
+    // is not configured, and `needed` reads that as "everything".
+    let host = api.read_interface_data().ok();
+
+    match needed(host.as_ref(), private, port, &peers) {
+        Change::Everything(reason) => {
+            // At `info`, once per start: whether a deployment costs the
+            // overlay a minute of silence now depends on this line.
+            tracing::info!(
+                reason,
+                port = host.as_ref().map(|host| host.listen_port),
+                keyed = host.as_ref().map(|host| host.private_key.is_some()),
+                "rebuilding the overlay interface"
+            );
+            return api
+                .configure_interface(&InterfaceConfiguration {
+                    name: INTERFACE.to_string(),
+                    prvkey: private.to_string(),
+                    addresses: vec![wanted],
+                    port,
+                    peers,
+                    mtu: None,
+                    fwmark: None,
+                })
+                .map_err(|error| format!("could not configure {INTERFACE}: {error}"));
+        }
+        Change::Peers { set, gone } => {
+            for peer in &set {
+                api.configure_peer(peer)
+                    .map_err(|error| format!("could not configure a peer: {error}"))?;
+            }
+            for key in &gone {
+                api.remove_peer(key)
+                    .map_err(|error| format!("could not remove a peer: {error}"))?;
+            }
+            tracing::info!(
+                set = set.len(),
+                removed = gone.len(),
+                "the overlay's peers changed"
+            );
+        }
+        // The case the module note is about, and worth a line: somebody
+        // reading a deployment's journal should be able to see that the
+        // overlay was left alone rather than infer it from silence.
+        Change::Nothing => tracing::info!("the overlay interface already matches"),
+    }
+
+    // Whatever the peers needed, and last rather than first: the address
+    // is the one part of this the kernel cannot be asked about — `Host`
+    // carries WireGuard's own state and an interface address is not part
+    // of it — so it is written rather than compared. netlink *replaces*
+    // it instead of adding a second one, which is why doing this on every
+    // start is not the thing the module note warns about.
+    api.assign_address(&wanted)
+        .map_err(|error| format!("could not address {INTERFACE}: {error}"))
 }
 
 /// The product is a Linux daemon. These exist so the crate still
@@ -293,6 +518,255 @@ mod tests {
     fn the_interface_carries_the_subnet_not_one_address() {
         assert_eq!(interface_address("10.42.0.2"), "10.42.0.2/24");
         assert!(interface_address("10.42.0.2").parse::<IpAddrMask>().is_ok());
+    }
+
+    /// Two keys and a peer built the way `peers` builds one.
+    fn key(seed: u8) -> Key {
+        Key::new([seed; 32])
+    }
+
+    fn peer(seed: u8, allowed: &str) -> Peer {
+        let mut peer = Peer::new(key(seed));
+        peer.allowed_ips = vec![allowed.parse().expect("a mask")];
+        peer
+    }
+
+    fn kernel(private: &Key, port: u16, peers: Vec<Peer>) -> Host {
+        let mut host = Host::new(port, private.clone());
+        for peer in peers {
+            host.peers.insert(peer.public_key.clone(), peer);
+        }
+        host
+    }
+
+    /// The one that cost a replication stream on every deployment.
+    ///
+    /// Nothing takes the interface down when this process stops, so a
+    /// start that finds the kernel already holding what the rows say has
+    /// nothing to do — and doing it anyway replaces the peers, drops
+    /// their sessions and the endpoints learned from them, and the other
+    /// end goes quiet for the best part of a minute.
+    #[test]
+    fn a_start_that_changes_nothing_tells_the_kernel_nothing() {
+        let private = key(1);
+        let wanted = vec![peer(2, "10.42.0.4/32")];
+        let host = kernel(&private, DEFAULT_PORT, wanted.clone());
+
+        assert_eq!(
+            needed(Some(&host), &private.to_string(), DEFAULT_PORT, &wanted),
+            Change::Nothing
+        );
+    }
+
+    /// An endpoint this node did not configure is one the kernel
+    /// *learned* from a handshake — the whole of how a public node
+    /// answers a private one. Reading that as a difference would rebuild
+    /// every working peer at every start, which is the failure this
+    /// comparison replaced.
+    #[test]
+    fn an_endpoint_the_kernel_learned_is_not_a_difference() {
+        let private = key(1);
+        let wanted = vec![peer(2, "10.42.0.4/32")];
+
+        let mut learned = wanted[0].clone();
+        learned.endpoint = Some("203.0.113.7:51820".parse().expect("an address"));
+        learned.last_handshake = Some(std::time::UNIX_EPOCH);
+        learned.rx_bytes = 4096;
+        let host = kernel(&private, DEFAULT_PORT, vec![learned]);
+
+        assert_eq!(
+            needed(Some(&host), &private.to_string(), DEFAULT_PORT, &wanted),
+            Change::Nothing
+        );
+    }
+
+    /// The kernel hands back `0` for a peer configured without a
+    /// keepalive, which is what "off" is spelled as down there. Reading
+    /// that as a difference from `None` made a public node rewrite every
+    /// peer at every start — harmless, and it meant this file's own
+    /// "already matches" never printed on the node that most needed it.
+    #[test]
+    fn a_keepalive_of_nought_is_no_keepalive() {
+        let private = key(1);
+        let mut reported = peer(2, "10.42.0.4/32");
+        reported.persistent_keepalive_interval = Some(0);
+        reported.endpoint = Some("203.0.113.7:51820".parse().expect("an address"));
+        reported.last_handshake = Some(std::time::UNIX_EPOCH);
+
+        let host = kernel(&private, DEFAULT_PORT, vec![reported]);
+        assert_eq!(
+            needed(
+                Some(&host),
+                &private.to_string(),
+                DEFAULT_PORT,
+                &[peer(2, "10.42.0.4/32")]
+            ),
+            Change::Nothing
+        );
+    }
+
+    /// A peer that differs is set on its own, and one nobody wants is
+    /// removed — so a node joining does not cost the peers already there
+    /// their sessions.
+    #[test]
+    fn only_the_peers_that_moved_are_touched() {
+        let private = key(1);
+        let staying = peer(2, "10.42.0.4/32");
+        let arriving = peer(3, "10.42.0.5/32");
+        let leaving = peer(4, "10.42.0.6/32");
+        let host = kernel(
+            &private,
+            DEFAULT_PORT,
+            vec![staying.clone(), leaving.clone()],
+        );
+
+        let change = needed(
+            Some(&host),
+            &private.to_string(),
+            DEFAULT_PORT,
+            &[staying, arriving.clone()],
+        );
+        match change {
+            Change::Peers { set, gone } => {
+                assert_eq!(set.len(), 1, "only the new peer");
+                assert_eq!(set[0].public_key, arriving.public_key);
+                assert_eq!(gone, vec![leaving.public_key]);
+            }
+            other => panic!("expected the two peers, got {other:?}"),
+        }
+    }
+
+    /// A peer whose address moved is told, rather than left pointing at
+    /// where the node used to be — the comparison has to be about the
+    /// fields this node writes, not about the peer existing.
+    #[test]
+    fn a_peer_whose_allowed_address_changed_is_told() {
+        let private = key(1);
+        let host = kernel(&private, DEFAULT_PORT, vec![peer(2, "10.42.0.4/32")]);
+
+        let change = needed(
+            Some(&host),
+            &private.to_string(),
+            DEFAULT_PORT,
+            &[peer(2, "10.42.0.9/32")],
+        );
+        assert!(
+            matches!(&change, Change::Peers { set, gone } if set.len() == 1 && gone.is_empty()),
+            "expected the one peer to be set, got {change:?}"
+        );
+    }
+
+    /// This node's own identity on the overlay. There is nothing to
+    /// preserve when the key changes — every session was derived from the
+    /// old one — and a different port is an interface nobody can reach.
+    #[test]
+    fn a_different_key_or_port_rebuilds_the_interface() {
+        let private = key(1);
+        let wanted = vec![peer(2, "10.42.0.4/32")];
+
+        let elsewhere = kernel(&key(9), DEFAULT_PORT, wanted.clone());
+        assert_eq!(
+            needed(
+                Some(&elsewhere),
+                &private.to_string(),
+                DEFAULT_PORT,
+                &wanted
+            ),
+            Change::Everything("a different key"),
+            "a key that is not this node's"
+        );
+
+        let other_port = kernel(&private, 51821, wanted.clone());
+        assert_eq!(
+            needed(
+                Some(&other_port),
+                &private.to_string(),
+                DEFAULT_PORT,
+                &wanted
+            ),
+            Change::Everything("a different listen port"),
+            "a port nobody is dialling"
+        );
+
+        assert_eq!(
+            needed(None, &private.to_string(), DEFAULT_PORT, &wanted),
+            Change::Everything("the interface could not be read"),
+            "an interface that could not be read is one that is not there"
+        );
+    }
+
+    /// The one the nodes found. WireGuard clamps a private key when it
+    /// takes it, so what the kernel hands back is never quite the value in
+    /// the database — and comparing the bytes rebuilt a perfectly healthy
+    /// interface at every start, on both test nodes, which is the failure
+    /// this whole comparison exists to prevent.
+    #[test]
+    fn a_key_the_kernel_clamped_is_the_same_key() {
+        let stored = key(1);
+
+        let mut clamped = stored.as_array();
+        clamped[0] &= 248;
+        clamped[31] = (clamped[31] & 127) | 64;
+        assert_ne!(clamped, stored.as_array(), "the clamp has to change it");
+
+        let host = kernel(
+            &Key::new(clamped),
+            DEFAULT_PORT,
+            vec![peer(2, "10.42.0.4/32")],
+        );
+        assert_eq!(
+            needed(
+                Some(&host),
+                &stored.to_string(),
+                DEFAULT_PORT,
+                &[peer(2, "10.42.0.4/32")]
+            ),
+            Change::Nothing
+        );
+    }
+
+    /// A read that comes back without a private key is not a node whose
+    /// identity changed, and treating it as one rebuilt a healthy
+    /// interface at every start — which is the whole failure this file is
+    /// about. A peer that has completed a handshake did it against this
+    /// node's public half, so the key is proved without being read.
+    #[test]
+    fn a_handshake_proves_the_key_the_kernel_did_not_hand_back() {
+        let private = key(1);
+        let mut answered = peer(2, "10.42.0.4/32");
+        answered.last_handshake = Some(std::time::UNIX_EPOCH);
+
+        let mut host = kernel(&private, DEFAULT_PORT, vec![answered.clone()]);
+        host.private_key = None;
+
+        assert_eq!(
+            needed(
+                Some(&host),
+                &private.to_string(),
+                DEFAULT_PORT,
+                &[peer(2, "10.42.0.4/32")]
+            ),
+            Change::Nothing
+        );
+    }
+
+    /// And when no peer has ever answered, the interface is the thing to
+    /// suspect — there is no session to lose by rebuilding it.
+    #[test]
+    fn an_interface_no_peer_has_ever_answered_is_rebuilt() {
+        let private = key(1);
+        let mut host = kernel(&private, DEFAULT_PORT, vec![peer(2, "10.42.0.4/32")]);
+        host.private_key = None;
+
+        assert_eq!(
+            needed(
+                Some(&host),
+                &private.to_string(),
+                DEFAULT_PORT,
+                &[peer(2, "10.42.0.4/32")]
+            ),
+            Change::Everything("no peer has ever completed a handshake")
+        );
     }
 
     /// A node that has joined nothing and enrolled nobody has no
