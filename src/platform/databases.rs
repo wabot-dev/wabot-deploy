@@ -294,6 +294,9 @@ pub async fn dispatch(
     let project = super::projects::find(database, &service.project_id)
         .await?
         .ok_or_else(|| PlatformError::Refused("no project for this database".into()))?;
+    let running = super::services::find(database, &service.id)
+        .await?
+        .map_or(service.desired_state, |row| row.desired_state);
     let placements = super::replicas::of_service(database, &service.id).await?;
 
     // Which node holds which slots. A node holding two copies is told
@@ -357,10 +360,12 @@ pub async fn dispatch(
             // the copy has to answer to *its* name, not to one built
             // from the domain of whichever machine is holding it.
             qualified_domain: domain.clone(),
-            // The intent travels with the instruction. A database stopped
-            // here whose standbys went on following was the same bug a
-            // plain service had, and the copies are the same rows.
-            running: service.desired_state == super::services::DesiredState::Running,
+            // The intent travels with the instruction, and it is read
+            // from the **row** rather than from the caller's `service`.
+            // `stop` writes the state and then dispatches with the struct
+            // it was handed, which still says `Running`: a stop that
+            // travelled asked for a deployment.
+            running: running == super::services::DesiredState::Running,
         })
         .map_err(|error| PlatformError::Refused(error.to_string()))?;
 

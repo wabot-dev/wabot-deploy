@@ -742,6 +742,21 @@ impl Deployer {
         // start back what is being taken down.
         services::set_desired_state(&self.database, &service.id, DesiredState::Stopped).await?;
 
+        // The other machines next, and **before containerd** on purpose:
+        // the instruction is the intent, so it belongs with it, and a node
+        // whose own runtime will not answer must still be able to say
+        // "stop" to the nodes running the rest of this service. Below this
+        // line the first thing that fails returns.
+        //
+        // Both, because a service is told by one of them and a database by
+        // the other, and each declines what is not its business. Leaving
+        // the second one out is how a database Jorge stopped went on being
+        // followed by a standby on another machine: `tell_holders` returns
+        // at once for a managed kind, `dispatch_standbys` is what carries
+        // its intent, and nothing here called it.
+        self.tell_holders(project, service).await;
+        self.dispatch_standbys(service).await;
+
         let client = Containerd::connect().await?;
         let net = self.network_of(project).await;
 
@@ -757,10 +772,6 @@ impl Deployer {
             replicas::set_last_error(&self.database, &replica.id, None).await?;
         }
         self.sync_routes().await;
-        // The copies on other machines, which is the whole of the bug this
-        // call fixes: without it they went on running and serving, and the
-        // console said the service was stopped.
-        self.tell_holders(project, service).await;
 
         tracing::info!(service = %service.slug, project = %project.slug, "stopped");
         Ok(())
@@ -1112,6 +1123,20 @@ impl Deployer {
             }
         }
 
+        // The intent comes from the row, never from the caller's copy of
+        // it. `stop` writes the state and then calls this with the struct
+        // it was handed, which still says `Running` — so the instruction
+        // that travelled said "run it", and a stop reached the other node
+        // as no change at all. The test below had quietly arranged the
+        // fresh struct the code should have read for itself, which is how
+        // it passed while the path was broken.
+        let running = services::find(&self.database, &service.id)
+            .await
+            .ok()
+            .flatten()
+            .map_or(service.desired_state, |row| row.desired_state)
+            == DesiredState::Running;
+
         let host = crate::network::capability::Capability::Host;
         for (node_id, mut slots) in by_node {
             slots.sort_unstable();
@@ -1147,7 +1172,7 @@ impl Deployer {
                     .find(|port| port.hostname.is_some())
                     .map(|port| port.container_port),
                 slots,
-                running: service.desired_state == DesiredState::Running,
+                running,
             }) {
                 Ok(payload) => payload,
                 Err(error) => {
@@ -1168,7 +1193,7 @@ impl Deployer {
                 Ok(Some(_)) => tracing::info!(
                     service = %service.slug,
                     node = %node_id,
-                    running = service.desired_state == DesiredState::Running,
+                    running,
                     "told a node what it holds for this service"
                 ),
                 Ok(None) => {}
@@ -2039,14 +2064,22 @@ mod tests {
             &crate::config::Config::default(),
         );
 
-        services::set_desired_state(&database, &service.id, DesiredState::Stopped)
-            .await
-            .expect("stopped");
-        let service = services::find(&database, &service.id)
-            .await
-            .expect("query")
-            .expect("there");
-        deployer.tell_holders(&project, &service).await;
+        // Through `stop`, not through the dispatcher. The first version of
+        // this set the state, re-read the row and handed the fresh struct
+        // over — which is the arrangement the code should have made for
+        // itself, so it passed while a real stop travelled as
+        // `running: true`. Containerd is not here, so the local half
+        // fails; the instruction leaves before it.
+        let _ = deployer.stop(&project, &service).await;
+        assert_eq!(
+            services::find(&database, &service.id)
+                .await
+                .expect("query")
+                .expect("there")
+                .desired_state,
+            DesiredState::Stopped,
+            "the intent is written even when the runtime will not answer"
+        );
 
         let waiting = crate::network::errand::waiting(&database, "nd-far")
             .await
@@ -2057,6 +2090,103 @@ mod tests {
             waiting[0].payload["slots"],
             serde_json::json!([1]),
             "stopped, and still placed there — `slots: []` would delete it"
+        );
+    }
+
+    /// A database is told by the other dispatcher, and stopping one has to
+    /// reach it.
+    ///
+    /// This is the test that was missing. The `running` field, the payload
+    /// that carries it and the far node's handling of it all shipped
+    /// together — and nothing called `dispatch_standbys` on the way out of
+    /// `stop`, so Jorge stopped a database from the console and the standby
+    /// on the other machine went on following it. `tell_holders` declines a
+    /// managed kind at its first line, which is correct and was the whole
+    /// of the coverage.
+    ///
+    /// It runs `stop` rather than the dispatcher directly: what was wrong
+    /// was the wiring, and a test of the dispatcher would have passed
+    /// before the fix. Containerd is not here, so the local half fails —
+    /// which is why the dispatch happens before it, and asserting on the
+    /// errand is asserting exactly that.
+    #[tokio::test]
+    async fn stopping_a_database_tells_the_node_holding_its_standby() {
+        let database = crate::db::open_in_memory().await.expect("open");
+        let project = projects::create(&database, "db-test")
+            .await
+            .expect("project");
+        let (service, _) = crate::platform::databases::create(
+            &database,
+            &project.id,
+            "orders",
+            "17",
+            256 * 1024 * 1024,
+        )
+        .await
+        .expect("created");
+
+        // This node, on the overlay: the errand carries where the primary
+        // answers, and that is this node's address and a port bound to it.
+        crate::network::ensure_self(&database, &crate::config::Config::default())
+            .await
+            .expect("self");
+        let mut me = crate::network::me(&database)
+            .await
+            .expect("query")
+            .expect("there");
+        me.overlay_ip = Some("10.42.0.1".into());
+        crate::network::save(&database, &me).await.expect("saved");
+
+        let here = replicas::of_service(&database, &service.id)
+            .await
+            .expect("replicas")
+            .pop()
+            .expect("a database is created with its primary");
+        replicas::ensure_overlay_port(&database, &here.id)
+            .await
+            .expect("port");
+
+        // And a node that agreed to keep data, holding the standby.
+        crate::network::save(
+            &database,
+            &crate::network::Node {
+                id: "nd-far".into(),
+                name: "far.example".into(),
+                kind: crate::network::Kind::Private,
+                overlay_ip: Some("10.42.0.9".into()),
+                public_key: None,
+                endpoint: None,
+                allows: vec![crate::network::capability::Capability::Store],
+                last_seen_at: None,
+                is_self: false,
+            },
+        )
+        .await
+        .expect("node");
+        replicas::place(&database, &service.id, Some("nd-far"), 3)
+            .await
+            .expect("placed");
+
+        let deployer = Deployer::new(
+            std::sync::Arc::new(database.clone()),
+            &crate::config::Config::default(),
+        );
+        // The local half needs containerd and there is none here. What is
+        // being pinned is what left this node before that.
+        let _ = deployer.stop(&project, &service).await;
+
+        let waiting = crate::network::errand::waiting(&database, "nd-far")
+            .await
+            .expect("errands");
+        let stop = waiting
+            .iter()
+            .find(|errand| errand.kind == crate::network::errand::Kind::Database)
+            .expect("the node holding the standby was told nothing");
+        assert_eq!(stop.payload["running"], serde_json::json!(false));
+        assert_eq!(
+            stop.payload["slots"],
+            serde_json::json!([3]),
+            "stopped, and still held — the volume stays where it is"
         );
     }
 
