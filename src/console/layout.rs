@@ -584,6 +584,14 @@ pre ::selection {
 .check input[type="radio"] {
   width: 1.05rem;
   height: 1.05rem;
+  /* And no padding, which is the whole of why a radio was a pill.
+   *
+   * The design system pads every input — `0.625rem 0.75rem` — and then
+   * sizes these two without resetting it. With `box-sizing: border-box`
+   * the padding is a floor, so the box is at least 1.5rem wide by 1.25rem
+   * tall: wider than tall, and 50% of that is an ellipse. Setting the
+   * width alone, which is what was here, could never have worked. */
+  padding: 0;
   flex: 0 0 auto;
 }
 .check input[type="radio"] { border-radius: 50%; }
