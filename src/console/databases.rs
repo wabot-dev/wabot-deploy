@@ -380,8 +380,14 @@ impl Strings {
 /// One string, in a block that does not break it.
 fn value<'a>(which: &'a str, dsn: &'a str, copy: &'a str, copied: &'a str) -> impl Renderable + 'a {
     rsx! {
-        <pre class="dsn-value" data-dsn=(which) data-copy
-             data-copy-label=(copy) data-copied-label=(copied)>(dsn)</pre>
+        // The line is what CSS shows or hides, so the button the island
+        // appends belongs to the string beside it rather than to the three
+        // that are not on screen — and it sits next to the string instead
+        // of on top of the end somebody is reading.
+        <div class="dsn-line" data-dsn=(which)>
+            <pre class="dsn-value" data-copy
+                 data-copy-label=(copy) data-copied-label=(copied)>(dsn)</pre>
+        </div>
     }
 }
 

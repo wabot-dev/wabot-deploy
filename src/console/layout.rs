@@ -366,7 +366,6 @@ wabot-outlet {
  * which is the whole mechanism.
  */
 .dsn-value {
-  display: none;
   margin: 0;
   padding: var(--sp-3) var(--sp-4);
   background: rgb(var(--c-bg-sunken));
@@ -378,27 +377,25 @@ wabot-outlet {
   white-space: pre;
   overflow-x: auto;
 }
-.dsn:has(#dsn-primary:checked):has(#dsn-short:not(:checked)) [data-dsn="primary-full"],
-.dsn:has(#dsn-pool:checked):has(#dsn-short:not(:checked)) [data-dsn="pool-full"],
-.dsn:has(#dsn-primary:checked):has(#dsn-short:checked) [data-dsn="primary-short"],
-.dsn:has(#dsn-pool:checked):has(#dsn-short:checked) [data-dsn="pool-short"] {
-  display: block;
+.dsn:has(#dsn-public:checked):has(#dsn-primary:checked) [data-dsn="primary-full"],
+.dsn:has(#dsn-public:checked):has(#dsn-pool:checked) [data-dsn="pool-full"],
+.dsn:has(#dsn-private:checked):has(#dsn-primary:checked) [data-dsn="primary-short"],
+.dsn:has(#dsn-private:checked):has(#dsn-pool:checked) [data-dsn="pool-short"] {
+  display: flex;
 }
-.dsn-pick { flex-wrap: wrap; gap: var(--sp-4); align-items: center; }
-.dsn-values { position: relative; }
+.dsn-pick { flex-wrap: wrap; gap: var(--sp-5); align-items: center; }
+.dsn-group { display: flex; flex-wrap: wrap; gap: var(--sp-4); align-items: center; }
 
-/* Revealed by the `copy` island, never rendered visible.
+/* The string and its button on one line.
  *
- * A button that cannot copy is a control that lies, and with scripting off
- * that is exactly what it would be — the text is selectable either way. So
- * the server renders it hidden and the island shows it, which is the same
- * shape `fields` uses for a constraint the server already imposes.
+ * The button was positioned over the block and sat on top of the string —
+ * which for a string that scrolls is worse than no button, because it
+ * covers exactly the end somebody is trying to read. Beside it instead, and
+ * the string takes the room that is left.
  */
-.dsn-copy {
-  position: absolute;
-  top: var(--sp-2);
-  right: var(--sp-2);
-}
+.dsn-line { display: none; align-items: center; gap: var(--sp-3); }
+.dsn-line .dsn-value { flex: 1 1 auto; min-width: 0; }
+.dsn-line .btn { flex: 0 0 auto; }
 
 /* Release notes. Written by somebody else, arriving as Markdown, and
    rendered here as ordinary prose — narrow enough to read, with the
@@ -575,7 +572,21 @@ pre ::selection {
   font-weight: 500;
   margin-top: var(--sp-2);
 }
-.check input[type="checkbox"] { width: 1.05rem; }
+/* The box and the dot keep their size inside a `.check` label.
+ *
+ * The width is restated because the design system sets `width: 100%` on
+ * every input and then 1.05rem on these two, and in a flex label the
+ * first one wins — the checkbox rule has been here for that reason since
+ * before radios were used in one. A radio without it renders as a
+ * rounded rectangle: the height is right, the width is not, and 50% of a
+ * rectangle is a pill. */
+.check input[type="checkbox"],
+.check input[type="radio"] {
+  width: 1.05rem;
+  height: 1.05rem;
+  flex: 0 0 auto;
+}
+.check input[type="radio"] { border-radius: 50%; }
 
 /* Where a port is reachable, and whether its certificate has arrived.
    Two things in one cell, so the cell has to space them itself — and
