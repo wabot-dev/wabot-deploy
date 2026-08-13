@@ -218,10 +218,31 @@ impl Deployer {
                     .as_ref()
                     .and_then(|r| r.owner_domain.clone())
                     .or_else(|| domain.clone());
+                // The name itself, not the domain to build one from: a
+                // database's is the operator's to choose and may sit under
+                // a domain that has nothing to do with this node's.
+                let qualified = match row.is_some() {
+                    true => {
+                        databases::qualified_name(
+                            &self.database,
+                            service,
+                            &project.slug,
+                            suffix.as_deref(),
+                        )
+                        .await?
+                    }
+                    // An ordinary service keeps the derived name it has
+                    // always had in here. Its own hostname is what an edge
+                    // serves, which is a different question from what the
+                    // containers beside it resolve.
+                    false => suffix
+                        .as_ref()
+                        .map(|domain| format!("{}.{}.{domain}", service.slug, project.slug)),
+                };
                 named.push((
                     service.slug.clone(),
                     row.as_ref().map(|r| r.primary_slot),
-                    suffix,
+                    qualified,
                 ));
 
                 for replica in replicas::of_service(&self.database, &service.id).await? {
@@ -1968,6 +1989,14 @@ pub async fn certificate_names(
         Ok(Some(row)) if row.owner_domain.is_some() => row.owner_domain,
         _ => crate::node::settings::domain(database, config).await,
     };
+    // The name the operator chose, or the one every database had before
+    // they could — one function, so the certificate covers exactly what
+    // `/etc/hosts` resolves. Two builders of this drifted once already and
+    // the failure was a client dialling a name no certificate held.
+    let qualified = databases::qualified_name(database, service, &project.slug, domain.as_deref())
+        .await
+        .ok()
+        .flatten();
     let mut names = Vec::new();
 
     // Both names, and the read pool's is not optional: a client
@@ -1976,15 +2005,18 @@ pub async fn certificate_names(
     // only the primary's name would fail every read. The pool is the
     // same database, so it is the same certificate with one more name on
     // it rather than a second certificate.
-    for slug in [
-        service.slug.clone(),
-        format!("{}{}", service.slug, hosts::READ_ONLY),
+    for (slug, qualified) in [
+        (service.slug.clone(), qualified.clone()),
+        (
+            format!("{}{}", service.slug, hosts::READ_ONLY),
+            qualified.as_deref().map(hosts::pool_name),
+        ),
     ] {
-        if let Some(domain) = &domain {
+        if let Some(qualified) = qualified {
             // First, so the qualified one is the common name: it is the
             // only one a public authority could sign, and the one a
             // client outside this node would use.
-            names.push(format!("{slug}.{}.{domain}", project.slug));
+            names.push(qualified);
         }
         names.push(slug.clone());
         names.push(format!("{slug}.{}", project.slug));

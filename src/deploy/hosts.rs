@@ -64,6 +64,22 @@ pub struct Entry {
 /// reads as a different service.
 pub const READ_ONLY: &str = "-ro";
 
+/// The read pool's name, from the primary's.
+///
+/// `-ro` goes into the **first label**, so `db.example.com` reads
+/// `db-ro.example.com`: one name the operator chose governs both, and the
+/// pool's is predictable rather than a second thing to keep in step.
+///
+/// It degenerates to what was there before — `orders.db-test.node.example`
+/// becomes `orders-ro.db-test.node.example` — which is the point: nothing
+/// moves for a database that never had a name chosen for it.
+pub fn pool_name(primary: &str) -> String {
+    match primary.split_once('.') {
+        Some((first, rest)) => format!("{first}{READ_ONLY}.{rest}"),
+        None => format!("{primary}{READ_ONLY}"),
+    }
+}
+
 /// Where a container's hosts file lives on the node.
 pub fn path(data_dir: &Path, container_id: &str) -> PathBuf {
     data_dir.join("hosts").join(container_id)
@@ -144,15 +160,21 @@ pub fn entries_for(
     reader: &str,
 ) -> Vec<Entry> {
     let mut entries: Vec<Entry> = Vec::new();
-    let names_for = |slug: &str, domain: &Option<String>| {
+    // The short names are built; the qualified one is **given**.
+    //
+    // It used to be built too — slug, project and the node's domain — and
+    // that was the same thing only while every name was a subdomain of the
+    // node. A database's name is the operator's to choose, so it arrives
+    // here as a value and this stops guessing at it.
+    let names_for = |slug: &str, qualified: Option<&String>| {
         let mut names = vec![slug.to_string(), format!("{slug}.{project}")];
-        if let Some(domain) = domain {
-            names.push(format!("{slug}.{project}.{domain}"));
+        if let Some(qualified) = qualified {
+            names.push(qualified.clone());
         }
         names
     };
 
-    for (slug, primary_slot, domain) in services {
+    for (slug, primary_slot, qualified) in services {
         let mut writable = Vec::new();
         let mut readable = Vec::new();
         for ((service, slot), address) in addresses {
@@ -167,7 +189,7 @@ pub fn entries_for(
 
         if !writable.is_empty() {
             entries.push(Entry {
-                names: names_for(slug, domain),
+                names: names_for(slug, qualified.as_ref()),
                 addresses: writable.clone(),
             });
         }
@@ -182,7 +204,10 @@ pub fn entries_for(
             };
             if !pool.is_empty() {
                 entries.push(Entry {
-                    names: names_for(&format!("{slug}{READ_ONLY}"), domain),
+                    names: names_for(
+                        &format!("{slug}{READ_ONLY}"),
+                        qualified.as_ref().map(|name| pool_name(name)).as_ref(),
+                    ),
                     addresses: rotate(pool, reader),
                 });
             }
@@ -300,6 +325,22 @@ mod tests {
         assert_eq!(entries[0].addresses.len(), 2);
     }
 
+    /// The pool's name follows the primary's, whatever the operator chose.
+    ///
+    /// `-ro` in the first label rather than appended to the whole name:
+    /// `db-ro.example.com` is a hostname and `db.example.com-ro` is not.
+    /// It degenerates to what every database had before a name could be
+    /// chosen, which is what keeps this from moving anything.
+    #[test]
+    fn the_read_pool_is_named_after_the_primary() {
+        assert_eq!(pool_name("db.example.com"), "db-ro.example.com");
+        assert_eq!(
+            pool_name("orders.db-test.node.example"),
+            "orders-ro.db-test.node.example"
+        );
+        assert_eq!(pool_name("db"), "db-ro", "a name can be one label");
+    }
+
     /// Three ways to say it: bare inside the project, qualified by the
     /// project, and the full name the certificate will be for — so what
     /// an application connects to inside is what it would connect to
@@ -307,7 +348,14 @@ mod tests {
     #[test]
     fn a_name_is_written_short_and_long() {
         let entries = entries_for(
-            &[("orders".to_string(), None, Some("node.example".to_string()))],
+            // The qualified name, given rather than built: what a
+            // database is called is the operator's choice now, and this
+            // is the derivation it starts from.
+            &[(
+                "orders".to_string(),
+                None,
+                Some("orders.db-test.node.example".to_string()),
+            )],
             &addresses(&[("orders", 1, "10.42.2.200")]),
             "db-test",
             "db-test.web",
@@ -335,8 +383,16 @@ mod tests {
     fn a_copy_is_named_under_its_owners_domain_not_the_holders() {
         let entries = entries_for(
             &[
-                ("orders".to_string(), Some(1), Some("owner.example".into())),
-                ("web".to_string(), None, Some("holder.example".into())),
+                (
+                    "orders".to_string(),
+                    Some(1),
+                    Some("orders.db-test.owner.example".into()),
+                ),
+                (
+                    "web".to_string(),
+                    None,
+                    Some("web.db-test.holder.example".into()),
+                ),
             ],
             &addresses(&[("orders", 2, "10.42.2.254"), ("web", 1, "10.42.2.5")]),
             "db-test",

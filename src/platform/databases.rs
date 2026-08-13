@@ -411,6 +411,37 @@ fn instruction(
     .map_err(|error| PlatformError::Refused(error.to_string()))
 }
 
+/// What this database is called, in full.
+///
+/// **A row when the operator chose one, derived when they have not.** The
+/// name lives where a service's does — `port.hostname` — because a
+/// database's name is a name like any other, and giving it a column of its
+/// own would be a second place for a hostname to live and a second
+/// uniqueness rule to keep.
+///
+/// The derivation is what every database had before a name could be
+/// chosen: `<service>.<project>.<domain>`. So nothing moves for one nobody
+/// has renamed, and `suffix` is the **owner's** domain — a copy held for
+/// somebody else answers to their name, not to the holding machine's.
+///
+/// `None` on a node with no domain and no chosen name, which is a database
+/// that has only its short names.
+pub async fn qualified_name(
+    database: &SqliteDatabase,
+    service: &Service,
+    project_slug: &str,
+    suffix: Option<&str>,
+) -> PlatformResult<Option<String>> {
+    if let Some(chosen) = super::ports::of_service(database, &service.id)
+        .await?
+        .into_iter()
+        .find_map(|port| port.hostname)
+    {
+        return Ok(Some(chosen));
+    }
+    Ok(suffix.map(|domain| format!("{}.{project_slug}.{domain}", service.slug)))
+}
+
 /// Tell every node holding a copy of this database to let it go.
 ///
 /// `slots: []`, which the holding node reads as "this is not yours to
