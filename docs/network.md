@@ -664,3 +664,145 @@ The lesson generalises past this feature: **every switch that grants
 needs the path that ungrants tested with it.** All three of these are
 the same omission, and none is visible from the granting side — the node
 that revokes sees its own table change and assumes the rest followed.
+
+## What a stop turned out to need
+
+Phase 8's lesson generalised the way lessons do: the *next* switch had
+the same omission. Stopping a service took down the copies on the node
+that owns it and said nothing to the machines running the others, so a
+service the console showed as stopped went on serving traffic somewhere
+else. Reported by Jorge from the console, with a copy `Running` on the
+other node underneath a badge saying the service had never been
+deployed.
+
+Three things it needed, and the middle one is a decision rather than a
+fix.
+
+**A stop is not a removal, and the errand already had a way to say the
+wrong one.** `slots: []` means "take this service off that machine" and
+deletes the rows there — right for a placement that moved, and total
+loss as a way to say "stop". So the intent travels beside the placement:
+`Host.running` and `Standby.running`, defaulted to true, because every
+errand that has ever been queued asked for a deployment. `false` stops
+what that node holds and keeps it, so starting the service again is a
+matter of saying so rather than of placing every copy a second time —
+which for a database is the difference between a restart and a base
+backup over the network.
+
+**Stopping needs the same permission as placing.** The phase 8 rule was
+that a withdrawal needs no permission, and it does not carry over: an
+edge errand with no upstreams asks a node to *stop answering for a
+name*, where this one reaches into the node and stops processes. Jorge's
+question was the right one — if stopping needed no grant, an authority a
+node had shut the door on could still reach in. So `carry_out` checks
+`host` for every host errand, stop included, and the placement dispatch
+skips a node that no longer allows it rather than queueing an errand it
+would refuse for ever.
+
+**Which reopens the hole phase 8 closed, so the node closes it
+itself.** A node that revokes `host` can no longer be *told* to stop
+what it is running, and those containers would run for ever.
+`Deployer::evict_ungranted` runs at boot beside `release_ungranted` and
+asks only about now: a service whose origin no longer grants `host` —
+or `store`, for a database, since keeping somebody's data and running
+somebody's container are different favours — has its local copies
+stopped and **evicted**. Evicted rather than stopped, because somebody
+did throw them out: the row is the tombstone that says so, and the next
+report tells the node that placed them to stop asking. It is also the
+first caller `replicas::evict` has ever had, which is worth noticing —
+"evictable there" was in the model and in the reports before anything
+on the node could do it.
+
+The dispatch itself is derived and queued only when it differs, on the
+subject `placement:<service>`, which is the shape `dispatch_standbys`
+already had. So `stop` reaches a node that answers and the boot pass
+reaches the one that did not, and between them an instruction arrives at
+a machine that was off — the only way it ever does.
+
+### And what the badge was saying
+
+`observe_service` answers about *this* machine, so a service placed
+entirely on other nodes read as `Absent`, which the badge renders as
+"Not deployed". It is deployed; it is running; it is not here. Two
+answers now, because a page must not invent an outcome nobody reported:
+`Running elsewhere` once some copy has reported an address, and
+`Waiting for that node` until one has — the same distinction the replica
+table already drew one card lower. The action beside it is `stop`, which
+is what the owner of a service running on somebody else's machine can
+do about it, and which only became true with the errand above.
+
+Deploying one had been refused outright — `has no replica on this
+node` — so the one thing its owner could not do was start it again after
+stopping it. `deploy` returns `Option<Ipv4Addr>` now, `None` being "no
+copy here", and tells the holders instead of refusing.
+
+## Two things a node found in an afternoon, both invisible in a test
+
+Jorge asked whether the database and its replicas were actually working.
+They were — two standbys `streaming`, a write round trip present on both
+copies in seconds, both refusing writes, `sslmode=verify-full` against
+the owner-qualified name working on either. What the afternoon turned up
+was underneath.
+
+**A report that says the same thing is not a change.** `api::record`
+answered `true` whenever it *wrote*, without comparing against the row.
+A node reports every fifteen seconds and almost always repeats itself,
+and `true` means "something moved" — so the authority rebuilt its route
+table, rewrote every local container's `/etc/hosts` and woke the
+certificate loop, every fifteen seconds, for as long as both nodes were
+up. Measured on the Ubuntu node: 41 rebuilds in ten minutes, and an ACME
+loop that never once reached its twelve-hour wait because the doorbell
+kept resetting its backoff to sixty seconds. The comment above the call
+site said exactly what should happen and the code did the opposite,
+which is the most expensive kind of comment.
+
+An eviction had it too: `evict` is a no-op on a row that already carries
+the timestamp, and the far node goes on reporting a copy it evicted for
+as long as the row is there.
+
+**A restart cost the overlay a minute of silence, and the standby's
+replication with it.** Nothing takes `wabot0` down when the process
+stops — the interface, its address, its peers and the kernel's live
+sessions outlive the binary, and so does the port mapping into a
+container, which is iptables. So while a node is being replaced, packets
+between two containers on different machines keep moving with nothing
+running to carry them. The only thing that can break that is
+`tunnel::apply`, and it did: `configure_interface` sets `ReplacePeers`,
+so the kernel drops every peer with its session keys and — for a peer
+this node did not dial — the endpoint it had *learned* from the last
+handshake. A public node configures no endpoint for a private peer on
+purpose, so after every restart it held a peer it could not send to and
+a session it could not read, until the other end noticed and started
+again: 30 seconds of drain plus up to 25 more, against a
+`wal_receiver_timeout` of 60. It fired every time, on a tunnel nothing
+had asked to change.
+
+So `needed` compares first and a start that changes nothing tells the
+kernel nothing; a peer that *has* changed is set on its own, which
+leaves its neighbours' sessions alone.
+
+**Getting that comparison right took the node twice.**
+
+- **A private key read back from the kernel is not the one in the
+  database.** WireGuard clamps a secret when it takes it — `[0] &= 248`,
+  and the top two bits of `[31]` — and `Key::generate` does not. So
+  comparing the bytes concluded the interface belonged to somebody else
+  and rebuilt it at every start: the precise failure the comparison was
+  added to prevent, reintroduced by the comparison. Public halves are
+  compared now, which the clamp does not change, and which is the honest
+  question anyway — whether this is the same identity, not whether two
+  encodings match.
+- **Nought is not nothing, except in a keepalive.** The kernel hands
+  back `0` for a peer configured without one, so comparing the options
+  directly called every peer on a public node different, every start.
+
+Neither was findable from here. What made them findable was giving the
+decision a voice: the rebuild says *why* — `reason="a different private
+key" keyed=true` is what named the first one — and the quiet case says
+so too, because "the overlay interface already matches" is the line that
+proves a deployment did not cost anything.
+
+**Verified on both nodes**: 41 route rebuilds in ten minutes became 2,
+both of them at boot; both nodes report `already matches` on restart;
+and the remote standby's replication session survived three consecutive
+deployments, its `backend_start` unchanged across all of them.

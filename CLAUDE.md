@@ -257,6 +257,14 @@ Publishing a release is outward-facing. Ask first.
 - `scripts/deploy.sh` prints `line 76: release: command not found` on
   every run. Harmless, and it is exactly where somebody looks when
   something is wrong.
+- **An errand a node queues for itself is never collected.** The
+  collector asks its *authorities*, and a node that takes instructions
+  from nobody has none — so a row addressed to this node sits pending for
+  ever. One is on the Ubuntu test node from 2026-08-13. Harmless and
+  confusing, which is the combination that costs somebody an hour.
+- `doctor` prints the overlay port from the config under a comment
+  promising what the kernel says. The peers below it are read from the
+  kernel; the port is not.
 
 ## The network work
 
@@ -440,6 +448,54 @@ again. Three separate causes, and each one alone was enough:
 
 Verified on the node: the claim, the route and the order all gone at the
 next boot, `no problems found`.
+
+**A stop has to travel, and stopping needs the same permission as
+placing.** `stop` took down the copies here and said nothing to the
+machines running the others, so a service the console called stopped went
+on serving traffic elsewhere. The intent rides beside the placement now —
+`Host.running` and `Standby.running`, defaulted true — because `slots:
+[]` already means something else: "take this off that machine", which
+deletes the rows there. And the phase 8 rule does **not** carry over:
+withdrawing an *edge* needs no permission because it only asks a node to
+stop answering for a name, where this reaches in and stops processes. So
+the grant is checked, the dispatch skips a node that no longer allows it,
+and the hole that opens — a node that revoked `host` cannot be *told* to
+stop — is closed by that node itself: `evict_ungranted` runs at boot
+beside `release_ungranted` and throws off what it no longer consents to
+run. Evicted rather than stopped, because somebody did throw it out, and
+the report is how the owner learns to stop asking.
+
+**"Not deployed" was the page answering about the wrong machine.**
+`observe_service` asks this node's runtime, so a service placed entirely
+on other nodes read as absent. It has two answers now — `Running
+elsewhere` once a copy has reported an address, `Waiting for that node`
+until one has — and its action is `stop`, which is what the owner of a
+service on somebody else's machine can do about it. `deploy` no longer
+refuses a service with no copy here; it tells the holders.
+
+**A report that says the same thing is not a change.** `api::record`
+answered `true` whenever it wrote, and `true` means "something moved":
+the authority rebuilt its routes, rewrote every container's `/etc/hosts`
+and woke the certificate loop every fifteen seconds for as long as both
+nodes were up — 41 rebuilds in ten minutes, and an ACME loop that never
+reached its twelve-hour wait. The comment above the call site said
+exactly what should happen.
+
+**A restart must not touch a healthy overlay.** Nothing takes `wabot0`
+down when this process stops — the interface, its peers and the kernel's
+sessions outlive the binary, and so does the port mapping, which is
+iptables — so packets keep crossing while a node is being replaced. The
+only thing that can break that is `tunnel::apply`, and it did:
+`configure_interface` sets `ReplacePeers`, which drops every session key
+and every *learned* endpoint, costing 45–55 seconds against a
+`wal_receiver_timeout` of 60. Every deployment cost the remote standby
+its replication stream. It compares first now — and the comparison itself
+took two node runs: **a private key read back from the kernel is not the
+one in the database** (WireGuard clamps a secret when it takes it, so
+public halves are what to compare), and **a keepalive of nought is no
+keepalive**. What made both findable was making the decision speak: the
+rebuild logs its reason, and the quiet case logs `the overlay interface
+already matches`.
 
 Next: phase 9, groups — health and failover across the upstreams of one
 name. Today a dead replica keeps its share of the traffic until the
