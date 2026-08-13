@@ -740,15 +740,36 @@ pub(crate) struct Live {
     edges: std::collections::BTreeMap<String, EdgeCell>,
 }
 
+impl Live {
+    /// Every word in here, in the reader's language.
+    ///
+    /// The words are chosen where the state is decided — one place, so a
+    /// first paint and an update cannot disagree — and that place has no
+    /// business knowing who is reading. So they are English there and
+    /// translated here, on the way out.
+    fn translate(&mut self) {
+        for cell in self.services.values_mut() {
+            cell.word = super::language::word(&cell.word).to_string();
+        }
+        for cell in self.replicas.values_mut() {
+            cell.word = super::language::word(&cell.word).to_string();
+            cell.detail = super::language::word(&cell.detail).to_string();
+        }
+        for cell in self.edges.values_mut() {
+            cell.word = super::language::word(&cell.word).to_string();
+        }
+    }
+}
+
 /// One replica, as its row reads.
 #[derive(serde::Serialize)]
 pub(crate) struct ReplicaCell {
-    badge: &'static str,
-    dot: &'static str,
-    word: String,
+    pub(crate) badge: &'static str,
+    pub(crate) dot: &'static str,
+    pub(crate) word: String,
     /// The line under it: an address while it is up, a reason while it
     /// is not, empty when there is nothing to add.
-    detail: String,
+    pub(crate) detail: String,
 }
 
 /// One hostname, as far as its certificate has got.
@@ -765,7 +786,11 @@ pub(crate) struct NameCell {
 pub(crate) struct EdgeCell {
     badge: &'static str,
     dot: &'static str,
-    word: &'static str,
+    /// Owned, because it is translated on the way out and the Spanish for
+    /// a constant is a different constant. One allocation per edge per
+    /// tick, against a second spelling of `language::word` for static
+    /// text — which is the kind of pair that drifts.
+    word: String,
 }
 
 /// How far each edge instruction has got.
@@ -818,23 +843,23 @@ async fn edge_cells(
                 Some(order) if order.error.is_some() => EdgeCell {
                     badge: "badge badge-danger",
                     dot: "dot dot-danger",
-                    word: "Refused",
+                    word: "Refused".into(),
                 },
                 Some(order) if order.done() => EdgeCell {
                     badge: "badge badge-success",
                     dot: "dot dot-success",
-                    word: "Serving",
+                    word: "Serving".into(),
                 },
                 Some(_) => EdgeCell {
                     badge: "badge badge-info",
                     dot: "dot dot-info dot-pulse",
-                    word: "Asked",
+                    word: "Asked".into(),
                 },
                 // No errand at all: this node itself, which needs none.
                 None => EdgeCell {
                     badge: "badge badge-success",
                     dot: "dot dot-success",
-                    word: "Serving",
+                    word: "Serving".into(),
                 },
             };
             cells.insert(format!("{hostname}|{node_id}"), cell);
@@ -854,25 +879,60 @@ async fn replica_cells(
         return cells;
     };
 
+    // Which nodes have an instruction waiting to be collected, once for the
+    // project rather than once per replica.
+    let queued = crate::network::errand::all(&state.database)
+        .await
+        .unwrap_or_default();
+
     for service in services {
         let Ok(replicas) =
             crate::platform::replicas::of_service(&state.database, &service.id).await
         else {
             continue;
         };
+        let stopped = service.desired_state == crate::platform::services::DesiredState::Stopped;
         for replica in replicas {
-            cells.insert(replica.id.clone(), replica_cell(&replica));
+            let waiting_for_it = replica.node_id.as_ref().is_some_and(|node| {
+                queued.iter().any(|record| {
+                    record.done_at.is_none()
+                        && &record.node_id == node
+                        && record.payload.get("service").and_then(|name| name.as_str())
+                            == Some(service.name.as_str())
+                })
+            });
+            cells.insert(
+                replica.id.clone(),
+                replica_cell(&replica, stopped, waiting_for_it),
+            );
         }
     }
     cells
 }
 
-/// The words `placement_state` renders, as data.
+/// What one replica's row says — the **only** decision, read by the first
+/// paint and by every update after it.
 ///
-/// Kept beside it deliberately: two places deciding what "evicted"
-/// looks like is how a page ends up saying one thing on load and
-/// another two seconds later.
-fn replica_cell(replica: &crate::platform::replicas::Replica) -> ReplicaCell {
+/// The comment here used to say the words were "kept beside"
+/// `placement_state` deliberately, and name the failure that would cause:
+/// a page saying one thing on load and another two seconds later. It then
+/// happened exactly as described. A stopped service's remote copy was
+/// given its own word in `placement_state` and not here, so the first
+/// paint said "not running" and the stream put "waiting for that node"
+/// back over it — reported by Jorge with the two rows beside each other,
+/// the local copies right and the remote one wrong.
+///
+/// So `placement_state` renders *this*, and there is nothing left to keep
+/// in step.
+pub(crate) fn replica_cell(
+    replica: &crate::platform::replicas::Replica,
+    // Whether the service is meant to be running at all. Nobody waits for
+    // news about a copy that is not, here or anywhere else.
+    stopped: bool,
+    // Whether an instruction about it is still waiting to be collected,
+    // which is a different thing from silence.
+    queued: bool,
+) -> ReplicaCell {
     if replica.evicted() {
         return ReplicaCell {
             badge: "badge badge-warning",
@@ -897,15 +957,25 @@ fn replica_cell(replica: &crate::platform::replicas::Replica) -> ReplicaCell {
             detail: address.clone(),
         };
     }
-    match replica.is_here() {
-        true => ReplicaCell {
+    if replica.is_here() || stopped {
+        return ReplicaCell {
             badge: "badge",
             dot: "",
             word: "Not running".into(),
             detail: String::new(),
+        };
+    }
+    match queued {
+        // Written and not yet collected, which is most of what makes a
+        // wait feel long.
+        true => ReplicaCell {
+            badge: "badge badge-info",
+            dot: "dot dot-info dot-pulse",
+            word: "Queued for that node".into(),
+            detail: String::new(),
         },
-        // Placed elsewhere and nothing has come back. The node reports
-        // when it collects, so this is the honest word until it does.
+        // Told, and nothing has come back. The node reports when it
+        // collects, so this is the honest word until it does.
         false => ReplicaCell {
             badge: "badge badge-info",
             dot: "dot dot-info dot-pulse",
@@ -1243,13 +1313,26 @@ impl ProjectApi {
                         );
                     }
                 }
-                let payload = serde_json::to_string(&Live {
+                let mut live = Live {
                     services: cells,
                     replicas: replica_cells(&state, &project).await,
                     names: name_cells(&state, &project).await,
                     edges: edge_cells(&state, &project).await,
-                })
-                .unwrap_or_else(|_| "{}".into());
+                };
+                // Into the reader's language, after the reads and before
+                // the write — the same shape a view uses, and for the same
+                // reason: the scope is a thread-local around a stretch with
+                // no `await` in it.
+                //
+                // Without this the badge a page rendered in Spanish turned
+                // back to English two seconds later, which is the same
+                // "decided in two places" failure as the words themselves,
+                // one layer down.
+                super::language::scoped(account.language, || {
+                    live.translate();
+                    String::new()
+                });
+                let payload = serde_json::to_string(&live).unwrap_or_else(|_| "{}".into());
                 yield Ok::<_, std::convert::Infallible>(
                     wabot::rest::axum::body::Bytes::from(format!("data: {payload}\n\n")),
                 );

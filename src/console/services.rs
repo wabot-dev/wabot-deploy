@@ -1392,55 +1392,36 @@ fn served_by_form<'a>(
     }
 }
 
-/// What a replica is doing, in the words its own node reported.
+/// What a replica is doing, rendered from the one decision.
 ///
-/// A copy with no address is **three** different things, and the page used
-/// to give one word to all of them: stopped, still waiting to be told, or
-/// told and not yet reporting. Jorge stopped a database and its remote copy
-/// said "waiting for that node" — nobody was waiting for anything; that
-/// node had said what it had done and the page had no word for it.
-///
-/// So the service's intent and the errand queue both reach here, and the
-/// only case left for "waiting" is the one it was written for: the
-/// instruction is gone and the answer has not come back.
+/// The words and the classes come from `projects::replica_cell`, which the
+/// stream sends as data — so the first paint and every update after it
+/// cannot disagree. They did: a stopped service's remote copy read "not
+/// running" on load and "waiting for that node" two seconds later, because
+/// the decision had been made twice and only one copy was corrected.
 fn placement_state<'a>(
     replica: &'a crate::platform::replicas::Replica,
     stopped: bool,
     queued: bool,
 ) -> impl Renderable + 'a {
+    let cell = super::projects::replica_cell(replica, stopped, queued);
     rsx! {
-        @if replica.evicted() {
-            <span class="badge badge-warning">(t("Evicted there"))</span>
-        } @else if let Some(failure) = &replica.last_error {
-            <span class="badge badge-danger">
-                <span class="dot dot-danger"></span>(t("Failed"))
-            </span>
-            <p class="failure">(failure)</p>
-        } @else if let Some(address) = &replica.address {
-            <span class="badge badge-success">
-                <span class="dot dot-success"></span>(t("Running"))
-            </span>
-            <span class="tile-detail">(" ")(address)</span>
-        } @else if replica.is_here() || stopped {
-            // Nobody is waiting for news about a copy that is not meant to
-            // be running — here or anywhere else. The word is the same one
-            // the copies on this machine get, because the state is.
-            <span class="badge">(t("Not running"))</span>
-        } @else if queued {
-            // The instruction is written and that node has not asked for
-            // it yet. Which is a different thing from silence, and the
-            // difference is most of what makes a wait feel long.
-            <span class="badge badge-info">
-                <span class="dot dot-info dot-pulse"></span>(t("Queued for that node"))
-            </span>
+        @if cell.dot.is_empty() {
+            <span class=(cell.badge)>(super::language::word(&cell.word))</span>
         } @else {
-            // Told, and nothing has come back about it. The node reports
-            // when it collects, so this is the honest word until it does —
-            // not "failed", which would be this page inventing an outcome
-            // nobody reported.
-            <span class="badge badge-info">
-                <span class="dot dot-info dot-pulse"></span>(t("Waiting for that node"))
+            <span class=(cell.badge)>
+                <span class=(cell.dot)></span>(super::language::word(&cell.word))
             </span>
+        }
+        // The line under it: an address while it is up, a reason while it
+        // is not. `failure` is the class the stream writes a reason into,
+        // and it is what the page has always used for one.
+        @if !cell.detail.is_empty() {
+            @if cell.badge.contains("danger") {
+                <p class="failure">(&cell.detail)</p>
+            } @else {
+                <span class="tile-detail">(" ")(&cell.detail)</span>
+            }
         }
     }
 }
@@ -3001,6 +2982,10 @@ mod tests {
             reserved_host: None,
         };
 
+        // Through the renderer, which reads the one decision the stream
+        // also sends — that pairing is what broke: this word was corrected
+        // in the renderer and not in the decision, so the page said one
+        // thing on load and the other two seconds later.
         let stopped = placement_state(&replica, true, false).render().into_inner();
         assert!(stopped.contains("Not running"), "{stopped}");
         assert!(
@@ -3019,6 +3004,42 @@ mod tests {
             .render()
             .into_inner();
         assert!(waiting.contains("Waiting for that node"), "{waiting}");
+    }
+
+    /// The first paint and the stream say the same thing, because they read
+    /// the same decision.
+    ///
+    /// They did not: the word for a stopped copy elsewhere was corrected in
+    /// the renderer and not in the cell the stream sends, so the row read
+    /// "not running" on load and "waiting for that node" two seconds later.
+    /// The comment above `replica_cell` had named that exact failure as the
+    /// reason the two were kept together, which is not the same as making
+    /// them one.
+    #[test]
+    fn what_the_page_paints_is_what_the_stream_sends() {
+        let replica = crate::platform::replicas::Replica {
+            id: "rp-1".into(),
+            service_id: "svc-1".into(),
+            node_id: Some("nd-far".into()),
+            slot: 3,
+            address: None,
+            overlay_port: Some(30001),
+            last_error: None,
+            evicted_at: None,
+            reserved_host: None,
+        };
+
+        for (stopped, queued) in [(true, false), (false, true), (false, false)] {
+            let painted = placement_state(&replica, stopped, queued)
+                .render()
+                .into_inner();
+            let streamed = super::super::projects::replica_cell(&replica, stopped, queued);
+            assert!(
+                painted.contains(&streamed.word),
+                "the paint says something the stream does not: {painted} vs {}",
+                streamed.word
+            );
+        }
     }
 
     /// A project and a service to place, made the way the console does.
