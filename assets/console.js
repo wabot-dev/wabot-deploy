@@ -90,6 +90,67 @@
     };
   });
 
+  // ---- copying a connection string --------------------------------------
+  //
+  // The button is **not** in the markup: the server renders none, and this
+  // puts one on each block it can copy. With scripting off there is no
+  // button, which is the honest state — the string is selectable text
+  // either way, and a button that cannot copy is a control that lies.
+  //
+  // An island rather than a listener at load, like everything else here: a
+  // boosted navigation swaps the view and a listener attached once belongs
+  // to markup that is gone.
+
+  wabot.island('copy', function (host) {
+    var made = [];
+    host.querySelectorAll('[data-copy]').forEach(function (block) {
+      var button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'btn btn-secondary btn-sm dsn-copy';
+      button.textContent = block.dataset.copyLabel || 'Copy';
+      button.addEventListener('click', function () {
+        var text = block.textContent;
+        var said = function () {
+          var was = button.textContent;
+          button.textContent = block.dataset.copiedLabel || 'Copied';
+          window.setTimeout(function () {
+            button.textContent = was;
+          }, 1200);
+        };
+        // The modern one needs a secure context, which a node reached by
+        // IP on a self-signed certificate is not. So the fallback is not
+        // legacy: it is the path this console is most often on.
+        if (navigator.clipboard && window.isSecureContext) {
+          navigator.clipboard.writeText(text).then(said, function () {
+            select(block);
+          });
+          return;
+        }
+        select(block);
+        said();
+      });
+      block.parentNode.appendChild(button);
+      made.push(button);
+    });
+
+    return function () {
+      made.forEach(function (button) {
+        if (button.parentNode) button.parentNode.removeChild(button);
+      });
+    };
+  });
+
+  // Everything short of the clipboard: the string is selected, so one
+  // keystroke finishes what the button started.
+  var select = function (block) {
+    var range = document.createRange();
+    range.selectNodeContents(block);
+    var selection = window.getSelection();
+    if (!selection) return;
+    selection.removeAllRanges();
+    selection.addRange(range);
+  };
+
   // ---- a project's service states ---------------------------------------
   //
   // Every badge in the table, replaced in place. Without this the row

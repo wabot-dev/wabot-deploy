@@ -310,10 +310,6 @@ impl ServicePages {
             }
             false => Vec::new(),
         };
-        let service_slug_for_names = service.slug.clone();
-        let placed_elsewhere = placements
-            .iter()
-            .any(|replica| !replica.is_here() && !replica.evicted());
 
         let serving = crate::platform::edges::of_service(&self.state.database, &service.id).await?;
         let deploying = crate::deploy::jobs::deploying(&self.state.container)
@@ -427,7 +423,6 @@ impl ServicePages {
                         service.memory_limit,
                         &names,
                     ))
-                    (super::databases::names_card(&service_slug_for_names, &names, placed_elsewhere))
                 }
 
                 @if service.is_ours() {

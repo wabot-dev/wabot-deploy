@@ -352,6 +352,54 @@ wabot-outlet {
    falsey value hides the element just as thoroughly. */
 .is-hidden { display: none !important; }
 
+/* A connection string, in one piece.
+ *
+ * It was a paragraph, so the browser broke it wherever it liked — and a
+ * connection string with a line break in it is one nobody can use. This
+ * scrolls sideways instead: the string stays whole, and the card keeps its
+ * width whatever the domain's length.
+ *
+ * Four of them are rendered and one is shown, chosen by the radios above
+ * with no script involved. That is the point: the console works with
+ * scripting off, and the alternative to holding all four is a round trip
+ * to move a radio button. `:has()` reads the state of a sibling input,
+ * which is the whole mechanism.
+ */
+.dsn-value {
+  display: none;
+  margin: 0;
+  padding: var(--sp-3) var(--sp-4);
+  background: rgb(var(--c-bg-sunken));
+  border-radius: var(--r-md);
+  font-family: var(--font-mono);
+  font-size: 0.82rem;
+  line-height: 1.5;
+  color: rgb(var(--c-fg-body));
+  white-space: pre;
+  overflow-x: auto;
+}
+.dsn:has(#dsn-primary:checked):has(#dsn-short:not(:checked)) [data-dsn="primary-full"],
+.dsn:has(#dsn-pool:checked):has(#dsn-short:not(:checked)) [data-dsn="pool-full"],
+.dsn:has(#dsn-primary:checked):has(#dsn-short:checked) [data-dsn="primary-short"],
+.dsn:has(#dsn-pool:checked):has(#dsn-short:checked) [data-dsn="pool-short"] {
+  display: block;
+}
+.dsn-pick { flex-wrap: wrap; gap: var(--sp-4); align-items: center; }
+.dsn-values { position: relative; }
+
+/* Revealed by the `copy` island, never rendered visible.
+ *
+ * A button that cannot copy is a control that lies, and with scripting off
+ * that is exactly what it would be — the text is selectable either way. So
+ * the server renders it hidden and the island shows it, which is the same
+ * shape `fields` uses for a constraint the server already imposes.
+ */
+.dsn-copy {
+  position: absolute;
+  top: var(--sp-2);
+  right: var(--sp-2);
+}
+
 /* Release notes. Written by somebody else, arriving as Markdown, and
    rendered here as ordinary prose — narrow enough to read, with the
    bullets and code the notes actually use. */

@@ -246,32 +246,11 @@ pub fn database_card<'a>(
     address: Option<String>,
     memory_limit: Option<u64>,
     // Every name it answers to, from `deploy::certificate_names` — the same
-    // list the certificate is built from, so this page cannot name
-    // something the certificate does not cover.
+    // list the certificate is built from, so this page cannot offer a string
+    // naming something the certificate does not cover.
     names: &'a [String],
 ) -> impl Renderable + 'a {
-    // By name, not by address.
-    //
-    // The address is this copy's on the project's bridge: right on this
-    // machine, meaningless on any other, and impossible to verify, because
-    // a certificate holds names. The qualified name is the same string on a
-    // laptop, in a container beside it, and on another node holding a copy.
-    //
-    // With `verify-full` and the authority, because both are true now: the
-    // certificate covers every name below, and the node places its CA in
-    // every container it starts.
-    let url = names.first().map(|name| {
-        format!(
-            "{}?sslmode=verify-full&sslrootcert=/etc/wabot/ca.crt",
-            postgres::connection_url(
-                &row.admin_user,
-                &row.admin_password,
-                name,
-                postgres::PORT,
-                &row.database_name,
-            )
-        )
-    });
+    let strings = Strings::of(row, names);
     let copies = replicas.len();
     let standbys = replicas
         .iter()
@@ -300,21 +279,8 @@ pub fn database_card<'a>(
                 <dt>(t("Copies"))</dt>
                 <dd>(format!("{copies} ({standbys} read-only)"))</dd>
             </dl>
-            @if let Some(url) = &url {
-                <details>
-                    <summary>(t("Connection string"))</summary>
-                    <p class="mono">(url)</p>
-                    <p class="field-hint">(t("For any container in this project, on any node \
-                         holding a copy. It names the database rather than an address, so it \
-                         survives a redeployment and reads the same everywhere."))</p>
-                    @if let Some(address) = &address {
-                        <p class="field-hint">
-                            (t("This copy is on the project's bridge at "))(address)
-                            (t(" — reserved for it, and not something a certificate can \
-                                 vouch for."))
-                        </p>
-                    }
-                </details>
+            @if let Some(strings) = &strings {
+                (connection_block(strings, address.as_deref()))
             } @else {
                 <p class="tile-detail">(t("It has no address yet. A connection string appears once \
                      it has been deployed."))</p>
@@ -323,79 +289,167 @@ pub fn database_card<'a>(
     }
 }
 
-/// Every name this database answers to, and what each one reaches.
+/// The four strings this database can be reached by, all four rendered.
 ///
-/// **Because none of it was anywhere.** The page showed a connection string
-/// built from a bridge address and named nothing, so the questions it left
-/// were the ones Jorge asked: where is a database's domain set, which edge
-/// serves it, what are its hostnames. Two of those have answers that are
-/// "nowhere, deliberately" — and a page that omits them reads as a page
-/// missing a feature rather than a design saying no.
-pub fn names_card<'a>(
-    service_slug: &'a str,
-    names: &'a [String],
-    // Whether a copy runs on another node: the pool is only worth
-    // explaining as spread when there is something to spread over.
-    elsewhere: bool,
-) -> impl Renderable + 'a {
-    let pool = format!("{service_slug}{}", crate::deploy::hosts::READ_ONLY);
-    let (writable, readable): (Vec<&String>, Vec<&String>) =
-        names.iter().partition(|name| !name.starts_with(&pool));
+/// ## Why all four, and why the choosing is CSS
+///
+/// The page must work with scripting off, so the alternative to rendering
+/// every string is a round trip to change a radio button. They are four
+/// short lines: the markup holds them all and `:has()` shows the chosen
+/// one. Nothing is fetched, nothing is built in the browser, and with no
+/// JavaScript at all the first one is showing because its radio is checked.
+struct Strings {
+    /// `orders.db-test.<domain>` — unique across the network, and the only
+    /// form a certificate authority could ever sign.
+    primary_full: Option<String>,
+    pool_full: Option<String>,
+    /// `orders.db-test` — what a container in this project resolves. Shorter
+    /// to read and meaningless anywhere else, which is the trade.
+    primary_short: String,
+    pool_short: String,
+}
 
-    rsx! {
-        <section class="card stack">
-            <p class="card-label">(t("Names"))</p>
-            <p class="field-hint">(t("A database is reached by name, from inside the project. \
-                 The node writes these into every container it starts, so nothing in an \
-                 image has to be configured."))</p>
+impl Strings {
+    /// Built from the certificate's own name list, so every string offered
+    /// is one `verify-full` will accept.
+    ///
+    /// `None` when the database has no name at all, which is a database that
+    /// has never been deployed.
+    fn of(row: &Database, names: &[String]) -> Option<Self> {
+        let dsn = |host: &str| {
+            format!(
+                "{}?sslmode=verify-full&sslrootcert=/etc/wabot/ca.crt",
+                postgres::connection_url(
+                    &row.admin_user,
+                    &row.admin_password,
+                    host,
+                    postgres::PORT,
+                    &row.database_name,
+                )
+            )
+        };
+        // Longest first is how `certificate_names` orders them: the
+        // qualified name, then the bare slug, then slug and project. So the
+        // qualified pair is whatever holds a dot past the project, and the
+        // short pair is the two-part one — chosen by shape rather than by
+        // rebuilding the names here, which would be a second opinion about
+        // what this database is called.
+        let pool_mark = crate::deploy::hosts::READ_ONLY;
+        let is_pool = |name: &&String| {
+            name.split('.')
+                .next()
+                .is_some_and(|first| first.ends_with(pool_mark))
+        };
+        let parts = |name: &&String| name.split('.').count();
 
-            <table>
-                <thead>
-                    <tr><th>(t("Name"))</th><th>(t("Reaches"))</th></tr>
-                </thead>
-                <tbody>
-                    @for name in &writable {
-                        <tr>
-                            <td class="mono">(name)</td>
-                            <td>(t("The primary — reads and writes"))</td>
-                        </tr>
-                    }
-                    @for name in &readable {
-                        <tr>
-                            <td class="mono">(name)</td>
-                            <td>(t("The read pool — refuses writes"))</td>
-                        </tr>
-                    }
-                </tbody>
-            </table>
+        let primary_short = names
+            .iter()
+            .filter(|name| !is_pool(name) && parts(name) == 2)
+            .min_by_key(|name| name.len())?
+            .clone();
+        let pool_short = names
+            .iter()
+            .filter(|name| is_pool(name) && parts(name) == 2)
+            .min_by_key(|name| name.len())?
+            .clone();
 
-            @if elsewhere {
-                <p class="field-hint">(t("The pool holds every read-only copy, and each \
-                     container is given them in its own order — so ten applications do not \
-                     all put the same copy first. That is spread rather than balance: one \
-                     client keeps using the copy it picked."))</p>
-            } @else {
-                <p class="field-hint">(t("The pool falls back to the primary while there is no \
-                     read-only copy, so an application written against it keeps working when \
-                     the last one is taken away."))</p>
-            }
-
-            <dl class="kv">
-                <dt>(t("Certificate"))</dt>
-                <dd>(t("Signed by this node, covering every name above. A container verifies \
-                     it with the authority the node places at /etc/wabot/ca.crt."))</dd>
-                <dt>(t("Its domain"))</dt>
-                <dd>(t("The node's, inherited — set a domain on the node and every database \
-                     it owns is named under it. A copy held on another machine keeps the \
-                     owner's domain, because the name belongs to the database."))</dd>
-                <dt>(t("From outside the node"))</dt>
-                <dd>(t("Nothing, and there is no edge to choose: an edge terminates TLS and \
-                     proxies HTTP, while Postgres speaks its own protocol with TLS inside \
-                     the server. Reaching one from outside is a published port, which is \
-                     not built yet."))</dd>
-            </dl>
-        </section>
+        Some(Self {
+            primary_full: names
+                .iter()
+                .find(|name| !is_pool(name) && parts(name) > 2)
+                .map(|name| dsn(name)),
+            pool_full: names
+                .iter()
+                .find(|name| is_pool(name) && parts(name) > 2)
+                .map(|name| dsn(name)),
+            primary_short: dsn(&primary_short),
+            pool_short: dsn(&pool_short),
+        })
     }
+}
+
+/// One string at a time, chosen without a round trip and without a script.
+///
+/// The string used to be a paragraph, so a browser broke it across lines
+/// wherever it liked — and a connection string with a line break in it is a
+/// connection string nobody can use. It is a `<pre>` that scrolls now.
+///
+/// The copy button is **revealed** by the `copy` island rather than
+/// rendered: with scripting off a button that cannot copy is a control that
+/// lies, and the text is selectable either way.
+/// One string, in a block that does not break it.
+fn value<'a>(which: &'a str, dsn: &'a str, copy: &'a str, copied: &'a str) -> impl Renderable + 'a {
+    rsx! {
+        <pre class="dsn-value" data-dsn=(which) data-copy
+             data-copy-label=(copy) data-copied-label=(copied)>(dsn)</pre>
+    }
+}
+
+fn connection_block<'a>(strings: &'a Strings, address: Option<&'a str>) -> impl Renderable + 'a {
+    // The words the island puts on the button it makes. Passed as data
+    // because the script has no language and the account has one — the same
+    // rule the badge words follow.
+    let (copy, copied) = (t("Copy"), t("Copied"));
+    let inner = rsx! {
+        <details open>
+            <summary>(t("Connection string"))</summary>
+            <div class="dsn stack-sm">
+                <div class="row dsn-pick">
+                    <label class="check">
+                        <input type="radio" name="dsn-target" id="dsn-primary" checked>
+                        (t("Primary — reads and writes"))
+                    </label>
+                    <label class="check">
+                        <input type="radio" name="dsn-target" id="dsn-pool">
+                        (t("Read pool — refuses writes"))
+                    </label>
+                    <label class="check">
+                        <input type="checkbox" id="dsn-short">
+                        (t("Short name"))
+                    </label>
+                </div>
+
+                // Every string, with the words the island puts on the button
+                // it makes: the script has no language and the account has
+                // one, which is the rule the badge words follow too.
+                <div class="dsn-values">
+                    (value("primary-full", strings.primary_full.as_ref()
+                        .unwrap_or(&strings.primary_short), copy, copied))
+                    (value("pool-full", strings.pool_full.as_ref()
+                        .unwrap_or(&strings.pool_short), copy, copied))
+                    (value("primary-short", &strings.primary_short, copy, copied))
+                    (value("pool-short", &strings.pool_short, copy, copied))
+                </div>
+
+                <p class="field-hint">(t("Both names resolve in every container of this project, \
+                     on any node holding a copy. The long one is the same string everywhere and \
+                     the only form a certificate authority could sign; the short one means \
+                     nothing outside this project."))</p>
+                <p class="field-hint">(t("From outside the node, neither resolves — and there is \
+                     no edge to choose: an edge terminates TLS and proxies HTTP, while Postgres \
+                     speaks its own protocol with TLS inside the server. The domain is the \
+                     node's, inherited by every database it owns."))</p>
+                @if let Some(address) = address {
+                    <p class="field-hint">
+                        (t("This copy is on the project's bridge at "))(address)
+                        (t(" — reserved for it, and not something a certificate can vouch \
+                             for."))
+                    </p>
+                }
+            </div>
+        </details>
+    }
+    .render()
+    .into_inner();
+
+    // Rendered first, then wrapped: `rsx!` expands to a closure that
+    // captures by move, and nesting one inside the island's would have both
+    // wanting the same borrows.
+    wabot::ui::hypertext::island(
+        "copy",
+        &serde_json::json!({}),
+        hypertext::Raw::dangerously_create(&inner),
+    )
 }
 
 #[cfg(test)]
@@ -437,18 +491,8 @@ mod tests {
             &service,
         )
         .await;
-        let rendered = names_card(&service.slug, &names, false)
-            .render()
-            .into_inner();
-
-        for name in &names {
-            assert!(
-                rendered.contains(name.as_str()),
-                "the certificate covers {name} and the page does not say so"
-            );
-        }
-        // The qualified one first, which is what the connection string uses:
-        // an address is right on one machine and a name is right everywhere.
+        // The qualified name first, which is how `certificate_names` orders
+        // them and what `Strings::of` reads the four choices out of.
         assert_eq!(
             names.first().map(String::as_str),
             Some("orders.db-test.node.example")
@@ -460,11 +504,27 @@ mod tests {
         let card = database_card(&row, &replicas, Some("10.42.2.200".into()), None, &names)
             .render()
             .into_inner();
-        assert!(
-            card.contains("postgresql://orders:")
-                && card.contains("@orders.db-test.node.example:5432/orders")
-                && card.contains("sslrootcert=/etc/wabot/ca.crt"),
-            "the connection string names the database and can be verified: {card}"
+        // Four strings, all four in the markup, because choosing is CSS: the
+        // page has to work with scripting off, and the alternative to
+        // rendering every one is a round trip to move a radio button.
+        for host in [
+            "@orders.db-test.node.example:5432/orders",
+            "@orders-ro.db-test.node.example:5432/orders",
+            "@orders.db-test:5432/orders",
+            "@orders-ro.db-test:5432/orders",
+        ] {
+            assert!(card.contains(host), "no string for {host}: {card}");
+        }
+        // And every one of them verifies, with the authority the node
+        // places — a string offering `require` would be encryption without
+        // identity, which is what this page used to hand out.
+        // `&` arrives escaped, which is the markup being correct rather
+        // than the string being wrong.
+        assert_eq!(
+            card.matches("sslmode=verify-full&amp;sslrootcert=/etc/wabot/ca.crt")
+                .count(),
+            4,
+            "one per choice: {card}"
         );
     }
 
