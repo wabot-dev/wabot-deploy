@@ -649,6 +649,11 @@ async fn note_reachability(
 /// since, or a replica this node has already moved. Not an error: the
 /// other end is describing its own machine truthfully, and it cannot
 /// know what has been decided here since it was told.
+///
+/// And `false` when the report says what the row already said, which is
+/// almost every report. The caller reads `true` as "something moved" and
+/// rebuilds derived state from it, so the answer has to be about the
+/// change rather than about the write having succeeded.
 async fn record(
     database: &SqliteDatabase,
     node: &str,
@@ -682,6 +687,32 @@ async fn record(
     let Some(replica) = replica.filter(|replica| replica.node_id.as_deref() == Some(node)) else {
         return Ok(false);
     };
+
+    // Whether this report says anything the row does not already.
+    //
+    // The writes below are idempotent, so doing them again was harmless
+    // and the *answer* was not: `true` means "something moved", and what
+    // the caller does with it is rebuild the route table, rewrite every
+    // local container's `/etc/hosts` and wake the certificate loop. A
+    // node reports every fifteen seconds and almost always repeats
+    // itself, so an unchanged report was that work for ever, on a node
+    // where nothing had happened — measured on the Ubuntu test node,
+    // where it also kept the certificate loop from ever reaching its
+    // twelve-hour wait and buried the journal.
+    let changed = match state.evicted {
+        // Recorded once. `evict` already refuses a row that carries the
+        // timestamp, and a node goes on reporting a copy it evicted for
+        // as long as the row is there.
+        true => replica.evicted_at.is_none(),
+        false => {
+            replica.address.as_deref() != state.address.as_deref()
+                || replica.overlay_port != state.overlay_port
+                || replica.last_error.as_deref() != state.error.as_deref()
+        }
+    };
+    if !changed {
+        return Ok(false);
+    }
 
     let write = async {
         if state.evicted {
@@ -1240,6 +1271,96 @@ mod tests {
             .expect("there");
         assert!(!after.evicted(), "a stale report evicted a local replica");
         assert!(after.is_here());
+    }
+
+    /// A node reports every fifteen seconds and almost always says what
+    /// it said last time. The answer is read as "something moved", and
+    /// what the caller does with it is rebuild the route table, rewrite
+    /// every local container's `/etc/hosts` and wake the certificate
+    /// loop — so saying it to an unchanged report is that work for ever
+    /// on a node where nothing is happening.
+    ///
+    /// This shipped: on the Ubuntu test node the routes were rebuilt
+    /// every fifteen seconds for as long as both nodes were up, which
+    /// also reset the certificate loop's backoff before it could ever
+    /// reach its twelve-hour wait.
+    #[tokio::test]
+    async fn a_node_saying_the_same_thing_twice_is_not_a_change() {
+        let authority = authority().await;
+        authority
+            .harness
+            .post("/api/network/join")
+            .header("authorization", format!("Bearer {}", authority.secret))
+            .json(&arriving())
+            .send()
+            .await
+            .assert_ok();
+        placed_there(&authority, 2).await;
+
+        let reported = |address: &str| ReplicaState {
+            project: "shared".into(),
+            service: "web".into(),
+            slot: 2,
+            address: Some(address.to_string()),
+            overlay_port: Some(30001),
+            error: None,
+            evicted: false,
+        };
+
+        let first = record(&authority.database, "nd-joining001", &reported("10.42.2.5"))
+            .await
+            .expect("recorded");
+        assert!(first, "the first report of an address is news");
+
+        let again = record(&authority.database, "nd-joining001", &reported("10.42.2.5"))
+            .await
+            .expect("recorded");
+        assert!(!again, "the same report again is not");
+
+        let moved = record(&authority.database, "nd-joining001", &reported("10.42.2.9"))
+            .await
+            .expect("recorded");
+        assert!(moved, "an address that changed is news again");
+    }
+
+    /// An eviction is recorded once, for the same reason: the node that
+    /// evicted a copy goes on saying so on every report while the row is
+    /// still there.
+    #[tokio::test]
+    async fn an_eviction_already_recorded_is_not_news_again() {
+        let authority = authority().await;
+        authority
+            .harness
+            .post("/api/network/join")
+            .header("authorization", format!("Bearer {}", authority.secret))
+            .json(&arriving())
+            .send()
+            .await
+            .assert_ok();
+        placed_there(&authority, 2).await;
+
+        let evicted = ReplicaState {
+            project: "shared".into(),
+            service: "web".into(),
+            slot: 2,
+            address: None,
+            overlay_port: None,
+            error: None,
+            evicted: true,
+        };
+
+        assert!(
+            record(&authority.database, "nd-joining001", &evicted)
+                .await
+                .expect("recorded"),
+            "an eviction has to reach the node that placed it"
+        );
+        assert!(
+            !record(&authority.database, "nd-joining001", &evicted)
+                .await
+                .expect("recorded"),
+            "the same eviction on the next report is not a change"
+        );
     }
 
     /// A service with a replica placed on the joined node, and its id.
