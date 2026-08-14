@@ -311,51 +311,21 @@ impl ServicePages {
             false => Vec::new(),
         };
 
-        // What signs this database's certificate, read for the name the
-        // certificate is stored under — the first of the list, which is the
-        // qualified one. A database always has a certificate, so unlike a
-        // service there is no "none" to render.
-        let (database_policy, database_cells) = match names.first() {
-            Some(name) => {
-                let facts = super::certificate_facts_for(&self.state, name).await;
-                let state = super::nodes::CertificateState::read(
-                    &facts,
-                    Some(name),
-                    // The name's own failure, not the node's: the node
-                    // records one reason for everything, and attributing
-                    // it here would be the console guessing.
-                    crate::edge::policy::for_name(&self.state.database, &self.state.config, name)
-                        .await
-                        .last_error,
-                    self.state.certificates.phase(),
-                    self.state.config.acme.disabled,
-                );
-                (
-                    Some(
-                        crate::edge::policy::for_name(
-                            &self.state.database,
-                            &self.state.config,
-                            name,
-                        )
-                        .await,
-                    ),
-                    Some(super::nodes::certificate_cells(&state, &facts, Some(name))),
-                )
-            }
-            None => (None, None),
+        // Whether this node signs the certificate, which is the one thing
+        // the connection string needs from that decision: with a public
+        // authority it carries no `sslrootcert`, because the client's own
+        // trust store is what checks it. The rest of the certificate — its
+        // state, and where it comes from — is a decision, so it lives in
+        // settings with the name and the port.
+        let signs_here = match names.first() {
+            Some(name) => matches!(
+                crate::edge::policy::for_name(&self.state.database, &self.state.config, name)
+                    .await
+                    .renew_with,
+                crate::edge::policy::RenewWith::SelfSigned
+            ),
+            None => false,
         };
-        let certificate_action = format!(
-            "/projects/{}/services/{}/database/certificate",
-            project.slug, service.slug
-        );
-        let name_action = format!(
-            "/projects/{}/services/{}/database/name",
-            project.slug, service.slug
-        );
-        let publish_action = format!(
-            "/projects/{}/services/{}/database/publish",
-            project.slug, service.slug
-        );
 
         let serving = crate::platform::edges::of_service(&self.state.database, &service.id).await?;
         let deploying = crate::deploy::jobs::deploying(&self.state.container)
@@ -468,31 +438,9 @@ impl ServicePages {
                         reserved_address.clone(),
                         service.memory_limit,
                         &names,
-                        database_policy
-                            .as_ref()
-                            .is_some_and(|policy| matches!(
-                                policy.renew_with,
-                                crate::edge::policy::RenewWith::SelfSigned
-                            )),
+                        signs_here,
                         ports.first().and_then(|port| port.host_port),
                     ))
-                    @if let Some(name) = names.first() {
-                        (super::databases::name_card(
-                            &name_action,
-                            name,
-                            &crate::deploy::hosts::pool_name(name),
-                        ))
-                    }
-                    @if let (Some(policy), Some(cells)) = (&database_policy, &database_cells) {
-                        (super::databases::certificate_card(&certificate_action, policy, cells))
-                    }
-                    @if let Some(name) = names.first() {
-                        (super::databases::published_card(
-                            &publish_action,
-                            ports.first().and_then(|port| port.host_port),
-                            name,
-                        ))
-                    }
                 }
 
                 @if service.is_ours() {
@@ -891,6 +839,50 @@ impl ServicePages {
 
         let ports = ports::of_service(&self.state.database, &service.id).await?;
         let history = config_history::of_service(&self.state.database, &service.id).await?;
+
+        // What a managed database is configured with. Here rather than on
+        // the service's own page because that is the split this console
+        // already draws — the page you open to see what something is doing
+        // should not be four forms deep — and because a service's
+        // certificate source has always lived on this page. They were on
+        // the detail page only because that is where I was working.
+        let names = match service.kind.is_managed() {
+            true => {
+                crate::deploy::certificate_names(
+                    &self.state.database,
+                    &self.state.config,
+                    &project,
+                    &service,
+                )
+                .await
+            }
+            false => Vec::new(),
+        };
+        let (database_policy, database_cells) = match names.first() {
+            Some(name) => {
+                let facts = super::certificate_facts_for(&self.state, name).await;
+                let policy =
+                    crate::edge::policy::for_name(&self.state.database, &self.state.config, name)
+                        .await;
+                let state = super::nodes::CertificateState::read(
+                    &facts,
+                    Some(name),
+                    policy.last_error.clone(),
+                    self.state.certificates.phase(),
+                    self.state.config.acme.disabled,
+                );
+                (
+                    Some(policy),
+                    Some(super::nodes::certificate_cells(&state, &facts, Some(name))),
+                )
+            }
+            None => (None, None),
+        };
+        let database_actions = (
+            format!("{here}/database/name"),
+            format!("{here}/database/certificate"),
+            format!("{here}/database/publish"),
+        );
         let env_text: String = service
             .env
             .iter()
@@ -984,6 +976,24 @@ impl ServicePages {
                 // one whose value the next deployment overwrites. What
                 // is left to choose is the size.
                 @if service.kind.is_managed() {
+                    @if let Some(name) = names.first() {
+                        (super::databases::name_card(
+                            &database_actions.0,
+                            name,
+                            &crate::deploy::hosts::pool_name(name),
+                        ))
+                    }
+                    @if let (Some(policy), Some(cells)) = (&database_policy, &database_cells) {
+                        (super::databases::certificate_card(&database_actions.1, policy, cells))
+                    }
+                    @if let Some(name) = names.first() {
+                        (super::databases::published_card(
+                            &database_actions.2,
+                            ports.first().and_then(|port| port.host_port),
+                            name,
+                        ))
+                    }
+
                     <section class="stack">
                         <p class="card-label">(t("Memory"))</p>
                         <form method="post" action=(format!("{here}/memory")) class="card stack">
