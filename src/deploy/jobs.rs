@@ -165,7 +165,12 @@ impl DeployHandler {
                 //
                 // A no-op on a node that takes instructions from nobody,
                 // which is every single-node install.
-                crate::network::collect::report_now(&self.database, &self.container).await;
+                crate::network::collect::report_now(
+                    &self.database,
+                    self.deployer.config(),
+                    &self.container,
+                )
+                .await;
                 outcome
             }
             Some(id) => {

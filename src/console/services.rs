@@ -314,6 +314,23 @@ impl ServicePages {
         // cgroups, for the table below — a copy elsewhere is measured by
         // the node running it, and this map simply has no entry for it.
         let used = self.state.deployer.memory().await.containers;
+        // And what each copy here holds. One walk per copy, on a page
+        // somebody opened — the alternative is a figure that is only ever
+        // as fresh as the last report, which for a volume on this very
+        // machine would be strange.
+        let disk: std::collections::BTreeMap<String, Option<u64>> = placements
+            .iter()
+            .filter(|replica| replica.is_here() && !replica.evicted())
+            .map(|replica| {
+                (
+                    replica.id.clone(),
+                    crate::platform::volumes::used_by(
+                        &self.state.config.node.data_dir,
+                        &replica.container_id(&project.slug, &service.slug),
+                    ),
+                )
+            })
+            .collect();
 
         let serving = crate::platform::edges::of_service(&self.state.database, &service.id).await?;
         let deploying = crate::deploy::jobs::deploying(&self.state.container)
@@ -437,9 +454,12 @@ impl ServicePages {
                         &nodes,
                         &queued,
                         service.desired_state == services::DesiredState::Stopped,
-                        &project.slug,
-                        &service.slug,
-                        &used,
+                        &Running {
+                            project_slug: &project.slug,
+                            service_slug: &service.slug,
+                            used: &used,
+                            disk: &disk,
+                        },
                     ))
                 } @else {
                     (from_elsewhere_card(
@@ -1397,9 +1417,11 @@ fn running_card<'a>(
     nodes: &'a [crate::network::Node],
     queued: &'a [String],
     stopped: bool,
-    project_slug: &'a str,
-    service_slug: &'a str,
-    used: &'a std::collections::BTreeMap<String, u64>,
+    // The ids this table is about, and what each copy here is using. One
+    // struct because they travel together and seven bare arguments is a
+    // call nobody can read — which the linter says with a number and the
+    // next reader would say with a sigh.
+    at: &'a Running<'a>,
 ) -> impl Renderable + 'a {
     let live: Vec<&crate::platform::replicas::Replica> =
         placements.iter().filter(|r| !r.evicted()).collect();
@@ -1409,7 +1431,8 @@ fn running_card<'a>(
     let here: u64 = live
         .iter()
         .filter_map(|replica| {
-            used.get(&replica.container_id(project_slug, service_slug))
+            at.used
+                .get(&replica.container_id(at.project_slug, at.service_slug))
                 .copied()
         })
         .sum();
@@ -1434,6 +1457,7 @@ fn running_card<'a>(
                             <th>(t("Node"))</th>
                             <th>(t("State"))</th>
                             <th>(t("Memory"))</th>
+                            <th>(t("Disk"))</th>
                         </tr>
                     </thead>
                     <tbody>
@@ -1458,9 +1482,22 @@ fn running_card<'a>(
                                 // database using no memory is not a
                                 // reading anybody should believe.
                                 <td class="mono">(
-                                    used.get(&replica.container_id(project_slug, service_slug))
+                                    at.used.get(&replica.container_id(at.project_slug, at.service_slug))
                                         .copied()
                                         .or(replica.memory_bytes)
+                                        .map(crate::node::memory::human)
+                                        .unwrap_or_else(|| "—".into())
+                                )</td>
+                                // What its volume holds. The figure that
+                                // matters most for a database and the one
+                                // nothing else watches: a memory ceiling
+                                // is a decision somebody made, and a
+                                // volume grows until the machine is full.
+                                <td class="mono">(
+                                    at.disk.get(&replica.id)
+                                        .copied()
+                                        .flatten()
+                                        .or(replica.disk_bytes)
                                         .map(crate::node::memory::human)
                                         .unwrap_or_else(|| "—".into())
                                 )</td>
@@ -1471,6 +1508,18 @@ fn running_card<'a>(
             </div>
         </section>
     }
+}
+
+/// Where this table is, and what it measured there.
+///
+/// Memory comes from the cgroups of the copies on this machine; disk from
+/// walking their volumes. A copy elsewhere is in neither map and falls back
+/// to what its own node last reported.
+struct Running<'a> {
+    project_slug: &'a str,
+    service_slug: &'a str,
+    used: &'a std::collections::BTreeMap<String, u64>,
+    disk: &'a std::collections::BTreeMap<String, Option<u64>>,
 }
 
 /// What a replica's node is called, for a table that reads rather than
@@ -3274,6 +3323,7 @@ mod tests {
             evicted_at: None,
             reserved_host: None,
             memory_bytes: None,
+            disk_bytes: None,
         };
 
         // Through the renderer, which reads the one decision the stream
@@ -3322,6 +3372,7 @@ mod tests {
             evicted_at: None,
             reserved_host: None,
             memory_bytes: None,
+            disk_bytes: None,
         };
 
         for (stopped, queued) in [(true, false), (false, true), (false, false)] {

@@ -1,0 +1,19 @@
+-- What a copy elsewhere is holding on its own disk.
+--
+-- The companion to `memory_bytes`, and the more important of the two for
+-- a database: memory is a ceiling the operator chose and the engine
+-- respects, while a volume grows until the machine is full and nothing
+-- warns anybody. A node cannot read another's disk, so — like the
+-- address, the failure and the memory figure — it travels on the report.
+--
+-- ## Also a measurement, so also not news
+--
+-- Same rule as `memory_bytes`, and it matters for the same reason: a
+-- figure that differs on every reading must not make `api::record` answer
+-- "something moved", because the caller rebuilds the route table and
+-- rewrites every container's /etc/hosts when it does. See migration
+-- `0034`.
+--
+-- Null is a copy nobody has reported on, and every copy on a node that
+-- has not upgraded. The page says nothing rather than zero.
+ALTER TABLE replica ADD COLUMN disk_bytes INTEGER;

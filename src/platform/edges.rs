@@ -251,6 +251,7 @@ mod tests {
             evicted_at: None,
             reserved_host: None,
             memory_bytes: None,
+            disk_bytes: None,
         }
     }
 

@@ -130,6 +130,12 @@ impl Deployer {
         }
     }
 
+    /// What this node is configured with — the data directory, mainly, for
+    /// a caller that has the deployer and no config of its own.
+    pub fn config(&self) -> &crate::config::Config {
+        &self.config
+    }
+
     /// Hand the deployer the table the edge is serving from, so a
     /// deployment takes effect without a restart.
     pub fn with_routes(mut self, routes: Arc<crate::edge::routes::RouteTable>) -> Self {

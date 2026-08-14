@@ -359,6 +359,10 @@ impl NodePages {
         }
 
         let snapshot = self.state.deployer.memory().await;
+        // One call, and about the directory the node writes into rather
+        // than about `/`: they are usually the same filesystem and the day
+        // they are not is the day this matters.
+        let filesystem = crate::node::disk::filesystem(&self.state.config.node.data_dir);
         let facts = super::certificate_facts(&self.state).await;
         let policy = crate::edge::policy::for_name(
             &self.state.database,
@@ -397,28 +401,31 @@ impl NodePages {
         // the strings are read here, and nothing awaits inside.
         let body = super::language::scoped(account.language, || {
             rsx! {
-                (layout::style_tag())
-                <div class="split">
-                    <div class="stack-sm">
-                        <h1>(&node.name)</h1>
-                        <p class="slug-preview">("wabot-deploy ")(crate::api::VERSION)</p>
+                    (layout::style_tag())
+                    <div class="split">
+                        <div class="stack-sm">
+                            <h1>(&node.name)</h1>
+                            <p class="slug-preview">("wabot-deploy ")(crate::api::VERSION)</p>
+                        </div>
+                        <a class="btn btn-ghost" href="/nodes">(t("All nodes"))</a>
                     </div>
-                    <a class="btn btn-ghost" href="/nodes">(t("All nodes"))</a>
-                </div>
 
-                // One island around both cards: the stream replaces
-                // figures in each, and the runtime tears it down when
-                // this host leaves the DOM. It used to be an inline
-                // `<script>`, which a boosted navigation never runs —
-                // arriving here by clicking a link left the page a
-                // snapshot with no sign that it was one.
-                (live_cards(&node.id, &cells, &state, &policy, domain.as_deref(), &query, &snapshot))
+                    // One island around both cards: the stream replaces
+                    // figures in each, and the runtime tears it down when
+                    // this host leaves the DOM. It used to be an inline
+                    // `<script>`, which a boosted navigation never runs —
+                    // arriving here by clicking a link left the page a
+                    // snapshot with no sign that it was one.
+                    (live_cards(
+                        &node.id, &filesystem, &cells, &state, &policy,
+                        domain.as_deref(), &query, &snapshot,
+                    ))
 
-                // Outside the island: none of it streams, and a card
-                // inside the host would be replaced by an update that
-                // has nothing to say about it.
-                (network_card(&node))
-        }
+                    // Outside the island: none of it streams, and a card
+                    // inside the host would be replaced by an update that
+                    // has nothing to say about it.
+                    (network_card(&node))
+            }
             .render()
             .into_inner()
         });
@@ -1411,7 +1418,13 @@ const SOURCES: &[(&str, &str)] = &[
     ("file", "Read from files on this node"),
 ];
 
-fn memory_card(snapshot: &Snapshot) -> impl Renderable + '_ {
+fn memory_card<'a>(
+    snapshot: &'a Snapshot,
+    // Where the node keeps its data, which is the filesystem that matters:
+    // a machine with room on `/` and none where the volumes are is a
+    // machine that cannot write.
+    filesystem: &'a crate::node::disk::Filesystem,
+) -> impl Renderable + 'a {
     let containers = snapshot.containers_total();
 
     rsx! {
@@ -1461,6 +1474,23 @@ fn memory_card(snapshot: &Snapshot) -> impl Renderable + '_ {
                  own reading and in the system's, and shared pages count for each process \
                  that maps them. \"Everything else\" is what is left over rather than a \
                  measurement of its own."))</p>
+
+            // And the disk, which is the other ceiling a node has and the
+            // one nothing on this page said a word about. A machine that
+            // runs out of it stops being able to write — a database first,
+            // and then the node's own log and database.
+            @if filesystem.total > 0 {
+                <dl class="kv">
+                    <dt>(t("Disk"))</dt>
+                    <dd>
+                        (memory::human(filesystem.used()))(t(" of "))
+                        (memory::human(filesystem.total))
+                        // A separator is punctuation, not prose: it goes
+                        // through no table, like a command or a hostname.
+                        (" · ")(memory::human(filesystem.available))(t(" free"))
+                    </dd>
+                </dl>
+            }
 
             @if snapshot.swap_total > 0 {
                 <dl class="kv">
@@ -1519,6 +1549,7 @@ fn width(snapshot: &Snapshot, bytes: u64) -> String {
 #[allow(clippy::too_many_arguments)]
 fn live_cards<'a>(
     node_id: &'a str,
+    filesystem: &'a crate::node::disk::Filesystem,
     cells: &'a CertificateCells,
     state: &'a CertificateState,
     policy: &'a crate::edge::policy::Policy,
@@ -1528,7 +1559,7 @@ fn live_cards<'a>(
 ) -> impl Renderable + 'a {
     let inner = rsx! {
         (certificate_card(cells, state, policy, domain, query))
-        (memory_card(snapshot))
+        (memory_card(snapshot, filesystem))
     }
     .render()
     .into_inner();
@@ -2347,7 +2378,9 @@ pub(crate) mod tests {
     #[test]
     fn every_streamed_cell_has_a_place_on_the_page() {
         let snapshot = snapshot();
-        let rendered = memory_card(&snapshot).render().into_inner();
+        let rendered = memory_card(&snapshot, &Default::default())
+            .render()
+            .into_inner();
         let payload = cells(&snapshot);
 
         for key in payload.cells.keys() {
@@ -2390,7 +2423,7 @@ pub(crate) mod tests {
 
         // And the first paint still needs the whole declaration, because
         // there it is the attribute.
-        assert!(memory_card(&snapshot)
+        assert!(memory_card(&snapshot, &Default::default())
             .render()
             .into_inner()
             .contains("style=\"width:"));
@@ -2401,7 +2434,9 @@ pub(crate) mod tests {
     #[test]
     fn the_first_paint_and_the_stream_agree() {
         let snapshot = snapshot();
-        let rendered = memory_card(&snapshot).render().into_inner();
+        let rendered = memory_card(&snapshot, &Default::default())
+            .render()
+            .into_inner();
 
         for value in cells(&snapshot).cells.values() {
             if value.contains("of 0 B") {

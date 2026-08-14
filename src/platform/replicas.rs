@@ -50,6 +50,13 @@ pub struct Replica {
     /// report count as news — see migration `0034`. A copy here is read
     /// from its cgroup instead; this is for the ones that are not.
     pub memory_bytes: Option<u64>,
+    /// What its volume held when that node last said so.
+    ///
+    /// The figure that matters most for a database and the one nothing
+    /// else watches: memory is a ceiling somebody chose, and a volume
+    /// grows until the machine is full. A measurement like the one above,
+    /// with the same rule — see migration `0035`.
+    pub disk_bytes: Option<u64>,
 }
 
 impl Replica {
@@ -186,6 +193,7 @@ pub async fn place(
         evicted_at: None,
         reserved_host: None,
         memory_bytes: None,
+        disk_bytes: None,
     };
 
     let row = replica.clone();
@@ -528,6 +536,25 @@ pub async fn set_memory(
     Ok(())
 }
 
+/// What a copy elsewhere is holding on disk, as its own node measured it.
+pub async fn set_disk(
+    database: &SqliteDatabase,
+    id: &str,
+    bytes: Option<u64>,
+) -> PlatformResult<()> {
+    let (id, bytes) = (id.to_string(), bytes.map(|bytes| bytes as i64));
+    database
+        .write(move |connection| {
+            connection.execute(
+                "UPDATE replica SET \"disk_bytes\" = ?2 WHERE \"id\" = ?1",
+                (id, bytes),
+            )?;
+            Ok(())
+        })
+        .await?;
+    Ok(())
+}
+
 /// Why this copy is not running, or that it is.
 pub async fn set_last_error(
     database: &SqliteDatabase,
@@ -581,7 +608,7 @@ pub async fn remove(database: &SqliteDatabase, id: &str) -> PlatformResult<()> {
 
 const COLUMNS: &str = "\"id\", \"service_id\", \"node_id\", \"slot\", \"address\", \
                        \"last_error\", \"evicted_at\", \"overlay_port\", \"reserved_host\", \
-                       \"memory_bytes\"";
+                       \"memory_bytes\", \"disk_bytes\"";
 
 fn decode(row: &Row<'_>) -> wabot::sqlite::rusqlite::Result<Replica> {
     Ok(Replica {
@@ -595,6 +622,7 @@ fn decode(row: &Row<'_>) -> wabot::sqlite::rusqlite::Result<Replica> {
         overlay_port: row.get::<_, Option<i64>>(7)?.map(|port| port as u16),
         reserved_host: row.get::<_, Option<i64>>(8)?.map(|host| host as u8),
         memory_bytes: row.get::<_, Option<i64>>(9)?.map(|bytes| bytes as u64),
+        disk_bytes: row.get::<_, Option<i64>>(10)?.map(|bytes| bytes as u64),
     })
 }
 
@@ -629,6 +657,7 @@ mod tests {
             evicted_at: None,
             reserved_host: None,
             memory_bytes: None,
+            disk_bytes: None,
         };
 
         assert_eq!(replica(1).container_id("demo", "web"), "demo.web");

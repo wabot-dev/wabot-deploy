@@ -181,6 +181,14 @@ pub struct ReplicaState {
     /// teeth: see `record`, which must not treat a new figure as news.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub memory: Option<u64>,
+    /// What its volume holds on that machine's disk.
+    ///
+    /// The figure nothing else can produce here, and the one that matters
+    /// most for a database: a ceiling on memory is a decision somebody
+    /// made, and a volume grows until the machine is full. A measurement,
+    /// with the same rule as the one above.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub disk: Option<u64>,
 }
 
 /// A refusal, in the shape the other end knows how to print.
@@ -868,6 +876,11 @@ async fn record(
             .await
             .map_err(|error| super::NetworkError::Refused(error.to_string()))?;
     }
+    if !state.evicted && replica.disk_bytes != state.disk {
+        crate::platform::replicas::set_disk(database, &replica.id, state.disk)
+            .await
+            .map_err(|error| super::NetworkError::Refused(error.to_string()))?;
+    }
 
     if !changed {
         return Ok(false);
@@ -1550,6 +1563,7 @@ mod tests {
             error: None,
             evicted: false,
             memory: None,
+            disk: None,
         };
 
         let first = record(&authority.database, "nd-joining001", &reported("10.42.2.5"))
@@ -1664,6 +1678,7 @@ mod tests {
             error: None,
             evicted: false,
             memory: Some(bytes),
+            disk: None,
         };
 
         assert!(
@@ -1715,6 +1730,7 @@ mod tests {
             error: None,
             evicted: true,
             memory: None,
+            disk: None,
         };
 
         assert!(

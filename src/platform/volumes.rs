@@ -57,6 +57,22 @@ pub fn root(data_dir: &Path) -> PathBuf {
 /// the service and the slot — so an operator reading `ctr containers
 /// ls` and `ls volumes/` sees the same names on both sides, and slot 1
 /// keeps the name it had before there were slots.
+/// How much this copy's volumes hold, or `None` when it has none.
+///
+/// Every volume of the copy at once: a service could declare two, and the
+/// question somebody is asking is what this copy costs the disk.
+///
+/// `None` rather than nought for a copy with nothing on disk, because a
+/// database showing 0 B is a reading somebody would act on and this is the
+/// absence of a reading.
+pub fn used_by(data_dir: &Path, container_id: &str) -> Option<u64> {
+    let path = root(data_dir).join(container_id);
+    if !path.exists() {
+        return None;
+    }
+    Some(crate::node::disk::used(&path).bytes)
+}
+
 pub fn directory(data_dir: &Path, container_id: &str, name: &str) -> PathBuf {
     root(data_dir).join(container_id).join(name)
 }
@@ -304,6 +320,7 @@ mod tests {
             evicted_at: None,
             reserved_host: None,
             memory_bytes: None,
+            disk_bytes: None,
         };
 
         assert_eq!(

@@ -114,6 +114,16 @@ wabot-addon-async-sqlite = "0.2"
 x509-parser = "0.16"
 # `oneshot`, for calling the control-plane router in-process.
 tower = { version = "0.5", features = ["util"] }
+# How full a filesystem is, which has no answer in std.
+#
+# `preflight` declares `getuid` as a bare `extern "C"` and says why a
+# dependency was not worth it for one call. `statvfs` is the case that
+# reasoning does not cover: it fills a struct whose layout differs between
+# glibc and musl, and this binary is built for musl and runs on both — a
+# hand-written struct is a field read from the wrong offset on one of them.
+# It is already in the tree through `rustls-platform-verifier`, so naming it
+# costs nothing to build.
+libc = "0.2"
 
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

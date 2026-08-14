@@ -171,7 +171,7 @@ async fn from_one(
     // asking for more work — so an authority queueing something has just
     // heard the truth about what is already there, and a replica evicted
     // here stops being asked for in the same round trip.
-    report_to(database, container, node_id, &endpoint, &secret).await;
+    report_to(database, config, container, node_id, &endpoint, &secret).await;
 
     let waiting = match super::call::errands(&endpoint, &secret).await {
         Ok(waiting) => waiting,
@@ -208,7 +208,7 @@ async fn from_one(
     // finishes, from `deploy::jobs`. Reporting a deployment here would
     // send the state from before it ran and call it news.
     if settled > 0 {
-        report_to(database, container, node_id, &endpoint, &secret).await;
+        report_to(database, config, container, node_id, &endpoint, &secret).await;
     }
     settled
 }
@@ -224,7 +224,7 @@ async fn from_one(
 ///
 /// Quiet on failure by design: this is an extra, and the loop is what
 /// guarantees the state gets there eventually.
-pub async fn report_now(database: &SqliteDatabase, container: &Container) {
+pub async fn report_now(database: &SqliteDatabase, config: &Config, container: &Container) {
     let authorities = match super::authorities(database).await {
         Ok(authorities) => authorities,
         Err(error) => {
@@ -242,7 +242,15 @@ pub async fn report_now(database: &SqliteDatabase, container: &Container) {
             _ => None,
         };
         let Some(endpoint) = endpoint else { continue };
-        report_to(database, container, &authority.node_id, &endpoint, &secret).await;
+        report_to(
+            database,
+            config,
+            container,
+            &authority.node_id,
+            &endpoint,
+            &secret,
+        )
+        .await;
     }
 }
 
@@ -256,12 +264,13 @@ pub async fn report_now(database: &SqliteDatabase, container: &Container) {
 /// an edge — which is the whole of what that field was added for.
 async fn report_to(
     database: &SqliteDatabase,
+    config: &Config,
     container: &Container,
     node_id: &str,
     endpoint: &str,
     secret: &str,
 ) {
-    match report_for(database, container, node_id).await {
+    match report_for(database, config, container, node_id).await {
         Ok(report) => {
             if let Err(error) = super::call::report(endpoint, secret, &report).await {
                 tracing::debug!(%error, authority = %node_id, "could not report");
@@ -279,6 +288,7 @@ async fn report_to(
 /// the console shows.
 async fn report_for(
     database: &SqliteDatabase,
+    config: &Config,
     container: &Container,
     authority: &str,
 ) -> Result<super::api::Report, String> {
@@ -323,6 +333,14 @@ async fn report_for(
                     memory: used
                         .get(&replica.container_id(&project.slug, &service.slug))
                         .copied(),
+                    // Walked here rather than sent as a total, because the
+                    // volume is this machine's directory and its size is
+                    // not something the node that placed the copy could
+                    // ever compute.
+                    disk: crate::platform::volumes::used_by(
+                        &config.node.data_dir,
+                        &replica.container_id(&project.slug, &service.slug),
+                    ),
                 });
             }
         }
@@ -1086,9 +1104,14 @@ mod tests {
         // No deployer registered, which is what a test has and what a node
         // whose containerd will not answer has: the report is still worth
         // sending, and the memory figures are simply absent.
-        let report = report_for(&database, &Container::new(), "nd-authority")
-            .await
-            .expect("report");
+        let report = report_for(
+            &database,
+            &Config::default(),
+            &Container::new(),
+            "nd-authority",
+        )
+        .await
+        .expect("report");
 
         assert!(report.replicas.is_empty(), "nothing was placed here");
         assert_eq!(report.endpoint.as_deref(), Some("alpine.example:443"));
