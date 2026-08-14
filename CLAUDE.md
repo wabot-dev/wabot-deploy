@@ -581,6 +581,25 @@ standby beside the primary and a second on the other machine, both
 on either. Phase 5 — noticing a standby that stopped following — is not
 written.
 
+**A database's name is the operator's, and what the page offers is what
+verifies.** The name was derived from the node's domain, which is the
+operator's choice only while every name is a subdomain of the node — it is
+a field now, on `port.hostname` where a service's lives, and the read
+pool's is the primary's with `-ro` in the first label. `docs/naming.md`
+carries the rest, and two things there are worth knowing before touching
+this:
+
+- **A certificate can be current, from the right authority, and wrong.** An
+  ACME order was one identifier, so choosing Let's Encrypt for a database
+  named the primary and not the pool, and every read would have failed
+  `verify-full` against a certificate with three months left. Freshness
+  cannot see a missing name; `ensure` compares the name set now, which
+  `ensure_self_signed` always had.
+- **A public authority cannot sign a short name**, because nothing outside
+  the node resolves it — and a node with no domain has no long name at all.
+  So the console offers both spellings only where both are on the
+  certificate, and never a string `verify-full` would reject.
+
 **A name belongs to the database, not to the machine holding a copy.**
 The long name used to be built from the local node's domain for
 everything on the node, so the same database answered to a different

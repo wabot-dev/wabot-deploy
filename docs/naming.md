@@ -320,3 +320,110 @@ Phase 5 is where "what an enterprise expects" actually lands: a password
 in an environment variable is the thing certificates exist to replace,
 and `pg_hba.conf` can require a client certificate per user. It is last
 because it is worth nothing until the rest is true.
+
+## What the console turned out to owe
+
+The naming above was built and then left in the code. A database's page
+showed a connection string made from a bridge address and named nothing
+else, so the questions it left were the ones Jorge asked: where is a
+database's domain set, which edge serves it, what are its hostnames. Two
+of those have answers that are "nowhere, deliberately" — and a page that
+omits them reads as a missing feature rather than a design saying no.
+
+### The name is the operator's
+
+**And it was a derivation.** `<service>.<project>.<the node's domain>` is
+the operator's choice only while every name is a subdomain of the node,
+which is not a rule anybody agreed to. So the name is a field, the
+derivation is what it starts at, and it lives on `port.hostname` where a
+service's lives — which brings its uniqueness for free and by the right
+mechanism: the index refuses a duplicate, so two operators naming one
+hostname in the same second cannot both win.
+
+The read pool's name is not asked for. It is the primary's with `-ro` in
+the **first label**, so `db.example.com` reads `db-ro.example.com` and one
+name governs both. It degenerates to what every database had before, which
+is what kept the change from moving anything.
+
+A rename moves everything derived from it in the same request: the
+certificate is stored under the first name, so a new name is a new key and
+it is reissued and handed to the running servers; the project's containers
+get their `/etc/hosts` rewritten; and the certificate *source* moves with
+it, because a policy left on the old name is an answer nothing reads.
+
+### One name, both sides — which is what makes the short one optional
+
+`/etc/hosts` is what makes the qualified name resolve inside the project,
+so it works there whatever signed it and with no DNS at all. That is the
+split-horizon property this document set out to have, and it has a
+consequence the console has to respect: what the page may offer depends on
+what actually verifies.
+
+| | What is offered |
+|---|---|
+| Signed here, with a domain | Both spellings — a self-signed certificate covers all six names |
+| A public authority | The long one only |
+| No domain | The short one only, and no choice to show |
+
+A public authority cannot sign `orders.db-test`: nothing outside this node
+resolves it, so there is no challenge for it to set. And a node with no
+domain has no long name at all, which makes the short one not a
+convenience but the only name the database has. The two constraints pull
+opposite ways — offer fewer, never offer none — and the rule that satisfies
+both is that a page never shows a string `verify-full` would reject.
+
+### A certificate can be current, from the right authority, and wrong
+
+Choosing Let's Encrypt for a database worked, and the certificate named
+the primary alone: an ACME order was one identifier, while the self-signed
+path had always covered every name. The container had not been handed it
+yet; the pass that does runs every fifteen minutes, and when it ran every
+read failed `verify-full` against a name the certificate did not hold.
+
+Two fixes, and the second is the one worth carrying:
+
+- **An order for a database carries both qualified names.** `ensure_all`
+  explains why this node keeps one certificate per name rather than one
+  big one, and that reasoning is about names belonging to *different
+  services*: reissuing all of them because one moved is a failure that
+  spreads. A database's two are not that — the pool's name is the
+  primary's by construction and has no existence apart from it.
+- **Freshness cannot see a missing name.** `ensure` now compares the
+  stored names against the wanted ones, which `ensure_self_signed` had
+  always done. That asymmetry is what let this happen, and closing it made
+  the fix self-healing: the node reissued on its own at the next pass and
+  said why — `reissuing: the stored certificate does not cover every name`.
+
+Verified on the node afterwards: both qualified names with
+`sslmode=verify-full` against the **public** trust store, no `sslrootcert`
+and nothing to distribute — writable on the primary, read-only on the pool.
+
+### Verifying from outside a container
+
+`docs/naming.md` said the node mounts its authority into every container
+so an application verifies with `sslrootcert=/etc/wabot/ca.crt` and nothing
+in the image has to know anything. That had never been built — the file the
+connection string named was not there — and it only ever answers for a
+container anyway. A laptop has nowhere to get it from.
+
+So the node places it in every container it starts, and the console hands
+it over: `GET /ca.crt`, named `wabot-node-ca.crt` so it is placeable. The
+connection string names it only when this node is the one that signed;
+with a public authority it carries no `sslrootcert` at all, because naming
+a file a laptop does not have is a string that fails for the reader most
+likely to paste it.
+
+### The certificate makes a name verifiable; a port makes it reachable
+
+They are separate cards on the page because they fail separately, and only
+the first existed: the name had resolved from outside since the day it was
+chosen, with nothing listening. Publishing allocates from the range the
+node already uses for host ports — the operator does not pick the number,
+because two databases on one machine cannot share one and asking would be
+asking somebody to remember what everything else took. Publishing
+something already published keeps its number: one that moved would break
+every client holding the old one.
+
+The primary only. A pool answering from outside needs a port per replica
+and something choosing between them, which is a load balancer with its own
+justification.
