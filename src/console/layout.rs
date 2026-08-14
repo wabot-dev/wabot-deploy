@@ -392,10 +392,21 @@ wabot-outlet {
   white-space: pre;
   overflow-x: auto;
 }
-.dsn:has(#dsn-public:checked):has(#dsn-primary:checked) [data-dsn="primary-full"],
-.dsn:has(#dsn-public:checked):has(#dsn-pool:checked) [data-dsn="pool-full"],
-.dsn:has(#dsn-private:checked):has(#dsn-primary:checked) [data-dsn="primary-short"],
-.dsn:has(#dsn-private:checked):has(#dsn-pool:checked) [data-dsn="pool-short"] {
+.dsn:has(#dsn-full:checked):has(#dsn-primary:checked) [data-dsn="primary-full"],
+.dsn:has(#dsn-full:checked):has(#dsn-pool:checked) [data-dsn="pool-full"],
+.dsn:has(#dsn-short:checked):has(#dsn-primary:checked) [data-dsn="primary-short"],
+.dsn:has(#dsn-short:checked):has(#dsn-pool:checked) [data-dsn="pool-short"] {
+  display: flex;
+}
+
+/* And when the name is not a choice there is no group to match on: one
+   spelling exists, so the copy radio alone decides. Written as "no
+   `#dsn-full` in this block" rather than a class the server sets, because
+   the markup already says it — the radio is there or it is not. */
+.dsn:not(:has(#dsn-full)):has(#dsn-primary:checked) [data-dsn^="primary-"],
+.dsn:not(:has(#dsn-full)):has(#dsn-pool:checked) [data-dsn^="pool-"],
+.dsn:not(:has(#dsn-short)):has(#dsn-primary:checked) [data-dsn^="primary-"],
+.dsn:not(:has(#dsn-short)):has(#dsn-pool:checked) [data-dsn^="pool-"] {
   display: flex;
 }
 .dsn-pick { flex-wrap: wrap; gap: var(--sp-5); align-items: center; }

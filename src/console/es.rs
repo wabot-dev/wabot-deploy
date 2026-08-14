@@ -194,6 +194,7 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
     ("Key file", "Fichero de la clave"),
     ("Last update", "Última actualización"),
     ("Logs", "Logs"),
+    ("Long name", "Nombre largo"),
     ("Make a member", "Hacer miembro"),
     ("Make an administrator", "Hacer administrador"),
     ("May", "Puede"),
@@ -284,6 +285,10 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
     ("Renews in", "Se renueva en"),
     ("Replica", "Réplica"),
     ("Replicas can be placed here — its own services included. A small node can own projects and run none of them.", "Se pueden colocar réplicas aquí — las de sus propios servicios incluidas. Un nodo pequeño puede tener proyectos y no ejecutar ninguno."),
+    (
+        "Resolves in every container of this project, on any node holding a copy — the long name in the world's DNS too. Neither reaches the database from outside the node: that is a published port, which is not built.",
+        "Resuelve en cada contenedor de este proyecto, en cualquier nodo que sostenga una copia — el nombre largo también en el DNS del mundo. Ninguno alcanza la base desde fuera del nodo: eso es publicar un puerto, que no está construido.",
+    ),
     ("Restarting", "Reiniciando"),
     ("Restore", "Restaurar"),
     ("Revoke", "Revocar"),

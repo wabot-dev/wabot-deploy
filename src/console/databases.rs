@@ -487,14 +487,21 @@ pub fn database_card<'a>(
 /// one. Nothing is fetched, nothing is built in the browser, and with no
 /// JavaScript at all the first one is showing because its radio is checked.
 struct Strings {
-    /// `orders.db-test.<domain>` — unique across the network, and the only
-    /// form a certificate authority could ever sign.
-    primary_full: Option<String>,
-    pool_full: Option<String>,
-    /// `orders.db-test` — what a container in this project resolves. Shorter
-    /// to read and meaningless anywhere else, which is the trade.
-    primary_short: String,
-    pool_short: String,
+    /// The long name — `orders.db-test.<domain>` — and the short one,
+    /// `orders.db-test`. Both resolve in every container of the project;
+    /// the long one also resolves in the world's DNS, which is what makes
+    /// it the only form an authority could ever sign.
+    primary: Vec<Choice>,
+    pool: Vec<Choice>,
+}
+
+/// One string, and how to spell the name it uses.
+struct Choice {
+    /// `full` or `short` — what the radio selects and the stylesheet
+    /// matches on.
+    which: &'static str,
+    label: &'static str,
+    dsn: String,
 }
 
 impl Strings {
@@ -503,6 +510,22 @@ impl Strings {
     ///
     /// `None` when the database has no name at all, which is a database that
     /// has never been deployed.
+    /// **Only what actually verifies.**
+    ///
+    /// A page that offered a string `verify-full` rejects would be worse
+    /// than one that offered none, and there are two ways to produce one:
+    ///
+    /// - With a public authority, the short names are not on the
+    ///   certificate and never can be — nothing outside this node resolves
+    ///   them, so there is no challenge for an authority to set. Offering
+    ///   the short form there is offering a string that fails.
+    /// - On a node with no domain there **is** no long name: nothing to
+    ///   derive one from, so the short one is not a convenience, it is the
+    ///   only name the database has.
+    ///
+    /// So the name is a choice only when both spellings work, which is a
+    /// node with a domain whose certificate it signs itself. Otherwise
+    /// there is one spelling and no group to show.
     fn of(row: &Database, names: &[String], signs_here: bool) -> Option<Self> {
         // `verify-full` always: encryption without identity is what
         // `require` buys, and every name here is on the certificate.
@@ -552,18 +575,42 @@ impl Strings {
             .min_by_key(|name| name.len())?
             .clone();
 
+        let long_of = |pool: bool| {
+            names
+                .iter()
+                .find(|name| is_pool(name) == pool && parts(name) > 2)
+                .map(|name| dsn(name))
+        };
+        let offer = |long: Option<String>, short: String| {
+            let mut choices = Vec::new();
+            if let Some(long) = long {
+                choices.push(Choice {
+                    which: "full",
+                    label: "Long name",
+                    dsn: long,
+                });
+            }
+            // The short one only where it is on the certificate, which is
+            // where this node signed it.
+            if signs_here || choices.is_empty() {
+                choices.push(Choice {
+                    which: "short",
+                    label: "Short name",
+                    dsn: short,
+                });
+            }
+            choices
+        };
+
         Some(Self {
-            primary_full: names
-                .iter()
-                .find(|name| !is_pool(name) && parts(name) > 2)
-                .map(|name| dsn(name)),
-            pool_full: names
-                .iter()
-                .find(|name| is_pool(name) && parts(name) > 2)
-                .map(|name| dsn(name)),
-            primary_short: dsn(&primary_short),
-            pool_short: dsn(&pool_short),
+            primary: offer(long_of(false), dsn(&primary_short)),
+            pool: offer(long_of(true), dsn(&pool_short)),
         })
+    }
+
+    /// Whether the name is a choice at all.
+    fn names_differ(&self) -> bool {
+        self.primary.len() > 1
     }
 }
 
@@ -670,20 +717,27 @@ fn connection_block(strings: &Strings) -> impl Renderable + '_ {
         <details>
             <summary>(t("Connection string"))</summary>
             <div class="dsn stack-sm">
-                // Two groups, because they are two questions: which name,
-                // and which copy. One row mixing them read as three
-                // unrelated switches.
+                // Two groups when there are two questions, one when the
+                // name is not a choice — a node with no domain has only
+                // the short name, and a public authority can only ever
+                // sign the long one.
                 <div class="dsn-pick">
-                    <div class="dsn-group">
-                        <label class="check">
-                            <input type="radio" name="dsn-name" id="dsn-public" checked>
-                            (t("Public"))
-                        </label>
-                        <label class="check">
-                            <input type="radio" name="dsn-name" id="dsn-private">
-                            (t("Private"))
-                        </label>
-                    </div>
+                    @if strings.names_differ() {
+                        <div class="dsn-group">
+                            @for (index, choice) in strings.primary.iter().enumerate() {
+                                <label class="check">
+                                    @if index == 0 {
+                                        <input type="radio" name="dsn-name"
+                                               id=(format!("dsn-{}", choice.which)) checked>
+                                    } @else {
+                                        <input type="radio" name="dsn-name"
+                                               id=(format!("dsn-{}", choice.which))>
+                                    }
+                                    (t(choice.label))
+                                </label>
+                            }
+                        </div>
+                    }
                     <div class="dsn-group">
                         <label class="check">
                             <input type="radio" name="dsn-target" id="dsn-primary" checked>
@@ -696,24 +750,26 @@ fn connection_block(strings: &Strings) -> impl Renderable + '_ {
                     </div>
                 </div>
 
-                // Every string, with the words the island puts on the button
-                // it makes: the script has no language and the account has
-                // one, which is the rule the badge words follow too.
+                // Every string that verifies, and the stylesheet shows the
+                // chosen one. With no name group there is one spelling, so
+                // its radio is the only thing selecting.
                 <div class="dsn-values">
-                    (value("primary-full", strings.primary_full.as_ref()
-                        .unwrap_or(&strings.primary_short), copy, copied))
-                    (value("pool-full", strings.pool_full.as_ref()
-                        .unwrap_or(&strings.pool_short), copy, copied))
-                    (value("primary-short", &strings.primary_short, copy, copied))
-                    (value("pool-short", &strings.pool_short, copy, copied))
+                    @for choice in &strings.primary {
+                        (value(&format!("primary-{}", choice.which), &choice.dsn, copy, copied))
+                    }
+                    @for choice in &strings.pool {
+                        (value(&format!("pool-{}", choice.which), &choice.dsn, copy, copied))
+                    }
                 </div>
 
-                // One line, and it is the one that stops the labels lying:
-                // "public" is the name's form, not a promise that the
-                // internet can reach it.
-                <p class="field-hint">(t("Both resolve inside this project, on any node holding \
-                     a copy. Neither reaches the database from outside the node — that is a \
-                     published port, which is not built."))</p>
+                // The one line that stops a name being read as a promise:
+                // it resolves inside the project whatever it is spelled
+                // like, and reaching the database from outside the node is
+                // a published port rather than a name.
+                <p class="field-hint">(t("Resolves in every container of this project, on any \
+                     node holding a copy — the long name in the world's DNS too. Neither \
+                     reaches the database from outside the node: that is a published port, \
+                     which is not built."))</p>
             </div>
         </details>
     }
@@ -802,11 +858,9 @@ mod tests {
         }
         // And every one of them verifies, with the authority the node
         // places — a string offering `require` would be encryption without
-        // identity, which is what this page used to hand out.
-        // `&` arrives escaped, which is the markup being correct rather
-        // than the string being wrong.
-        // `&` arrives escaped, which is the markup being correct rather
-        // than the string being wrong.
+        // identity, which is what this page used to hand out. `&` arrives
+        // escaped, which is the markup being right rather than the string
+        // being wrong.
         assert_eq!(
             card.matches("sslmode=verify-full&amp;sslrootcert=/etc/wabot/ca.crt")
                 .count(),
@@ -820,12 +874,91 @@ mod tests {
         // markup, so every rule matched nothing and the page showed no
         // string at all — which looked, from outside, exactly like a
         // deployment that had not happened.
-        for id in ["dsn-public", "dsn-private", "dsn-primary", "dsn-pool"] {
+        for id in ["dsn-full", "dsn-short", "dsn-primary", "dsn-pool"] {
             assert!(card.contains(&format!("id=\"{id}\"")), "no {id}: {card}");
         }
         assert!(
             card.contains("<details>"),
             "the section is closed until somebody opens it: {card}"
+        );
+    }
+
+    /// The page never offers a string `verify-full` would reject, and
+    /// there are two ways to produce one.
+    ///
+    /// A public authority cannot sign the short names: nothing outside this
+    /// node resolves them, so there is no challenge for it to set. And a
+    /// node with no domain has no long name at all — there is nothing to
+    /// derive one from, which makes the short one the only name the
+    /// database has rather than a convenience that could be dropped.
+    ///
+    /// Jorge asked both questions in the same breath, and they pull in
+    /// opposite directions: the first says offer fewer, the second says
+    /// never offer none.
+    #[tokio::test]
+    async fn only_the_spellings_that_verify_are_offered() {
+        let database = crate::db::open_in_memory().await.expect("open");
+        crate::node::settings::set_domain(&database, Some("node.example"))
+            .await
+            .expect("domain");
+        let project = crate::platform::projects::create(&database, "db-test")
+            .await
+            .expect("project");
+        let (service, row) = crate::platform::databases::create(
+            &database,
+            &project.id,
+            "orders",
+            "17",
+            256 * 1024 * 1024,
+        )
+        .await
+        .expect("created");
+        let names = crate::deploy::certificate_names(
+            &database,
+            &crate::config::Config::default(),
+            &project,
+            &service,
+        )
+        .await;
+        let replicas = crate::platform::replicas::of_service(&database, &service.id)
+            .await
+            .expect("replicas");
+        let address = Some("10.42.2.200".to_string());
+
+        let public = database_card(&row, &replicas, address.clone(), None, &names, false)
+            .render()
+            .into_inner();
+        assert!(public.contains("@orders.db-test.node.example:5432/orders"));
+        assert!(
+            !public.contains("@orders.db-test:5432/orders"),
+            "a short name is not on a public certificate: {public}"
+        );
+        assert!(
+            !public.contains("sslrootcert"),
+            "and nothing has to be distributed to verify one: {public}"
+        );
+        assert!(
+            !public.contains(r#"id="dsn-short""#),
+            "with one spelling there is no name to choose: {public}"
+        );
+
+        // A node with no domain: the derivation has nothing to work from,
+        // so only the short names exist.
+        let short_only: Vec<String> = names
+            .iter()
+            .filter(|name| !name.ends_with("node.example"))
+            .cloned()
+            .collect();
+        let bare = database_card(&row, &replicas, address, None, &short_only, true)
+            .render()
+            .into_inner();
+        assert!(
+            bare.contains("@orders.db-test:5432/orders"),
+            "the only name it has: {bare}"
+        );
+        assert!(
+            !bare.contains(r#"id="dsn-full""#),
+            "and nothing to choose between: {bare}"
         );
     }
 
