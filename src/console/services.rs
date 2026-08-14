@@ -223,11 +223,7 @@ impl ServicePages {
         // else entirely, and whether it answers for its own names is a
         // decision like every other one on this page.
         //
-        let (host, edge) = (
-            crate::network::capability::Capability::Host,
-            crate::network::capability::Capability::Edge,
-        );
-        let hosts_here = crate::network::capability::provides(&self.state.database, host).await;
+        let edge = crate::network::capability::Capability::Edge;
         // And only nodes that agreed to it. A node that never granted
         // `edge` cannot be told to serve a name — the errand would sit
         // in its queue for ever while this page said it was served,
@@ -237,19 +233,6 @@ impl ServicePages {
             .iter()
             .filter(|node| node.may_be_edge())
             .filter(|node| node.is_self || node.allows.contains(&edge))
-            .cloned()
-            .collect();
-        // Somewhere a copy could actually run. A node that does not
-        // offer to host runs nothing — **including this node's own
-        // services**, which is the case a small machine that owns its
-        // projects and places every copy elsewhere is asking for.
-        //
-        let placement_nodes: Vec<crate::network::Node> = nodes
-            .iter()
-            .filter(|node| match node.is_self {
-                true => hosts_here,
-                false => node.allows.contains(&host),
-            })
             .cloned()
             .collect();
         // The engine's own row, when this service is one. The card it
@@ -326,6 +309,11 @@ impl ServicePages {
             ),
             None => false,
         };
+
+        // What each copy on this machine is using. One read of the
+        // cgroups, for the table below — a copy elsewhere is measured by
+        // the node running it, and this map simply has no entry for it.
+        let used = self.state.deployer.memory().await.containers;
 
         let serving = crate::platform::edges::of_service(&self.state.database, &service.id).await?;
         let deploying = crate::deploy::jobs::deploying(&self.state.container)
@@ -444,7 +432,15 @@ impl ServicePages {
                 }
 
                 @if service.is_ours() {
-                    (placement_card(&project, &service, &placements, &placement_nodes, &queued))
+                    (running_card(
+                        &placements,
+                        &nodes,
+                        &queued,
+                        service.desired_state == services::DesiredState::Stopped,
+                        &project.slug,
+                        &service.slug,
+                        &used,
+                    ))
                 } @else {
                     (from_elsewhere_card(
                         &project,
@@ -846,6 +842,33 @@ impl ServicePages {
         // should not be four forms deep — and because a service's
         // certificate source has always lived on this page. They were on
         // the detail page only because that is where I was working.
+        // Where the copies are and where they could be. On this page
+        // because the form that changes them is on this page now — the
+        // table that shows what they are doing stays on the service's own.
+        let placements =
+            crate::platform::replicas::of_service(&self.state.database, &service.id).await?;
+        let nodes = crate::network::all(&self.state.database).await?;
+        let host = crate::network::capability::Capability::Host;
+        let hosts_here = crate::network::capability::provides(&self.state.database, host).await;
+        let placement_nodes: Vec<crate::network::Node> = nodes
+            .iter()
+            .filter(|node| match node.is_self {
+                true => hosts_here,
+                false => node.allows.contains(&host),
+            })
+            .cloned()
+            .collect();
+        let queued: Vec<String> = crate::network::errand::all(&self.state.database)
+            .await?
+            .into_iter()
+            .filter(|record| record.done_at.is_none())
+            .filter(|record| {
+                record.payload.get("service").and_then(|name| name.as_str())
+                    == Some(service.name.as_str())
+            })
+            .map(|record| record.node_id)
+            .collect();
+
         let names = match service.kind.is_managed() {
             true => {
                 crate::deploy::certificate_names(
@@ -1152,6 +1175,16 @@ impl ServicePages {
                 </section>
                 }
 
+                // Where the copies go, which is a decision like every
+                // other one on this page. It was on the service's own page
+                // for both kinds, and the table it sat above — what is
+                // running and what it is using — stays there: reading and
+                // deciding are the split this console draws everywhere
+                // else.
+                @if service.is_ours() {
+                    (placement_card(&project, &service, &placements, &placement_nodes, &queued))
+                }
+
                 <section class="card stack">
                     <p class="card-label">(t("Danger zone"))</p>
                     // A database's data goes with it, and that sentence
@@ -1346,6 +1379,110 @@ async fn returning_to(request: Request, fallback: &str) -> String {
     match from.starts_with('/') && !from.starts_with("//") {
         true => from.to_string(),
         false => fallback.to_string(),
+    }
+}
+
+/// What each copy is doing and what it is using, here.
+///
+/// The detail page's half of what used to be one card: a table is what
+/// somebody opens this page to read, and the selectors that change a
+/// placement are a decision, which is settings' half.
+///
+/// Memory is per replica and only for the copies on **this** machine. A
+/// copy elsewhere is measured by the node running it and reports its state
+/// back, not its cgroup — so this says nothing rather than guessing, which
+/// is the same rule the log page follows about a copy it cannot read.
+fn running_card<'a>(
+    placements: &'a [crate::platform::replicas::Replica],
+    nodes: &'a [crate::network::Node],
+    queued: &'a [String],
+    stopped: bool,
+    project_slug: &'a str,
+    service_slug: &'a str,
+    used: &'a std::collections::BTreeMap<String, u64>,
+) -> impl Renderable + 'a {
+    let live: Vec<&crate::platform::replicas::Replica> =
+        placements.iter().filter(|r| !r.evicted()).collect();
+    let here: u64 = live
+        .iter()
+        .filter_map(|replica| {
+            used.get(&replica.container_id(project_slug, service_slug))
+                .copied()
+        })
+        .sum();
+
+    rsx! {
+        <section class="stack">
+            <div class="split">
+                <p class="card-label">(t("Where this runs"))</p>
+                <span class="who">
+                    (format!("{} replica(s)", live.len()))
+                    @if here > 0 {
+                        (" · ")(crate::node::memory::human(here))(t(" here"))
+                    }
+                </span>
+            </div>
+
+            <div class="card stack">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>(t("Replica"))</th>
+                            <th>(t("Node"))</th>
+                            <th>(t("State"))</th>
+                            <th>(t("Memory"))</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @for replica in &live {
+                            <tr>
+                                <td class="mono">("#")(replica.slot)</td>
+                                <td class="mono">(node_name(replica, nodes))</td>
+                                <td data-replica=(&replica.id)>
+                                    (placement_state(
+                                        replica,
+                                        stopped,
+                                        replica.node_id.as_ref().is_some_and(|node| {
+                                            queued.iter().any(|q| q == node)
+                                        }),
+                                    ))
+                                </td>
+                                <td class="mono">(
+                                    used.get(&replica.container_id(project_slug, service_slug))
+                                        .map(|bytes| crate::node::memory::human(*bytes))
+                                        // Not zero, and not "unknown": a
+                                        // copy on another machine is
+                                        // measured by that machine, and a
+                                        // figure invented here would be a
+                                        // number somebody could act on.
+                                        .unwrap_or_else(|| "—".into())
+                                )</td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            </div>
+        </section>
+    }
+}
+
+/// What a replica's node is called, for a table that reads rather than
+/// selects.
+fn node_name<'a>(
+    replica: &'a crate::platform::replicas::Replica,
+    nodes: &'a [crate::network::Node],
+) -> String {
+    match &replica.node_id {
+        Some(id) => nodes
+            .iter()
+            .find(|node| &node.id == id)
+            .map(|node| node.name.clone())
+            .unwrap_or_else(|| id.clone()),
+        None => nodes
+            .iter()
+            .find(|node| node.is_self)
+            .map(|node| node.name.clone())
+            .unwrap_or_else(|| t("this node").to_string()),
     }
 }
 

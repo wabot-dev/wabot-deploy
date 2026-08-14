@@ -149,6 +149,12 @@ impl Service {
     /// refused outright, as this found out on a real node. And a slug
     /// is `[a-z0-9-]`, so a dot cannot occur inside either half: the
     /// id parses back apart unambiguously, which `-` would not.
+    ///
+    /// **Slot 1's**, which is why nothing calls this any more: a service is
+    /// *n* copies, and asking a service for "its" container id answered
+    /// about one of them. That is what made the memory reading count a
+    /// three-copy service once. `Replica::container_id` is the one to ask.
+    #[allow(dead_code)]
     pub fn container_id(&self, project_slug: &str) -> String {
         format!("{project_slug}.{}", self.slug)
     }

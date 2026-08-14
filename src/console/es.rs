@@ -27,6 +27,7 @@
 /// list a thousand entries long is only maintainable if there is one
 /// place a given string can be.
 pub(crate) const TABLE: &[(&str, &str)] = &[
+    (" here", " aquí"),
     (" is available.", " está disponible."),
     (" of ", " de "),
     (" values · ", " valores · "),
@@ -473,6 +474,7 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
         "the box in the rack by the window",
         "la máquina del rack junto a la ventana",
     ),
+    ("this node", "este nodo"),
     ("used", "usada"),
 ];
 

@@ -903,14 +903,30 @@ impl Deployer {
                 .unwrap_or_default();
             let projects = projects::all(&self.database).await.unwrap_or_default();
 
+            // Every **replica**, not every service.
+            //
+            // This asked for `service.container_id`, which is slot 1's —
+            // so a service with copies in slots 2 and 3 had one of them
+            // counted and the memory page reported less than the machine
+            // was using. Found on the test node, where a three-copy
+            // service and a two-copy database contributed one container
+            // each.
             for service in services {
                 let Some(project) = projects.iter().find(|p| p.id == service.project_id) else {
                     continue;
                 };
-                let id = service.container_id(&project.slug);
-                if let Ok(Some(status)) = containers::status(&client, &id).await {
-                    if status.running() {
-                        pids.insert(id, status.pid);
+                for replica in replicas::of_service(&self.database, &service.id)
+                    .await
+                    .unwrap_or_default()
+                {
+                    if !replica.is_here() || replica.evicted() {
+                        continue;
+                    }
+                    let id = replica.container_id(&project.slug, &service.slug);
+                    if let Ok(Some(status)) = containers::status(&client, &id).await {
+                        if status.running() {
+                            pids.insert(id, status.pid);
+                        }
                     }
                 }
             }
