@@ -311,6 +311,21 @@ impl ServicePages {
             false => Vec::new(),
         };
 
+        // What signs this database's certificate, read for the name the
+        // certificate is stored under — the first of the list, which is the
+        // qualified one. A database always has a certificate, so unlike a
+        // service there is no "none" to render.
+        let database_policy = match names.first() {
+            Some(name) => Some(
+                crate::edge::policy::for_name(&self.state.database, &self.state.config, name).await,
+            ),
+            None => None,
+        };
+        let certificate_action = format!(
+            "/projects/{}/services/{}/database/certificate",
+            project.slug, service.slug
+        );
+
         let serving = crate::platform::edges::of_service(&self.state.database, &service.id).await?;
         let deploying = crate::deploy::jobs::deploying(&self.state.container)
             .await
@@ -422,7 +437,16 @@ impl ServicePages {
                         reserved_address.clone(),
                         service.memory_limit,
                         &names,
+                        database_policy
+                            .as_ref()
+                            .is_some_and(|policy| matches!(
+                                policy.renew_with,
+                                crate::edge::policy::RenewWith::SelfSigned
+                            )),
                     ))
+                    @if let Some(policy) = &database_policy {
+                        (super::databases::certificate_card(&certificate_action, policy))
+                    }
                 }
 
                 @if service.is_ours() {
@@ -1876,39 +1900,19 @@ impl ServiceApi {
             Err(response) => return Ok(response),
         };
 
-        let renew_with = match field(&form, "renew_with") {
-            "self_signed" => crate::edge::policy::RenewWith::SelfSigned,
-            "file" => {
-                let cert_path = field(&form, "cert_path").trim().to_string();
-                let key_path = field(&form, "key_path").trim().to_string();
-                if cert_path.is_empty() || key_path.is_empty() {
-                    return Ok(back_with_error(
-                        &here,
-                        "reading from files needs both a certificate and a key",
-                    ));
-                }
-                if let Err(error) = crate::edge::certs::from_files(&hostname, &cert_path, &key_path)
-                {
-                    return Ok(back_with_error(&here, &error.to_string()));
-                }
-                crate::edge::policy::RenewWith::File {
-                    cert_path,
-                    key_path,
-                }
-            }
-            _ => crate::edge::policy::RenewWith::Acme,
+        let renew_with = match super::nodes::source_from(&form, &hostname) {
+            Ok(renew_with) => renew_with,
+            Err(reason) => return Ok(back_with_error(&here, &reason)),
         };
-
-        // Choosing the default forgets rather than records it, so the
-        // stored answer cannot outlive the config that produced it.
-        let stored =
-            if renew_with == crate::edge::policy::RenewWith::default_for(&self.state.config) {
-                crate::edge::policy::clear(&self.state.database, &hostname).await
-            } else {
-                crate::edge::policy::set(&self.state.database, &hostname, &renew_with).await
-            };
-        if let Err(error) = stored {
-            return Ok(back_with_error(&here, &error.to_string()));
+        if let Err(error) = super::nodes::store_source(
+            &self.state.database,
+            &self.state.config,
+            &hostname,
+            &renew_with,
+        )
+        .await
+        {
+            return Ok(back_with_error(&here, &error));
         }
         self.state.certificates.now();
 
@@ -2843,41 +2847,62 @@ impl ServiceApi {
             String,
         )>,
     > {
-        let Some(account) = signed_in(&self.auth) else {
-            return Ok(None);
-        };
-        let Some((project_slug, service_slug)) = service_path(path) else {
-            return Ok(None);
-        };
-        let Some((project, allowed)) =
-            access::find_project(&self.state.database, &account, project_slug).await?
-        else {
-            return Ok(None);
-        };
-        // Every caller of this mutates something. A viewer gets the
-        // same answer as a stranger, which is the same answer as a
-        // service that does not exist.
-        if !allowed.may_deploy() {
-            return Ok(None);
-        }
-        let found = services::in_project(&self.state.database, &project.id, service_slug).await?;
-
-        // A service that arrived on an errand is administered from the
-        // node that sent it. Every caller of this changes something, so
-        // a foreign one answers the same way a stranger's does — the
-        // one thing this node's operator can do to it is throw it out,
-        // and that has its own path through the danger zone rather than
-        // going through here.
-        //
-        // The check is on the *service*, not only the project: a
-        // project that arrived from elsewhere holds only foreign
-        // services, but reading it off the row that is actually being
-        // changed is the one that cannot be wrong.
-        let found = found.filter(|service| service.is_ours());
-
-        let back = format!("/projects/{}", project.slug);
-        Ok(found.map(|service| (project, service, back)))
+        locate_for(&self.state, &self.auth, path).await
     }
+}
+
+/// The same locator, for a form that lives on this page and is handled
+/// elsewhere — a database's certificate is one of them.
+///
+/// Free rather than a method so the database controller can use it without
+/// inheriting the rest of this one: the permission question, the refusal
+/// for a service that arrived on an errand and the page to go back to are
+/// all the same, and answering them twice is how two forms on one page come
+/// to disagree about who may submit them.
+pub(crate) async fn locate_for(
+    state: &Arc<ConsoleState>,
+    auth: &Arc<Auth>,
+    path: &str,
+) -> RestResult<
+    Option<(
+        crate::platform::projects::Project,
+        services::Service,
+        String,
+    )>,
+> {
+    let Some(account) = signed_in(auth) else {
+        return Ok(None);
+    };
+    let Some((project_slug, service_slug)) = service_path(path) else {
+        return Ok(None);
+    };
+    let Some((project, allowed)) =
+        access::find_project(&state.database, &account, project_slug).await?
+    else {
+        return Ok(None);
+    };
+    // Every caller of this mutates something. A viewer gets the same
+    // answer as a stranger, which is the same answer as a service that
+    // does not exist.
+    if !allowed.may_deploy() {
+        return Ok(None);
+    }
+    let found = services::in_project(&state.database, &project.id, service_slug).await?;
+
+    // A service that arrived on an errand is administered from the node
+    // that sent it. Every caller of this changes something, so a foreign
+    // one answers the same way a stranger's does — the one thing this
+    // node's operator can do to it is throw it out, and that has its own
+    // path through the danger zone rather than going through here.
+    //
+    // The check is on the *service*, not only the project: a project that
+    // arrived from elsewhere holds only foreign services, but reading it
+    // off the row that is actually being changed is the one that cannot be
+    // wrong.
+    let found = found.filter(|service| service.is_ours());
+
+    let back = format!("/projects/{}", project.slug);
+    Ok(found.map(|service| (project, service, back)))
 }
 
 /// Was a checkbox ticked?

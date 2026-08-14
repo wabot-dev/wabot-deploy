@@ -1292,6 +1292,58 @@ fn certificate_card<'a>(
 /// because it is the same question — the node's domain is not a
 /// special case, it is only the name that had a page first. The ids
 /// carry the action so two of these on one page do not collide.
+/// Read a certificate source out of a form, refusing what cannot work.
+///
+/// **Shared, because it is the same question wherever it is asked** — the
+/// node's own name, a service's hostname, a database's. It was written
+/// twice with the same reasoning in both, and a third copy is what made it
+/// worth one: the two subtleties here are the file pair being *read* before
+/// it is trusted, and anything unrecognised falling back to ACME rather
+/// than to a file source that could lose a certificate.
+pub(crate) fn source_from(
+    form: &std::collections::HashMap<String, String>,
+    name: &str,
+) -> Result<crate::edge::policy::RenewWith, String> {
+    match super::auth::field(form, "renew_with") {
+        "self_signed" => Ok(crate::edge::policy::RenewWith::SelfSigned),
+        "file" => {
+            let cert_path = super::auth::field(form, "cert_path").trim().to_string();
+            let key_path = super::auth::field(form, "key_path").trim().to_string();
+            if cert_path.is_empty() || key_path.is_empty() {
+                return Err("reading from files needs both a certificate and a key".into());
+            }
+            // Refused now, while there is somebody to tell.
+            crate::edge::certs::from_files(name, &cert_path, &key_path)
+                .map_err(|error| error.to_string())?;
+            Ok(crate::edge::policy::RenewWith::File {
+                cert_path,
+                key_path,
+            })
+        }
+        // Including anything a hand-written form might send: ACME is the
+        // default, and defaulting to it cannot lose a certificate the way
+        // defaulting to a file source could.
+        _ => Ok(crate::edge::policy::RenewWith::Acme),
+    }
+}
+
+/// Store it — **forgetting** rather than writing the default.
+///
+/// A stored default would go stale the day `acme.disabled` changed, and
+/// then say the opposite of what the node does.
+pub(crate) async fn store_source(
+    database: &wabot::sqlite::SqliteDatabase,
+    config: &crate::config::Config,
+    name: &str,
+    renew_with: &crate::edge::policy::RenewWith,
+) -> Result<(), String> {
+    let stored = match renew_with == &crate::edge::policy::RenewWith::default_for(config) {
+        true => crate::edge::policy::clear(database, name).await,
+        false => crate::edge::policy::set(database, name, renew_with).await,
+    };
+    stored.map_err(|error| error.to_string())
+}
+
 pub(crate) fn certificate_source_form(
     action: &str,
     policy: &crate::edge::policy::Policy,
@@ -1500,6 +1552,52 @@ pub struct NodeApi {
 
 #[rest_controller("/")]
 impl NodeApi {
+    /// The node's certificate authority, as a file.
+    ///
+    /// Because a client that cannot verify is a client using `require`,
+    /// which is encryption without identity. A container is handed this at
+    /// `/etc/wabot/ca.crt`; anything else — a laptop, a CI runner, a
+    /// machine elsewhere — has nowhere to get it from, and telling somebody
+    /// to `psql` their way into a container to copy a file is not an
+    /// answer.
+    ///
+    /// It is the authority's **public** half, which is what an authority is
+    /// for. Behind a session anyway: what it discloses is that this node
+    /// exists and signs things, and that is nobody's business but the
+    /// operator's.
+    #[get("/ca.crt")]
+    #[raw]
+    #[middleware(SessionMiddleware)]
+    async fn authority(&self, _request: Request) -> RestResult<Response> {
+        if signed_in(&self.auth).is_none() {
+            return Ok(Response::builder()
+                .status(StatusCode::UNAUTHORIZED)
+                .body(Body::empty())
+                .expect("a constant response is well-formed"));
+        }
+        let pem = match crate::edge::certs::ca_certificate_pem(&self.state.database).await {
+            Ok(pem) => pem,
+            Err(error) => {
+                tracing::warn!(%error, "could not read this node's authority");
+                return Ok(Response::builder()
+                    .status(StatusCode::INTERNAL_SERVER_ERROR)
+                    .body(Body::empty())
+                    .expect("a constant response is well-formed"));
+            }
+        };
+
+        Ok(Response::builder()
+            .header(header::CONTENT_TYPE, "application/x-pem-file")
+            // Named, because a file called `ca.crt` in a downloads folder
+            // beside four others is a file nobody can place.
+            .header(
+                header::CONTENT_DISPOSITION,
+                "attachment; filename=\"wabot-node-ca.crt\"",
+            )
+            .body(Body::from(pem))
+            .expect("a constant response is well-formed"))
+    }
+
     /// Set the node's domain and ask for a certificate now.
     ///
     /// The name is checked against DNS first, exactly as a service
@@ -1951,43 +2049,15 @@ impl NodeApi {
             .await
             .unwrap_or_else(|| crate::edge::certs::FALLBACK_NAME.to_string());
 
-        let renew_with = match super::auth::field(&form, "renew_with") {
-            "self_signed" => crate::edge::policy::RenewWith::SelfSigned,
-            "file" => {
-                let cert_path = super::auth::field(&form, "cert_path").trim().to_string();
-                let key_path = super::auth::field(&form, "key_path").trim().to_string();
-                if cert_path.is_empty() || key_path.is_empty() {
-                    return Ok(super::auth::back_with_error(
-                        here,
-                        "reading from files needs both a certificate and a key",
-                    ));
-                }
-                // Refused now, while there is somebody to tell.
-                if let Err(error) = crate::edge::certs::from_files(&name, &cert_path, &key_path) {
-                    return Ok(super::auth::back_with_error(here, &error.to_string()));
-                }
-                crate::edge::policy::RenewWith::File {
-                    cert_path,
-                    key_path,
-                }
-            }
-            // Including anything a hand-written form might send: ACME
-            // is the default, and defaulting to it cannot lose a
-            // certificate the way defaulting to a file source could.
-            _ => crate::edge::policy::RenewWith::Acme,
+        let renew_with = match source_from(&form, &name) {
+            Ok(renew_with) => renew_with,
+            Err(reason) => return Ok(super::auth::back_with_error(here, &reason)),
         };
 
-        // Choosing the default *forgets* rather than writes it down.
-        // A stored default would go stale the day `acme.disabled`
-        // changed, and then say the opposite of what the node does.
-        let stored =
-            if renew_with == crate::edge::policy::RenewWith::default_for(&self.state.config) {
-                crate::edge::policy::clear(&self.state.database, &name).await
-            } else {
-                crate::edge::policy::set(&self.state.database, &name, &renew_with).await
-            };
-        if let Err(error) = stored {
-            return Ok(super::auth::back_with_error(here, &error.to_string()));
+        if let Err(error) =
+            store_source(&self.state.database, &self.state.config, &name, &renew_with).await
+        {
+            return Ok(super::auth::back_with_error(here, &error));
         }
         // The loop installs it. Same reason as saving a domain: this
         // console asks, it does not issue.

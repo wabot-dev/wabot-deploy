@@ -170,6 +170,85 @@ pub struct DatabaseApi {
 
 #[rest_controller("/")]
 impl DatabaseApi {
+    /// Where this database's certificate comes from.
+    ///
+    /// **ACME is refused unless both names resolve to this node**, and both
+    /// is the point: the read pool's name is derived from the primary's, so
+    /// an operator who added one DNS record and not the other would have a
+    /// certificate order that cannot pass — twice a day, against an
+    /// authority that locks the account at five failures an hour.
+    ///
+    /// The renewal loop makes the same check before it spends anything, so
+    /// this is not what protects the account. It is what gives an answer
+    /// *now*, in the form, instead of a silence somebody has to go and read
+    /// the certificate page to understand.
+    #[post("/projects/:project/services/:service/database/certificate")]
+    #[raw]
+    #[middleware(SessionMiddleware)]
+    async fn certificate(&self, request: Request) -> RestResult<Response> {
+        // The service page's locator, because this is one of its forms: it
+        // is the same permission question, the same refusal for a service
+        // that arrived on an errand, and the same "back to here".
+        let path = request.uri().path().to_string();
+        let Some((project, service, here)) =
+            super::services::locate_for(&self.state, &self.auth, &path).await?
+        else {
+            return Ok(see_other("/"));
+        };
+        let form = match read_form(request).await {
+            Ok(form) => form,
+            Err(response) => return Ok(response),
+        };
+
+        let names = crate::deploy::certificate_names(
+            &self.state.database,
+            &self.state.config,
+            &project,
+            &service,
+        )
+        .await;
+        let Some(name) = names.first().cloned() else {
+            return Ok(back_with_error(&here, "this database has no name yet"));
+        };
+
+        let renew_with = match super::nodes::source_from(&form, &name) {
+            Ok(renew_with) => renew_with,
+            Err(reason) => return Ok(back_with_error(&here, &reason)),
+        };
+
+        if renew_with == crate::edge::policy::RenewWith::Acme {
+            let Some(node_domain) =
+                crate::node::settings::domain(&self.state.database, &self.state.config).await
+            else {
+                return Ok(back_with_error(
+                    &here,
+                    "this node has no domain of its own, so it cannot check whether those                      names point here — set one on the node page first",
+                ));
+            };
+            // Both, and named individually when one fails: "it does not
+            // resolve" about a name the operator never typed is a message
+            // they cannot act on.
+            for name in [name.clone(), crate::deploy::hosts::pool_name(&name)] {
+                let outcome = crate::deploy::dns::resolves_here(&name, &node_domain).await;
+                if !outcome.ok() {
+                    return Ok(back_with_error(&here, &outcome.explain(&name)));
+                }
+            }
+        }
+
+        if let Err(error) =
+            super::nodes::store_source(&self.state.database, &self.state.config, &name, &renew_with)
+                .await
+        {
+            return Ok(back_with_error(&here, &error));
+        }
+        // The loop owns issuance; this only says there is something to look
+        // at, so the answer arrives in seconds rather than at the next pass.
+        self.state.certificates.now();
+
+        Ok(see_other(&here))
+    }
+
     /// Make a database, and start it.
     #[post("/projects/:project/databases")]
     #[raw]
@@ -249,6 +328,11 @@ pub fn database_card<'a>(
     // list the certificate is built from, so this page cannot offer a string
     // naming something the certificate does not cover.
     names: &'a [String],
+    // Whether this node is the one signing. It decides a single parameter,
+    // and getting it wrong is a string that fails: `sslrootcert` pointing at
+    // an authority that did not sign is as broken as leaving it out when it
+    // did.
+    signs_here: bool,
 ) -> impl Renderable + 'a {
     // Only once it has an address, which is only once it has been
     // deployed. The names exist from the moment the database does — they
@@ -259,7 +343,9 @@ pub fn database_card<'a>(
     // The address itself is not shown here: every copy's is in the
     // placement table below, which is where somebody looking for one
     // looks.
-    let strings = address.as_ref().and_then(|_| Strings::of(row, names));
+    let strings = address
+        .as_ref()
+        .and_then(|_| Strings::of(row, names, signs_here));
     let copies = replicas.len();
     let standbys = replicas
         .iter()
@@ -324,10 +410,21 @@ impl Strings {
     ///
     /// `None` when the database has no name at all, which is a database that
     /// has never been deployed.
-    fn of(row: &Database, names: &[String]) -> Option<Self> {
+    fn of(row: &Database, names: &[String], signs_here: bool) -> Option<Self> {
+        // `verify-full` always: encryption without identity is what
+        // `require` buys, and every name here is on the certificate.
+        //
+        // The authority only when this node is the one that signed. With a
+        // public one the client's own trust store is what checks it, and
+        // naming a file that a laptop does not have would be a string that
+        // fails for the one reader most likely to paste it.
+        let suffix = match signs_here {
+            true => "?sslmode=verify-full&sslrootcert=/etc/wabot/ca.crt",
+            false => "?sslmode=verify-full",
+        };
         let dsn = |host: &str| {
             format!(
-                "{}?sslmode=verify-full&sslrootcert=/etc/wabot/ca.crt",
+                "{}{suffix}",
                 postgres::connection_url(
                     &row.admin_user,
                     &row.admin_password,
@@ -386,6 +483,43 @@ impl Strings {
 /// The copy button is **revealed** by the `copy` island rather than
 /// rendered: with scripting off a button that cannot copy is a control that
 /// lies, and the text is selectable either way.
+/// Where this database's certificate comes from, and how to verify it.
+///
+/// The same control a service's hostname has and the node's own — one
+/// question asked in three places, so it is one form. What a database adds
+/// is the other half: with the node signing, a client outside a container
+/// has nothing to check against until it holds the authority, so the page
+/// hands it over rather than describing it.
+pub fn certificate_card<'a>(
+    action: &'a str,
+    policy: &'a crate::edge::policy::Policy,
+) -> impl Renderable + 'a {
+    let signs_here = matches!(
+        policy.renew_with,
+        crate::edge::policy::RenewWith::SelfSigned
+    );
+    rsx! {
+        <section class="card stack">
+            <p class="card-label">(t("Certificate"))</p>
+            (super::nodes::certificate_source_form(action, policy))
+            @if signs_here {
+                <p class="field-hint">(t("This node signs it, so a client has to be given the \
+                     authority before it can verify anything. A container gets it at \
+                     /etc/wabot/ca.crt; anything else needs the file."))</p>
+                <div class="actions">
+                    <a class="btn btn-secondary btn-sm" href="/ca.crt" download>
+                        (t("Download the authority"))
+                    </a>
+                </div>
+            } @else {
+                <p class="field-hint">(t("A public authority signs it, so any client verifies it \
+                     with the trust store it already has — the connection string needs no \
+                     certificate of its own."))</p>
+            }
+        </section>
+    }
+}
+
 /// One string, in a block that does not break it.
 fn value<'a>(which: &'a str, dsn: &'a str, copy: &'a str, copied: &'a str) -> impl Renderable + 'a {
     rsx! {
@@ -518,9 +652,16 @@ mod tests {
         let replicas = crate::platform::replicas::of_service(&database, &service.id)
             .await
             .expect("replicas");
-        let card = database_card(&row, &replicas, Some("10.42.2.200".into()), None, &names)
-            .render()
-            .into_inner();
+        let card = database_card(
+            &row,
+            &replicas,
+            Some("10.42.2.200".into()),
+            None,
+            &names,
+            true,
+        )
+        .render()
+        .into_inner();
         // Four strings, all four in the markup, because choosing is CSS: the
         // page has to work with scripting off, and the alternative to
         // rendering every one is a round trip to move a radio button.
