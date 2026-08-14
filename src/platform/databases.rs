@@ -278,6 +278,18 @@ pub async fn dispatch(
     service: &Service,
     primary: Option<(String, u16)>,
     domain: Option<String>,
+    // Nodes to tell **even though they hold nothing now**.
+    //
+    // The list below is built from the rows as they are, so a node that
+    // just lost its last copy is not in it — and it is the one that most
+    // needs telling. Its container goes on running, holding a volume and
+    // following a primary, with nothing on either side pointing at it.
+    //
+    // Found on the test node: a database reduced from three copies to
+    // one left `db-test.orders.3` running on the other machine for ever.
+    // The `host` path solved this with the same set; this one had the
+    // same hole and no `slots: []` ever reached the far side.
+    also_tell: &std::collections::BTreeSet<String>,
 ) -> PlatformResult<usize> {
     let Some(row) = of_service(database, &service.id).await? else {
         return Ok(0);
@@ -304,6 +316,11 @@ pub async fn dispatch(
     // whole of what that node runs for this database — the same rule a
     // `host` errand follows, and what lets a copy be taken away.
     let mut by_node: std::collections::BTreeMap<String, Vec<u32>> = Default::default();
+    // An empty list for a node that has just lost everything, so the
+    // instruction says "none of this is yours" rather than never arriving.
+    for node_id in also_tell {
+        by_node.entry(node_id.clone()).or_default();
+    }
     for replica in placements.iter().filter(|r| !r.evicted()) {
         let Some(node_id) = &replica.node_id else {
             continue;
@@ -720,6 +737,88 @@ mod tests {
     /// Everything an errand carries reaches the row, and a second
     /// errand updates rather than being ignored.
     ///
+    /// A node that has just lost its last copy is the one that most needs
+    /// telling, and it is the one the rows no longer point at.
+    ///
+    /// Found on the test node: a database reduced from three copies to one
+    /// left a Postgres running on the other machine, holding a volume and
+    /// following a primary, with nothing on either side claiming it. The
+    /// `host` path had solved this with the same set of "nodes touched
+    /// before the change"; this one had the same hole and no `slots: []`
+    /// ever left.
+    #[tokio::test]
+    async fn a_node_that_lost_its_last_copy_is_told_to_let_go() {
+        let (database, project_id) = project().await;
+        crate::node::settings::set_domain(&database, Some("node.example"))
+            .await
+            .expect("domain");
+        crate::network::ensure_self(&database, &crate::config::Config::default())
+            .await
+            .expect("self");
+        let mut me = crate::network::me(&database)
+            .await
+            .expect("query")
+            .expect("there");
+        me.overlay_ip = Some("10.42.0.1".into());
+        crate::network::save(&database, &me).await.expect("saved");
+
+        let (service, _) = create(&database, &project_id, "orders", "17", 256 * 1024 * 1024)
+            .await
+            .expect("created");
+        let here = super::super::replicas::of_service(&database, &service.id)
+            .await
+            .expect("replicas")
+            .pop()
+            .expect("the primary");
+        super::super::replicas::ensure_overlay_port(&database, &here.id)
+            .await
+            .expect("port");
+
+        crate::network::save(
+            &database,
+            &crate::network::Node {
+                id: "nd-far".into(),
+                name: "far.example".into(),
+                kind: crate::network::Kind::Private,
+                overlay_ip: Some("10.42.0.9".into()),
+                public_key: None,
+                endpoint: None,
+                allows: vec![crate::network::capability::Capability::Store],
+                last_seen_at: None,
+                is_self: false,
+                ca_pem: None,
+            },
+        )
+        .await
+        .expect("node");
+
+        // The copy is gone from the rows — which is the state a placement
+        // change leaves behind, and the reason nothing points at that node
+        // any more.
+        let touched: std::collections::BTreeSet<String> =
+            ["nd-far".to_string()].into_iter().collect();
+        dispatch(
+            &database,
+            &service,
+            Some(("10.42.0.1".into(), 30000)),
+            Some("node.example".into()),
+            &touched,
+        )
+        .await
+        .expect("dispatched");
+
+        let told = crate::network::errand::waiting(&database, "nd-far")
+            .await
+            .expect("errands")
+            .pop()
+            .expect("the node holding nothing was told nothing");
+        assert_eq!(
+            told.payload["slots"],
+            serde_json::json!([]),
+            "which is how it learns to stop and take the copy off its disk"
+        );
+    }
+
     /// This guards a bug that reached both nodes: `qualified_domain`
     /// was read off the errand into the parameter tuple and then left
     /// out of the column list, so the copy went on naming itself under

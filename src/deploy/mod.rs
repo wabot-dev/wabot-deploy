@@ -1082,7 +1082,24 @@ impl Deployer {
     /// primary's overlay port on this node. Nothing is sent while there
     /// is no address — a standby with nowhere to follow would come up
     /// as a primary of its own.
+    /// The same, telling nodes that have just lost their last copy.
+    ///
+    /// Separate entry point rather than a default, because the set is only
+    /// knowable by the caller that made the change: after the rows move,
+    /// nothing points at the node that lost one.
+    pub async fn dispatch_standbys_including(
+        &self,
+        service: &Service,
+        also: &std::collections::BTreeSet<String>,
+    ) {
+        self.standbys(service, also).await;
+    }
+
     async fn dispatch_standbys(&self, service: &Service) {
+        self.standbys(service, &Default::default()).await;
+    }
+
+    async fn standbys(&self, service: &Service, also: &std::collections::BTreeSet<String>) {
         if !service.kind.is_managed() || !service.is_ours() {
             return;
         }
@@ -1094,7 +1111,9 @@ impl Deployer {
             }
         };
         let domain = crate::node::settings::domain(&self.database, &self.config).await;
-        if let Err(error) = databases::dispatch(&self.database, service, primary, domain).await {
+        if let Err(error) =
+            databases::dispatch(&self.database, service, primary, domain, also).await
+        {
             tracing::warn!(service = %service.slug, %error, "could not tell a node to hold a copy");
         }
     }

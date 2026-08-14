@@ -2868,6 +2868,8 @@ impl ServiceApi {
         // one*. The second half is why the set is passed in: a node
         // losing its last copy is exactly the one nothing points at any
         // more, and it is the one that most needs telling.
+        let mut continue_managed = false;
+        let touched_all = touched.clone();
         for node_id in touched {
             // Every slot that node holds, in the service's numbering:
             // a node running two copies is told about both in one
@@ -2897,6 +2899,7 @@ impl ServiceApi {
             // database errand only won because it happened to arrive
             // second and is convergent.
             if service.kind.is_managed() {
+                continue_managed = true;
                 continue;
             }
             if let Err(error) = self.send_there(project, service, &node_id, by, slots).await {
@@ -2905,6 +2908,18 @@ impl ServiceApi {
                 // nobody has answered for.
                 tracing::warn!(node = %node_id, %error, "could not queue a host errand");
             }
+        }
+
+        // A database's own errand, including to the nodes that just lost
+        // their last copy — the `host` path above uses `touched` for
+        // exactly that and this one had no equivalent, so a database
+        // reduced from three copies to one left a Postgres running on the
+        // other machine with nothing pointing at it.
+        if continue_managed {
+            self.state
+                .deployer
+                .dispatch_standbys_including(service, &touched_all)
+                .await;
         }
 
         if placements.iter().any(|replica| replica.is_here()) {
