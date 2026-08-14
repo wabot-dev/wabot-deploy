@@ -941,6 +941,48 @@ impl Deployer {
         crate::node::memory::read(&pids)
     }
 
+    /// Which cgroup each running container is in, by container id.
+    ///
+    /// For the CPU reading, which needs `cpu.stat` and therefore the path
+    /// rather than the pid. Read from `/proc/<pid>/cgroup` because that is
+    /// the one source that cannot disagree with where the process actually
+    /// is — a path built from the container id would be guessing at the
+    /// runtime's naming, and crun's differs from runc's.
+    pub async fn cgroups(&self) -> std::collections::BTreeMap<String, String> {
+        let mut paths = std::collections::BTreeMap::new();
+        let Ok(client) = Containerd::connect().await else {
+            return paths;
+        };
+        let services = services::all(&self.database, None)
+            .await
+            .unwrap_or_default();
+        let projects = projects::all(&self.database).await.unwrap_or_default();
+
+        for service in services {
+            let Some(project) = projects.iter().find(|p| p.id == service.project_id) else {
+                continue;
+            };
+            for replica in replicas::of_service(&self.database, &service.id)
+                .await
+                .unwrap_or_default()
+            {
+                if !replica.is_here() || replica.evicted() {
+                    continue;
+                }
+                let id = replica.container_id(&project.slug, &service.slug);
+                if let Ok(Some(status)) = containers::status(&client, &id).await {
+                    if !status.running() {
+                        continue;
+                    }
+                    if let Some(path) = cgroup_of(status.pid) {
+                        paths.insert(id, path);
+                    }
+                }
+            }
+        }
+        paths
+    }
+
     /// What containerd says about one copy right now.
     pub async fn observe(
         &self,
@@ -2100,6 +2142,18 @@ pub async fn certificate_names(
 ///
 /// The first name of each managed service's set, because that is the key
 /// `refresh_certificates` writes it under — see there.
+/// The cgroup a pid is in, on a v2 tree.
+///
+/// One line, `0::/the/path`. A v1 tree has one line per controller and no
+/// unified path, which is a node this product refuses at install — see
+/// `preflight`.
+fn cgroup_of(pid: u32) -> Option<String> {
+    std::fs::read_to_string(format!("/proc/{pid}/cgroup"))
+        .ok()?
+        .lines()
+        .find_map(|line| line.strip_prefix("0::").map(str::to_string))
+}
+
 /// The names a **public** authority should be asked to sign for one key.
 ///
 /// Every other name is itself. A database is two: the qualified primary

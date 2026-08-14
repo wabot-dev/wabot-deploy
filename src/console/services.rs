@@ -1456,6 +1456,7 @@ fn running_card<'a>(
                             <th>(t("Replica"))</th>
                             <th>(t("Node"))</th>
                             <th>(t("State"))</th>
+                            <th>(t("CPU"))</th>
                             <th>(t("Memory"))</th>
                             <th>(t("Disk"))</th>
                         </tr>
@@ -1481,6 +1482,13 @@ fn running_card<'a>(
                                 // "—" when neither has one, because a
                                 // database using no memory is not a
                                 // reading anybody should believe.
+                                // Written by the stream, which is the only
+                                // place with the two readings a percentage
+                                // needs. Rendered empty rather than as a
+                                // dash: the first tick is two seconds
+                                // away, and a dash that becomes a number is
+                                // a row that jumps.
+                                <td class="mono" data-cpu=(&replica.id)></td>
                                 <td class="mono">(
                                     at.used.get(&replica.container_id(at.project_slug, at.service_slug))
                                         .copied()

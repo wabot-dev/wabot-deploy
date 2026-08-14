@@ -204,7 +204,21 @@
           if (dot) dot.className = state.dot;
         }
         var detail = cell.querySelector('.failure, .tile-detail');
-        if (detail) detail.textContent = state.detail;
+        if (detail) set(detail, state.detail);
+
+        // Its share of the machine, in its own cell rather than inside the
+        // state one: the state is a badge and this is a number, and a
+        // stream that wrote both into one place would make the badge's
+        // markup this script's business.
+        //
+        // Only when the payload carries one. A copy on another node has
+        // none, and the first tick of any stream has none — writing an
+        // empty string over a figure would blank the column every time
+        // somebody opened a second page.
+        if (state.cpu) {
+          var cpu = host.querySelector('[data-cpu="' + id + '"]');
+          set(cpu, state.cpu);
+        }
       });
 
       // A certificate arrives minutes after the hostname is saved, and

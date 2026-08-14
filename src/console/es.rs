@@ -100,6 +100,7 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
         "Las dos resuelven dentro de este proyecto, en cualquier nodo que sostenga una copia. Ninguna alcanza la base desde fuera del nodo — eso es publicar un puerto, que no está construido.",
     ),
     ("Breadcrumb", "Ruta de navegación"),
+    ("CPU", "CPU"),
     ("Can", "Puede"),
     ("Cancel", "Cancelar"),
     ("Certificate", "Certificado"),
@@ -514,7 +515,7 @@ mod tests {
     /// A word that is the same in both languages, listed rather than
     /// allowed silently. Otherwise "translated to itself" cannot tell a
     /// deliberate `Swap` from a line somebody pasted and forgot.
-    const THE_SAME_IN_BOTH: &[&str] = &["Error: ", "Id", "Logs", "Swap"];
+    const THE_SAME_IN_BOTH: &[&str] = &["CPU", "Error: ", "Id", "Logs", "Swap"];
 
     #[test]
     fn nothing_is_left_untranslated_by_accident() {

@@ -767,6 +767,15 @@ pub(crate) struct ReplicaCell {
     pub(crate) badge: &'static str,
     pub(crate) dot: &'static str,
     pub(crate) word: String,
+    /// What this copy is using, in millicores — a thousand is one core.
+    ///
+    /// Only for the copies here, and only from the second tick: a rate is
+    /// the difference between two readings, which is why it lives on a
+    /// stream rather than on a page render. Empty is "no answer yet", and
+    /// the page leaves what it had rather than writing a dash over a
+    /// figure.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub(crate) cpu: String,
     /// The line under it: an address while it is up, a reason while it
     /// is not, empty when there is nothing to add.
     pub(crate) detail: String,
@@ -872,6 +881,10 @@ async fn edge_cells(
 async fn replica_cells(
     state: &super::ConsoleState,
     project: &crate::platform::projects::Project,
+    // What each container here is using, from two readings of the stream.
+    // `None` on the first tick, which is why the cell is empty rather than
+    // a dash: the page keeps what it has instead of flashing.
+    busy: Option<&crate::node::cpu::Busy>,
 ) -> std::collections::BTreeMap<String, ReplicaCell> {
     let mut cells = std::collections::BTreeMap::new();
     let Ok(services) = crate::platform::services::all(&state.database, Some(&project.id)).await
@@ -901,10 +914,16 @@ async fn replica_cells(
                             == Some(service.name.as_str())
                 })
             });
-            cells.insert(
-                replica.id.clone(),
-                replica_cell(&replica, stopped, waiting_for_it),
-            );
+            let mut cell = replica_cell(&replica, stopped, waiting_for_it);
+            if replica.is_here() && !replica.evicted() {
+                let id = replica.container_id(&project.slug, &service.slug);
+                if let Some(share) = busy.and_then(|busy| busy.containers.get(&id)) {
+                    // A thousand is one core. Absolute, so this column can
+                    // be compared against the same column on another node.
+                    cell.cpu = format!("{share}m");
+                }
+            }
+            cells.insert(replica.id.clone(), cell);
         }
     }
     cells
@@ -938,6 +957,7 @@ pub(crate) fn replica_cell(
             badge: "badge badge-warning",
             dot: "",
             word: "Evicted there".into(),
+            cpu: String::new(),
             detail: String::new(),
         };
     }
@@ -946,6 +966,7 @@ pub(crate) fn replica_cell(
             badge: "badge badge-danger",
             dot: "dot dot-danger",
             word: "Failed".into(),
+            cpu: String::new(),
             detail: failure.clone(),
         };
     }
@@ -954,6 +975,7 @@ pub(crate) fn replica_cell(
             badge: "badge badge-success",
             dot: "dot dot-success",
             word: "Running".into(),
+            cpu: String::new(),
             detail: address.clone(),
         };
     }
@@ -962,6 +984,7 @@ pub(crate) fn replica_cell(
             badge: "badge",
             dot: "",
             word: "Not running".into(),
+            cpu: String::new(),
             detail: String::new(),
         };
     }
@@ -972,6 +995,7 @@ pub(crate) fn replica_cell(
             badge: "badge badge-info",
             dot: "dot dot-info dot-pulse",
             word: "Queued for that node".into(),
+            cpu: String::new(),
             detail: String::new(),
         },
         // Told, and nothing has come back. The node reports when it
@@ -980,6 +1004,7 @@ pub(crate) fn replica_cell(
             badge: "badge badge-info",
             dot: "dot dot-info dot-pulse",
             word: "Waiting for that node".into(),
+            cpu: String::new(),
             detail: String::new(),
         },
     }
@@ -1286,6 +1311,11 @@ impl ProjectApi {
 
         let state = self.state.clone();
         let stream = async_stream::stream! {
+            // The previous CPU reading. A percentage is the difference
+            // between two, and a stream is the one place that has both —
+            // which is why this figure is on the table and not on the page
+            // render beside memory and disk.
+            let mut before: Option<crate::node::cpu::Sample> = None;
             loop {
                 let mut cells = std::collections::BTreeMap::new();
                 if let Ok(services) =
@@ -1313,9 +1343,15 @@ impl ProjectApi {
                         );
                     }
                 }
+                let now = crate::node::cpu::sample(&state.deployer.cgroups().await);
+                let busy = before
+                    .as_ref()
+                    .and_then(|before| crate::node::cpu::between(before, &now));
+                before = Some(now);
+
                 let mut live = Live {
                     services: cells,
-                    replicas: replica_cells(&state, &project).await,
+                    replicas: replica_cells(&state, &project, busy.as_ref()).await,
                     names: name_cells(&state, &project).await,
                     edges: edge_cells(&state, &project).await,
                 };

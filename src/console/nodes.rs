@@ -1479,6 +1479,16 @@ fn memory_card<'a>(
             // one nothing on this page said a word about. A machine that
             // runs out of it stops being able to write — a database first,
             // and then the node's own log and database.
+            // The other two ceilings a machine has. CPU arrives on the
+            // stream and only from the second tick — a percentage is the
+            // difference between two readings — so the server renders the
+            // dash it will replace rather than nothing, which would be a
+            // row that appears two seconds after the page.
+            <dl class="kv">
+                <dt>(t("CPU"))</dt>
+                <dd data-cell="cpu">("—")</dd>
+            </dl>
+
             @if filesystem.total > 0 {
                 <dl class="kv">
                     <dt>(t("Disk"))</dt>
@@ -2170,8 +2180,20 @@ impl NodeApi {
         let state = self.state.clone();
         let mut phase = state.certificates.watch();
         let stream = async_stream::stream! {
+            // The previous CPU reading, which is the whole of why this
+            // figure can exist here and nowhere else: a percentage is the
+            // difference between two samples, and a stream is the one
+            // place that naturally has both. The first tick carries none —
+            // there is nothing to subtract from — and the page shows a
+            // dash rather than a number that would mean "since boot".
+            let mut before: Option<crate::node::cpu::Sample> = None;
             loop {
                 let snapshot = state.deployer.memory().await;
+                let now = crate::node::cpu::sample(&state.deployer.cgroups().await);
+                let busy = before
+                    .as_ref()
+                    .and_then(|before| crate::node::cpu::between(before, &now));
+                before = Some(now);
                 let facts = super::certificate_facts(&state).await;
                 let domain =
                     crate::node::settings::domain(&state.database, &state.config).await;
@@ -2190,7 +2212,7 @@ impl NodeApi {
                     state.config.acme.disabled,
                 );
                 let payload = serde_json::to_string(&Live {
-                    inner: cells(&snapshot),
+                    inner: cells(&snapshot, busy.as_ref()),
                     certificate: certificate_cells(&certificate, &facts, domain.as_deref()),
                     errands: errand_cells(&state.database, &id).await,
                 })
@@ -2314,7 +2336,7 @@ struct Cells {
     bars: BTreeMap<String, String>,
 }
 
-fn cells(snapshot: &Snapshot) -> Cells {
+fn cells(snapshot: &Snapshot, busy: Option<&crate::node::cpu::Busy>) -> Cells {
     let containers = snapshot.containers_total();
     let runtime = snapshot.containerd + snapshot.shims;
 
@@ -2339,6 +2361,16 @@ fn cells(snapshot: &Snapshot) -> Cells {
                 memory::human(snapshot.swap_used),
                 memory::human(snapshot.swap_total)
             ),
+        ),
+        // A dash until there are two readings to subtract. Not "0 %": a
+        // machine at nought is a machine somebody would believe.
+        // Millicores, against what the machine has: a thousand is one
+        // core, and the capacity is what makes the first number mean
+        // something without knowing the box.
+        (
+            "cpu".to_string(),
+            busy.map(|busy| format!("{}m of {}m", busy.node, busy.capacity))
+                .unwrap_or_else(|| "—".into()),
         ),
     ]);
 
@@ -2381,7 +2413,7 @@ pub(crate) mod tests {
         let rendered = memory_card(&snapshot, &Default::default())
             .render()
             .into_inner();
-        let payload = cells(&snapshot);
+        let payload = cells(&snapshot, None);
 
         for key in payload.cells.keys() {
             // Swap is only rendered when the machine has some.
@@ -2413,7 +2445,7 @@ pub(crate) mod tests {
     fn a_streamed_bar_is_a_value_and_the_attribute_is_a_declaration() {
         let snapshot = snapshot();
 
-        for (key, value) in &cells(&snapshot).bars {
+        for (key, value) in &cells(&snapshot, None).bars {
             assert!(
                 !value.contains("width"),
                 "{key} carries a declaration where a value belongs: {value}"
@@ -2438,7 +2470,7 @@ pub(crate) mod tests {
             .render()
             .into_inner();
 
-        for value in cells(&snapshot).cells.values() {
+        for value in cells(&snapshot, None).cells.values() {
             if value.contains("of 0 B") {
                 continue; // swap, which this machine does not have
             }
