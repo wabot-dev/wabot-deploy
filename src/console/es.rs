@@ -153,6 +153,10 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
         "For any container in this project, on any node holding a copy. It names the database rather than an address, so it survives a redeployment and reads the same everywhere.",
         "Para cualquier contenedor de este proyecto, en cualquier nodo que sostenga una copia. Nombra la base de datos en lugar de una dirección, así que sobrevive a un redespliegue y se lee igual en todas partes.",
     ),
+    (
+        "For anything that is not HTTP — a queue, a socket, an engine with its own protocol. The node picks the outside port, and it is reachable from the whole internet unless a firewall says otherwise.",
+        "Para cualquier cosa que no sea HTTP — una cola, un socket, un motor con su propio protocolo. El nodo elige el puerto de fuera, y se llega desde todo internet salvo que un cortafuegos diga lo contrario.",
+    ),
     ("Forget", "Olvidar"),
     ("Forget this node", "Olvidar este nodo"),
     ("From", "De"),

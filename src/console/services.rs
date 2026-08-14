@@ -1227,9 +1227,16 @@ fn port_form<'a>(
                                 <input type="checkbox" name="publish" value="1">
                                 (t("Publish on the node's public address (raw TCP)"))
                             </label>
-                            <p class="field-hint">(t("For a database or anything that is not HTTP. The node \
-                                 picks the outside port. It is reachable from the whole \
-                                 internet unless a firewall says otherwise."))</p>
+                            // "For a database or anything that is not
+                            // HTTP" was right when this form was the only
+                            // way to expose one. A managed database has
+                            // its own card now and never reaches this
+                            // form, so the example named the one case that
+                            // no longer arrives here.
+                            <p class="field-hint">(t("For anything that is not HTTP — a queue, a \
+                                 socket, an engine with its own protocol. The node picks the \
+                                 outside port, and it is reachable from the whole internet \
+                                 unless a firewall says otherwise."))</p>
 
                             // Whether HTTPS is offered at all depends on the
                             // node having a domain. Without one, `add_port`
