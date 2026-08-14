@@ -482,6 +482,11 @@ pub fn database_card<'a>(
     // an authority that did not sign is as broken as leaving it out when it
     // did.
     signs_here: bool,
+    // The port the world reaches it on, when there is one. The strings
+    // above are the project's own; this is what makes the sentence under
+    // them true rather than a description of the product at some past
+    // moment.
+    published: Option<u16>,
 ) -> impl Renderable + 'a {
     // Only once it has an address, which is only once it has been
     // deployed. The names exist from the moment the database does — they
@@ -524,7 +529,7 @@ pub fn database_card<'a>(
                 <dd>(format!("{copies} ({standbys} read-only)"))</dd>
             </dl>
             @if let Some(strings) = &strings {
-                (connection_block(strings))
+                (connection_block(strings, published))
             } @else {
                 <p class="tile-detail">(t("It has no address yet. A connection string appears once \
                      it has been deployed."))</p>
@@ -846,7 +851,7 @@ fn value<'a>(which: &'a str, dsn: &'a str, copy: &'a str, copied: &'a str) -> im
     }
 }
 
-fn connection_block(strings: &Strings) -> impl Renderable + '_ {
+fn connection_block(strings: &Strings, published: Option<u16>) -> impl Renderable + '_ {
     // The words the island puts on the button it makes. Passed as data
     // because the script has no language and the account has one — the same
     // rule the badge words follow.
@@ -900,14 +905,24 @@ fn connection_block(strings: &Strings) -> impl Renderable + '_ {
                     }
                 </div>
 
-                // The one line that stops a name being read as a promise:
-                // it resolves inside the project whatever it is spelled
-                // like, and reaching the database from outside the node is
-                // a published port rather than a name.
-                <p class="field-hint">(t("Resolves in every container of this project, on any \
-                     node holding a copy — the long name in the world's DNS too. Neither \
-                     reaches the database from outside the node: that is a published port, \
-                     which is not built."))</p>
+                // The one line that stops a name being read as a promise —
+                // and it has to know whether the port is open, because it
+                // said "publishing is not built" for as long as that was
+                // true and went on saying it after Jorge published one.
+                // A hint that describes the product rather than this
+                // database is a hint that goes stale on its own.
+                @if let Some(port) = published {
+                    <p class="field-hint">
+                        (t("These reach it from inside the project, on any node holding a \
+                             copy. From outside the node it answers on the published port, \
+                             "))<span class="mono">(port.to_string())</span>(t(" — same name, \
+                             same certificate."))
+                    </p>
+                } @else {
+                    <p class="field-hint">(t("These reach it from inside the project, on any \
+                         node holding a copy — the long name resolves in the world's DNS too, \
+                         and nothing answers there until a port is published below."))</p>
+                }
             </div>
         </details>
     }
@@ -980,6 +995,7 @@ mod tests {
             None,
             &names,
             true,
+            None,
         )
         .render()
         .into_inner();
@@ -1063,7 +1079,7 @@ mod tests {
             .expect("replicas");
         let address = Some("10.42.2.200".to_string());
 
-        let public = database_card(&row, &replicas, address.clone(), None, &names, false)
+        let public = database_card(&row, &replicas, address.clone(), None, &names, false, None)
             .render()
             .into_inner();
         assert!(public.contains("@orders.db-test.node.example:5432/orders"));
@@ -1087,7 +1103,7 @@ mod tests {
             .filter(|name| !name.ends_with("node.example"))
             .cloned()
             .collect();
-        let bare = database_card(&row, &replicas, address, None, &short_only, true)
+        let bare = database_card(&row, &replicas, address, None, &short_only, true, None)
             .render()
             .into_inner();
         assert!(

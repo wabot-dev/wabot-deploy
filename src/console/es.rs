@@ -38,6 +38,7 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
         " — reserved for it, and not something a certificate can vouch for.",
         " — reservada para ella, y no algo por lo que un certificado pueda responder.",
     ),
+    (" — same name, same certificate.", " — mismo nombre, mismo certificado."),
     (
         " — the same name with -ro in its first label. Changing this reissues the certificate and rewrites the names inside every container of this project.",
         " — el mismo nombre con -ro en su primera etiqueta. Cambiarlo reemite el certificado y reescribe los nombres dentro de cada contenedor de este proyecto.",
@@ -382,6 +383,14 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
     ("The rows stay because they are what carries that news. Removing them here would leave the other node sending the same instruction again.", "Las filas se quedan porque son lo que lleva esa noticia. Quitarlas aquí dejaría al otro nodo mandando la misma instrucción otra vez."),
     ("The setup token was printed by `wabot-deploy install`. It works once, and it expires.", "El token de instalación lo imprimió `wabot-deploy install`. Funciona una vez, y caduca."),
     ("The slug is derived from the name, and it is what hostnames and containerd labels are built from.", "El slug se deriva del nombre, y es con lo que se construyen los nombres de host y las etiquetas de containerd."),
+    (
+        "These reach it from inside the project, on any node holding a copy — the long name resolves in the world's DNS too, and nothing answers there until a port is published below.",
+        "Estas llegan desde dentro del proyecto, en cualquier nodo que sostenga una copia — el nombre largo también resuelve en el DNS del mundo, y ahí no responde nada hasta que se publique un puerto abajo.",
+    ),
+    (
+        "These reach it from inside the project, on any node holding a copy. From outside the node it answers on the published port, ",
+        "Estas llegan desde dentro del proyecto, en cualquier nodo que sostenga una copia. Desde fuera del nodo responde en el puerto publicado, ",
+    ),
     ("They choose their own username and password. Nobody here ever sees it — which is the reason this is a link rather than a form that sets one for them.", "Elige su propio usuario y su contraseña. Aquí nadie la ve nunca — que es la razón de que esto sea un enlace y no un formulario que se la ponga."),
     (
         "This container was started before its output was being kept. Deploy it again and it will write from then on.",

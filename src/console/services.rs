@@ -474,6 +474,7 @@ impl ServicePages {
                                 policy.renew_with,
                                 crate::edge::policy::RenewWith::SelfSigned
                             )),
+                        ports.first().and_then(|port| port.host_port),
                     ))
                     @if let Some(name) = names.first() {
                         (super::databases::name_card(
@@ -509,6 +510,14 @@ impl ServicePages {
                     ))
                 }
 
+                // A managed database has no releases and no tag to watch:
+                // its image is written by the node, pinned to the major
+                // version the operator chose, and a push to this node's
+                // registry has nothing to do with it. The card said
+                // "nothing has been pushed yet — create a push token and
+                // push an image", which is an instruction that would
+                // achieve nothing here.
+                @if !service.kind.is_managed() {
                 <section class="stack">
                     <div class="split">
                         <p class="card-label">(t("Releases"))</p>
@@ -565,7 +574,17 @@ impl ServicePages {
                         </table>
                     }
                 </section>
+                }
 
+                // And its port is not this table's business. A database's
+                // is one row the node wrote, it answers no HTTPS name, and
+                // the "served also by" picker beside it chooses which
+                // public nodes proxy for a hostname — which for a database
+                // is a control that cannot do anything: an edge terminates
+                // TLS and proxies HTTP, and Postgres speaks neither. The
+                // name, the certificate and the published port each have a
+                // card of their own above.
+                @if !service.kind.is_managed() {
                 <section class="stack">
                     <p class="card-label">(t("Reachable at"))</p>
                     @if ports.is_empty() {
@@ -619,6 +638,7 @@ impl ServicePages {
                         </table>
                     }
                 </section>
+                }
         }
             .render()
             .into_inner()
@@ -1054,6 +1074,15 @@ impl ServicePages {
                     </section>
                 }
 
+                // A database's port is not a list to add to. It has
+                // exactly one, 5432, written by the node when the database
+                // was created — a second would be a port nothing listens
+                // on — and the HTTPS hostname this form asks for is a name
+                // an edge would serve, which is not something Postgres can
+                // be reached through. Its name, its certificate and its
+                // published port are three cards on the service's own
+                // page.
+                @if !service.kind.is_managed() {
                 <section class="stack">
                     <p class="card-label">(t("Ports"))</p>
                     @if ports.is_empty() {
@@ -1111,6 +1140,7 @@ impl ServicePages {
 
                     (port_form(&add, &suggestion, account.is_admin()))
                 </section>
+                }
 
                 <section class="card stack">
                     <p class="card-label">(t("Danger zone"))</p>
@@ -1135,7 +1165,7 @@ impl ServicePages {
                     }
                 </section>
 
-                @if !certificates.is_empty() {
+                @if !certificates.is_empty() && !service.kind.is_managed() {
                     <section class="stack">
                         <p class="card-label">(t("Certificates"))</p>
                         <p class="tile-detail">(t("One per hostname. A node with no public DNS, or a name a \
