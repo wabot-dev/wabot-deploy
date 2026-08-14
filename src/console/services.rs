@@ -315,11 +315,34 @@ impl ServicePages {
         // certificate is stored under — the first of the list, which is the
         // qualified one. A database always has a certificate, so unlike a
         // service there is no "none" to render.
-        let database_policy = match names.first() {
-            Some(name) => Some(
-                crate::edge::policy::for_name(&self.state.database, &self.state.config, name).await,
-            ),
-            None => None,
+        let (database_policy, database_cells) = match names.first() {
+            Some(name) => {
+                let facts = super::certificate_facts_for(&self.state, name).await;
+                let state = super::nodes::CertificateState::read(
+                    &facts,
+                    Some(name),
+                    // The name's own failure, not the node's: the node
+                    // records one reason for everything, and attributing
+                    // it here would be the console guessing.
+                    crate::edge::policy::for_name(&self.state.database, &self.state.config, name)
+                        .await
+                        .last_error,
+                    self.state.certificates.phase(),
+                    self.state.config.acme.disabled,
+                );
+                (
+                    Some(
+                        crate::edge::policy::for_name(
+                            &self.state.database,
+                            &self.state.config,
+                            name,
+                        )
+                        .await,
+                    ),
+                    Some(super::nodes::certificate_cells(&state, &facts, Some(name))),
+                )
+            }
+            None => (None, None),
         };
         let certificate_action = format!(
             "/projects/{}/services/{}/database/certificate",
@@ -327,6 +350,10 @@ impl ServicePages {
         );
         let name_action = format!(
             "/projects/{}/services/{}/database/name",
+            project.slug, service.slug
+        );
+        let publish_action = format!(
+            "/projects/{}/services/{}/database/publish",
             project.slug, service.slug
         );
 
@@ -455,8 +482,15 @@ impl ServicePages {
                             &crate::deploy::hosts::pool_name(name),
                         ))
                     }
-                    @if let Some(policy) = &database_policy {
-                        (super::databases::certificate_card(&certificate_action, policy))
+                    @if let (Some(policy), Some(cells)) = (&database_policy, &database_cells) {
+                        (super::databases::certificate_card(&certificate_action, policy, cells))
+                    }
+                    @if let Some(name) = names.first() {
+                        (super::databases::published_card(
+                            &publish_action,
+                            ports.first().and_then(|port| port.host_port),
+                            name,
+                        ))
                     }
                 }
 

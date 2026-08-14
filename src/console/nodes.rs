@@ -1180,7 +1180,7 @@ pub(crate) struct CertificateCells {
     pub(crate) badge: &'static str,
     pub(crate) dot: &'static str,
     note: &'static str,
-    failure: String,
+    pub(crate) failure: String,
 }
 
 pub(crate) fn certificate_cells(

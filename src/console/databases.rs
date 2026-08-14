@@ -263,6 +263,62 @@ impl DatabaseApi {
         Ok(see_other(&here))
     }
 
+    /// Open a port of this node's onto the database, or close it.
+    ///
+    /// Which is the only way anything outside the node reaches it: a
+    /// certificate makes the name verifiable, and this is what makes the
+    /// database answer. The two are separate because they fail separately
+    /// — a name with a good certificate and no port resolves to a machine
+    /// that says nothing.
+    ///
+    /// The primary only. A pool that answered from outside would need a
+    /// port per replica and something choosing between them, which is a
+    /// load balancer and has its own justification rather than being a
+    /// detail of this.
+    #[post("/projects/:project/services/:service/database/publish")]
+    #[raw]
+    #[middleware(SessionMiddleware)]
+    async fn publish(&self, request: Request) -> RestResult<Response> {
+        let path = request.uri().path().to_string();
+        let Some((_, service, here)) =
+            super::services::locate_for(&self.state, &self.auth, &path).await?
+        else {
+            return Ok(see_other("/"));
+        };
+        let form = match read_form(request).await {
+            Ok(form) => form,
+            Err(response) => return Ok(response),
+        };
+
+        let Some(port) = crate::platform::ports::of_service(&self.state.database, &service.id)
+            .await?
+            .into_iter()
+            .next()
+        else {
+            return Ok(back_with_error(&here, "this database has no port row"));
+        };
+
+        let publish = field(&form, "publish") == "on";
+        if let Err(error) =
+            crate::platform::ports::set_published(&self.state.database, &port.id, publish).await
+        {
+            return Ok(back_with_error(&here, &error.to_string()));
+        }
+
+        // Redeployed, because a published port is an iptables rule made
+        // when the container joins the network — not something that can be
+        // added to one already running.
+        let command = crate::deploy::jobs::DeployService {
+            service_id: service.id.clone(),
+            release_id: None,
+        };
+        if let Err(error) = wabot::async_jobs::run_command(&self.state.container, &command).await {
+            tracing::error!(service = %service.id, %error, "could not queue a deployment");
+        }
+
+        Ok(see_other(&here))
+    }
+
     /// Where this database's certificate comes from.
     ///
     /// **ACME is refused unless both names resolve to this node**, and both
@@ -667,6 +723,11 @@ pub fn name_card<'a>(action: &'a str, name: &'a str, pool: &'a str) -> impl Rend
 pub fn certificate_card<'a>(
     action: &'a str,
     policy: &'a crate::edge::policy::Policy,
+    // What the node holds for this name right now. A source without a state
+    // is a page saying what was *asked for* and never what happened —
+    // which is what sent Jorge to `doctor` to find out whether his
+    // certificate had been issued.
+    cells: &'a super::nodes::CertificateCells,
 ) -> impl Renderable + 'a {
     let signs_here = matches!(
         policy.renew_with,
@@ -674,7 +735,25 @@ pub fn certificate_card<'a>(
     );
     rsx! {
         <section class="card stack">
-            <p class="card-label">(t("Certificate"))</p>
+            <div class="split">
+                <p class="card-label">(t("Certificate"))</p>
+                <span class=(cells.badge)>
+                    <span class=(cells.dot)></span>(t(cells.word))
+                </span>
+            </div>
+
+            // The same three facts a service's name shows, because it is
+            // the same question about a different name.
+            <dl class="kv">
+                <dt>(t("Issuer"))</dt>
+                <dd>(&cells.issuer)</dd>
+                <dt>(t("Renews in"))</dt>
+                <dd>(&cells.renews)</dd>
+            </dl>
+            @if !cells.failure.is_empty() {
+                <p class="failure">(&cells.failure)</p>
+            }
+
             (super::nodes::certificate_source_form(action, policy))
             @if signs_here {
                 <p class="field-hint">(t("This node signs it, so a client has to be given the \
@@ -690,6 +769,65 @@ pub fn certificate_card<'a>(
                      with the trust store it already has — the connection string needs no \
                      certificate of its own."))</p>
             }
+        </section>
+    }
+}
+
+/// Whether the world can reach this database, and on what port.
+///
+/// **The number is the node's to choose.** Two databases on one machine
+/// cannot share a host port, and asking for one would be asking somebody
+/// to remember what every other service on the node already took — the
+/// allocator picks the lowest free one out of the node's range and the
+/// unique index is what makes that safe.
+///
+/// Separate from the certificate, because they answer different questions
+/// and Jorge named the difference: a certificate makes a name *verifiable*
+/// and a port makes the database *reachable*. Until this is on, the name
+/// resolves from outside and nothing answers.
+pub fn published_card<'a>(
+    action: &'a str,
+    host_port: Option<u16>,
+    name: &'a str,
+) -> impl Renderable + 'a {
+    rsx! {
+        <section class="card stack">
+            <div class="split">
+                <p class="card-label">(t("From outside the node"))</p>
+                @if host_port.is_some() {
+                    <span class="badge badge-success">
+                        <span class="dot dot-success"></span>(t("Published"))
+                    </span>
+                } @else {
+                    <span class="badge">(t("Not published"))</span>
+                }
+            </div>
+
+            @if let Some(port) = host_port {
+                <dl class="kv">
+                    <dt>(t("Reachable at"))</dt>
+                    <dd class="mono">(name)(":")(port.to_string())</dd>
+                </dl>
+                <p class="field-hint">(t("The node chose the port, so it cannot collide with \
+                     another database's. It survives a redeployment and changes only if you \
+                     turn this off and on again."))</p>
+            } @else {
+                <p class="field-hint">(t("The name already resolves from outside and nothing \
+                     answers there. Publishing opens a port on every interface of this node \
+                     and maps it to the primary."))</p>
+            }
+
+            <form method="post" action=(action)>
+                @if host_port.is_some() {
+                    <input type="hidden" name="publish" value="off">
+                    <button class="btn btn-ghost destructive" type="submit">
+                        (t("Stop publishing"))
+                    </button>
+                } @else {
+                    <input type="hidden" name="publish" value="on">
+                    <button class="btn btn-secondary" type="submit">(t("Publish"))</button>
+                }
+            </form>
         </section>
     }
 }

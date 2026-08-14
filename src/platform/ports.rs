@@ -247,6 +247,51 @@ pub async fn set_hostname(
     Ok(())
 }
 
+/// Publish this port on a free one of the node's, or stop publishing it.
+///
+/// **The number is the node's to choose, not the operator's.** Two
+/// databases on one machine cannot share a host port, and a form that
+/// asked for one would be asking somebody to remember what every other
+/// service on the node already took. `free_host_port` picks the lowest
+/// free one out of `HOST_PORT_RANGE`, and the unique index is what makes
+/// that safe rather than the lookup — two concurrent publishes can both
+/// see the same number free, and the loser is told to try again.
+///
+/// Idempotent: a port already published keeps the number it has. An
+/// allocation that moved would break every client holding the old one, to
+/// no purpose.
+pub async fn set_published(
+    database: &SqliteDatabase,
+    id: &str,
+    publish: bool,
+) -> PlatformResult<Option<u16>> {
+    let existing = all(database)
+        .await?
+        .into_iter()
+        .find(|port| port.id == id)
+        .ok_or_else(|| PlatformError::Refused("no such port".into()))?;
+
+    let host_port = match (publish, existing.host_port) {
+        (true, Some(held)) => return Ok(Some(held)),
+        (true, None) => Some(free_host_port(database).await?),
+        (false, None) => return Ok(None),
+        (false, Some(_)) => None,
+    };
+
+    let (id, stored) = (id.to_string(), host_port.map(i64::from));
+    database
+        .write(move |connection| {
+            connection.execute(
+                "UPDATE port SET \"host_port\" = ?2 WHERE \"id\" = ?1",
+                (id, stored),
+            )?;
+            Ok(())
+        })
+        .await
+        .map_err(|error| refusal(error, existing.container_port, &None))?;
+    Ok(host_port)
+}
+
 pub async fn delete(database: &SqliteDatabase, id: &str) -> PlatformResult<()> {
     let id = id.to_string();
     database
@@ -290,6 +335,72 @@ pub fn normalize_hostname(hostname: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    /// The node picks the number, and it does not move.
+    ///
+    /// Two databases on one machine cannot share a host port, so asking an
+    /// operator for one would be asking them to remember what everything
+    /// else on the node already took. And a port that moved on the next
+    /// publish would break every client holding the old one — which is why
+    /// publishing something already published is a no-op rather than a
+    /// fresh allocation.
+    #[tokio::test]
+    async fn publishing_picks_a_free_port_and_keeps_it() {
+        let database = crate::db::open_in_memory().await.expect("open");
+        let project = crate::platform::projects::create(&database, "shared")
+            .await
+            .expect("project");
+        let mut ports = Vec::new();
+        for name in ["one", "two"] {
+            let service = crate::platform::services::create(
+                &database,
+                &project.id,
+                name,
+                "registry.example/db@sha256:abc",
+                &[],
+            )
+            .await
+            .expect("service");
+            ports.push(
+                create(&database, &service.id, 5432, false, None)
+                    .await
+                    .expect("port"),
+            );
+        }
+
+        let first = set_published(&database, &ports[0].id, true)
+            .await
+            .expect("published")
+            .expect("a number");
+        let second = set_published(&database, &ports[1].id, true)
+            .await
+            .expect("published")
+            .expect("a number");
+        assert_ne!(first, second, "two databases cannot share one host port");
+        assert!(HOST_PORT_RANGE.contains(&first) && HOST_PORT_RANGE.contains(&second));
+
+        assert_eq!(
+            set_published(&database, &ports[0].id, true)
+                .await
+                .expect("again"),
+            Some(first),
+            "a port already published keeps the number clients are holding"
+        );
+
+        assert_eq!(
+            set_published(&database, &ports[0].id, false)
+                .await
+                .expect("closed"),
+            None
+        );
+        // And the number goes back into the pool rather than being burnt.
+        assert_eq!(
+            set_published(&database, &ports[0].id, true)
+                .await
+                .expect("republished"),
+            Some(first)
+        );
+    }
+
     use super::*;
 
     async fn service() -> (SqliteDatabase, String) {
