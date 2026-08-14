@@ -43,6 +43,13 @@ pub struct Replica {
     /// cannot move when the container is recreated, and `host-local`
     /// hands out the lowest free one.
     pub reserved_host: Option<u8>,
+    /// What it was using when the node running it last said so.
+    ///
+    /// The one field on this row that is a **measurement** rather than a
+    /// decision, which is why it is deliberately not part of what makes a
+    /// report count as news — see migration `0034`. A copy here is read
+    /// from its cgroup instead; this is for the ones that are not.
+    pub memory_bytes: Option<u64>,
 }
 
 impl Replica {
@@ -178,6 +185,7 @@ pub async fn place(
         last_error: None,
         evicted_at: None,
         reserved_host: None,
+        memory_bytes: None,
     };
 
     let row = replica.clone();
@@ -497,6 +505,29 @@ pub async fn set_overlay_port(
     Ok(())
 }
 
+/// What a copy elsewhere is using, as its own node measured it.
+///
+/// Written by the report and by nothing else: this node cannot read
+/// another machine's cgroups, and a figure it produced for one would be a
+/// number somebody could act on and nobody measured.
+pub async fn set_memory(
+    database: &SqliteDatabase,
+    id: &str,
+    bytes: Option<u64>,
+) -> PlatformResult<()> {
+    let (id, bytes) = (id.to_string(), bytes.map(|bytes| bytes as i64));
+    database
+        .write(move |connection| {
+            connection.execute(
+                "UPDATE replica SET \"memory_bytes\" = ?2 WHERE \"id\" = ?1",
+                (id, bytes),
+            )?;
+            Ok(())
+        })
+        .await?;
+    Ok(())
+}
+
 /// Why this copy is not running, or that it is.
 pub async fn set_last_error(
     database: &SqliteDatabase,
@@ -549,7 +580,8 @@ pub async fn remove(database: &SqliteDatabase, id: &str) -> PlatformResult<()> {
 }
 
 const COLUMNS: &str = "\"id\", \"service_id\", \"node_id\", \"slot\", \"address\", \
-                       \"last_error\", \"evicted_at\", \"overlay_port\", \"reserved_host\"";
+                       \"last_error\", \"evicted_at\", \"overlay_port\", \"reserved_host\", \
+                       \"memory_bytes\"";
 
 fn decode(row: &Row<'_>) -> wabot::sqlite::rusqlite::Result<Replica> {
     Ok(Replica {
@@ -562,6 +594,7 @@ fn decode(row: &Row<'_>) -> wabot::sqlite::rusqlite::Result<Replica> {
         evicted_at: row.get(6)?,
         overlay_port: row.get::<_, Option<i64>>(7)?.map(|port| port as u16),
         reserved_host: row.get::<_, Option<i64>>(8)?.map(|host| host as u8),
+        memory_bytes: row.get::<_, Option<i64>>(9)?.map(|bytes| bytes as u64),
     })
 }
 
@@ -595,6 +628,7 @@ mod tests {
             last_error: None,
             evicted_at: None,
             reserved_host: None,
+            memory_bytes: None,
         };
 
         assert_eq!(replica(1).container_id("demo", "web"), "demo.web");

@@ -303,6 +303,7 @@ mod tests {
             last_error: None,
             evicted_at: None,
             reserved_host: None,
+            memory_bytes: None,
         };
 
         assert_eq!(

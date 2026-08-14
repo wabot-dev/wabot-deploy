@@ -171,7 +171,7 @@ async fn from_one(
     // asking for more work — so an authority queueing something has just
     // heard the truth about what is already there, and a replica evicted
     // here stops being asked for in the same round trip.
-    report_to(database, node_id, &endpoint, &secret).await;
+    report_to(database, container, node_id, &endpoint, &secret).await;
 
     let waiting = match super::call::errands(&endpoint, &secret).await {
         Ok(waiting) => waiting,
@@ -208,7 +208,7 @@ async fn from_one(
     // finishes, from `deploy::jobs`. Reporting a deployment here would
     // send the state from before it ran and call it news.
     if settled > 0 {
-        report_to(database, node_id, &endpoint, &secret).await;
+        report_to(database, container, node_id, &endpoint, &secret).await;
     }
     settled
 }
@@ -224,7 +224,7 @@ async fn from_one(
 ///
 /// Quiet on failure by design: this is an extra, and the loop is what
 /// guarantees the state gets there eventually.
-pub async fn report_now(database: &SqliteDatabase) {
+pub async fn report_now(database: &SqliteDatabase, container: &Container) {
     let authorities = match super::authorities(database).await {
         Ok(authorities) => authorities,
         Err(error) => {
@@ -242,7 +242,7 @@ pub async fn report_now(database: &SqliteDatabase) {
             _ => None,
         };
         let Some(endpoint) = endpoint else { continue };
-        report_to(database, &authority.node_id, &endpoint, &secret).await;
+        report_to(database, container, &authority.node_id, &endpoint, &secret).await;
     }
 }
 
@@ -254,8 +254,14 @@ pub async fn report_now(database: &SqliteDatabase) {
 /// nothing is exactly the one that has never been given work, so it
 /// stayed private on its authority for ever and could never be chosen as
 /// an edge — which is the whole of what that field was added for.
-async fn report_to(database: &SqliteDatabase, node_id: &str, endpoint: &str, secret: &str) {
-    match report_for(database, node_id).await {
+async fn report_to(
+    database: &SqliteDatabase,
+    container: &Container,
+    node_id: &str,
+    endpoint: &str,
+    secret: &str,
+) {
+    match report_for(database, container, node_id).await {
         Ok(report) => {
             if let Err(error) = super::call::report(endpoint, secret, &report).await {
                 tracing::debug!(%error, authority = %node_id, "could not report");
@@ -273,12 +279,24 @@ async fn report_to(database: &SqliteDatabase, node_id: &str, endpoint: &str, sec
 /// the console shows.
 async fn report_for(
     database: &SqliteDatabase,
+    container: &Container,
     authority: &str,
 ) -> Result<super::api::Report, String> {
     let projects = projects::all(database)
         .await
         .map_err(|error| error.to_string())?;
     let mut replicas = Vec::new();
+
+    // What each container here is using, read once for the whole report.
+    // The node that placed these copies cannot read this machine's
+    // cgroups, so if the figure does not travel it does not exist there.
+    let used = match container.try_resolve::<crate::deploy::Deployer>() {
+        Ok(deployer) => deployer.memory().await.containers,
+        // No deployer is no containerd, which is every test in this file
+        // and a node whose runtime will not answer. The report is still
+        // worth sending: the rest of it is rows.
+        Err(_) => Default::default(),
+    };
 
     for project in projects
         .iter()
@@ -302,6 +320,9 @@ async fn report_for(
                     overlay_port: replica.overlay_port,
                     error: replica.last_error.clone(),
                     evicted: replica.evicted(),
+                    memory: used
+                        .get(&replica.container_id(&project.slug, &service.slug))
+                        .copied(),
                 });
             }
         }
@@ -1062,7 +1083,12 @@ mod tests {
             .await
             .expect("self");
 
-        let report = report_for(&database, "nd-authority").await.expect("report");
+        // No deployer registered, which is what a test has and what a node
+        // whose containerd will not answer has: the report is still worth
+        // sending, and the memory figures are simply absent.
+        let report = report_for(&database, &Container::new(), "nd-authority")
+            .await
+            .expect("report");
 
         assert!(report.replicas.is_empty(), "nothing was placed here");
         assert_eq!(report.endpoint.as_deref(), Some("alpine.example:443"));

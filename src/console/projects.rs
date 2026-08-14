@@ -1717,6 +1717,7 @@ mod tests {
                 last_error: None,
                 evicted_at: None,
                 reserved_host: None,
+                memory_bytes: None,
             };
 
         // The ordinary case, and the useful one.

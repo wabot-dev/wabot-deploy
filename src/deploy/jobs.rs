@@ -82,6 +82,10 @@ pub struct DeployService {
 pub struct DeployHandler {
     deployer: Arc<super::Deployer>,
     database: Arc<wabot::sqlite::SqliteDatabase>,
+    /// For the report this sends when a deployment finishes: reading what
+    /// each container is using needs the deployer, and it is resolved out
+    /// of here rather than held twice.
+    container: Container,
 }
 
 impl DeployHandler {
@@ -161,7 +165,7 @@ impl DeployHandler {
                 //
                 // A no-op on a node that takes instructions from nobody,
                 // which is every single-node install.
-                crate::network::collect::report_now(&self.database).await;
+                crate::network::collect::report_now(&self.database, &self.container).await;
                 outcome
             }
             Some(id) => {

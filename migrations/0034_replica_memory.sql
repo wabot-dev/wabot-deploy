@@ -1,0 +1,31 @@
+-- What a copy on another node is using, as that node last said.
+--
+-- ## Why it is stored rather than asked for
+--
+-- The owner of a service cannot read another machine's cgroups, and the
+-- console showed `—` for every copy placed elsewhere. That was honest and
+-- it was the wrong shape: the answer already travels. A node reports what
+-- it is holding every fifteen seconds, and every field that had to cross —
+-- the address, the overlay port, the failure, the endpoint, what the node
+-- allows, its certificate authority — got there this way. This is one
+-- more.
+--
+-- ## Why it must not count as a change
+--
+-- `api::record` answers whether something *moved*, and the caller rebuilds
+-- the route table, rewrites every container's /etc/hosts and wakes the
+-- certificate loop when it does. Memory changes on every reading — it is
+-- a live figure, not a fact — so treating it as news would rebuild the
+-- node's derived state every fifteen seconds for ever. That bug shipped
+-- once already, for a different reason, and cost 41 route rebuilds in ten
+-- minutes.
+--
+-- So this column is written and deliberately excluded from what makes a
+-- report interesting. It is the one field on this row that is a
+-- measurement rather than a decision.
+--
+-- Null is a copy that has never been reported on, a copy that is not
+-- running, and every copy on a node that has not upgraded yet. The page
+-- says nothing rather than zero: a database using no memory is not a
+-- reading anybody should believe.
+ALTER TABLE replica ADD COLUMN memory_bytes INTEGER;

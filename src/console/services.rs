@@ -1403,6 +1403,9 @@ fn running_card<'a>(
 ) -> impl Renderable + 'a {
     let live: Vec<&crate::platform::replicas::Replica> =
         placements.iter().filter(|r| !r.evicted()).collect();
+    // This node's own, which is the figure somebody sizing this machine
+    // wants — a total across the network would answer a question nobody
+    // asked while hiding the one they did.
     let here: u64 = live
         .iter()
         .filter_map(|replica| {
@@ -1447,14 +1450,18 @@ fn running_card<'a>(
                                         }),
                                     ))
                                 </td>
+                                // A copy here is read from its cgroup; one
+                                // elsewhere is whatever its own node last
+                                // reported, which is the only way that
+                                // figure can exist on this machine. Still
+                                // "—" when neither has one, because a
+                                // database using no memory is not a
+                                // reading anybody should believe.
                                 <td class="mono">(
                                     used.get(&replica.container_id(project_slug, service_slug))
-                                        .map(|bytes| crate::node::memory::human(*bytes))
-                                        // Not zero, and not "unknown": a
-                                        // copy on another machine is
-                                        // measured by that machine, and a
-                                        // figure invented here would be a
-                                        // number somebody could act on.
+                                        .copied()
+                                        .or(replica.memory_bytes)
+                                        .map(crate::node::memory::human)
                                         .unwrap_or_else(|| "—".into())
                                 )</td>
                             </tr>
@@ -3251,6 +3258,7 @@ mod tests {
             last_error: None,
             evicted_at: None,
             reserved_host: None,
+            memory_bytes: None,
         };
 
         // Through the renderer, which reads the one decision the stream
@@ -3298,6 +3306,7 @@ mod tests {
             last_error: None,
             evicted_at: None,
             reserved_host: None,
+            memory_bytes: None,
         };
 
         for (stopped, queued) in [(true, false), (false, true), (false, false)] {

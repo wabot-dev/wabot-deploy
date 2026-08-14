@@ -170,6 +170,17 @@ pub struct ReplicaState {
     /// one.
     #[serde(default)]
     pub evicted: bool,
+    /// What it is using, from the cgroup of the machine running it.
+    ///
+    /// The owner of a service cannot read another node's cgroups, so this
+    /// is the only way the figure can exist there — the same reason the
+    /// address and the failure travel. `None` from a node that has not
+    /// upgraded, and from a copy that is not running.
+    ///
+    /// **It is a measurement, not a decision**, and that difference has
+    /// teeth: see `record`, which must not treat a new figure as news.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub memory: Option<u64>,
 }
 
 /// A refusal, in the shape the other end knows how to print.
@@ -799,6 +810,21 @@ async fn record(
                 || replica.last_error.as_deref() != state.error.as_deref()
         }
     };
+
+    // Written on every report, and **never** part of `changed`.
+    //
+    // Memory is a live figure: it differs on every reading, so counting it
+    // as movement would make every report say "something moved" — and the
+    // caller answers that by rebuilding the route table, rewriting every
+    // container's `/etc/hosts` and waking the certificate loop. That is
+    // exactly the storm this function was fixed for earlier today, and it
+    // would come back through a field nobody thought of as a decision.
+    if !state.evicted && replica.memory_bytes != state.memory {
+        crate::platform::replicas::set_memory(database, &replica.id, state.memory)
+            .await
+            .map_err(|error| super::NetworkError::Refused(error.to_string()))?;
+    }
+
     if !changed {
         return Ok(false);
     }
@@ -1419,6 +1445,7 @@ mod tests {
             overlay_port: Some(30001),
             error: None,
             evicted: false,
+            memory: None,
         };
 
         let first = record(&authority.database, "nd-joining001", &reported("10.42.2.5"))
@@ -1435,6 +1462,66 @@ mod tests {
             .await
             .expect("recorded");
         assert!(moved, "an address that changed is news again");
+    }
+
+    /// A figure that differs on every reading is not a change.
+    ///
+    /// Memory travels on the report because the node that placed a copy
+    /// cannot read another machine's cgroups — but it is a measurement,
+    /// and `true` here means "something moved", which the caller answers
+    /// by rebuilding the route table, rewriting every container's
+    /// `/etc/hosts` and waking the certificate loop. Counting a new figure
+    /// as news would bring back the storm this function was fixed for, on
+    /// a field nobody thinks of as a decision.
+    ///
+    /// It is still *written*: the page reads it, and a stale number is
+    /// worse than none.
+    #[tokio::test]
+    async fn a_new_memory_figure_is_stored_and_is_not_news() {
+        let authority = authority().await;
+        authority
+            .harness
+            .post("/api/network/join")
+            .header("authorization", format!("Bearer {}", authority.secret))
+            .json(&arriving())
+            .send()
+            .await
+            .assert_ok();
+        let placed = placed_there(&authority, 2).await;
+
+        let reporting = |bytes: u64| ReplicaState {
+            project: "shared".into(),
+            service: "web".into(),
+            slot: 2,
+            address: Some("10.42.2.5".into()),
+            overlay_port: Some(30001),
+            error: None,
+            evicted: false,
+            memory: Some(bytes),
+        };
+
+        assert!(
+            record(&authority.database, "nd-joining001", &reporting(1_000))
+                .await
+                .expect("recorded"),
+            "the address is news the first time"
+        );
+        assert!(
+            !record(&authority.database, "nd-joining001", &reporting(2_000))
+                .await
+                .expect("recorded"),
+            "a different figure on its own is not"
+        );
+
+        let after = crate::platform::replicas::in_slot(&authority.database, &placed, 2)
+            .await
+            .expect("query")
+            .expect("there");
+        assert_eq!(
+            after.memory_bytes,
+            Some(2_000),
+            "and it is written anyway, or the page shows a stale number"
+        );
     }
 
     /// An eviction is recorded once, for the same reason: the node that
@@ -1461,6 +1548,7 @@ mod tests {
             overlay_port: None,
             error: None,
             evicted: true,
+            memory: None,
         };
 
         assert!(
