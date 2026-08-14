@@ -219,7 +219,9 @@ days holding 702 MB — 37 % of the machine — and that, not the size of
 the binary, is what had made building impossible.
 
 Never fabricate a session or a token in the node's database to test a
-page. Ask for the click. That is also why **anything visual has to be
+page. Ask for the click. (`wabot-deploy passwd <username>` exists for the
+operator who is locked out of their own node — that is recovery, not a way
+to conjure a session for a test.) That is also why **anything visual has to be
 looked at by somebody**: without a session the console answers 302, so
 four UI faults in one afternoon — a repeated word, a hard-to-hit
 control, a misaligned icon, a password manager hijacking a field — were

@@ -392,6 +392,56 @@ pub async fn set_language(
 ///
 /// `None` for both "no such user" and "wrong password", deliberately:
 /// telling them apart tells an attacker which usernames exist.
+/// Replace an account's password with a freshly generated one.
+///
+/// **Generated rather than taken as an argument**, and the difference is
+/// not politeness: a password on a command line lands in shell history, in
+/// the process table while it runs, and in whatever the terminal scrolled
+/// past. This one is printed once and stored as a hash like every other.
+///
+/// Matched case-insensitively, the way signing in matches it — an operator
+/// recovering an account should not have to remember how they capitalised
+/// it.
+pub async fn reset_password(
+    database: &SqliteDatabase,
+    username: &str,
+) -> AccountResult<(String, String)> {
+    let lookup = username.trim().to_lowercase();
+    // Long enough that it is not worth attacking, and made of the same
+    // alphabet as every other secret this node prints so it survives being
+    // copied out of a terminal.
+    let password = wabot::prelude::password::generate(24);
+    let hash = wabot::prelude::password::hash(&password)
+        .map_err(|error| AccountError::Hash(error.to_string()))?;
+
+    let (found, stored) = (lookup.clone(), hash);
+    let name: Option<String> = database
+        .write(move |connection| {
+            let name: Option<String> = connection
+                .query_row(
+                    "SELECT \"username\" FROM account WHERE lower(\"username\") = ?1",
+                    [&found],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            if name.is_some() {
+                connection.execute(
+                    "UPDATE account SET \"password_hash\" = ?2 WHERE lower(\"username\") = ?1",
+                    (&found, &stored),
+                )?;
+            }
+            Ok(name)
+        })
+        .await?;
+
+    match name {
+        Some(name) => Ok((name, password)),
+        None => Err(AccountError::Refused(format!(
+            "no account here is called {username}"
+        ))),
+    }
+}
+
 pub async fn authenticate(
     database: &SqliteDatabase,
     username: &str,
@@ -586,6 +636,54 @@ mod tests {
             .expect("created");
         assert_eq!(account.username, "jorge");
         assert!(any_account(&database).await.expect("query"));
+    }
+
+    /// The way back into a node whose only administrator forgot their
+    /// password — which, until this existed, was a reinstall.
+    ///
+    /// The old password stops working in the same breath, because the
+    /// point is recovery and not a second key: an account with two
+    /// passwords is one whose owner cannot tell whether the one they had
+    /// was stolen.
+    #[tokio::test]
+    async fn a_forgotten_password_can_be_replaced_and_the_old_one_stops() {
+        let database = database().await;
+        let token = issue_setup_token(&database).await.expect("token");
+        create_admin(&database, &token, "Jorge", "correct horse battery")
+            .await
+            .expect("created");
+
+        // Matched the way signing in matches it: an operator recovering an
+        // account should not have to remember how they capitalised it.
+        let (name, password) = reset_password(&database, "jorge").await.expect("reset");
+        assert_eq!(name, "Jorge", "and the answer says whose it was");
+
+        assert!(authenticate(&database, "jorge", &password)
+            .await
+            .expect("query")
+            .is_some());
+        assert!(
+            authenticate(&database, "jorge", "correct horse battery")
+                .await
+                .expect("query")
+                .is_none(),
+            "the password they lost is not still a way in"
+        );
+    }
+
+    /// A name nobody has is refused rather than quietly creating one: the
+    /// setup token is the only thing that mints an account, and a typo
+    /// here must not become a second administrator.
+    #[tokio::test]
+    async fn resetting_a_name_that_is_not_here_makes_nobody() {
+        let database = database().await;
+        let token = issue_setup_token(&database).await.expect("token");
+        create_admin(&database, &token, "jorge", "correct horse battery")
+            .await
+            .expect("created");
+
+        assert!(reset_password(&database, "someone-else").await.is_err());
+        assert_eq!(all(&database).await.expect("query").len(), 1);
     }
 
     /// The whole reason the token exists. Without it, whoever reaches

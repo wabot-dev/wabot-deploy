@@ -8,5 +8,6 @@ pub mod containerd;
 pub mod doctor;
 pub mod install;
 pub mod join;
+pub mod passwd;
 pub mod serve;
 pub mod setup_token;

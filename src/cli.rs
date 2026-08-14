@@ -61,6 +61,25 @@ pub enum Command {
     /// operator who has to hand one to somebody else.
     SetupToken,
 
+    /// Give an account a new password, and print it.
+    ///
+    /// Because a node whose only administrator forgot their password had
+    /// no way back in: the setup token refuses once an account exists —
+    /// deliberately, it is what stops a second administrator being minted
+    /// — and nothing else could write a password. The console was locked
+    /// and the machine was fine.
+    ///
+    /// This grants nothing new. Whoever runs it already has root on the
+    /// box, which means the binary, the database and every container; a
+    /// recovery path that root does not have is a lock on a door with no
+    /// wall. What it does is make the recovery obvious instead of a
+    /// reinstall.
+    Passwd {
+        /// Whose. Matched the way signing in matches it — case-insensitive.
+        #[arg(value_name = "USERNAME")]
+        username: String,
+    },
+
     /// Talk to containerd and report what it says.
     ///
     /// Not part of running a node: it exists because the containerd
@@ -199,6 +218,19 @@ mod tests {
     #[test]
     fn the_command_tree_is_well_formed() {
         Cli::command().debug_assert();
+    }
+
+    /// The way back in takes a name, because a node has more than one
+    /// account and a reset with no argument would be a coin toss about
+    /// whose password just changed.
+    #[test]
+    fn passwd_takes_whose() {
+        let cli = Cli::parse_from(["wabot-deploy", "passwd", "jorge"]);
+        assert!(matches!(cli.command, Command::Passwd { username } if username == "jorge"));
+        assert!(
+            Cli::try_parse_from(["wabot-deploy", "passwd"]).is_err(),
+            "and it will not guess"
+        );
     }
 
     #[test]

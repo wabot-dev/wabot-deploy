@@ -68,6 +68,7 @@ fn main() -> std::process::ExitCode {
             Command::Doctor => commands::doctor::run(config, &cli.config).await,
             Command::Join { token } => commands::join::run(config, &token).await,
             Command::SetupToken => commands::setup_token::run(config).await,
+            Command::Passwd { username } => commands::passwd::run(config, &username).await,
             Command::Containerd { pull, run, port } => {
                 commands::containerd::run(pull, run, port).await
             }
