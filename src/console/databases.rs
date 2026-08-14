@@ -170,6 +170,99 @@ pub struct DatabaseApi {
 
 #[rest_controller("/")]
 impl DatabaseApi {
+    /// What this database is called.
+    ///
+    /// The name is written and everything derived from it follows in the
+    /// same request: the certificate is reissued under the new name and
+    /// handed to the running servers, and the project's containers get
+    /// their `/etc/hosts` rewritten. A rename that left either behind would
+    /// be a page saying one name while the database answered to another.
+    ///
+    /// No DNS check here, deliberately. A name signed by this node needs to
+    /// resolve nowhere but inside the project — that is the ordinary case —
+    /// and the check belongs where the answer matters, which is the moment
+    /// somebody asks a public authority for it.
+    #[post("/projects/:project/services/:service/database/name")]
+    #[raw]
+    #[middleware(SessionMiddleware)]
+    async fn name(&self, request: Request) -> RestResult<Response> {
+        let path = request.uri().path().to_string();
+        let Some((project, service, here)) =
+            super::services::locate_for(&self.state, &self.auth, &path).await?
+        else {
+            return Ok(see_other("/"));
+        };
+        let form = match read_form(request).await {
+            Ok(form) => form,
+            Err(response) => return Ok(response),
+        };
+
+        let typed = crate::platform::ports::normalize_hostname(field(&form, "name"));
+        if typed.is_empty() {
+            return Ok(back_with_error(
+                &here,
+                "a database is reached by name, so it has to have one",
+            ));
+        }
+
+        let was = crate::deploy::certificate_names(
+            &self.state.database,
+            &self.state.config,
+            &project,
+            &service,
+        )
+        .await
+        .into_iter()
+        .next();
+
+        let Some(port) = crate::platform::ports::of_service(&self.state.database, &service.id)
+            .await?
+            .into_iter()
+            .next()
+        else {
+            return Ok(back_with_error(&here, "this database has no port row"));
+        };
+        if let Err(error) =
+            crate::platform::ports::set_hostname(&self.state.database, &port.id, Some(&typed)).await
+        {
+            return Ok(back_with_error(&here, &error.to_string()));
+        }
+
+        // The choice of certificate follows the name it was made about. A
+        // policy left on the old one would be an answer nothing reads and a
+        // new name quietly back on the default.
+        if let Some(was) = was.filter(|was| was != &typed) {
+            let policy =
+                crate::edge::policy::for_name(&self.state.database, &self.state.config, &was).await;
+            if let Err(error) = super::nodes::store_source(
+                &self.state.database,
+                &self.state.config,
+                &typed,
+                &policy.renew_with,
+            )
+            .await
+            {
+                return Ok(back_with_error(&here, &error));
+            }
+            if let Err(error) = crate::edge::policy::clear(&self.state.database, &was).await {
+                tracing::warn!(%was, %error, "could not forget the old name's certificate source");
+            }
+        }
+
+        // Issued under the new name and handed to whatever is running,
+        // which is what `refresh_certificates` does on its own timer — the
+        // rename only makes it worth doing now.
+        if let Err(error) = self.state.deployer.refresh_certificates().await {
+            tracing::warn!(%error, "could not reissue after the rename");
+        }
+        // And the names inside the containers, which is where this name is
+        // resolved from.
+        self.state.deployer.sync_routes().await;
+        self.state.certificates.now();
+
+        Ok(see_other(&here))
+    }
+
     /// Where this database's certificate comes from.
     ///
     /// **ACME is refused unless both names resolve to this node**, and both
@@ -483,6 +576,40 @@ impl Strings {
 /// The copy button is **revealed** by the `copy` island rather than
 /// rendered: with scripting off a button that cannot copy is a control that
 /// lies, and the text is selectable either way.
+/// What this database is called.
+///
+/// **A database always has a name**, unlike a service: a name is how it is
+/// reached and how its certificate is verified, and there is no version of
+/// this that works without one. So the field is never empty — it starts at
+/// what every database had before a name could be chosen,
+/// `<service>.<project>.<the node's domain>`, and the operator may put
+/// anything there, including a domain that has nothing to do with this
+/// machine's.
+///
+/// The read pool's name is not asked for. It is the primary's with `-ro` in
+/// the first label, so one name governs both and there is no second thing
+/// to keep in step — see `hosts::pool_name`.
+pub fn name_card<'a>(action: &'a str, name: &'a str, pool: &'a str) -> impl Renderable + 'a {
+    rsx! {
+        <section class="card stack">
+            <p class="card-label">(t("Name"))</p>
+            <form method="post" action=(action) class="stack">
+                <input id="db-name" name="name" type="text" autocomplete="off"
+                       class="mono" value=(name) required>
+                <p class="field-hint">
+                    (t("The read pool answers at "))<span class="mono">(pool)</span>
+                    (t(" — the same name with -ro in its first label. Changing this \
+                         reissues the certificate and rewrites the names inside every \
+                         container of this project."))
+                </p>
+                <div class="actions">
+                    <button class="btn btn-secondary" type="submit">(t("Save name"))</button>
+                </div>
+            </form>
+        </section>
+    }
+}
+
 /// Where this database's certificate comes from, and how to verify it.
 ///
 /// The same control a service's hostname has and the node's own — one
@@ -700,6 +827,70 @@ mod tests {
             card.contains("<details>"),
             "the section is closed until somebody opens it: {card}"
         );
+    }
+
+    /// A chosen name is what the database is called, everywhere.
+    ///
+    /// The certificate is stored under the first of these names and the
+    /// project's containers resolve them, so a rename that reached one and
+    /// not the other would be a client dialling a name no certificate holds
+    /// — which is the failure `0032` was written about, from the other
+    /// direction.
+    #[tokio::test]
+    async fn a_chosen_name_replaces_the_derived_one_everywhere() {
+        let database = crate::db::open_in_memory().await.expect("open");
+        crate::node::settings::set_domain(&database, Some("node.example"))
+            .await
+            .expect("domain");
+        let project = crate::platform::projects::create(&database, "db-test")
+            .await
+            .expect("project");
+        let (service, _) = crate::platform::databases::create(
+            &database,
+            &project.id,
+            "orders",
+            "17",
+            256 * 1024 * 1024,
+        )
+        .await
+        .expect("created");
+        let config = crate::config::Config::default();
+
+        let derived =
+            crate::deploy::certificate_names(&database, &config, &project, &service).await;
+        assert_eq!(
+            derived.first().map(String::as_str),
+            Some("orders.db-test.node.example"),
+            "what every database had before a name could be chosen"
+        );
+
+        let port = crate::platform::ports::of_service(&database, &service.id)
+            .await
+            .expect("ports")
+            .pop()
+            .expect("a database is created with one");
+        crate::platform::ports::set_hostname(&database, &port.id, Some("db.example.com"))
+            .await
+            .expect("named");
+
+        let chosen = crate::deploy::certificate_names(&database, &config, &project, &service).await;
+        assert_eq!(
+            chosen.first().map(String::as_str),
+            Some("db.example.com"),
+            "the row wins over the derivation"
+        );
+        assert!(
+            chosen.contains(&"db-ro.example.com".to_string()),
+            "and the pool follows it: {chosen:?}"
+        );
+        assert!(
+            !chosen.iter().any(|name| name.ends_with("node.example")),
+            "nothing keeps answering to the old name: {chosen:?}"
+        );
+        // The short names inside the project are untouched: they are what a
+        // container beside it resolves and they cost nothing.
+        assert!(chosen.contains(&"orders".to_string()));
+        assert!(chosen.contains(&"orders.db-test".to_string()));
     }
 
     async fn project(console: &Console) -> String {

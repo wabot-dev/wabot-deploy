@@ -221,6 +221,32 @@ pub async fn all(database: &SqliteDatabase) -> PlatformResult<Vec<Port>> {
         .await?)
 }
 
+/// Give this port a name, or take its name away.
+///
+/// The uniqueness is the index's, not a query's: two operators naming one
+/// hostname in the same second would both pass a check and one would win
+/// the write. So the constraint refuses it and the message is built from
+/// what the caller supplied — the same path `create` takes.
+pub async fn set_hostname(
+    database: &SqliteDatabase,
+    id: &str,
+    hostname: Option<&str>,
+) -> PlatformResult<()> {
+    let (id, hostname) = (id.to_string(), hostname.map(str::to_string));
+    let refused = hostname.clone();
+    database
+        .write(move |connection| {
+            connection.execute(
+                "UPDATE port SET \"hostname\" = ?2 WHERE \"id\" = ?1",
+                (id, hostname),
+            )?;
+            Ok(())
+        })
+        .await
+        .map_err(|error| refusal(error, 0, &refused))?;
+    Ok(())
+}
+
 pub async fn delete(database: &SqliteDatabase, id: &str) -> PlatformResult<()> {
     let id = id.to_string();
     database

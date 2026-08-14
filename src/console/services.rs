@@ -325,6 +325,10 @@ impl ServicePages {
             "/projects/{}/services/{}/database/certificate",
             project.slug, service.slug
         );
+        let name_action = format!(
+            "/projects/{}/services/{}/database/name",
+            project.slug, service.slug
+        );
 
         let serving = crate::platform::edges::of_service(&self.state.database, &service.id).await?;
         let deploying = crate::deploy::jobs::deploying(&self.state.container)
@@ -444,6 +448,13 @@ impl ServicePages {
                                 crate::edge::policy::RenewWith::SelfSigned
                             )),
                     ))
+                    @if let Some(name) = names.first() {
+                        (super::databases::name_card(
+                            &name_action,
+                            name,
+                            &crate::deploy::hosts::pool_name(name),
+                        ))
+                    }
                     @if let Some(policy) = &database_policy {
                         (super::databases::certificate_card(&certificate_action, policy))
                     }

@@ -38,6 +38,10 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
         " — reserved for it, and not something a certificate can vouch for.",
         " — reservada para ella, y no algo por lo que un certificado pueda responder.",
     ),
+    (
+        " — the same name with -ro in its first label. Changing this reissues the certificate and rewrites the names inside every container of this project.",
+        " — el mismo nombre con -ro en su primera etiqueta. Cambiarlo reemite el certificado y reescribe los nombres dentro de cada contenedor de este proyecto.",
+    ),
     ("A ceiling on the container and the engine's own settings, together. Postgres is given a quarter of it for shared buffers and told to expect half of it as cache — its defaults alone would be killed on the smaller sizes.", "Un techo para el contenedor y los ajustes del propio motor, a la vez. A Postgres se le da un cuarto para los buffers compartidos y se le dice que espere la mitad como caché — sus valores por defecto solos morirían en los tamaños pequeños."),
     (
         "A copy writes its log on the machine that runs it, and this node cannot read another one's disk. Open the console of the node holding it.",
@@ -296,6 +300,7 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
     ("Save", "Guardar"),
     ("Save domain", "Guardar dominio"),
     ("Save environment", "Guardar entorno"),
+    ("Save name", "Guardar nombre"),
     ("Save placement", "Guardar colocación"),
     ("Save source", "Guardar origen"),
     ("Saving redeploys the service with these values. The image it runs does not change.", "Guardar redespliega el servicio con estos valores. La imagen que ejecuta no cambia."),
@@ -355,6 +360,7 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
         "El pool tiene todas las copias de solo lectura, y a cada contenedor se le dan en su propio orden — así diez aplicaciones no ponen todas la misma copia primero. Eso es reparto, no balanceo: un cliente sigue usando la copia que eligió.",
     ),
     ("The primary — reads and writes", "El primario — lecturas y escrituras"),
+    ("The read pool answers at ", "El pool de lectura responde en "),
     ("The read pool — refuses writes", "El pool de lectura — rechaza escrituras"),
     ("The rows stay because they are what carries that news. Removing them here would leave the other node sending the same instruction again.", "Las filas se quedan porque son lo que lleva esa noticia. Quitarlas aquí dejaría al otro nodo mandando la misma instrucción otra vez."),
     ("The setup token was printed by `wabot-deploy install`. It works once, and it expires.", "El token de instalación lo imprimió `wabot-deploy install`. Funciona una vez, y caduca."),
