@@ -301,6 +301,21 @@ wabot-outlet {
 .tile-name { margin: 0 0 var(--sp-2); font-weight: 600; }
 .tile-detail { margin: 0; color: rgb(var(--c-fg-muted)); font-size: var(--fs-sm); }
 
+/* The gap after a badge belongs to the badge, not to the sentence.
+ *
+ * It was a literal space inside the detail's text — and the stream writes
+ * that text with `textContent`, so the space survived the first paint and
+ * was gone two seconds later: an address sitting flush against the pill
+ * beside it, on every row, but only after the page updated itself. The
+ * same class of bug as the words themselves, one layer down.
+ *
+ * A margin cannot be overwritten by anything that replaces text. */
+.badge + .tile-detail,
+.badge + .mono,
+.badge + .failure {
+  margin-left: var(--sp-2);
+}
+
 /* The state column keeps its width whatever the word is.
  *
  * "Not deployed" wrapped to two lines where "Running" did not, so the

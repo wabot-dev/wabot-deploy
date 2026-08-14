@@ -650,7 +650,7 @@ fn people_card<'a>(
                                 <td>(&member.username)</td>
                                 <td>
                                     <span class="badge">(member.role.label())</span>
-                                    <span class="tile-detail">(" ")(role_means(member.role))</span>
+                                    <span class="tile-detail">(role_means(member.role))</span>
                                 </td>
                                 <td class="row-actions">
                                     @if allowed.may_administer() {

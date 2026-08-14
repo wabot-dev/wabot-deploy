@@ -864,7 +864,7 @@ fn errand_row(order: &network::errand::Record) -> impl Renderable + '_ {
         <tr>
             <td>
                 (order.kind.as_str())
-                <span class="tile-detail">(" ")(&order.id)</span>
+                <span class="tile-detail">(&order.id)</span>
             </td>
             <td data-errand=(&order.id)>
                 @if let Some(reason) = &order.error {
@@ -966,7 +966,7 @@ fn authority_row<'a>(
         <tr>
             <td>
                 (name)
-                <span class="tile-detail">(" ")(&authority.node_id)</span>
+                <span class="tile-detail">(&authority.node_id)</span>
             </td>
             <td>
                 @if held.is_empty() {

@@ -1461,7 +1461,7 @@ fn placement_state<'a>(
             @if cell.badge.contains("danger") {
                 <p class="failure">(&cell.detail)</p>
             } @else {
-                <span class="tile-detail">(" ")(&cell.detail)</span>
+                <span class="tile-detail">(&cell.detail)</span>
             }
         }
     }
