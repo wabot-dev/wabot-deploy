@@ -224,11 +224,32 @@ async fn load_or_create_account(database: &SqliteDatabase, config: &Config) -> A
 pub async fn obtain(
     database: &SqliteDatabase,
     config: &Config,
-    domain: &str,
+    names: &[String],
 ) -> AcmeResult<StoredCert> {
+    let Some(domain) = names.first().map(String::as_str) else {
+        return Err(AcmeError::Refused("an order with no names in it".into()));
+    };
     let account = load_or_create_account(database, config).await?;
 
-    let identifiers = [Identifier::Dns(domain.to_string())];
+    // Every name in one order.
+    //
+    // `ensure_all` explains why this node holds one certificate per name
+    // rather than one big one, and that reasoning is about names belonging
+    // to *different services*: reissuing all of them because one moved is
+    // a failure that spreads. A database's two names are not that. The
+    // read pool's is the primary's with `-ro` in its first label, they
+    // change together by construction, and the pool has no existence
+    // apart from the database — so an order that carried only the first
+    // left the pool with a certificate that did not name it, which is
+    // every read failing `verify-full`.
+    //
+    // Each name gets its own authorization and its own token; they are
+    // stored against the first, which is the key the whole order is
+    // cleaned up and stored under.
+    let identifiers: Vec<Identifier> = names
+        .iter()
+        .map(|name| Identifier::Dns(name.clone()))
+        .collect();
     let mut order = account.new_order(&NewOrder::new(&identifiers)).await?;
 
     // Answer every pending authorization before telling the CA to
@@ -278,7 +299,7 @@ pub async fn obtain(
 
     let stored = StoredCert {
         domain: domain.to_string(),
-        names: vec![domain.to_string()],
+        names: names.to_vec(),
         not_after: certs::not_after(&chain_pem)
             // Unparseable means renew at the next pass rather than
             // trust a number nobody read.
@@ -294,7 +315,7 @@ pub async fn obtain(
     };
     certs::save(database, &stored).await?;
 
-    tracing::info!(%domain, "obtained a certificate");
+    tracing::info!(%domain, names = names.len(), "obtained a certificate");
     Ok(stored)
 }
 
@@ -618,8 +639,26 @@ pub async fn ensure(
         // operator asked.
         let same_authority = existing.issuer == directory;
         let fresh = existing.not_after > now_ms() + RENEW_WITHIN_DAYS * 86_400_000;
-        if same_authority && fresh {
+        // And it has to still cover what is being asked for.
+        //
+        // A certificate can be current, from the right authority, and
+        // *wrong*: a database's read pool was added to the names after its
+        // certificate was issued, so the stored one named the primary
+        // alone and every read failed `verify-full` against a certificate
+        // that had months left. Freshness cannot see that.
+        //
+        // `ensure_self_signed` has always asked this — the local path is
+        // convergent on the name set — and the ACME path did not, which is
+        // the asymmetry that let it happen.
+        let covers = crate::deploy::public_names_for(database, config, &domain)
+            .await
+            .iter()
+            .all(|name| existing.names.contains(name));
+        if same_authority && fresh && covers {
             return Ok(false);
+        }
+        if same_authority && fresh {
+            tracing::info!(%domain, "reissuing: the stored certificate does not cover every name");
         }
         if !same_authority && existing.issuer != "self-signed" {
             tracing::info!(
@@ -649,26 +688,32 @@ pub async fn ensure(
     // does not need renewing needs no lookup, and a name whose DNS moved
     // while its certificate is still valid is not yet a problem to
     // report.
+    // Every name this order will carry — a database's is two, and both
+    // have to be checked or the order fails on the one nobody looked at.
+    let names = crate::deploy::public_names_for(database, config, &domain).await;
+
     if let Some(node_domain) = crate::node::settings::domain(database, config).await {
-        let resolution = crate::deploy::dns::resolves_here(&domain, &node_domain).await;
-        match resolution {
-            crate::deploy::dns::Resolution::Here => {}
-            // The node's own domain does not resolve, so there is nothing
-            // to compare against. Not a reason to refuse: the authority
-            // validates the *name being asked for*, which may resolve
-            // perfectly well while this node's own does not — and refusing
-            // on "cannot tell" would stop a renewal that would have
-            // worked.
-            crate::deploy::dns::Resolution::NoReference => {
-                tracing::debug!(%domain, "ordering without a DNS check: this node's domain does not resolve")
-            }
-            elsewhere => {
-                return Err(AcmeError::Refused(elsewhere.explain(&domain)));
+        for name in &names {
+            let resolution = crate::deploy::dns::resolves_here(name, &node_domain).await;
+            match resolution {
+                crate::deploy::dns::Resolution::Here => {}
+                // The node's own domain does not resolve, so there is nothing
+                // to compare against. Not a reason to refuse: the authority
+                // validates the *name being asked for*, which may resolve
+                // perfectly well while this node's own does not — and refusing
+                // on "cannot tell" would stop a renewal that would have
+                // worked.
+                crate::deploy::dns::Resolution::NoReference => {
+                    tracing::debug!(%name, "ordering without a DNS check: this node's domain does not resolve")
+                }
+                elsewhere => {
+                    return Err(AcmeError::Refused(elsewhere.explain(name)));
+                }
             }
         }
     }
 
-    obtain(database, config, &domain).await?;
+    obtain(database, config, &names).await?;
     // Reloaded from storage rather than pushed in: the resolver then
     // serves exactly what a restart would, so there is no state that
     // exists only in this process.
@@ -1105,6 +1150,61 @@ mod tests {
         assert!(
             outcome.is_err(),
             "a certificate from a different authority must not be kept: {outcome:?}"
+        );
+    }
+
+    /// A certificate can be current, from the right authority, and wrong.
+    ///
+    /// A database's read pool joined the names after its certificate was
+    /// issued, so the stored one named the primary alone — and every read
+    /// failed `verify-full` against a certificate with three months left.
+    /// Freshness cannot see that, and the local path had always asked
+    /// (`ensure_self_signed` is convergent on the name set) while the ACME
+    /// path did not.
+    ///
+    /// It cannot reach the network here, so "noticed" is an error from the
+    /// attempt rather than a silent `Ok(false)` — the same evidence the
+    /// authority-switch test uses.
+    #[tokio::test]
+    async fn a_certificate_that_covers_too_little_is_reissued() {
+        let database = database().await;
+        let resolver = certs::CertResolver::new();
+        let mut config = Config::default();
+        config.node.domain = Some("localhost".into());
+        config.acme.directory = "staging".into();
+
+        // A managed database, so its key wants two names.
+        let project = crate::platform::projects::create(&database, "db-test")
+            .await
+            .expect("project");
+        let (service, _) = crate::platform::databases::create(
+            &database,
+            &project.id,
+            "orders",
+            "17",
+            256 * 1024 * 1024,
+        )
+        .await
+        .expect("created");
+        let port = crate::platform::ports::of_service(&database, &service.id)
+            .await
+            .expect("ports")
+            .pop()
+            .expect("a database has one");
+        crate::platform::ports::set_hostname(&database, &port.id, Some("localhost"))
+            .await
+            .expect("named");
+
+        // Stored: current, right authority, and naming only the primary.
+        let mut stored = stored_from(config.acme.directory_url(), 60);
+        stored.domain = "localhost".into();
+        stored.names = vec!["localhost".into()];
+        certs::save(&database, &stored).await.expect("save");
+
+        let outcome = ensure(&database, &config, &resolver, "localhost").await;
+        assert!(
+            outcome.is_err(),
+            "a certificate missing the pool's name must not be kept: {outcome:?}"
         );
     }
 

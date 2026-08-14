@@ -2028,6 +2028,44 @@ pub async fn certificate_names(
 ///
 /// The first name of each managed service's set, because that is the key
 /// `refresh_certificates` writes it under — see there.
+/// The names a **public** authority should be asked to sign for one key.
+///
+/// Every other name is itself. A database is two: the qualified primary
+/// and the qualified read pool, which change together and have to be on
+/// one certificate — a client dialling `orders-ro` with `verify-full`
+/// checks the name it asked for, so an order carrying only the primary is
+/// every read failing.
+///
+/// **And only the qualified ones.** `orders` and `orders.db-test` resolve
+/// inside the project and nowhere else, so no authority can validate them:
+/// there is no challenge to pass for a name that does not exist outside
+/// this node. Choosing a public authority for a database therefore costs
+/// the short names their verification — the page says so, and this is
+/// where it becomes true.
+pub async fn public_names_for(
+    database: &SqliteDatabase,
+    config: &crate::config::Config,
+    key: &str,
+) -> Vec<String> {
+    let projects = projects::all(database).await.unwrap_or_default();
+    for service in services::all(database, None).await.unwrap_or_default() {
+        if !service.kind.is_managed() {
+            continue;
+        }
+        let Some(project) = projects.iter().find(|p| p.id == service.project_id) else {
+            continue;
+        };
+        let names = certificate_names(database, config, project, &service).await;
+        if names.first().map(String::as_str) != Some(key) {
+            continue;
+        }
+        // Qualified only, which is what having a dot past the project
+        // means here — see `certificate_names`, which puts them first.
+        return vec![key.to_string(), hosts::pool_name(key)];
+    }
+    vec![key.to_string()]
+}
+
 pub async fn database_certificate_keys(
     database: &SqliteDatabase,
     config: &crate::config::Config,
