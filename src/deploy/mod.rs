@@ -1231,7 +1231,33 @@ impl Deployer {
     /// it as a plain container without its volume or its engine
     /// arguments; those travel on `Kind::Database`, which carries the same
     /// intent for the same reason.
+    /// The same, telling a node that holds nothing of this service.
+    ///
+    /// The set exists for one reason: `by_node` is built from the rows, so
+    /// a node with no copy left is not in it — and it is the one that has
+    /// to be told it runs none of this now.
+    pub async fn tell_holders_including(
+        &self,
+        project: &Project,
+        service: &Service,
+        also: &std::collections::BTreeSet<String>,
+    ) {
+        self.holders(project, service, Holding::AsPlaced, also)
+            .await;
+    }
+
     async fn tell_holders(&self, project: &Project, service: &Service, holding: Holding) {
+        self.holders(project, service, holding, &Default::default())
+            .await;
+    }
+
+    async fn holders(
+        &self,
+        project: &Project,
+        service: &Service,
+        holding: Holding,
+        also: &std::collections::BTreeSet<String>,
+    ) {
         if service.kind.is_managed() || !service.is_ours() {
             return;
         }
@@ -1255,6 +1281,11 @@ impl Deployer {
         // runs for this service, which is what lets a copy be taken away
         // and the far side find out.
         let mut by_node: std::collections::BTreeMap<String, Vec<u32>> = Default::default();
+        // Nodes to tell even with nothing to give them, which is how one
+        // learns that its last copy went home.
+        for node_id in also {
+            by_node.entry(node_id.clone()).or_default();
+        }
         for replica in placements.iter().filter(|replica| !replica.evicted()) {
             if let Some(node_id) = &replica.node_id {
                 by_node

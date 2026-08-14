@@ -402,6 +402,50 @@ impl NetworkApi {
             }
         }
 
+        // And what it says it is holding that this node does not claim.
+        //
+        // A copy whose row went away here goes on running there for ever:
+        // the instruction that would stop it is queued by whatever made
+        // the change, and it cannot be queued if the change already
+        // happened, if this node was down when it did, or if the code that
+        // should have sent it did not — all three have occurred.
+        //
+        // So this is the convergent half, and it asks about now: that node
+        // reports slot 3 of a service this node owns, this node's rows say
+        // slot 3 is somewhere else or gone, and the answer is to send the
+        // placement again — which is computed from the rows and is
+        // therefore right whatever the disagreement was. Not a bespoke
+        // "drop it": a node holding two copies where this node claims one
+        // must keep the one it should have.
+        for service in unclaimed(&self.database, &node, &report.replicas).await {
+            let Some(project) =
+                crate::platform::projects::find(&self.database, &service.project_id)
+                    .await
+                    .ok()
+                    .flatten()
+            else {
+                continue;
+            };
+            let also: std::collections::BTreeSet<String> = [node.clone()].into_iter().collect();
+            tracing::info!(
+                node = %node,
+                service = %service.slug,
+                "it holds a copy this node does not claim; sending the placement again"
+            );
+            match service.kind.is_managed() {
+                true => {
+                    self.deployer
+                        .dispatch_standbys_including(&service, &also)
+                        .await
+                }
+                false => {
+                    self.deployer
+                        .tell_holders_including(&project, &service, &also)
+                        .await
+                }
+            }
+        }
+
         // Only when something moved, so a node saying the same thing
         // every fifteen seconds does not rebuild the table every
         // fifteen seconds.
@@ -845,6 +889,66 @@ async fn record(
         .await
         .map_err(|error| super::NetworkError::Refused(error.to_string()))?;
     Ok(true)
+}
+
+/// The services this node owns that `node` is holding a copy of without
+/// this node claiming one there.
+///
+/// **Only where the service is identifiable and ours.** A project or a
+/// service this node cannot find is not evidence of an orphan — it is
+/// evidence that something was renamed, and concluding "drop it" from a
+/// name lookup that missed would take down a copy that is doing its job. A
+/// service that arrived from elsewhere is somebody else's to place, so its
+/// placement is not this node's to correct.
+///
+/// What is left is the one case that is unambiguous: this node owns the
+/// service, and the slot that node reports is either gone or placed
+/// somewhere else.
+async fn unclaimed(
+    database: &SqliteDatabase,
+    node: &str,
+    reported: &[ReplicaState],
+) -> Vec<crate::platform::services::Service> {
+    let projects = crate::platform::projects::all(database)
+        .await
+        .unwrap_or_default();
+    let mut services: Vec<crate::platform::services::Service> = Vec::new();
+
+    for state in reported {
+        if state.evicted {
+            continue;
+        }
+        let Some(project) = projects
+            .iter()
+            .find(|project| project.name == state.project)
+        else {
+            continue;
+        };
+        let found = crate::platform::services::in_project(
+            database,
+            &project.id,
+            &crate::platform::slugify(&state.service),
+        )
+        .await
+        .ok()
+        .flatten();
+        let Some(service) = found.filter(|service| service.is_ours()) else {
+            continue;
+        };
+        if services.iter().any(|held| held.id == service.id) {
+            continue;
+        }
+
+        let claimed = crate::platform::replicas::in_slot(database, &service.id, state.slot)
+            .await
+            .ok()
+            .flatten()
+            .is_some_and(|replica| replica.node_id.as_deref() == Some(node) && !replica.evicted());
+        if !claimed {
+            services.push(service);
+        }
+    }
+    services
 }
 
 /// A storage failure, in the same shape as every other answer here.
@@ -1462,6 +1566,68 @@ mod tests {
             .await
             .expect("recorded");
         assert!(moved, "an address that changed is news again");
+    }
+
+    /// A copy the owner does not claim is one nobody will ever stop.
+    ///
+    /// The instruction that would stop it is queued by whatever made the
+    /// change — and cannot be, if the change already happened, if this node
+    /// was down when it did, or if the code that should have sent it did
+    /// not. All three have happened here, and the last one left a Postgres
+    /// running on the Alpine node with a volume and a replication stream
+    /// and no row on either side claiming it.
+    ///
+    /// So the report itself is the trigger: that node says it holds slot 3,
+    /// this node's rows say otherwise, and the placement goes out again —
+    /// computed from the rows, so it is right whatever the disagreement
+    /// was.
+    #[tokio::test]
+    async fn a_copy_this_node_does_not_claim_is_told_to_go() {
+        let authority = authority().await;
+        authority
+            .harness
+            .post("/api/network/join")
+            .header("authorization", format!("Bearer {}", authority.secret))
+            .json(&arriving())
+            .send()
+            .await
+            .assert_ok();
+        let placed = placed_there(&authority, 2).await;
+
+        // The row goes away, which is what a placement change leaves —
+        // and the far node has not been told.
+        let replica = crate::platform::replicas::in_slot(&authority.database, &placed, 2)
+            .await
+            .expect("query")
+            .expect("there");
+        crate::platform::replicas::remove(&authority.database, &replica.id)
+            .await
+            .expect("removed");
+
+        authority
+            .harness
+            .post("/api/network/report")
+            .header("authorization", format!("Bearer {}", authority.secret))
+            .json(&serde_json::json!({
+                "replicas": [
+                    { "project": "shared", "service": "web", "slot": 2,
+                      "address": "10.42.2.5" }
+                ]
+            }))
+            .send()
+            .await
+            .assert_ok();
+
+        let told = crate::network::errand::waiting(&authority.database, "nd-joining001")
+            .await
+            .expect("errands")
+            .pop()
+            .expect("the node holding it was told nothing");
+        assert_eq!(
+            told.payload["slots"],
+            serde_json::json!([]),
+            "which is how it learns the copy is not its to run"
+        );
     }
 
     /// A figure that differs on every reading is not a change.
