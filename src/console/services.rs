@@ -437,7 +437,19 @@ impl ServicePages {
                     // it to be assembled from a hostname in one row and a
                     // port in another — which is what a database's card
                     // does, and what Jorge asked this one to do.
-                    (exposure_card(&exposure, matches!(observed, crate::deploy::Observed::Running { .. })))
+                    // Not for a managed database, and the reason is that
+                    // this block would lie: it turns a port with a
+                    // hostname into `https://<name>`, and a database
+                    // answers the Postgres protocol on a TCP socket. What
+                    // it offers is its own three cards — the name, the
+                    // certificate and the published port — each of which
+                    // says a true thing this one cannot.
+                    @if !service.kind.is_managed() {
+                        (exposure_card(
+                            &exposure,
+                            matches!(observed, crate::deploy::Observed::Running { .. }),
+                        ))
+                    }
                     @if let Some(failure) = here.as_ref().and_then(|r| r.last_error.as_ref()) {
                         <p class="failure">(failure)</p>
                     }
@@ -3584,6 +3596,44 @@ mod tests {
         for url in open.outside.iter().chain(open.inside.iter()) {
             assert!(card.contains(url.as_str()), "{url} is missing: {card}");
         }
+    }
+
+    /// A database gets none of this, because it would be a lie.
+    ///
+    /// The block turns a port with a hostname into `https://<name>`, and a
+    /// database answers the Postgres protocol on a TCP socket — the one
+    /// thing an edge cannot proxy, which is why a database has no edge to
+    /// choose in the first place. It shipped that way for one deploy and
+    /// Jorge caught it on the page.
+    #[tokio::test]
+    async fn a_database_is_not_offered_an_https_url_it_does_not_serve() {
+        let console = Console::new().await;
+        let cookie = console.signed_in().await;
+        let project = project(&console, &cookie).await;
+
+        console
+            .harness
+            .post(&format!("/projects/{project}/databases"))
+            .header("cookie", &cookie)
+            .form(&[
+                ("name", "orders"),
+                ("version", "17"),
+                ("memory", "67108864"),
+            ])
+            .send()
+            .await;
+
+        let body = console
+            .harness
+            .get(&format!("/projects/{project}/services/orders"))
+            .header("cookie", &cookie)
+            .send()
+            .await
+            .body;
+        assert!(
+            !body.contains("https://orders"),
+            "a database does not answer HTTPS anywhere: {body}"
+        );
     }
 
     /// The first paint and the stream say the same thing, because they read
