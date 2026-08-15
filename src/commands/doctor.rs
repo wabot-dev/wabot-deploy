@@ -184,8 +184,16 @@ pub async fn run(config: Config, config_path: &Path) -> anyhow::Result<i32> {
             // about a container no row claims. Not counted as a problem
             // for the same reason: it is disk to reclaim, by hand, once
             // somebody has looked.
-            for orphan in crate::platform::volumes::orphans(&config.node.data_dir, &live) {
-                println!("  orphan      {} (no replica claims it)", orphan.display());
+            // All four kinds, not only the data. A copy leaves its
+            // configuration, its names and its log beside its volume,
+            // and for a long time this looked for one of the four — so
+            // the two nobody could see accumulated a file per container
+            // that ever ran here, silently.
+            for (kind, orphan) in crate::deploy::Deployer::leftovers(&config.node.data_dir, &live) {
+                println!(
+                    "  orphan      {} ({kind}, no replica claims it)",
+                    orphan.display()
+                );
             }
         }
         Err(error) => println!("  volumes     unreadable: {error}"),
@@ -345,17 +353,28 @@ pub async fn run(config: Config, config_path: &Path) -> anyhow::Result<i32> {
     // What the kernel says, not what this process asked for. An
     // overlay reported from a struct filled in at startup would answer
     // "did I try", and the question is whether packets move.
-    println!(
-        "  interface   {} on udp/{}",
-        crate::network::tunnel::INTERFACE,
-        config.overlay.port
-    );
+    //
+    // The port included. It was printed from the configuration file
+    // under this very comment: the peers below were the kernel's and
+    // the number above them was not, so a node listening on something
+    // other than what its file says reported the file. Now the file is
+    // named only where there is no interface to ask.
     match crate::network::tunnel::observed() {
-        Ok(peers) if peers.is_empty() => {
+        Ok(interface) if interface.peers.is_empty() => {
+            println!(
+                "  interface   {} on udp/{}",
+                crate::network::tunnel::INTERFACE,
+                interface.port
+            );
             println!("  no peers configured on it");
         }
-        Ok(peers) => {
-            for peer in &peers {
+        Ok(interface) => {
+            println!(
+                "  interface   {} on udp/{}",
+                crate::network::tunnel::INTERFACE,
+                interface.port
+            );
+            for peer in &interface.peers {
                 println!(
                     "  peer        {} {}",
                     peer.public_key,
@@ -377,13 +396,20 @@ pub async fn run(config: Config, config_path: &Path) -> anyhow::Result<i32> {
                     println!("              at {endpoint}");
                 }
             }
-            if peers.iter().any(|peer| !peer.live()) {
+            if interface.peers.iter().any(|peer| !peer.live()) {
                 problems += 1;
             }
         }
         Err(error) => {
             // Not counted: a node on no overlay has no interface, and
-            // saying so is not the same as something being wrong.
+            // saying so is not the same as something being wrong. The
+            // configured port is what there is to say here — it is what
+            // this node would listen on, and nothing is listening.
+            println!(
+                "  interface   {} would be udp/{} (from the file)",
+                crate::network::tunnel::INTERFACE,
+                config.overlay.port
+            );
             println!("  not up: {error}");
         }
     }

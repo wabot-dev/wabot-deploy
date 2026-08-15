@@ -838,6 +838,53 @@ impl Deployer {
         Ok(())
     }
 
+    /// Everything on this node's disk that no copy claims.
+    ///
+    /// A copy leaves four things behind and until now only one of them
+    /// was ever looked for. `volumes::orphans` has reported unclaimed
+    /// data since databases existed, and the configuration written for
+    /// a container, the names it was given and what it said were in no
+    /// list at all — so a node that has moved copies around keeps a file
+    /// per container that ever ran on it, and nothing says so. There is
+    /// one on the Ubuntu test node for a replica that moved to Alpine.
+    ///
+    /// Reported, never removed, which is the rule the volume half
+    /// already followed: a directory whose rows are missing for a reason
+    /// nobody has understood yet is one somebody can still recover from.
+    /// The three small ones hold nothing anybody wants back — they are
+    /// rebuilt from the rows — but a thing this node cannot explain is
+    /// not a thing it should delete on sight.
+    pub fn leftovers(data_dir: &std::path::Path, live: &[String]) -> Vec<(&'static str, PathBuf)> {
+        let mut found: Vec<(&'static str, PathBuf)> = volumes::orphans(data_dir, live)
+            .into_iter()
+            .map(|path| ("data", path))
+            .collect();
+
+        // The other three are named after the container id exactly —
+        // a directory for the generated configuration, a file for the
+        // names, a file for the output with `.log` after it.
+        for (kind, directory, suffix) in [
+            ("config", "config", ""),
+            ("hosts", "hosts", ""),
+            ("log", "logs", ".log"),
+        ] {
+            let Ok(entries) = std::fs::read_dir(data_dir.join(directory)) else {
+                continue;
+            };
+            for entry in entries.flatten() {
+                let name = entry.file_name().to_string_lossy().to_string();
+                let Some(id) = name.strip_suffix(suffix) else {
+                    continue;
+                };
+                if !live.iter().any(|claimed| claimed == id) {
+                    found.push((kind, entry.path()));
+                }
+            }
+        }
+        found.sort_by(|left, right| left.1.cmp(&right.1));
+        found
+    }
+
     /// Take one copy away for good: stop it, let go of what it held,
     /// and drop its row.
     ///
@@ -871,17 +918,30 @@ impl Deployer {
             tracing::warn!(slot = replica.slot, %error, "stopping a copy that was dropped");
         }
 
+        let id = replica.container_id(&project.slug, &service.slug);
         if service.kind.is_managed() {
             let primary = databases::of_service(&self.database, &service.id)
                 .await?
                 .map(|row| row.primary_slot);
             if primary.is_some_and(|slot| slot != replica.slot) {
-                let id = replica.container_id(&project.slug, &service.slug);
                 if let Err(error) = volumes::discard(&self.config.node.data_dir, &id) {
                     tracing::warn!(container = %id, %error, "discarding a standby's data");
                 }
             }
         }
+
+        // And the three small things a copy leaves beside its data: the
+        // configuration written for it, the names it was given, and what
+        // it said. None is worth keeping — every one is rebuilt from the
+        // rows at the next deployment — and none of them is ever removed
+        // by anything else, because the only other caller of these is a
+        // deletion of the whole service. So a node that has moved copies
+        // around keeps a file per container that ever ran on it: there
+        // is one on the Ubuntu node right now for a replica that went to
+        // Alpine.
+        database::discard(&self.config.node.data_dir, &id);
+        hosts::discard(&self.config.node.data_dir, &id);
+        logs::discard(&self.config.node.data_dir, &id);
 
         replicas::remove(&self.database, &replica.id).await?;
         Ok(())
