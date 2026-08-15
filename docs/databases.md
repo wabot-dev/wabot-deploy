@@ -422,6 +422,12 @@ verification build was made with `CARGO_PROFILE_NODE_LTO=false` and
 sixteen codegen units, which is the same optimisation level in pieces
 that fit.
 
+**The published port is verified** (2026-08-13): a port from the free
+range on the Ubuntu node, `sslmode=verify-full` against the database's
+own qualified name from the Alpine node over the internet, on a
+certificate a public authority signed. It was in the list below for a
+week after it had been done.
+
 **Phases 3 and 4 are verified across both nodes** (2026-08-13), one
 database owned by Ubuntu with a standby beside it and a second on
 Alpine. `pg_stat_replication` on the primary shows both — `10.42.2.254`
@@ -527,15 +533,17 @@ being told elsewhere that a slot is no longer its.
 
 ## What has not been run on a node
 
-Everything above passes `cargo fmt`, `cargo clippy -D warnings` and 690
+Everything above passes `cargo fmt`, `cargo clippy -D warnings` and 771
 tests. What is left unverified:
-- **The published port.** A database reachable from outside the node is
-  a `port` row with a `host_port`, and no database has had one.
 - **Reading a remote pool from a third node.** A node that holds no
   copy has no address for one: `orders-ro` resolves inside the project
   that holds it and nowhere else. That is naming's phase 4.
 - **Failover of any kind.** Nothing promotes, and nothing notices a
   standby that stopped following — phase 5.
+- **A preset lowered while a standby follows.** The volume carries its
+  ceiling now and a copy whose ceiling comes down is seeded again — but
+  what has run on a node is the seeding, reached by removing the copy
+  and adding it back. The automatic path has never fired.
 - **The errand a new node sends an old one.** A `host` errand for an
   image from a registry that is not this node's own now omits the
   credential, and a node old enough to require it answers "that is not
