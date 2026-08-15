@@ -124,6 +124,23 @@ impl DatabasePages {
     }
 }
 
+/// Where these three forms live, and so where saving one goes back to.
+///
+/// The name, the certificate and the published port are settings, and
+/// `locate_for` answers with the *project* — the right fallback for a
+/// control on the project's own list, and the wrong place to land
+/// somebody who was half-way down a settings page. A save that moves
+/// the page is a save that hides what it did.
+fn settings_of(
+    project: &crate::platform::projects::Project,
+    service: &crate::platform::services::Service,
+) -> String {
+    format!(
+        "/projects/{}/services/{}/settings",
+        project.slug, service.slug
+    )
+}
+
 /// The rung offered first.
 ///
 /// Not the smallest. 64 MB runs and it runs ten connections, which is
@@ -187,11 +204,12 @@ impl DatabaseApi {
     #[middleware(SessionMiddleware)]
     async fn name(&self, request: Request) -> RestResult<Response> {
         let path = request.uri().path().to_string();
-        let Some((project, service, here)) =
+        let Some((project, service, _)) =
             super::services::locate_for(&self.state, &self.auth, &path).await?
         else {
             return Ok(see_other("/"));
         };
+        let here = settings_of(&project, &service);
         let form = match read_form(request).await {
             Ok(form) => form,
             Err(response) => return Ok(response),
@@ -280,11 +298,12 @@ impl DatabaseApi {
     #[middleware(SessionMiddleware)]
     async fn publish(&self, request: Request) -> RestResult<Response> {
         let path = request.uri().path().to_string();
-        let Some((_, service, here)) =
+        let Some((project, service, _)) =
             super::services::locate_for(&self.state, &self.auth, &path).await?
         else {
             return Ok(see_other("/"));
         };
+        let here = settings_of(&project, &service);
         let form = match read_form(request).await {
             Ok(form) => form,
             Err(response) => return Ok(response),
@@ -339,11 +358,12 @@ impl DatabaseApi {
         // is the same permission question, the same refusal for a service
         // that arrived on an errand, and the same "back to here".
         let path = request.uri().path().to_string();
-        let Some((project, service, here)) =
+        let Some((project, service, _)) =
             super::services::locate_for(&self.state, &self.auth, &path).await?
         else {
             return Ok(see_other("/"));
         };
+        let here = settings_of(&project, &service);
         let form = match read_form(request).await {
             Ok(form) => form,
             Err(response) => return Ok(response),

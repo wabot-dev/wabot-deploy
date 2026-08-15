@@ -2907,7 +2907,14 @@ impl ServiceApi {
         let Some((project, service, back)) = self.locate(&path).await? else {
             return Ok(see_other("/"));
         };
-        let here = format!("/projects/{}/services/{}", project.slug, service.slug);
+        // Back to the page the form is on. Where the copies go is a
+        // decision, so it lives in settings — and landing somebody on
+        // the detail page after they saved one is the console deciding
+        // they had finished.
+        let here = format!(
+            "/projects/{}/services/{}/settings",
+            project.slug, service.slug
+        );
         let _ = back;
 
         let form = match read_form(request).await {
@@ -3027,7 +3034,11 @@ impl ServiceApi {
         let Some((project, service, _)) = self.locate(&path).await? else {
             return Ok(see_other("/"));
         };
-        let here = format!("/projects/{}/services/{}", project.slug, service.slug);
+        // Settings, where the card is — see `placement` above.
+        let here = format!(
+            "/projects/{}/services/{}/settings",
+            project.slug, service.slug
+        );
 
         let form = match read_form(request).await {
             Ok(form) => form,
@@ -5144,6 +5155,14 @@ mod tests {
     /// Each form comes back to the page it is on. Landing on the
     /// service page after saving means the next edit starts with a
     /// click somebody should not have had to make.
+    ///
+    /// **Every form on the page, and that is the point of the list.**
+    /// This guarded three of them and each one added since went
+    /// somewhere else: placement and edges to the detail page, because
+    /// that is where those cards used to live, and a database's name,
+    /// certificate and port to the project's list, because the locator
+    /// they share answers with the project. Reported by Jorge, who saved
+    /// a setting and found himself two pages away.
     #[tokio::test]
     async fn saving_a_setting_stays_on_the_settings_page() {
         let console = Console::new().await;
@@ -5155,6 +5174,9 @@ mod tests {
             ("tracking", vec![("track_tag", "latest")]),
             ("env", vec![("env", "A=1")]),
             ("ports", vec![("container_port", "8080")]),
+            ("memory", vec![("memory", "0")]),
+            ("placement", vec![("copies", "1")]),
+            ("edges", vec![("hostname", "api.example.com")]),
         ] {
             let response = console
                 .harness
@@ -5166,6 +5188,44 @@ mod tests {
             let location = response.header("location").expect("redirected");
             assert!(
                 location.starts_with(&settings),
+                "{action} went to {location}"
+            );
+        }
+
+        // And a database's three, which are the same page and a
+        // different controller — against a real one, so a save that
+        // works is what is being followed rather than a refusal that
+        // happens to land in the same place.
+        let project = projects::find(&console.database, "my-api")
+            .await
+            .expect("query")
+            .expect("made");
+        crate::platform::databases::create(
+            &console.database,
+            &project.id,
+            "orders",
+            "17",
+            256 * 1024 * 1024,
+        )
+        .await
+        .expect("database");
+        let database = "/projects/my-api/services/orders";
+
+        for (action, form) in [
+            ("database/name", vec![("name", "orders.example.com")]),
+            ("database/certificate", vec![("renew_with", "self-signed")]),
+            ("database/publish", vec![("publish", "1")]),
+        ] {
+            let response = console
+                .harness
+                .post(&format!("{database}/{action}"))
+                .header("cookie", &cookie)
+                .form(&form)
+                .send()
+                .await;
+            let location = response.header("location").expect("redirected");
+            assert!(
+                location.starts_with(&format!("{database}/settings")),
                 "{action} went to {location}"
             );
         }
