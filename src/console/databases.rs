@@ -278,7 +278,7 @@ impl DatabaseApi {
         self.state.deployer.sync_routes().await;
         self.state.certificates.now();
 
-        Ok(see_other(&here))
+        Ok(see_other(&format!("{here}#name")))
     }
 
     /// Open a port of this node's onto the database, or close it.
@@ -335,7 +335,7 @@ impl DatabaseApi {
             tracing::error!(service = %service.id, %error, "could not queue a deployment");
         }
 
-        Ok(see_other(&here))
+        Ok(see_other(&format!("{here}#published")))
     }
 
     /// Where this database's certificate comes from.
@@ -415,7 +415,7 @@ impl DatabaseApi {
         // at, so the answer arrives in seconds rather than at the next pass.
         self.state.certificates.now();
 
-        Ok(see_other(&here))
+        Ok(see_other(&format!("{here}#certificate")))
     }
 
     /// Make a database, and start it.
@@ -719,7 +719,7 @@ impl Strings {
 /// to keep in step — see `hosts::pool_name`.
 pub fn name_card<'a>(action: &'a str, name: &'a str, pool: &'a str) -> impl Renderable + 'a {
     rsx! {
-        <section class="card stack">
+        <section class="card stack" id="name">
             <p class="card-label">(t("Name"))</p>
             <form method="post" action=(action) class="stack">
                 <input id="db-name" name="name" type="text" autocomplete="off"
@@ -759,7 +759,7 @@ pub fn certificate_card<'a>(
         crate::edge::policy::RenewWith::SelfSigned
     );
     rsx! {
-        <section class="card stack">
+        <section class="card stack" id="certificate">
             <div class="split">
                 <p class="card-label">(t("Certificate"))</p>
                 <span class=(cells.badge)>
@@ -816,7 +816,7 @@ pub fn published_card<'a>(
     name: &'a str,
 ) -> impl Renderable + 'a {
     rsx! {
-        <section class="card stack">
+        <section class="card stack" id="published">
             <div class="split">
                 <p class="card-label">(t("From outside the node"))</p>
                 @if host_port.is_some() {

@@ -1015,11 +1015,16 @@ impl ServicePages {
                         ))
                     }
 
-                    <section class="stack">
+                    // The section carries the id, because the id is
+                    // where a save comes back to. The field's own was
+                    // `memory` too, and two elements with one id is a
+                    // fragment that lands on whichever the browser
+                    // finds first.
+                    <section class="stack" id="memory">
                         <p class="card-label">(t("Memory"))</p>
                         <form method="post" action=(format!("{here}/memory")) class="card stack">
-                            <label for="memory">(t("Memory"))</label>
-                            <select id="memory" name="memory">
+                            <label for="memory-size">(t("Memory"))</label>
+                            <select id="memory-size" name="memory">
                                 @for rung in crate::platform::presets::LADDER {
                                     @if Some(rung) == service.memory_limit {
                                         <option value=(rung.to_string()) selected>(
@@ -1042,7 +1047,7 @@ impl ServicePages {
                         </form>
                     </section>
                 } @else {
-                    <section class="stack">
+                    <section class="stack" id="releases">
                         <p class="card-label">(t("Releases"))</p>
                         <form method="post" action=(format!("{here}/tracking")) class="card stack">
                             <label for="track_tag">(t("Tag to watch"))</label>
@@ -1068,7 +1073,7 @@ impl ServicePages {
                         </form>
                     </section>
 
-                    <section class="stack">
+                    <section class="stack" id="environment">
                         <p class="card-label">(t("Environment"))</p>
                         <form method="post" action=(format!("{here}/env")) class="card stack">
                             <textarea name="env" autocomplete="off" rows="6" class="mono"
@@ -1114,7 +1119,7 @@ impl ServicePages {
                 // published port are three cards on the service's own
                 // page.
                 @if !service.kind.is_managed() {
-                <section class="stack">
+                <section class="stack" id="ports">
                     <p class="card-label">(t("Ports"))</p>
                     @if ports.is_empty() {
                         <p class="tile-detail">(t("This service exposes nothing. That is the right answer for \
@@ -1198,7 +1203,7 @@ impl ServicePages {
                 // with no hostname has nothing to be answered for.
                 @if service.is_ours() && !public_nodes.is_empty() {
                     @if ports.iter().any(|port| port.hostname.is_some()) {
-                        <section class="stack">
+                        <section class="stack" id="edges">
                             <p class="card-label">(t("Who answers for these names"))</p>
                             <div class="card stack">
                                 @for port in &ports {
@@ -1219,7 +1224,7 @@ impl ServicePages {
                 }
 
                 @if !certificates.is_empty() && !service.kind.is_managed() {
-                    <section class="stack">
+                    <section class="stack" id="certificates">
                         <p class="card-label">(t("Certificates"))</p>
                         <p class="tile-detail">(t("One per hostname. A node with no public DNS, or a name a \
                              certificate authority cannot reach, is what the other two \
@@ -1893,7 +1898,7 @@ fn placement_card<'a>(
         project.slug, service.slug
     );
     rsx! {
-        <section class="stack">
+        <section class="stack" id="placement">
             <div class="split">
                 <p class="card-label">(t("Where this runs"))</p>
                 <span class="who">(format!("{} replica(s)", placements.len()))</span>
@@ -2433,14 +2438,19 @@ impl ServiceApi {
                 let confirmed = port
                     .hostname
                     .map(|hostname| format!("{hostname} resolves here, and is now routed"));
+                // The fragment last, after any query: it is where the
+                // card is, so the page comes back where it was rather
+                // than at the top. See `back_with_error`, which does
+                // not carry one — a refusal belongs beside the note
+                // that explains it, and that note is at the top.
                 Ok(see_other(&match confirmed {
                     Some(message) => format!(
-                        "{here}?{}",
+                        "{here}?{}#ports",
                         form_urlencoded::Serializer::new(String::new())
                             .append_pair("checked", &message)
                             .finish()
                     ),
-                    None => here,
+                    None => format!("{here}#ports"),
                 }))
             }
             Err(error) => Ok(back_with_error(&here, &error.to_string())),
@@ -2479,7 +2489,7 @@ impl ServiceApi {
             ports::delete(&self.state.database, port_id).await?;
             self.enqueue(&service.id, None).await;
         }
-        Ok(see_other(&here))
+        Ok(see_other(&format!("{here}#ports")))
     }
 
     /// Choose where one hostname's certificate comes from.
@@ -2542,7 +2552,7 @@ impl ServiceApi {
         }
         self.state.certificates.now();
 
-        Ok(see_other(&here))
+        Ok(see_other(&format!("{here}#certificates")))
     }
 
     /// Deploy one release — the newest, or an older one, which is
@@ -2618,7 +2628,7 @@ impl ServiceApi {
             checked(&form, "auto_deploy"),
         )
         .await?;
-        Ok(see_other(&here))
+        Ok(see_other(&format!("{here}#releases")))
     }
 
     /// Change the environment, and redeploy with it.
@@ -2659,7 +2669,7 @@ impl ServiceApi {
         if let Err(error) = wabot::async_jobs::run_command(&self.state.container, &command).await {
             tracing::error!(%error, "could not queue the deployment");
         }
-        Ok(see_other(&here))
+        Ok(see_other(&format!("{here}#memory")))
     }
 
     #[post("/projects/:project/services/:service/env")]
@@ -2700,7 +2710,7 @@ impl ServiceApi {
 
         self.apply_env(&project, &service, env, account.map(|a| a.id), "edit")
             .await?;
-        Ok(see_other(&here))
+        Ok(see_other(&format!("{here}#environment")))
     }
 
     /// Put an earlier set of values back.
@@ -2738,7 +2748,7 @@ impl ServiceApi {
         let env: Vec<(String, String)> = revision.env.into_iter().collect();
         self.apply_env(&project, &service, env, account.map(|a| a.id), "revert")
             .await?;
-        Ok(see_other(&here))
+        Ok(see_other(&format!("{here}#environment")))
     }
 
     /// Start (or restart) a service's container.
@@ -3017,7 +3027,7 @@ impl ServiceApi {
 
         self.dispatch(&project, &service, &account.id, touched)
             .await?;
-        Ok(see_other(&here))
+        Ok(see_other(&format!("{here}#placement")))
     }
 
     /// Choose which public nodes answer for one of this service's
@@ -3093,7 +3103,7 @@ impl ServiceApi {
             .await?;
         }
 
-        Ok(see_other(&here))
+        Ok(see_other(&format!("{here}#edges")))
     }
 }
 
@@ -5170,13 +5180,34 @@ mod tests {
         let page = service(&console, &cookie).await;
         let settings = format!("{page}/settings");
 
-        for (action, form) in [
-            ("tracking", vec![("track_tag", "latest")]),
-            ("env", vec![("env", "A=1")]),
-            ("ports", vec![("container_port", "8080")]),
-            ("memory", vec![("memory", "0")]),
-            ("placement", vec![("copies", "1")]),
-            ("edges", vec![("hostname", "api.example.com")]),
+        // And it comes back to the *card*, not to the top of the page:
+        // a form submit is a navigation, so the browser puts the reader
+        // at the top of a page they were half-way down. The fragment is
+        // the only lever there is with scripting off, which is the
+        // console's rule — the runtime boosts links and not submits.
+        let writing = console
+            .harness
+            .get(&settings)
+            .header("cookie", &cookie)
+            .send()
+            .await
+            .body;
+
+        // `on_page` is false for a card that renders only sometimes:
+        // the edges one needs a public node and a name for it to answer
+        // for, and neither exists here. Its redirect is still pinned —
+        // it is the id that cannot be looked for.
+        for (action, anchor, on_page, form) in [
+            ("tracking", "releases", true, vec![("track_tag", "latest")]),
+            ("env", "environment", true, vec![("env", "A=1")]),
+            ("ports", "ports", true, vec![("container_port", "8080")]),
+            ("placement", "placement", true, vec![("copies", "1")]),
+            (
+                "edges",
+                "edges",
+                false,
+                vec![("hostname", "api.example.com")],
+            ),
         ] {
             let response = console
                 .harness
@@ -5189,6 +5220,18 @@ mod tests {
             assert!(
                 location.starts_with(&settings),
                 "{action} went to {location}"
+            );
+            assert!(
+                location.ends_with(&format!("#{anchor}")),
+                "{action} landed at the top: {location}"
+            );
+            // The anchor has to name something. An id nothing carries
+            // is a fragment the browser ignores, silently, which is the
+            // half-applied shape this console has been bitten by
+            // before.
+            assert!(
+                !on_page || writing.contains(&format!("id=\"{anchor}\"")),
+                "nothing on the page is #{anchor}"
             );
         }
 
@@ -5210,11 +5253,49 @@ mod tests {
         .await
         .expect("database");
         let database = "/projects/my-api/services/orders";
+        // A certificate is refused outright on a node with no name of
+        // its own, and a refusal returns to the top of the page — which
+        // is the behaviour above, not the one under test here.
+        crate::node::settings::set_domain(&console.database, Some("node.example.com"))
+            .await
+            .expect("domain");
 
-        for (action, form) in [
-            ("database/name", vec![("name", "orders.example.com")]),
-            ("database/certificate", vec![("renew_with", "self-signed")]),
-            ("database/publish", vec![("publish", "1")]),
+        let writing = console
+            .harness
+            .get(&format!("{database}/settings"))
+            .header("cookie", &cookie)
+            .send()
+            .await
+            .body;
+
+        // `saved` is false where a test cannot get a save through: a
+        // certificate of any source is refused unless the node's own
+        // domain resolves, and no name resolves in here. The page is
+        // still pinned — that is what was wrong — and the fragment is
+        // followed by the two beside it.
+        for (action, anchor, saved, form) in [
+            // The size is a database's card. A plain service has a
+            // ceiling too and no form for it — the one place it is
+            // chosen is here.
+            ("memory", "memory", true, vec![("memory", "")]),
+            (
+                "database/name",
+                "name",
+                true,
+                vec![("name", "orders.example.com")],
+            ),
+            (
+                "database/certificate",
+                "certificate",
+                false,
+                vec![("renew_with", "self-signed")],
+            ),
+            (
+                "database/publish",
+                "published",
+                true,
+                vec![("publish", "1")],
+            ),
         ] {
             let response = console
                 .harness
@@ -5227,6 +5308,14 @@ mod tests {
             assert!(
                 location.starts_with(&format!("{database}/settings")),
                 "{action} went to {location}"
+            );
+            assert!(
+                !saved || location.ends_with(&format!("#{anchor}")),
+                "{action} landed at the top: {location}"
+            );
+            assert!(
+                writing.contains(&format!("id=\"{anchor}\"")),
+                "nothing on the page is #{anchor}"
             );
         }
     }
