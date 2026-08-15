@@ -342,7 +342,7 @@ impl ServicePages {
         let logs = format!("/projects/{}/services/{}/logs", project.slug, service.slug);
         let domain = crate::node::settings::domain(&self.state.database, &self.state.config).await;
         let exposure = exposure(&service, &project.slug, &ports, domain.as_deref());
-        let push_target = push_target(&service, &project.slug, domain.as_deref());
+        let push = push(&service, &project.slug, domain.as_deref());
 
         let all_projects = access::projects_for(&self.state.database, &account).await?;
         let frame = Frame::new(
@@ -550,8 +550,8 @@ impl ServicePages {
                     // the three parts of the reference — the node's host,
                     // the name under the project, and the one tag this
                     // service watches — from three other pages.
-                    @if let Some(target) = &push_target {
-                        (push_example(target, service.auto_deploy))
+                    @if let Some(push) = &push {
+                        (push_example(push, service.auto_deploy, &settings))
                     }
                 </section>
                 }
@@ -1498,42 +1498,68 @@ fn exposure_card<'a>(exposure: &'a Exposure, running: bool) -> impl Renderable +
     )
 }
 
-/// The reference a push has to carry to land on this service.
+/// What the releases card can say about pushing to this service.
 ///
-/// The same three parts the registry compares when a manifest arrives —
-/// this node as the host, the repository name without one, and the tag
-/// the service watches — so what the page shows is what `release` will
-/// match rather than a second guess at it.
+/// [`Push::To`] carries the same three parts the registry compares when
+/// a manifest arrives — this node as the host, the repository name
+/// without one, and the tag the service watches — so what the page
+/// shows is what `release` will match rather than a second guess at it.
 ///
-/// `None` when there is nothing to push to, and both cases are real: a
-/// digest-pinned image watches no tag, and an image outside the
-/// project's own namespace is refused by the token guard before any
-/// service is looked at. A command that cannot work is worse than no
-/// command, because it is tried first.
-fn push_target(
+/// The other three are the ways a push cannot land here, and they are
+/// why this is not an `Option`: printing nothing left somebody looking
+/// at a card that says "push an image to this repository" above an
+/// empty space, with no way to find out which repository or why there
+/// wasn't one. A dead end is a value somebody can act on.
+enum Push {
+    /// Push here, and it becomes a release.
+    To(String),
+    /// The image belongs to another registry, so a push to this node
+    /// matches no service. Carries the reference that would work.
+    Elsewhere(String),
+    /// Pinned by digest: it names bytes, and nothing watches bytes.
+    Pinned,
+    /// No domain, so this node's registry has no name to dial.
+    Nameless,
+}
+
+fn push(
     service: &services::Service,
     project_slug: &str,
     node_domain: Option<&str>,
-) -> Option<String> {
+) -> Option<Push> {
     // Managed images are the node's own choice, pinned to a major
-    // version; nothing is ever pushed at one.
+    // version; nothing is ever pushed at one, and there is nothing
+    // useful to say about that.
     if service.kind.is_managed() {
         return None;
     }
 
-    let reference = crate::platform::images::Reference::parse(&service.image)?;
-    let name = reference.name().to_string();
-    if name != project_slug && !name.starts_with(&format!("{project_slug}/")) {
-        return None;
-    }
+    let Some(reference) = crate::platform::images::Reference::parse(&service.image) else {
+        return Some(Push::Pinned);
+    };
+    let Some(host) = node_domain else {
+        return Some(Push::Nameless);
+    };
+    let tag = crate::platform::images::tracked_tag(&service.image, service.track_tag.as_deref())
+        .unwrap_or_else(|| "latest".into());
 
-    let tag = crate::platform::images::tracked_tag(&service.image, service.track_tag.as_deref())?;
-    // The registry names a pushed image under the node's own host, and
-    // that is what containerd is later asked to pull. Without a domain
-    // there is no host to write, and a reference with none is one
-    // containerd reads as its first segment being a registry to dial.
-    let host = node_domain?;
-    Some(format!("{host}/{name}:{tag}"))
+    // The token guard refuses a repository that is not the project's,
+    // and `release` compares names before tags — so an image from
+    // anywhere else can never be matched by a push here, whatever it is
+    // addressed to. What it would take is the service's image field
+    // naming this node.
+    let name = reference.name();
+    match name == project_slug || name.starts_with(&format!("{project_slug}/")) {
+        // The registry names a pushed image under the node's own host,
+        // and that is what containerd is later asked to pull. A
+        // reference with no host is one containerd reads as its first
+        // segment being a registry to dial.
+        true => Some(Push::To(format!("{host}/{name}:{tag}"))),
+        false => Some(Push::Elsewhere(format!(
+            "{host}/{project_slug}/{}:{tag}",
+            service.slug
+        ))),
+    }
 }
 
 /// Two commands that put an image on this service, and a button to take
@@ -1544,29 +1570,71 @@ fn push_target(
 /// Spanish. Behind a `<details>` for the same reason the connection
 /// strings are: it is read once when the service is set up and is in
 /// the way every time after that.
-fn push_example(target: &str, auto_deploy: bool) -> impl Renderable + '_ {
+fn push_example(push: &Push, auto_deploy: bool, settings: &str) -> impl Renderable {
     let (copy, copied) = (t("Copy"), t("Copied"));
     // `docker build -t <target> .` rather than a tag step with a
     // placeholder in it: a command with `<your image>` in the middle is
     // one somebody pastes and watches fail. This one is complete.
-    let commands = format!("docker build -t {target} .\ndocker push {target}");
+    let commands = match push {
+        Push::To(target) => format!("docker build -t {target} .\ndocker push {target}"),
+        _ => String::new(),
+    };
+    let settings = settings.to_string();
+    let instead = match push {
+        Push::Elsewhere(reference) => reference.clone(),
+        _ => String::new(),
+    };
     let inner = rsx! {
         <details>
             <summary>(t("How to push"))</summary>
             <div class="dsn stack-sm">
-                <p class="field-hint">(t("From the directory with the Dockerfile, after \
-                     docker login with a push token from the project page."))</p>
-                <div class="dsn-line">
-                    <pre class="dsn-value" data-copy
-                         data-copy-label=(copy) data-copied-label=(copied)>(&commands)</pre>
-                </div>
-                @if auto_deploy {
-                    <p class="field-hint">(t("The push deploys it. Any other tag is stored and \
-                         changes nothing here."))</p>
-                } @else {
-                    <p class="field-hint">(t("The push appears above as a release, and waits for \
-                         somebody to deploy it. Any other tag is stored and changes nothing \
-                         here."))</p>
+                @if !commands.is_empty() {
+                    <p class="field-hint">(t("From the directory with the Dockerfile, after \
+                         docker login with a push token from the project page."))</p>
+                    <div class="dsn-line">
+                        <pre class="dsn-value" data-copy
+                             data-copy-label=(copy) data-copied-label=(copied)>(&commands)</pre>
+                    </div>
+                    @if auto_deploy {
+                        <p class="field-hint">(t("The push deploys it. Any other tag is stored and \
+                             changes nothing here."))</p>
+                    } @else {
+                        <p class="field-hint">(t("The push appears above as a release, and waits for \
+                             somebody to deploy it. Any other tag is stored and changes nothing \
+                             here."))</p>
+                    }
+                }
+
+                // The three dead ends, each with the one thing that
+                // ends it. Said here rather than left blank: the line
+                // above this card tells somebody to push an image to
+                // "this repository", and for these three there is no
+                // repository to push to until something changes.
+                @if !instead.is_empty() {
+                    <p class="field-hint">(t("This service runs an image from another registry, \
+                         so nothing pushed to this node can land on it — a push is matched to a \
+                         service by the name it carries. Point the service at this reference \
+                         instead, and push that:"))</p>
+                    <div class="dsn-line">
+                        <pre class="dsn-value" data-copy
+                             data-copy-label=(copy) data-copied-label=(copied)>(&instead)</pre>
+                    </div>
+                    <p class="field-hint">
+                        <a href=(&settings)>(t("Change the image in settings"))</a>
+                    </p>
+                }
+                @if matches!(push, Push::Pinned) {
+                    <p class="field-hint">(t("This service is pinned to one image by digest, \
+                         which names bytes rather than a name a push can move. Give it a tag in \
+                         settings for pushes to reach it."))</p>
+                    <p class="field-hint">
+                        <a href=(&settings)>(t("Change the image in settings"))</a>
+                    </p>
+                }
+                @if matches!(push, Push::Nameless) {
+                    <p class="field-hint">(t("This node has no domain, so its registry has no \
+                         name a client could dial. Give the node one in its settings, and the \
+                         command to push here appears."))</p>
                 }
             </div>
         </details>
@@ -4873,11 +4941,13 @@ mod tests {
     /// The command has to be addressed the way the registry reads a
     /// push — host, name without one, and the tag this service watches
     /// — or it is three pages of guessing with a wrong answer at the
-    /// end. And there are four ways to have nothing to say, each one a
-    /// command that could only fail: no domain to push to, a
-    /// digest-pinned image that watches no tag, an image in somebody
-    /// else's namespace that the token guard refuses, and a database,
-    /// whose image is the node's own choice.
+    /// end.
+    ///
+    /// And three services cannot be pushed to at all, which the card has
+    /// to *say* rather than leave blank. Printing nothing was the first
+    /// version, and it put an empty space under a line telling somebody
+    /// to push an image to this repository — reported straight away,
+    /// against a service tracking `docker.io/library/nginx`.
     #[tokio::test]
     async fn a_push_command_is_addressed_the_way_the_registry_reads_one() {
         let console = Console::new().await;
@@ -4897,13 +4967,12 @@ mod tests {
         )
         .await
         .expect("service");
-        assert_eq!(
-            push_target(&ours, "my-api", Some("node.example.com")).as_deref(),
-            Some("node.example.com/my-api/api:latest")
-        );
-        assert_eq!(
-            push_target(&ours, "my-api", None),
-            None,
+        assert!(matches!(
+            push(&ours, "my-api", Some("node.example.com")),
+            Some(Push::To(target)) if target == "node.example.com/my-api/api:latest"
+        ));
+        assert!(
+            matches!(push(&ours, "my-api", None), Some(Push::Nameless)),
             "a node with no domain has no host to write into a reference"
         );
 
@@ -4916,23 +4985,28 @@ mod tests {
         )
         .await
         .expect("service");
-        assert_eq!(
-            push_target(&pinned, "my-api", Some("node.example.com")),
-            None,
+        assert!(
+            matches!(
+                push(&pinned, "my-api", Some("node.example.com")),
+                Some(Push::Pinned)
+            ),
             "a digest names bytes, and nothing watches it"
         );
 
+        // The reported case: created against a public image, so a push
+        // here matches no service whatever it is addressed to — and the
+        // answer is the reference that would work.
         let theirs = services::all(&console.database, Some(&project.id))
             .await
             .expect("query")
             .into_iter()
             .find(|service| service.slug == "web")
             .expect("the nginx one");
-        assert_eq!(
-            push_target(&theirs, "my-api", Some("node.example.com")),
-            None,
-            "library/nginx is not this project's to push to"
-        );
+        assert!(matches!(
+            push(&theirs, "my-api", Some("node.example.com")),
+            Some(Push::Elsewhere(instead))
+                if instead == "node.example.com/my-api/web:alpine"
+        ));
     }
 
     /// And it is on the page, with the button that takes it.
@@ -4972,6 +5046,24 @@ mod tests {
         assert!(
             body.contains(r#"data-island="copy""#),
             "and something to copy it with: {body}"
+        );
+
+        // And the service that cannot be pushed to says so, on the page
+        // where somebody went looking for the command.
+        let body = console
+            .harness
+            .get("/projects/my-api/services/web")
+            .header("cookie", &cookie)
+            .send()
+            .await
+            .body;
+        assert!(
+            body.contains("an image from another registry"),
+            "it says why: {body}"
+        );
+        assert!(
+            body.contains("node.example.com/my-api/web:alpine"),
+            "and what would work: {body}"
         );
     }
 

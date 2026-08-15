@@ -114,6 +114,10 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
     ("Certificate file", "Fichero del certificado"),
     ("Certificate on the way", "Certificado en camino"),
     ("Certificates", "Certificados"),
+    (
+        "Change the image in settings",
+        "Cambiar la imagen en ajustes",
+    ),
     ("Check again", "Comprobar de nuevo"),
     ("Collected", "Recogido"),
     ("Connection string", "Cadena de conexión"),
@@ -448,6 +452,10 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
     ("This node dials it at", "Este nodo lo marca en"),
     ("This node has no address another one could call back on, so it cannot enrol anybody yet.", "Este nodo no tiene una dirección a la que otro pueda devolver la llamada, así que todavía no puede enrolar a nadie."),
     ("This node has no domain of its own, so it cannot check that a name points here — and it will not route one it could not check. The node needs a domain before anything can be served over HTTPS.", "Este nodo no tiene dominio propio, así que no puede comprobar que un nombre apunte aquí — y no va a enrutar uno que no pudo comprobar. El nodo necesita un dominio antes de poder servir nada por HTTPS."),
+    (
+        "This node has no domain, so its registry has no name a client could dial. Give the node one in its settings, and the command to push here appears.",
+        "Este nodo no tiene dominio, así que su registry no tiene nombre al que un cliente pueda llamar. Dale uno en sus ajustes, y aparece el comando para subir aquí.",
+    ),
     ("This node has no services to send. Deploy one here first — what travels is an instruction to run the same image, pulled from this node's registry.", "Este nodo no tiene servicios que mandar. Despliega uno aquí primero — lo que viaja es una instrucción de ejecutar la misma imagen, tirada del registry de este nodo."),
     ("This node installs a release when you ask it to, and never on its own. Installing one restarts the node; the containers on it keep running.", "Este nodo instala una versión cuando se lo pides, y nunca por su cuenta. Instalar una reinicia el nodo; los contenedores que tiene siguen corriendo."),
     ("This node now takes instructions from ", "Este nodo ya toma instrucciones de "),
@@ -463,6 +471,14 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
     ("This service exposes nothing. That is the right answer for a worker; add a port for anything that listens.", "Este servicio no expone nada. Esa es la respuesta correcta para un worker; añade un puerto para cualquier cosa que escuche."),
     ("This service is administered from the node that placed it here, and nothing on this page will change it.", "Este servicio se administra desde el nodo que lo colocó aquí, y nada de esta página lo va a cambiar."),
     ("This service is not running anywhere.", "Este servicio no corre en ningún sitio."),
+    (
+        "This service is pinned to one image by digest, which names bytes rather than a name a push can move. Give it a tag in settings for pushes to reach it.",
+        "Este servicio está fijado a una imagen por digest, que nombra bytes y no un nombre que una subida pueda mover. Dale una etiqueta en ajustes para que las subidas le lleguen.",
+    ),
+    (
+        "This service runs an image from another registry, so nothing pushed to this node can land on it — a push is matched to a service by the name it carries. Point the service at this reference instead, and push that:",
+        "Este servicio corre una imagen de otro registry, así que nada de lo que se suba a este nodo puede caer en él — una subida se empareja con un servicio por el nombre que lleva. Apunta el servicio a esta referencia y sube esa:",
+    ),
     ("Throw it off this node", "Echarlo de este nodo"),
     ("Throw it out", "Echarlo fuera"),
     ("Tokens this node minted", "Tokens que acuñó este nodo"),
