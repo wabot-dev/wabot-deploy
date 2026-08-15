@@ -362,7 +362,15 @@ impl NodePages {
         // One call, and about the directory the node writes into rather
         // than about `/`: they are usually the same filesystem and the day
         // they are not is the day this matters.
-        let filesystem = crate::node::disk::filesystem(&self.state.config.node.data_dir);
+        // Every part of it, which is three directory walks — so once per
+        // render and never on the stream beside it: the memory tick is
+        // every two seconds, and walking containerd's tree that often
+        // would be this node's own reading of itself, at the top of its
+        // own CPU column.
+        let disk = crate::node::disk::breakdown(
+            &self.state.config.node.data_dir,
+            std::path::Path::new(crate::node::disk::CONTAINERD_ROOT),
+        );
         let facts = super::certificate_facts(&self.state).await;
         let policy = crate::edge::policy::for_name(
             &self.state.database,
@@ -417,7 +425,7 @@ impl NodePages {
                     // arriving here by clicking a link left the page a
                     // snapshot with no sign that it was one.
                     (live_cards(
-                        &node.id, &filesystem, &cells, &state, &policy,
+                        &node.id, &disk, &cells, &state, &policy,
                         domain.as_deref(), &query, &snapshot,
                     ))
 
@@ -1418,13 +1426,7 @@ const SOURCES: &[(&str, &str)] = &[
     ("file", "Read from files on this node"),
 ];
 
-fn memory_card<'a>(
-    snapshot: &'a Snapshot,
-    // Where the node keeps its data, which is the filesystem that matters:
-    // a machine with room on `/` and none where the volumes are is a
-    // machine that cannot write.
-    filesystem: &'a crate::node::disk::Filesystem,
-) -> impl Renderable + 'a {
+fn memory_card(snapshot: &Snapshot) -> impl Renderable + '_ {
     let containers = snapshot.containers_total();
 
     rsx! {
@@ -1475,32 +1477,17 @@ fn memory_card<'a>(
                  that maps them. \"Everything else\" is what is left over rather than a \
                  measurement of its own."))</p>
 
-            // And the disk, which is the other ceiling a node has and the
-            // one nothing on this page said a word about. A machine that
-            // runs out of it stops being able to write — a database first,
-            // and then the node's own log and database.
-            // The other two ceilings a machine has. CPU arrives on the
-            // stream and only from the second tick — a percentage is the
-            // difference between two readings — so the server renders the
-            // dash it will replace rather than nothing, which would be a
-            // row that appears two seconds after the page.
+            // CPU arrives on the stream and only from the second tick —
+            // a rate is the difference between two readings — so the
+            // server renders the dash it will replace rather than
+            // nothing, which would be a row that appears two seconds
+            // after the page. The disk is a card of its own below: it
+            // has parts, and a line saying how full a filesystem is
+            // answers none of the questions somebody has when it is.
             <dl class="kv">
                 <dt>(t("CPU"))</dt>
                 <dd data-cell="cpu">("—")</dd>
             </dl>
-
-            @if filesystem.total > 0 {
-                <dl class="kv">
-                    <dt>(t("Disk"))</dt>
-                    <dd>
-                        (memory::human(filesystem.used()))(t(" of "))
-                        (memory::human(filesystem.total))
-                        // A separator is punctuation, not prose: it goes
-                        // through no table, like a command or a hostname.
-                        (" · ")(memory::human(filesystem.available))(t(" free"))
-                    </dd>
-                </dl>
-            }
 
             @if snapshot.swap_total > 0 {
                 <dl class="kv">
@@ -1510,6 +1497,69 @@ fn memory_card<'a>(
                         (memory::human(snapshot.swap_total))
                     </dd>
                 </dl>
+            }
+        </section>
+    }
+}
+
+/// The other ceiling a machine has, in the parts it is made of.
+///
+/// A line saying a filesystem is 57 % full answers none of the questions
+/// somebody has when it is: what is taking it, and which of those can be
+/// got back. So it is the memory card's shape — a bar in parts and a
+/// table with the same colours — and the parts are the three directories
+/// this node can name.
+///
+/// Read once, when the page is drawn. The memory beside it ticks every
+/// two seconds and this must not: each part is a directory walk, and
+/// walking containerd's tree every two seconds would put this node at
+/// the top of its own CPU column.
+fn disk_card(disk: &crate::node::disk::Breakdown) -> impl Renderable + '_ {
+    let width = |bytes: u64| format!("{:.4}%", disk.percent_of_total(bytes));
+
+    rsx! {
+        <section class="card stack">
+            <div class="split">
+                <p class="card-label">(t("Disk"))</p>
+                <span class="mono">
+                    (memory::human(disk.filesystem.used()))(t(" of "))
+                    (memory::human(disk.filesystem.total))
+                    // A separator is punctuation, not prose: it goes
+                    // through no table, like a command or a hostname.
+                    (" · ")(memory::human(disk.filesystem.available))(t(" free"))
+                </span>
+            </div>
+
+            <div class="meter">
+                <span class="meter-part meter-containers"
+                      style=(width(disk.volumes.bytes))></span>
+                <span class="meter-part meter-runtime"
+                      style=(width(disk.images.bytes))></span>
+                <span class="meter-part meter-node"
+                      style=(width(disk.node.bytes))></span>
+                <span class="meter-part meter-rest" style=(width(disk.rest()))></span>
+            </div>
+
+            <table class="mem">
+                <tbody>
+                    (row("volumes", t("persistent disks"), "meter-containers", disk.volumes.bytes,
+                         t("What services keep. One disk per copy — two copies of a database \
+                            on one machine are two databases.")))
+                    (row("images", "containerd", "meter-runtime", disk.images.bytes,
+                         t("The images pulled to this node and the snapshots unpacked from \
+                            them. Nothing collects these yet.")))
+                    (row("node", "wabot-deploy", "meter-node", disk.node.bytes,
+                         t("This node's own: its database, its certificates and the logs it \
+                            keeps for each container.")))
+                    (row("rest", t("everything else"), "meter-rest", disk.rest(),
+                         t("The kernel, the distribution, and anything else on this machine.")))
+                </tbody>
+            </table>
+
+            @if disk.partial() {
+                <p class="note">(t("One of these directories was too big to walk while a page \
+                     was waiting, so its figure is a floor and \"everything else\" is the \
+                     larger for it."))</p>
             }
         </section>
     }
@@ -1559,7 +1609,7 @@ fn width(snapshot: &Snapshot, bytes: u64) -> String {
 #[allow(clippy::too_many_arguments)]
 fn live_cards<'a>(
     node_id: &'a str,
-    filesystem: &'a crate::node::disk::Filesystem,
+    disk: &'a crate::node::disk::Breakdown,
     cells: &'a CertificateCells,
     state: &'a CertificateState,
     policy: &'a crate::edge::policy::Policy,
@@ -1569,7 +1619,8 @@ fn live_cards<'a>(
 ) -> impl Renderable + 'a {
     let inner = rsx! {
         (certificate_card(cells, state, policy, domain, query))
-        (memory_card(snapshot, filesystem))
+        (memory_card(snapshot))
+        (disk_card(disk))
     }
     .render()
     .into_inner();
@@ -2410,9 +2461,7 @@ pub(crate) mod tests {
     #[test]
     fn every_streamed_cell_has_a_place_on_the_page() {
         let snapshot = snapshot();
-        let rendered = memory_card(&snapshot, &Default::default())
-            .render()
-            .into_inner();
+        let rendered = memory_card(&snapshot).render().into_inner();
         let payload = cells(&snapshot, None);
 
         for key in payload.cells.keys() {
@@ -2455,7 +2504,7 @@ pub(crate) mod tests {
 
         // And the first paint still needs the whole declaration, because
         // there it is the attribute.
-        assert!(memory_card(&snapshot, &Default::default())
+        assert!(memory_card(&snapshot)
             .render()
             .into_inner()
             .contains("style=\"width:"));
@@ -2466,9 +2515,7 @@ pub(crate) mod tests {
     #[test]
     fn the_first_paint_and_the_stream_agree() {
         let snapshot = snapshot();
-        let rendered = memory_card(&snapshot, &Default::default())
-            .render()
-            .into_inner();
+        let rendered = memory_card(&snapshot).render().into_inner();
 
         for value in cells(&snapshot, None).cells.values() {
             if value.contains("of 0 B") {

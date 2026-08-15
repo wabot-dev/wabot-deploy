@@ -58,6 +58,10 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
         "A database is reached by name, from inside the project. The node writes these into every container it starts, so nothing in an image has to be configured.",
         "A una base de datos se llega por nombre, desde dentro del proyecto. El nodo los escribe en cada contenedor que arranca, así que no hay nada que configurar en una imagen.",
     ),
+    (
+        "A disk belongs to one copy and survives every deployment — a container is replaced, the directory under it is not. Two copies never share one: that would be two servers writing the same files. It goes when the copy does, and a copy that comes back gets an empty one.",
+        "Un disco es de una copia y sobrevive a cada despliegue — el contenedor se reemplaza, el directorio de debajo no. Dos copias nunca comparten uno: serían dos servidores escribiendo los mismos ficheros. Se va cuando se va la copia, y una copia que vuelve recibe uno vacío.",
+    ),
     ("A key and an address appear the first time this node enrols another one or joins one itself. The overlay is what carries traffic between nodes — an edge here reaching a container that runs somewhere else.", "La clave y la dirección aparecen la primera vez que este nodo enrola a otro o se une a uno. La overlay es lo que lleva el tráfico entre nodos — un edge de aquí llegando a un contenedor que corre en otro sitio."),
     ("A new copy is created on the node you pick, rather than here and moved after — which would start a container on this machine and stop it again for nothing. Removing takes the ones already thrown out first, then the highest-numbered; the node running one is told to stop it.", "Una copia nueva se crea en el nodo que elijas, en vez de aquí y moverla después — lo que arrancaría un contenedor en esta máquina para pararlo acto seguido sin motivo. Al quitar se van primero las ya expulsadas, luego las de número más alto; al nodo que corre una se le dice que la pare."),
     (
@@ -192,10 +196,18 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
     ("From the nodes page of the node you are joining: invite a node there, and it shows one token, once. Pasting it here does what `wabot-deploy join` does in a terminal — this node records that one as an authority and tells it so. The same token can be pasted again if something goes wrong part-way.", "Desde la página de nodos del nodo al que te unes: invita un nodo allí, y enseña un token, una vez. Pegarlo aquí hace lo que hace `wabot-deploy join` en una terminal — este nodo anota aquel como autoridad y se lo dice. El mismo token se puede volver a pegar si algo sale mal a medias."),
     ("Have it answer for this node's hostnames", "Que responda por los nombres de este nodo"),
     ("Have this node answer for its hostnames", "Que este nodo responda por sus nombres"),
+    (
+        "Holds",
+        "Ocupa",
+    ),
     ("How many", "Cuántas"),
     ("How to push", "Cómo subir una imagen"),
     ("Id", "Id"),
     ("Image", "Imagen"),
+    (
+        "Inside the container",
+        "Dentro del contenedor",
+    ),
     ("Inside the project", "Dentro del proyecto"),
     ("Install", "Instalar"),
     ("Install this release", "Instalar esta versión"),
@@ -278,6 +290,10 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
     ("On this network", "En esta red"),
     ("On this node", "En este nodo"),
     ("One KEY=value per line. Everything after the first = is the value, so a value may contain one.", "Un CLAVE=valor por línea. Todo lo que va tras el primer = es el valor, así que un valor puede llevar uno."),
+    (
+        "One of these directories was too big to walk while a page was waiting, so its figure is a floor and \"everything else\" is the larger for it.",
+        "Uno de estos directorios era demasiado grande para recorrerlo mientras una página esperaba, así que su cifra es un mínimo y «todo lo demás» es mayor por ello.",
+    ),
     ("One per hostname. A node with no public DNS, or a name a certificate authority cannot reach, is what the other two answers are for.", "Uno por nombre. Un nodo sin DNS público, o un nombre al que una autoridad de certificación no llega, es para lo que están las otras dos respuestas."),
     (
         "One per running container. The runtime's overhead, not the image's.",
@@ -297,6 +313,10 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
     ("Overview", "Resumen"),
     ("Password", "Contraseña"),
     ("People", "Personas"),
+    (
+        "Persistent disks",
+        "Discos persistentes",
+    ),
     ("Person", "Persona"),
     ("Placed by", "Colocada por"),
     ("Ports", "Puertos"),
@@ -387,6 +407,10 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
     ),
     ("The image is pulled from Docker Hub. The major version is fixed once the database exists: changing it is a data migration, not an image change.", "La imagen se trae de Docker Hub. La versión mayor queda fija en cuanto la base existe: cambiarla es una migración de datos, no un cambio de imagen."),
     (
+        "The images pulled to this node and the snapshots unpacked from them. Nothing collects these yet.",
+        "Las imágenes descargadas a este nodo y los snapshots que se desempaquetaron de ellas. Todavía no hay nada que las recoja.",
+    ),
+    (
         "The kernel, the distribution, and anything else on this machine.",
         "El kernel, la distribución y todo lo demás que haya en esta máquina.",
     ),
@@ -464,6 +488,10 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
         "Lo firma este nodo, así que a un cliente hay que darle la autoridad antes de que pueda verificar nada. Un contenedor la recibe en /etc/wabot/ca.crt; cualquier otra cosa necesita el fichero.",
     ),
     ("This node stops listing it. It is one direction only: the other node still holds this one as an authority until somebody revokes it there, from its own console. A grant belongs to the node that made it.", "Este nodo deja de listarlo. Va en una sola dirección: el otro nodo sigue teniendo a este como autoridad hasta que alguien lo revoque allí, desde su propia consola. Una concesión es del nodo que la hizo."),
+    (
+        "This node's own: its database, its certificates and the logs it keeps for each container.",
+        "Lo propio de este nodo: su base de datos, sus certificados y los logs que guarda de cada contenedor.",
+    ),
     ("This node, and the ones that have agreed to take instructions from it.", "Este nodo, y los que han aceptado tomar instrucciones de él."),
     ("This release came with no notes.", "Esta versión vino sin notas."),
     ("This runs the container. Which nodes answer for the service's name is chosen on the service itself, and can be this node, that one, or both.", "Esto ejecuta el contenedor. Qué nodos responden por el nombre del servicio se elige en el propio servicio, y puede ser este nodo, aquel, o los dos."),
@@ -495,6 +523,10 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
     ("Waiting to be collected", "Esperando a ser recogido"),
     ("What is in it", "Qué lleva"),
     (
+        "What services keep. One disk per copy — two copies of a database on one machine are two databases.",
+        "Lo que guardan los servicios. Un disco por copia — dos copias de una base de datos en una máquina son dos bases de datos.",
+    ),
+    (
         "What the images themselves are using, from their cgroups.",
         "Lo que usan las imágenes mismas, leído de sus cgroups.",
     ),
@@ -523,6 +555,10 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
     ("nothing", "nada"),
     ("nowhere", "en ningún sitio"),
     ("older than what is running", "más vieja que la que corre"),
+    (
+        "persistent disks",
+        "discos persistentes",
+    ),
     ("replica", "réplica"),
     ("replicas", "réplicas"),
     ("running here", "corriendo aquí"),

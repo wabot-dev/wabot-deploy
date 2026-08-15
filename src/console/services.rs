@@ -302,6 +302,11 @@ impl ServicePages {
         // cgroups, for the table below — a copy elsewhere is measured by
         // the node running it, and this map simply has no entry for it.
         let used = self.state.deployer.memory().await.containers;
+        // What this service keeps, which is a row per volume and a
+        // directory per copy of it.
+        let volumes = crate::platform::volumes::of_service(&self.state.database, &service.id)
+            .await
+            .unwrap_or_default();
         // And what each copy here holds. One walk per copy, on a page
         // somebody opened — the alternative is a figure that is only ever
         // as fresh as the last report, which for a volume on this very
@@ -475,6 +480,23 @@ impl ServicePages {
                             disk: &disk,
                         },
                     ))
+                    // Only where there is one to show. A service that
+                    // declares no volume keeps nothing, and a card
+                    // saying so would be a row of dashes explaining an
+                    // absence nobody asked about.
+                    @if !volumes.is_empty() {
+                        (disks_card(
+                            &volumes,
+                            &placements,
+                            &nodes,
+                            &Running {
+                                project_slug: &project.slug,
+                                service_slug: &service.slug,
+                                used: &used,
+                                disk: &disk,
+                            },
+                        ))
+                    }
                 } @else {
                     (from_elsewhere_card(
                         &project,
@@ -1839,6 +1861,74 @@ fn running_card<'a>(
                          reports on. The same unit, and the second is the smoother of the \
                          two."))</p>
                 }
+            </div>
+        </section>
+    }
+}
+
+/// The disks themselves: one per copy, and that is the whole point.
+///
+/// The table above measures them and never says what they *are* — so a
+/// database's storage was a number in a column and nothing that said
+/// there is a directory on a machine, one for each copy, that outlives
+/// every deployment. Asked for by name.
+///
+/// One row per copy rather than one per volume-and-copy, because a
+/// service declares one volume today and the row would be the same
+/// sentence repeated. The paths are listed in the cell when there are
+/// several, and the size is the copy's total either way — which is the
+/// figure its own node reports, and the only one that can exist here
+/// for a copy on another machine.
+fn disks_card<'a>(
+    volumes: &'a [crate::platform::volumes::Volume],
+    placements: &'a [crate::platform::replicas::Replica],
+    nodes: &'a [crate::network::Node],
+    at: &'a Running<'a>,
+) -> impl Renderable + 'a {
+    let live: Vec<&crate::platform::replicas::Replica> =
+        placements.iter().filter(|r| !r.evicted()).collect();
+    let paths = volumes
+        .iter()
+        .map(|volume| volume.path.clone())
+        .collect::<Vec<_>>()
+        .join("  ");
+
+    rsx! {
+        <section class="stack">
+            <p class="card-label">(t("Persistent disks"))</p>
+            <div class="card stack">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>(t("Replica"))</th>
+                            <th>(t("Node"))</th>
+                            <th>(t("Inside the container"))</th>
+                            <th>(t("Holds"))</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @for replica in &live {
+                            <tr>
+                                <td class="mono">("#")(replica.slot)</td>
+                                <td class="mono">(node_name(replica, nodes))</td>
+                                <td class="mono">(&paths)</td>
+                                <td class="mono">(
+                                    at.disk.get(&replica.id)
+                                        .copied()
+                                        .flatten()
+                                        .or(replica.disk_bytes)
+                                        .map(crate::node::memory::human)
+                                        .unwrap_or_else(|| "—".into())
+                                )</td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+                <p class="field-hint">(t("A disk belongs to one copy and survives every \
+                     deployment — a container is replaced, the directory under it is not. \
+                     Two copies never share one: that would be two servers writing the same \
+                     files. It goes when the copy does, and a copy that comes back gets an \
+                     empty one."))</p>
             </div>
         </section>
     }
@@ -5160,6 +5250,66 @@ mod tests {
         ] {
             assert!(writing.contains(form), "{form} is missing: {writing}");
         }
+    }
+
+    /// A database's storage was a number in a column and nothing that
+    /// said what it *is*: a directory per copy, on the machine running
+    /// it, that outlives every deployment. Reported by Jorge, who went
+    /// looking for the persistent disks and found none named anywhere.
+    ///
+    /// Only where there is one. A service that declares no volume keeps
+    /// nothing, and the card would be a row of dashes explaining an
+    /// absence nobody asked about.
+    #[tokio::test]
+    async fn a_database_names_the_disk_each_copy_keeps() {
+        let console = Console::new().await;
+        let cookie = console.signed_in().await;
+        let page = service(&console, &cookie).await;
+
+        let plain = console
+            .harness
+            .get(&page)
+            .header("cookie", &cookie)
+            .send()
+            .await
+            .body;
+        assert!(
+            !plain.contains("Persistent disks"),
+            "a service that keeps nothing says nothing: {plain}"
+        );
+
+        let project = projects::find(&console.database, "my-api")
+            .await
+            .expect("query")
+            .expect("made");
+        let (database, _) = crate::platform::databases::create(
+            &console.database,
+            &project.id,
+            "orders",
+            "17",
+            256 * 1024 * 1024,
+        )
+        .await
+        .expect("database");
+        crate::platform::replicas::ensure_here(&console.database, &database.id, 2)
+            .await
+            .expect("a second copy");
+
+        let body = console
+            .harness
+            .get("/projects/my-api/services/orders")
+            .header("cookie", &cookie)
+            .send()
+            .await
+            .body;
+        assert!(body.contains("Persistent disks"), "{body}");
+        // One row per copy, and the mount inside the container is what
+        // names it — the path on the node is derived from the container
+        // id and is not somebody's to type.
+        assert!(
+            body.matches(crate::platform::postgres::DATA_MOUNT).count() >= 2,
+            "a disk for each copy: {body}"
+        );
     }
 
     /// Each form comes back to the page it is on. Landing on the
