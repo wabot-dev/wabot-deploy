@@ -158,6 +158,23 @@
   // and a deployment finishing while somebody watches is exactly when
   // stale is worst.
 
+  // Written only when it differs.
+  //
+  // Assigning the same text replaces the node's text anyway, and a page
+  // doing that to seven cells a second reads as a page fidgeting —
+  // reported from the memory view as "nothing changes but something
+  // moves". Nothing here decides *what* to show; it only declines to
+  // repaint what is already right.
+  //
+  // **Module scope, because two islands use it.** It was declared inside
+  // `node-live` and called from `project-live`, which is a ReferenceError
+  // the moment a message arrives — and one that takes the whole handler
+  // with it, so a page kept its first paint and looked merely stale. A
+  // helper shared by two islands belongs to neither.
+  var set = function (node, value) {
+    if (node && node.textContent !== value) node.textContent = value;
+  };
+
   // A hostname carries dots, and a dot in a selector is a class. The
   // built-in is not everywhere yet, so this is the fallback rather than
   // the plan.
@@ -383,17 +400,6 @@
   wabot.island('node-live', function (host, props) {
     if (!props || !props.node) return null;
     var source = new EventSource('/nodes/' + encodeURIComponent(props.node) + '/live');
-
-    // Written only when it differs.
-    //
-    // Assigning the same text replaces the node's text anyway, and a
-    // page doing that to seven cells a second reads as a page fidgeting:
-    // reported from the memory view as "nothing changes but something
-    // moves". Nothing here decides *what* to show — the server does
-    // that — this only declines to repaint what is already right.
-    var set = function (node, value) {
-      if (node && node.textContent !== value) node.textContent = value;
-    };
 
     var put = function (key, value) {
       set(host.querySelector('[data-cert="' + key + '"]'), value);

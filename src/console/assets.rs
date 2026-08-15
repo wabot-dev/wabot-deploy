@@ -174,6 +174,43 @@ mod tests {
         assert!(tag.contains(env!("WABOT_ASSET_HASH")), "{tag}");
     }
 
+    /// A helper two islands call has to live where both can see it.
+    ///
+    /// `set` was declared inside `node-live` and called from
+    /// `project-live`, which is a ReferenceError the moment a message
+    /// arrives — and it takes the whole handler down with it, so the page
+    /// keeps its first paint and looks merely stale rather than broken.
+    /// CPU never appeared and nobody could tell that the state badges had
+    /// stopped updating too.
+    ///
+    /// Read out of the script rather than executed: this crate has no
+    /// JavaScript engine, and where a `var` sits relative to its callers
+    /// is a textual fact.
+    #[test]
+    fn a_helper_two_islands_share_is_declared_before_both() {
+        let script = ASSETS
+            .iter()
+            .find(|asset| asset.path == "console.js")
+            .expect("shipped");
+        let text = std::str::from_utf8(script.bytes).expect("utf-8");
+
+        let declared = text.find("var set = function").expect("`set` is declared");
+        assert_eq!(
+            text.matches("var set = function").count(),
+            1,
+            "one definition, or two islands can disagree about what it does"
+        );
+        for island in ["project-live", "node-live"] {
+            let at = text
+                .find(&format!("wabot.island('{island}'"))
+                .unwrap_or_else(|| panic!("{island} is registered"));
+            assert!(
+                declared < at,
+                "`set` is declared after {island}, which calls it"
+            );
+        }
+    }
+
     #[test]
     fn nothing_is_empty() {
         for asset in ASSETS {
