@@ -1562,8 +1562,13 @@ fn push(
         // reference with no host is one containerd reads as its first
         // segment being a registry to dial.
         true => Some(Push::To(format!("{host}/{name}:{tag}"))),
+        // `latest`, and not the tag the other registry's image carries.
+        // A service created from `nginx:alpine` was offered
+        // `…/nubo-app:alpine` — the tag belongs to somebody else's
+        // image, and inheriting it means every service made from a
+        // public base image suggests a tag nobody would have chosen.
         false => Some(Push::Elsewhere(format!(
-            "{host}/{project_slug}/{}:{tag}",
+            "{host}/{project_slug}/{}:latest",
             service.slug
         ))),
     }
@@ -1582,19 +1587,38 @@ fn push_example(push: &Push, auto_deploy: bool, settings: &str) -> impl Renderab
     // `docker build -t <target> .` rather than a tag step with a
     // placeholder in it: a command with `<your image>` in the middle is
     // one somebody pastes and watches fail. This one is complete.
-    let commands = match push {
-        Push::To(target) => format!("docker build -t {target} .\ndocker push {target}"),
-        _ => String::new(),
+    // Both cases with a reference get the commands. The second one has
+    // a step in front of it — point the service here first — and that
+    // is a sentence, not a reason to withhold what to type: the card
+    // showed the bare reference and Jorge went looking for the build
+    // and the push that were not there.
+    let target = match push {
+        Push::To(target) | Push::Elsewhere(target) => target.as_str(),
+        _ => "",
+    };
+    let commands = match target.is_empty() {
+        true => String::new(),
+        false => format!("docker build -t {target} .\ndocker push {target}"),
     };
     let settings = settings.to_string();
-    let instead = match push {
-        Push::Elsewhere(reference) => reference.clone(),
-        _ => String::new(),
-    };
+    let landing = matches!(push, Push::To(_));
     let inner = rsx! {
         <details>
             <summary>(t("How to push"))</summary>
             <div class="dsn stack-sm">
+                // The dead ends, each with the one thing that ends it.
+                // Said rather than left blank: the line above this card
+                // tells somebody to push an image to "this repository",
+                // and until something changes there is none.
+                @if matches!(push, Push::Elsewhere(_)) {
+                    <p class="field-hint">(t("This service runs an image from another registry, \
+                         so nothing pushed to this node can land on it — a push is matched to a \
+                         service by the name it carries. Point the service at this reference \
+                         instead, and push that:"))</p>
+                    <p class="field-hint">
+                        <a href=(&settings)>(t("Change the image in settings"))</a>
+                    </p>
+                }
                 @if !commands.is_empty() {
                     <p class="field-hint">(t("From the directory with the Dockerfile, after \
                          docker login with a push token from the project page."))</p>
@@ -1602,6 +1626,8 @@ fn push_example(push: &Push, auto_deploy: bool, settings: &str) -> impl Renderab
                         <pre class="dsn-value" data-copy
                              data-copy-label=(copy) data-copied-label=(copied)>(&commands)</pre>
                     </div>
+                }
+                @if landing {
                     @if auto_deploy {
                         <p class="field-hint">(t("The push deploys it. Any other tag is stored and \
                              changes nothing here."))</p>
@@ -1610,25 +1636,6 @@ fn push_example(push: &Push, auto_deploy: bool, settings: &str) -> impl Renderab
                              somebody to deploy it. Any other tag is stored and changes nothing \
                              here."))</p>
                     }
-                }
-
-                // The three dead ends, each with the one thing that
-                // ends it. Said here rather than left blank: the line
-                // above this card tells somebody to push an image to
-                // "this repository", and for these three there is no
-                // repository to push to until something changes.
-                @if !instead.is_empty() {
-                    <p class="field-hint">(t("This service runs an image from another registry, \
-                         so nothing pushed to this node can land on it — a push is matched to a \
-                         service by the name it carries. Point the service at this reference \
-                         instead, and push that:"))</p>
-                    <div class="dsn-line">
-                        <pre class="dsn-value" data-copy
-                             data-copy-label=(copy) data-copied-label=(copied)>(&instead)</pre>
-                    </div>
-                    <p class="field-hint">
-                        <a href=(&settings)>(t("Change the image in settings"))</a>
-                    </p>
                 }
                 @if matches!(push, Push::Pinned) {
                     <p class="field-hint">(t("This service is pinned to one image by digest, \
@@ -5009,10 +5016,13 @@ mod tests {
             .into_iter()
             .find(|service| service.slug == "web")
             .expect("the nginx one");
+        // `latest`, not the `alpine` the public image carries: that
+        // tag is somebody else's image's, and every service made from a
+        // public base would otherwise be told to push one.
         assert!(matches!(
             push(&theirs, "my-api", Some("node.example.com")),
             Some(Push::Elsewhere(instead))
-                if instead == "node.example.com/my-api/web:alpine"
+                if instead == "node.example.com/my-api/web:latest"
         ));
     }
 
@@ -5069,8 +5079,8 @@ mod tests {
             "it says why: {body}"
         );
         assert!(
-            body.contains("node.example.com/my-api/web:alpine"),
-            "and what would work: {body}"
+            body.contains("docker push node.example.com/my-api/web:latest"),
+            "and the commands for what would work: {body}"
         );
     }
 

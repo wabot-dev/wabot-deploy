@@ -512,6 +512,26 @@ wabot-outlet {
   margin-top: var(--sp-3);
 }
 
+/* Same asymmetry, one element down. `.field-hint` carries a *negative*
+   top margin and a large bottom one, because under a field that is
+   exactly right — it belongs to the input above it. Inside a flex stack
+   that already spaces its children, the negative one pulls the line up
+   against whatever it follows and the bottom one adds to the gap: so a
+   hint opening a disclosure sat on the summary, and every hint after a
+   command block was twice as far from it as the block was from the line
+   above. The stack's gap is the spacing; the margins are not. */
+.dsn .field-hint { margin: 0; }
+
+/* A block somebody opens once and then scrolls past — the connection
+   strings, and how to push. The design system styles neither, so the
+   marker had no pointer and the first line inside started flush against
+   the word that opens it. */
+details > summary {
+  cursor: pointer;
+  font-weight: 500;
+}
+details[open] > summary { margin-bottom: var(--sp-4); }
+
 .dsn-pick { flex-wrap: wrap; gap: var(--sp-5); align-items: center; }
 .dsn-group { display: flex; flex-wrap: wrap; gap: var(--sp-4); align-items: center; }
 
