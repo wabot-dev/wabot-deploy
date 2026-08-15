@@ -220,6 +220,27 @@ pub async fn run(config: Config, config_path: &Path) -> anyhow::Result<i32> {
         println!("  nothing supervises services here; the node has to be run in the foreground");
     }
 
+    // The way back from an update, which exists and was written down
+    // nowhere. Both halves are kept deliberately — the binary that was
+    // replaced, and a copy of the database taken before anything could
+    // migrate it — and an operator who needs them at two in the morning
+    // was expected to know two paths nobody had told them. There is no
+    // button for this on purpose: putting a schema back is not a file
+    // operation, which is exactly why the second half is a copy.
+    let previous =
+        std::path::Path::new(crate::bootstrap::service::BINARY_PATH).with_extension("previous");
+    if previous.exists() {
+        println!("  the way back {}", previous.display());
+    }
+    let backups = config.node.data_dir.join("backups");
+    if let Some((path, count)) = newest_backup(&backups) {
+        println!(
+            "  database copy {} ({count} kept in {})",
+            path.display(),
+            backups.display()
+        );
+    }
+
     println!();
     println!("certificates");
     match crate::edge::certs::load_all(&database).await {
@@ -557,6 +578,25 @@ fn finish(problems: usize) -> anyhow::Result<i32> {
         println!("{problems} problem(s) found");
         Ok(1)
     }
+}
+
+/// The most recent database copy an update took, and how many there
+/// are.
+///
+/// Counted rather than pruned: a copy of somebody's database is not a
+/// thing this node deletes on its own, and the number is what tells an
+/// operator whether the directory is worth looking at. `VACUUM INTO`
+/// writes one per update and nothing has ever removed one.
+fn newest_backup(directory: &std::path::Path) -> Option<(std::path::PathBuf, usize)> {
+    let mut copies: Vec<(std::time::SystemTime, std::path::PathBuf)> = std::fs::read_dir(directory)
+        .ok()?
+        .flatten()
+        .filter(|entry| entry.path().extension().is_some_and(|kind| kind == "db"))
+        .filter_map(|entry| Some((entry.metadata().ok()?.modified().ok()?, entry.path())))
+        .collect();
+    copies.sort_by_key(|(modified, _)| std::cmp::Reverse(*modified));
+    let count = copies.len();
+    copies.into_iter().next().map(|(_, path)| (path, count))
 }
 
 /// The container id of every copy this node runs.
