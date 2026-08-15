@@ -714,13 +714,15 @@ impl Deployer {
 
         // The log first, emptied: what a container says while failing
         // is the only thing that explains it, and containerd discards
-        // it unless it is given somewhere to put it. Managed engines
-        // only — the node writes their configuration, so it owes an
-        // account of what happened to it.
-        let log = match service.kind.is_managed() {
-            true => logs::prepare(&self.config.node.data_dir, &id).ok(),
-            false => None,
-        };
+        // it unless it is given somewhere to put it.
+        //
+        // Every container, not only a managed engine. That restriction
+        // was about the disk — nothing bounded the file — and the page
+        // it left behind told the owner of a plain container that its
+        // output had not been kept and to deploy it again, which could
+        // never work. `logs::trim_all` is the bound now, and it belongs
+        // to the disk rather than to who wrote the configuration.
+        let log = logs::prepare(&self.config.node.data_dir, &id).ok();
 
         match containers::run(
             &client,

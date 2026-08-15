@@ -22,12 +22,24 @@
 //! required, so the failure mode the original comment warned about
 //! cannot happen.
 //!
+//! ## Every container, since a service's page asks the same question
+//!
+//! It was managed engines only, and the reason was the paragraph below:
+//! nothing bounded the file, and a chatty web service writing to stdout
+//! for a month is a disk leak with a slow fuse. But the log *page*
+//! exists for every service — it is where somebody goes to find out why
+//! one is not answering — and on a plain container it said the output
+//! had not been kept and to deploy it again, which was advice that could
+//! not work. Reported by Jorge, of an nginx.
+//!
+//! So the bound is here instead: [`trim`] keeps the end of a file that
+//! has grown past [`MAX_BYTES`], and the pass that reconciles runs it.
+//!
 //! ## One run, not a history
 //!
 //! The file is truncated when the container starts. There is no
-//! rotation here and no log retention policy, so an append-only file is
-//! a disk leak with a slow fuse; what somebody needs when a container
-//! will not stay up is what *this* attempt said.
+//! rotation here and no retention policy, so what somebody needs when a
+//! container will not stay up is what *this* attempt said.
 //!
 //! **Following exists now** — [`read_from`], and the page and stream on
 //! a service that use it. Searching and keeping still do not, and this
@@ -67,6 +79,85 @@ pub fn prepare(data_dir: &Path, container_id: &str) -> std::io::Result<PathBuf> 
     }
     std::fs::write(&path, b"")?;
     Ok(path)
+}
+
+/// How large one container's log may get before its beginning is
+/// dropped.
+///
+/// Big enough to hold what a service says between deployments, small
+/// enough that thirty of them cannot fill a node — which is the number
+/// that matters, because this is per container and a node runs many.
+pub const MAX_BYTES: u64 = 8 * 1024 * 1024;
+
+/// What is kept when one is over: the end, because that is where the
+/// reason a container stopped is.
+const KEEP_BYTES: u64 = 2 * 1024 * 1024;
+
+/// Drop the beginning of any log that has outgrown [`MAX_BYTES`].
+///
+/// Every file under `logs/`, not the ones a caller can name: a
+/// container that is gone left its file behind, and the whole point of
+/// the bound is the disk rather than any one service.
+///
+/// Returns how many were trimmed, so the pass that calls this can say
+/// nothing on the ordinary tick and say something when it acted.
+///
+/// The file the shim is appending to is rewritten under it, which is
+/// safe for the one thing this has to be safe for: the shim opened it
+/// with `O_APPEND`, so its next write goes to the end of whatever is
+/// there now. What can be lost is a line written during the rewrite,
+/// and a log that loses a line while being trimmed is a better answer
+/// than a node that fills its disk.
+pub fn trim_all(data_dir: &Path) -> usize {
+    let Ok(entries) = std::fs::read_dir(data_dir.join("logs")) else {
+        return 0;
+    };
+    let mut trimmed = 0;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let Ok(metadata) = entry.metadata() else {
+            continue;
+        };
+        if !metadata.is_file() || metadata.len() <= MAX_BYTES {
+            continue;
+        }
+        match trim(&path, KEEP_BYTES) {
+            Ok(()) => {
+                trimmed += 1;
+                tracing::info!(
+                    file = %path.display(), was = metadata.len(),
+                    "trimmed a container log"
+                );
+            }
+            Err(error) => {
+                tracing::warn!(file = %path.display(), %error, "could not trim a container log")
+            }
+        }
+    }
+    trimmed
+}
+
+/// Keep the last `keep` bytes of one file.
+///
+/// From the first newline inside the window, so what is left starts at a
+/// line rather than half-way through one.
+pub fn trim(path: &Path, keep: u64) -> std::io::Result<()> {
+    use std::io::{Read, Seek, SeekFrom};
+
+    let mut file = std::fs::File::open(path)?;
+    let length = file.metadata()?.len();
+    if length <= keep {
+        return Ok(());
+    }
+    file.seek(SeekFrom::Start(length - keep))?;
+    let mut kept = Vec::new();
+    file.read_to_end(&mut kept)?;
+    let from = kept
+        .iter()
+        .position(|byte| *byte == b'\n')
+        .map(|at| at + 1)
+        .unwrap_or(0);
+    std::fs::write(path, &kept[from..])
 }
 
 /// The last of what a container said, or `None` if it said nothing.
@@ -178,6 +269,49 @@ pub fn discard(data_dir: &Path, container_id: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Keeping every container's output is only safe with a bound on
+    /// it: the shim appends and nothing rotates, so a chatty service
+    /// running for a month is a node with a full disk. That is why this
+    /// was managed engines only, and why the answer is the bound rather
+    /// than the restriction — a log page that exists for every service
+    /// and keeps nothing for most of them is a page that lies.
+    #[test]
+    fn a_log_that_outgrows_the_bound_keeps_its_end() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let logs = dir.path().join("logs");
+        std::fs::create_dir_all(&logs).expect("mkdir");
+
+        let small = logs.join("demo.quiet.log");
+        std::fs::write(&small, b"one line\n").expect("write");
+
+        // A megabyte of numbered lines, trimmed to the last few.
+        let noisy = logs.join("demo.noisy.log");
+        let mut written = String::new();
+        for line in 0..40_000 {
+            written.push_str(&format!("line {line}\n"));
+        }
+        std::fs::write(&noisy, &written).expect("write");
+        let full = std::fs::metadata(&noisy).expect("stat").len();
+
+        // Nothing is over the shipped bound, so the pass leaves both.
+        assert_eq!(trim_all(dir.path()), 0);
+        assert_eq!(std::fs::metadata(&noisy).expect("stat").len(), full);
+
+        trim(&noisy, 1024).expect("trimmed");
+        let kept = std::fs::read_to_string(&noisy).expect("read");
+        assert!(kept.len() <= 1024, "{} bytes kept", kept.len());
+        assert!(
+            kept.ends_with("line 39999\n"),
+            "the end is what a failure is at: {kept:.40}"
+        );
+        // And it starts at a line, not half-way through one.
+        assert!(kept.starts_with("line "), "{kept:.40}");
+
+        // The small one is untouched by either.
+        trim(&small, 1024).expect("nothing to do");
+        assert_eq!(std::fs::read_to_string(&small).expect("read"), "one line\n");
+    }
 
     /// `file://` with an empty host. A bare path is the `fifo` scheme to
     /// the shim, which is the thing this avoids.

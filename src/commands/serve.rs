@@ -200,6 +200,37 @@ pub async fn run(config: Config) -> anyhow::Result<i32> {
                 Ok::<(), anyhow::Error>(())
             }
         })
+        // The bound on what containers write.
+        //
+        // Its own loop and not a step of anything else: what it protects
+        // is the node's disk, which has nothing to do with certificates
+        // or with any one service. Cheap enough to run often — a
+        // `read_dir` and a `stat` each — and it acts on almost none of
+        // the ticks.
+        .service_with_cancel("container-logs", {
+            let deployer = deployer.clone();
+            move |cancel| async move {
+                loop {
+                    let data_dir = deployer.config().node.data_dir.clone();
+                    // On the blocking pool: it reads and rewrites files,
+                    // and a log that has grown to eight megabytes is
+                    // eight megabytes of read on whatever thread asks.
+                    let trimmed = tokio::task::spawn_blocking(move || {
+                        crate::deploy::logs::trim_all(&data_dir)
+                    })
+                    .await
+                    .unwrap_or(0);
+                    if trimmed > 0 {
+                        tracing::info!(trimmed, "container logs trimmed to their last part");
+                    }
+
+                    tokio::select! {
+                        _ = cancel.cancelled() => return Ok::<(), anyhow::Error>(()),
+                        _ = tokio::time::sleep(std::time::Duration::from_secs(300)) => {}
+                    }
+                }
+            }
+        })
         // A renewed certificate reaching a running database.
         //
         // Its own loop rather than a step of the certificate loop: that
