@@ -223,18 +223,6 @@ impl ServicePages {
         // else entirely, and whether it answers for its own names is a
         // decision like every other one on this page.
         //
-        let edge = crate::network::capability::Capability::Edge;
-        // And only nodes that agreed to it. A node that never granted
-        // `edge` cannot be told to serve a name — the errand would sit
-        // in its queue for ever while this page said it was served,
-        // which is what the Alpine node did for an hour before anybody
-        // noticed. This node needs no grant to instruct itself.
-        let public_nodes: Vec<crate::network::Node> = nodes
-            .iter()
-            .filter(|node| node.may_be_edge())
-            .filter(|node| node.is_self || node.allows.contains(&edge))
-            .cloned()
-            .collect();
         // The engine's own row, when this service is one. The card it
         // fills in stands in for the image field and the environment
         // editor, neither of which a managed database has.
@@ -332,7 +320,6 @@ impl ServicePages {
             })
             .collect();
 
-        let serving = crate::platform::edges::of_service(&self.state.database, &service.id).await?;
         let deploying = crate::deploy::jobs::deploying(&self.state.container)
             .await
             .contains(&service.id);
@@ -559,69 +546,6 @@ impl ServicePages {
                 </section>
                 }
 
-                // And its port is not this table's business. A database's
-                // is one row the node wrote, it answers no HTTPS name, and
-                // the "served also by" picker beside it chooses which
-                // public nodes proxy for a hostname — which for a database
-                // is a control that cannot do anything: an edge terminates
-                // TLS and proxies HTTP, and Postgres speaks neither. The
-                // name, the certificate and the published port each have a
-                // card of their own above.
-                @if !service.kind.is_managed() {
-                <section class="stack">
-                    <p class="card-label">(t("Reachable at"))</p>
-                    @if ports.is_empty() {
-                        <p class="tile-detail">(t("This service exposes nothing. That is the right answer \
-                             for a worker; a port is added in settings."))</p>
-                    } @else {
-                        <table>
-                            <thead>
-                                <tr>
-                                    <th>(t("Container"))</th>
-                                    <th>(t("Reachable at"))</th>
-                                </tr>
-                            </thead>
-                            <tbody>
-                                @for port in &ports {
-                                    <tr>
-                                        <td class="mono">(port.container_port)</td>
-                                        <td class="mono reach">
-                                            <span>(reachable_at(port, domain.as_deref()))</span>
-                                            // Rendered whether or not it
-                                            // applies and hidden by a
-                                            // class, so the stream can
-                                            // show it without building
-                                            // markup — the rule every
-                                            // island here follows. An
-                                            // ACME order takes minutes,
-                                            // and this was true only at
-                                            // the instant it rendered.
-                                            @if let Some(hostname) = &port.hostname {
-                                                <span data-name=(hostname)
-                                                      class=(match secured.contains(hostname) {
-                                                          true => "badge badge-info is-hidden",
-                                                          false => "badge badge-info",
-                                                      })>
-                                                    <span class="dot dot-info dot-pulse"></span>
-                                                    (t("Certificate on the way"))
-                                                </span>
-                                            }
-                                            @if let Some(hostname) = &port.hostname {
-                                                @if service.is_ours() && !public_nodes.is_empty() {
-                                                    (served_by_form(
-                                                        &project, &service, hostname,
-                                                        &public_nodes, &serving,
-                                                    ))
-                                                }
-                                            }
-                                        </td>
-                                    </tr>
-                                }
-                            </tbody>
-                        </table>
-                    }
-                </section>
-                }
         }
             .render()
             .into_inner()
@@ -881,6 +805,24 @@ impl ServicePages {
         // should not be four forms deep — and because a service's
         // certificate source has always lived on this page. They were on
         // the detail page only because that is where I was working.
+        // Who could answer for a name, and who was asked to.
+        //
+        // Only a node with an address the world can dial, and only one
+        // that agreed to be asked: a node that never granted `edge`
+        // cannot be told to serve a name — the errand would sit in its
+        // queue for ever while this page said it was served, which is what
+        // the Alpine node did for an hour before anybody noticed. This
+        // node needs no grant to instruct itself.
+        let nodes_for_edges = crate::network::all(&self.state.database).await?;
+        let edge = crate::network::capability::Capability::Edge;
+        let public_nodes: Vec<crate::network::Node> = nodes_for_edges
+            .iter()
+            .filter(|node| node.may_be_edge())
+            .filter(|node| node.is_self || node.allows.contains(&edge))
+            .cloned()
+            .collect();
+        let serving = crate::platform::edges::of_service(&self.state.database, &service.id).await?;
+
         // Where the copies are and where they could be. On this page
         // because the form that changes them is on this page now — the
         // table that shows what they are doing stays on the service's own.
@@ -1222,6 +1164,41 @@ impl ServicePages {
                 // else.
                 @if service.is_ours() {
                     (placement_card(&project, &service, &placements, &placement_nodes, &queued))
+                }
+
+                // Which nodes answer for each of this service's names.
+                //
+                // A card of its own rather than a column inside the ports
+                // table, which is where it lived: it is a decision about a
+                // *name*, and the table it was in is about ports — one of
+                // which may have no name at all, and a name may be served
+                // by several nodes. Reading a checkbox grid out of a cell
+                // was the page asking somebody to hold two questions at
+                // once.
+                //
+                // Only where there is a choice to make: a node with no
+                // public address cannot answer for a name, and a service
+                // with no hostname has nothing to be answered for.
+                @if service.is_ours() && !public_nodes.is_empty() {
+                    @if ports.iter().any(|port| port.hostname.is_some()) {
+                        <section class="stack">
+                            <p class="card-label">(t("Who answers for these names"))</p>
+                            <div class="card stack">
+                                @for port in &ports {
+                                    @if let Some(hostname) = &port.hostname {
+                                        (served_by_form(
+                                            &project, &service, hostname,
+                                            &public_nodes, &serving,
+                                        ))
+                                    }
+                                }
+                                <p class="field-hint">(t("A node answers for a name by claiming it, \
+                                     getting a certificate for it, and proxying to wherever the \
+                                     copies run. Only nodes with an address the world can dial \
+                                     are here, and only those that agreed to be asked."))</p>
+                            </div>
+                        </section>
+                    }
                 }
 
                 <section class="card stack">
@@ -5037,6 +5014,10 @@ mod tests {
     }
 
     /// The default answer: a service exposes nothing.
+    ///
+    /// Both pages say it, and they say different halves of it — the
+    /// service card on the detail page lists what there is to connect
+    /// to, and the ports section in settings is where one is added.
     #[tokio::test]
     async fn a_new_service_exposes_nothing() {
         let console = Console::new().await;
@@ -5046,6 +5027,18 @@ mod tests {
         let body = console
             .harness
             .get(&page)
+            .header("cookie", &cookie)
+            .send()
+            .await
+            .body;
+        assert!(
+            body.contains("It answers inside the project only"),
+            "{body}"
+        );
+
+        let body = console
+            .harness
+            .get(&format!("{page}/settings"))
             .header("cookie", &cookie)
             .send()
             .await
@@ -5147,6 +5140,10 @@ mod tests {
     /// exists the moment the port does, and the certificate follows a
     /// few seconds later. A page that claimed it was ready would be
     /// wrong for exactly the window somebody is watching.
+    ///
+    /// In settings, beside the name — that is where the name was typed,
+    /// and where the ports table lives now that the detail page carries
+    /// the connection strings rather than a table of them.
     #[tokio::test]
     async fn a_hostname_says_when_its_certificate_has_not_arrived() {
         let console = Console::new().await;
@@ -5173,7 +5170,7 @@ mod tests {
 
         let body = console
             .harness
-            .get(&page)
+            .get(&format!("{page}/settings"))
             .header("cookie", &cookie)
             .send()
             .await

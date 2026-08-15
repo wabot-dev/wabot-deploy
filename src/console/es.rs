@@ -60,6 +60,10 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
     ),
     ("A key and an address appear the first time this node enrols another one or joins one itself. The overlay is what carries traffic between nodes — an edge here reaching a container that runs somewhere else.", "La clave y la dirección aparecen la primera vez que este nodo enrola a otro o se une a uno. La overlay es lo que lleva el tráfico entre nodos — un edge de aquí llegando a un contenedor que corre en otro sitio."),
     ("A new copy is created on the node you pick, rather than here and moved after — which would start a container on this machine and stop it again for nothing. Removing takes the ones already thrown out first, then the highest-numbered; the node running one is told to stop it.", "Una copia nueva se crea en el nodo que elijas, en vez de aquí y moverla después — lo que arrancaría un contenedor en esta máquina para pararlo acto seguido sin motivo. Al quitar se van primero las ya expulsadas, luego las de número más alto; al nodo que corre una se le dice que la pare."),
+    (
+        "A node answers for a name by claiming it, getting a certificate for it, and proxying to wherever the copies run. Only nodes with an address the world can dial are here, and only those that agreed to be asked.",
+        "Un nodo responde por un nombre reclamándolo, consiguiendo un certificado para él y haciendo de proxy hacia donde corran las copias. Aquí solo están los nodos con una dirección a la que el mundo pueda llamar, y solo los que aceptaron que se les pida.",
+    ),
     ("A note, if you want one", "Una nota, si quieres"),
     (
         "A public authority signs it, so any client verifies it with the trust store it already has — the connection string needs no certificate of its own.",
@@ -475,6 +479,7 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
     ("When", "Cuándo"),
     ("Where the certificate comes from", "De dónde viene el certificado"),
     ("Where this runs", "Dónde corre"),
+    ("Who answers for these names", "Quién responde por estos nombres"),
     ("Withdraw", "Retirar"),
     ("Without this, a push is recorded as a release and waits for somebody to deploy it from the service page.", "Sin esto, una subida se anota como versión y espera a que alguien la despliegue desde la página del servicio."),
     ("You are: ", "Tu rol: "),
