@@ -431,11 +431,37 @@ pub fn init_script(replication_user: &str, replication_password: &str) -> String
 ///   argument on every start instead, and writes `standby.signal`
 ///   itself — see [`STANDBY_SIGNAL`].
 ///
+/// ## The slot is dropped first, and that is not belt and braces
+///
+/// `-C` fails outright when the slot is already there — *"replication
+/// slot "wabot_slot_2" already exists"* — and it is there whenever this
+/// standby has lived before: a slot belongs to the primary, so removing
+/// a copy on one machine leaves it behind on another, and nothing this
+/// node can do to its own disk removes it. That is the second half of
+/// the failure Jorge hit reseeding a standby; the first was the data
+/// directory, which is `deploy::database`'s.
+///
+/// `DROP_REPLICATION_SLOT` is a *replication-protocol* command, so it
+/// goes down the one connection the primary's `pg_hba.conf` already
+/// admits from a standby — no SQL login, and nothing widened to allow
+/// this. It is expected to fail for a standby being seeded for the
+/// first time, which is why the shell runs the backup either way: what
+/// matters is the slot being fresh, not who made it so.
+///
 /// The password travels in the environment (`PGPASSWORD`) rather than in
 /// the command, because a command is in the container's spec on disk and
 /// in `ctr containers info`.
 pub fn base_backup(host: &str, port: u16, user: &str, slot: &str) -> Vec<String> {
-    [
+    // Both tools read `PGPASSWORD`, and neither the slot name nor the
+    // user is anything but `[A-Za-z0-9_]` — `slot_name` builds the
+    // first from a number and `create` the second — so there is nothing
+    // here a shell would read as anything but a word.
+    let drop = format!(
+        "psql \"host={host} port={port} user={user} dbname=postgres \
+         replication=database sslmode=require\" \
+         --no-psqlrc --quiet --command \"DROP_REPLICATION_SLOT {slot}\" || true"
+    );
+    let backup = [
         "pg_basebackup",
         "--host",
         host,
@@ -456,9 +482,13 @@ pub fn base_backup(host: &str, port: u16, user: &str, slot: &str) -> Vec<String>
         "--verbose",
         "--no-password",
     ]
-    .iter()
-    .map(|argument| argument.to_string())
-    .collect()
+    .join(" ");
+
+    vec![
+        "sh".to_string(),
+        "-c".to_string(),
+        format!("{drop}\n{backup}"),
+    ]
 }
 
 /// The file that makes Postgres come up following somebody instead of
@@ -533,6 +563,47 @@ pub fn connection_url(
 mod tests {
     use super::*;
     use crate::platform::presets;
+
+    /// A slot outlives the copy it was made for, because it lives on
+    /// the *primary* — so reseeding a standby that has lived before
+    /// meets `pg_basebackup -C` refusing: "replication slot
+    /// "wabot_slot_2" already exists". Jorge hit it one step after the
+    /// data directory was fixed, which is the same lesson twice: what a
+    /// copy leaves behind is not all on the machine that held it.
+    ///
+    /// Dropped over the replication protocol, which is the one
+    /// connection the primary already admits from a standby — a SQL
+    /// login would have meant widening `pg_hba.conf` for every node
+    /// holding a copy.
+    #[test]
+    fn seeding_drops_the_slot_it_is_about_to_create() {
+        let command = base_backup("10.42.0.1", 30000, "wabot_replication", &slot_name(2));
+        let script = command.last().expect("a script");
+
+        assert_eq!(command.first().map(String::as_str), Some("sh"));
+        assert!(
+            script.contains("DROP_REPLICATION_SLOT wabot_slot_2"),
+            "{script}"
+        );
+        assert!(
+            script.contains("replication=database"),
+            "over the replication connection, not a SQL one: {script}"
+        );
+        // Expected to fail on a standby seeded for the first time, and
+        // the backup is what the container is for.
+        assert!(script.contains("|| true"), "{script}");
+        assert!(
+            script.contains("pg_basebackup --host 10.42.0.1 --port 30000"),
+            "{script}"
+        );
+        assert!(
+            script.contains("--create-slot --slot wabot_slot_2"),
+            "{script}"
+        );
+        // The password is never in the command: a command is in the
+        // container's spec on disk and in `ctr containers info`.
+        assert!(!script.contains("PGPASSWORD"), "{script}");
+    }
 
     /// The mistake the whole table exists to prevent: `shared_buffers`
     /// defaults to 128 MB, which is twice the smallest rung. A ceiling
