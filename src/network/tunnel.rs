@@ -491,7 +491,7 @@ pub fn observed() -> Result<Interface, String> {
 /// answer nobody needs.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Interface {
-    pub port: u32,
+    pub port: u16,
     pub peers: Vec<Handshake>,
 }
 
