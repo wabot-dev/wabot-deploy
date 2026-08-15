@@ -460,6 +460,54 @@ deployment, so a payload that gained a field reached nobody until
 something redeployed. Reconciliation recomputes the errand at boot now;
 `queue_if_changed` makes the pass free on the boots where nothing moved.
 
+## Lowering the preset breaks the standby, and nothing local could tell
+
+Reported from the node (2026-08-15): a 256 MB database moved to 64 MB in
+settings. The primary restarted at the new rung without a complaint; the
+standby beside it aborted recovery and stayed down.
+
+```text
+FATAL:  recovery aborted because of insufficient parameter settings
+DETAIL: max_connections = 10 is a lower setting than on the primary
+        server, where its value was 40.
+```
+
+The rule is not the one it reads as. A standby's `max_connections` has
+to be at least the primary's value **recorded in the log it still has to
+replay**, not the primary's value now — and the record that says 40 is
+sitting in the log ahead of it, so it cannot get past the thing that
+would tell it the primary is at 10. The directory is finished, and no
+restart, retry or wait moves it.
+
+Three things about the shape of this, because it is not one bug:
+
+- **The ladder was doing exactly what it was designed to.** `tuning`
+  gives the 64 MB rung ten connections and the 256 MB rung forty. Both
+  copies get the same number from the same row, so they are always
+  equal — it is the *transition* that is impossible, not the state.
+- **Only downwards.** A standby may run above the primary and never
+  below it, so raising the preset was always safe.
+- **The primary is fine and says nothing.** It is a fresh start with a
+  new value; the write-ahead log gets a parameter record and life goes
+  on. Everything that is wrong is inside the copy.
+
+What the node does now is ask the volume rather than work out what
+changed: `.wabot-max-connections` beside the data directory records what
+this copy was last started at, and a standby whose ceiling has come down
+has its `pgdata` thrown away and copied from the primary again — which
+is already at the new rung, so the new copy has no such record in it.
+Asked of the thing rather than of the history, because the machine
+holding a copy may have been switched off when the operator lowered the
+rung and an errand that arrives days later has to reach the same answer.
+
+A volume with no record is one seeded before this existed: left alone,
+and given a record from then on. Copying every standby on the node once
+on upgrade is a worse answer than the one case somebody has reported.
+
+**No test could have found this.** It needs a primary with a standby
+following it, a preset change, and a second start — three node runs, and
+the failure is inside PostgreSQL's own recovery check.
+
 ## What has not been run on a node
 
 Everything above passes `cargo fmt`, `cargo clippy -D warnings` and 690

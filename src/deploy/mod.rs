@@ -665,6 +665,25 @@ impl Deployer {
         // server that expects to find a data directory there — and
         // before the network, because the seed has none of its own.
         if let Some(prepared) = &prepared {
+            // A standby whose ceiling has come down since it was seeded
+            // cannot start at the new one — the log it still has to
+            // replay records the primary's old value, and Postgres
+            // refuses rather than replay it with less. The directory is
+            // finished; a fresh copy of the primary, which is already
+            // at the new rung, has no such record in it. See
+            // `database::outgrown`.
+            if prepared.role == postgres::Role::Standby
+                && database::outgrown(&self.config.node.data_dir, &id, prepared.max_connections)
+            {
+                tracing::warn!(
+                    service = %service.slug,
+                    slot = replica.slot,
+                    max_connections = prepared.max_connections,
+                    "this copy's ceiling came down; copying the primary in again"
+                );
+                database::discard_standby_data(&self.config.node.data_dir, &id)
+                    .map_err(|error| DeployError::Refused(error.to_string()))?;
+            }
             if prepared.role == postgres::Role::Standby
                 && !database::seeded(&self.config.node.data_dir, &id)
             {
@@ -686,6 +705,10 @@ impl Deployer {
             // has to move `primary_slot` rather than touch the volume.
             if prepared.role == postgres::Role::Standby {
                 database::write_standby_signal(&self.config.node.data_dir, &id)?;
+                // After the seed, so a directory that has just arrived
+                // from the primary is recorded at the value it is about
+                // to run at.
+                database::record_ceiling(&self.config.node.data_dir, &id, prepared.max_connections);
             }
         }
 

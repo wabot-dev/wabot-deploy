@@ -33,6 +33,11 @@ pub struct Preparation {
     /// the conninfo is built from, kept apart because `pg_basebackup`
     /// takes a host and a port rather than a connection string.
     pub primary_endpoint: Option<(String, u16)>,
+    /// The ceiling this copy is about to run at, which for a standby is
+    /// also the thing its data directory has to be able to bear. Taken
+    /// from here rather than recomputed by the caller: it is one of the
+    /// arguments above, and two places deriving it is how they differ.
+    pub max_connections: u32,
 }
 
 /// What this copy is, as the rows describe it.
@@ -166,6 +171,7 @@ pub fn prepare(plan: &Plan<'_>) -> std::io::Result<Preparation> {
         shm_size: Some(presets::shm_for(plan.limit())),
         role: plan.role,
         primary_endpoint: plan.primary.clone(),
+        max_connections: postgres::tuning(plan.limit()).max_connections,
     })
 }
 
@@ -280,6 +286,88 @@ pub fn seeded(data_dir: &Path, container_id: &str) -> bool {
         .join("pgdata")
         .join(postgres::VERSION_FILE)
         .exists()
+}
+
+/// What a standby's data directory was last able to run at.
+///
+/// One number, `max_connections`, beside the volume rather than inside
+/// `pgdata` — a base backup overwrites everything in there.
+const CEILING_FILE: &str = ".wabot-max-connections";
+
+/// Whether this volume can still be started at `max_connections`.
+///
+/// **The failure this exists for**: a standby refuses to start when
+/// `max_connections` is lower than the primary's value *recorded in the
+/// write-ahead log it has yet to replay* — not the primary's value now.
+/// So lowering a database's memory takes both copies down a rung, the
+/// primary restarts happily at the new one, and the standby aborts
+/// recovery for ever:
+///
+/// ```text
+/// FATAL: recovery aborted because of insufficient parameter settings
+/// DETAIL: max_connections = 10 is a lower setting than on the primary
+///         server, where its value was 40.
+/// ```
+///
+/// It cannot get past the record that says so, and nothing it replays
+/// afterwards can help, so the directory is finished. A fresh base
+/// backup from the primary — which is already at the new rung — has no
+/// such record in it.
+///
+/// Asked of the volume rather than worked out from what changed, which
+/// is this node's rule everywhere else: the machine holding a copy may
+/// have been switched off when the operator lowered the rung, and an
+/// errand that arrives days later has to reach the same answer.
+///
+/// A volume with no record is one seeded before this was written. It is
+/// left alone and given a record from here on — a full copy of every
+/// standby on the node at the next deployment is a worse answer than
+/// the one case somebody has already reported.
+pub fn outgrown(data_dir: &Path, container_id: &str, max_connections: u32) -> bool {
+    let Some(before) = recorded_ceiling(data_dir, container_id) else {
+        return false;
+    };
+    before > max_connections
+}
+
+fn ceiling_path(data_dir: &Path, container_id: &str) -> PathBuf {
+    crate::platform::volumes::directory(data_dir, container_id, postgres::VOLUME).join(CEILING_FILE)
+}
+
+fn recorded_ceiling(data_dir: &Path, container_id: &str) -> Option<u32> {
+    std::fs::read_to_string(ceiling_path(data_dir, container_id))
+        .ok()?
+        .trim()
+        .parse()
+        .ok()
+}
+
+/// Record what this copy is being started at, for the next deployment
+/// to compare against.
+pub fn record_ceiling(data_dir: &Path, container_id: &str, max_connections: u32) {
+    let path = ceiling_path(data_dir, container_id);
+    if let Err(error) = std::fs::write(&path, max_connections.to_string()) {
+        // Not fatal: the worst it costs is the comparison above, and a
+        // deployment that failed because of a note beside a volume
+        // would be the wrong trade entirely.
+        tracing::warn!(file = %path.display(), %error, "recording a copy's connection ceiling");
+    }
+}
+
+/// Throw away a standby's data directory so the next deployment seeds
+/// it again.
+///
+/// The volume itself stays, and so does everything beside `pgdata` in
+/// it. **Only ever a standby**: it holds a copy of the primary and
+/// nothing of its own, which is what makes this safe here and unsafe
+/// one directory over.
+pub fn discard_standby_data(data_dir: &Path, container_id: &str) -> std::io::Result<()> {
+    let pgdata = crate::platform::volumes::directory(data_dir, container_id, postgres::VOLUME)
+        .join("pgdata");
+    match std::fs::remove_dir_all(&pgdata) {
+        Err(error) if error.kind() != std::io::ErrorKind::NotFound => Err(error),
+        _ => Ok(()),
+    }
 }
 
 /// Make a standby follow rather than accept writes.
@@ -443,6 +531,63 @@ mod tests {
             "{arguments}"
         );
         assert!(arguments.contains("hot_standby=on"), "{arguments}");
+    }
+
+    /// A standby cannot be started below what its own log records.
+    ///
+    /// Postgres refuses recovery when `max_connections` is lower than
+    /// the primary's value *in the log still to be replayed*, not the
+    /// primary's value now — so lowering a database's memory took the
+    /// primary down a rung happily and left the standby aborting
+    /// recovery for ever, which is what Jorge found on the node with a
+    /// 256 MB database moved to 64 MB.
+    ///
+    /// The number comes from the same `prepare` that writes the
+    /// arguments, so the thing compared and the thing passed cannot
+    /// differ.
+    #[test]
+    fn a_standby_whose_ceiling_came_down_has_to_be_copied_again() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let row = database();
+        let id = "demo.db.2";
+
+        let mut big = plan(dir.path(), id, &row, postgres::Role::Standby);
+        big.memory_limit = Some(256 * 1024 * 1024);
+        big.primary = Some(("10.42.0.1".into(), 30000));
+        let big = prepare(&big).expect("prepared");
+        assert_eq!(big.max_connections, 40);
+
+        // Nothing recorded yet: a volume seeded before any of this
+        // existed is left alone rather than copied again on sight.
+        assert!(!outgrown(dir.path(), id, big.max_connections));
+        crate::platform::volumes::ensure(dir.path(), id, postgres::VOLUME).expect("volume");
+        record_ceiling(dir.path(), id, big.max_connections);
+
+        let mut small = plan(dir.path(), id, &row, postgres::Role::Standby);
+        small.memory_limit = Some(64 * 1024 * 1024);
+        small.primary = Some(("10.42.0.1".into(), 30000));
+        let small = prepare(&small).expect("prepared");
+        assert_eq!(small.max_connections, 10);
+
+        assert!(
+            outgrown(dir.path(), id, small.max_connections),
+            "the log records 40 and this would start at 10"
+        );
+        // The other direction is fine, and must not cost a copy: a
+        // standby may run above the primary, never below it.
+        assert!(!outgrown(dir.path(), id, big.max_connections));
+        record_ceiling(dir.path(), id, small.max_connections);
+        assert!(!outgrown(dir.path(), id, small.max_connections));
+
+        // And what it throws away is the data directory alone — the
+        // volume around it holds the certificate the server reads.
+        let volume = crate::platform::volumes::directory(dir.path(), id, postgres::VOLUME);
+        std::fs::create_dir_all(volume.join("pgdata")).expect("pgdata");
+        std::fs::write(volume.join("pgdata").join(postgres::VERSION_FILE), "17").expect("write");
+        std::fs::create_dir_all(tls_dir(dir.path(), id)).expect("tls");
+        discard_standby_data(dir.path(), id).expect("discarded");
+        assert!(!seeded(dir.path(), id), "the next deployment seeds it");
+        assert!(tls_dir(dir.path(), id).exists(), "and the rest stays");
     }
 
     /// The slot is read back off the container id, which is the one
