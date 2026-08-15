@@ -153,6 +153,61 @@ pub async fn run_once(database: &SqliteDatabase, config: &Config, container: &Co
     for authority in authorities.iter().filter(|a| a.live()) {
         settled += from_one(database, config, container, &authority.node_id).await;
     }
+    settled += from_here(database, config, container).await;
+    settled
+}
+
+/// The errands this node queued for itself.
+///
+/// **Nothing collected these.** Collection asks a node's *authorities*,
+/// and a node that takes instructions from nobody has none — so an
+/// errand addressed to this machine sat pending for ever, and the thing
+/// it asked for never happened. Being an edge is a row like any other,
+/// including for the node that owns the service, so the console writes
+/// one of these every time somebody ticks this node's own box: there is
+/// one on the Ubuntu test node, an empty-upstream withdrawal, waiting
+/// since today.
+///
+/// Carried out here, in the same pass and by the same `carry_out`, and
+/// settled in the local table rather than over the network — which is
+/// the whole difference: there is no call to make and no failure to
+/// tolerate. Nothing about the instruction changes because both ends
+/// are this machine.
+async fn from_here(database: &SqliteDatabase, config: &Config, container: &Container) -> usize {
+    let me = match super::me(database).await {
+        Ok(Some(me)) => me.id,
+        // A node that has never been on a network has no id of its own
+        // and cannot have addressed itself.
+        Ok(None) => return 0,
+        Err(error) => {
+            tracing::warn!(%error, "could not read this node's own row");
+            return 0;
+        }
+    };
+
+    let waiting = match errand::waiting(database, &me).await {
+        Ok(waiting) => waiting,
+        Err(error) => {
+            tracing::warn!(%error, "could not read this node's own errands");
+            return 0;
+        }
+    };
+
+    let mut settled = 0;
+    for order in waiting {
+        let id = order.id.clone();
+        let outcome = carry_out(database, config, container, &me, order).await;
+        if let Err(reason) = &outcome {
+            tracing::warn!(errand = %id, %reason, "could not carry out this node's own errand");
+        }
+        match errand::settle(database, &me, &id, outcome.err().as_deref()).await {
+            Ok(true) => settled += 1,
+            // Already settled, which a pass that overlapped with
+            // another would find and is not news.
+            Ok(false) => {}
+            Err(error) => tracing::warn!(%error, errand = %id, "could not settle an own errand"),
+        }
+    }
     settled
 }
 
@@ -487,6 +542,20 @@ async fn allowed(
     authority: &str,
     capability: super::capability::Capability,
 ) -> Result<(), String> {
+    // A node needs no permission from itself. The grant table records
+    // what this node agreed to do *for somebody else*, and there is no
+    // row in it for the machine it lives on — so an errand this node
+    // queued for itself would be refused by its own consent check,
+    // which is a sentence with nobody in it.
+    if super::me(database)
+        .await
+        .ok()
+        .flatten()
+        .is_some_and(|me| me.id == authority)
+    {
+        return Ok(());
+    }
+
     match super::capability::granted_to(database, authority)
         .await
         .contains(&capability)
@@ -982,6 +1051,59 @@ async fn ensure_project(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// An errand a node queues for itself was never collected: the pass
+    /// asks this node's *authorities*, and a node that takes
+    /// instructions from nobody has none. Being an edge is a row like
+    /// any other — including for the node that owns the service — so
+    /// the console writes one of these whenever somebody ticks this
+    /// node's own box, and one has been sitting on the Ubuntu test node
+    /// since this morning with an empty upstream list, which is a
+    /// withdrawal that never happened.
+    #[tokio::test]
+    async fn a_node_carries_out_the_errands_it_queued_for_itself() {
+        let database = crate::db::open_in_memory().await.expect("open");
+        let config = Config::default();
+        let container = Container::new();
+
+        crate::network::ensure_self(&database, &config)
+            .await
+            .expect("self");
+        let me = crate::network::me(&database)
+            .await
+            .expect("query")
+            .expect("there");
+
+        errand::queue(
+            &database,
+            &me.id,
+            Kind::Edge,
+            &serde_json::json!({ "hostname": "api.example.com", "upstreams": [] }),
+        )
+        .await
+        .expect("queued");
+
+        assert_eq!(
+            errand::waiting(&database, &me.id)
+                .await
+                .expect("query")
+                .len(),
+            1,
+            "queued for this node itself"
+        );
+
+        // No authority, so the ordinary pass has nobody to ask — which
+        // is exactly the case that left this pending for ever.
+        let settled = run_once(&database, &config, &container).await;
+        assert_eq!(settled, 1, "it carried out its own");
+        assert!(
+            errand::waiting(&database, &me.id)
+                .await
+                .expect("query")
+                .is_empty(),
+            "and settled it, so the next pass has nothing to do"
+        );
+    }
 
     /// A copy placed on another node is reached through a port on that
     /// node's overlay address, and that port can only be opened if the
