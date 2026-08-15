@@ -354,6 +354,7 @@ impl ServicePages {
         );
         let logs = format!("/projects/{}/services/{}/logs", project.slug, service.slug);
         let domain = crate::node::settings::domain(&self.state.database, &self.state.config).await;
+        let urls = urls(&service, &project.slug, &ports, domain.as_deref());
 
         let all_projects = access::projects_for(&self.state.database, &account).await?;
         let frame = Frame::new(
@@ -431,6 +432,14 @@ impl ServicePages {
                                 .unwrap_or_else(|| "not running".into())
                         )</dd>
                     </dl>
+                    // The string somebody came for. A page that shows what
+                    // a service is should hand it over rather than leave
+                    // it to be assembled from a hostname in one row and a
+                    // port in another — which is what a database's card
+                    // does, and what Jorge asked this one to do.
+                    @if !urls.is_empty() {
+                        (url_block(&urls))
+                    }
                     @if let Some(failure) = here.as_ref().and_then(|r| r.last_error.as_ref()) {
                         <p class="failure">(failure)</p>
                     }
@@ -1361,6 +1370,121 @@ fn port_form<'a>(
 }
 
 /// Where a port can be reached from, in one cell.
+/// Where this service answers, as strings somebody can paste.
+///
+/// The same shape a database's card has, and for the same reason Jorge
+/// asked for it: a page that shows what something *is* should hand over
+/// the one string somebody came for, rather than making them assemble it
+/// from a hostname in one row and a port in another.
+///
+/// Two axes and only what is true, which is the rule the database's block
+/// already follows:
+///
+/// - **Public** exists when a port has a hostname, or when one is
+///   published on this node's address. Nothing invents one.
+/// - **Private** always exists: every container in the project resolves
+///   `<service>.<project>`, because the node writes it into their hosts
+///   file — the same names a database is reached by.
+fn urls<'a>(
+    service: &'a services::Service,
+    project_slug: &'a str,
+    ports: &'a [crate::platform::ports::Port],
+    node_domain: Option<&'a str>,
+) -> Vec<UrlChoice> {
+    // The port that serves, which is the one with a hostname and
+    // otherwise the lowest — the same rule the deploy path uses to decide
+    // what a container is told to bind.
+    let Some(port) = ports
+        .iter()
+        .find(|port| port.hostname.is_some())
+        .or_else(|| ports.iter().min_by_key(|port| port.container_port))
+    else {
+        return Vec::new();
+    };
+
+    let mut choices = Vec::new();
+    if let Some(hostname) = &port.hostname {
+        choices.push(UrlChoice {
+            which: "public",
+            label: "Public",
+            url: format!("https://{hostname}"),
+        });
+    } else if let (Some(host_port), Some(domain)) = (port.host_port, node_domain) {
+        // Published raw TCP: an address and a port rather than a URL,
+        // because whatever answers there is not necessarily HTTP.
+        choices.push(UrlChoice {
+            which: "public",
+            label: "Public",
+            url: format!("{domain}:{host_port}"),
+        });
+    }
+    choices.push(UrlChoice {
+        which: "private",
+        label: "Private",
+        url: format!(
+            "http://{}.{project_slug}:{}",
+            service.slug, port.container_port
+        ),
+    });
+    choices
+}
+
+/// One string a service answers at.
+struct UrlChoice {
+    which: &'static str,
+    label: &'static str,
+    url: String,
+}
+
+/// The strings, with the picker only when there is a choice.
+///
+/// Rendered through the same block and the same island a database's
+/// connection string uses: one `<pre>` that scrolls rather than a
+/// paragraph a browser breaks, and a copy button the island adds — so
+/// with scripting off there is no button and the text is still
+/// selectable.
+fn url_block(choices: &[UrlChoice]) -> impl Renderable + '_ {
+    let (copy, copied) = (t("Copy"), t("Copied"));
+    let inner = rsx! {
+        <div class="dsn stack-sm">
+            @if choices.len() > 1 {
+                <div class="dsn-pick">
+                    <div class="dsn-group">
+                        @for (index, choice) in choices.iter().enumerate() {
+                            <label class="check">
+                                @if index == 0 {
+                                    <input type="radio" name="url-where"
+                                           id=(format!("url-{}", choice.which)) checked>
+                                } @else {
+                                    <input type="radio" name="url-where"
+                                           id=(format!("url-{}", choice.which))>
+                                }
+                                (t(choice.label))
+                            </label>
+                        }
+                    </div>
+                </div>
+            }
+            <div class="dsn-values">
+                @for choice in choices {
+                    <div class="dsn-line" data-url=(choice.which)>
+                        <pre class="dsn-value" data-copy
+                             data-copy-label=(copy) data-copied-label=(copied)>(&choice.url)</pre>
+                    </div>
+                }
+            </div>
+        </div>
+    }
+    .render()
+    .into_inner();
+
+    wabot::ui::hypertext::island(
+        "copy",
+        &serde_json::json!({}),
+        hypertext::Raw::dangerously_create(&inner),
+    )
+}
+
 fn reachable_at(port: &crate::platform::ports::Port, node_domain: Option<&str>) -> String {
     let mut where_from = Vec::new();
     if let Some(hostname) = &port.hostname {
@@ -3374,6 +3498,68 @@ mod tests {
             .render()
             .into_inner();
         assert!(waiting.contains("Waiting for that node"), "{waiting}");
+    }
+
+    /// A service hands over the string somebody came for, and only the
+    /// ones that are true.
+    ///
+    /// The same rule the database's block follows: a public URL exists
+    /// when a hostname or a published port does, and nothing invents one.
+    /// The private one always exists, because every container in the
+    /// project resolves `<service>.<project>` — the node writes it into
+    /// their hosts file.
+    #[tokio::test]
+    async fn a_service_offers_the_urls_it_actually_answers_at() {
+        let database = crate::db::open_in_memory().await.expect("open");
+        let project = crate::platform::projects::create(&database, "shop")
+            .await
+            .expect("project");
+        let service = services::create(
+            &database,
+            &project.id,
+            "web",
+            "registry.example/web@sha256:abc",
+            &[],
+        )
+        .await
+        .expect("service");
+
+        // A worker declares no port and answers nowhere, so there is no
+        // string to hand over and the card shows none.
+        assert!(urls(&service, "shop", &[], Some("node.example")).is_empty());
+
+        // A port and no hostname: reachable inside the project and
+        // nowhere else, which is one string rather than none.
+        let port = crate::platform::ports::create(&database, &service.id, 80, false, None)
+            .await
+            .expect("port");
+        let ports = vec![port];
+        let only_private = urls(&service, "shop", &ports, Some("node.example"));
+        assert_eq!(only_private.len(), 1);
+        assert_eq!(only_private[0].url, "http://web.shop:80");
+
+        // With a hostname, the public one appears and is what the picker
+        // opens on — it is the one somebody is on this page to copy.
+        crate::platform::ports::set_hostname(&database, &ports[0].id, Some("shop.example.com"))
+            .await
+            .expect("named");
+        let ports = crate::platform::ports::of_service(&database, &service.id)
+            .await
+            .expect("ports");
+        let both = urls(&service, "shop", &ports, Some("node.example"));
+        assert_eq!(both[0].url, "https://shop.example.com");
+        assert_eq!(both[1].url, "http://web.shop:80");
+
+        let rendered = url_block(&both).render().into_inner();
+        assert!(rendered.contains(r#"id="url-public""#), "{rendered}");
+        assert!(rendered.contains("https://shop.example.com"), "{rendered}");
+        // And with one choice there is nothing to pick between.
+        let alone = url_block(&only_private).render().into_inner();
+        assert!(!alone.contains(r#"id="url-public""#), "{alone}");
+        assert!(
+            !alone.contains("url-where"),
+            "no picker for one string: {alone}"
+        );
     }
 
     /// The first paint and the stream say the same thing, because they read

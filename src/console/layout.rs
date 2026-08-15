@@ -380,6 +380,7 @@ wabot-outlet {
  * to move a radio button. `:has()` reads the state of a sibling input,
  * which is the whole mechanism.
  */
+.dsn-line[data-url] { display: none; }
 .dsn-value {
   margin: 0;
   padding: var(--sp-3) var(--sp-4);
@@ -403,6 +404,14 @@ wabot-outlet {
    spelling exists, so the copy radio alone decides. Written as "no
    `#dsn-full` in this block" rather than a class the server sets, because
    the markup already says it — the radio is there or it is not. */
+/* A service's, on the same block and the same rule: show the chosen one,
+   and show the only one when there is no choice to make. */
+.dsn:has(#url-public:checked) [data-url="public"],
+.dsn:has(#url-private:checked) [data-url="private"],
+.dsn:not(:has(#url-public)) [data-url="private"] {
+  display: flex;
+}
+
 .dsn:not(:has(#dsn-full)):has(#dsn-primary:checked) [data-dsn^="primary-"],
 .dsn:not(:has(#dsn-full)):has(#dsn-pool:checked) [data-dsn^="pool-"],
 .dsn:not(:has(#dsn-short)):has(#dsn-primary:checked) [data-dsn^="primary-"],
