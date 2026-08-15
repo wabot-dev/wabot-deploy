@@ -331,7 +331,13 @@ impl ServicePages {
         let cell = super::projects::state_cell(
             &observed,
             deploying,
-            here.as_ref().and_then(|replica| replica.address.as_deref()),
+            // The service's own page names the copy that runs here; the
+            // list is the page that counts them.
+            super::projects::Whereabouts::Address(
+                here.as_ref()
+                    .and_then(|replica| replica.address.clone())
+                    .unwrap_or_else(|| "—".into()),
+            ),
             super::projects::elsewhere_of(&placements),
         );
         let back = format!("/projects/{}", project.slug);

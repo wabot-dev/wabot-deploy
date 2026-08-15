@@ -513,6 +513,7 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
     ("You are: ", "Tu rol: "),
     ("You were invited as ", "Te invitaron como "),
     ("answers for names", "responde por nombres"),
+    ("elsewhere", "en otro nodo"),
     ("everything else", "todo lo demás"),
     ("joined · ", "unido · "),
     ("never used", "sin usar"),
@@ -521,6 +522,7 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
     ("no ceiling", "sin techo"),
     ("nothing", "nada"),
     ("older than what is running", "más vieja que la que corre"),
+    ("replicas", "réplicas"),
     ("running here", "corriendo aquí"),
     ("runs containers only", "solo ejecuta contenedores"),
     (

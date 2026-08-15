@@ -187,7 +187,7 @@ impl ProjectPages {
             let cell = state_cell(
                 &observed,
                 deploying.contains(&service.id),
-                Some(where_it_runs.as_str()),
+                where_it_runs,
                 elsewhere_of(&placements),
             );
             rows.push((service, cell, here.and_then(|replica| replica.last_error)));
@@ -492,7 +492,7 @@ fn service_table(
                                         ))>(&service.name)</a>
                                     </td>
                                     <td class="mono address" data-address=(&service.id)>
-                                        (&cell.address)
+                                        (cell.whereabouts.say())
                                     </td>
                                     <td class="state" data-state=(&service.id)>
                                         (state_badge(cell))
@@ -751,6 +751,11 @@ impl Live {
     fn translate(&mut self) {
         for cell in self.services.values_mut() {
             cell.word = super::language::word(&cell.word).to_string();
+            // The one field composed rather than looked up. Said here
+            // and rendered by `say` on the page, so a count sent two
+            // seconds after a page load cannot be in the other
+            // language.
+            cell.address = cell.whereabouts.say();
         }
         for cell in self.replicas.values_mut() {
             cell.word = super::language::word(&cell.word).to_string();
@@ -1067,14 +1072,22 @@ pub(crate) struct StateCell {
     /// disabled: that is where it is heading, and saying so is more
     /// use than an empty cell.
     busy: bool,
-    /// Where it runs, in the width of a column.
+    /// Where it runs, in the reader's language.
     ///
-    /// The container's address while a service is one copy on this
-    /// node, which is what it usually is and the most useful thing to
-    /// show. Once there are several, one address is a lie about the
-    /// other n − 1, so it becomes a count instead — the service's own
-    /// page is where each copy is named.
+    /// Written by [`LiveState::translate`], which is the only thing that
+    /// reads it: the page composes the same sentence from
+    /// [`StateCell::whereabouts`] inside its own render scope. Two
+    /// callers of one function rather than one value passed through two
+    /// places that would each have to remember to translate it.
     address: String,
+    /// The parts of that sentence, before it is one.
+    ///
+    /// A count and a language are decided in different places — the
+    /// count in a handler, which awaits, and the language around a
+    /// render, which cannot. So the handler carries the count and the
+    /// render says it.
+    #[serde(skip)]
+    pub(crate) whereabouts: Whereabouts,
 }
 
 /// Where a service runs, in the width of a column.
@@ -1084,16 +1097,45 @@ pub(crate) struct StateCell {
 /// they become a count — and a copy somewhere else is worth saying
 /// even when there is only one, because "running" on this page would
 /// otherwise mean a container this node has never seen.
-pub(crate) fn where_it_runs(placements: &[crate::platform::replicas::Replica]) -> String {
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum Whereabouts {
+    /// One copy on this node: its own address, or a dash while it has
+    /// none yet.
+    Address(String),
+    /// A count, and how much of it is on other machines.
+    Copies { total: usize, away: usize },
+}
+
+impl Whereabouts {
+    /// The sentence, in the language of the render in progress.
+    ///
+    /// The number is a number in both languages and the nouns are not,
+    /// so the nouns go through `t` and the sentence is composed around
+    /// them. It was composed whole in the handler and reached neither
+    /// door — `t` takes a literal and this is not one, and the stream's
+    /// `translate` looks a whole value up in a table, which no sentence
+    /// with a count in it can ever be found in. So a Spanish console
+    /// read "3 replicas · 2 elsewhere".
+    pub(crate) fn say(&self) -> String {
+        match self {
+            Self::Address(address) => address.clone(),
+            Self::Copies { total: 1, away: 1 } => format!("1 {}", t("elsewhere")),
+            Self::Copies { total, away: 0 } => format!("{total} {}", t("replicas")),
+            Self::Copies { total, away } => {
+                format!("{total} {} · {away} {}", t("replicas"), t("elsewhere"))
+            }
+        }
+    }
+}
+
+pub(crate) fn where_it_runs(placements: &[crate::platform::replicas::Replica]) -> Whereabouts {
     let live: Vec<&crate::platform::replicas::Replica> =
         placements.iter().filter(|r| !r.evicted()).collect();
-    let elsewhere = live.iter().filter(|r| !r.is_here()).count();
+    let away = live.iter().filter(|r| !r.is_here()).count();
 
-    match (live.len(), elsewhere) {
-        (1, 0) => live[0].address.clone().unwrap_or_else(|| "—".into()),
-        (1, 1) => "1 elsewhere".to_string(),
-        (n, 0) => format!("{n} replicas"),
-        (n, away) => format!("{n} replicas · {away} elsewhere"),
+    match (live.len(), away) {
+        (1, 0) => Whereabouts::Address(live[0].address.clone().unwrap_or_else(|| "—".into())),
+        (total, away) => Whereabouts::Copies { total, away },
     }
 }
 
@@ -1139,12 +1181,14 @@ pub(crate) fn elsewhere_of(placements: &[crate::platform::replicas::Replica]) ->
 pub(crate) fn state_cell(
     observed: &Observed,
     deploying: bool,
-    address: Option<&str>,
+    whereabouts: Whereabouts,
     // `None` when copies run on this node, which is the ordinary case and
     // the one `observed` already answers for.
     elsewhere: Option<Elsewhere>,
 ) -> StateCell {
-    let address = address.unwrap_or("—").to_string();
+    // Empty until something says it: the sentence needs a language, and
+    // this runs in a handler, which has none around it.
+    let address = String::new();
     if deploying {
         return StateCell {
             word: "Deploying".into(),
@@ -1153,6 +1197,7 @@ pub(crate) fn state_cell(
             action: "stop",
             busy: true,
             address,
+            whereabouts,
         };
     }
     match observed {
@@ -1163,6 +1208,7 @@ pub(crate) fn state_cell(
             action: "stop",
             busy: false,
             address,
+            whereabouts,
         },
         Observed::Stopped { exit_code } => StateCell {
             word: format!("Exited {exit_code}"),
@@ -1171,6 +1217,7 @@ pub(crate) fn state_cell(
             action: "deploy",
             busy: false,
             address: address.clone(),
+            whereabouts: whereabouts.clone(),
         },
         // Nothing here. Which is not the same as nothing anywhere, and
         // the difference is the whole of what this argument is for — the
@@ -1185,6 +1232,7 @@ pub(crate) fn state_cell(
                 action: "stop",
                 busy: false,
                 address: address.clone(),
+                whereabouts: whereabouts.clone(),
             },
             Some(Elsewhere::Silent) => StateCell {
                 word: "Waiting for that node".into(),
@@ -1193,6 +1241,7 @@ pub(crate) fn state_cell(
                 action: "stop",
                 busy: false,
                 address: address.clone(),
+                whereabouts: whereabouts.clone(),
             },
             None => StateCell {
                 word: "Not deployed".into(),
@@ -1201,6 +1250,7 @@ pub(crate) fn state_cell(
                 action: "deploy",
                 busy: false,
                 address: address.clone(),
+                whereabouts: whereabouts.clone(),
             },
         },
         Observed::Unknown(_) => StateCell {
@@ -1210,6 +1260,7 @@ pub(crate) fn state_cell(
             action: "deploy",
             busy: false,
             address: address.clone(),
+            whereabouts: whereabouts.clone(),
         },
     }
 }
@@ -1342,7 +1393,7 @@ impl ProjectApi {
                             state_cell(
                                 &observed,
                                 busy,
-                                Some(where_it_runs(&placements).as_str()),
+                                where_it_runs(&placements),
                                 elsewhere_of(&placements),
                             ),
                         );
@@ -1765,15 +1816,18 @@ mod tests {
 
         // The ordinary case, and the useful one.
         assert_eq!(
-            where_it_runs(&[replica(1, true, Some("10.42.1.5"))]),
+            where_it_runs(&[replica(1, true, Some("10.42.1.5"))]).say(),
             "10.42.1.5"
         );
         // One copy and it is not on this machine: an address here would
         // name a container this node has never seen.
-        assert_eq!(where_it_runs(&[replica(1, false, None)]), "1 elsewhere");
+        assert_eq!(
+            where_it_runs(&[replica(1, false, None)]).say(),
+            "1 elsewhere"
+        );
 
         assert_eq!(
-            where_it_runs(&[replica(1, true, Some("10.42.1.5")), replica(2, true, None)]),
+            where_it_runs(&[replica(1, true, Some("10.42.1.5")), replica(2, true, None)]).say(),
             "2 replicas"
         );
         assert_eq!(
@@ -1781,8 +1835,39 @@ mod tests {
                 replica(1, true, Some("10.42.1.5")),
                 replica(2, false, None),
                 replica(3, false, None),
-            ]),
+            ])
+            .say(),
             "3 replicas · 2 elsewhere"
+        );
+    }
+
+    /// The count is a sentence, and a sentence on this console is read
+    /// in the account's language. It was composed in the handler out of
+    /// English words and reached neither door — not `t`, which takes a
+    /// literal, and not the stream's `translate`, which looks a whole
+    /// value up in a table. So a Spanish page said "3 replicas · 2
+    /// elsewhere", in the one column that changes as copies move.
+    #[test]
+    fn the_count_of_copies_is_read_in_the_accounts_language() {
+        let three = Whereabouts::Copies { total: 3, away: 2 };
+        let spanish =
+            crate::console::language::scoped(crate::console::language::Language::Es, || {
+                three.say()
+            });
+        assert_eq!(spanish, "3 réplicas · 2 en otro nodo");
+
+        assert_eq!(
+            crate::console::language::scoped(crate::console::language::Language::Es, || {
+                Whereabouts::Copies { total: 1, away: 1 }.say()
+            }),
+            "1 en otro nodo"
+        );
+        // An address is a machine's, in either language.
+        assert_eq!(
+            crate::console::language::scoped(crate::console::language::Language::Es, || {
+                Whereabouts::Address("10.42.1.5".into()).say()
+            }),
+            "10.42.1.5"
         );
     }
 
@@ -1797,21 +1882,28 @@ mod tests {
     /// and a number.
     #[test]
     fn a_state_word_is_a_word_somebody_reads() {
+        // This test is about the word; where it runs is not part of it.
+        let nowhere = || Whereabouts::Copies { total: 0, away: 0 };
         let placed = [
-            state_cell(&Observed::Absent, true, None, None),
-            state_cell(&Observed::Absent, false, None, None),
-            state_cell(&Observed::Absent, false, None, Some(Elsewhere::Running)),
-            state_cell(&Observed::Absent, false, None, Some(Elsewhere::Silent)),
+            state_cell(&Observed::Absent, true, nowhere(), None),
+            state_cell(&Observed::Absent, false, nowhere(), None),
+            state_cell(
+                &Observed::Absent,
+                false,
+                nowhere(),
+                Some(Elsewhere::Running),
+            ),
+            state_cell(&Observed::Absent, false, nowhere(), Some(Elsewhere::Silent)),
             state_cell(
                 &Observed::Running {
                     pid: 1,
                     address: None,
                 },
                 false,
-                None,
+                nowhere(),
                 None,
             ),
-            state_cell(&Observed::Unknown("busy".into()), false, None, None),
+            state_cell(&Observed::Unknown("busy".into()), false, nowhere(), None),
         ];
 
         for cell in &placed {
@@ -1828,7 +1920,8 @@ mod tests {
     /// there reads as a fault. The job is what knows.
     #[test]
     fn a_deployment_in_flight_outranks_what_containerd_says() {
-        let busy = state_cell(&Observed::Absent, true, None, None);
+        let nowhere = || Whereabouts::Copies { total: 0, away: 0 };
+        let busy = state_cell(&Observed::Absent, true, nowhere(), None);
         assert_eq!(busy.word, "Deploying");
         // Shown, not hidden: a control that vanishes takes the column's
         // width with it. Disabled says the same thing and keeps the row
@@ -1836,7 +1929,7 @@ mod tests {
         assert_eq!(busy.action, "stop");
         assert!(busy.busy, "and it cannot be pressed yet");
 
-        let idle = state_cell(&Observed::Absent, false, None, None);
+        let idle = state_cell(&Observed::Absent, false, nowhere(), None);
         assert_eq!(idle.word, "Not deployed");
         assert_eq!(idle.action, "deploy");
         assert!(!idle.busy);
@@ -1849,14 +1942,14 @@ mod tests {
                 address: None,
             },
             false,
-            Some("10.42.1.5"),
+            Whereabouts::Address("10.42.1.5".into()),
             None,
         );
         assert_eq!(running.action, "stop");
-        // The address rides with the state: a deployment ends by
-        // assigning one, and a row showing the new state beside the old
-        // address is half-updated.
-        assert_eq!(running.address, "10.42.1.5");
+        // Where it runs rides with the state: a deployment ends by
+        // assigning an address, and a row showing the new state beside
+        // the old address is half-updated.
+        assert_eq!(running.whereabouts.say(), "10.42.1.5");
     }
 
     /// The state updates in place, so the page has to declare the
