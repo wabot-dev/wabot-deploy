@@ -409,6 +409,22 @@ wabot-outlet {
 .dsn:not(:has(#dsn-short)):has(#dsn-pool:checked) [data-dsn^="pool-"] {
   display: flex;
 }
+/* A group's label belongs to the block under it — the rule the form
+   labels above already follow, and here the design system works against
+   it. `.card-label` carries a `margin-bottom` of its own *on top of* the
+   stack's gap, so there was 20px below the words and 8px above them: each
+   label floated between two groups instead of heading one.
+
+   That reads fine on a card with a single heading, which is every other
+   card in this console — it is only where labels alternate with content,
+   as they do here, that the asymmetry shows. So the fix is scoped rather
+   than applied to `.card-label` everywhere. */
+.dsn .card-label { margin-bottom: 0; }
+.dsn .dsn-values + .card-label,
+.dsn .field-hint + .card-label {
+  margin-top: var(--sp-3);
+}
+
 .dsn-pick { flex-wrap: wrap; gap: var(--sp-5); align-items: center; }
 .dsn-group { display: flex; flex-wrap: wrap; gap: var(--sp-4); align-items: center; }
 
