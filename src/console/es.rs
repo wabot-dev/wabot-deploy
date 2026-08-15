@@ -150,6 +150,10 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
     ("Earlier attempts", "Intentos anteriores"),
     ("Environment", "Entorno"),
     ("Error: ", "Error: "),
+    (
+        "Every container in this project resolves that name, on any node holding a copy — whether or not anything is exposed.",
+        "Cada contenedor de este proyecto resuelve ese nombre, en cualquier nodo que sostenga una copia — se exponga algo o no.",
+    ),
     ("Evicted there", "Expulsada allí"),
     ("Expired", "Caducada"),
     ("Failed", "Falló"),
@@ -180,6 +184,7 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
     ("How many", "Cuántas"),
     ("Id", "Id"),
     ("Image", "Imagen"),
+    ("Inside the project", "Dentro del proyecto"),
     ("Install", "Instalar"),
     ("Install this release", "Instalar esta versión"),
     ("Installed", "Instalada"),
@@ -237,6 +242,10 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
     ("Not following — reload to see more", "Sin seguir — recarga para ver más"),
     ("Not published", "Sin publicar"),
     ("Not running", "No está corriendo"),
+    (
+        "Nothing answers at any of these while it is not running.",
+        "Mientras no esté corriendo, en ninguna de estas responde nada.",
+    ),
     ("Nothing has been pushed yet. Create a push token on the project page and push an image to this repository.", "Todavía no se ha subido nada. Crea un token de subida en la página del proyecto y sube una imagen a este repositorio."),
     ("Nothing yet", "Todavía nada"),
     (
@@ -246,6 +255,10 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
     (
         "Nothing, and there is no edge to choose: an edge terminates TLS and proxies HTTP, while Postgres speaks its own protocol with TLS inside the server. Reaching one from outside is a published port, which is not built yet.",
         "Nada, y no hay edge que elegir: un edge termina TLS y proxya HTTP, mientras Postgres habla su propio protocolo con TLS dentro del servidor. Alcanzarla desde fuera es publicar un puerto, que todavía no está construido.",
+    ),
+    (
+        "Nothing. It answers inside the project only — publish a port or give one a hostname in settings.",
+        "Nada. Sólo responde dentro del proyecto — publica un puerto o dale un nombre a uno en ajustes.",
     ),
     ("Nothing. It is handing this node an address on its overlay and asking for nothing back.", "Nada. Le está dando a este nodo una dirección en su overlay y no pide nada a cambio."),
     ("Nothing. This node will take its instructions and give it none.", "Nada. Este nodo tomará sus instrucciones y no le dará ninguna."),
