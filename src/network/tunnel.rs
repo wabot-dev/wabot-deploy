@@ -443,7 +443,7 @@ fn apply(_address: &str, _private: &str, _port: u16, _peers: Vec<Peer>) -> Resul
 }
 
 #[cfg(not(target_os = "linux"))]
-pub fn observed() -> Result<Vec<Handshake>, String> {
+pub fn observed() -> Result<Interface, String> {
     Err("the overlay needs a Linux kernel".into())
 }
 
@@ -454,13 +454,14 @@ pub fn observed() -> Result<Vec<Handshake>, String> {
 /// kernel — a struct this process filled in at startup would report
 /// what it asked for, which is the question nobody has.
 #[cfg(target_os = "linux")]
-pub fn observed() -> Result<Vec<Handshake>, String> {
+pub fn observed() -> Result<Interface, String> {
     let api = WGApi::<Kernel>::new(INTERFACE)
         .map_err(|error| format!("could not open netlink: {error}"))?;
     let host = api
         .read_interface_data()
         .map_err(|error| format!("could not read {INTERFACE}: {error}"))?;
 
+    let port = host.listen_port;
     let mut seen: Vec<Handshake> = host
         .peers
         .into_values()
@@ -477,7 +478,21 @@ pub fn observed() -> Result<Vec<Handshake>, String> {
         })
         .collect();
     seen.sort_by(|a, b| a.public_key.cmp(&b.public_key));
-    Ok(seen)
+    Ok(Interface { port, peers: seen })
+}
+
+/// The interface as the kernel has it: what it listens on, and who it
+/// has heard from.
+///
+/// The port comes back with the peers because it is the same read and
+/// the same question. `doctor` printed it from the configuration file,
+/// under a comment promising this — so a node whose file said one thing
+/// and whose kernel did another reported the file, which is the one
+/// answer nobody needs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Interface {
+    pub port: u32,
+    pub peers: Vec<Handshake>,
 }
 
 /// One peer, as the kernel sees it.
