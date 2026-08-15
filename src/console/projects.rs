@@ -308,12 +308,13 @@ impl ProjectPages {
             .shown
             .as_deref()
             .and_then(|nonce| self.state.reveals.take(nonce));
-        let registry_host = self
-            .state
-            .config
-            .node
-            .domain
-            .clone()
+        // The stored domain, not the file's. The registry names what it
+        // receives under `settings::domain`, which prefers the row the
+        // console writes — so reading the file here printed a `docker
+        // login` for whatever the node was called at install time, for
+        // as long as nobody had edited the file to match.
+        let registry_host = crate::node::settings::domain(&self.state.database, &self.state.config)
+            .await
             .unwrap_or_else(|| "this node".into());
 
         let members = access::members(&self.state.database, &project.id).await?;

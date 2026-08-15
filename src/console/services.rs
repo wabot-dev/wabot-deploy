@@ -342,6 +342,7 @@ impl ServicePages {
         let logs = format!("/projects/{}/services/{}/logs", project.slug, service.slug);
         let domain = crate::node::settings::domain(&self.state.database, &self.state.config).await;
         let exposure = exposure(&service, &project.slug, &ports, domain.as_deref());
+        let push_target = push_target(&service, &project.slug, domain.as_deref());
 
         let all_projects = access::projects_for(&self.state.database, &account).await?;
         let frame = Frame::new(
@@ -542,6 +543,15 @@ impl ServicePages {
                                 }
                             </tbody>
                         </table>
+                    }
+
+                    // How to put one here. The page said "push an image
+                    // to this repository" and left somebody to work out
+                    // the three parts of the reference — the node's host,
+                    // the name under the project, and the one tag this
+                    // service watches — from three other pages.
+                    @if let Some(target) = &push_target {
+                        (push_example(target, service.auto_deploy))
                     }
                 </section>
                 }
@@ -1481,6 +1491,91 @@ fn exposure_card<'a>(exposure: &'a Exposure, running: bool) -> impl Renderable +
 
     // XSS SAFETY: every line above is this function's own markup, built
     // from strings the page already renders escaped.
+    wabot::ui::hypertext::island(
+        "copy",
+        &serde_json::json!({}),
+        hypertext::Raw::dangerously_create(&inner),
+    )
+}
+
+/// The reference a push has to carry to land on this service.
+///
+/// The same three parts the registry compares when a manifest arrives —
+/// this node as the host, the repository name without one, and the tag
+/// the service watches — so what the page shows is what `release` will
+/// match rather than a second guess at it.
+///
+/// `None` when there is nothing to push to, and both cases are real: a
+/// digest-pinned image watches no tag, and an image outside the
+/// project's own namespace is refused by the token guard before any
+/// service is looked at. A command that cannot work is worse than no
+/// command, because it is tried first.
+fn push_target(
+    service: &services::Service,
+    project_slug: &str,
+    node_domain: Option<&str>,
+) -> Option<String> {
+    // Managed images are the node's own choice, pinned to a major
+    // version; nothing is ever pushed at one.
+    if service.kind.is_managed() {
+        return None;
+    }
+
+    let reference = crate::platform::images::Reference::parse(&service.image)?;
+    let name = reference.name().to_string();
+    if name != project_slug && !name.starts_with(&format!("{project_slug}/")) {
+        return None;
+    }
+
+    let tag = crate::platform::images::tracked_tag(&service.image, service.track_tag.as_deref())?;
+    // The registry names a pushed image under the node's own host, and
+    // that is what containerd is later asked to pull. Without a domain
+    // there is no host to write, and a reference with none is one
+    // containerd reads as its first segment being a registry to dial.
+    let host = node_domain?;
+    Some(format!("{host}/{name}:{tag}"))
+}
+
+/// Two commands that put an image on this service, and a button to take
+/// them.
+///
+/// The commands are not translated and the sentence around them is —
+/// they are pasted into a terminal, and a terminal does not speak
+/// Spanish. Behind a `<details>` for the same reason the connection
+/// strings are: it is read once when the service is set up and is in
+/// the way every time after that.
+fn push_example(target: &str, auto_deploy: bool) -> impl Renderable + '_ {
+    let (copy, copied) = (t("Copy"), t("Copied"));
+    // `docker build -t <target> .` rather than a tag step with a
+    // placeholder in it: a command with `<your image>` in the middle is
+    // one somebody pastes and watches fail. This one is complete.
+    let commands = format!("docker build -t {target} .\ndocker push {target}");
+    let inner = rsx! {
+        <details>
+            <summary>(t("How to push"))</summary>
+            <div class="dsn stack-sm">
+                <p class="field-hint">(t("From the directory with the Dockerfile, after \
+                     docker login with a push token from the project page."))</p>
+                <div class="dsn-line">
+                    <pre class="dsn-value" data-copy
+                         data-copy-label=(copy) data-copied-label=(copied)>(&commands)</pre>
+                </div>
+                @if auto_deploy {
+                    <p class="field-hint">(t("The push deploys it. Any other tag is stored and \
+                         changes nothing here."))</p>
+                } @else {
+                    <p class="field-hint">(t("The push appears above as a release, and waits for \
+                         somebody to deploy it. Any other tag is stored and changes nothing \
+                         here."))</p>
+                }
+            </div>
+        </details>
+    }
+    .render()
+    .into_inner();
+
+    // XSS SAFETY: the markup above is this function's own, and the
+    // reference inside it went through `rsx!`'s escaping.
     wabot::ui::hypertext::island(
         "copy",
         &serde_json::json!({}),
@@ -4773,6 +4868,111 @@ mod tests {
             .expect("query")
             .expect("present");
         assert_eq!(left[0].project_id, survivor.id, "and it was the right one");
+    }
+
+    /// The command has to be addressed the way the registry reads a
+    /// push — host, name without one, and the tag this service watches
+    /// — or it is three pages of guessing with a wrong answer at the
+    /// end. And there are four ways to have nothing to say, each one a
+    /// command that could only fail: no domain to push to, a
+    /// digest-pinned image that watches no tag, an image in somebody
+    /// else's namespace that the token guard refuses, and a database,
+    /// whose image is the node's own choice.
+    #[tokio::test]
+    async fn a_push_command_is_addressed_the_way_the_registry_reads_one() {
+        let console = Console::new().await;
+        let cookie = console.signed_in().await;
+        service(&console, &cookie).await;
+        let project = projects::find(&console.database, "my-api")
+            .await
+            .expect("query")
+            .expect("made");
+
+        let ours = services::create(
+            &console.database,
+            &project.id,
+            "api",
+            "node.example.com/my-api/api:latest",
+            &[],
+        )
+        .await
+        .expect("service");
+        assert_eq!(
+            push_target(&ours, "my-api", Some("node.example.com")).as_deref(),
+            Some("node.example.com/my-api/api:latest")
+        );
+        assert_eq!(
+            push_target(&ours, "my-api", None),
+            None,
+            "a node with no domain has no host to write into a reference"
+        );
+
+        let pinned = services::create(
+            &console.database,
+            &project.id,
+            "pinned",
+            "node.example.com/my-api/pinned@sha256:abc",
+            &[],
+        )
+        .await
+        .expect("service");
+        assert_eq!(
+            push_target(&pinned, "my-api", Some("node.example.com")),
+            None,
+            "a digest names bytes, and nothing watches it"
+        );
+
+        let theirs = services::all(&console.database, Some(&project.id))
+            .await
+            .expect("query")
+            .into_iter()
+            .find(|service| service.slug == "web")
+            .expect("the nginx one");
+        assert_eq!(
+            push_target(&theirs, "my-api", Some("node.example.com")),
+            None,
+            "library/nginx is not this project's to push to"
+        );
+    }
+
+    /// And it is on the page, with the button that takes it.
+    #[tokio::test]
+    async fn the_releases_card_says_how_to_push() {
+        let console = Console::new().await;
+        let cookie = console.signed_in().await;
+        service(&console, &cookie).await;
+        crate::node::settings::set_domain(&console.database, Some("node.example.com"))
+            .await
+            .expect("domain");
+        let project = projects::find(&console.database, "my-api")
+            .await
+            .expect("query")
+            .expect("made");
+        services::create(
+            &console.database,
+            &project.id,
+            "api",
+            "node.example.com/my-api/api:latest",
+            &[],
+        )
+        .await
+        .expect("service");
+
+        let body = console
+            .harness
+            .get("/projects/my-api/services/api")
+            .header("cookie", &cookie)
+            .send()
+            .await
+            .body;
+        assert!(
+            body.contains("docker push node.example.com/my-api/api:latest"),
+            "{body}"
+        );
+        assert!(
+            body.contains(r#"data-island="copy""#),
+            "and something to copy it with: {body}"
+        );
     }
 
     async fn service(console: &Console, cookie: &str) -> String {
