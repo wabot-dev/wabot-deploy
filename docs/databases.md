@@ -508,6 +508,23 @@ on upgrade is a worse answer than the one case somebody has reported.
 following it, a preset change, and a second start — three node runs, and
 the failure is inside PostgreSQL's own recovery check.
 
+And the obvious way out of it did not work either. Jorge took the copies
+to one and back to two, which should be a new standby and a new copy of
+the primary, and got the identical failure back: **the row went and the
+directory stayed**. A slot filled again gets the same container id, so
+the volume left behind was adopted rather than seeded — the second
+standby *was* the first one's data directory.
+
+Not deleting a volume is the right rule for the one copy of something,
+and it is exactly backwards for a standby: that directory holds a copy of
+the primary and nothing of its own, and adopting a stale one fails in two
+ways that both read as the database being broken — the parameters above,
+and a replication slot dropped meanwhile whose write-ahead log the
+primary has long since recycled. So `forget_replica` takes the directory
+with the row, for a standby and never for the primary, and both places
+that drop a replica go through it: the placement form here, and a node
+being told elsewhere that a slot is no longer its.
+
 ## What has not been run on a node
 
 Everything above passes `cargo fmt`, `cargo clippy -D warnings` and 690

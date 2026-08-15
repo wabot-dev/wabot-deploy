@@ -3208,23 +3208,21 @@ impl ServiceApi {
                 // nothing left pointing at the one that lost its last
                 // copy. An evicted one is already stopped — that is
                 // what evicting means.
-                if replica.is_here() {
-                    if let Err(error) = self
+                match replica.is_here() {
+                    // Stopped, its row dropped, and — for a standby —
+                    // the directory it held, which is what makes the
+                    // same slot come back as a fresh copy of the
+                    // primary rather than as this one's leftovers.
+                    true => self
                         .state
                         .deployer
-                        .stop_replica(project, service, replica)
+                        .forget_replica(project, service, replica)
                         .await
-                    {
-                        tracing::warn!(
-                            slot = replica.slot,
-                            %error,
-                            "stopping a copy that was dropped"
-                        );
-                    }
+                        .map_err(|error| error.to_string())?,
+                    false => crate::platform::replicas::remove(&self.state.database, &replica.id)
+                        .await
+                        .map_err(|error| error.to_string())?,
                 }
-                crate::platform::replicas::remove(&self.state.database, &replica.id)
-                    .await
-                    .map_err(|error| error.to_string())?;
             }
         }
 

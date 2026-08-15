@@ -836,6 +836,55 @@ impl Deployer {
         Ok(())
     }
 
+    /// Take one copy away for good: stop it, let go of what it held,
+    /// and drop its row.
+    ///
+    /// **A standby's data directory goes with the row.** It holds a copy
+    /// of the primary and nothing of its own, and a slot filled again
+    /// later gets the same container id — so the directory left behind
+    /// is adopted rather than seeded, and it fails in two ways that both
+    /// read as the database being broken: the parameters recorded in the
+    /// log it has not replayed (see `database::outgrown`), and a
+    /// replication slot dropped meanwhile, whose write-ahead log the
+    /// primary has long since recycled.
+    ///
+    /// Reported by Jorge, who did the reasonable thing with a standby
+    /// that would not start — took the copies down to one and back to
+    /// two — and got the identical failure back, because the second
+    /// standby was the first one's directory.
+    ///
+    /// Never the primary's, and never a plain service's volume:
+    /// `volumes::discard` has exactly one other caller, a deletion
+    /// somebody confirmed. A *stop* keeps everything — this is removal.
+    pub async fn forget_replica(
+        &self,
+        project: &Project,
+        service: &Service,
+        replica: &Replica,
+    ) -> DeployResult<()> {
+        if let Err(error) = self.stop_replica(project, service, replica).await {
+            // Reported and carried on from: the row is going either way,
+            // and a container this node could not reach must not keep it
+            // listed as something it runs.
+            tracing::warn!(slot = replica.slot, %error, "stopping a copy that was dropped");
+        }
+
+        if service.kind.is_managed() {
+            let primary = databases::of_service(&self.database, &service.id)
+                .await?
+                .map(|row| row.primary_slot);
+            if primary.is_some_and(|slot| slot != replica.slot) {
+                let id = replica.container_id(&project.slug, &service.slug);
+                if let Err(error) = volumes::discard(&self.config.node.data_dir, &id) {
+                    tracing::warn!(container = %id, %error, "discarding a standby's data");
+                }
+            }
+        }
+
+        replicas::remove(&self.database, &replica.id).await?;
+        Ok(())
+    }
+
     pub async fn stop(&self, project: &Project, service: &Service) -> DeployResult<()> {
         // The intent first, so a reconcile arriving mid-stop does not
         // start back what is being taken down.
@@ -2565,6 +2614,63 @@ mod tests {
             .expect("the node holding the standby was told nothing");
         assert_eq!(told.payload["slots"], serde_json::json!([]));
         assert_eq!(told.payload["running"], serde_json::json!(false));
+    }
+
+    /// A slot that comes back has to come back empty.
+    ///
+    /// Taking the copies to one and back to two is what somebody does
+    /// with a standby that will not start, and it did nothing: the row
+    /// went, the directory stayed, the new row got the same container id
+    /// and adopted it — so the second standby was the first one's
+    /// failure, exactly. A standby's directory holds a copy of the
+    /// primary and nothing of its own, which is what makes deleting it
+    /// safe and adopting it wrong.
+    #[tokio::test]
+    async fn a_standbys_data_goes_when_its_row_does_and_the_primarys_stays() {
+        let (database, project, service) = database_with_a_standby_elsewhere().await;
+        let node = tempfile::tempdir().expect("tempdir");
+        let mut config = crate::config::Config::default();
+        config.node.data_dir = node.path().to_path_buf();
+        let deployer = Deployer::new(std::sync::Arc::new(database.clone()), &config);
+
+        replicas::ensure_here(&database, &service.id, 2)
+            .await
+            .expect("a copy here");
+        let replica = replicas::in_slot(&database, &service.id, 2)
+            .await
+            .expect("query")
+            .expect("there");
+        let (primary, standby) = (
+            format!("{}.{}", project.slug, service.slug),
+            replica.container_id(&project.slug, &service.slug),
+        );
+        for id in [&primary, &standby] {
+            volumes::ensure(node.path(), id, crate::platform::postgres::VOLUME).expect("volume");
+        }
+
+        // Containerd is not here, which is the ordinary case in a test
+        // and a real one on a node whose runtime is unwell: the row and
+        // the directory go either way.
+        deployer
+            .forget_replica(&project, &service, &replica)
+            .await
+            .expect("forgotten");
+
+        assert!(
+            !volumes::directory(node.path(), &standby, crate::platform::postgres::VOLUME).exists(),
+            "the standby's data is gone"
+        );
+        assert!(
+            volumes::directory(node.path(), &primary, crate::platform::postgres::VOLUME).exists(),
+            "and the primary's is not — that one is the database"
+        );
+        assert!(
+            replicas::in_slot(&database, &service.id, 2)
+                .await
+                .expect("query")
+                .is_none(),
+            "and the row went with it"
+        );
     }
 
     /// Queued only when it differs, because this runs at every boot: the

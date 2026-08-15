@@ -923,13 +923,12 @@ async fn stop_unnamed(
         .into_iter()
         .filter(|replica| replica.is_here() && !slots.contains(&replica.slot))
     {
-        if let Err(error) = deployer.stop_replica(project, service, &replica).await {
-            // Reported and carried on from: the row is going either
-            // way, and a container this node could not reach must not
-            // keep it listed as something it runs.
-            tracing::warn!(slot = replica.slot, %error, "stopping a copy that was taken away");
-        }
-        replicas::remove(database, &replica.id)
+        // The row, the container and — for a standby — the directory
+        // it held: a slot this node is given again later has to arrive
+        // as a fresh copy of the primary, not as what the last one left
+        // behind.
+        deployer
+            .forget_replica(project, service, &replica)
             .await
             .map_err(|error| error.to_string())?;
     }
