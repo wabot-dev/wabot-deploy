@@ -321,6 +321,7 @@ mod tests {
             reserved_host: None,
             memory_bytes: None,
             disk_bytes: None,
+            cpu_millicores: None,
         };
 
         assert_eq!(

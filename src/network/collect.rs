@@ -88,6 +88,20 @@ const WAKE_FLOOR: std::time::Duration = std::time::Duration::from_secs(2);
 /// A service that returns ends the process, so this waits on the cancel
 /// token rather than falling out of the loop — the same shape as the
 /// certificate loop next to it.
+/// The CPU reading the last report was worked out against.
+///
+/// A rate is the difference between two samples, and the node holding a
+/// copy is the only one that has both — so it divides here and what
+/// crosses is millicores rather than a counter. The owner receiving a
+/// counter would have to divide by the gap since the last report, which is
+/// fifteen seconds when everything is well and unknown when it is not.
+///
+/// Held for the process rather than passed through: `report_now` is called
+/// from a finished deployment as well as from the loop, and both want to
+/// measure against whatever was read last rather than each keeping their
+/// own history.
+static LAST_CPU: std::sync::Mutex<Option<crate::node::cpu::Sample>> = std::sync::Mutex::new(None);
+
 pub async fn loop_forever(
     database: std::sync::Arc<SqliteDatabase>,
     config: Config,
@@ -300,12 +314,33 @@ async fn report_for(
     // What each container here is using, read once for the whole report.
     // The node that placed these copies cannot read this machine's
     // cgroups, so if the figure does not travel it does not exist there.
-    let used = match container.try_resolve::<crate::deploy::Deployer>() {
-        Ok(deployer) => deployer.memory().await.containers,
-        // No deployer is no containerd, which is every test in this file
-        // and a node whose runtime will not answer. The report is still
-        // worth sending: the rest of it is rows.
-        Err(_) => Default::default(),
+    //
+    // No deployer is no containerd, which is every test in this file and a
+    // node whose runtime will not answer. The report is still worth
+    // sending: the rest of it is rows.
+    let deployer = container.try_resolve::<crate::deploy::Deployer>().ok();
+    let used = match &deployer {
+        Some(deployer) => deployer.memory().await.containers,
+        None => Default::default(),
+    };
+
+    // And the rate, against whatever was read for the last report. The
+    // first one after a start has nothing to subtract from and carries no
+    // CPU at all — the owner leaves the column as it was rather than
+    // writing a nought somebody would believe.
+    let busy = match &deployer {
+        Some(deployer) => {
+            let now = crate::node::cpu::sample(&deployer.cgroups().await);
+            let mut last = LAST_CPU
+                .lock()
+                .expect("the CPU sample is not held across a panic");
+            let busy = last
+                .as_ref()
+                .and_then(|before| crate::node::cpu::between(before, &now));
+            *last = Some(now);
+            busy
+        }
+        None => None,
     };
 
     for project in projects
@@ -341,6 +376,14 @@ async fn report_for(
                         &config.node.data_dir,
                         &replica.container_id(&project.slug, &service.slug),
                     ),
+                    // Already divided. See `LAST_CPU`: a counter crossing
+                    // the network would be arithmetic on a guess at the
+                    // far end.
+                    cpu: busy.as_ref().and_then(|busy| {
+                        busy.containers
+                            .get(&replica.container_id(&project.slug, &service.slug))
+                            .copied()
+                    }),
                 });
             }
         }

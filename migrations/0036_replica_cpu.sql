@@ -1,0 +1,31 @@
+-- What a copy elsewhere is using, in millicores, as its own node worked it
+-- out.
+--
+-- ## Why the figure travels and not the counter
+--
+-- Memory and disk are absolutes: a node reads a number and sends it. CPU
+-- is a rate, and a rate is the difference between two readings — so
+-- sending the cgroup's running total would leave the owner subtracting it
+-- against the previous report, which arrives every fifteen seconds and
+-- sometimes does not arrive at all. A gap of unknown length makes an
+-- unknown denominator, and the result is a figure that looks like a
+-- measurement and is arithmetic on a guess.
+--
+-- The node holding the copy has both readings and knows exactly how long
+-- apart they were. It divides there, and what crosses is the answer.
+--
+-- ## Two windows, and the page says so
+--
+-- A copy on this machine is measured across the console stream's two
+-- seconds; one elsewhere across its report interval, fifteen. Same unit,
+-- and the second is smoother — a burst that spikes a local figure is
+-- averaged away in a remote one. That is worth knowing rather than
+-- hiding, because somebody comparing the two columns would otherwise
+-- conclude the remote copy was calmer.
+--
+-- ## And it is a measurement, so it is not news
+--
+-- The rule `memory_bytes` and `disk_bytes` follow, for the third time:
+-- a figure that differs on every reading must not make `api::record`
+-- answer "something moved". See migration `0034`.
+ALTER TABLE replica ADD COLUMN cpu_millicores INTEGER;

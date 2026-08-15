@@ -915,11 +915,15 @@ async fn replica_cells(
                 })
             });
             let mut cell = replica_cell(&replica, stopped, waiting_for_it);
+            // Only the copies here. One elsewhere is measured by the node
+            // running it and arrives on its report, which the server has
+            // already rendered — writing over it from a stream that has no
+            // reading for it would blank a figure that is true.
             if replica.is_here() && !replica.evicted() {
                 let id = replica.container_id(&project.slug, &service.slug);
                 if let Some(share) = busy.and_then(|busy| busy.containers.get(&id)) {
                     // A thousand is one core. Absolute, so this column can
-                    // be compared against the same column on another node.
+                    // be read against the same column on another node.
                     cell.cpu = format!("{share}m");
                 }
             }
@@ -1755,6 +1759,7 @@ mod tests {
                 reserved_host: None,
                 memory_bytes: None,
                 disk_bytes: None,
+                cpu_millicores: None,
             };
 
         // The ordinary case, and the useful one.

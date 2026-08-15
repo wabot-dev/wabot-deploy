@@ -119,6 +119,10 @@ fn migrations() -> Vec<Migration> {
             "0035_replica_disk",
             include_str!("../migrations/0035_replica_disk.sql"),
         ),
+        Migration::new(
+            "0036_replica_cpu",
+            include_str!("../migrations/0036_replica_cpu.sql"),
+        ),
     ]
 }
 

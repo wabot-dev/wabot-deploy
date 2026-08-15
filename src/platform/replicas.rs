@@ -57,6 +57,14 @@ pub struct Replica {
     /// grows until the machine is full. A measurement like the one above,
     /// with the same rule — see migration `0035`.
     pub disk_bytes: Option<u64>,
+    /// What it was using when the node running it last worked it out, in
+    /// millicores — a thousand is one core.
+    ///
+    /// The rate is computed **there**: a counter crossing the network
+    /// would leave this node dividing by a gap it can only guess at. See
+    /// migration `0036`, which also explains why this number is smoother
+    /// than the one for a copy here.
+    pub cpu_millicores: Option<u32>,
 }
 
 impl Replica {
@@ -194,6 +202,7 @@ pub async fn place(
         reserved_host: None,
         memory_bytes: None,
         disk_bytes: None,
+        cpu_millicores: None,
     };
 
     let row = replica.clone();
@@ -555,6 +564,25 @@ pub async fn set_disk(
     Ok(())
 }
 
+/// What a copy elsewhere is using, as its own node worked it out.
+pub async fn set_cpu(
+    database: &SqliteDatabase,
+    id: &str,
+    millicores: Option<u32>,
+) -> PlatformResult<()> {
+    let (id, milli) = (id.to_string(), millicores.map(i64::from));
+    database
+        .write(move |connection| {
+            connection.execute(
+                "UPDATE replica SET \"cpu_millicores\" = ?2 WHERE \"id\" = ?1",
+                (id, milli),
+            )?;
+            Ok(())
+        })
+        .await?;
+    Ok(())
+}
+
 /// Why this copy is not running, or that it is.
 pub async fn set_last_error(
     database: &SqliteDatabase,
@@ -608,7 +636,7 @@ pub async fn remove(database: &SqliteDatabase, id: &str) -> PlatformResult<()> {
 
 const COLUMNS: &str = "\"id\", \"service_id\", \"node_id\", \"slot\", \"address\", \
                        \"last_error\", \"evicted_at\", \"overlay_port\", \"reserved_host\", \
-                       \"memory_bytes\", \"disk_bytes\"";
+                       \"memory_bytes\", \"disk_bytes\", \"cpu_millicores\"";
 
 fn decode(row: &Row<'_>) -> wabot::sqlite::rusqlite::Result<Replica> {
     Ok(Replica {
@@ -623,6 +651,7 @@ fn decode(row: &Row<'_>) -> wabot::sqlite::rusqlite::Result<Replica> {
         reserved_host: row.get::<_, Option<i64>>(8)?.map(|host| host as u8),
         memory_bytes: row.get::<_, Option<i64>>(9)?.map(|bytes| bytes as u64),
         disk_bytes: row.get::<_, Option<i64>>(10)?.map(|bytes| bytes as u64),
+        cpu_millicores: row.get::<_, Option<i64>>(11)?.map(|milli| milli as u32),
     })
 }
 
@@ -658,6 +687,7 @@ mod tests {
             reserved_host: None,
             memory_bytes: None,
             disk_bytes: None,
+            cpu_millicores: None,
         };
 
         assert_eq!(replica(1).container_id("demo", "web"), "demo.web");

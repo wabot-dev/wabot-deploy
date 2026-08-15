@@ -189,6 +189,19 @@ pub struct ReplicaState {
     /// with the same rule as the one above.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub disk: Option<u64>,
+    /// What it is using, in millicores, **already divided**.
+    ///
+    /// Memory and disk are absolutes and cross as read. A rate is the
+    /// difference between two samples, and only the node running the copy
+    /// has both — sending its counter would leave the reader dividing by
+    /// the gap since the last report, which is fifteen seconds when all is
+    /// well and unknown when it is not.
+    ///
+    /// So the window differs by where the copy is: two seconds for one
+    /// here, a report interval for one elsewhere. Same unit, and the page
+    /// says which is which.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cpu: Option<u32>,
 }
 
 /// A refusal, in the shape the other end knows how to print.
@@ -881,6 +894,15 @@ async fn record(
             .await
             .map_err(|error| super::NetworkError::Refused(error.to_string()))?;
     }
+    // Kept when a report carries none, rather than cleared. The first
+    // report after that node restarted has no rate yet — it has one
+    // sample — and blanking the column for it would read as "it stopped
+    // using any" rather than "nobody has measured since".
+    if !state.evicted && state.cpu.is_some() && replica.cpu_millicores != state.cpu {
+        crate::platform::replicas::set_cpu(database, &replica.id, state.cpu)
+            .await
+            .map_err(|error| super::NetworkError::Refused(error.to_string()))?;
+    }
 
     if !changed {
         return Ok(false);
@@ -1564,6 +1586,7 @@ mod tests {
             evicted: false,
             memory: None,
             disk: None,
+            cpu: None,
         };
 
         let first = record(&authority.database, "nd-joining001", &reported("10.42.2.5"))
@@ -1679,6 +1702,7 @@ mod tests {
             evicted: false,
             memory: Some(bytes),
             disk: None,
+            cpu: None,
         };
 
         assert!(
@@ -1702,6 +1726,76 @@ mod tests {
             after.memory_bytes,
             Some(2_000),
             "and it is written anyway, or the page shows a stale number"
+        );
+    }
+
+    /// A rate crosses as an answer, and an absent one leaves what is
+    /// there.
+    ///
+    /// Memory and disk are absolutes and cross as read; CPU is the
+    /// difference between two samples, so the node running the copy
+    /// divides and sends millicores — a counter would leave this side
+    /// dividing by the gap since the last report, which is fifteen seconds
+    /// when all is well and unknown when it is not.
+    ///
+    /// And a report carrying none does not clear it. The first report
+    /// after that node restarted has one sample and no rate yet; blanking
+    /// the column would read as "it stopped using any" rather than "nobody
+    /// has measured since".
+    #[tokio::test]
+    async fn a_rate_arrives_worked_out_and_an_absent_one_keeps_what_it_had() {
+        let authority = authority().await;
+        authority
+            .harness
+            .post("/api/network/join")
+            .header("authorization", format!("Bearer {}", authority.secret))
+            .json(&arriving())
+            .send()
+            .await
+            .assert_ok();
+        let placed = placed_there(&authority, 2).await;
+
+        let reporting = |cpu: Option<u32>| ReplicaState {
+            project: "shared".into(),
+            service: "web".into(),
+            slot: 2,
+            address: Some("10.42.2.5".into()),
+            overlay_port: Some(30001),
+            error: None,
+            evicted: false,
+            memory: Some(1_000),
+            disk: None,
+            cpu,
+        };
+
+        record(&authority.database, "nd-joining001", &reporting(Some(250)))
+            .await
+            .expect("recorded");
+        let after = crate::platform::replicas::in_slot(&authority.database, &placed, 2)
+            .await
+            .expect("query")
+            .expect("there");
+        assert_eq!(
+            after.cpu_millicores,
+            Some(250),
+            "already divided, and stored"
+        );
+
+        // A restart on that node: one sample, no rate.
+        assert!(
+            !record(&authority.database, "nd-joining001", &reporting(None))
+                .await
+                .expect("recorded"),
+            "and it is still not news"
+        );
+        let after = crate::platform::replicas::in_slot(&authority.database, &placed, 2)
+            .await
+            .expect("query")
+            .expect("there");
+        assert_eq!(
+            after.cpu_millicores,
+            Some(250),
+            "silence is not nought — the column keeps what somebody measured"
         );
     }
 
@@ -1731,6 +1825,7 @@ mod tests {
             evicted: true,
             memory: None,
             disk: None,
+            cpu: None,
         };
 
         assert!(

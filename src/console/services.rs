@@ -1482,13 +1482,24 @@ fn running_card<'a>(
                                 // "—" when neither has one, because a
                                 // database using no memory is not a
                                 // reading anybody should believe.
-                                // Written by the stream, which is the only
-                                // place with the two readings a percentage
-                                // needs. Rendered empty rather than as a
-                                // dash: the first tick is two seconds
-                                // away, and a dash that becomes a number is
-                                // a row that jumps.
-                                <td class="mono" data-cpu=(&replica.id)></td>
+                                // For a copy here the stream writes this,
+                                // because it has the two readings a rate
+                                // needs; for one elsewhere the server
+                                // renders what that node worked out and
+                                // sent, and the stream leaves it alone.
+                                //
+                                // The two are measured over different
+                                // windows — two seconds against a report
+                                // interval — which the card below says
+                                // rather than letting somebody read the
+                                // remote copy as the calmer one.
+                                <td class="mono" data-cpu=(&replica.id)>(
+                                    replica
+                                        .cpu_millicores
+                                        .filter(|_| !replica.is_here())
+                                        .map(|milli| format!("{milli}m"))
+                                        .unwrap_or_default()
+                                )</td>
                                 <td class="mono">(
                                     at.used.get(&replica.container_id(at.project_slug, at.service_slug))
                                         .copied()
@@ -1513,6 +1524,12 @@ fn running_card<'a>(
                         }
                     </tbody>
                 </table>
+                @if live.iter().any(|replica| !replica.is_here()) {
+                    <p class="field-hint">(t("A copy here is measured every couple of seconds; \
+                         one on another node is measured by that node, across the interval it \
+                         reports on. The same unit, and the second is the smoother of the \
+                         two."))</p>
+                }
             </div>
         </section>
     }
@@ -3332,6 +3349,7 @@ mod tests {
             reserved_host: None,
             memory_bytes: None,
             disk_bytes: None,
+            cpu_millicores: None,
         };
 
         // Through the renderer, which reads the one decision the stream
@@ -3381,6 +3399,7 @@ mod tests {
             reserved_host: None,
             memory_bytes: None,
             disk_bytes: None,
+            cpu_millicores: None,
         };
 
         for (stopped, queued) in [(true, false), (false, true), (false, false)] {

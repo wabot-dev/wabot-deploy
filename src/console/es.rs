@@ -47,6 +47,10 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
     ),
     ("A ceiling on the container and the engine's own settings, together. Postgres is given a quarter of it for shared buffers and told to expect half of it as cache — its defaults alone would be killed on the smaller sizes.", "Un techo para el contenedor y los ajustes del propio motor, a la vez. A Postgres se le da un cuarto para los buffers compartidos y se le dice que espere la mitad como caché — sus valores por defecto solos morirían en los tamaños pequeños."),
     (
+        "A copy here is measured every couple of seconds; one on another node is measured by that node, across the interval it reports on. The same unit, and the second is the smoother of the two.",
+        "Una copia de aquí se mide cada par de segundos; una de otro nodo la mide ese nodo, a lo largo del intervalo con el que reporta. La misma unidad, y la segunda es la más suave de las dos.",
+    ),
+    (
         "A copy writes its log on the machine that runs it, and this node cannot read another one's disk. Open the console of the node holding it.",
         "Una copia escribe su log en la máquina que la ejecuta, y este nodo no puede leer el disco de otra. Abre la consola del nodo que la tiene.",
     ),
