@@ -101,6 +101,7 @@ pub async fn run(
                 spec: Some(spec_any),
                 snapshotter: super::snapshots::SNAPSHOTTER.to_string(),
                 snapshot_key: snapshot_key(id),
+                labels: request.labels.clone().into_iter().collect(),
                 ..Default::default()
             }),
         }))
@@ -219,6 +220,35 @@ pub async fn status(client: &Containerd, id: &str) -> ClientResult<Option<TaskSt
         Err(status) if status.code() == tonic::Code::NotFound => Ok(None),
         Err(source) => Err(ClientError::Call {
             call: "Tasks.Get",
+            source,
+        }),
+    }
+}
+
+/// What a container was created with, as containerd kept it.
+///
+/// `None` when there is no such container, which is an ordinary answer
+/// and not a failure: the caller is usually asking about one that may
+/// have gone away.
+pub async fn labels(
+    client: &Containerd,
+    id: &str,
+) -> ClientResult<Option<std::collections::BTreeMap<String, String>>> {
+    match ContainersClient::new(client.channel())
+        .get(
+            client.request(containerd_client::services::v1::GetContainerRequest {
+                id: id.to_string(),
+            }),
+        )
+        .await
+    {
+        Ok(response) => Ok(response
+            .into_inner()
+            .container
+            .map(|container| container.labels.into_iter().collect())),
+        Err(status) if status.code() == tonic::Code::NotFound => Ok(None),
+        Err(source) => Err(ClientError::Call {
+            call: "Containers.Get",
             source,
         }),
     }

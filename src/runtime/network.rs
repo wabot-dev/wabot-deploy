@@ -368,6 +368,26 @@ pub struct PortMapping {
     pub host_ip: Option<String>,
 }
 
+/// The mappings as one line, sorted, for a comparison to be made of.
+///
+/// A container is created with this written on it and reconciliation
+/// builds it again from the rows: same function both times, so a
+/// difference is a difference in the rows and never in the spelling.
+pub fn render(mappings: &[PortMapping]) -> String {
+    let mut rendered: Vec<String> = mappings
+        .iter()
+        .map(|mapping| match &mapping.host_ip {
+            Some(address) => format!(
+                "{address}:{}->{}",
+                mapping.host_port, mapping.container_port
+            ),
+            None => format!("*:{}->{}", mapping.host_port, mapping.container_port),
+        })
+        .collect();
+    rendered.sort();
+    rendered.join(",")
+}
+
 /// Create the namespace, put the container on the project's bridge,
 /// and return the address it was given.
 ///
@@ -644,6 +664,39 @@ fn first_address(stdout: &str) -> Option<Ipv4Addr> {
 
 #[cfg(test)]
 mod tests {
+    /// The two halves of the comparison are this function, twice: what
+    /// a container was created with and what the rows say now. Sorted,
+    /// so the order the rows came back in is not a difference.
+    #[test]
+    fn a_mapping_renders_the_same_however_it_arrived() {
+        use super::{render, PortMapping};
+
+        let one = vec![
+            PortMapping {
+                host_port: 30001,
+                container_port: 5432,
+                host_ip: Some("10.42.0.1".into()),
+            },
+            PortMapping {
+                host_port: 20000,
+                container_port: 5432,
+                host_ip: None,
+            },
+        ];
+        let other = vec![one[1].clone(), one[0].clone()];
+        assert_eq!(render(&one), render(&other));
+        assert_eq!(render(&one), "*:20000->5432,10.42.0.1:30001->5432");
+
+        // And a difference that matters is one: the same ports bound to
+        // a different address is not the same mapping.
+        let moved = vec![PortMapping {
+            host_ip: Some("10.42.0.2".into()),
+            ..one[0].clone()
+        }];
+        assert_ne!(render(&moved), render(&one[..1]));
+        assert_eq!(render(&[]), "");
+    }
+
     use super::*;
 
     #[test]

@@ -103,6 +103,15 @@ pub struct ContainerRequest {
     /// `None` is what every container had until there were presets: no
     /// ceiling, and one process can take the machine.
     pub memory_limit: Option<u64>,
+    /// What this container was created with, for something later to
+    /// compare against.
+    ///
+    /// containerd keeps these beside the container and hands them back
+    /// on a read, so they live and die with it — which is what makes
+    /// them the right home for "what was applied": a file would outlive
+    /// the container it described, and a struct in this process would
+    /// not survive a restart.
+    pub labels: std::collections::BTreeMap<String, String>,
     /// The size of `/dev/shm`, in bytes. `None` is [`DEFAULT_SHM`].
     ///
     /// Its own field rather than a fraction of `memory_limit`, because

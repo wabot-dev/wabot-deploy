@@ -119,6 +119,10 @@ enum Holding {
     LetGo,
 }
 
+/// Where a container's published ports are written, so that something
+/// other than the deployment can ask what they were.
+const PORTS_LABEL: &str = "wabot.ports";
+
 impl Deployer {
     pub fn new(database: Arc<SqliteDatabase>, config: &crate::config::Config) -> Self {
         Self {
@@ -430,23 +434,19 @@ impl Deployer {
             .collect())
     }
 
-    async fn try_deploy(
+    /// Every port this copy is published on, as the rows say it should
+    /// be right now.
+    ///
+    /// Pulled out of the deployment so that **something else can ask the
+    /// same question**: reconciliation compares this against what the
+    /// running container was created with, and a comparison whose two
+    /// halves are computed by different code is a comparison that finds
+    /// differences nobody made.
+    async fn published_ports(
         &self,
-        project: &Project,
         service: &Service,
         replica: &Replica,
-    ) -> DeployResult<Ipv4Addr> {
-        let client = Containerd::connect().await?;
-        let id = replica.container_id(&project.slug, &service.slug);
-
-        let index = projects::ensure_network_index(&self.database, &project.id).await?;
-        let net = ProjectNetwork::new(index)?;
-
-        // The container before the network: a create that fails after
-        // the address is allocated would leak the reservation, and the
-        // teardown below is what stops that from accumulating.
-        containers::remove(&client, &id).await?;
-
+    ) -> DeployResult<Vec<PortMapping>> {
         let ports = ports::of_service(&self.database, &service.id).await?;
         let published: Vec<PortMapping> = ports
             .iter()
@@ -517,6 +517,28 @@ impl Deployer {
             }
         }
 
+        Ok(published)
+    }
+
+    async fn try_deploy(
+        &self,
+        project: &Project,
+        service: &Service,
+        replica: &Replica,
+    ) -> DeployResult<Ipv4Addr> {
+        let client = Containerd::connect().await?;
+        let id = replica.container_id(&project.slug, &service.slug);
+
+        let index = projects::ensure_network_index(&self.database, &project.id).await?;
+        let net = ProjectNetwork::new(index)?;
+
+        // The container before the network: a create that fails after
+        // the address is allocated would leak the reservation, and the
+        // teardown below is what stops that from accumulating.
+        containers::remove(&client, &id).await?;
+
+        let ports = ports::of_service(&self.database, &service.id).await?;
+        let published = self.published_ports(service, replica).await?;
         // Before the container, and before the network is even torn
         // down on a failure: a bind of a directory that is not there
         // fails inside the shim, where the message is about a mount
@@ -629,6 +651,16 @@ impl Deployer {
             resolv_conf: Some(self.resolv_conf.clone()),
             mounts,
             memory_limit: service.memory_limit,
+            // What this container is being published on, written on it.
+            // Reconciliation reads it back and compares — the one thing
+            // it never checked was whether the ports it opened are the
+            // ports the rows now ask for, so a mapping could be right
+            // in the database and absent on the machine with nothing
+            // saying so.
+            labels: std::collections::BTreeMap::from([(
+                PORTS_LABEL.to_string(),
+                network::render(&published),
+            )]),
             shm_size: prepared.as_ref().and_then(|prepared| prepared.shm_size),
         };
 
@@ -836,6 +868,39 @@ impl Deployer {
 
         tracing::info!(service = %service.slug, slot = replica.slot, "stopped one copy");
         Ok(())
+    }
+
+    /// Whether the running container is published on what the rows now
+    /// say.
+    ///
+    /// Both halves come from `published_ports` and `network::render` —
+    /// the same two functions the deployment used — so a difference here
+    /// is a difference in the rows and never in the spelling.
+    ///
+    /// True when there is nothing to compare against: a container from
+    /// before this was written carries no label, and redeploying every
+    /// container on the node once because of that would be this check
+    /// doing more damage than the drift it looks for.
+    async fn ports_match(&self, project: &Project, service: &Service, replica: &Replica) -> bool {
+        let id = replica.container_id(&project.slug, &service.slug);
+        let Ok(client) = Containerd::connect().await else {
+            return true;
+        };
+        let applied = match containers::labels(&client, &id).await {
+            Ok(Some(labels)) => labels.get(PORTS_LABEL).cloned(),
+            // No container, or a runtime that will not answer: neither
+            // is this question's to report on.
+            Ok(None) | Err(_) => return true,
+        };
+        let Some(applied) = applied else {
+            return true;
+        };
+        match self.published_ports(service, replica).await {
+            Ok(wanted) => applied == network::render(&wanted),
+            // The rows could not be read, which is not the container's
+            // fault and not a reason to replace it.
+            Err(_) => true,
+        }
     }
 
     /// Everything on this node's disk that no copy claims.
@@ -1186,7 +1251,28 @@ impl Deployer {
             };
 
             match self.observe(project, service, &replica).await {
-                Observed::Running { .. } => {}
+                // Running is not the same as running *as the rows say*.
+                // A container is created with the ports it was given
+                // written on it, and this is the one thing that asks
+                // whether they are still the ports the rows ask for —
+                // until now a published port that had been added,
+                // removed or moved since the container started stayed
+                // that way until something else happened to redeploy.
+                Observed::Running { .. } => {
+                    match self.ports_match(project, service, &replica).await {
+                        true => {}
+                        false => {
+                            tracing::info!(
+                                service = %service.slug,
+                                slot = replica.slot,
+                                "reconciling: its ports are not what the rows say"
+                            );
+                            if self.restore(project, service).await {
+                                started += 1;
+                            }
+                        }
+                    }
+                }
                 Observed::Unknown(error) => {
                     // Reconciling against a runtime that cannot answer
                     // would redeploy everything on the node because
