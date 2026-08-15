@@ -1201,29 +1201,6 @@ impl ServicePages {
                     }
                 }
 
-                <section class="card stack">
-                    <p class="card-label">(t("Danger zone"))</p>
-                    // A database's data goes with it, and that sentence
-                    // is the whole reason this branch exists: the
-                    // generic wording says the images stay in the
-                    // registry, which is true and reads as reassurance
-                    // about the wrong thing entirely.
-                    @if service.kind.is_managed() {
-                        <p class="tile-detail">(t("Deleting a database stops it and removes everything \
-                             it stored on this node. There is no undo and there is no backup — a \
-                             read-only copy is not one, because a deletion reaches it too."))</p>
-                        <form method="post" action=(format!("{here}/delete"))>
-                            <button class="btn btn-danger" type="submit">(t("Delete database and its data"))</button>
-                        </form>
-                    } @else {
-                        <p class="tile-detail">(t("Deleting a service stops its container and removes it. The \
-                             images it was built from stay in the registry."))</p>
-                        <form method="post" action=(format!("{here}/delete"))>
-                            <button class="btn btn-danger" type="submit">(t("Delete service"))</button>
-                        </form>
-                    }
-                </section>
-
                 @if !certificates.is_empty() && !service.kind.is_managed() {
                     <section class="stack">
                         <p class="card-label">(t("Certificates"))</p>
@@ -1253,6 +1230,34 @@ impl ServicePages {
                         }
                     </section>
                 }
+
+                // Last on the page, always. Deleting is not one setting
+                // among the others and reading it as one is how somebody
+                // presses it on the way past — it sat above the
+                // certificates here, which put a destructive button in
+                // the middle of a page people scroll through.
+                <section class="card stack">
+                    <p class="card-label">(t("Danger zone"))</p>
+                    // A database's data goes with it, and that sentence
+                    // is the whole reason this branch exists: the
+                    // generic wording says the images stay in the
+                    // registry, which is true and reads as reassurance
+                    // about the wrong thing entirely.
+                    @if service.kind.is_managed() {
+                        <p class="tile-detail">(t("Deleting a database stops it and removes everything \
+                             it stored on this node. There is no undo and there is no backup — a \
+                             read-only copy is not one, because a deletion reaches it too."))</p>
+                        <form method="post" action=(format!("{here}/delete"))>
+                            <button class="btn btn-danger" type="submit">(t("Delete database and its data"))</button>
+                        </form>
+                    } @else {
+                        <p class="tile-detail">(t("Deleting a service stops its container and removes it. The \
+                             images it was built from stay in the registry."))</p>
+                        <form method="post" action=(format!("{here}/delete"))>
+                            <button class="btn btn-danger" type="submit">(t("Delete service"))</button>
+                        </form>
+                    }
+                </section>
         }
             .render()
             .into_inner()
@@ -1815,6 +1820,11 @@ fn node_option<'a>(
 /// Every choice is a checkbox rather than a single selector because a
 /// name can be served from several nodes at once — that is what makes it
 /// survive one of them going away.
+///
+/// The name is the heading and the nodes are a column under it. It was
+/// one flex line — a label, the boxes and a button, all in a row — which
+/// is what fitted inside the cell it used to live in and reads as one
+/// run-on sentence anywhere else.
 fn served_by_form<'a>(
     project: &'a crate::platform::projects::Project,
     service: &'a services::Service,
@@ -1828,15 +1838,20 @@ fn served_by_form<'a>(
         .map(|(_, node)| node.as_str())
         .collect();
     rsx! {
-        <form method="post" class="served-by"
+        <form method="post" class="stack-sm"
               action=(format!(
                   "/projects/{}/services/{}/edges",
                   project.slug, service.slug
               ))>
             <input type="hidden" name="hostname" value=(hostname)>
-            <p class="tile-detail">(t("Also served by"))</p>
+            // The name this form is about, and it has to be here: two
+            // ports with two hostnames render two of these, and without
+            // it they are the same list of nodes twice. It read as a
+            // label — "also served by" — only while the address was in
+            // the cell next door.
+            <p class="mono">(hostname)</p>
             @for node in public {
-                <label class="served-by-node">
+                <label class="check">
                     @if chosen.contains(&node.id.as_str()) {
                         <input type="checkbox"
                                name=(format!("edge-{}", node.id)) value="1" checked>
@@ -1860,7 +1875,9 @@ fn served_by_form<'a>(
                     </span>
                 </label>
             }
-            <button class="btn btn-secondary btn-sm" type="submit">(t("Save"))</button>
+            <div class="actions">
+                <button class="btn btn-secondary btn-sm" type="submit">(t("Save"))</button>
+            </div>
         </form>
     }
 }

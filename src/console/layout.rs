@@ -110,9 +110,78 @@ pub const CSS: &str = r#"
  * charcoal rather than black, which is the part of "easy on the eyes"
  * the design system already got right.
  */
+/* Four corrections, and the reason they are all here is one thing the
+ * dark palette does: it takes a token that reads well in light and
+ * *inverts its role*, without revisiting what is painted on or beside
+ * it. A light-mode chip becomes a dark-mode slab a shade off the card;
+ * a red dark enough to read as text becomes a pink slab still carrying
+ * white ink. Every one of these was invisible to whoever wrote it and
+ * obvious to somebody using the console at night.
+ *
+ * The values are the same in both dark scopes — this one and the
+ * `prefers-color-scheme` block below — so a change here needs the same
+ * change there.
+ */
 [data-theme='dark'] {
   --c-fg:       224 218 209;  /* 12.64:1 on the canvas, down from 15.14 */
   --c-fg-faint: 158 152 143;  /* worst case 5.00:1, up from 2.60 */
+
+  /* The ramp had no steps left in it. Correcting faint upwards brought
+   * it to 158 152 143 and left muted at 160 154 145 — two tones two
+   * units apart doing the work of two levels, so a table heading, a
+   * hint and a slug were all the same grey and none of them read as
+   * quieter than the next. Muted moves up to where it was meant to be:
+   * 8.25:1 on the canvas, 6.89:1 on a card, and visibly above faint. */
+  --c-fg-muted: 185 178 168;
+
+  /* A secondary action you cannot find is not an action.
+   *
+   * `--c-action-soft` is 44 42 39 against a card's 34 33 31 — 1.12:1,
+   * where the same token in light mode is a grey chip on white and
+   * reads at once. "Save origin" was a label floating on the card with
+   * no button under it. 88 84 78 puts the slab at 2.14:1 against the
+   * card and keeps its label at 5.23:1, which is where this stops:
+   * lighter finds the button and loses the word on it. */
+  --c-action-soft: 88 84 78;
+
+  /* An empty box you cannot see is not a control. The unchecked fill is
+   * `--c-bg-contrast`, 44 42 39 — the same 1.12:1, so every unticked
+   * box was a gap where a control should be. Reported on the edges
+   * card, where the boxes are the whole of what the card does.
+   *
+   * 3.15:1, which is what WCAG asks of a control, and it can go the
+   * whole way because nothing is written on it — unlike the button
+   * above. */
+  --c-control-empty: 112 108 101;
+}
+
+/* Light keeps what the design system chose; the token exists so the
+ * rule below can be written once. */
+:root {
+  --c-control-empty: var(--c-bg-contrast);
+}
+
+/* `:not(:checked)` rather than a lower-specificity rule: the checked
+ * fill is `--c-fg` and this must not be able to win against it. */
+input[type="checkbox"]:not(:checked),
+input[type="radio"]:not(:checked) {
+  background: rgb(var(--c-control-empty));
+}
+
+/* A destructive action, in either theme.
+ *
+ * `.btn-danger` paints a fixed `--c-n-0` on a slab coloured
+ * `--c-danger-fg` — and that token flips to a pale pink in dark so it
+ * can be *read* as text, which left white on pink at 1.29:1. A delete
+ * button nobody can read is the one button where that matters most.
+ *
+ * The ink is the inverse of its slab, exactly as the checkbox mark
+ * below: unchanged in light, where `--c-fg-inverse` is that same white,
+ * and near-black on the pink at 10.0:1 in dark.
+ */
+.btn-danger,
+button[type="submit"].btn-danger {
+  color: rgb(var(--c-fg-inverse));
 }
 
 /* A checked box, in either theme.
@@ -136,8 +205,16 @@ input[type="radio"]::after {
  *
  * The tokens are restated because the design system ships its dark
  * palette only under `[data-theme='dark']`, and CSS cannot make a
- * media query set an attribute. Keep in step with the vendored block;
- * a `prefers-color-scheme` variant belongs upstream.
+ * media query set an attribute. Keep in step with the vendored block
+ * and with the corrections above; a `prefers-color-scheme` variant
+ * belongs upstream.
+ *
+ * The semantic half was missing here, which is a whole class of "dark
+ * mode looks wrong for some people and right for others": a running
+ * badge, a failure, a warning and the brand ink all kept their light
+ * values for anybody who had never touched the toggle, because that
+ * leaves `data-theme` empty rather than `dark`. Nobody hits it who
+ * chose their theme once.
  */
 @media (prefers-color-scheme: dark) {
   .app-shell:not([data-theme='light']) {
@@ -148,13 +225,23 @@ input[type="radio"]::after {
     --c-bg-inverse:  244 242 238;
     --c-fg:          224 218 209;
     --c-fg-body:     214 210 202;
-    --c-fg-muted:    160 154 145;
+    --c-fg-muted:    185 178 168;
     --c-fg-faint:    158 152 143;
     --c-fg-inverse:   17  16  15;
     --c-action:      244 242 238;
     --c-action-fg:    17  16  15;
-    --c-action-soft:  44  42  39;
+    --c-action-soft:  88  84  78;
+    --c-control-empty: 112 108 101;
+    --c-brand-ink:   var(--c-brand-300);
     --c-brand-wash:   60  32  18;
+    --c-success-bg:   30  56  38;
+    --c-success-fg:  175 215 180;
+    --c-warning-bg:   68  50  18;
+    --c-warning-fg:  240 198 122;
+    --c-danger-bg:    72  28  24;
+    --c-danger-fg:   238 175 165;
+    --c-info-bg:      28  46  68;
+    --c-info-fg:     176 200 226;
   }
 }
 
@@ -685,24 +772,6 @@ pre ::selection {
   gap: var(--sp-1);
 }
 
-/* Choosing who answers for a name. On its own line under the address
-   it belongs to — it is about that hostname and nothing else in the
-   row, and reading it beside the address is what makes that obvious. */
-.served-by {
-  display: flex;
-  align-items: center;
-  gap: var(--sp-3);
-  flex-wrap: wrap;
-  flex-basis: 100%;
-  font-family: var(--font-sans);
-}
-
-.served-by-node {
-  display: flex;
-  align-items: center;
-  gap: var(--sp-1);
-}
-
 /* The design system styles `button[type="submit"]` as the primary
    action, and that selector outranks `.btn-secondary`, `.btn-ghost`
    and `.btn-danger` — so every submit came out black whatever variant
@@ -840,6 +909,64 @@ mod tests {
     fn a_dark_surface_has_its_own_selection_colour() {
         assert!(super::CSS.contains("pre ::selection"));
         assert!(super::CSS.contains("pre::selection"));
+    }
+
+    /// Dark mode is written twice — once for the toggle and once for
+    /// the operating system's preference — because a media query cannot
+    /// set an attribute. So a correction made in one scope is invisible
+    /// to half the people using the console, and which half depends on
+    /// whether they ever touched the toggle. Four tokens were in that
+    /// state at once: the semantic set, which meant a running badge kept
+    /// its light-mode colours on a dark page.
+    #[test]
+    fn the_two_dark_palettes_agree() {
+        let chosen = tokens(super::CSS, "[data-theme='dark'] {");
+        let followed = tokens(super::CSS, ".app-shell:not([data-theme='light']) {");
+        assert!(!chosen.is_empty(), "the explicit dark block was not found");
+
+        for (name, value) in &chosen {
+            let there = followed.iter().find(|(other, _)| other == name);
+            assert_eq!(
+                there.map(|(_, value)| value.as_str()),
+                Some(value.as_str()),
+                "{name} differs between the two dark scopes"
+            );
+        }
+    }
+
+    /// The custom properties a block declares, comments stripped and
+    /// whitespace flattened, so two spellings of the same colour
+    /// compare equal.
+    #[cfg(test)]
+    fn tokens(css: &str, selector: &str) -> Vec<(String, String)> {
+        let body = css
+            .split(selector)
+            .nth(1)
+            .expect("the block is there")
+            .split('}')
+            .next()
+            .expect("the block closes");
+
+        let mut plain = String::new();
+        let mut rest = body;
+        while let Some(start) = rest.find("/*") {
+            plain.push_str(&rest[..start]);
+            let end = rest[start..].find("*/").expect("the comment closes");
+            rest = &rest[start + end + 2..];
+        }
+        plain.push_str(rest);
+
+        plain
+            .split(';')
+            .filter_map(|declaration| declaration.split_once(':'))
+            .map(|(name, value)| {
+                (
+                    name.trim().to_string(),
+                    value.split_whitespace().collect::<Vec<_>>().join(" "),
+                )
+            })
+            .filter(|(name, _)| name.starts_with("--"))
+            .collect()
     }
 
     #[test]

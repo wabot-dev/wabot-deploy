@@ -79,7 +79,6 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
     ("All nodes", "Todos los nodos"),
     ("Allowed", "Permitido"),
     ("Already thrown out. Its containers are stopped and the node that placed it has been told — or will be, the next time it asks.", "Ya expulsada. Sus contenedores están parados y el nodo que la colocó ya lo sabe — o lo sabrá, la próxima vez que pregunte."),
-    ("Also served by", "Servido también por"),
     ("And offer it, in return:", "Y ofrecerle, a cambio:"),
     ("Answer for hostnames", "Responder por nombres"),
     ("Answer for its hostnames from this node", "Responder por sus nombres desde este nodo"),
