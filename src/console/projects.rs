@@ -473,7 +473,14 @@ fn service_table(
                         <thead>
                             <tr>
                                 <th>(t("Service"))</th>
-                                <th class="address">(t("Address"))</th>
+                                // The copies. Headed by nothing, for the
+                                // reason the delete column is: the cell
+                                // says "3 replicas · 2 elsewhere", which
+                                // names itself. It was headed "Address"
+                                // and held one, until a service had more
+                                // than one copy and the column started
+                                // answering a different question.
+                                <th class="address"></th>
                                 <th class="state">(t("State"))</th>
                                 // The delete column. Headed by nothing,
                                 // because "Delete" over a column of
@@ -1090,20 +1097,19 @@ pub(crate) struct StateCell {
     pub(crate) whereabouts: Whereabouts,
 }
 
-/// Where a service runs, in the width of a column.
+/// How many copies of a service there are, and how many of them are on
+/// other machines.
 ///
-/// One copy here is the ordinary case and its address is the useful
-/// thing. Several copies make one address a lie about the others, so
-/// they become a count — and a copy somewhere else is worth saying
-/// even when there is only one, because "running" on this page would
-/// otherwise mean a container this node has never seen.
+/// A count rather than an address, everywhere. The single-copy case used
+/// to name the container's address, which put a `10.42.x.x` under a
+/// column headed "Address" on one row and a count on the next — and that
+/// address is reachable from inside the project only, where the
+/// service's own name resolves and is the thing to use. Where each copy
+/// is and what it is doing belongs to the replicas table, one row each.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum Whereabouts {
-    /// One copy on this node: its own address, or a dash while it has
-    /// none yet.
-    Address(String),
-    /// A count, and how much of it is on other machines.
-    Copies { total: usize, away: usize },
+pub(crate) struct Whereabouts {
+    pub(crate) total: usize,
+    pub(crate) away: usize,
 }
 
 impl Whereabouts {
@@ -1117,13 +1123,15 @@ impl Whereabouts {
     /// with a count in it can ever be found in. So a Spanish console
     /// read "3 replicas · 2 elsewhere".
     pub(crate) fn say(&self) -> String {
-        match self {
-            Self::Address(address) => address.clone(),
-            Self::Copies { total: 1, away: 1 } => format!("1 {}", t("elsewhere")),
-            Self::Copies { total, away: 0 } => format!("{total} {}", t("replicas")),
-            Self::Copies { total, away } => {
-                format!("{total} {} · {away} {}", t("replicas"), t("elsewhere"))
-            }
+        match (self.total, self.away) {
+            (0, _) => t("nowhere").to_string(),
+            // A copy that is not here is worth saying even when it is
+            // the only one: "running" on a page served by this node
+            // would otherwise mean a container it has never seen.
+            (1, 1) => format!("1 {}", t("elsewhere")),
+            (1, _) => format!("1 {}", t("replica")),
+            (total, 0) => format!("{total} {}", t("replicas")),
+            (total, away) => format!("{total} {} · {away} {}", t("replicas"), t("elsewhere")),
         }
     }
 }
@@ -1131,11 +1139,10 @@ impl Whereabouts {
 pub(crate) fn where_it_runs(placements: &[crate::platform::replicas::Replica]) -> Whereabouts {
     let live: Vec<&crate::platform::replicas::Replica> =
         placements.iter().filter(|r| !r.evicted()).collect();
-    let away = live.iter().filter(|r| !r.is_here()).count();
 
-    match (live.len(), away) {
-        (1, 0) => Whereabouts::Address(live[0].address.clone().unwrap_or_else(|| "—".into())),
-        (total, away) => Whereabouts::Copies { total, away },
+    Whereabouts {
+        total: live.len(),
+        away: live.iter().filter(|r| !r.is_here()).count(),
     }
 }
 
@@ -1793,11 +1800,17 @@ mod tests {
         assert!(body.contains("Danger zone"), "an owner sees it: {body}");
     }
 
-    /// One address is a lie about the other n − 1. The column says
-    /// where a service runs, and only names an address while there is
-    /// exactly one copy to name.
+    /// The column counts copies and never names an address.
+    ///
+    /// It named one while there was exactly one copy, which made the
+    /// column answer two different questions a row apart — an address on
+    /// this row, a count on the next, under a heading that could only
+    /// suit one of them. And the address it named is reachable from
+    /// inside the project only, where the service's own name resolves
+    /// and is the thing to use. Which copy is where is the replicas
+    /// table, a row each.
     #[test]
-    fn the_column_stops_naming_an_address_once_there_are_several() {
+    fn the_column_counts_copies_rather_than_naming_one() {
         let replica =
             |slot, here: bool, address: Option<&str>| crate::platform::replicas::Replica {
                 id: format!("rp-{slot}"),
@@ -1814,17 +1827,22 @@ mod tests {
                 cpu_millicores: None,
             };
 
-        // The ordinary case, and the useful one.
+        // The ordinary case: one copy, here, with an address the page
+        // no longer shows.
         assert_eq!(
             where_it_runs(&[replica(1, true, Some("10.42.1.5"))]).say(),
-            "10.42.1.5"
+            "1 replica"
         );
-        // One copy and it is not on this machine: an address here would
-        // name a container this node has never seen.
+        // One copy and it is not on this machine, which is worth saying
+        // even alone: "running" here would otherwise mean a container
+        // this node has never seen.
         assert_eq!(
             where_it_runs(&[replica(1, false, None)]).say(),
             "1 elsewhere"
         );
+        // Placed nowhere at all — not "0 replicas", which reads as a
+        // measurement of something.
+        assert_eq!(where_it_runs(&[]).say(), "nowhere");
 
         assert_eq!(
             where_it_runs(&[replica(1, true, Some("10.42.1.5")), replica(2, true, None)]).say(),
@@ -1849,7 +1867,7 @@ mod tests {
     /// elsewhere", in the one column that changes as copies move.
     #[test]
     fn the_count_of_copies_is_read_in_the_accounts_language() {
-        let three = Whereabouts::Copies { total: 3, away: 2 };
+        let three = Whereabouts { total: 3, away: 2 };
         let spanish =
             crate::console::language::scoped(crate::console::language::Language::Es, || {
                 three.say()
@@ -1858,16 +1876,16 @@ mod tests {
 
         assert_eq!(
             crate::console::language::scoped(crate::console::language::Language::Es, || {
-                Whereabouts::Copies { total: 1, away: 1 }.say()
+                Whereabouts { total: 1, away: 1 }.say()
             }),
             "1 en otro nodo"
         );
-        // An address is a machine's, in either language.
+        // Singular, and the plural is not "1 replicas".
         assert_eq!(
             crate::console::language::scoped(crate::console::language::Language::Es, || {
-                Whereabouts::Address("10.42.1.5".into()).say()
+                Whereabouts { total: 1, away: 0 }.say()
             }),
-            "10.42.1.5"
+            "1 réplica"
         );
     }
 
@@ -1883,7 +1901,7 @@ mod tests {
     #[test]
     fn a_state_word_is_a_word_somebody_reads() {
         // This test is about the word; where it runs is not part of it.
-        let nowhere = || Whereabouts::Copies { total: 0, away: 0 };
+        let nowhere = || Whereabouts { total: 0, away: 0 };
         let placed = [
             state_cell(&Observed::Absent, true, nowhere(), None),
             state_cell(&Observed::Absent, false, nowhere(), None),
@@ -1920,7 +1938,7 @@ mod tests {
     /// there reads as a fault. The job is what knows.
     #[test]
     fn a_deployment_in_flight_outranks_what_containerd_says() {
-        let nowhere = || Whereabouts::Copies { total: 0, away: 0 };
+        let nowhere = || Whereabouts { total: 0, away: 0 };
         let busy = state_cell(&Observed::Absent, true, nowhere(), None);
         assert_eq!(busy.word, "Deploying");
         // Shown, not hidden: a control that vanishes takes the column's
@@ -1942,14 +1960,14 @@ mod tests {
                 address: None,
             },
             false,
-            Whereabouts::Address("10.42.1.5".into()),
+            Whereabouts { total: 2, away: 1 },
             None,
         );
         assert_eq!(running.action, "stop");
         // Where it runs rides with the state: a deployment ends by
-        // assigning an address, and a row showing the new state beside
-        // the old address is half-updated.
-        assert_eq!(running.whereabouts.say(), "10.42.1.5");
+        // placing copies, and a row showing the new state beside the
+        // old count is half-updated.
+        assert_eq!(running.whereabouts.say(), "2 replicas · 1 elsewhere");
     }
 
     /// The state updates in place, so the page has to declare the

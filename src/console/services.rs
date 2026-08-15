@@ -331,13 +331,7 @@ impl ServicePages {
         let cell = super::projects::state_cell(
             &observed,
             deploying,
-            // The service's own page names the copy that runs here; the
-            // list is the page that counts them.
-            super::projects::Whereabouts::Address(
-                here.as_ref()
-                    .and_then(|replica| replica.address.clone())
-                    .unwrap_or_else(|| "—".into()),
-            ),
+            super::projects::where_it_runs(&placements),
             super::projects::elsewhere_of(&placements),
         );
         let back = format!("/projects/{}", project.slug);
@@ -399,6 +393,19 @@ impl ServicePages {
                         // it stopped.
                         <div class="row" data-state=(&service.id)>
                             (super::projects::state_badge(&cell))
+                            // How many copies there are, beside the word
+                            // for what they are doing — where a
+                            // container's address used to be, under the
+                            // label "Address". Two things were wrong
+                            // with that: the stream writes this same
+                            // element, so a page that first painted an
+                            // address turned into a count two seconds
+                            // later under a label for the other one, and
+                            // an address belongs to one copy, which the
+                            // replicas table below names one by one.
+                            <span class="tile-detail" data-address=(&service.id)>
+                                (cell.whereabouts.say())
+                            </span>
                             // The page showed the state and withheld the
                             // control, so the one place you go to find
                             // out a service is down was the one place
@@ -419,12 +426,6 @@ impl ServicePages {
                     <dl class="kv">
                         <dt>(t("Image"))</dt>
                         <dd>(&service.image)</dd>
-                        <dt>(t("Address"))</dt>
-                        <dd class="mono" data-address=(&service.id)>(
-                            here.as_ref()
-                                .and_then(|r| r.address.clone())
-                                .unwrap_or_else(|| "not running".into())
-                        )</dd>
                     </dl>
                     // The string somebody came for. A page that shows what
                     // a service is should hand it over rather than leave
