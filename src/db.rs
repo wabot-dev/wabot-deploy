@@ -135,6 +135,10 @@ fn migrations() -> Vec<Migration> {
             "0039_following",
             include_str!("../migrations/0039_following.sql"),
         ),
+        Migration::new(
+            "0040_archiving_default",
+            include_str!("../migrations/0040_archiving_default.sql"),
+        ),
     ]
 }
 

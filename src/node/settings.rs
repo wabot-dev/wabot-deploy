@@ -74,6 +74,13 @@ const ARCHIVING: &str = "wal.archiving";
 ///
 /// An explicit `off` still wins. A node with little disk, or one whose
 /// databases hold nothing anybody would miss, is a real answer.
+///
+/// **And every node that existed before this got that explicit `off`**,
+/// from `migrations/0040_archiving_default.sql`. The default is for
+/// nodes being installed, where there is no database to disturb;
+/// applying it to a running one would restart somebody's database
+/// because a default changed, arriving with an upgrade they wanted for
+/// something else.
 pub async fn archiving(database: &SqliteDatabase) -> bool {
     !matches!(read(database, ARCHIVING).await, Ok(Some(value)) if value == "off")
 }
