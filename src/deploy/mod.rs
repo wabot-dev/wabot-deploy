@@ -189,6 +189,15 @@ pub struct Committed {
 /// other than the deployment can ask what they were.
 const PORTS_LABEL: &str = "wabot.ports";
 
+/// And whether it was started archiving its write-ahead log.
+///
+/// The same idea as the ports, for the same reason: `archive_mode` is a
+/// postmaster setting written into the arguments, so it changes only at
+/// a deployment — and nothing would cause one. Turning the switch on
+/// left a page saying "on" over a database that was not archiving, which
+/// is worse than a switch that does nothing.
+const ARCHIVING_LABEL: &str = "wabot.archiving";
+
 impl Deployer {
     pub fn new(database: Arc<SqliteDatabase>, config: &crate::config::Config) -> Self {
         Self {
@@ -676,6 +685,10 @@ impl Deployer {
         // What only a managed engine needs: its generated files, its
         // tuning, its credentials and its role.
         let prepared = self.prepare_engine(project, service, replica, &net).await?;
+        // Written on the container below, so reconciliation can tell a
+        // database started before the switch moved from one started
+        // after it.
+        let archiving = crate::node::settings::archiving(&self.database).await;
         if let Some(prepared) = &prepared {
             mounts.extend(prepared.mounts.iter().cloned());
         }
@@ -724,10 +737,16 @@ impl Deployer {
             // ports the rows now ask for, so a mapping could be right
             // in the database and absent on the machine with nothing
             // saying so.
-            labels: std::collections::BTreeMap::from([(
-                PORTS_LABEL.to_string(),
-                network::render(&published),
-            )]),
+            labels: std::collections::BTreeMap::from([
+                (PORTS_LABEL.to_string(), network::render(&published)),
+                (
+                    ARCHIVING_LABEL.to_string(),
+                    match prepared.is_some() {
+                        true => archiving.to_string(),
+                        false => String::new(),
+                    },
+                ),
+            ]),
             shm_size: prepared.as_ref().and_then(|prepared| prepared.shm_size),
         };
 
@@ -937,7 +956,7 @@ impl Deployer {
         Ok(())
     }
 
-    /// Whether the running container is published on what the rows now
+    /// Whether the running container was started with what the rows now
     /// say.
     ///
     /// Both halves come from `published_ports` and `network::render` —
@@ -948,22 +967,41 @@ impl Deployer {
     /// before this was written carries no label, and redeploying every
     /// container on the node once because of that would be this check
     /// doing more damage than the drift it looks for.
-    async fn ports_match(&self, project: &Project, service: &Service, replica: &Replica) -> bool {
+    async fn started_as_asked(
+        &self,
+        project: &Project,
+        service: &Service,
+        replica: &Replica,
+    ) -> bool {
         let id = replica.container_id(&project.slug, &service.slug);
         let Ok(client) = Containerd::connect().await else {
             return true;
         };
-        let applied = match containers::labels(&client, &id).await {
-            Ok(Some(labels)) => labels.get(PORTS_LABEL).cloned(),
+        let labels = match containers::labels(&client, &id).await {
+            Ok(Some(labels)) => labels,
             // No container, or a runtime that will not answer: neither
             // is this question's to report on.
             Ok(None) | Err(_) => return true,
         };
-        let Some(applied) = applied else {
+
+        // Archiving first, because it is the cheaper question and the
+        // one an upgrade changes: the default flipped once pruning
+        // existed, and every database already running was started
+        // without it.
+        if service.kind.is_managed() {
+            if let Some(applied) = labels.get(ARCHIVING_LABEL) {
+                let wanted = crate::node::settings::archiving(&self.database).await;
+                if applied != &wanted.to_string() {
+                    return false;
+                }
+            }
+        }
+
+        let Some(applied) = labels.get(PORTS_LABEL) else {
             return true;
         };
         match self.published_ports(service, replica).await {
-            Ok(wanted) => applied == network::render(&wanted),
+            Ok(wanted) => applied == &network::render(&wanted),
             // The rows could not be read, which is not the container's
             // fault and not a reason to replace it.
             Err(_) => true,
@@ -1484,13 +1522,13 @@ impl Deployer {
                 // removed or moved since the container started stayed
                 // that way until something else happened to redeploy.
                 Observed::Running { .. } => {
-                    match self.ports_match(project, service, &replica).await {
+                    match self.started_as_asked(project, service, &replica).await {
                         true => {}
                         false => {
                             tracing::info!(
                                 service = %service.slug,
                                 slot = replica.slot,
-                                "reconciling: its ports are not what the rows say"
+                                "reconciling: it was started with something the rows no longer say"
                             );
                             if self.restore(project, service).await {
                                 started += 1;

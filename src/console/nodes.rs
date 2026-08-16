@@ -1888,13 +1888,22 @@ impl NodeApi {
         // Not a capability — nothing is granted to anybody by it — but
         // the same kind of decision and the same form: something this
         // node either does or does not do, whose cost is its own.
-        if let Err(error) = crate::node::settings::set_archiving(
-            &self.state.database,
-            form.contains_key("archiving"),
-        )
-        .await
+        //
+        // **And the databases have to be told.** `archive_mode` is a
+        // postmaster setting written into the container's arguments, so
+        // it changes at the next deployment and reconciliation will not
+        // cause one: it restores what is absent and what has the wrong
+        // ports, and this is neither. Without the redeployment below the
+        // switch reads on, the page says on, and nothing archives —
+        // which is worse than a switch that does nothing, because it is
+        // a page that lies.
+        let was = crate::node::settings::archiving(&self.state.database).await;
+        let wanted = form.contains_key("archiving");
+        if let Err(error) = crate::node::settings::set_archiving(&self.state.database, wanted).await
         {
             tracing::warn!(%error, "could not save whether to keep the log");
+        } else if was != wanted {
+            self.redeploy_databases().await;
         }
 
         // The self row carries the answer: `kind` is derived from the
@@ -1911,6 +1920,30 @@ impl NodeApi {
         self.state.deployer.sync_routes().await;
 
         Ok(super::auth::see_other(here))
+    }
+
+    /// Redeploy every managed engine here, because something they read
+    /// at startup has changed.
+    ///
+    /// Queued rather than done: a deployment is this node's own job,
+    /// which is what "obeying is local" has meant since phase 3, and a
+    /// form that waited for three databases to restart is a form that
+    /// times out.
+    async fn redeploy_databases(&self) {
+        let Ok(services) = crate::platform::services::all(&self.state.database, None).await else {
+            return;
+        };
+        for service in services.iter().filter(|service| service.kind.is_managed()) {
+            let command = crate::deploy::jobs::DeployService {
+                service_id: service.id.clone(),
+                release_id: None,
+            };
+            if let Err(error) =
+                wabot::async_jobs::run_command(&self.state.container, &command).await
+            {
+                tracing::error!(service = %service.slug, %error, "could not queue it");
+            }
+        }
     }
 
     /// Mint a join token for a node that does not exist here yet.
