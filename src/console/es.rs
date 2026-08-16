@@ -274,6 +274,7 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
     ("None. A token is what CI authenticates with — it is nobody's password, and revoking it changes nothing else.", "Ninguno. Un token es con lo que se autentica CI — no es la contraseña de nadie, y revocarlo no cambia nada más."),
     ("Not answering", "No responde"),
     ("Not deployed", "Sin despliegue"),
+    ("Not following", "Sin seguir"),
     ("Not following — reload to see more", "Sin seguir — recarga para ver más"),
     ("Not published", "Sin publicar"),
     ("Not running", "No está corriendo"),

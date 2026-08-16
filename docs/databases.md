@@ -538,8 +538,9 @@ tests. What is left unverified:
 - **Reading a remote pool from a third node.** A node that holds no
   copy has no address for one: `orders-ro` resolves inside the project
   that holds it and nowhere else. That is naming's phase 4.
-- **Failover of any kind.** Nothing promotes, and nothing notices a
-  standby that stopped following — phase 5.
+- **Promotion.** Nothing writes `database.primary_slot`. Noticing a
+  standby that stopped following is done — see below — and promoting one
+  is deliberately still a person's decision.
 - **A preset lowered while a standby follows.** The volume carries its
   ceiling now and a copy whose ceiling comes down is seeded again — but
   what has run on a node is the seeding, reached by removing the copy
@@ -567,3 +568,70 @@ tests. What is left unverified:
   where that dependency gets argued for; until then the console shows
   the container's state, which does not know whether replication is
   following.
+
+
+## Phase 5: noticing a standby that stopped following
+
+A standby can be up, healthy by every measure this node had, and no
+longer replicating. The container runs, the process answers, memory and
+CPU and disk all read normally — and the data is frozen at whatever
+moment it stopped. Somebody reading from it gets answers, and they are
+old, and nothing said so.
+
+### Asked of the primary, and about slots
+
+`pg_replication_slots`, not `pg_stat_replication`. The second lists
+standbys that are **connected**, so one that stopped following is simply
+absent — and absence cannot be told from a standby nobody ever created.
+A slot is a row either way and carries `active`.
+
+It also carries the consequence: `restart_lsn` says how much
+write-ahead log the primary is holding for that slot. An inactive slot
+makes the primary keep WAL until `max_slot_wal_keep_size`, after which
+the slot breaks and the standby has to be seeded again — so this is the
+number that distinguishes "reconnect it" from "it is already too late".
+
+### The image's psql, not a client in the binary
+
+The dependency argued for twice and deferred twice, decided by
+measurement:
+
+| | |
+|---|---|
+| the image's `psql`, one container per ask | **134 ms**, measured on the node |
+| `tokio-postgres` in the binary | **21 new crates**, fifteen of them to do SCRAM-SHA-256 |
+
+Three things settled it, and the first is that **this node already does
+exactly this**: `seed_standby` runs the same image with `pg_basebackup`
+instead of the server, and the traps are already written down. The
+second is that the client version then always matches the server's,
+where a pinned crate and a Postgres 18 age apart. The third is the
+promise at the top of this document — that a second engine is a table of
+numbers and two strings. A Postgres client in the binary helps MySQL not
+at all; MySQL's client comes in MySQL's image.
+
+That also corrects an entry below: "no SQL path to change [the
+replication password] without a Postgres client in this binary" is
+wrong. There is one, by this road, and `pg_promote()` for a future
+promotion is the same.
+
+### Three states, because NULL is one of them
+
+`replica.following` is NULL until somebody has asked. A node that has
+just started, or one whose primary is on another machine, has no
+opinion — and rendering "not following" for a copy nobody has asked
+about would be the page inventing an outage. Only `Some(false)` shows
+the badge.
+
+### What it does not do
+
+**Only the primaries on this node.** A database whose primary lives
+elsewhere is that node's to ask, and the answer would have to travel —
+the shape reporting already has, and where this goes when promotion
+exists. Today every primary is on the node that owns the database,
+because nothing moves one.
+
+**And it still does not promote.** A node that decides on its own that a
+machine it cannot reach is dead will eventually decide it during a
+partition, and two primaries is worse than an outage somebody was told
+about.

@@ -1,0 +1,42 @@
+-- Whether a read-only copy is still following its primary.
+--
+-- ## The failure this makes visible
+--
+-- A standby can be up, healthy by every measure this node had, and no
+-- longer replicating. The container runs, the process answers, memory
+-- and CPU and disk all read normally — and the data is frozen at
+-- whatever moment it stopped. Somebody reading from it gets answers, and
+-- they are old, and nothing anywhere said so.
+--
+-- `docs/databases.md` has listed this as phase 5 since databases existed.
+--
+-- ## Asked of the primary, not of the standby
+--
+-- `pg_replication_slots` on the primary, rather than
+-- `pg_stat_replication`: the second lists standbys that are *connected*,
+-- so one that stopped following is simply absent — and absence cannot be
+-- told from a standby nobody ever created. A slot is a row either way and
+-- says `active`.
+--
+-- ## Three states, so NULL is one of them
+--
+-- NULL is **not asked yet**, and it has to be distinguishable: a node
+-- that has just started, or one whose primary is on another machine, has
+-- no opinion — and rendering "not following" for a copy nobody has asked
+-- about would be this column inventing an outage.
+--
+-- 0 is a slot that exists with nothing connected to it. 1 is following.
+ALTER TABLE replica ADD COLUMN "following" INTEGER;
+
+-- How much write-ahead log the primary is holding for that slot, in
+-- bytes.
+--
+-- The consequence rather than the symptom. An inactive slot makes the
+-- primary keep WAL until `max_slot_wal_keep_size` — which this node sets
+-- to twice `max_wal_size` — and after that the slot is broken and the
+-- standby has to be seeded again. This is the number that says how close
+-- that is, and it is the difference between "reconnect it" and "it is
+-- already too late".
+--
+-- A following standby shows a small one and needs nobody.
+ALTER TABLE replica ADD COLUMN "wal_held" INTEGER;

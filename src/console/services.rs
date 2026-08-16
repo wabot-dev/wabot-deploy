@@ -3866,6 +3866,8 @@ mod tests {
             memory_bytes: None,
             disk_bytes: None,
             cpu_millicores: None,
+            following: None,
+            wal_held: None,
         };
 
         // Through the renderer, which reads the one decision the stream
@@ -4035,6 +4037,8 @@ mod tests {
             memory_bytes: None,
             disk_bytes: None,
             cpu_millicores: None,
+            following: None,
+            wal_held: None,
         };
 
         // Every combination, including the input added last — a state

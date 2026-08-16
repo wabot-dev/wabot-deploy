@@ -233,6 +233,30 @@ pub async fn run(config: Config) -> anyhow::Result<i32> {
                 }
             }
         })
+        // Whether the read-only copies are still following.
+        //
+        // Its own loop, at a minute: a container per database per pass,
+        // which is 134 ms of work measured on the node and the reason
+        // this is not on the fifteen-second tick beside the reports.
+        // A standby that stopped following is a fault that is minutes
+        // old before it matters and hours old before anybody would have
+        // noticed without this.
+        .service_with_cancel("replication-health", {
+            let deployer = deployer.clone();
+            move |cancel| async move {
+                loop {
+                    // Once at start, before the first wait: a node that
+                    // came back should say what it found rather than a
+                    // minute later.
+                    deployer.ask_replication().await;
+
+                    tokio::select! {
+                        _ = cancel.cancelled() => return Ok::<(), anyhow::Error>(()),
+                        _ = tokio::time::sleep(std::time::Duration::from_secs(60)) => {}
+                    }
+                }
+            }
+        })
         // A renewed certificate reaching a running database.
         //
         // Its own loop rather than a step of the certificate loop: that

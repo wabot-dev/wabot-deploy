@@ -1017,6 +1017,31 @@ pub(crate) fn replica_cell(
             detail: failure.clone(),
         };
     }
+    // Running, and no longer replicating. **Above the rotation check and
+    // below the failures**, which is where it belongs: nothing failed —
+    // the container is up and answering — and what is wrong is that its
+    // data stopped moving. A copy somebody reads from that is silently
+    // hours out of date is worse than one that is down, because down is
+    // visible.
+    //
+    // Only ever `Some(false)`: `None` is "not asked yet", and rendering
+    // this for a copy nobody has asked about would be the page inventing
+    // an outage.
+    if replica.following == Some(false) && !replica.evicted() {
+        return ReplicaCell {
+            badge: "badge badge-danger",
+            dot: "dot dot-danger",
+            word: "Not following".into(),
+            cpu: String::new(),
+            detail: match replica.wal_held {
+                Some(held) if held > 0 => format!(
+                    "{} of write-ahead log held for it",
+                    crate::node::memory::human(held)
+                ),
+                _ => String::new(),
+            },
+        };
+    }
     if let Some(address) = &replica.address {
         // Running and out of the rotation. Not `Failed`, which is what
         // the *node* said about starting it, and not `Running`, which
@@ -1870,6 +1895,8 @@ mod tests {
                 memory_bytes: None,
                 disk_bytes: None,
                 cpu_millicores: None,
+                following: None,
+                wal_held: None,
             };
 
         // The ordinary case: one copy, here, with an address the page
@@ -2076,6 +2103,8 @@ mod tests {
             memory_bytes: None,
             disk_bytes: None,
             cpu_millicores: None,
+            following: None,
+            wal_held: None,
         };
         let failed = crate::platform::replicas::Replica {
             last_error: Some("it exited 1".into()),
@@ -2086,11 +2115,16 @@ mod tests {
             ..replica(None)
         };
 
+        let not_following = crate::platform::replicas::Replica {
+            following: Some(false),
+            ..replica(Some("10.42.1.5"))
+        };
         let copies = [
             replica_cell(&evicted, false, false, false),
             replica_cell(&failed, false, false, false),
             replica_cell(&replica(Some("10.42.1.5")), false, false, false),
             replica_cell(&replica(Some("10.42.1.5")), false, false, true),
+            replica_cell(&not_following, false, false, false),
             replica_cell(&replica(None), false, false, false),
             replica_cell(&replica(None), true, false, false),
             replica_cell(&replica(None), false, true, false),

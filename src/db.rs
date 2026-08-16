@@ -131,6 +131,10 @@ fn migrations() -> Vec<Migration> {
             "0038_cpu_limit",
             include_str!("../migrations/0038_cpu_limit.sql"),
         ),
+        Migration::new(
+            "0039_following",
+            include_str!("../migrations/0039_following.sql"),
+        ),
     ]
 }
 

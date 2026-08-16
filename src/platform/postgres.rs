@@ -538,6 +538,120 @@ pub fn conninfo(host: &str, port: u16, user: &str, password: &str) -> String {
     )
 }
 
+/// The command that asks a primary about its slots.
+///
+/// **The image's own `psql`, not a client in this binary.** Measured on
+/// the node: 134 ms for the whole container lifecycle — create, start,
+/// query, tear down — against 21 new crates for the alternative, fifteen
+/// of which exist only to authenticate SCRAM-SHA-256. Three things
+/// decided it, and the first is that this node already does exactly
+/// this: `base_backup` runs the same image with a different command, and
+/// the traps are already written down. The second is that the client
+/// version then always matches the server's, where a pinned crate and a
+/// Postgres 18 age apart. The third is the promise in
+/// `docs/databases.md` that a second engine is a table of numbers and
+/// two strings — a Postgres client in the binary helps MySQL not at all,
+/// and MySQL's client comes in MySQL's image.
+///
+/// `-tAF'|'`: tuples only, unaligned, one separator. That is what those
+/// flags are for, and it is the difference between parsing a table meant
+/// for a person and reading three fields.
+///
+/// The password travels in the environment, like the base backup's and
+/// for the same reason: a command is in the container's spec on disk and
+/// in `ctr containers info`.
+pub fn ask_slots(host: &str, port: u16, user: &str) -> Vec<String> {
+    [
+        "psql",
+        "--host",
+        host,
+        "--port",
+        &port.to_string(),
+        "--username",
+        user,
+        "--dbname",
+        "postgres",
+        "--no-password",
+        "--tuples-only",
+        "--no-align",
+        "--field-separator",
+        "|",
+        "--command",
+        replication_query(),
+    ]
+    .iter()
+    .map(|argument| argument.to_string())
+    .collect()
+}
+
+/// What the primary says about one standby's slot.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SlotState {
+    /// The slot number, read back out of `wabot_slot_N` — which is the
+    /// replica's slot, one thing across the whole network, so this reads
+    /// against the placement page with nothing to map between.
+    pub slot: u32,
+    /// Whether a standby is connected to it right now.
+    ///
+    /// **This is the signal.** A slot exists because a standby was
+    /// seeded against it; inactive means that standby stopped following
+    /// and nothing has noticed. It is not the same as the container
+    /// being down — a copy can be up, healthy, and silently no longer
+    /// replicating, which is the failure this whole thing is about.
+    pub active: bool,
+    /// How much write-ahead log the primary is holding for it, in bytes.
+    ///
+    /// The consequence, not the symptom: an inactive slot makes the
+    /// primary keep WAL until `max_slot_wal_keep_size`, and this is the
+    /// number that says how close that is. A standby that is merely
+    /// behind shows a small one and needs nobody.
+    pub held_bytes: i64,
+}
+
+/// What to ask the primary about its standbys.
+///
+/// `pg_replication_slots` rather than `pg_stat_replication`, and the
+/// difference is the whole point: the second lists standbys that are
+/// *connected*, so one that stopped following simply is not there —
+/// absence as a signal, which cannot be told from a standby nobody ever
+/// created. The slot is a row that exists either way and says `active`.
+///
+/// Tuples only, unaligned, pipe-separated: `psql -tAF'|'`. That is what
+/// those flags are for, and it is the difference between parsing a
+/// table meant for a person and reading three fields.
+pub fn replication_query() -> &'static str {
+    "SELECT slot_name, active, \
+     COALESCE(pg_wal_lsn_diff(pg_current_wal_lsn(), restart_lsn)::int8, 0) \
+     FROM pg_replication_slots WHERE slot_type = 'physical' ORDER BY slot_name"
+}
+
+/// Read what [`replication_query`] returned.
+///
+/// Tolerant on purpose. This parses the output of a program run in a
+/// container, and the ways that arrives malformed — a notice on stdout,
+/// a truncated read, a slot somebody made by hand — are not worth a
+/// failure that hides the rows that *did* parse. A line that makes no
+/// sense is skipped; the ones that do are returned.
+pub fn parse_replication(text: &str) -> Vec<SlotState> {
+    text.lines()
+        .filter_map(|line| {
+            let mut fields = line.trim().split('|');
+            let name = fields.next()?;
+            let slot = name.strip_prefix("wabot_slot_")?.parse().ok()?;
+            let active = matches!(fields.next()?, "t" | "true");
+            // A missing or unreadable byte count is nought rather than a
+            // dropped row: `active` is the signal and this is the
+            // detail, so losing the detail must not lose the signal.
+            let held_bytes = fields.next().and_then(|n| n.parse().ok()).unwrap_or(0);
+            Some(SlotState {
+                slot,
+                active,
+                held_bytes,
+            })
+        })
+        .collect()
+}
+
 /// The replication slot a standby holds on the primary.
 ///
 /// Named for the slot it occupies, which is one thing across the whole
@@ -563,6 +677,49 @@ pub fn connection_url(
 mod tests {
     use super::*;
     use crate::platform::presets;
+
+    /// The primary is asked about *slots*, not about connected
+    /// standbys, and the reason is that absence is not an answer:
+    /// `pg_stat_replication` omits a standby that stopped following,
+    /// which reads exactly like a standby nobody ever made. A slot is a
+    /// row either way and says `active`.
+    #[test]
+    fn what_the_primary_says_about_a_standby_that_stopped() {
+        let following = parse_replication("wabot_slot_2|t|0\nwabot_slot_3|t|16777216\n");
+        assert_eq!(
+            following,
+            vec![
+                SlotState {
+                    slot: 2,
+                    active: true,
+                    held_bytes: 0
+                },
+                SlotState {
+                    slot: 3,
+                    active: true,
+                    held_bytes: 16_777_216
+                },
+            ]
+        );
+
+        // The failure this exists for: the container is up, the slot is
+        // there, and nothing is connected to it.
+        let stopped = parse_replication("wabot_slot_2|f|536870912");
+        assert!(!stopped[0].active);
+        assert_eq!(stopped[0].held_bytes, 536_870_912);
+
+        // Tolerant, because this reads the output of a program in a
+        // container: a notice, a truncated line or somebody's own slot
+        // must not lose the rows that did parse.
+        let noisy = parse_replication(
+            "NOTICE: something\nwabot_slot_2|t|0\nsomebody_elses_slot|t|0\nwabot_slot_|t|0\n",
+        );
+        assert_eq!(noisy.len(), 1);
+        assert_eq!(noisy[0].slot, 2);
+
+        // And a missing byte count keeps the signal.
+        assert!(!parse_replication("wabot_slot_4|f")[0].active);
+    }
 
     /// A slot outlives the copy it was made for, because it lives on
     /// the *primary* — so reseeding a standby that has lived before

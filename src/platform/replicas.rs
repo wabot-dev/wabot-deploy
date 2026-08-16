@@ -65,6 +65,16 @@ pub struct Replica {
     /// migration `0036`, which also explains why this number is smoother
     /// than the one for a copy here.
     pub cpu_millicores: Option<u32>,
+    /// Whether this read-only copy is still following its primary.
+    ///
+    /// `None` is **not asked yet**, and it has to stay distinguishable:
+    /// a node that has just started has no opinion, and rendering "not
+    /// following" for a copy nobody has asked about is a page inventing
+    /// an outage. See `migrations/0039_following.sql`.
+    pub following: Option<bool>,
+    /// Write-ahead log the primary is holding for this copy's slot, in
+    /// bytes. The consequence of not following, rather than the symptom.
+    pub wal_held: Option<u64>,
 }
 
 impl Replica {
@@ -203,6 +213,8 @@ pub async fn place(
         memory_bytes: None,
         disk_bytes: None,
         cpu_millicores: None,
+        following: None,
+        wal_held: None,
     };
 
     let row = replica.clone();
@@ -636,7 +648,8 @@ pub async fn remove(database: &SqliteDatabase, id: &str) -> PlatformResult<()> {
 
 const COLUMNS: &str = "\"id\", \"service_id\", \"node_id\", \"slot\", \"address\", \
                        \"last_error\", \"evicted_at\", \"overlay_port\", \"reserved_host\", \
-                       \"memory_bytes\", \"disk_bytes\", \"cpu_millicores\"";
+                       \"memory_bytes\", \"disk_bytes\", \"cpu_millicores\", \"following\", \
+                       \"wal_held\"";
 
 fn decode(row: &Row<'_>) -> wabot::sqlite::rusqlite::Result<Replica> {
     Ok(Replica {
@@ -652,7 +665,35 @@ fn decode(row: &Row<'_>) -> wabot::sqlite::rusqlite::Result<Replica> {
         memory_bytes: row.get::<_, Option<i64>>(9)?.map(|bytes| bytes as u64),
         disk_bytes: row.get::<_, Option<i64>>(10)?.map(|bytes| bytes as u64),
         cpu_millicores: row.get::<_, Option<i64>>(11)?.map(|milli| milli as u32),
+        following: row
+            .get::<_, Option<i64>>(12)?
+            .map(|following| following != 0),
+        wal_held: row.get::<_, Option<i64>>(13)?.map(|bytes| bytes as u64),
     })
+}
+
+/// Record what the primary said about one copy's replication slot.
+///
+/// Both together, because they are one answer: a slot that is not active
+/// and the log piling up behind it are the fault and its cost, and a page
+/// showing one without the other tells half a story.
+pub async fn set_following(
+    database: &SqliteDatabase,
+    id: &str,
+    following: bool,
+    wal_held: u64,
+) -> PlatformResult<()> {
+    let (id, following, held) = (id.to_string(), i64::from(following), wal_held as i64);
+    database
+        .write(move |connection| {
+            connection.execute(
+                "UPDATE replica SET \"following\" = ?2, \"wal_held\" = ?3 WHERE \"id\" = ?1",
+                (id, following, held),
+            )?;
+            Ok(())
+        })
+        .await?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -688,6 +729,8 @@ mod tests {
             memory_bytes: None,
             disk_bytes: None,
             cpu_millicores: None,
+            following: None,
+            wal_held: None,
         };
 
         assert_eq!(replica(1).container_id("demo", "web"), "demo.web");

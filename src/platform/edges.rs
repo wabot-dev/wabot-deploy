@@ -253,6 +253,8 @@ mod tests {
             memory_bytes: None,
             disk_bytes: None,
             cpu_millicores: None,
+            following: None,
+            wal_held: None,
         }
     }
 

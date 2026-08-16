@@ -2082,6 +2082,152 @@ impl Deployer {
         Ok(())
     }
 
+    /// Ask every primary here what its standbys are doing, and write it
+    /// down.
+    ///
+    /// **Phase 5**, and the failure it makes visible: a standby can be
+    /// up, healthy by every measure this node had, and no longer
+    /// replicating. The container runs, the process answers, memory and
+    /// CPU and disk read normally — and the data is frozen at whatever
+    /// moment it stopped. Somebody reading from it gets answers, and
+    /// they are old, and nothing said so.
+    ///
+    /// Asked of the *primary*, because that is the only thing that
+    /// knows: `pg_replication_slots` has a row per standby whether or
+    /// not it is connected, where `pg_stat_replication` simply omits one
+    /// that stopped — absence, which cannot be told from a standby
+    /// nobody ever made.
+    ///
+    /// **Only the primaries on this node.** A database whose primary
+    /// lives elsewhere is that node's to ask, and the answer would have
+    /// to travel — which is the shape reporting already has and is where
+    /// this goes when promotion exists. Today every primary is on the
+    /// node that owns the database, because nothing moves one.
+    ///
+    /// One container per database per pass, ~134 ms measured on the
+    /// node. Nothing is recorded when the ask fails: a primary that
+    /// could not be reached says nothing about whether a standby is
+    /// following, and writing "not following" from a failed question
+    /// would be this making the outage up.
+    pub async fn ask_replication(&self) -> usize {
+        let Ok(services) = services::all(&self.database, None).await else {
+            return 0;
+        };
+        let mut asked = 0;
+
+        for service in services.iter().filter(|service| service.kind.is_managed()) {
+            let Ok(Some(row)) = databases::of_service(&self.database, &service.id).await else {
+                continue;
+            };
+            let Ok(Some(project)) = projects::find(&self.database, &service.project_id).await
+            else {
+                continue;
+            };
+            let Ok(placements) = replicas::of_service(&self.database, &service.id).await else {
+                continue;
+            };
+            // The primary, and only if it is here and running.
+            let Some(primary) = placements
+                .iter()
+                .find(|replica| replica.slot == row.primary_slot && replica.is_here())
+                .filter(|replica| !replica.evicted())
+            else {
+                continue;
+            };
+            let Some(address) = &primary.address else {
+                continue;
+            };
+
+            match self
+                .ask_one(&project, service, &row, address, primary.slot)
+                .await
+            {
+                Ok(states) => {
+                    for state in states {
+                        let Some(replica) =
+                            placements.iter().find(|replica| replica.slot == state.slot)
+                        else {
+                            continue;
+                        };
+                        if let Err(error) = replicas::set_following(
+                            &self.database,
+                            &replica.id,
+                            state.active,
+                            state.held_bytes.max(0) as u64,
+                        )
+                        .await
+                        {
+                            tracing::warn!(%error, slot = state.slot, "could not record it");
+                        }
+                        if !state.active {
+                            tracing::warn!(
+                                service = %service.slug, slot = state.slot,
+                                held = state.held_bytes,
+                                "a read-only copy is not following its primary"
+                            );
+                        }
+                    }
+                    asked += 1;
+                }
+                // Debug, not warn: a primary that is starting, or a node
+                // between deployments, cannot answer — and this runs on
+                // a timer, so a warning would be one a minute for as
+                // long as it lasted.
+                Err(reason) => {
+                    tracing::debug!(service = %service.slug, %reason, "could not ask the primary")
+                }
+            }
+        }
+        asked
+    }
+
+    /// One question, in a container of the engine's own image.
+    async fn ask_one(
+        &self,
+        project: &Project,
+        service: &Service,
+        row: &crate::platform::databases::Database,
+        address: &str,
+        slot: u32,
+    ) -> Result<Vec<postgres::SlotState>, String> {
+        let client = Containerd::connect().await.map_err(|e| e.to_string())?;
+        let data_dir = &self.config.node.data_dir;
+        let asker = format!(
+            "{}.ask",
+            crate::platform::replicas::container_id_for(&project.slug, &service.slug, slot)
+        );
+
+        let request = ContainerRequest {
+            command: postgres::ask_slots(address, postgres::PORT, &row.admin_user),
+            env: vec![("PGPASSWORD".to_string(), row.admin_password.clone())],
+            // The host's network — the primary is on this machine's
+            // bridge, which the node can reach and a container in its
+            // own namespace could not without an address of its own.
+            ..Default::default()
+        };
+
+        let log = logs::prepare(data_dir, &asker).map_err(|e| e.to_string())?;
+        let outcome = containers::run_to_completion(
+            &client,
+            &asker,
+            &service.image,
+            &request,
+            None,
+            Some(&log),
+            ASK_DEADLINE,
+        )
+        .await;
+
+        let said = logs::tail(data_dir, &asker, 4_000).unwrap_or_default();
+        logs::discard(data_dir, &asker);
+
+        match outcome {
+            Ok(0) => Ok(postgres::parse_replication(&said)),
+            Ok(code) => Err(format!("psql exited {code}: {said}")),
+            Err(error) => Err(error.to_string()),
+        }
+    }
+
     /// Copy the primary's data directory into a standby's empty volume.
     ///
     /// A container of its own, run to completion before the standby is
@@ -2683,6 +2829,15 @@ const SEED_PAUSE: std::time::Duration = std::time::Duration::from_secs(10);
 /// database over a network — and bounded, because a job that never ends
 /// is a queue that never moves.
 const SEED_DEADLINE: std::time::Duration = std::time::Duration::from_secs(1800);
+
+/// How long one question to a primary may take.
+///
+/// Short: it is a connect and a single-row query against a server on
+/// this machine's own bridge, measured at 134 ms end to end including
+/// the container. A generous deadline here would mean a pass that takes
+/// longer than the interval between passes when a primary is unwell —
+/// which is exactly when the pass matters.
+const ASK_DEADLINE: std::time::Duration = std::time::Duration::from_secs(15);
 
 /// The nameservers in a `resolv.conf` that a container could use.
 ///
