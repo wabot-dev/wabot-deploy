@@ -27,6 +27,7 @@
 /// list a thousand entries long is only maintainable if there is one
 /// place a given string can be.
 pub(crate) const TABLE: &[(&str, &str)] = &[
+    (" and ", " y "),
     (
         " copies here have no memory ceiling, so what is promised is a floor rather than a total — any of them may take what is left.",
         " copias de aquí no tienen techo de memoria, así que lo prometido es un mínimo y no un total — cualquiera de ellas puede llevarse lo que queda.",
@@ -49,6 +50,11 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
         " — the same name with -ro in its first label. Changing this reissues the certificate and rewrites the names inside every container of this project.",
         " — el mismo nombre con -ro en su primera etiqueta. Cambiarlo reemite el certificado y reescribe los nombres dentro de cada contenedor de este proyecto.",
     ),
+    (
+        ", and no log after it yet. A minute of writes is what produces the first segment.",
+        ", y todavía ningún log posterior. Un minuto de escrituras es lo que produce el primer segmento.",
+    ),
+    ("A backup from ", "Un backup de "),
     ("A ceiling on the container and the engine's own settings, together. Postgres is given a quarter of it for shared buffers and told to expect half of it as cache — its defaults alone would be killed on the smaller sizes.", "Un techo para el contenedor y los ajustes del propio motor, a la vez. A Postgres se le da un cuarto para los buffers compartidos y se le dice que espere la mitad como caché — sus valores por defecto solos morirían en los tamaños pequeños."),
     ("A certificate would not issue", "Un certificado no se pudo emitir"),
     (
@@ -80,6 +86,10 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
         "Lo firma una autoridad pública, así que cualquier cliente lo verifica con el almacén de confianza que ya trae — la cadena de conexión no necesita certificado propio.",
     ),
     ("A reference containerd can resolve. Fully qualified — there is no implicit registry here.", "Una referencia que containerd pueda resolver. Completa — aquí no hay registry implícito."),
+    (
+        "A segment is missing, so the window ends where it does rather than at the newest thing archived — recovery stops at the gap. What is kept after it cannot be reached. Taking a backup now starts a whole window again.",
+        "Falta un segmento, así que la ventana termina donde termina y no en lo último archivado — la recuperación se para en el hueco. Lo que se guarda después no se puede alcanzar. Tomar un backup ahora empieza una ventana entera de nuevo.",
+    ),
     ("A wildcard record covers this node, so this name already resolves here. Leave it as it is.", "Un registro comodín cubre este nodo, así que este nombre ya resuelve aquí. Déjalo como está."),
     ("Accounts", "Cuentas"),
     ("Add", "Añadir"),
@@ -94,6 +104,8 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
     ("Answer for hostnames", "Responder por nombres"),
     ("Answer for its hostnames from this node", "Responder por sus nombres desde este nodo"),
     ("Answer for this node's hostnames", "Responder por los nombres de este nodo"),
+    ("Any minute", "Cualquier minuto"),
+    ("Any moment between ", "Cualquier momento entre "),
     ("As", "Como"),
     ("Ask it to run this", "Pedirle que lo ejecute"),
     ("Ask that node to let this one:", "Pedirle a ese nodo que deje a este:"),
@@ -118,6 +130,7 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
         "Las dos resuelven dentro de este proyecto, en cualquier nodo que sostenga una copia. Ninguna alcanza la base desde fuera del nodo — eso es publicar un puerto, que no está construido.",
     ),
     ("Breadcrumb", "Ruta de navegación"),
+    ("Broken part way", "Rota a medias"),
     ("CPU", "CPU"),
     ("Can", "Puede"),
     ("Cancel", "Cancelar"),
@@ -202,6 +215,7 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
         "Desde el directorio con el Dockerfile, después de docker login con un token de subida de la página del proyecto.",
     ),
     ("From the nodes page of the node you are joining: invite a node there, and it shows one token, once. Pasting it here does what `wabot-deploy join` does in a terminal — this node records that one as an authority and tells it so. The same token can be pasted again if something goes wrong part-way.", "Desde la página de nodos del nodo al que te unes: invita un nodo allí, y enseña un token, una vez. Pegarlo aquí hace lo que hace `wabot-deploy join` en una terminal — este nodo anota aquel como autoridad y se lo dice. El mismo token se puede volver a pegar si algo sale mal a medias."),
+    ("Going back", "Volver atrás"),
     ("Have it answer for this node's hostnames", "Que responda por los nombres de este nodo"),
     ("Have this node answer for its hostnames", "Que este nodo responda por sus nombres"),
     (
@@ -284,6 +298,7 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
     ("Not deployed", "Sin despliegue"),
     ("Not following", "Sin seguir"),
     ("Not following — reload to see more", "Sin seguir — recarga para ver más"),
+    ("Not kept", "Sin guardar"),
     ("Not published", "Sin publicar"),
     ("Not running", "No está corriendo"),
     (
@@ -372,6 +387,7 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
     ("Read pool — refuses writes", "Pool de lectura — rechaza escrituras"),
     ("Reconnecting…", "Reconectando…"),
     ("Recorded when this node joined — what it said about itself when it arrived. Instructions do not travel over the overlay: that node collects them over the same connection it enrolled through, which is why nothing here has to be able to reach it.", "Anotado cuando este nodo se unió — lo que dijo de sí mismo al llegar. Las instrucciones no viajan por la overlay: ese nodo las recoge por la misma conexión con la que se enroló, que es por lo que nada de aquí tiene que poder alcanzarlo."),
+    ("Recovers nothing", "No recupera nada"),
     ("Refused", "Rechazado"),
     ("Releases", "Versiones"),
     ("Remove", "Quitar"),
@@ -433,6 +449,7 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
     ("Tag to watch", "Etiqueta a vigilar"),
     ("Takes instructions from", "Toma instrucciones de"),
     ("That node writes its own project, its own service row and its own deployment — nothing is shared. It pulls the image from this node's registry with a credential this puts in the instruction, so the image travels only when it is needed.", "Ese nodo escribe su propio proyecto, su propia fila de servicio y su propio despliegue — no se comparte nada. Tira la imagen del registry de este nodo con una credencial que esto mete en la instrucción, así que la imagen viaja solo cuando hace falta."),
+    ("The backup only", "Sólo el backup"),
     ("The ceiling on the container and the engine's own settings, together. It takes effect at the next deployment: a cgroup limit is written when the container is created, and nothing reaches into a running one to change it.", "El techo del contenedor y los ajustes del propio motor, a la vez. Surte efecto en el siguiente despliegue: el límite del cgroup se escribe al crear el contenedor, y nada entra en uno que ya corre para cambiarlo."),
     (
         "The console, the edge and the deploy path — this process.",
@@ -450,6 +467,14 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
     (
         "The kernel, the distribution, and anything else on this machine.",
         "El kernel, la distribución y todo lo demás que haya en esta máquina.",
+    ),
+    (
+        "The later end is the last segment archived, not the current moment: a segment closes a minute or two after the one before it.",
+        "El extremo más reciente es el último segmento archivado, no el momento actual: un segmento se cierra un minuto o dos después del anterior.",
+    ),
+    (
+        "The log is being kept and there is no backup to replay it onto. A base backup is what the log is applied to, so until one is taken this recovers nothing at all — the disk is being spent on something nothing can use.",
+        "Se está guardando el log y no hay backup sobre el que reproducirlo. Un base backup es aquello a lo que se aplica el log, así que hasta que se tome uno esto no recupera nada — el disco se está gastando en algo que nadie puede usar.",
     ),
     ("The machine is yours: throwing it out is something you can always do, and it is the only thing here that is.", "La máquina es tuya: echarlo fuera es algo que siempre puedes hacer, y es lo único aquí que lo es."),
     (
@@ -519,6 +544,10 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
     ),
     ("This node has no services to send. Deploy one here first — what travels is an instruction to run the same image, pulled from this node's registry.", "Este nodo no tiene servicios que mandar. Despliega uno aquí primero — lo que viaja es una instrucción de ejecutar la misma imagen, tirada del registry de este nodo."),
     ("This node installs a release when you ask it to, and never on its own. Installing one restarts the node; the containers on it keep running.", "Este nodo instala una versión cuando se lo pides, y nunca por su cuenta. Instalar una reinicia el nodo; los contenedores que tiene siguen corriendo."),
+    (
+        "This node is not keeping the write-ahead log, so a restore reaches the moment of a backup and no further. The switch is on the node's page.",
+        "Este nodo no está guardando el log de escritura anticipada, así que una restauración llega al momento de un backup y no más allá. El interruptor está en la página del nodo.",
+    ),
     ("This node now takes instructions from ", "Este nodo ya toma instrucciones de "),
     (
         "This node signs it, so a client has to be given the authority before it can verify anything. A container gets it at /etc/wabot/ca.crt; anything else needs the file.",

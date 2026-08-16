@@ -305,6 +305,19 @@ impl ServicePages {
         // Which copies the edge stopped sending to. One read of the
         // health map, for the whole table below.
         let silent = self.state.deployer.not_answering(&service).await;
+        // What a restore of this database could reach. Read here rather
+        // than in the card so the card stays a function of its argument.
+        let window = match service.kind.is_managed() {
+            true => crate::commands::backup::window(
+                &self.state.config.node.data_dir,
+                &format!("{}.{}", project.slug, service.slug),
+                crate::commands::backup::taken(&self.state.config.node.data_dir)
+                    .last()
+                    .map(|(_, manifest)| manifest.taken_at),
+                crate::node::settings::archiving(&self.state.database).await,
+            ),
+            false => crate::commands::backup::Window::NotKeeping,
+        };
         // What this service keeps, which is a row per volume and a
         // directory per copy of it.
         let volumes = crate::platform::volumes::of_service(&self.state.database, &service.id)
@@ -468,6 +481,12 @@ impl ServicePages {
                         signs_here,
                         ports.first().and_then(|port| port.host_port),
                     ))
+                    // How far back it can be taken. Beside the database
+                    // card because it is a fact about this database
+                    // rather than about the node — even though what
+                    // decides it is a switch on the node's page, which
+                    // is why the card says so when it is off.
+                    (super::databases::window_card(&window))
                 }
 
                 @if service.is_ours() {

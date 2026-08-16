@@ -488,6 +488,91 @@ impl DatabaseApi {
 /// connection string in plain sight is one that ends up in a
 /// screenshot. It is markup rather than script, so it works with
 /// scripting off like everything else here.
+/// How far back this database can be taken, and how recent it can land.
+///
+/// Four answers, and three of them say "not what you think" — see
+/// `commands::backup::Window`. The one worth building a card for is
+/// `NoAnchor`: log arriving with no backup to replay it onto looks
+/// exactly like working, and recovers nothing.
+pub fn window_card(window: &crate::commands::backup::Window) -> impl Renderable + '_ {
+    use crate::commands::backup::Window;
+
+    rsx! {
+        <section class="card stack" id="recovery">
+            <div class="split">
+                <p class="card-label">(t("Going back"))</p>
+                @match window {
+                    Window::NotKeeping => {
+                        <span class="badge">(t("Not kept"))</span>
+                    }
+                    Window::NoAnchor => {
+                        <span class="badge badge-danger">
+                            <span class="dot dot-danger"></span>(t("Recovers nothing"))
+                        </span>
+                    }
+                    Window::OnlyTheBackup { .. } => {
+                        <span class="badge badge-info">
+                            <span class="dot dot-info"></span>(t("The backup only"))
+                        </span>
+                    }
+                    Window::Between { gap: true, .. } => {
+                        <span class="badge badge-warning">
+                            <span class="dot dot-warning"></span>(t("Broken part way"))
+                        </span>
+                    }
+                    Window::Between { .. } => {
+                        <span class="badge badge-success">
+                            <span class="dot dot-success"></span>(t("Any minute"))
+                        </span>
+                    }
+                }
+            </div>
+
+            @match window {
+                Window::NotKeeping => {
+                    <p class="field-hint">(t("This node is not keeping the write-ahead log, so a \
+                         restore reaches the moment of a backup and no further. The switch is \
+                         on the node's page."))</p>
+                }
+                // The one that looks like it is working.
+                Window::NoAnchor => {
+                    <p class="field-hint">(t("The log is being kept and there is no backup to \
+                         replay it onto. A base backup is what the log is applied to, so until \
+                         one is taken this recovers nothing at all — the disk is being spent on \
+                         something nothing can use."))</p>
+                }
+                Window::OnlyTheBackup { at } => {
+                    <p class="field-hint">
+                        (t("A backup from "))<span class="mono">(super::layout::exactly(*at))</span>
+                        (t(", and no log after it yet. A minute of writes is what produces the \
+                             first segment."))
+                    </p>
+                }
+                Window::Between { from, to, gap } => {
+                    <p class="field-hint">
+                        (t("Any moment between "))<span class="mono">(super::layout::exactly(*from))</span>
+                        (t(" and "))<span class="mono">(super::layout::exactly(*to))</span>
+                    </p>
+                    // The end of the window is the hole, not the newest
+                    // segment: recovery stops there, and everything
+                    // archived afterwards is being kept and cannot be
+                    // reached.
+                    @if *gap {
+                        <p class="field-hint">(t("A segment is missing, so the window ends where \
+                             it does rather than at the newest thing archived — recovery stops \
+                             at the gap. What is kept after it cannot be reached. Taking a \
+                             backup now starts a whole window again."))</p>
+                    } @else {
+                        <p class="field-hint">(t("The later end is the last segment archived, \
+                             not the current moment: a segment closes a minute or two after \
+                             the one before it."))</p>
+                    }
+                }
+            }
+        </section>
+    }
+}
+
 pub fn database_card<'a>(
     row: &'a Database,
     replicas: &'a [replicas::Replica],

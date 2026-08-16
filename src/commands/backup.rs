@@ -191,6 +191,112 @@ pub async fn run(config: Config, into: Option<PathBuf>) -> anyhow::Result<i32> {
     Ok(0)
 }
 
+/// What a database can be restored to, and what it cannot.
+///
+/// **Four answers, and three of them are "not what you think".** The
+/// question an operator is really asking is "how far back can I go, and
+/// how recent can I land", and every way of getting that wrong is a
+/// promise that fails at the moment it is called on.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Window {
+    /// Nothing is kept. Restoring means the last backup and no further.
+    NotKeeping,
+    /// The log is being kept and **there is no backup to anchor it**.
+    /// Disk is being spent on something nothing can use: a base backup
+    /// is what the log is replayed *onto*, and without one the whole
+    /// archive is unreachable. The worst of the four, because it is the
+    /// one that looks like it is working.
+    NoAnchor,
+    /// A backup exists and no log has arrived yet — a database that has
+    /// just been turned on, or one nobody has written to.
+    OnlyTheBackup { at: i64 },
+    /// Any moment between the two. `to` is the time of the last
+    /// **usable** segment, which is not the newest one when the run is
+    /// broken: recovery stops at a hole, so a gap makes the segment
+    /// before it the real end.
+    Between {
+        from: i64,
+        to: i64,
+        /// Set when the run is broken, so the page can say that
+        /// everything after it is being kept and cannot be reached.
+        gap: bool,
+    },
+}
+
+/// Work out the window for one database's archive.
+///
+/// `anchor` is when the oldest kept base backup was taken, which is the
+/// earliest moment any restore could target — everything before it is
+/// gone whatever the archive holds.
+pub fn window(data_dir: &Path, container: &str, anchor: Option<i64>, keeping: bool) -> Window {
+    if !keeping {
+        return Window::NotKeeping;
+    }
+    let archive = crate::deploy::database::archive_dir(data_dir, container);
+    let held = crate::platform::wal::held(&archive);
+
+    let Some(from) = anchor else {
+        // Keeping log with nothing to replay it onto. Said as its own
+        // answer rather than folded into "nothing yet", because the two
+        // want opposite things done about them: one waits, and this one
+        // needs a backup taking now.
+        return match held.segments {
+            0 => Window::NotKeeping,
+            _ => Window::NoAnchor,
+        };
+    };
+
+    // The last segment that can actually be reached. A gap ends the
+    // window there whatever arrived afterwards.
+    let last = match &held.gap {
+        Some(missing) => newest_before(&archive, missing),
+        None => held
+            .newest
+            .as_ref()
+            .and_then(|name| modified(&archive, name)),
+    };
+
+    match last {
+        Some(to) if to > from => Window::Between {
+            from,
+            to,
+            gap: held.gap.is_some(),
+        },
+        // A segment older than the backup reaches nothing: the backup
+        // already contains that moment.
+        _ => Window::OnlyTheBackup { at: from },
+    }
+}
+
+/// When the newest segment before this one was archived.
+fn newest_before(archive: &Path, missing: &str) -> Option<i64> {
+    std::fs::read_dir(archive)
+        .ok()?
+        .flatten()
+        .filter_map(|entry| {
+            let name = entry.file_name().to_string_lossy().to_string();
+            let stem = name.strip_suffix(".gz").unwrap_or(&name).to_string();
+            (stem.len() == 24 && stem.as_str() < missing).then(|| at(&entry))?
+        })
+        .max()
+}
+
+fn modified(archive: &Path, name: &str) -> Option<i64> {
+    std::fs::read_dir(archive)
+        .ok()?
+        .flatten()
+        .find_map(|entry| {
+            let found = entry.file_name().to_string_lossy().to_string();
+            found.starts_with(name).then(|| at(&entry))?
+        })
+}
+
+fn at(entry: &std::fs::DirEntry) -> Option<i64> {
+    let modified = entry.metadata().ok()?.modified().ok()?;
+    let since = modified.duration_since(std::time::UNIX_EPOCH).ok()?;
+    Some(since.as_millis() as i64)
+}
+
 /// Drop what has expired, and the log no survivor needs.
 ///
 /// **In that order, and it matters.** Deleting log first would leave a
@@ -495,6 +601,71 @@ fn human(bytes: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The four answers, and the one that matters most is `NoAnchor`.
+    ///
+    /// Keeping log with no backup to replay it onto is the state that
+    /// *looks* like it is working — the archive fills, the disk goes
+    /// down, everything reports normally — and recovers nothing at all.
+    /// A base backup is what the log is replayed onto; without one the
+    /// whole archive is unreachable.
+    #[test]
+    fn a_window_says_which_of_the_four_states_it_is_in() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let archive = crate::deploy::database::archive_dir(dir.path(), "demo.orders");
+        std::fs::create_dir_all(&archive).expect("mkdir");
+        let write = |name: &str| {
+            std::fs::write(archive.join(name), vec![0u8; 16]).expect("write");
+        };
+
+        // Off is off, whatever is on the disk.
+        assert_eq!(
+            window(dir.path(), "demo.orders", Some(1_000), false),
+            Window::NotKeeping
+        );
+
+        // On, and nothing has arrived: waiting, not broken.
+        assert_eq!(
+            window(dir.path(), "demo.orders", None, true),
+            Window::NotKeeping
+        );
+
+        // On, log arriving, and no backup — the dangerous one.
+        write("000000010000000000000010.gz");
+        assert_eq!(
+            window(dir.path(), "demo.orders", None, true),
+            Window::NoAnchor,
+            "log with nothing to replay it onto recovers nothing"
+        );
+
+        // A backup, and log older than it: the backup already holds
+        // those moments, so there is nothing further to reach.
+        let anchored = window(dir.path(), "demo.orders", Some(i64::MAX - 1), true);
+        assert!(
+            matches!(anchored, Window::OnlyTheBackup { .. }),
+            "{anchored:?}"
+        );
+
+        // A backup, and log after it: a real window.
+        let between = window(dir.path(), "demo.orders", Some(0), true);
+        match between {
+            Window::Between { from, to, gap } => {
+                assert_eq!(from, 0);
+                assert!(to > 0);
+                assert!(!gap);
+            }
+            other => panic!("expected a window: {other:?}"),
+        }
+
+        // And a hole ends it early, whatever arrived afterwards.
+        write("000000010000000000000011.gz");
+        write("000000010000000000000099.gz");
+        let broken = window(dir.path(), "demo.orders", Some(0), true);
+        assert!(
+            matches!(broken, Window::Between { gap: true, .. }),
+            "a gap has to reach the page: {broken:?}"
+        );
+    }
 
     /// The window is anchored by the newest backup *older* than it, and
     /// that is the part which reads wrong and is right.

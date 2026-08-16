@@ -41,6 +41,31 @@ pub fn head(title_text: &str) {
 }
 
 /// The error strip a form shows when the node refused it.
+/// A moment, as a moment.
+///
+/// **The exception the comment below names.** Everywhere else on this
+/// console a time answers "did that just happen", and relative is the
+/// better answer. A recovery window is the one place it is not: somebody
+/// reading it is about to *type a time* — "restore to 14:32" — and
+/// "between 3 days ago and 2 minutes ago" cannot be typed into anything.
+///
+/// UTC, and labelled. The node keeps UTC, the operator may not, and a
+/// timestamp with no zone on the page somebody uses to choose a recovery
+/// point is an hour of somebody's data decided by a guess.
+pub fn exactly(at_ms: i64) -> String {
+    let Ok(moment) = time::OffsetDateTime::from_unix_timestamp(at_ms / 1000) else {
+        return "an unreadable time".into();
+    };
+    format!(
+        "{:04}-{:02}-{:02} {:02}:{:02} UTC",
+        moment.year(),
+        u8::from(moment.month()),
+        moment.day(),
+        moment.hour(),
+        moment.minute(),
+    )
+}
+
 /// A moment, as how long ago it was.
 ///
 /// Relative rather than absolute because every reader of this console
