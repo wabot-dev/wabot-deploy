@@ -80,6 +80,23 @@ pub enum Command {
         username: String,
     },
 
+    /// Copy everything this node would need to be itself again.
+    ///
+    /// The database, and every volume a managed engine does not own —
+    /// see `commands::backup` for why those are named and skipped
+    /// rather than copied wrongly. Images are deliberately left out:
+    /// they are in a registry and come back with a pull.
+    ///
+    /// A directory, not an archive, so `rsync` and `scp -r` already
+    /// understand it. Move it off the machine; a backup on the same
+    /// disk protects against nothing that has ever happened to a disk.
+    Backup {
+        /// Where to write it. Must not exist — a backup written over
+        /// another one is two half-backups that look like one.
+        #[arg(long, value_name = "PATH")]
+        out: Option<std::path::PathBuf>,
+    },
+
     /// Talk to containerd and report what it says.
     ///
     /// Not part of running a node: it exists because the containerd

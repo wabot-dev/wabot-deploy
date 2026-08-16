@@ -2082,6 +2082,91 @@ impl Deployer {
         Ok(())
     }
 
+    /// Copy one running database into a directory, with its own tool.
+    ///
+    /// **A file copy of a running data directory is not a backup.** It
+    /// is a copy taken mid-write, which restores into a server that will
+    /// not start — the same class of mistake as copying SQLite by hand.
+    /// So the engine takes it: `pg_basebackup`, the same tool and the
+    /// same container pattern that seeds a standby, producing something
+    /// Postgres opens.
+    ///
+    /// **From a read-only copy when there is one.** That is the concrete
+    /// benefit of having standbys: a base backup is a full read of the
+    /// database, and taking it from the primary spends that on the
+    /// machine answering the writes. Falls back to the primary when
+    /// there is no other copy here, because a backup from the wrong
+    /// place beats no backup.
+    ///
+    /// Returns what it copied, or why it could not. `Ok` means the tool
+    /// exited zero and the directory holds what it wrote — nothing here
+    /// verifies the archive itself, and a restore is what does.
+    pub async fn back_up_engine(
+        &self,
+        project: &Project,
+        service: &Service,
+        into: &std::path::Path,
+    ) -> Result<u64, String> {
+        let row = databases::of_service(&self.database, &service.id)
+            .await
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| "no engine row".to_string())?;
+        let placements = replicas::of_service(&self.database, &service.id)
+            .await
+            .map_err(|error| error.to_string())?;
+
+        // A standby first, the primary second. Both must be here and
+        // running: a copy elsewhere is that node's to back up, and one
+        // with no address is not answering.
+        let from = placements
+            .iter()
+            .filter(|replica| replica.is_here() && !replica.evicted())
+            .filter(|replica| replica.address.is_some())
+            .min_by_key(|replica| (replica.slot == row.primary_slot, replica.slot))
+            .ok_or_else(|| "no copy of it is running here".to_string())?;
+        let address = from.address.clone().unwrap_or_default();
+
+        std::fs::create_dir_all(into).map_err(|error| error.to_string())?;
+        let client = Containerd::connect().await.map_err(|e| e.to_string())?;
+        let id = format!("{}.backup", from.container_id(&project.slug, &service.slug));
+
+        let request = ContainerRequest {
+            command: postgres::base_backup_into(&address, postgres::PORT, &row.admin_user),
+            env: vec![("PGPASSWORD".to_string(), row.admin_password.clone())],
+            mounts: vec![BindMount {
+                source: into.to_path_buf(),
+                destination: postgres::BACKUP_MOUNT.to_string(),
+                read_only: false,
+            }],
+            // The host's network, like the seeder: the copy it reads
+            // from is on this machine's bridge, and a container in its
+            // own namespace would need an address of its own to reach
+            // it.
+            ..Default::default()
+        };
+
+        let data_dir = &self.config.node.data_dir;
+        let log = logs::prepare(data_dir, &id).map_err(|error| error.to_string())?;
+        let outcome = containers::run_to_completion(
+            &client,
+            &id,
+            &service.image,
+            &request,
+            None,
+            Some(&log),
+            BACKUP_DEADLINE,
+        )
+        .await;
+        let said = logs::tail(data_dir, &id, 2_000).unwrap_or_default();
+        logs::discard(data_dir, &id);
+
+        match outcome {
+            Ok(0) => Ok(crate::node::disk::used(into).bytes),
+            Ok(code) => Err(format!("pg_basebackup exited {code}: {said}")),
+            Err(error) => Err(error.to_string()),
+        }
+    }
+
     /// Ask every primary here what its standbys are doing, and write it
     /// down.
     ///
@@ -2837,6 +2922,14 @@ const SEED_DEADLINE: std::time::Duration = std::time::Duration::from_secs(1800);
 /// the container. A generous deadline here would mean a pass that takes
 /// longer than the interval between passes when a primary is unwell —
 /// which is exactly when the pass matters.
+/// How long a base backup may take.
+///
+/// Half an hour, which is the seeding deadline's reasoning at a
+/// different scale: this reads the whole database over a socket, and a
+/// deadline shorter than the data is a backup that can never succeed on
+/// a large one. It is a bound against a hang, not a promise about speed.
+const BACKUP_DEADLINE: std::time::Duration = std::time::Duration::from_secs(1800);
+
 const ASK_DEADLINE: std::time::Duration = std::time::Duration::from_secs(15);
 
 /// The nameservers in a `resolv.conf` that a container could use.

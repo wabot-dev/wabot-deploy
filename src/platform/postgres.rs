@@ -491,6 +491,59 @@ pub fn base_backup(host: &str, port: u16, user: &str, slot: &str) -> Vec<String>
     ]
 }
 
+/// The command that copies a running database into a backup.
+///
+/// A sibling of [`base_backup`] rather than a parameter on it, because
+/// the flags differ for reasons worth reading side by side:
+///
+/// * **No slot.** Seeding creates a permanent one so the primary keeps
+///   write-ahead log for a standby that will come back. A backup wants
+///   the opposite — a temporary slot that exists for the length of the
+///   copy and holds nothing afterwards. `-X stream` takes one on its
+///   own, which is exactly the lifetime this needs.
+/// * **`--format=tar --gzip`.** Seeding writes a data directory the
+///   server will open, so it is plain. A backup is a thing that gets
+///   *moved*, and the destination this is built for is object storage:
+///   two objects rather than the several thousand small files a plain
+///   copy makes. The cost is that a restore untars, which `restore`
+///   does.
+/// * **`--checkpoint=fast`.** Seeding can wait for the next natural
+///   checkpoint; a backup somebody is standing in front of should not.
+///   It costs the primary a burst of writes, which is the trade an
+///   operator taking a backup has already agreed to.
+///
+/// `-X stream` on both, and for the same reason: it takes the log
+/// written *during* the copy on a second connection, where the default
+/// fetches it at the end and fails on a busy server when the segment it
+/// needs has already gone.
+pub fn base_backup_into(host: &str, port: u16, user: &str) -> Vec<String> {
+    [
+        "pg_basebackup",
+        "--host",
+        host,
+        "--port",
+        &port.to_string(),
+        "--username",
+        user,
+        "--pgdata",
+        BACKUP_MOUNT,
+        "--format=tar",
+        "--gzip",
+        "--wal-method",
+        "stream",
+        "--checkpoint=fast",
+        "--progress",
+        "--verbose",
+        "--no-password",
+    ]
+    .iter()
+    .map(|argument| argument.to_string())
+    .collect()
+}
+
+/// Where the backup container writes, inside itself.
+pub const BACKUP_MOUNT: &str = "/backup";
+
 /// The file that makes Postgres come up following somebody instead of
 /// accepting writes.
 ///
@@ -719,6 +772,31 @@ mod tests {
 
         // And a missing byte count keeps the signal.
         assert!(!parse_replication("wabot_slot_4|f")[0].active);
+    }
+
+    /// A backup takes a *temporary* slot and a seed takes a permanent
+    /// one, and the difference is the whole lifetime question: a seed's
+    /// slot exists so the primary keeps log for a standby that will come
+    /// back, where a backup's must hold nothing once the copy is done.
+    /// `-X stream` takes one for the length of the copy and no longer.
+    #[test]
+    fn a_backup_holds_no_slot_after_it_is_taken() {
+        let command = base_backup_into("10.42.2.200", PORT, "orders").join(" ");
+
+        assert!(command.starts_with("pg_basebackup "), "{command}");
+        assert!(
+            !command.contains("--create-slot") && !command.contains("--slot"),
+            "a backup must not leave a slot holding write-ahead log: {command}"
+        );
+        assert!(command.contains("--wal-method stream"), "{command}");
+        // Tar, because the destination this is built for is object
+        // storage: two objects rather than thousands of small files.
+        assert!(command.contains("--format=tar"), "{command}");
+        assert!(command.contains("--gzip"), "{command}");
+        // And it does not wait for a natural checkpoint, because
+        // somebody is standing in front of it.
+        assert!(command.contains("--checkpoint=fast"), "{command}");
+        assert!(!command.contains("PGPASSWORD"), "{command}");
     }
 
     /// A slot outlives the copy it was made for, because it lives on

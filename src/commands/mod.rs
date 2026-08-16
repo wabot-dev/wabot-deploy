@@ -4,6 +4,7 @@
 //! returns an exit code, so `main` decides how the process ends and
 //! the commands stay testable without one.
 
+pub mod backup;
 pub mod containerd;
 pub mod doctor;
 pub mod install;
