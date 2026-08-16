@@ -22,6 +22,7 @@
 //! reject. See [`auth`].
 
 pub mod assets;
+pub mod attention;
 pub mod auth;
 pub mod databases;
 pub mod es;

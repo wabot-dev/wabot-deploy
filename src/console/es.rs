@@ -46,10 +46,12 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
         " — el mismo nombre con -ro en su primera etiqueta. Cambiarlo reemite el certificado y reescribe los nombres dentro de cada contenedor de este proyecto.",
     ),
     ("A ceiling on the container and the engine's own settings, together. Postgres is given a quarter of it for shared buffers and told to expect half of it as cache — its defaults alone would be killed on the smaller sizes.", "Un techo para el contenedor y los ajustes del propio motor, a la vez. A Postgres se le da un cuarto para los buffers compartidos y se le dice que espere la mitad como caché — sus valores por defecto solos morirían en los tamaños pequeños."),
+    ("A certificate would not issue", "Un certificado no se pudo emitir"),
     (
         "A copy here is measured every couple of seconds; one on another node is measured by that node, across the interval it reports on. The same unit, and the second is the smoother of the two.",
         "Una copia de aquí se mide cada par de segundos; una de otro nodo la mide ese nodo, a lo largo del intervalo con el que reporta. La misma unidad, y la segunda es la más suave de las dos.",
     ),
+    ("A copy will not start", "Una copia no arranca"),
     (
         "A copy writes its log on the machine that runs it, and this node cannot read another one's disk. Open the console of the node holding it.",
         "Una copia escribe su log en la máquina que la ejecuta, y este nodo no puede leer el disco de otra. Abre la consola del nodo que la tiene.",
@@ -83,6 +85,7 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
     ("All nodes", "Todos los nodos"),
     ("Allowed", "Permitido"),
     ("Already thrown out. Its containers are stopped and the node that placed it has been told — or will be, the next time it asks.", "Ya expulsada. Sus contenedores están parados y el nodo que la colocó ya lo sabe — o lo sabrá, la próxima vez que pregunte."),
+    ("An instruction was refused", "Una instrucción fue rechazada"),
     ("And offer it, in return:", "Y ofrecerle, a cambio:"),
     ("Answer for hostnames", "Responder por nombres"),
     ("Answer for its hostnames from this node", "Responder por sus nombres desde este nodo"),
@@ -130,6 +133,7 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
     ("Container port", "Puerto del contenedor"),
     ("Copied", "Copiada"),
     ("Copies", "Copias"),
+    ("Copies out of the rotation", "Copias fuera de la rotación"),
     ("Copy", "Copiar"),
     ("Copy ", "Copia "),
     ("Could not read the release list: ", "No se pudo leer la lista de versiones: "),
@@ -237,6 +241,7 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
     ("Last update", "Última actualización"),
     ("Logs", "Logs"),
     ("Long name", "Nombre largo"),
+    ("Look", "Ver"),
     ("Make a member", "Hacer miembro"),
     ("Make an administrator", "Hacer administrador"),
     ("May", "Puede"),
@@ -245,6 +250,7 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
     ("Name", "Nombre"),
     ("Names", "Nombres"),
     ("Needs a domain that resolves here. Without an address the world can dial, this node is private whatever it would prefer.", "Necesita un dominio que resuelva aquí. Sin una dirección que el mundo pueda marcar, este nodo es privado quiera o no."),
+    ("Needs you", "Te necesita"),
     ("New", "Nuevo"),
     ("New ones on", "Las nuevas en"),
     ("No build here", "Sin binario aquí"),
@@ -393,6 +399,7 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
     ("State", "Estado"),
     ("Stop publishing", "Dejar de publicar"),
     ("Stops its containers here and tells the node that placed it to stop asking. It cannot be undone from this side — that node decides what happens next, and it may place it somewhere else.", "Para sus contenedores aquí y le dice al nodo que la colocó que deje de pedirla. No se puede deshacer desde este lado — ese nodo decide qué pasa después, y puede colocarla en otro sitio."),
+    ("Storage nothing claims", "Almacenamiento que nadie reclama"),
     ("Swap", "Swap"),
     ("Tag to watch", "Etiqueta a vigilar"),
     ("Takes instructions from", "Toma instrucciones de"),
@@ -635,6 +642,8 @@ mod tests {
     #[test]
     fn every_string_the_console_asks_for_is_translated() {
         const SOURCES: &[&str] = &[
+            include_str!("assets.rs"),
+            include_str!("attention.rs"),
             include_str!("shell.rs"),
             include_str!("layout.rs"),
             include_str!("auth.rs"),
@@ -662,6 +671,65 @@ mod tests {
             missing.len()
         );
     }
+
+    /// The scan above names its sources, and a list of names goes
+    /// stale.
+    ///
+    /// `include_str!` takes a literal, so the list cannot be a glob —
+    /// but it can be *checked* against one. `attention.rs` was written,
+    /// wired into a page, and left out of that list, and every string on
+    /// the new card was invisible to the guard that exists to find
+    /// exactly that. The suite stayed green.
+    ///
+    /// Same shape as `a_state_word_is_a_word_somebody_reads` covering
+    /// one of two functions: a guard that enumerates its inputs is right
+    /// until somebody adds an input.
+    #[test]
+    fn the_scan_reads_every_module_of_the_console() {
+        let mut missing = Vec::new();
+        for entry in std::fs::read_dir(concat!(env!("CARGO_MANIFEST_DIR"), "/src/console"))
+            .expect("the console's own directory")
+            .flatten()
+        {
+            let name = entry.file_name().to_string_lossy().to_string();
+            // `es.rs` is the table itself and `mod.rs` wires the rest
+            // together; `language.rs` is the door, and what it says is
+            // about translating rather than translated. Everything else
+            // is scanned, including modules with no strings in them —
+            // that costs nothing, where an exception list is one more
+            // thing that goes stale.
+            if !name.ends_with(".rs") || ["es.rs", "mod.rs", "language.rs"].contains(&&*name) {
+                continue;
+            }
+            let source = std::fs::read_to_string(entry.path()).expect("read");
+            // Matched by content rather than by path: `include_str!`
+            // gives the test the text, not the name it came from.
+            if !SOURCES_FOR_TEST.iter().any(|read| *read == source) {
+                missing.push(name);
+            }
+        }
+        missing.sort();
+        assert!(
+            missing.is_empty(),
+            "these console modules are not scanned for strings: {missing:?}"
+        );
+    }
+
+    /// The same list as the scan above, in one place so the two cannot
+    /// disagree about what is read.
+    const SOURCES_FOR_TEST: &[&str] = &[
+        include_str!("assets.rs"),
+        include_str!("attention.rs"),
+        include_str!("shell.rs"),
+        include_str!("layout.rs"),
+        include_str!("auth.rs"),
+        include_str!("people.rs"),
+        include_str!("databases.rs"),
+        include_str!("projects.rs"),
+        include_str!("services.rs"),
+        include_str!("nodes.rs"),
+        include_str!("updates.rs"),
+    ];
 
     /// Every string that reaches `t` through a *variable* rather than
     /// as a literal.

@@ -55,6 +55,17 @@ impl ProjectPages {
         // somebody adds a page that forgets to narrow.
         let projects = access::projects_for(&self.state.database, &account).await?;
 
+        // What needs somebody, read once for the page they land on. An
+        // administrator's view: a member of one project has no business
+        // being told about another's certificates, and every source here
+        // is node-wide.
+        let concerns = match account.is_admin() {
+            true => super::attention::gather(&self.state)
+                .await
+                .unwrap_or_default(),
+            false => Vec::new(),
+        };
+
         layout::head("Projects");
         let frame = Frame::new(&account, Area::Projects, &projects, None, "/");
         // The account's language, around the render and no wider:
@@ -69,6 +80,11 @@ impl ProjectPages {
                     @if let Some(message) = &query.error {
                         (layout::error_note(message))
                     }
+
+                    // Above the list, and only when there is something.
+                    // A panel that is always there is part of the
+                    // wallpaper by the second week.
+                    (super::attention::card(&concerns))
 
                     @if projects.is_empty() {
                         // No second "Create project" here: the one in the
@@ -1915,6 +1931,85 @@ mod tests {
                 Whereabouts { total: 1, away: 0 }.say()
             }),
             "1 réplica"
+        );
+    }
+
+    /// The landing page says what needs somebody, and says nothing when
+    /// nothing does.
+    ///
+    /// The second half is the property that makes the first worth
+    /// anything: a panel that is always on the page is wallpaper by the
+    /// second week, and the day it has something to say it says it in
+    /// the same place it said "all well".
+    #[tokio::test]
+    async fn the_landing_page_says_what_needs_somebody() {
+        let console = Console::new().await;
+        let cookie = console.signed_in().await;
+
+        let quiet = console
+            .harness
+            .get("/")
+            .header("cookie", &cookie)
+            .send()
+            .await
+            .body;
+        assert!(
+            !quiet.contains("Needs you"),
+            "nothing is wrong, so there is no panel: {quiet}"
+        );
+
+        // A copy that will not start — the most direct of the concerns,
+        // and the one an operator most needs off the page they land on.
+        console
+            .harness
+            .post("/projects")
+            .header("cookie", &cookie)
+            .form(&[("name", "demo")])
+            .send()
+            .await;
+        console
+            .harness
+            .post("/projects/demo/services")
+            .header("cookie", &cookie)
+            .form(&[("name", "api"), ("image", "docker.io/library/nginx:alpine")])
+            .send()
+            .await;
+        let service = crate::platform::services::all(&console.database, None)
+            .await
+            .expect("query")
+            .pop()
+            .expect("made");
+        let replica = crate::platform::replicas::ensure_here(&console.database, &service.id, 1)
+            .await
+            .expect("a copy")
+            .pop()
+            .expect("one");
+        crate::platform::replicas::set_last_error(
+            &console.database,
+            &replica.id,
+            Some("it started and exited 1"),
+        )
+        .await
+        .expect("failed");
+
+        let loud = console
+            .harness
+            .get("/")
+            .header("cookie", &cookie)
+            .send()
+            .await
+            .body;
+        assert!(loud.contains("Needs you"), "{loud}");
+        assert!(loud.contains("api #1"), "which one: {loud}");
+        // Not *what* the reason says: that text is written by whatever
+        // failed — the socket here, a container's last words on a node —
+        // and the deployment this replica just started is free to
+        // replace it while the page renders. That it is one line is
+        // `a_reason_is_one_line_in_a_list`, which asserts it without
+        // racing anything.
+        assert!(
+            loud.contains("/projects/demo/services/api"),
+            "and somewhere to go: {loud}"
         );
     }
 

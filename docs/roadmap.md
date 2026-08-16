@@ -91,7 +91,7 @@ been deferred twice and this is where it gets argued for. **Promotion
 stays manual** — a node that promotes on its own is a node that produces
 two primaries the moment a network partition looks like a death.
 
-## 3. One page that says what needs you
+## 3. One page that says what needs you — done
 
 The node already knows what is wrong and keeps it in five places:
 `doctor`'s problem count, errands that failed, certificate failures on
@@ -106,6 +106,25 @@ difference between a demo and a product.
 Notifications by mail or webhook come after, and only once the set of
 things worth being woken for is settled by having looked at the page for
 a while.
+
+**Built as `console::attention`**, on the page an operator lands on, and
+**absent when there is nothing** — the property that makes the rest
+worth anything, because a panel that is always there is wallpaper by the
+second week. Five sources: a copy that will not start, copies out of the
+rotation, a certificate that would not issue, an instruction another
+node refused, and storage nothing claims. Every entry carries where to
+go, because a list of complaints with nowhere to go is one people learn
+to scroll past.
+
+Writing it turned up a third instance of the same fault in one day: the
+translation scan enumerates the console's modules by name, so a new
+module is invisible to it. `attention.rs` was written, wired into a
+page, and left out — every string on the new card unguarded, suite
+green. `the_scan_reads_every_module_of_the_console` reads the directory
+and compares. **A guard that enumerates its inputs is right until
+somebody adds an input**, and that is now three for three: the badge
+words covering one of two functions, the settings-redirect list naming
+three of six forms, and this.
 
 ## 4. What a node has, and what a container may take
 
