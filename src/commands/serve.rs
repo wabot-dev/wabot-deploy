@@ -233,6 +233,34 @@ pub async fn run(config: Config) -> anyhow::Result<i32> {
                 }
             }
         })
+        // What has expired, and the log nothing needs any more.
+        //
+        // Beside the container logs and for the same reason: what it
+        // protects is the node's disk. Hourly, because a backup is
+        // daily at most and an archive grows by a segment a minute —
+        // neither wants a tighter loop than that, and the pass is a
+        // `read_dir` on the many hours where nothing has expired.
+        .service_with_cancel("backup-retention", {
+            let deployer = deployer.clone();
+            move |cancel| async move {
+                loop {
+                    let data_dir = deployer.config().node.data_dir.clone();
+                    let (removed, freed) = tokio::task::spawn_blocking(move || {
+                        crate::commands::backup::sweep(&data_dir, crate::platform::now_ms())
+                    })
+                    .await
+                    .unwrap_or((0, 0));
+                    if removed > 0 {
+                        tracing::info!(removed, freed, "expired backups and the log nothing needs");
+                    }
+
+                    tokio::select! {
+                        _ = cancel.cancelled() => return Ok::<(), anyhow::Error>(()),
+                        _ = tokio::time::sleep(std::time::Duration::from_secs(3600)) => {}
+                    }
+                }
+            }
+        })
         // Whether the read-only copies are still following.
         //
         // Its own loop, at a minute: a container per database per pass,

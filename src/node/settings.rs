@@ -59,18 +59,23 @@ const ARCHIVING: &str = "wal.archiving";
 
 /// Whether point-in-time recovery is on for this node.
 ///
-/// **Off by default, and that is temporary.** The feature is worth
-/// having on — restoring a database to the minute before somebody
-/// dropped a table is the thing that makes a managed database worth
-/// using — and turning it on before there is pruning would be a slow
-/// disk leak with the database's own life attached to it: Postgres will
-/// not delete a segment it has not archived, so the day the disk fills
-/// is the day the database stops.
+/// **On by default, now that there is pruning.** It was off while there
+/// was none, because Postgres will not delete a segment it has not
+/// archived — so an archive nothing bounded was a slow disk leak with
+/// the database's own life attached to it, and the day the disk filled
+/// was the day the database stopped.
 ///
-/// So: a switch, off, until retention exists. Then this default flips
-/// and the comment goes.
+/// With `backup::sweep` running hourly the archive is bounded by the
+/// recovery window, and the feature is worth having on: restoring a
+/// database to the minute before somebody dropped a table is most of
+/// what makes a managed database worth using, and a feature that only
+/// works for the operators who found the switch is a feature most people
+/// discover they did not have on the day they need it.
+///
+/// An explicit `off` still wins. A node with little disk, or one whose
+/// databases hold nothing anybody would miss, is a real answer.
 pub async fn archiving(database: &SqliteDatabase) -> bool {
-    matches!(read(database, ARCHIVING).await, Ok(Some(value)) if value == "on")
+    !matches!(read(database, ARCHIVING).await, Ok(Some(value)) if value == "off")
 }
 
 /// Turn it on, or off.

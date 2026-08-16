@@ -490,10 +490,6 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
     ("The setup token was printed by `wabot-deploy install`. It works once, and it expires.", "El token de instalación lo imprimió `wabot-deploy install`. Funciona una vez, y caduca."),
     ("The slug is derived from the name, and it is what hostnames and containerd labels are built from.", "El slug se deriva del nombre, y es con lo que se construyen los nombres de host y las etiquetas de containerd."),
     (
-        "There is no pruning yet, so what it keeps grows until somebody removes it. A database whose log cannot be written stops rather than losing it, which is the right way round and worth knowing before turning this on.",
-        "Todavía no hay poda, así que lo que guarda crece hasta que alguien lo quite. Una base de datos cuyo log no se puede escribir se para en vez de perderlo, que es el orden correcto y conviene saberlo antes de encender esto.",
-    ),
-    (
         "These reach it from inside the project, on any node holding a copy — the long name resolves in the world's DNS too, and nothing answers there until a port is published below.",
         "Estas llegan desde dentro del proyecto, en cualquier nodo que sostenga una copia — el nombre largo también resuelve en el DNS del mundo, y ahí no responde nada hasta que se publique un puerto abajo.",
     ),
@@ -567,6 +563,10 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
         "Lo que un servicio puede llevarse es también lo que se le reserva: este nodo cuenta lo que ha prometido y se niega a prometer más. Lo que guarda para sí — la consola, el edge, containerd — ya está fuera de estas cifras.",
     ),
     ("What is in it", "Qué lleva"),
+    (
+        "What it keeps is bounded by the recovery window: an hourly pass drops the backups that have expired and the log no surviving backup needs. Turning this off frees that disk and gives up going back to a minute.",
+        "Lo que guarda está acotado por la ventana de recuperación: una pasada cada hora quita los backups caducados y el log que ningún backup superviviente necesita. Apagarlo libera ese disco y renuncia a volver a un minuto concreto.",
+    ),
     (
         "What services keep. One disk per copy — two copies of a database on one machine are two databases.",
         "Lo que guardan los servicios. Un disco por copia — dos copias de una base de datos en una máquina son dos bases de datos.",

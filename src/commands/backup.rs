@@ -191,6 +191,145 @@ pub async fn run(config: Config, into: Option<PathBuf>) -> anyhow::Result<i32> {
     Ok(0)
 }
 
+/// Drop what has expired, and the log no survivor needs.
+///
+/// **In that order, and it matters.** Deleting log first would leave a
+/// window with a hole in it for as long as the pass took; deleting
+/// backups first means the log is measured against what actually
+/// survives. A pass interrupted between the two leaves an archive that
+/// is larger than it needs to be, which is the harmless direction.
+///
+/// Returns what it freed, so the caller can say something on the passes
+/// where it acted and nothing on the many where it did not.
+pub fn sweep(data_dir: &Path, now: i64) -> (usize, u64) {
+    let backups = taken(data_dir);
+    let (keep, drop) = keeping(&backups, now);
+
+    let mut freed = 0;
+    let mut removed = 0;
+    for path in drop {
+        let size = crate::node::disk::used(path).bytes;
+        match std::fs::remove_dir_all(path) {
+            Ok(()) => {
+                tracing::info!(backup = %path.display(), "expired backup removed");
+                removed += 1;
+                freed += size;
+            }
+            Err(error) => tracing::warn!(backup = %path.display(), %error, "could not remove it"),
+        }
+    }
+
+    // What the oldest surviving backup needs, per database. Each
+    // archive is asked about its own: two databases have two timelines
+    // and two positions, and one number for both would be right for one
+    // of them by accident.
+    let oldest = keep.last().and_then(|path| {
+        std::fs::read_dir(path.join("volumes")).ok().map(|entries| {
+            entries
+                .flatten()
+                .map(|entry| entry.path())
+                .collect::<Vec<_>>()
+        })
+    });
+    let Some(volumes) = oldest else {
+        return (removed, freed);
+    };
+
+    for volume in volumes {
+        let Some(container) = volume
+            .file_name()
+            .map(|name| name.to_string_lossy().to_string())
+        else {
+            continue;
+        };
+        // No manifest is "needs everything" — the one answer that
+        // cannot put a hole in a window. `prune` takes `None` and does
+        // nothing with it.
+        let needed = std::fs::read_to_string(volume.join("backup_manifest"))
+            .ok()
+            .and_then(|manifest| crate::platform::wal::start_of(&manifest))
+            .map(|(timeline, lsn)| crate::platform::wal::segment_name(timeline, lsn));
+
+        let archive = crate::deploy::database::archive_dir(data_dir, &container);
+        let pruned = crate::platform::wal::prune(&archive, needed.as_deref());
+        if pruned.removed > 0 {
+            tracing::info!(
+                database = %container, removed = pruned.removed, freed = pruned.freed,
+                kept = pruned.kept, "archived log pruned"
+            );
+            removed += pruned.removed;
+            freed += pruned.freed;
+        }
+    }
+    (removed, freed)
+}
+
+/// How long a database can be restored to any moment within.
+///
+/// Seven days, and it is the number an operator is really choosing when
+/// they turn archiving on: everything inside it costs disk, and
+/// everything outside it is gone. Not configurable yet — a default that
+/// somebody has to think about is better than a field they have to fill
+/// in before the feature works at all, and this is the value at which
+/// "somebody dropped a table on Friday and noticed on Monday" is
+/// recoverable.
+pub const KEEP_DAYS: i64 = 7;
+
+/// Every backup this node has taken, newest first.
+///
+/// Read off the disk rather than a table, deliberately. A backup is a
+/// directory somebody can move, copy or delete with the tools they
+/// already have, and a row claiming one exists where the directory does
+/// not is worse than no row — this way the disk is the record and
+/// cannot disagree with itself.
+pub fn taken(data_dir: &Path) -> Vec<(PathBuf, Manifest)> {
+    let mut found: Vec<(PathBuf, Manifest)> = std::fs::read_dir(data_dir.join("backups"))
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|entry| {
+            let manifest = std::fs::read_to_string(entry.path().join("manifest.json")).ok()?;
+            Some((entry.path(), serde_json::from_str(&manifest).ok()?))
+        })
+        .collect();
+    found.sort_by_key(|(_, manifest): &(PathBuf, Manifest)| -manifest.taken_at);
+    found
+}
+
+/// Which backups to keep, and which one anchors the window.
+///
+/// **The newest one older than the window, and everything after it.**
+/// Not "everything inside the window", which is the version that reads
+/// right and is wrong: on the morning after a seven-day-old backup
+/// expires, the newest remaining one might be six days old, and every
+/// moment before it would be unrecoverable — the window would silently
+/// shrink to six days and then to five.
+///
+/// So the anchor is the *last one that predates the window*, which is
+/// what makes the whole window reachable, and it is only dropped once a
+/// newer backup has taken over that job.
+pub fn keeping(taken: &[(PathBuf, Manifest)], now: i64) -> (Vec<&PathBuf>, Vec<&PathBuf>) {
+    let horizon = now - KEEP_DAYS * 24 * 60 * 60 * 1000;
+    let mut keep = Vec::new();
+    let mut drop = Vec::new();
+    let mut anchored = false;
+
+    // Newest first, so the first one older than the horizon is the
+    // anchor and everything past it is expired.
+    for (path, manifest) in taken {
+        match manifest.taken_at >= horizon || !anchored {
+            true => {
+                if manifest.taken_at < horizon {
+                    anchored = true;
+                }
+                keep.push(path);
+            }
+            false => drop.push(path),
+        }
+    }
+    (keep, drop)
+}
+
 /// Copy every volume, each the way its owner allows.
 async fn copy_volumes(
     database: &wabot::sqlite::SqliteDatabase,
@@ -356,6 +495,58 @@ fn human(bytes: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The window is anchored by the newest backup *older* than it, and
+    /// that is the part which reads wrong and is right.
+    ///
+    /// Keeping "everything inside the window" is the obvious rule and it
+    /// shrinks: the morning after the seven-day-old backup expires, the
+    /// newest one left might be six days old, and every moment before it
+    /// becomes unrecoverable. The window would quietly become six days,
+    /// then five. So the one that predates the window stays until a
+    /// newer one can take over its job.
+    #[test]
+    fn the_window_is_anchored_by_the_backup_before_it() {
+        let day = 24 * 60 * 60 * 1000i64;
+        let now = 100 * day;
+        let at = |days: i64| {
+            (
+                PathBuf::from(format!("backup-{days}")),
+                Manifest {
+                    format: FORMAT,
+                    taken_by: "test".into(),
+                    taken_at: now - days * day,
+                    node_id: None,
+                    node_name: None,
+                    volumes: Vec::new(),
+                },
+            )
+        };
+
+        // Newest first, as `taken` returns them.
+        let backups = vec![at(1), at(6), at(9), at(20)];
+        let (keep, drop) = keeping(&backups, now);
+
+        assert_eq!(keep.len(), 3, "and the nine-day-old one anchors the week");
+        assert!(keep.iter().any(|path| path.ends_with("backup-9")));
+        assert_eq!(drop.len(), 1);
+        assert!(drop[0].ends_with("backup-20"));
+
+        // With everything inside the window, nothing anchors it from
+        // outside and nothing is dropped: there is no older one to
+        // spare.
+        let recent = vec![at(1), at(2)];
+        let (keep, drop) = keeping(&recent, now);
+        assert_eq!(keep.len(), 2);
+        assert!(drop.is_empty());
+
+        // And one backup is never dropped, however old. It is the only
+        // thing that could be restored.
+        let only = vec![at(400)];
+        let (keep, drop) = keeping(&only, now);
+        assert_eq!(keep.len(), 1);
+        assert!(drop.is_empty(), "the last backup is not rubbish");
+    }
 
     /// A copy is worth what its manifest says it is worth, and the two
     /// answers are not interchangeable: one restores, and the other is

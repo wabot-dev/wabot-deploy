@@ -34,6 +34,7 @@ pub mod replicas;
 pub mod services;
 pub mod tokens;
 pub mod volumes;
+pub mod wal;
 
 #[derive(Debug, thiserror::Error)]
 pub enum PlatformError {

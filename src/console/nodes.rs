@@ -619,10 +619,10 @@ fn capabilities_card(
                              rather than only to the moment of a backup. It costs disk — a \
                              segment a minute per database, compressed — and it takes effect \
                              at each database's next deployment."))</span>
-                        <span class="tile-detail">(t("There is no pruning yet, so what it keeps \
-                             grows until somebody removes it. A database whose log cannot be \
-                             written stops rather than losing it, which is the right way round \
-                             and worth knowing before turning this on."))</span>
+                        <span class="tile-detail">(t("What it keeps is bounded by the recovery \
+                             window: an hourly pass drops the backups that have expired and \
+                             the log no surviving backup needs. Turning this off frees that \
+                             disk and gives up going back to a minute."))</span>
                     </span>
                 </label>
 
