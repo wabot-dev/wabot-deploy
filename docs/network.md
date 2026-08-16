@@ -956,3 +956,74 @@ but shorten a wait, and will not do that more than once every two seconds.
 The tightening, when it is worth it: the node mints a doorbell token at
 join and the authority presents it. The anchor for that already travels —
 this phase built exactly that road.
+
+## Phase 10: the direction that had no path
+
+Collection asks a node's **authorities**. That was the whole delivery
+model, and it left a hole nobody had drawn: an errand addressed to *an
+authority* was asked for by nobody. It sat pending for ever, and the
+thing it asked for never happened.
+
+Two shapes, both found on the test nodes rather than by reading:
+
+- **A node's own.** Being an edge is a row like any other, including for
+  the node that owns the service — so the console queues an errand
+  addressed to this machine every time somebody ticks its own box. One
+  was sitting on the Ubuntu node with an empty upstream list, which is a
+  withdrawal that never withdrew.
+- **A node's authority.** A service owned by the Alpine node, served by
+  the Ubuntu node that enrolled it. Five days pending. The name was
+  shown as served and answered by nobody.
+
+The second is the one with no road at all. The first only needed
+somebody to walk the one that was there.
+
+### What each needed
+
+**Its own:** `from_here` runs in the same pass, over the same
+`carry_out`, and settles in the local table — there is no call to make
+and no failure to tolerate. One thing had to give way: `node_grant`
+records what this node agreed to do *for somebody else* and holds no row
+for the machine it lives on, so a node's own errand was refused by its
+own consent check. A node needs no permission from itself.
+
+**Its authority:** the joined node hands it over. That direction always
+worked — it is how a node joins and how it reports — so the errand goes
+the way everything else from this side goes, on the enrolment secret,
+before collecting.
+
+### Queued on arrival, not carried out
+
+The receiving end writes a row addressed to itself and rings its own
+doorbell. It does **not** obey inside the handler, and that is the
+decision worth keeping: the request can time out and be retried, and
+obeying an errand writes rows, claims names and starts deployments.
+Doing that work inside an HTTP handler makes a lost reply into a second
+deployment. On its own pass it is exactly what every other errand this
+node obeys already is — *obeying is local*, which this has said since
+phase 3.
+
+### The column the table never had
+
+`node_id` has always meant "who it is for". There was no "who it is
+from" because the answer was always the same. Now it is not, and the
+asker decides two things obeying cannot guess: whether this node agreed
+to that capability **for them**, and whose service the resulting rows
+belong to. Carrying one out as though this node had asked itself would
+record somebody else's service as its own.
+
+`errand.from_node_id` is NULL for every row that exists today, and that
+is exactly true of them.
+
+### What still cannot be said
+
+**How it went does not travel back.** The asker is the one that dials,
+so there is nowhere to send the outcome — the far node carries the
+errand out minutes later and the machine that asked has already hung up.
+What the answer means is *queued*, and the errand is settled here on the
+strength of that. A failure on the far side is visible on the far side.
+
+That is the same shape as a deployment: `carry_out` queues one and
+reports itself from `deploy::jobs`, on the next report. The road for the
+outcome to come home is a report the *other* way, which is phase 11 if
+anything ever needs it.

@@ -89,6 +89,18 @@ pub struct Settled {
     pub settled: bool,
 }
 
+/// What a joined node asks its authority to do.
+///
+/// The kind travels as a string rather than as [`errand::Kind`]: a node
+/// older than the instruction has to be able to *read* the message
+/// before refusing it, and a strict enum would fail at deserialisation
+/// with a message about JSON rather than about versions.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Asked {
+    pub kind: String,
+    pub payload: serde_json::Value,
+}
+
 /// What a node holding somebody else's replicas says about them.
 ///
 /// Sent by the node running them, on the same schedule it collects
@@ -302,6 +314,95 @@ impl NetworkApi {
 
         match errand::waiting(&self.database, &node).await {
             Ok(waiting) => Ok(json(StatusCode::OK, &waiting)),
+            Err(error) => Ok(unreadable(error)),
+        }
+    }
+
+    /// An errand the other way round: a node this one enrolled asking
+    /// *it* to do something.
+    ///
+    /// **The direction the model did not have.** Collection asks a
+    /// node's authorities, so an errand addressed to an authority was
+    /// asked for by nobody — it sat pending for ever and the thing it
+    /// asked for never happened. That is not a rare corner: being an
+    /// edge is a row like any other, so a service owned by a joined node
+    /// and served by the node that enrolled it produces one of these
+    /// every time. There is one on the Alpine test node, five days old,
+    /// for a name the Ubuntu node was never told to answer for.
+    ///
+    /// Queued here, not carried out here. This is a request that can
+    /// time out and be retried, and obeying an errand writes rows and
+    /// starts deployments — so it goes on this node's own queue,
+    /// addressed to this node, with the asker recorded beside it, and
+    /// the pass that already carries out this node's own errands picks
+    /// it up. Obeying is local, which is what this has said since phase
+    /// 3.
+    ///
+    /// The same errand arriving twice is normal and harmless for the
+    /// same reason it is on the collecting side: an errand is a
+    /// convergent instruction, and the sender cannot tell a lost reply
+    /// from a slow one.
+    #[post("/asked")]
+    #[raw]
+    async fn asked(&self, request: Request) -> RestResult<Response> {
+        // Copied before anything is awaited: see `asking`.
+        let Some(secret) = bearer(&request).map(str::to_string) else {
+            return Ok(refuse(
+                StatusCode::UNAUTHORIZED,
+                "this endpoint needs the secret from the token this node was enrolled with",
+            ));
+        };
+        let from = match asking(&self.database, &secret).await {
+            Ok(node) => node,
+            Err(response) => return Ok(response),
+        };
+
+        let Ok(bytes) = wabot::rest::axum::body::to_bytes(request.into_body(), MAX_BODY).await
+        else {
+            return Ok(refuse(StatusCode::BAD_REQUEST, "that request is too large"));
+        };
+        let Ok(asked) = serde_json::from_slice::<Asked>(&bytes) else {
+            return Ok(refuse(StatusCode::BAD_REQUEST, "that is not an errand"));
+        };
+
+        // Refused by name rather than stored and failed later. A node
+        // newer than this one asking for something it has never heard of
+        // learns that here, in the answer, rather than by watching an
+        // errand fail on a machine it cannot see.
+        let kind = errand::Kind::parse(&asked.kind);
+        if kind == errand::Kind::Unknown {
+            return Ok(refuse(
+                StatusCode::BAD_REQUEST,
+                "this node is older than that instruction and does not know it",
+            ));
+        }
+
+        let me = match super::me(&self.database).await {
+            Ok(Some(me)) => me.id,
+            // A node with no row of its own has never been on a network
+            // and cannot have enrolled the caller — so this is
+            // unreachable in practice, and answering it as a refusal
+            // beats unwrapping.
+            Ok(None) => {
+                return Ok(refuse(
+                    StatusCode::CONFLICT,
+                    "this node has no identity of its own yet",
+                ))
+            }
+            Err(error) => return Ok(unreadable(error)),
+        };
+
+        match errand::accept(&self.database, &me, &from, kind, &asked.payload).await {
+            Ok(errand) => {
+                tracing::info!(from = %from, kind = %asked.kind, errand = %errand.id,
+                    "a node asked this one to do something");
+                // Its own doorbell, so this happens now rather than
+                // within fifteen seconds. The caller is waiting to hear
+                // that it landed, not that it is done — and the loop is
+                // what does it.
+                self.doorbell.ring();
+                Ok(json(StatusCode::ACCEPTED, &Settled { settled: true }))
+            }
             Err(error) => Ok(unreadable(error)),
         }
     }
@@ -1145,6 +1246,82 @@ mod tests {
             .await;
         response.assert_ok();
         assert_eq!(response.value()["settled"], serde_json::json!(false));
+    }
+
+    /// The direction the model did not have: a node this one enrolled
+    /// asking *it* to do something. Collection asks a node's
+    /// authorities, so an errand addressed to an authority was asked
+    /// for by nobody — and being an edge is a row like any other, so a
+    /// service owned by a joined node and served by the node that
+    /// enrolled it produces one every time.
+    ///
+    /// Queued, not carried out: this is a request that can time out and
+    /// be retried, and obeying an errand writes rows and starts
+    /// deployments. What matters here is that it lands, addressed to
+    /// this node, with the asker recorded — because what obeying it
+    /// decides is asked of *them*.
+    #[tokio::test]
+    async fn a_node_this_one_enrolled_can_ask_it_to_do_something() {
+        let authority = authority().await;
+        authority
+            .harness
+            .post("/api/network/join")
+            .header("authorization", format!("Bearer {}", authority.secret))
+            .json(&arriving())
+            .send()
+            .await
+            .assert_ok();
+
+        let response = authority
+            .harness
+            .post("/api/network/asked")
+            .header("authorization", format!("Bearer {}", authority.secret))
+            .json(&serde_json::json!({
+                "kind": "edge",
+                "payload": { "hostname": "api.example.com", "upstreams": ["10.42.0.9:30001"] },
+            }))
+            .send()
+            .await;
+        response.assert_status(StatusCode::ACCEPTED);
+
+        let me = super::super::me(&authority.database)
+            .await
+            .expect("query")
+            .expect("there");
+        let waiting = errand::waiting_here(&authority.database, &me.id)
+            .await
+            .expect("query");
+        assert_eq!(waiting.len(), 1, "addressed to this node");
+        let (order, from) = &waiting[0];
+        assert_eq!(order.kind, errand::Kind::Edge);
+        assert_eq!(
+            from.as_deref(),
+            Some("nd-joining001"),
+            "and it remembers who asked, which is what obeying it is decided by"
+        );
+
+        // A stranger cannot. The bearer is the enrolment secret, so
+        // this is the same standing every other endpoint here asks for.
+        authority
+            .harness
+            .post("/api/network/asked")
+            .header("authorization", "Bearer not-a-secret")
+            .json(&serde_json::json!({ "kind": "edge", "payload": {} }))
+            .send()
+            .await
+            .assert_status(StatusCode::UNAUTHORIZED);
+
+        // And an instruction from a newer node is refused by name,
+        // rather than stored and failed later on a machine the asker
+        // cannot see.
+        authority
+            .harness
+            .post("/api/network/asked")
+            .header("authorization", format!("Bearer {}", authority.secret))
+            .json(&serde_json::json!({ "kind": "teleport", "payload": {} }))
+            .send()
+            .await
+            .assert_status(StatusCode::BAD_REQUEST);
     }
 
     #[tokio::test]

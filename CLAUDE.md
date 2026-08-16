@@ -259,11 +259,6 @@ Publishing a release is outward-facing. Ask first.
 - `scripts/deploy.sh` prints `line 76: release: command not found` on
   every run. Harmless, and it is exactly where somebody looks when
   something is wrong.
-- **An errand a node queues for itself is never collected.** The
-  collector asks its *authorities*, and a node that takes instructions
-  from nobody has none — so a row addressed to this node sits pending for
-  ever. One is on the Ubuntu test node from 2026-08-13. Harmless and
-  confusing, which is the combination that costs somebody an hour.
 - `doctor` prints the overlay port from the config under a comment
   promising what the kernel says. The peers below it are read from the
   kernel; the port is not.
@@ -520,9 +515,24 @@ keepalive**. What made both findable was making the decision speak: the
 rebuild logs its reason, and the quiet case logs `the overlay interface
 already matches`.
 
-Next: phase 9, groups — health and failover across the upstreams of one
-name. Today a dead replica keeps its share of the traffic until the
-owner notices.
+**Phase 10 closed the direction that had no path.** Collection asks a
+node's *authorities*, so an errand addressed to one was asked for by
+nobody — it sat pending for ever and what it asked for never happened.
+Two shapes, both found on the nodes: a node's own (being an edge is a
+row like any other, including for the owner) and a node's authority (a
+service owned by Alpine, served by the Ubuntu node that enrolled it —
+five days pending, shown as served, answered by nobody). Its own runs in
+the same pass; its authority is handed over, on the road that always
+worked. **Queued on arrival, never obeyed in the handler**: a request
+can time out and be retried, and obeying writes rows and starts
+deployments. And `errand.from_node_id`, because the asker decides two
+things obeying cannot guess — the capability check is about *them*, and
+the rows belong to them. How it went does not travel back: the asker is
+the one that dials.
+
+Next: groups — health and failover across the upstreams of one name.
+Today a dead replica keeps its share of the traffic until the owner
+notices.
 
 ## Databases
 

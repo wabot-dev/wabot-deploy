@@ -354,6 +354,108 @@ async fn queue_about(
     Ok(errand)
 }
 
+/// Take an errand a node this one enrolled has handed over.
+///
+/// **The direction the model did not have.** Collection asks a node's
+/// *authorities*, so an errand addressed to an authority would never be
+/// asked for — and there was no way for a joined node to say "you do
+/// this" at all. It could only ever be told. What made that show was a
+/// service on the Alpine node whose owner ticked the Ubuntu node's box:
+/// the errand sat pending for five days and the name was served by
+/// nobody.
+///
+/// Queued, not carried out. The handler that receives one is an HTTP
+/// request that can time out and be retried, and what carrying out an
+/// errand does is write rows and start deployments — so it belongs on
+/// this node's own pass, at this node's own pace, where every other
+/// errand it obeys is already carried out. That is the same "obeying is
+/// local" this has said since phase 3.
+///
+/// Addressed to this node, with the asker recorded beside it: what
+/// obeying decides is asked of *them* — whether this node agreed to that
+/// capability for them, and whose service the rows belong to.
+pub async fn accept(
+    database: &SqliteDatabase,
+    me: &str,
+    from: &str,
+    kind: Kind,
+    payload: &serde_json::Value,
+) -> NetworkResult<Errand> {
+    let errand = Errand {
+        id: format!("er-{}", wabot::prelude::password::generate(12)),
+        kind,
+        payload: payload.clone(),
+    };
+
+    let (id, node, asker, kind) = (
+        errand.id.clone(),
+        me.to_string(),
+        from.to_string(),
+        errand.kind.as_str().to_string(),
+    );
+    let body = payload.to_string();
+    database
+        .write(move |connection| {
+            connection.execute(
+                "INSERT INTO errand \
+                   (\"id\", \"node_id\", \"from_node_id\", \"kind\", \"payload\", \"created_at\") \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                (id, node, asker, kind, body, now_ms()),
+            )?;
+            Ok(())
+        })
+        .await?;
+
+    Ok(errand)
+}
+
+/// The errands this node has to carry out itself, and who asked for
+/// each.
+///
+/// The wire [`waiting`] cannot answer this: it hands an errand to the
+/// node that dialled, which already knows who it is talking to. Here
+/// both ends are rows in one database and "who asked" is the only thing
+/// that says whether this is somebody else's service or this node's own.
+///
+/// `None` for the asker means this node queued it, which is every row
+/// written before the column existed and is exactly true of them.
+pub async fn waiting_here(
+    database: &SqliteDatabase,
+    me: &str,
+) -> NetworkResult<Vec<(Errand, Option<String>)>> {
+    let node = me.to_string();
+    type Row = (String, String, String, Option<String>);
+    let rows: Vec<Row> = database
+        .read(move |connection| {
+            let mut statement = connection.prepare(
+                "SELECT \"id\", \"kind\", \"payload\", \"from_node_id\" FROM errand \
+                 WHERE \"node_id\" = ?1 AND \"done_at\" IS NULL \
+                 ORDER BY \"created_at\"",
+            )?;
+            let rows: wabot::sqlite::rusqlite::Result<Vec<Row>> = statement
+                .query_map([node], |row| {
+                    Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+                })?
+                .collect();
+            rows
+        })
+        .await?;
+
+    Ok(rows
+        .into_iter()
+        .map(|(id, kind, payload, from)| {
+            (
+                Errand {
+                    id,
+                    kind: Kind::parse(&kind),
+                    payload: serde_json::from_str(&payload).unwrap_or(serde_json::Value::Null),
+                },
+                from,
+            )
+        })
+        .collect())
+}
+
 /// Ask a node to do something, unless it was already asked the same
 /// thing.
 ///

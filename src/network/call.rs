@@ -127,6 +127,36 @@ pub async fn report(
     }
 }
 
+/// Ask an authority to do something.
+///
+/// The other direction, and the one the model did not have: collection
+/// asks a node's authorities, so an errand *addressed to* one was asked
+/// for by nobody. A joined node has always been able to dial its
+/// authority — that is how it joined and how it reports — so the errand
+/// goes the way everything else from this side goes.
+///
+/// The answer means "queued", not "done". What obeying it does happens
+/// on that node's own pass, where every other errand it obeys is
+/// carried out.
+pub async fn ask(
+    endpoint: &str,
+    secret: &str,
+    kind: &str,
+    payload: &serde_json::Value,
+) -> Result<(), CallError> {
+    let url = format!("https://{endpoint}/api/network/asked");
+    let body = serde_json::to_string(&super::api::Asked {
+        kind: kind.to_string(),
+        payload: payload.clone(),
+    })
+    .expect("an errand is plain data");
+
+    match tokio::time::timeout(TIMEOUT, send(&url, secret, Some(body))).await {
+        Ok(result) => result.map(|_| ()),
+        Err(_) => Err(CallError::TimedOut { url }),
+    }
+}
+
 /// Say how one went. `None` is success.
 pub async fn settle(
     endpoint: &str,

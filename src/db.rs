@@ -123,6 +123,10 @@ fn migrations() -> Vec<Migration> {
             "0036_replica_cpu",
             include_str!("../migrations/0036_replica_cpu.sql"),
         ),
+        Migration::new(
+            "0037_errand_from",
+            include_str!("../migrations/0037_errand_from.sql"),
+        ),
     ]
 }
 

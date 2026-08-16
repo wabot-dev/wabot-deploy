@@ -1,0 +1,24 @@
+-- Who asked for an errand, when it was not this node.
+--
+-- `node_id` has always meant "who it is for". There was no "who it is
+-- from" because until now the answer was always the same: this node
+-- queued it. Two things made that stop being true, and the second is
+-- the one this column is for:
+--
+--   * a node queues an errand addressed to *itself* — being an edge is
+--     a row like any other, including for the node that owns the
+--     service — and carries it out locally;
+--   * a node hands one to its authority, because the authority will
+--     never come and ask it for work. That is the direction the model
+--     did not have: collection asks a node's authorities, and a node
+--     that takes instructions from nobody has none.
+--
+-- The second case needs the asker recorded, because what obeying an
+-- errand decides is asked of *them*: whether this node agreed to that
+-- capability for them, and whose service the resulting rows belong to.
+-- Carrying one out as though this node had asked itself would record
+-- somebody else's service as this node's own.
+--
+-- NULL means this node queued it, which is every row that exists today
+-- and is exactly true of them.
+ALTER TABLE errand ADD COLUMN "from_node_id" TEXT;

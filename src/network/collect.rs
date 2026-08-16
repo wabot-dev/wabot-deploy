@@ -157,6 +157,53 @@ pub async fn run_once(database: &SqliteDatabase, config: &Config, container: &Co
     settled
 }
 
+/// Hand an authority the errands this node queued for it.
+///
+/// **Nothing did this.** Collection asks a node's authorities, so an
+/// errand addressed to an authority was asked for by nobody: it sat
+/// pending for ever and the thing it asked for never happened. Not a
+/// rare corner either — being an edge is a row like any other, so a
+/// service owned by a joined node and served by the node that enrolled
+/// it produces one every time somebody ticks the box. There is one on
+/// the Alpine test node, five days old, for a name the Ubuntu node was
+/// never told to answer for.
+///
+/// Settled here on the strength of the answer, which says the far node
+/// has it — not that it is done. What obeying it does happens on that
+/// node's own pass, and how it went is that node's business: this is
+/// the one direction where the asker cannot be told, because the asker
+/// is the one that dials.
+async fn hand_over(database: &SqliteDatabase, node_id: &str, endpoint: &str, secret: &str) {
+    let waiting = match errand::waiting(database, node_id).await {
+        Ok(waiting) => waiting,
+        Err(error) => {
+            tracing::warn!(%error, authority = %node_id, "could not read what to hand over");
+            return;
+        }
+    };
+
+    for order in waiting {
+        match super::call::ask(endpoint, secret, order.kind.as_str(), &order.payload).await {
+            Ok(()) => match errand::settle(database, node_id, &order.id, None).await {
+                Ok(_) => tracing::info!(
+                    errand = %order.id, authority = %node_id,
+                    "handed an errand to this node's authority"
+                ),
+                Err(error) => tracing::warn!(%error, errand = %order.id,
+                        "could not settle a handed-over errand"),
+            },
+            // Left pending, deliberately: the next pass tries again.
+            // An authority that cannot be reached is the ordinary state
+            // of a machine somewhere else, and a failure recorded here
+            // would be one nobody ever retries.
+            Err(error) => tracing::debug!(
+                %error, errand = %order.id, authority = %node_id,
+                "could not hand an errand to this node's authority"
+            ),
+        }
+    }
+}
+
 /// The errands this node queued for itself.
 ///
 /// **Nothing collected these.** Collection asks a node's *authorities*,
@@ -185,7 +232,7 @@ async fn from_here(database: &SqliteDatabase, config: &Config, container: &Conta
         }
     };
 
-    let waiting = match errand::waiting(database, &me).await {
+    let waiting = match errand::waiting_here(database, &me).await {
         Ok(waiting) => waiting,
         Err(error) => {
             tracing::warn!(%error, "could not read this node's own errands");
@@ -194,9 +241,15 @@ async fn from_here(database: &SqliteDatabase, config: &Config, container: &Conta
     };
 
     let mut settled = 0;
-    for order in waiting {
+    for (order, from) in waiting {
         let id = order.id.clone();
-        let outcome = carry_out(database, config, container, &me, order).await;
+        // Who asked, which is not always this node any more: one handed
+        // over by a node this one enrolled is obeyed *for them*, so the
+        // consent check and the origin recorded on the rows are about
+        // them. `None` is this node's own, and needs no permission from
+        // itself.
+        let asked_by = from.unwrap_or_else(|| me.clone());
+        let outcome = carry_out(database, config, container, &asked_by, order).await;
         if let Err(reason) = &outcome {
             tracing::warn!(errand = %id, %reason, "could not carry out this node's own errand");
         }
@@ -241,6 +294,11 @@ async fn from_one(
     // heard the truth about what is already there, and a replica evicted
     // here stops being asked for in the same round trip.
     report_to(database, config, container, node_id, &endpoint, &secret).await;
+
+    // And what this node has asked *that* one to do. Before collecting
+    // for the same reason the report is: what comes back should be
+    // computed after this node has said everything it has to say.
+    hand_over(database, node_id, &endpoint, &secret).await;
 
     let waiting = match super::call::errands(&endpoint, &secret).await {
         Ok(waiting) => waiting,
@@ -1051,6 +1109,71 @@ async fn ensure_project(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// An errand addressed to an *authority* was asked for by nobody:
+    /// collection asks a node's authorities, so the one direction with
+    /// no path was a joined node saying "you do this". Five days of it
+    /// on the Alpine test node, for a name the Ubuntu node was never
+    /// told to answer for.
+    ///
+    /// Handed over now, and settled on the strength of the answer —
+    /// which says the far node has it, not that it is done. This is the
+    /// one direction where the asker cannot be told how it went,
+    /// because the asker is the one that dials.
+    #[tokio::test]
+    async fn an_errand_for_an_authority_is_handed_to_it() {
+        let database = crate::db::open_in_memory().await.expect("open");
+        let config = Config::default();
+        let container = Container::new();
+
+        crate::network::ensure_self(&database, &config)
+            .await
+            .expect("self");
+        // An authority with an endpoint that does not answer, which is
+        // the case this has to be safe in: nothing is lost and the next
+        // pass tries again.
+        crate::network::save(
+            &database,
+            &crate::network::Node {
+                id: "nd-up".into(),
+                name: "up.example".into(),
+                kind: crate::network::Kind::Public,
+                overlay_ip: Some("10.42.0.1".into()),
+                public_key: None,
+                endpoint: Some("127.0.0.1:1".into()),
+                allows: Vec::new(),
+                is_self: false,
+                last_seen_at: None,
+                ca_pem: None,
+            },
+        )
+        .await
+        .expect("saved");
+        crate::network::grant(&database, "nd-up", "s3cret")
+            .await
+            .expect("authority");
+
+        errand::queue(
+            &database,
+            "nd-up",
+            Kind::Edge,
+            &serde_json::json!({ "hostname": "api.example.com", "upstreams": [] }),
+        )
+        .await
+        .expect("queued");
+
+        // The authority is unreachable, so nothing is handed over and
+        // nothing is thrown away.
+        run_once(&database, &config, &container).await;
+        assert_eq!(
+            errand::waiting(&database, "nd-up")
+                .await
+                .expect("query")
+                .len(),
+            1,
+            "an authority that cannot be reached keeps its errand pending"
+        );
+    }
 
     /// An errand a node queues for itself was never collected: the pass
     /// asks this node's *authorities*, and a node that takes
