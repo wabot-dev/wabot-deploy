@@ -197,9 +197,17 @@ pub const ARCHIVE_MOUNT: &str = "/archive";
 /// fill one — so without this, "restore to 14:32" on a quiet afternoon
 /// means restoring to whenever the last segment happened to close.
 ///
+/// **It is a floor, not a promise.** The switch is made by the
+/// checkpointer when it next wakes, so a segment closes *at least* this
+/// long after the last one and in practice a little more — measured on
+/// the node at two to three minutes for a value of sixty seconds. A
+/// horizon shown to an operator has to be the time of the last archived
+/// segment rather than "a minute ago", and this is why.
+///
 /// A minute costs one segment per minute per database, which sounds
-/// expensive and is not: an idle 16 MB segment gzips to a few kilobytes,
-/// which is why the command below compresses.
+/// expensive and is not: measured on the node, an idle 16 MB segment
+/// gzips to 16 kB and a busy one to 54 kB, which is why the command
+/// below compresses.
 pub const ARCHIVE_TIMEOUT_SECONDS: u32 = 60;
 
 /// What a primary runs to archive one finished segment.
