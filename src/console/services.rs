@@ -1233,7 +1233,17 @@ impl ServicePages {
                 // Only where there is a choice to make: a node with no
                 // public address cannot answer for a name, and a service
                 // with no hostname has nothing to be answered for.
-                @if service.is_ours() && !public_nodes.is_empty() {
+                //
+                // And never for a database, which is the same fault as
+                // the route this card describes. "A node answers for a
+                // name by claiming it, getting a certificate for it, and
+                // proxying to wherever the copies run" — the last third
+                // is false for Postgres, which speaks its own protocol
+                // and is reached on a published port rather than through
+                // an edge. Offering the choice would be offering a thing
+                // the node cannot do. Its certificate and its port are
+                // two cards of its own, and they say the true version.
+                @if service.is_ours() && !service.kind.is_managed() && !public_nodes.is_empty() {
                     @if ports.iter().any(|port| port.hostname.is_some()) {
                         <section class="stack" id="edges">
                             <p class="card-label">(t("Who answers for these names"))</p>

@@ -136,6 +136,27 @@ pub async fn sync(
         let Some(service) = services.iter().find(|s| s.id == port.service_id) else {
             continue;
         };
+        // **A database's name is not an HTTP name.**
+        //
+        // An edge terminates TLS and proxies HTTP; Postgres speaks its
+        // own protocol on a TCP socket, and a request forwarded to 5432
+        // arrives as a startup packet whose length is the ASCII of
+        // `GET `. `docs/databases.md` says a database gets no hostname
+        // for exactly this reason — and then the naming work gave it
+        // one, because a database's name is what `verify-full` checks,
+        // and this loop builds a route for *any* port that has one.
+        //
+        // Found on the node: `orders.db-test.…` in the route table,
+        // proxying to `10.42.2.200:5432`. Nothing could work through it
+        // and the door was public.
+        //
+        // Only the route goes. The `service_edge` row stays and is what
+        // `acme::wanted_names` reads, so the certificate is still
+        // ordered and still served — by the database itself, on its
+        // published port, which is where it was always presented from.
+        if service.kind.is_managed() {
+            continue;
+        }
         // Where each copy of this service answers, wherever it runs.
         //
         // One function for both halves — see `upstreams_of`. They used
@@ -293,6 +314,100 @@ mod tests {
     /// Found by ringing a doorbell that could not be reached: the endpoint
     /// was registered, the certificate covered the name, the tunnel was up,
     /// and the answer was 404 — because routing is a separate half and
+    /// **A database's name is not an HTTP name**, and this loop built a
+    /// route for any port that had one.
+    ///
+    /// Found on a node: `orders.db-test.…` in the route table pointing
+    /// at `10.42.2.200:5432`. An edge terminates TLS and proxies HTTP;
+    /// a request forwarded there arrives at Postgres as a startup packet
+    /// whose length is the ASCII of `GET `. Nothing could ever work
+    /// through that door and it was public.
+    ///
+    /// `docs/databases.md` says a database gets no hostname for exactly
+    /// this reason — and then the naming work gave it one, because a
+    /// name is what `verify-full` checks. Both are right; what was
+    /// missing was this line.
+    ///
+    /// The certificate is the other half of the claim and it must not
+    /// move: `acme::wanted_names` reads `service_edge`, not the route
+    /// table, so the name is still ordered for and still served — by the
+    /// database itself, on its published port.
+    #[tokio::test]
+    async fn a_database_gets_a_certificate_and_never_an_http_route() {
+        let database = crate::db::open_in_memory().await.expect("open");
+        let table = Arc::new(RouteTable::new());
+        // A node that can answer for a name at all, which is what
+        // `ports::serve_here` asks before writing the row.
+        crate::network::ensure_self(&database, &crate::config::Config::default())
+            .await
+            .expect("self");
+        let mut me = crate::network::me(&database)
+            .await
+            .expect("query")
+            .expect("there");
+        me.kind = crate::network::Kind::Public;
+        me.endpoint = Some("example.com:443".into());
+        crate::network::save(&database, &me).await.expect("saved");
+
+        let project = crate::platform::projects::create(&database, "db-test")
+            .await
+            .expect("project");
+        let (service, _) = crate::platform::databases::create(
+            &database,
+            &project.id,
+            "orders",
+            "17",
+            256 * 1024 * 1024,
+        )
+        .await
+        .expect("database");
+
+        // The state a database is in once it has a name and is running:
+        // a hostname on its port row, an address on its copy.
+        let name = "orders.db-test.example.com";
+        let port = crate::platform::ports::of_service(&database, &service.id)
+            .await
+            .expect("query")
+            .pop()
+            .expect("a database has one port");
+        crate::platform::ports::set_hostname(&database, &port.id, Some(name))
+            .await
+            .expect("named");
+        let replica = crate::platform::replicas::in_slot(&database, &service.id, 1)
+            .await
+            .expect("query")
+            .expect("its primary");
+        crate::platform::replicas::set_address(&database, &replica.id, Some("10.42.2.200"))
+            .await
+            .expect("address");
+
+        sync(&database, Some("example.com"), Some(&table))
+            .await
+            .expect("synced");
+
+        assert!(
+            table.resolve(name).is_none(),
+            "a database name must not be an HTTP route: {:?}",
+            table.hosts()
+        );
+        // And the row that decides the certificate is untouched, which
+        // is what keeps `verify-full` working against the name.
+        assert!(
+            crate::platform::edges::of_node(
+                &database,
+                crate::network::me(&database)
+                    .await
+                    .expect("query")
+                    .as_ref()
+                    .map(|node| &*node.id),
+            )
+            .await
+            .expect("query")
+            .contains(&name.to_string()),
+            "this node still answers for the name, which is what orders its certificate"
+        );
+    }
+
     /// neither half is visible from the other.
     #[tokio::test]
     async fn the_name_another_node_dials_reaches_the_control_plane() {

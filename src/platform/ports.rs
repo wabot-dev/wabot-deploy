@@ -232,18 +232,64 @@ pub async fn set_hostname(
     id: &str,
     hostname: Option<&str>,
 ) -> PlatformResult<()> {
-    let (id, hostname) = (id.to_string(), hostname.map(str::to_string));
-    let refused = hostname.clone();
+    // What answers for the old name, before the name changes.
+    //
+    // **Who answers has to move with it.** `service_edge` is keyed on
+    // the hostname, so renaming the port left the rows pointing at a
+    // name nothing has any more — and that row is what
+    // `acme::wanted_names` reads. A renamed database therefore went on
+    // ordering a certificate for the name nobody dials and never
+    // ordered one for the name everybody does, which is exactly the
+    // failure `docs/naming.md` is about: a certificate current, from the
+    // right authority, and wrong.
+    //
+    // Here rather than in the console, for the reason `create` already
+    // gives about writing the row itself: a caller that renames a port
+    // and does not know to move this gets a name stored, shown, and
+    // served by nobody.
+    let port = all(database).await?.into_iter().find(|port| port.id == id);
+    let was = port.as_ref().and_then(|port| port.hostname.clone());
+    let service_id = port.map(|port| port.service_id);
+    let serving = match &was {
+        Some(was) => super::edges::nodes_for(database, was).await?,
+        None => Vec::new(),
+    };
+
+    let (owned, name) = (id.to_string(), hostname.map(str::to_string));
+    let refused = name.clone();
     database
         .write(move |connection| {
             connection.execute(
                 "UPDATE port SET \"hostname\" = ?2 WHERE \"id\" = ?1",
-                (id, hostname),
+                (owned, name),
             )?;
             Ok(())
         })
         .await
         .map_err(|error| refusal(error, 0, &refused))?;
+
+    // The old name stops being answered for whatever happens next: a
+    // rename that left it would be a certificate renewed twice a day for
+    // a name nothing serves.
+    if let Some(was) = &was {
+        if Some(was.as_str()) != hostname {
+            if let Some(service_id) = &service_id {
+                super::edges::set(database, service_id, was, &[]).await?;
+            }
+        }
+    }
+    // And the new one is answered for by whoever answered for the old,
+    // which is what makes a rename a rename rather than a reset. A name
+    // that had nobody — a port that never had one — falls back to this
+    // node, the same default `create` writes.
+    if let (Some(hostname), Some(service_id)) = (hostname, &service_id) {
+        match serving.is_empty() {
+            true => serve_here(database, service_id, hostname).await?,
+            false => {
+                super::edges::set(database, service_id, hostname, &serving).await?;
+            }
+        }
+    }
     Ok(())
 }
 
@@ -335,6 +381,77 @@ pub fn normalize_hostname(hostname: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    /// **Who answers for a name has to move with the name.**
+    ///
+    /// `service_edge` is keyed on the hostname, so renaming a port left
+    /// its rows pointing at a name nothing has any more — and that row
+    /// is what `acme::wanted_names` reads. A renamed database went on
+    /// ordering a certificate for the name nobody dials and never
+    /// ordered one for the name everybody does: a certificate current,
+    /// from the right authority, and wrong, which is what
+    /// `docs/naming.md` exists about.
+    ///
+    /// Found by a test written about something else — the route a
+    /// database should never have had — which is the second time in this
+    /// file that the setup for one claim turned out to be the claim.
+    #[tokio::test]
+    async fn renaming_a_port_carries_who_answers_for_it() {
+        let database = crate::db::open_in_memory().await.expect("open");
+        crate::network::ensure_self(&database, &crate::config::Config::default())
+            .await
+            .expect("self");
+        let mut me = crate::network::me(&database)
+            .await
+            .expect("query")
+            .expect("there");
+        me.kind = crate::network::Kind::Public;
+        me.endpoint = Some("example.com:443".into());
+        crate::network::save(&database, &me).await.expect("saved");
+
+        let project = crate::platform::projects::create(&database, "demo")
+            .await
+            .expect("project");
+        let service = super::super::services::create(
+            &database,
+            &project.id,
+            "api",
+            "docker.io/library/nginx:alpine",
+            &[],
+        )
+        .await
+        .expect("service");
+        let port = create(&database, &service.id, 80, false, Some("old.example.com"))
+            .await
+            .expect("port");
+
+        assert_eq!(
+            super::super::edges::nodes_for(&database, "old.example.com")
+                .await
+                .expect("query"),
+            vec![me.id.clone()],
+            "creating with a name makes this node answer for it"
+        );
+
+        set_hostname(&database, &port.id, Some("new.example.com"))
+            .await
+            .expect("renamed");
+
+        assert_eq!(
+            super::super::edges::nodes_for(&database, "new.example.com")
+                .await
+                .expect("query"),
+            vec![me.id],
+            "and the rename carries that over"
+        );
+        assert!(
+            super::super::edges::nodes_for(&database, "old.example.com")
+                .await
+                .expect("query")
+                .is_empty(),
+            "the old name stops being answered for, or it is renewed for ever"
+        );
+    }
+
     /// The node picks the number, and it does not move.
     ///
     /// Two databases on one machine cannot share a host port, so asking an

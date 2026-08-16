@@ -427,3 +427,44 @@ every client holding the old one.
 The primary only. A pool answering from outside needs a port per replica
 and something choosing between them, which is a load balancer with its own
 justification.
+
+
+## A name is not only a string on a row
+
+Two things found together, on the node, by looking at the route table:
+
+**A database's name was an HTTP route.** `routing::sync` builds a proxy
+route for any port that has a hostname, and the naming work gave
+databases hostnames — so `orders.db-test.…` sat in the table pointing at
+`10.42.2.200:5432`. An edge terminates TLS and proxies HTTP; a request
+forwarded there arrives at Postgres as a startup packet whose length is
+the ASCII of `GET `. Nothing could ever work through that door, and it
+was public.
+
+Both halves of the contradiction were right. `docs/databases.md` says a
+database gets no hostname *because* an edge cannot serve it; this
+document says a database must have one *because* that is what
+`verify-full` checks. What was missing is that they are different
+questions about the same string: the name is for the client to dial and
+the certificate to cover, and never for the edge to route. One line in
+`sync`, and the `service_edge` row stays — it is what
+`acme::wanted_names` reads, so the certificate is still ordered and
+still served, by the database itself on its published port.
+
+**And renaming a port did not carry who answers for it.** `service_edge`
+is keyed on the hostname. `ports::create` writes the row;
+`set_hostname` did not move it. So a renamed database went on ordering a
+certificate for the name nobody dials and never ordered one for the name
+everybody does — a certificate current, from the right authority, and
+wrong, which is the failure this document opens with, reached by a
+different road.
+
+It was latent on the node: the name there was still the derived one, so
+the row and the port agreed by never having disagreed. The test written
+for the *first* fix is what turned it up — the setup for one claim
+turned out to be the claim.
+
+`set_hostname` moves the rows now, and stops the old name being answered
+for. That belongs in `ports` rather than in the console for the reason
+`create` already gives: a caller that renames a port and does not know
+to move this gets a name stored, shown, and served by nobody.
