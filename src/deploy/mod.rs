@@ -2131,8 +2131,16 @@ impl Deployer {
         let id = format!("{}.backup", from.container_id(&project.slug, &service.slug));
 
         let request = ContainerRequest {
-            command: postgres::base_backup_into(&address, postgres::PORT, &row.admin_user),
-            env: vec![("PGPASSWORD".to_string(), row.admin_password.clone())],
+            // **The replication role, not the admin one.** A base backup
+            // is a replication connection, and `pg_hba.conf` admits
+            // those for exactly one user — so the admin's credentials
+            // are refused by the line that exists to refuse everybody
+            // else. Found on the node, first run: `no pg_hba.conf entry
+            // for replication connection from host "10.42.2.1", user
+            // "orders"`. The seeder had it right and this copied the
+            // shape without the reason.
+            command: postgres::base_backup_into(&address, postgres::PORT, &row.replication_user),
+            env: vec![("PGPASSWORD".to_string(), row.replication_password.clone())],
             mounts: vec![BindMount {
                 source: into.to_path_buf(),
                 destination: postgres::BACKUP_MOUNT.to_string(),
