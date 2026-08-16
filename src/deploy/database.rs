@@ -290,10 +290,37 @@ fn existing_owner(_dir: &Path) -> Option<(u32, u32)> {
 /// records the answer. This returns whether that is still needed.
 #[cfg(unix)]
 pub fn tls_owner_is_wrong(data_dir: &Path, container_id: &str) -> bool {
+    root_owns(&tls_dir(data_dir, container_id).join("server.key"))
+}
+
+/// Whether the archive directory is one the server can write to.
+///
+/// **The same fault as the key, one directory over.** The node makes
+/// this as root and the server runs as `postgres`, so an archive command
+/// that is correct in every other way fails with exit code 1 and no
+/// explanation — Postgres reports that the command failed and not what
+/// the shell thought of it.
+///
+/// Found on the node, and only there: the mount was right, the command
+/// was right, `archive_mode` was on, and `pg_stat_archiver` said nothing
+/// had ever been tried until a segment was forced. Then: `archive
+/// command failed with exit code 1`.
+#[cfg(unix)]
+pub fn archive_owner_is_wrong(data_dir: &Path, container_id: &str) -> bool {
+    root_owns(&archive_dir(data_dir, container_id))
+}
+
+#[cfg(not(unix))]
+pub fn archive_owner_is_wrong(_data_dir: &Path, _container_id: &str) -> bool {
+    false
+}
+
+/// Whether root still owns this, which is the same as saying the server
+/// cannot write it.
+#[cfg(unix)]
+fn root_owns(path: &Path) -> bool {
     use std::os::unix::fs::MetadataExt;
-    let key = tls_dir(data_dir, container_id).join("server.key");
-    match std::fs::metadata(&key) {
-        // Root still owns it, so the server cannot read it.
+    match std::fs::metadata(path) {
         Ok(metadata) => metadata.uid() == 0,
         // Nothing to own yet.
         Err(_) => false,

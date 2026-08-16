@@ -2072,25 +2072,42 @@ impl Deployer {
         };
         database::write_tls(data_dir, container_id, &stored.cert_pem, &stored.key_pem)?;
 
-        if database::tls_owner_is_wrong(data_dir, container_id) {
+        // The archive directory has the same fault as the key: made by
+        // the node as root, written by a server that is not. Fixed in
+        // the same pass so a database needs one container for both
+        // rather than one each.
+        let archiving = crate::node::settings::archiving(&self.database).await;
+        let fix_archive = archiving && database::archive_owner_is_wrong(data_dir, container_id);
+
+        if database::tls_owner_is_wrong(data_dir, container_id) || fix_archive {
             let fixer = format!("{container_id}.chown");
+            let mut mounts = vec![BindMount {
+                source: volumes::ensure(data_dir, container_id, postgres::VOLUME)?,
+                destination: postgres::DATA_MOUNT.to_string(),
+                read_only: false,
+            }];
+            let mut what = format!(
+                "chown -R postgres:postgres {dir} && chmod 0600 {key}",
+                dir = postgres::TLS_DIR,
+                key = postgres::key_path()
+            );
+            if fix_archive {
+                mounts.push(BindMount {
+                    source: database::archive_dir(data_dir, container_id),
+                    destination: postgres::ARCHIVE_MOUNT.to_string(),
+                    read_only: false,
+                });
+                what.push_str(&format!(
+                    " && chown postgres:postgres {}",
+                    postgres::ARCHIVE_MOUNT
+                ));
+            }
+
             let request = ContainerRequest {
                 // `postgres` by name, resolved inside the image by the
                 // image. That is the whole point of doing this here.
-                command: vec![
-                    "sh".into(),
-                    "-c".into(),
-                    format!(
-                        "chown -R postgres:postgres {dir} && chmod 0600 {key}",
-                        dir = postgres::TLS_DIR,
-                        key = postgres::key_path()
-                    ),
-                ],
-                mounts: vec![BindMount {
-                    source: volumes::ensure(data_dir, container_id, postgres::VOLUME)?,
-                    destination: postgres::DATA_MOUNT.to_string(),
-                    read_only: false,
-                }],
+                command: vec!["sh".into(), "-c".into(), what],
+                mounts,
                 ..Default::default()
             };
             let credential = crate::platform::registry_credentials::for_reference(
