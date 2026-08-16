@@ -903,6 +903,59 @@ impl Deployer {
         }
     }
 
+    /// The copies of this service that are not answering, by replica id.
+    ///
+    /// The edge probes upstream *addresses*; a page shows replica
+    /// *rows*. This is the join, and it derives nothing of its own —
+    /// `routing::upstreams_of` is the same function that told the edge
+    /// where to send, so the address asked about is the address probed.
+    ///
+    /// Empty when this node routes nothing for the service, which is
+    /// the ordinary case for a node that owns it and had it served
+    /// elsewhere: health is known by the node doing the proxying, and
+    /// this one has no opinion to offer.
+    pub async fn not_answering(&self, service: &Service) -> Vec<String> {
+        let Some(routes) = &self.routes else {
+            return Vec::new();
+        };
+        let health = routes.health();
+        let down: Vec<std::net::SocketAddr> = health
+            .down()
+            .into_iter()
+            .map(|(address, _)| address)
+            .collect();
+        if down.is_empty() {
+            return Vec::new();
+        }
+
+        let (Ok(here), Ok(elsewhere), Ok(ports)) = (
+            replicas::here(&self.database).await,
+            replicas::elsewhere(&self.database).await,
+            ports::of_service(&self.database, &service.id).await,
+        ) else {
+            return Vec::new();
+        };
+        let nodes = crate::network::all(&self.database)
+            .await
+            .unwrap_or_default();
+
+        let mut failing = Vec::new();
+        for port in &ports {
+            for (replica, address) in crate::deploy::routing::upstreams_of(
+                &here,
+                &elsewhere,
+                &nodes,
+                &service.id,
+                port.container_port,
+            ) {
+                if down.contains(&address) && !failing.contains(&replica) {
+                    failing.push(replica);
+                }
+            }
+        }
+        failing
+    }
+
     /// Everything on this node's disk that no copy claims.
     ///
     /// A copy leaves four things behind and until now only one of them

@@ -302,6 +302,9 @@ impl ServicePages {
         // cgroups, for the table below — a copy elsewhere is measured by
         // the node running it, and this map simply has no entry for it.
         let used = self.state.deployer.memory().await.containers;
+        // Which copies the edge stopped sending to. One read of the
+        // health map, for the whole table below.
+        let silent = self.state.deployer.not_answering(&service).await;
         // What this service keeps, which is a row per volume and a
         // directory per copy of it.
         let volumes = crate::platform::volumes::of_service(&self.state.database, &service.id)
@@ -478,6 +481,7 @@ impl ServicePages {
                             service_slug: &service.slug,
                             used: &used,
                             disk: &disk,
+                            silent: &silent,
                         },
                     ))
                     // Only where there is one to show. A service that
@@ -494,6 +498,7 @@ impl ServicePages {
                                 service_slug: &service.slug,
                                 used: &used,
                                 disk: &disk,
+                                silent: &silent,
                             },
                         ))
                     }
@@ -868,6 +873,9 @@ impl ServicePages {
         let placements =
             crate::platform::replicas::of_service(&self.state.database, &service.id).await?;
         let nodes = crate::network::all(&self.state.database).await?;
+        // Which copies the edge stopped sending to, for the placement
+        // table below.
+        let silent = self.state.deployer.not_answering(&service).await;
         let host = crate::network::capability::Capability::Host;
         let hosts_here = crate::network::capability::provides(&self.state.database, host).await;
         let placement_nodes: Vec<crate::network::Node> = nodes
@@ -1207,7 +1215,9 @@ impl ServicePages {
                 // deciding are the split this console draws everywhere
                 // else.
                 @if service.is_ours() {
-                    (placement_card(&project, &service, &placements, &placement_nodes, &queued))
+                    (placement_card(
+                        &project, &service, &placements, &placement_nodes, &silent, &queued,
+                    ))
                 }
 
                 // Which nodes answer for each of this service's names.
@@ -1804,6 +1814,7 @@ fn running_card<'a>(
                                         replica.node_id.as_ref().is_some_and(|node| {
                                             queued.iter().any(|q| q == node)
                                         }),
+                                        at.silent.contains(&replica.id),
                                     ))
                                 </td>
                                 // A copy here is read from its cgroup; one
@@ -1944,6 +1955,11 @@ struct Running<'a> {
     service_slug: &'a str,
     used: &'a std::collections::BTreeMap<String, u64>,
     disk: &'a std::collections::BTreeMap<String, Option<u64>>,
+    /// The copies this node's edge has taken out of the rotation, by
+    /// replica id. Empty when this node routes nothing for the service,
+    /// which is every node that is not an edge for it — health is known
+    /// by whoever proxies, and nobody else has an opinion to offer.
+    silent: &'a [String],
 }
 
 /// What a replica's node is called, for a table that reads rather than
@@ -1978,6 +1994,8 @@ fn placement_card<'a>(
     service: &'a services::Service,
     placements: &'a [crate::platform::replicas::Replica],
     nodes: &'a [crate::network::Node],
+    // The copies out of the rotation, by replica id — see `Running`.
+    silent: &'a [String],
     // The nodes with an instruction about this service still waiting to
     // be collected, so a copy that has been told reads apart from one
     // that has not.
@@ -2018,6 +2036,7 @@ fn placement_card<'a>(
                                             .node_id
                                             .as_ref()
                                             .is_some_and(|node| queued.iter().any(|q| q == node)),
+                                        silent.contains(&replica.id),
                                     ))
                                 </td>
                             </tr>
@@ -2165,8 +2184,9 @@ fn placement_state<'a>(
     replica: &'a crate::platform::replicas::Replica,
     stopped: bool,
     queued: bool,
+    not_answering: bool,
 ) -> impl Renderable + 'a {
-    let cell = super::projects::replica_cell(replica, stopped, queued);
+    let cell = super::projects::replica_cell(replica, stopped, queued, not_answering);
     rsx! {
         @if cell.dot.is_empty() {
             <span class=(cell.badge)>(super::language::word(&cell.word))</span>
@@ -2226,6 +2246,11 @@ fn from_elsewhere_card<'a>(
                                 (placement_state(
                                     replica,
                                     service.desired_state == services::DesiredState::Stopped,
+                                    false,
+                                    // Whoever routes this service knows
+                                    // whether it answers, and for one
+                                    // that arrived on an errand that is
+                                    // the node which placed it.
                                     false,
                                 ))
                             </td>
@@ -3781,7 +3806,9 @@ mod tests {
         // also sends — that pairing is what broke: this word was corrected
         // in the renderer and not in the decision, so the page said one
         // thing on load and the other two seconds later.
-        let stopped = placement_state(&replica, true, false).render().into_inner();
+        let stopped = placement_state(&replica, true, false, false)
+            .render()
+            .into_inner();
         assert!(stopped.contains("Not running"), "{stopped}");
         assert!(
             !stopped.contains("Waiting"),
@@ -3790,12 +3817,14 @@ mod tests {
 
         // Told, and the instruction not yet collected. Legible rather than
         // silent, which is most of what makes a wait feel long.
-        let queued = placement_state(&replica, false, true).render().into_inner();
+        let queued = placement_state(&replica, false, true, false)
+            .render()
+            .into_inner();
         assert!(queued.contains("Queued for that node"), "{queued}");
 
         // And the case the word was written for: it has the instruction
         // and the answer has not come back.
-        let waiting = placement_state(&replica, false, false)
+        let waiting = placement_state(&replica, false, false, false)
             .render()
             .into_inner();
         assert!(waiting.contains("Waiting for that node"), "{waiting}");
@@ -3942,16 +3971,35 @@ mod tests {
             cpu_millicores: None,
         };
 
-        for (stopped, queued) in [(true, false), (false, true), (false, false)] {
-            let painted = placement_state(&replica, stopped, queued)
-                .render()
-                .into_inner();
-            let streamed = super::super::projects::replica_cell(&replica, stopped, queued);
-            assert!(
-                painted.contains(&streamed.word),
-                "the paint says something the stream does not: {painted} vs {}",
-                streamed.word
-            );
+        // Every combination, including the input added last — a state
+        // left out of this list is a state where the two are free to
+        // drift, which is the whole failure above.
+        //
+        // With an address and without: "not answering" is only reachable
+        // for a copy that reported one, because the question it answers
+        // is about a process that is up and not replying.
+        for address in [None, Some("10.42.1.5".to_string())] {
+            let replica = crate::platform::replicas::Replica {
+                address,
+                ..replica.clone()
+            };
+            for stopped in [true, false] {
+                for queued in [true, false] {
+                    for silent in [true, false] {
+                        let painted = placement_state(&replica, stopped, queued, silent)
+                            .render()
+                            .into_inner();
+                        let streamed =
+                            super::super::projects::replica_cell(&replica, stopped, queued, silent);
+                        assert!(
+                            painted.contains(&streamed.word),
+                            "the paint says something the stream does not: \
+                             {painted} vs {}",
+                            streamed.word
+                        );
+                    }
+                }
+            }
         }
     }
 

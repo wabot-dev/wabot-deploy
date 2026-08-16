@@ -262,6 +262,7 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
     ("Nodes this one has granted authority to. Revoking is one row, and it takes effect here — a node that has been revoked can ask for nothing.", "Nodos a los que este ha concedido autoridad. Revocar es una fila, y surte efecto aquí — un nodo revocado no puede pedir nada."),
     ("None.", "Ninguno."),
     ("None. A token is what CI authenticates with — it is nobody's password, and revoking it changes nothing else.", "Ninguno. Un token es con lo que se autentica CI — no es la contraseña de nadie, y revocarlo no cambia nada más."),
+    ("Not answering", "No responde"),
     ("Not deployed", "Sin despliegue"),
     ("Not following — reload to see more", "Sin seguir — recarga para ver más"),
     ("Not published", "Sin publicar"),

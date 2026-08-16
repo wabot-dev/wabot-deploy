@@ -918,6 +918,10 @@ async fn replica_cells(
             continue;
         };
         let stopped = service.desired_state == crate::platform::services::DesiredState::Stopped;
+        // Which of its copies the edge has taken out of the rotation.
+        // Once per service rather than once per replica: it is one read
+        // of the health map and one derivation of the addresses.
+        let silent = state.deployer.not_answering(&service).await;
         for replica in replicas {
             let waiting_for_it = replica.node_id.as_ref().is_some_and(|node| {
                 queued.iter().any(|record| {
@@ -927,7 +931,12 @@ async fn replica_cells(
                             == Some(service.name.as_str())
                 })
             });
-            let mut cell = replica_cell(&replica, stopped, waiting_for_it);
+            let mut cell = replica_cell(
+                &replica,
+                stopped,
+                waiting_for_it,
+                silent.contains(&replica.id),
+            );
             // Only the copies here. One elsewhere is measured by the node
             // running it and arrives on its report, which the server has
             // already rendered — writing over it from a stream that has no
@@ -968,6 +977,11 @@ pub(crate) fn replica_cell(
     // Whether an instruction about it is still waiting to be collected,
     // which is a different thing from silence.
     queued: bool,
+    // Whether the edge has taken it out of the rotation: its container
+    // is up and nothing answers on the port. A distinct state from every
+    // other one here, and the one somebody is looking for when a service
+    // is "up" and losing requests.
+    not_answering: bool,
 ) -> ReplicaCell {
     if replica.evicted() {
         return ReplicaCell {
@@ -988,6 +1002,21 @@ pub(crate) fn replica_cell(
         };
     }
     if let Some(address) = &replica.address {
+        // Running and out of the rotation. Not `Failed`, which is what
+        // the *node* said about starting it, and not `Running`, which
+        // would be the page agreeing with a container that is lying: the
+        // process is there and nothing answers on the port it was given.
+        // Warning rather than danger, because the edge has already moved
+        // the traffic — this is somebody to tell, not an outage.
+        if not_answering {
+            return ReplicaCell {
+                badge: "badge badge-warning",
+                dot: "dot dot-warning",
+                word: "Not answering".into(),
+                cpu: String::new(),
+                detail: address.clone(),
+            };
+        }
         return ReplicaCell {
             badge: "badge badge-success",
             dot: "dot dot-success",
@@ -1928,6 +1957,53 @@ mod tests {
             assert!(
                 crate::console::es::lookup(&cell.word).is_some(),
                 "no Spanish for the state word {:?}",
+                cell.word
+            );
+        }
+
+        // And the words of a *replica*, which reach a render the same
+        // way and were guarded by nothing. They happened to be
+        // translated; the first one added after this test was written —
+        // "Not answering" — was not, and the whole suite stayed green.
+        // A guard that covers one of two functions producing the same
+        // kind of value is a guard that will be right until somebody
+        // touches the other one.
+        let replica = |address: Option<&str>| crate::platform::replicas::Replica {
+            id: "rp-1".into(),
+            service_id: "svc-1".into(),
+            node_id: Some("nd-far".into()),
+            slot: 2,
+            address: address.map(str::to_string),
+            overlay_port: None,
+            last_error: None,
+            evicted_at: None,
+            reserved_host: None,
+            memory_bytes: None,
+            disk_bytes: None,
+            cpu_millicores: None,
+        };
+        let failed = crate::platform::replicas::Replica {
+            last_error: Some("it exited 1".into()),
+            ..replica(None)
+        };
+        let evicted = crate::platform::replicas::Replica {
+            evicted_at: Some(1),
+            ..replica(None)
+        };
+
+        let copies = [
+            replica_cell(&evicted, false, false, false),
+            replica_cell(&failed, false, false, false),
+            replica_cell(&replica(Some("10.42.1.5")), false, false, false),
+            replica_cell(&replica(Some("10.42.1.5")), false, false, true),
+            replica_cell(&replica(None), false, false, false),
+            replica_cell(&replica(None), true, false, false),
+            replica_cell(&replica(None), false, true, false),
+        ];
+        for cell in &copies {
+            assert!(
+                crate::console::es::lookup(&cell.word).is_some(),
+                "no Spanish for the replica word {:?}",
                 cell.word
             );
         }

@@ -18,6 +18,77 @@ use wabot::sqlite::SqliteDatabase;
 use crate::edge::routes::{self, RouteTable, Upstream};
 use crate::platform::{ports, services, PlatformResult};
 
+/// Where the edge sends a request for each copy of one service, and
+/// which copy each address belongs to.
+///
+/// **Two different questions live one word apart here**, and both are
+/// answered in this list. A copy *here* is reached at the container's
+/// own address on the port it listens on. A copy *elsewhere* is reached
+/// at that node's overlay address and the port bound there — never the
+/// container's own, because a CNI bridge subnet is identical on every
+/// node, so a container address names a different container on each
+/// machine that reads it.
+///
+/// One entry per replica, which is the whole of the load balancing: a
+/// node running two copies appears twice and takes twice the traffic,
+/// and nothing carries a weight.
+///
+/// Keyed by replica so the console can say *which copy* is not
+/// answering. That is why this is one function rather than the two
+/// halves it used to be: the page and the router have to derive the
+/// same address, and a second derivation is a second answer.
+pub fn upstreams_of(
+    here: &[crate::platform::replicas::Replica],
+    elsewhere: &[crate::platform::replicas::Replica],
+    nodes: &[crate::network::Node],
+    service_id: &str,
+    container_port: u16,
+) -> Vec<(String, SocketAddr)> {
+    // No address means no copy is running there. Left out rather than
+    // guessed at: a proxy attempt to a dead address is a hung request,
+    // where a name with nothing behind it is a truthful 404.
+    let mut upstreams: Vec<(String, SocketAddr)> = here
+        .iter()
+        .filter(|replica| replica.service_id == service_id)
+        .filter_map(|replica| {
+            let address = replica.address.as_deref()?;
+            match format!("{address}:{container_port}").parse::<SocketAddr>() {
+                Ok(upstream) => Some((replica.id.clone(), upstream)),
+                Err(_) => {
+                    tracing::warn!(%address, port = container_port, "unroutable");
+                    None
+                }
+            }
+        })
+        .collect();
+
+    for replica in elsewhere
+        .iter()
+        .filter(|replica| replica.service_id == service_id)
+        .filter(|replica| !replica.evicted())
+    {
+        // A copy that has reported no port yet is unreachable, and an
+        // invented address here is a request that hangs rather than one
+        // that fails over.
+        let Some(port) = replica.overlay_port else {
+            continue;
+        };
+        let overlay = replica
+            .node_id
+            .as_ref()
+            .and_then(|node_id| nodes.iter().find(|node| &node.id == node_id))
+            .and_then(|node| node.overlay_ip.as_deref());
+        let Some(overlay) = overlay else {
+            continue;
+        };
+        match format!("{overlay}:{port}").parse::<SocketAddr>() {
+            Ok(upstream) => upstreams.push((replica.id.clone(), upstream)),
+            Err(_) => tracing::warn!(%overlay, port, "upstream skipped: not an address"),
+        }
+    }
+    upstreams
+}
+
 /// Recompute every route and hand the new set to the edge.
 ///
 /// `table` is the live one the listener reads. Passing it in rather
@@ -65,52 +136,22 @@ pub async fn sync(
         let Some(service) = services.iter().find(|s| s.id == port.service_id) else {
             continue;
         };
-        // No address means no copy of it is running here. The route is
-        // dropped rather than kept pointing at where it used to be: a
-        // 404 from the edge is a truthful answer, and a proxy attempt
-        // to a dead address is a hung request.
+        // Where each copy of this service answers, wherever it runs.
         //
-        // **One entry per replica**, not per node. A node running two
-        // copies contributes two, so a plain round-robin sends it twice
-        // the requests — which is what "two there and one here" is
-        // asking for, without anything having to carry a weight.
-        let mut upstreams: Vec<SocketAddr> = placements
-            .iter()
-            .filter(|replica| replica.service_id == service.id)
-            .filter_map(|replica| replica.address.as_deref())
-            .filter_map(|address| {
-                match format!("{address}:{}", port.container_port).parse::<SocketAddr>() {
-                    Ok(upstream) => Some(upstream),
-                    Err(_) => {
-                        tracing::warn!(%address, port = port.container_port, "unroutable");
-                        None
-                    }
-                }
-            })
-            .collect();
-
-        // The copies on other nodes, reached the only way anything
-        // outside a node can: that node's overlay address and the port
-        // it opened there. Appended to the local ones rather than
-        // replacing them, so the list is one entry per replica wherever
-        // it runs — which is what makes a node with two of them take
-        // twice the traffic without anything carrying a weight.
-        let mine: Vec<_> = elsewhere
-            .iter()
-            .filter(|replica| replica.service_id == service.id)
-            .cloned()
-            .collect();
-        upstreams.extend(
-            crate::platform::edges::upstreams(&mine, &nodes)
-                .iter()
-                .filter_map(|address| match address.parse::<SocketAddr>() {
-                    Ok(upstream) => Some(upstream),
-                    Err(_) => {
-                        tracing::warn!(%address, "upstream skipped: not an address");
-                        None
-                    }
-                }),
-        );
+        // One function for both halves — see `upstreams_of`. They used
+        // to be built here in two, and the console needed the same
+        // answer to say which copy is out of rotation: a third place
+        // deriving one address is how the three come to disagree.
+        let upstreams: Vec<SocketAddr> = upstreams_of(
+            &placements,
+            &elsewhere,
+            &nodes,
+            &service.id,
+            port.container_port,
+        )
+        .into_iter()
+        .map(|(_, address)| address)
+        .collect();
 
         // Nothing running: the route is dropped rather than kept
         // pointing at where it used to be. A 404 from the edge is a
