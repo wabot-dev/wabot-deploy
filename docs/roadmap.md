@@ -38,8 +38,19 @@ well once and never reacts.
 ## 1. A licence, and a security posture
 
 Not a feature, and first anyway: **without a `LICENSE` file nobody can
-legally use this, or evaluate it.** That is the whole of it. Five
-minutes.
+legally use this, or evaluate it.**
+
+Adding the file is five minutes; choosing what goes in it is not, and
+this document said otherwise until somebody read it. For infrastructure
+that might one day be sold or offered as a service, the choice decides
+what a competitor may do with it and what a customer's lawyer will say
+about it — permissive (Apache-2.0, MIT), or reciprocal against hosting
+(AGPL). It is a strategic decision that happens to produce a small file,
+and treating it as a small file is how it gets made badly.
+
+Everything below is blocked on it in the sense that nobody outside can
+evaluate any of it. Nothing below is blocked on it in the sense of
+work: the code carries on.
 
 `SECURITY.md` matters nearly as much, and for a specific reason this
 repository has earned: the argument for holding credentials in the clear
