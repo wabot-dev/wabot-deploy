@@ -2580,7 +2580,9 @@ impl Deployer {
             "preparing a database copy"
         );
 
+        let archiving = crate::node::settings::archiving(&self.database).await;
         Ok(Some(database::prepare(&database::Plan {
+            archiving,
             data_dir: &self.config.node.data_dir,
             container_id: &replica.container_id(&project.slug, &service.slug),
             database: &row,

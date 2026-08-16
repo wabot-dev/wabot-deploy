@@ -165,6 +165,7 @@ impl NodePages {
             || crate::node::settings::domain(&self.state.database, &self.state.config)
                 .await
                 .is_some();
+        let archiving = crate::node::settings::archiving(&self.state.database).await;
         let now = super::now_ms();
 
         layout::head("Nodes");
@@ -185,7 +186,7 @@ impl NodePages {
                     (review_card(token, terms))
                 }
 
-                (capabilities_card(hosts, edges, reachable))
+                (capabilities_card(hosts, edges, reachable, archiving))
 
                 <div class="grid">
                     @for node in &nodes {
@@ -556,7 +557,12 @@ pub(crate) fn offering(capability: network::capability::Capability) -> &'static 
 /// showing. Offering to answer for names needs an address the world can
 /// dial, and a switch that could be turned on to no effect is a promise
 /// the node cannot keep.
-fn capabilities_card(hosts: bool, edges: bool, reachable: bool) -> impl Renderable {
+fn capabilities_card(
+    hosts: bool,
+    edges: bool,
+    reachable: bool,
+    archiving: bool,
+) -> impl Renderable {
     rsx! {
         <section class="stack">
             <p class="card-label">(t("What this node does"))</p>
@@ -596,6 +602,30 @@ fn capabilities_card(hosts: bool, edges: bool, reachable: bool) -> impl Renderab
                         }
                     </span>
                 </label>
+
+                // Point-in-time recovery, which is a decision about
+                // *this node's disk* rather than about any one database
+                // — which is why it sits with the other two things the
+                // node either does or does not do.
+                <label class="capability">
+                    @if archiving {
+                        <input type="checkbox" name="archiving" value="1" checked>
+                    } @else {
+                        <input type="checkbox" name="archiving" value="1">
+                    }
+                    <span>
+                        <strong>(t("Keep the write-ahead log"))</strong>
+                        <span class="tile-detail">(t("Lets a database be restored to any minute, \
+                             rather than only to the moment of a backup. It costs disk — a \
+                             segment a minute per database, compressed — and it takes effect \
+                             at each database's next deployment."))</span>
+                        <span class="tile-detail">(t("There is no pruning yet, so what it keeps \
+                             grows until somebody removes it. A database whose log cannot be \
+                             written stops rather than losing it, which is the right way round \
+                             and worth knowing before turning this on."))</span>
+                    </span>
+                </label>
+
 
                 <div class="actions">
                     <button type="submit">(t("Save"))</button>
@@ -1853,6 +1883,18 @@ impl NodeApi {
                     "that could not be saved",
                 ));
             }
+        }
+
+        // Not a capability — nothing is granted to anybody by it — but
+        // the same kind of decision and the same form: something this
+        // node either does or does not do, whose cost is its own.
+        if let Err(error) = crate::node::settings::set_archiving(
+            &self.state.database,
+            form.contains_key("archiving"),
+        )
+        .await
+        {
+            tracing::warn!(%error, "could not save whether to keep the log");
         }
 
         // The self row carries the answer: `kind` is derived from the

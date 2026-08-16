@@ -184,9 +184,87 @@ pub fn tuning(memory_limit: u64) -> Tuning {
     }
 }
 
+/// Where a primary drops its finished write-ahead log, inside the
+/// container.
+pub const ARCHIVE_MOUNT: &str = "/archive";
+
+/// How often a primary is made to close a segment even if it is not
+/// full, in seconds.
+///
+/// **This is the granularity of point-in-time recovery**, and the number
+/// somebody is really choosing when they ask to go back to a minute. A
+/// segment is 16 MB and an idle database would otherwise take hours to
+/// fill one — so without this, "restore to 14:32" on a quiet afternoon
+/// means restoring to whenever the last segment happened to close.
+///
+/// A minute costs one segment per minute per database, which sounds
+/// expensive and is not: an idle 16 MB segment gzips to a few kilobytes,
+/// which is why the command below compresses.
+pub const ARCHIVE_TIMEOUT_SECONDS: u32 = 60;
+
+/// What a primary runs to archive one finished segment.
+///
+/// ## `pg_receivewal` was the other way, and this is not it
+///
+/// A streaming receiver has a better recovery point — it loses only the
+/// unflushed tail rather than up to one segment — and it costs a
+/// long-lived container per database, for ever, on a node whose whole
+/// premise is two processes. This is the primary's own work: a `cp` it
+/// forks per segment, and no new process that has to be watched.
+///
+/// ## The failure mode is the opposite of a slot's, and worse
+///
+/// A replication slot that nobody drains is bounded by
+/// `max_slot_wal_keep_size` — the slot breaks and the disk survives.
+/// **Archiving has no such bound.** Postgres will not delete a segment
+/// it has not archived, so a command that keeps failing fills the disk
+/// and stops the database.
+///
+/// That decides the shape of everything downstream: this writes to a
+/// bind mount on the node, which cannot fail for any reason a network
+/// can. Getting it to object storage or another machine is a separate
+/// step that may fail all it likes without touching the database.
+///
+/// ## `test !  -f` first
+///
+/// The archive command must never overwrite a segment it already has —
+/// the documentation is unusually blunt about this, because a retry
+/// after a partial write would replace good bytes with truncated ones,
+/// and the copy that gets replaced is the one PITR needs. So: refuse if
+/// it is there, and let Postgres retry.
+pub fn archive_command() -> String {
+    format!("test ! -f {ARCHIVE_MOUNT}/%f.gz && gzip -1 < %p > {ARCHIVE_MOUNT}/%f.gz.tmp && mv {ARCHIVE_MOUNT}/%f.gz.tmp {ARCHIVE_MOUNT}/%f.gz")
+}
+
 /// What the primary is started with.
-pub fn primary_arguments(memory_limit: u64) -> Vec<String> {
+pub fn primary_arguments(memory_limit: u64, archiving: bool) -> Vec<String> {
     let mut arguments = common_arguments(memory_limit);
+
+    // Archiving, when the node has somewhere to put it.
+    //
+    // `archive_mode` is a postmaster setting, so this takes effect at
+    // the next deployment rather than now — the same as a memory
+    // ceiling, and for the same reason.
+    //
+    // Off is written explicitly rather than left out, so that turning
+    // it off is a deployment that *turns it off* rather than one that
+    // leaves whatever was there.
+    match archiving {
+        true => {
+            push(&mut arguments, "archive_mode", "on");
+            push(&mut arguments, "archive_command", &archive_command());
+            push(
+                &mut arguments,
+                "archive_timeout",
+                &format!("{ARCHIVE_TIMEOUT_SECONDS}s"),
+            );
+            // Enough detail in the log to recover *to* something: with
+            // `minimal` the log holds what a crash needs and not what a
+            // point in time does.
+            push(&mut arguments, "wal_level", "replica");
+        }
+        false => push(&mut arguments, "archive_mode", "off"),
+    }
 
     // A slot holds write-ahead log for a standby that is not there.
     // Unbounded, that fills the primary's disk when one never comes
@@ -774,6 +852,44 @@ mod tests {
         assert!(!parse_replication("wabot_slot_4|f")[0].active);
     }
 
+    /// The archive command refuses to overwrite, and the reason is the
+    /// one the documentation is unusually blunt about: a retry after a
+    /// partial write would replace good bytes with truncated ones, and
+    /// the copy it replaces is the one a restore needs.
+    ///
+    /// It also writes to a temporary name and moves it, so a segment
+    /// that appears in the archive is a segment that is complete —
+    /// there is no window in which the file exists and is half of one.
+    #[test]
+    fn archiving_never_overwrites_and_never_leaves_half_a_segment() {
+        let command = archive_command();
+
+        assert!(command.starts_with("test ! -f "), "{command}");
+        assert!(command.contains(".tmp && mv "), "{command}");
+        // Compressed, which is what makes a minute of an idle database
+        // cost kilobytes instead of sixteen megabytes.
+        assert!(command.contains("gzip"), "{command}");
+        // And into the mount, never into the data directory: the whole
+        // point is that it outlives the container.
+        assert!(command.contains(ARCHIVE_MOUNT), "{command}");
+    }
+
+    /// Turning archiving off is written, not omitted. A deployment that
+    /// left the setting out would leave whatever the last one set — so
+    /// "off" would mean "unchanged", which is the one thing it must not
+    /// mean.
+    #[test]
+    fn a_primary_says_whether_it_is_archiving_either_way() {
+        let on = primary_arguments(256 * MB, true).join(" ");
+        assert!(on.contains("archive_mode=on"), "{on}");
+        assert!(on.contains("archive_timeout=60s"), "{on}");
+        assert!(on.contains("wal_level=replica"), "{on}");
+
+        let off = primary_arguments(256 * MB, false).join(" ");
+        assert!(off.contains("archive_mode=off"), "{off}");
+        assert!(!off.contains("archive_command"), "{off}");
+    }
+
     /// A backup takes a *temporary* slot and a seed takes a permanent
     /// one, and the difference is the whole lifetime question: a seed's
     /// slot exists so the primary keeps log for a standby that will come
@@ -901,7 +1017,7 @@ mod tests {
     #[test]
     fn the_arguments_are_pairs_the_entrypoint_passes_through() {
         for rung in presets::LADDER {
-            let arguments = primary_arguments(rung);
+            let arguments = primary_arguments(rung, false);
             assert_eq!(arguments.len() % 2, 0, "an odd number of arguments");
             for pair in arguments.chunks(2) {
                 assert_eq!(pair[0], "-c");
@@ -984,7 +1100,7 @@ mod tests {
     /// so a renewal arrives by the same path that placed the first one.
     #[test]
     fn the_server_is_pointed_at_its_certificate() {
-        let arguments = primary_arguments(128 * 1024 * 1024).join(" ");
+        let arguments = primary_arguments(128 * 1024 * 1024, false).join(" ");
         assert!(arguments.contains("-c ssl=on"), "{arguments}");
         assert!(
             arguments.contains(&format!("ssl_cert_file={}", certificate_path())),

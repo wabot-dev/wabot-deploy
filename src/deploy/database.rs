@@ -73,6 +73,15 @@ pub struct Plan<'a> {
     /// `primary_conninfo`, `pg_basebackup` takes `--host --port` — and
     /// one of them building the other's is how they drift.
     pub primary: Option<(String, u16)>,
+    /// Whether this node keeps the write-ahead log for point-in-time
+    /// recovery.
+    ///
+    /// A decision of the node's rather than the database's, because what
+    /// it costs is the node's disk — and because the failure it can
+    /// cause is the node's too: Postgres will not delete a segment it
+    /// has not archived, so an archive that cannot be written fills the
+    /// disk and stops the database. See `postgres::archive_command`.
+    pub archiving: bool,
 }
 
 impl Plan<'_> {
@@ -111,7 +120,7 @@ pub fn prepare(plan: &Plan<'_>) -> std::io::Result<Preparation> {
     )?;
 
     let args = match plan.role {
-        postgres::Role::Primary => postgres::primary_arguments(plan.limit()),
+        postgres::Role::Primary => postgres::primary_arguments(plan.limit(), plan.archiving),
         postgres::Role::Standby => postgres::standby_arguments(
             plan.limit(),
             // A standby with nowhere to dial would come up as a
@@ -138,6 +147,14 @@ pub fn prepare(plan: &Plan<'_>) -> std::io::Result<Preparation> {
     // The environment is the primary's alone. A standby's data
     // directory arrives from the base backup with the users already in
     // it, so the entrypoint finds `PG_VERSION` and never runs `initdb`.
+    // Somewhere for the finished log to go, made before the container
+    // that will write to it — a bind of a directory that is not there
+    // fails inside the shim, where the message is about a mount rather
+    // than about the directory nobody created.
+    if plan.archiving {
+        std::fs::create_dir_all(archive_dir(plan.data_dir, plan.container_id))?;
+    }
+
     let env = match plan.role {
         postgres::Role::Primary => postgres::environment(
             &plan.database.admin_user,
@@ -156,18 +173,32 @@ pub fn prepare(plan: &Plan<'_>) -> std::io::Result<Preparation> {
     Ok(Preparation {
         args,
         env,
-        mounts: vec![
-            BindMount {
-                source: conf,
-                destination: postgres::CONFIG_MOUNT.to_string(),
-                read_only: true,
-            },
-            BindMount {
-                source: init,
-                destination: postgres::INIT_MOUNT.to_string(),
-                read_only: true,
-            },
-        ],
+        mounts: {
+            let mut mounts = vec![
+                BindMount {
+                    source: conf,
+                    destination: postgres::CONFIG_MOUNT.to_string(),
+                    read_only: true,
+                },
+                BindMount {
+                    source: init,
+                    destination: postgres::INIT_MOUNT.to_string(),
+                    read_only: true,
+                },
+            ];
+            // Writable, and outside the volume: the archive has to
+            // outlive the data directory it came from, or a restore
+            // would be reading the log out of the thing it is
+            // restoring.
+            if plan.archiving {
+                mounts.push(BindMount {
+                    source: archive_dir(plan.data_dir, plan.container_id),
+                    destination: postgres::ARCHIVE_MOUNT.to_string(),
+                    read_only: false,
+                });
+            }
+            mounts
+        },
         shm_size: Some(presets::shm_for(plan.limit())),
         role: plan.role,
         primary_endpoint: plan.primary.clone(),
@@ -396,6 +427,19 @@ pub fn discard(data_dir: &Path, container_id: &str) {
     }
 }
 
+/// Where a primary's finished write-ahead log is kept.
+///
+/// Beside the volumes rather than inside one, because it has to outlive
+/// the data directory: a restore reads the archive *while* replacing
+/// what the archive came from, and a log kept inside the volume would be
+/// deleted by the thing that needs it.
+///
+/// Keyed on the container id like everything else here, so an operator
+/// reading `ls` sees the same names on both sides.
+pub fn archive_dir(data_dir: &Path, container_id: &str) -> PathBuf {
+    data_dir.join("wal").join(container_id)
+}
+
 /// Where this copy reads the files the node writes for it.
 ///
 /// `pub(crate)` because the node's certificate authority goes in here too,
@@ -452,6 +496,7 @@ mod tests {
         role: postgres::Role,
     ) -> Plan<'a> {
         Plan {
+            archiving: false,
             data_dir,
             container_id,
             database: row,

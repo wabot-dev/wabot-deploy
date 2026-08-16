@@ -53,6 +53,31 @@ pub async fn set_domain(database: &SqliteDatabase, domain: Option<&str>) -> Sqli
     write(database, DOMAIN, &value).await
 }
 
+/// Whether this node keeps the write-ahead log of its databases, so
+/// that one can be restored to a point in time.
+const ARCHIVING: &str = "wal.archiving";
+
+/// Whether point-in-time recovery is on for this node.
+///
+/// **Off by default, and that is temporary.** The feature is worth
+/// having on — restoring a database to the minute before somebody
+/// dropped a table is the thing that makes a managed database worth
+/// using — and turning it on before there is pruning would be a slow
+/// disk leak with the database's own life attached to it: Postgres will
+/// not delete a segment it has not archived, so the day the disk fills
+/// is the day the database stops.
+///
+/// So: a switch, off, until retention exists. Then this default flips
+/// and the comment goes.
+pub async fn archiving(database: &SqliteDatabase) -> bool {
+    matches!(read(database, ARCHIVING).await, Ok(Some(value)) if value == "on")
+}
+
+/// Turn it on, or off.
+pub async fn set_archiving(database: &SqliteDatabase, on: bool) -> SqliteResult<()> {
+    write(database, ARCHIVING, if on { "on" } else { "off" }).await
+}
+
 /// What the last certificate attempt said, if it failed.
 pub async fn acme_error(database: &SqliteDatabase) -> Option<String> {
     match read(database, ACME_ERROR).await {

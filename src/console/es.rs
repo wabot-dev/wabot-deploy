@@ -241,8 +241,16 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
     ("Joined", "Unido"),
     ("Keep a copy of its data on this node", "Guardar una copia de sus datos en este nodo"),
     ("Keep a copy of this node's data over there", "Guardar allí una copia de los datos de este nodo"),
+    (
+        "Keep the write-ahead log",
+        "Guardar el log de escritura anticipada",
+    ),
     ("Key file", "Fichero de la clave"),
     ("Last update", "Última actualización"),
+    (
+        "Lets a database be restored to any minute, rather than only to the moment of a backup. It costs disk — a segment a minute per database, compressed — and it takes effect at each database's next deployment.",
+        "Permite restaurar una base de datos a cualquier minuto, y no sólo al momento de un backup. Cuesta disco — un segmento por minuto y base de datos, comprimido — y surte efecto en el siguiente despliegue de cada base de datos.",
+    ),
     ("Logs", "Logs"),
     ("Long name", "Nombre largo"),
     ("Look", "Ver"),
@@ -481,6 +489,10 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
     ("The rows stay because they are what carries that news. Removing them here would leave the other node sending the same instruction again.", "Las filas se quedan porque son lo que lleva esa noticia. Quitarlas aquí dejaría al otro nodo mandando la misma instrucción otra vez."),
     ("The setup token was printed by `wabot-deploy install`. It works once, and it expires.", "El token de instalación lo imprimió `wabot-deploy install`. Funciona una vez, y caduca."),
     ("The slug is derived from the name, and it is what hostnames and containerd labels are built from.", "El slug se deriva del nombre, y es con lo que se construyen los nombres de host y las etiquetas de containerd."),
+    (
+        "There is no pruning yet, so what it keeps grows until somebody removes it. A database whose log cannot be written stops rather than losing it, which is the right way round and worth knowing before turning this on.",
+        "Todavía no hay poda, así que lo que guarda crece hasta que alguien lo quite. Una base de datos cuyo log no se puede escribir se para en vez de perderlo, que es el orden correcto y conviene saberlo antes de encender esto.",
+    ),
     (
         "These reach it from inside the project, on any node holding a copy — the long name resolves in the world's DNS too, and nothing answers there until a port is published below.",
         "Estas llegan desde dentro del proyecto, en cualquier nodo que sostenga una copia — el nombre largo también resuelve en el DNS del mundo, y ahí no responde nada hasta que se publique un puerto abajo.",
