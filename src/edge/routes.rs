@@ -49,15 +49,61 @@ impl Upstream {
     /// request at the same index and send the whole first burst to the
     /// same pair of containers.
     ///
-    /// Not least-connections or latency-aware. Those need a health
-    /// signal this does not have yet — and picking a replica by a
-    /// measurement nothing updates would be worse than picking in turn.
+    /// Not least-connections or latency-aware. Those need a measurement
+    /// per request, where this needs one signal per replica — see
+    /// [`pick_live`](Self::pick_live), which is what the edge calls.
     pub fn pick(&self, turn: usize) -> Option<SocketAddr> {
         match self {
             Self::ControlPlane => None,
             Self::Proxy(addresses) if addresses.is_empty() => None,
             Self::Proxy(addresses) => Some(addresses[turn % addresses.len()]),
         }
+    }
+
+    /// Which one takes this request, skipping the ones that are not
+    /// answering.
+    ///
+    /// Round-robin **over the live ones**, which is not the same as
+    /// round-robin skipping the dead ones — and the difference is the
+    /// whole load-balancing model.
+    ///
+    /// The first version scanned the full ring from `turn` and took the
+    /// first live entry. With three replicas and the middle one down
+    /// that sends four requests in six to the *third* and two to the
+    /// first: the dead one's share goes entirely to whoever follows it
+    /// rather than being spread. A test caught it, and it matters
+    /// because the promise here is "one entry per replica, so a node
+    /// with two copies takes twice the traffic" — a promise that must
+    /// not quietly change shape at the moment a machine dies, which is
+    /// when somebody is reading the graph.
+    ///
+    /// So: count the live ones, then take the `turn`th of those. Even
+    /// across whatever is left, and unchanged while everything is up.
+    ///
+    /// **If nothing is answering it sends the request anyway.** A name
+    /// whose every upstream reads as down still gets a request
+    /// forwarded, which fails with a 502 that would have happened
+    /// regardless — rather than a 404, which claims the site does not
+    /// exist. This is what keeps a broken prober from being able to take
+    /// a name off the air: health may remove a replica *while another
+    /// one is up*, and it may never remove the last.
+    pub fn pick_live(&self, turn: usize, health: &super::health::Health) -> Option<SocketAddr> {
+        let Self::Proxy(addresses) = self else {
+            return None;
+        };
+        let live = addresses
+            .iter()
+            .filter(|address| health.is_up(address))
+            .count();
+        if live == 0 {
+            // Which also answers the empty case, with `None`.
+            return self.pick(turn);
+        }
+        addresses
+            .iter()
+            .filter(|address| health.is_up(address))
+            .nth(turn % live)
+            .copied()
     }
 }
 
@@ -67,6 +113,16 @@ pub struct RouteTable {
     /// Where the next request starts looking. Shared across names on
     /// purpose — see [`Upstream::pick`].
     turn: std::sync::atomic::AtomicUsize,
+    /// Which upstreams are answering.
+    ///
+    /// Beside the table rather than in it, because the two are different
+    /// facts with different lifetimes: the table says where a name *may*
+    /// go and changes when somebody deploys, this says which of those
+    /// are answering *now* and changes on a timer. Folding health into
+    /// the table would mean rebuilding it every few seconds and would
+    /// make a name with nothing healthy behind it disappear — which is
+    /// exactly the answer `pick_live` refuses to give.
+    health: Arc<super::health::Health>,
 }
 
 impl Default for RouteTable {
@@ -80,7 +136,34 @@ impl RouteTable {
         Self {
             by_host: ArcSwap::from_pointee(HashMap::new()),
             turn: std::sync::atomic::AtomicUsize::new(0),
+            health: Arc::new(super::health::Health::default()),
         }
+    }
+
+    /// What the prober writes into and the console reads out of.
+    pub fn health(&self) -> Arc<super::health::Health> {
+        self.health.clone()
+    }
+
+    /// Every address behind every name, for the prober to ask about.
+    ///
+    /// Deduplicated: one node's overlay address serves every name it
+    /// answers for, and probing it once per name would be the same
+    /// question asked five times.
+    pub fn upstreams(&self) -> Vec<SocketAddr> {
+        let mut all: Vec<SocketAddr> = self
+            .by_host
+            .load()
+            .values()
+            .filter_map(|upstream| match upstream {
+                Upstream::Proxy(addresses) => Some(addresses.clone()),
+                Upstream::ControlPlane => None,
+            })
+            .flatten()
+            .collect();
+        all.sort();
+        all.dedup();
+        all
     }
 
     /// Resolve a `Host` header.
@@ -96,7 +179,7 @@ impl RouteTable {
     /// after each one would all land on the same container.
     pub fn next_upstream(&self, upstream: &Upstream) -> Option<SocketAddr> {
         let turn = self.turn.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        upstream.pick(turn)
+        upstream.pick_live(turn, &self.health)
     }
 
     pub fn resolve(&self, host: &str) -> Option<Upstream> {
@@ -346,6 +429,100 @@ pub async fn upsert(
 
 #[cfg(test)]
 mod tests {
+    /// Health takes a replica out of the ring and leaves the ring
+    /// turning. The share each live replica carries is unchanged —
+    /// a node running two copies still appears twice — because health
+    /// only removes entries, it does not reweight the ones that stay.
+    #[test]
+    fn a_replica_that_stopped_answering_is_skipped() {
+        let table = RouteTable::new();
+        let health = table.health();
+        let (one, two, three) = (address(1), address(2), address(3));
+        let upstream = Upstream::Proxy(vec![one, two, three]);
+
+        // Everything up: three requests, three different copies.
+        let taken: Vec<_> = (0..3)
+            .map(|turn| upstream.pick_live(turn, &health))
+            .collect();
+        assert_eq!(taken, vec![Some(one), Some(two), Some(three)]);
+
+        for _ in 0..crate::edge::health::FAILURES_TO_EVICT {
+            health.observed(two, false, 0);
+        }
+
+        // Six requests over two live copies, evenly, and never the one
+        // that is down.
+        let taken: Vec<_> = (0..6)
+            .map(|turn| upstream.pick_live(turn, &health).expect("somewhere"))
+            .collect();
+        assert!(!taken.contains(&two), "{taken:?}");
+        assert_eq!(taken.iter().filter(|a| **a == one).count(), 3, "{taken:?}");
+        assert_eq!(
+            taken.iter().filter(|a| **a == three).count(),
+            3,
+            "{taken:?}"
+        );
+    }
+
+    /// **The rule that makes this safe to run at all.** A name whose
+    /// every upstream reads as down still gets a request forwarded: it
+    /// fails with a 502 that would have happened anyway, rather than a
+    /// 404 claiming the site does not exist.
+    ///
+    /// So a prober that is itself wrong — a node whose own network broke,
+    /// a timeout too short under load — costs nothing that was not
+    /// already lost. It can never take a name off the air, which is the
+    /// failure that would make health checks worse than none.
+    #[test]
+    fn health_may_never_take_the_last_one_out() {
+        let table = RouteTable::new();
+        let health = table.health();
+        let (one, two) = (address(1), address(2));
+        let upstream = Upstream::Proxy(vec![one, two]);
+
+        for address in [one, two] {
+            for _ in 0..crate::edge::health::FAILURES_TO_EVICT {
+                health.observed(address, false, 0);
+            }
+        }
+
+        assert_eq!(
+            upstream.pick_live(0, &health),
+            Some(one),
+            "with nothing healthy it still sends the request somewhere"
+        );
+        assert_eq!(
+            upstream.pick_live(1, &health),
+            Some(two),
+            "and still in turn"
+        );
+    }
+
+    /// The prober asks the table what to probe, and asks about one
+    /// address once — a node's overlay address serves every name it
+    /// answers for, so probing per name would be the same question five
+    /// times.
+    #[test]
+    fn every_upstream_is_named_once_whatever_it_serves() {
+        let table = RouteTable::new();
+        let (shared, only) = (address(1), address(2));
+        table.replace([
+            ("a.example".to_string(), Upstream::Proxy(vec![shared, only])),
+            ("b.example".to_string(), Upstream::Proxy(vec![shared])),
+            ("console.example".to_string(), Upstream::ControlPlane),
+        ]);
+
+        assert_eq!(
+            table.upstreams(),
+            vec![shared, only],
+            "deduplicated, and the control plane is not an upstream"
+        );
+    }
+
+    fn address(last: u8) -> SocketAddr {
+        SocketAddr::from(([10, 42, 0, last], 8080))
+    }
+
     use super::*;
 
     fn proxy(port: u16) -> Upstream {

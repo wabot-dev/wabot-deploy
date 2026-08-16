@@ -121,6 +121,8 @@ pub async fn run(config: Config) -> anyhow::Result<i32> {
     // One router: the console's pages, the API's endpoints and the
     // registry answer on the same hostname, because they are the same
     // thing to whoever is looking at the node.
+    // Taken before the table is moved into the edge below.
+    let health_routes = routes.clone();
     let control_plane = crate::api::routes(&container)
         .merge(crate::network::api::routes(&container))
         .merge(crate::console::routes(&container))
@@ -273,6 +275,17 @@ pub async fn run(config: Config) -> anyhow::Result<i32> {
                 vec![],
             ),
         )
+        // Whether the upstreams answer.
+        //
+        // Beside the listener rather than inside it: the edge's job is
+        // to forward a request, and a request is not the moment to find
+        // out that a replica died — the first one to notice would be the
+        // one that failed. This asks on a timer, so the failure has
+        // already been priced in by the time somebody's request arrives.
+        .service_with_cancel("upstream-health", {
+            let routes = health_routes.clone();
+            move |cancel| crate::edge::health::watch(routes, cancel)
+        })
         .service_with_cancel("edge-https", move |cancel| {
             crate::edge::serve_https(edge, resolver, https, cancel)
         })
