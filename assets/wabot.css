@@ -1,6 +1,18 @@
 /* =============================================================
    Wabot Design System — core tokens + reset + semantic styles
    -------------------------------------------------------------
+   THIS COPY IS OURS. It was brought here so a node never needs a
+   CDN, and so it could be corrected where the correction belongs.
+   Nothing syncs it back and nothing overwrites it: there is no
+   script, no build step and no CI job that touches this file.
+
+   Corrections made here carry a WHY comment saying what was wrong
+   and what it measured, so the next person can tell them from the
+   original. They used to live in `console/layout.rs`, restated at
+   a specificity that could win, under a comment claiming an
+   upstream sync would take them away. There is no sync. Page CSS
+   belongs in `layout.rs`; what a token *is* belongs here.
+   -------------------------------------------------------------
    Single-file design system. Import this and write semantic HTML:
 
        link rel=stylesheet href=colors_and_type.css
@@ -118,8 +130,12 @@
 
   --c-fg:          var(--c-n-900);  /* headings, body */
   --c-fg-body:     var(--c-n-700);
-  --c-fg-muted:    var(--c-n-500);
-  --c-fg-faint:    var(--c-n-400);
+  /* CORRECTED. The shipped ramp — n-500 and n-400 — measures 2.0:1
+     to 2.5:1 against the surfaces this is painted on, where the
+     floor for body text is 4.5:1. Not decorative: faint renders a
+     slug, an empty-state line and every placeholder. */
+  --c-fg-muted:     88 83 76;      /* worst case 6.06:1 */
+  --c-fg-faint:    104 99 92;      /* worst case 4.73:1 */
   --c-fg-inverse:  var(--c-n-0);
 
   --c-brand:       var(--c-brand-500);
@@ -129,6 +145,11 @@
   --c-action:      var(--c-n-900);  /* primary action bg — black */
   --c-action-fg:   var(--c-n-0);
   --c-action-soft: var(--c-n-200);  /* secondary action bg */
+
+  /* The fill of an unchecked box. Its own token because dark needs a
+     different answer — see the correction there — and a rule reading
+     `--c-bg-contrast` directly could not be given one. */
+  --c-control-empty: var(--c-bg-contrast);
 
   --c-focus:       var(--c-brand-500);
 
@@ -203,10 +224,23 @@
   --c-bg-contrast: 44 42 39;     /* heavy contrast */
   --c-bg-inverse:  244 242 238;  /* inverse becomes light */
 
-  --c-fg:          240 238 233;
+  /* CORRECTED, and the four below are one fault: dark takes a token
+     that reads well in light and *inverts its role* without
+     revisiting what is painted on or beside it. A light chip becomes
+     a slab a shade off the card; a red dark enough to read as text
+     becomes a pink slab still carrying white ink. Each was invisible
+     to whoever wrote it and obvious to somebody reading at night. */
+
+  /* 12.64:1 on the canvas, down from 15.14. No upper bound in WCAG,
+     but near-maximum contrast on dark is what makes light text look
+     like it is vibrating. Still far above AAA. */
+  --c-fg:          224 218 209;
   --c-fg-body:     214 210 202;
-  --c-fg-muted:    160 154 145;
-  --c-fg-faint:    110 104  96;
+  /* Muted and faint were two units apart after faint was corrected —
+     two tones doing the work of two levels, so a table heading, a
+     hint and a slug were all the same grey. 8.25:1 and 5.00:1. */
+  --c-fg-muted:    185 178 168;
+  --c-fg-faint:    158 152 143;
   --c-fg-inverse:   17  16  15;
 
   --c-brand:       var(--c-brand-500);
@@ -215,7 +249,17 @@
 
   --c-action:      244 242 238;  /* in dark mode actions invert — light pill on dark */
   --c-action-fg:   17  16  15;
-  --c-action-soft: 44  42  39;
+  /* CORRECTED. 44 42 39 against a card's 34 33 31 is 1.12:1 — a
+     secondary button nobody could find, where the same token in
+     light is a grey chip on white. 2.14:1 for the slab, and it
+     stops there: lighter finds the button and loses its label,
+     which stays at 5.23:1. */
+  --c-action-soft:  88  84  78;
+  /* CORRECTED. An unchecked box was `--c-bg-contrast`, the same
+     1.12:1 — a gap where a control should be. 3.15:1, what WCAG
+     asks of a control, and it can go the whole way because nothing
+     is written on it. */
+  --c-control-empty: 112 108 101;
 
   --c-success-bg:  30  56  38;
   --c-success-fg:  175 215 180;
@@ -225,6 +269,53 @@
   --c-danger-fg:   238 175 165;
   --c-info-bg:     28  46  68;
   --c-info-fg:     176 200 226;
+}
+
+/* The same palette, for somebody who never chose a theme.
+   ─────────────────────────────────────────────────────────────
+   ADDED. The block above only answers to an explicit choice, and
+   CSS cannot make a media query set an attribute — so a reader who
+   has never touched the toggle got the light palette on a dark
+   page. Which reader that is depends on nothing they did, so this
+   is the class of bug that "looks fine on my machine" was invented
+   for.
+
+   Written out rather than aliased because there is nothing to alias
+   *to*: a custom property cannot carry a whole declaration block.
+   `the_two_dark_palettes_agree` compares the two, token by token,
+   and fails on a value changed in one of them. */
+@media (prefers-color-scheme: dark) {
+  .app-shell:not([data-theme='light']) {
+    --c-bg:          26 25 24;
+    --c-bg-raised:   34 33 31;
+    --c-bg-sunken:   21 20 19;
+    --c-bg-contrast: 44 42 39;
+    --c-bg-inverse:  244 242 238;
+
+    --c-fg:          224 218 209;
+    --c-fg-body:     214 210 202;
+    --c-fg-muted:    185 178 168;
+    --c-fg-faint:    158 152 143;
+    --c-fg-inverse:   17  16  15;
+
+    --c-brand:       var(--c-brand-500);
+    --c-brand-ink:   var(--c-brand-300);
+    --c-brand-wash:   60  32  18;
+
+    --c-action:      244 242 238;
+    --c-action-fg:    17  16  15;
+    --c-action-soft:  88  84  78;
+    --c-control-empty: 112 108 101;
+
+    --c-success-bg:   30  56  38;
+    --c-success-fg:  175 215 180;
+    --c-warning-bg:   68  50  18;
+    --c-warning-fg:  240 198 122;
+    --c-danger-bg:    72  28  24;
+    --c-danger-fg:   238 175 165;
+    --c-info-bg:      28  46  68;
+    --c-info-fg:     176 200 226;
+  }
 }
 
 
@@ -433,8 +524,15 @@ section { padding: var(--sp-12) 0; }
    No hover. Press = darker rgb-mix; disabled = lower opacity.
    ─────────────────────────────────────────────────────────── */
 
+/* CORRECTED: `:not([class])`, the idiom the secondary rule below
+   already used. Without it `button[type='submit']` (0,1,1) outranks
+   `.btn-secondary`, `.btn-ghost` and `.btn-danger` (0,1,0), so every
+   submit came out primary black whatever variant it asked for — and
+   on a console where almost every action is a form, almost every
+   button was shouting. It was patched by restating each variant at
+   higher specificity in `layout.rs`; this is the cause. */
 .btn,
-button[type='submit'] {
+button[type='submit']:not([class]) {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -450,7 +548,7 @@ button[type='submit'] {
 }
 
 .btn:active,
-button[type='submit']:active { background: rgb(var(--c-action) / 0.82); }
+button[type='submit']:not([class]):active { background: rgb(var(--c-action) / 0.82); }
 
 .btn:disabled,
 button[type='submit']:disabled {
@@ -478,7 +576,11 @@ button[type='button']:not([class]):active { background: rgb(var(--c-action-soft)
 /* Danger — restrained red */
 .btn-danger {
   background: rgb(var(--c-danger-fg));
-  color: rgb(var(--c-n-0));
+  /* CORRECTED. `--c-n-0` is white, and `--c-danger-fg` flips to a
+     pale pink in dark so it can be *read* as text — leaving white on
+     pink at 1.29:1, on the one button where being read matters most.
+     The inverse of its slab: unchanged in light, 10:1 in dark. */
+  color: rgb(var(--c-fg-inverse));
 }
 
 /* Brand — orange. Use sparingly: 1 per view. */
@@ -551,7 +653,8 @@ input[type='checkbox'], input[type='radio'] {
   appearance: none;
   width: 1.05rem; height: 1.05rem;
   flex-shrink: 0;
-  background: rgb(var(--c-bg-contrast));
+  /* CORRECTED: through the token, so dark can answer differently. */
+  background: rgb(var(--c-control-empty));
   border-radius: var(--r-sm);
   display: inline-grid; place-content: center;
   cursor: pointer;
@@ -560,10 +663,15 @@ input[type='checkbox'], input[type='radio'] {
 }
 input[type='radio'] { border-radius: 50%; }
 
+/* CORRECTED, both marks: `--c-n-0` is a fixed white on a box coloured
+   `--c-fg` — near-black in light and cream in dark, so a checked box
+   in dark was white on cream and could not be told from an empty one.
+   The mark is the inverse of its box, which is what it always meant.
+   Reported on the join terms screen, where every box is a decision. */
 input[type='checkbox']::after {
   content: '';
   width: 0.55rem; height: 0.55rem;
-  background: rgb(var(--c-n-0));
+  background: rgb(var(--c-fg-inverse));
   clip-path: polygon(14% 44%, 0 65%, 50% 100%, 100% 16%, 80% 0%, 43% 62%);
   transform: scale(0);
   transition: transform var(--motion-fast);
@@ -571,7 +679,7 @@ input[type='checkbox']::after {
 input[type='radio']::after {
   content: '';
   width: 0.45rem; height: 0.45rem; border-radius: 50%;
-  background: rgb(var(--c-n-0));
+  background: rgb(var(--c-fg-inverse));
   transform: scale(0);
   transition: transform var(--motion-fast);
 }

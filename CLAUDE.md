@@ -148,9 +148,29 @@ somebody pastes into an issue.
 The console follows the Wabot design system: no borders, no shadows, no
 hover state changes, primary actions are black, brand orange is for
 highlights only, sentence case, no emoji as iconography. Status is a
-coloured dot plus a word. `src/console/layout.rs` holds the page-level
-CSS; the tokens come from `assets/`, vendored so a node never needs a
-CDN.
+coloured dot plus a word.
+
+**`assets/wabot.css` is ours.** It came down here so a node never needs
+a CDN, and *that is also what makes it the place to correct*. Nothing
+syncs it back — no script, no build step, no CI job touches it — so the
+comment that used to say a sync would silently take a fix away was
+describing a hazard this repository does not have. Six corrections
+lived in `layout.rs` because of it, restated at a specificity that
+could win, and one of them was a *patch for a cause* sitting two
+hundred lines from the cause.
+
+So: what a token **is** goes in `assets/wabot.css`, beside the value it
+replaces, under a `CORRECTED` comment saying what was wrong and what it
+measured. Page CSS — the shell, the meter, the cards, anything this
+console invented — stays in `src/console/layout.rs`. The split is the
+thing, not the file's provenance.
+
+Two tests read the stylesheet directly rather than a copy of it:
+`the_two_dark_palettes_agree`, because dark is written twice and CSS
+cannot make a media query set an attribute, and
+`a_classed_submit_is_not_the_primary_button`, because
+`button[type='submit']` outranks every `.btn-*` variant and takes them
+all with it.
 
 ## Working locally
 
@@ -262,11 +282,6 @@ Publishing a release is outward-facing. Ask first.
 - `doctor` prints the overlay port from the config under a comment
   promising what the kernel says. The peers below it are read from the
   kernel; the port is not.
-- **Two design-system fixes are held in `layout.rs` rather than in the
-  vendored stylesheet**, and both belong upstream: the muted and faint
-  ramps, which failed contrast for body text, and a checked checkbox
-  whose mark was a fixed white on a box coloured `--c-fg` — cream on
-  cream in dark mode, a checked box indistinguishable from an empty one.
 - A value the stream assigns has to be the shape the CSSOM takes, and
   the CSSOM refuses silently: `style.width = "width:12%"` does nothing
   at all. The meter on the memory page froze that way for as long as it

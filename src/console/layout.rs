@@ -78,173 +78,6 @@ pub fn error_note(message: &str) -> impl Renderable + '_ {
 /// business. No borders, no shadows, no hover states — separation is
 /// background contrast.
 pub const CSS: &str = r#"
-/* The quiet text tones, corrected in both themes.
- *
- * The design system ships `--c-fg-faint` at a value that fails WCAG AA
- * against every surface this console paints it on — 2.0:1 to 2.5:1 in
- * light, 2.6:1 to 3.3:1 in dark, where the floor for body text is
- * 4.5:1. That is not decorative: faint is what renders a project's
- * slug, an empty-state line and every placeholder. `--c-fg-muted`
- * failed the same way in light only.
- *
- * Overridden here rather than in `assets/wabot.css` because that file
- * is vendored — editing it forks the copy and the next sync silently
- * takes the fix away. The ramp belongs to the whole design system, so
- * the real fix is upstream; this holds until then.
- */
-:root {
-  --c-fg-muted: 88 83 76;   /* worst case 6.06:1 */
-  --c-fg-faint: 104 99 92;  /* worst case 4.73:1 */
-}
-
-/* Dark, chosen explicitly. Two corrections, and only two — the rest of
- * the dark palette is the design system's and it measures well.
- *
- * `--c-fg` comes down from 15.1:1 to 12.6:1 against the canvas. There
- * is no upper bound in WCAG, but near-maximum contrast on a dark
- * background is what makes light text look like it is vibrating, and
- * the people who feel it worst are the ones reading a deploy console
- * at two in the morning. 12.6:1 is still far above AAA.
- *
- * The canvas itself is left alone at #1A1918. It is a deliberate warm
- * charcoal rather than black, which is the part of "easy on the eyes"
- * the design system already got right.
- */
-/* Four corrections, and the reason they are all here is one thing the
- * dark palette does: it takes a token that reads well in light and
- * *inverts its role*, without revisiting what is painted on or beside
- * it. A light-mode chip becomes a dark-mode slab a shade off the card;
- * a red dark enough to read as text becomes a pink slab still carrying
- * white ink. Every one of these was invisible to whoever wrote it and
- * obvious to somebody using the console at night.
- *
- * The values are the same in both dark scopes — this one and the
- * `prefers-color-scheme` block below — so a change here needs the same
- * change there.
- */
-[data-theme='dark'] {
-  --c-fg:       224 218 209;  /* 12.64:1 on the canvas, down from 15.14 */
-  --c-fg-faint: 158 152 143;  /* worst case 5.00:1, up from 2.60 */
-
-  /* The ramp had no steps left in it. Correcting faint upwards brought
-   * it to 158 152 143 and left muted at 160 154 145 — two tones two
-   * units apart doing the work of two levels, so a table heading, a
-   * hint and a slug were all the same grey and none of them read as
-   * quieter than the next. Muted moves up to where it was meant to be:
-   * 8.25:1 on the canvas, 6.89:1 on a card, and visibly above faint. */
-  --c-fg-muted: 185 178 168;
-
-  /* A secondary action you cannot find is not an action.
-   *
-   * `--c-action-soft` is 44 42 39 against a card's 34 33 31 — 1.12:1,
-   * where the same token in light mode is a grey chip on white and
-   * reads at once. "Save origin" was a label floating on the card with
-   * no button under it. 88 84 78 puts the slab at 2.14:1 against the
-   * card and keeps its label at 5.23:1, which is where this stops:
-   * lighter finds the button and loses the word on it. */
-  --c-action-soft: 88 84 78;
-
-  /* An empty box you cannot see is not a control. The unchecked fill is
-   * `--c-bg-contrast`, 44 42 39 — the same 1.12:1, so every unticked
-   * box was a gap where a control should be. Reported on the edges
-   * card, where the boxes are the whole of what the card does.
-   *
-   * 3.15:1, which is what WCAG asks of a control, and it can go the
-   * whole way because nothing is written on it — unlike the button
-   * above. */
-  --c-control-empty: 112 108 101;
-}
-
-/* Light keeps what the design system chose; the token exists so the
- * rule below can be written once. */
-:root {
-  --c-control-empty: var(--c-bg-contrast);
-}
-
-/* `:not(:checked)` rather than a lower-specificity rule: the checked
- * fill is `--c-fg` and this must not be able to win against it. */
-input[type="checkbox"]:not(:checked),
-input[type="radio"]:not(:checked) {
-  background: rgb(var(--c-control-empty));
-}
-
-/* A destructive action, in either theme.
- *
- * `.btn-danger` paints a fixed `--c-n-0` on a slab coloured
- * `--c-danger-fg` — and that token flips to a pale pink in dark so it
- * can be *read* as text, which left white on pink at 1.29:1. A delete
- * button nobody can read is the one button where that matters most.
- *
- * The ink is the inverse of its slab, exactly as the checkbox mark
- * below: unchanged in light, where `--c-fg-inverse` is that same white,
- * and near-black on the pink at 10.0:1 in dark.
- */
-.btn-danger,
-button[type="submit"].btn-danger {
-  color: rgb(var(--c-fg-inverse));
-}
-
-/* A checked box, in either theme.
- *
- * The design system paints the mark a fixed `--c-n-0` on a box coloured
- * `--c-fg` — near-black in light, cream in dark. So in dark mode it was
- * white on cream: a checked box nobody could tell from an empty one,
- * which is a control that lies about the thing it controls. Reported on
- * the join terms screen, where every box is a decision.
- *
- * The mark is the inverse of its box, which is what it always meant. Here
- * rather than in `assets/wabot.css` for the reason the ramp above gives:
- * that file is vendored, and the real fix belongs upstream.
- */
-input[type="checkbox"]::after,
-input[type="radio"]::after {
-  background: rgb(var(--c-fg-inverse));
-}
-
-/* Dark, followed from the operating system when nobody has chosen.
- *
- * The tokens are restated because the design system ships its dark
- * palette only under `[data-theme='dark']`, and CSS cannot make a
- * media query set an attribute. Keep in step with the vendored block
- * and with the corrections above; a `prefers-color-scheme` variant
- * belongs upstream.
- *
- * The semantic half was missing here, which is a whole class of "dark
- * mode looks wrong for some people and right for others": a running
- * badge, a failure, a warning and the brand ink all kept their light
- * values for anybody who had never touched the toggle, because that
- * leaves `data-theme` empty rather than `dark`. Nobody hits it who
- * chose their theme once.
- */
-@media (prefers-color-scheme: dark) {
-  .app-shell:not([data-theme='light']) {
-    --c-bg:          26 25 24;
-    --c-bg-raised:   34 33 31;
-    --c-bg-sunken:   21 20 19;
-    --c-bg-contrast: 44 42 39;
-    --c-bg-inverse:  244 242 238;
-    --c-fg:          224 218 209;
-    --c-fg-body:     214 210 202;
-    --c-fg-muted:    185 178 168;
-    --c-fg-faint:    158 152 143;
-    --c-fg-inverse:   17  16  15;
-    --c-action:      244 242 238;
-    --c-action-fg:    17  16  15;
-    --c-action-soft:  88  84  78;
-    --c-control-empty: 112 108 101;
-    --c-brand-ink:   var(--c-brand-300);
-    --c-brand-wash:   60  32  18;
-    --c-success-bg:   30  56  38;
-    --c-success-fg:  175 215 180;
-    --c-warning-bg:   68  50  18;
-    --c-warning-fg:  240 198 122;
-    --c-danger-bg:    72  28  24;
-    --c-danger-fg:   238 175 165;
-    --c-info-bg:      28  46  68;
-    --c-info-fg:     176 200 226;
-  }
-}
-
 /* The theme attribute sits on the shell rather than the document root:
  * the framework assembles the document, and a view has no way to reach
  * that element. So the shell paints the canvas itself, or the strip a
@@ -792,33 +625,6 @@ pre ::selection {
   gap: var(--sp-1);
 }
 
-/* The design system styles `button[type="submit"]` as the primary
-   action, and that selector outranks `.btn-secondary`, `.btn-ghost`
-   and `.btn-danger` — so every submit came out black whatever variant
-   it asked for. On a console almost every action is a form, so almost
-   every button was shouting. These restate the variants at a
-   specificity that wins.
-
-   The fix belongs upstream in the design system; this is the vendored
-   copy, and editing it here would be lost on the next sync. */
-button[type="submit"].btn-secondary {
-  background: rgb(var(--c-action-soft));
-  color: rgb(var(--c-fg));
-}
-button[type="submit"].btn-secondary:active { background: rgb(var(--c-action-soft) / 0.7); }
-
-button[type="submit"].btn-ghost {
-  background: transparent;
-  color: rgb(var(--c-fg));
-  padding-inline: var(--sp-3);
-}
-button[type="submit"].btn-ghost:active { color: rgb(var(--c-fg-muted)); }
-
-button[type="submit"].btn-danger {
-  background: rgb(var(--c-danger-fg));
-  color: rgb(var(--c-n-0));
-}
-
 /* A destructive action that is not the danger zone: a row's Delete.
    Red text rather than a red slab — it has to read as destructive
    without competing with the page's one real action. */
@@ -938,10 +744,16 @@ mod tests {
     /// whether they ever touched the toggle. Four tokens were in that
     /// state at once: the semantic set, which meant a running badge kept
     /// its light-mode colours on a dark page.
+    ///
+    /// Both blocks are in `assets/wabot.css` now, which is where a token
+    /// is defined. This reads the stylesheet the pages actually load —
+    /// not a copy of it — so the file being editable does not make it
+    /// unguarded.
     #[test]
     fn the_two_dark_palettes_agree() {
-        let chosen = tokens(super::CSS, "[data-theme='dark'] {");
-        let followed = tokens(super::CSS, ".app-shell:not([data-theme='light']) {");
+        let sheet = include_str!("../../assets/wabot.css");
+        let chosen = tokens(sheet, "[data-theme='dark'] {");
+        let followed = tokens(sheet, ".app-shell:not([data-theme='light']) {");
         assert!(!chosen.is_empty(), "the explicit dark block was not found");
 
         for (name, value) in &chosen {
@@ -989,13 +801,42 @@ mod tests {
             .collect()
     }
 
+    /// A submit with a variant class must not be styled as primary.
+    ///
+    /// `button[type='submit']` is 0,1,1 and `.btn-secondary` is 0,1,0,
+    /// so the bare selector wins and every submit came out black
+    /// whatever it asked for — on a console where almost every action
+    /// is a form, almost every button was shouting.
+    ///
+    /// It was patched by restating each variant at a higher
+    /// specificity, which had to be repeated for each new one and was
+    /// checked here by name. The cause is fixed instead: `:not([class])`
+    /// on the primary selector, which is the idiom the design system's
+    /// own secondary rule already used. So what this asserts is the
+    /// guard, not the patches — a variant added tomorrow is covered
+    /// without touching this test.
     #[test]
-    fn every_button_variant_beats_the_submit_default() {
-        for variant in ["btn-secondary", "btn-ghost", "btn-danger"] {
-            assert!(
-                super::CSS.contains(&format!(r#"button[type="submit"].{variant}"#)),
-                "{variant} would lose to button[type=\'submit\'] and render as primary"
-            );
+    fn a_classed_submit_is_not_the_primary_button() {
+        let sheet = include_str!("../../assets/wabot.css");
+        for rule in sheet.split('}') {
+            let Some((selectors, body)) = rule.split_once('{') else {
+                continue;
+            };
+            // Only the rules that *paint*. `:disabled` reaches every
+            // submit on purpose — it sets opacity and a cursor, which
+            // a disabled button of any variant should have, and there
+            // is nothing there for a variant to want back.
+            if !body.contains("background") && !body.contains("color") {
+                continue;
+            }
+            for selector in selectors.split(',') {
+                let selector = selector.trim();
+                assert!(
+                    !selector.starts_with("button[type='submit']")
+                        || selector.contains(":not([class])"),
+                    "{selector:?} paints every submit, variants included"
+                );
+            }
         }
     }
 }
