@@ -191,6 +191,30 @@ pub async fn run(config: Config, into: Option<PathBuf>) -> anyhow::Result<i32> {
     Ok(0)
 }
 
+/// Which backup a restore to this moment has to start from.
+///
+/// **The newest one taken at or before the target.** Not the newest of
+/// all, which is the mistake that is easy to make and impossible to
+/// recover from: replaying forwards is the only direction there is, so a
+/// backup taken *after* the moment somebody wants already contains what
+/// they are trying to undo. It cannot be rewound to reach them.
+///
+/// `None` when every backup is newer than the target — the moment is
+/// before anything this node kept, and saying so is the only honest
+/// answer. An operator who asked for last Tuesday and got Thursday's
+/// data with no warning would find out by reading rows that should not
+/// exist.
+pub fn base_for<'a>(
+    taken: &'a [(PathBuf, Manifest)],
+    target: i64,
+) -> Option<&'a (PathBuf, Manifest)> {
+    // `taken` is newest first, so the first one at or before the target
+    // is the newest such — no scan of the rest.
+    taken
+        .iter()
+        .find(|(_, manifest)| manifest.taken_at <= target)
+}
+
 /// What a database can be restored to, and what it cannot.
 ///
 /// **Four answers, and three of them are "not what you think".** The
@@ -601,6 +625,55 @@ fn human(bytes: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// **The newest backup at or before the moment, never the newest of
+    /// all.** Replaying only goes forwards, so a backup taken after the
+    /// moment somebody wants already contains the thing they are trying
+    /// to undo — and no amount of log replay walks back to them.
+    ///
+    /// The failure this prevents is the quiet one: an operator asks for
+    /// last Tuesday, gets Thursday's data, and finds out by reading rows
+    /// that should not exist.
+    #[test]
+    fn a_restore_starts_from_the_backup_before_the_moment() {
+        let day = 24 * 60 * 60 * 1000i64;
+        let at = |taken_at: i64| {
+            (
+                PathBuf::from(format!("backup-{taken_at}")),
+                Manifest {
+                    format: FORMAT,
+                    taken_by: "test".into(),
+                    taken_at,
+                    node_id: None,
+                    node_name: None,
+                    volumes: Vec::new(),
+                },
+            )
+        };
+        // Newest first, as `taken` returns them.
+        let backups = vec![at(10 * day), at(5 * day), at(1 * day)];
+
+        // A moment between two backups starts from the earlier one.
+        let picked = base_for(&backups, 7 * day).expect("one before it");
+        assert_eq!(picked.1.taken_at, 5 * day);
+
+        // A moment after everything starts from the newest.
+        assert_eq!(
+            base_for(&backups, 20 * day).expect("the newest").1.taken_at,
+            10 * day
+        );
+
+        // Exactly at a backup is that backup: it holds that moment.
+        assert_eq!(
+            base_for(&backups, 5 * day).expect("that one").1.taken_at,
+            5 * day
+        );
+
+        // And a moment before anything kept has no answer, rather than
+        // silently getting one that is too late.
+        assert!(base_for(&backups, 12 * 60 * 60 * 1000).is_none());
+        assert!(base_for(&[], 5 * day).is_none());
+    }
 
     /// The four answers, and the one that matters most is `NoAnchor`.
     ///

@@ -244,7 +244,119 @@ pub fn archive_command() -> String {
     format!("test ! -f {ARCHIVE_MOUNT}/%f.gz && gzip -1 < %p > {ARCHIVE_MOUNT}/%f.gz.tmp && mv {ARCHIVE_MOUNT}/%f.gz.tmp {ARCHIVE_MOUNT}/%f.gz")
 }
 
-/// What the primary is started with.
+/// Where a backup being restored is mounted, inside the container.
+pub const BASE_MOUNT: &str = "/base";
+
+/// Unpack a base backup into a data directory, and leave it ready to
+/// recover.
+///
+/// One shell command in the engine's own image, which is where `tar`,
+/// `gunzip` and the `postgres` user all are — the same reasoning as
+/// every other container this node runs against that image.
+///
+/// Four steps, and the order is the whole of it:
+///
+/// 1. **Refuse a directory that is not empty.** Untarring over a data
+///    directory would mix two databases into something that starts and
+///    is wrong, which is worse than either failing.
+/// 2. `base.tar.gz` is the cluster; `pg_wal.tar.gz` is the log written
+///    *during* the backup, which goes inside it. `pg_basebackup -Ft`
+///    produces exactly these two.
+/// 3. **`recovery.signal`**, whose presence is the instruction. Without
+///    it the server opens the restored files as an ordinary database and
+///    replays nothing — which looks like a successful restore to the
+///    moment of the backup, and silently is not the moment that was
+///    asked for.
+/// 4. `chown`, because the node made the directory as root and the
+///    server is not root. The same fault as the key and the archive,
+///    caught here before it can be a third surprise.
+pub fn unpack_base() -> Vec<String> {
+    vec![
+        "sh".into(),
+        "-c".into(),
+        format!(
+            "set -e; \
+             [ -z \"$(ls -A {PGDATA} 2>/dev/null)\" ] || {{ echo 'that data directory is not empty'; exit 1; }}; \
+             mkdir -p {PGDATA}; \
+             tar -xzf {BASE_MOUNT}/base.tar.gz -C {PGDATA}; \
+             mkdir -p {PGDATA}/pg_wal; \
+             tar -xzf {BASE_MOUNT}/pg_wal.tar.gz -C {PGDATA}/pg_wal; \
+             touch {PGDATA}/{RECOVERY_SIGNAL}; \
+             chown -R postgres:postgres {PGDATA}; \
+             chmod 0700 {PGDATA}"
+        ),
+    ]
+}
+
+/// The file whose presence tells Postgres to replay rather than open.
+///
+/// Its *presence*, not its contents — an empty file is the whole
+/// instruction. Postgres deletes it when recovery finishes, which is how
+/// a restored database stops being one and becomes an ordinary primary.
+pub const RECOVERY_SIGNAL: &str = "recovery.signal";
+
+/// How a recovering server fetches an archived segment.
+///
+/// `%f` is the name it wants and `%p` where to put it. Reading from a
+/// **read-only** mount of the original database's archive, which is the
+/// arrangement that matters: a restore is a second database replaying
+/// the first one's log, and a recovery that could write to that archive
+/// could damage the thing it was restoring from.
+///
+/// `gunzip -c` because the archive command compressed. The pair has to
+/// agree, and they are next to each other so that a change to one is
+/// read beside the other.
+pub fn restore_command() -> String {
+    format!("gunzip -c {ARCHIVE_MOUNT}/%f.gz > %p")
+}
+
+/// What a server is started with to replay to a moment and stop there.
+///
+/// ## `promote`, not `pause`
+///
+/// The default when a target is reached is to **pause**, waiting for
+/// somebody to say what happens next — which for a database being
+/// restored into a console is a server that comes up refusing
+/// connections and no obvious way to un-pause it. `promote` finishes
+/// recovery and opens for writes: the restored copy is its own database
+/// from that moment, which is what somebody asking for one wants.
+///
+/// It is also what makes this safe to do at all: the restored database
+/// is a *new* one that took the original's past, and promoting it means
+/// it can never be confused for the original or replay any further.
+///
+/// ## `exclusive` is deliberately not set
+///
+/// `recovery_target_inclusive` defaults to true: recovery stops *after*
+/// the last transaction that committed at or before the target. Somebody
+/// asking to go back to 14:32 means "the database as it was at 14:32",
+/// which includes what committed in that second.
+pub fn recovery_arguments(memory_limit: u64, target: Option<&str>) -> Vec<String> {
+    let mut arguments = common_arguments(memory_limit);
+
+    push(&mut arguments, "restore_command", &restore_command());
+    push(&mut arguments, "recovery_target_action", "promote");
+    match target {
+        // A moment. Postgres parses this as a timestamp in the server's
+        // time zone, which is UTC here — see `console::layout::exactly`,
+        // which labels it for the same reason.
+        Some(target) => push(&mut arguments, "recovery_target_time", target),
+        // No target is "as far as the log goes", which is what a node
+        // being rebuilt wants: the last moment that was archived.
+        None => {}
+    }
+
+    // **Never archives.** A restored database replaying somebody else's
+    // log must not write into the archive it is reading from — and one
+    // that has been promoted would start a new timeline and archive that
+    // into the original's directory, where the original's own segments
+    // are. Off, explicitly, so that a copy of the primary's arguments
+    // cannot bring it back.
+    push(&mut arguments, "archive_mode", "off");
+    arguments
+}
+
+/// What a primary is started with.
 pub fn primary_arguments(memory_limit: u64, archiving: bool) -> Vec<String> {
     let mut arguments = common_arguments(memory_limit);
 
@@ -858,6 +970,71 @@ mod tests {
 
         // And a missing byte count keeps the signal.
         assert!(!parse_replication("wabot_slot_4|f")[0].active);
+    }
+
+    /// Unpacking refuses a directory that already holds a database, and
+    /// leaves the signal that makes the server replay.
+    ///
+    /// The signal is the step whose absence is invisible: without it the
+    /// server opens the restored files as an ordinary database and
+    /// replays nothing, which looks like a successful restore to the
+    /// moment of the backup — and is silently not the moment that was
+    /// asked for.
+    #[test]
+    fn unpacking_refuses_a_directory_that_is_not_empty() {
+        let script = unpack_base().join(" ");
+
+        assert!(script.starts_with("sh -c"), "{script}");
+        // `set -e`, so a failed tar does not leave a half-cluster
+        // looking unpacked.
+        assert!(script.contains("set -e"), "{script}");
+        assert!(script.contains("is not empty"), "{script}");
+        // Both halves of what `pg_basebackup -Ft` produced.
+        assert!(script.contains("base.tar.gz"), "{script}");
+        assert!(script.contains("pg_wal.tar.gz"), "{script}");
+        // The instruction to replay.
+        assert!(script.contains(RECOVERY_SIGNAL), "{script}");
+        // And the ownership, learned twice already today.
+        assert!(script.contains("chown -R postgres:postgres"), "{script}");
+        assert!(script.contains("chmod 0700"), "{script}");
+    }
+
+    /// A restore replays somebody else's log and must never write to
+    /// it. Two halves: the archive is mounted read-only (the deploy
+    /// path's job) and archiving is off in the arguments (this one's) —
+    /// because a promoted database starts a new timeline, and archiving
+    /// that into the original's directory would put a second history
+    /// beside the first.
+    #[test]
+    fn a_restored_database_reads_the_archive_and_never_writes_it() {
+        let arguments = recovery_arguments(256 * MB, Some("2026-08-16 14:32:00")).join(" ");
+
+        assert!(
+            arguments.contains("restore_command=gunzip -c"),
+            "{arguments}"
+        );
+        assert!(
+            arguments.contains("recovery_target_time=2026-08-16 14:32:00"),
+            "{arguments}"
+        );
+        // Promote, not pause: the default waits for somebody to say what
+        // happens next, which is a server that comes up refusing
+        // connections with no obvious way out of it.
+        assert!(
+            arguments.contains("recovery_target_action=promote"),
+            "{arguments}"
+        );
+        assert!(arguments.contains("archive_mode=off"), "{arguments}");
+        // And it is still a database: the same ceiling arithmetic and
+        // the same TLS as any other.
+        assert!(arguments.contains("shared_buffers="), "{arguments}");
+        assert!(arguments.contains("ssl=on"), "{arguments}");
+
+        // No target is "as far as the log goes", which is what a node
+        // being rebuilt wants.
+        let latest = recovery_arguments(256 * MB, None).join(" ");
+        assert!(!latest.contains("recovery_target_time"), "{latest}");
+        assert!(latest.contains("restore_command="), "{latest}");
     }
 
     /// The archive command refuses to overwrite, and the reason is the
