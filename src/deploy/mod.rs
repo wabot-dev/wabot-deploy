@@ -119,6 +119,72 @@ enum Holding {
     LetGo,
 }
 
+/// What a node has of one resource, and what is already spoken for.
+#[derive(Debug, Clone, Copy)]
+pub struct Room {
+    /// What may be promised: the machine, less what the node keeps.
+    pub allocatable: u64,
+    /// Whether the machine's size could be read at all.
+    pub known: bool,
+    /// The sum of every ceiling on every copy here, this one included.
+    pub committed: u64,
+    /// What this service already holds, per copy.
+    pub already: u64,
+}
+
+/// Whether one more promise this size can be kept, and why not.
+///
+/// Pure, and separate from the readings, because this is the part
+/// somebody would argue with — and because a test for it should not
+/// need a machine with a particular amount of memory. The first version
+/// was not, and it refused *everything* on any machine whose total it
+/// could not read: `room_for` ran on a laptop with no `/proc/meminfo`,
+/// `allocatable` came out nought, and a node that cannot measure itself
+/// became a node that will not let you set a limit.
+///
+/// **What is not known is not enforced.** A reserve you cannot measure
+/// is not one you can hold back, and refusing on the strength of a
+/// reading that failed is a rule made of a missing number.
+///
+/// `already` is subtracted before the sum, or a ceiling would be refused
+/// by its own current value — a form that lets somebody set a number
+/// once and never change their mind, which is worse than no check
+/// because it looks like a rule.
+pub fn fits(room: Room, wanted: u64, copies: u64, say: impl Fn(u64) -> String) -> Option<String> {
+    if !room.known {
+        return None;
+    }
+    let others = room
+        .committed
+        .saturating_sub(room.already.saturating_mul(copies));
+    let after = others.saturating_add(wanted.saturating_mul(copies));
+    if after <= room.allocatable {
+        return None;
+    }
+    Some(format!(
+        "this node has {} to promise and {} is already promised; {} × {copies} does not fit",
+        say(room.allocatable),
+        say(others),
+        say(wanted),
+    ))
+}
+
+/// What this node has promised to the copies it runs.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Committed {
+    /// Bytes, summed over every copy here with a ceiling.
+    pub memory: u64,
+    /// Millicores, likewise.
+    pub cpu: u32,
+    /// How many copies have no memory ceiling at all.
+    ///
+    /// Reported rather than folded in, because there is no honest number
+    /// to fold: a container with no limit may take everything, and a sum
+    /// that silently omitted them would be a figure an operator trusts
+    /// for a decision it cannot support.
+    pub unbounded: usize,
+}
+
 /// Where a container's published ports are written, so that something
 /// other than the deployment can ask what they were.
 const PORTS_LABEL: &str = "wabot.ports";
@@ -651,6 +717,7 @@ impl Deployer {
             resolv_conf: Some(self.resolv_conf.clone()),
             mounts,
             memory_limit: service.memory_limit,
+            cpu_millicores: service.cpu_millicores,
             // What this container is being published on, written on it.
             // Reconciliation reads it back and compares — the one thing
             // it never checked was whether the ports it opened are the
@@ -901,6 +968,111 @@ impl Deployer {
             // fault and not a reason to replace it.
             Err(_) => true,
         }
+    }
+
+    /// What this node has promised, and what it has left.
+    ///
+    /// **A ceiling is also a reservation.** There is deliberately no
+    /// second number for a request — see `migrations/0038_cpu_limit.sql`
+    /// — so what a service may take is what the node counts against
+    /// itself when deciding whether it can take another.
+    ///
+    /// Counted per *replica* rather than per service: a service with
+    /// three copies here costs three times its ceiling, which is what it
+    /// actually costs. And only the copies here — a copy elsewhere is
+    /// that node's promise to keep.
+    ///
+    /// A service with no ceiling counts as nothing, which is the honest
+    /// answer and an uncomfortable one: it can take everything and the
+    /// arithmetic cannot see it. The page says so rather than quietly
+    /// pretending the sum means more than it does.
+    pub async fn committed(&self) -> Committed {
+        let (Ok(services), Ok(mine)) = (
+            services::all(&self.database, None).await,
+            replicas::here(&self.database).await,
+        ) else {
+            return Committed::default();
+        };
+
+        let mut committed = Committed::default();
+        for replica in mine.iter().filter(|replica| !replica.evicted()) {
+            let Some(service) = services.iter().find(|s| s.id == replica.service_id) else {
+                continue;
+            };
+            match service.memory_limit {
+                Some(bytes) => committed.memory += bytes,
+                None => committed.unbounded += 1,
+            }
+            if let Some(millicores) = service.cpu_millicores {
+                committed.cpu += millicores;
+            }
+        }
+        committed
+    }
+
+    /// Whether this node can keep a promise this size, or why not.
+    ///
+    /// `None` is yes. The reason is a sentence somebody can act on,
+    /// which is this project's rule about errors and matters more here
+    /// than usual: "refused" without a number is a form somebody fights
+    /// with by trying smaller values.
+    ///
+    /// This half gathers; [`fits`] decides. The judgement is worth
+    /// having apart from the four readings it needs — it is where the
+    /// arithmetic somebody would argue with lives, and a test for it
+    /// should not need a machine with a particular amount of memory.
+    pub async fn room_for(
+        &self,
+        service: &Service,
+        memory: Option<u64>,
+        cpu: Option<u32>,
+    ) -> Option<String> {
+        let mine = replicas::here(&self.database).await.ok()?;
+        let copies = mine
+            .iter()
+            .filter(|replica| replica.service_id == service.id && !replica.evicted())
+            .count()
+            .max(1) as u64;
+
+        let committed = self.committed().await;
+        let total = self.memory().await.total;
+
+        if let Some(bytes) = memory {
+            let refusal = fits(
+                Room {
+                    allocatable: crate::platform::presets::allocatable_memory(total),
+                    known: total > 0,
+                    committed: committed.memory,
+                    already: service.memory_limit.unwrap_or(0),
+                },
+                bytes,
+                copies,
+                crate::node::memory::human,
+            );
+            if refusal.is_some() {
+                return refusal;
+            }
+        }
+
+        if let Some(millicores) = cpu {
+            let cores = crate::node::cpu::allocatable_millicores();
+            return fits(
+                Room {
+                    allocatable: u64::from(cores),
+                    known: cores > 0,
+                    committed: u64::from(committed.cpu),
+                    already: u64::from(service.cpu_millicores.unwrap_or(0)),
+                },
+                u64::from(millicores),
+                copies,
+                |millicores| {
+                    crate::platform::presets::cpu_label(
+                        u32::try_from(millicores).unwrap_or(u32::MAX),
+                    )
+                },
+            );
+        }
+        None
     }
 
     /// The copies of this service that are not answering, by replica id.
@@ -2815,6 +2987,100 @@ mod tests {
             .expect("the node holding the standby was told nothing");
         assert_eq!(told.payload["slots"], serde_json::json!([]));
         assert_eq!(told.payload["running"], serde_json::json!(false));
+    }
+
+    /// **A ceiling is a reservation**, so a node counts what it has
+    /// promised and refuses to promise more.
+    ///
+    /// Three claims, and the middle one is the trap. The count must
+    /// exclude what *this* service already holds: counting it means a
+    /// ceiling refused by its own current value — a form somebody can
+    /// set once and never change their mind in, which is worse than no
+    /// check because it looks like a rule.
+    ///
+    /// And per copy, because a service with three replicas here costs
+    /// three times its ceiling. That is what it actually costs.
+    #[test]
+    fn a_node_refuses_to_promise_more_than_it_has() {
+        let gb = 1024 * 1024 * 1024;
+        let say = |bytes| crate::node::memory::human(bytes);
+        let empty = Room {
+            allocatable: 4 * gb,
+            known: true,
+            committed: 0,
+            already: 0,
+        };
+
+        assert_eq!(fits(empty, gb, 1, say), None, "nothing promised yet");
+        assert!(
+            fits(empty, 5 * gb, 1, say).is_some(),
+            "more than the machine has"
+        );
+
+        // Three copies of 2 GB is 6, which does not fit in 4.
+        assert!(fits(empty, 2 * gb, 3, say).is_some());
+        assert_eq!(fits(empty, gb, 3, say), None, "and three of 1 GB does");
+
+        // Holding 1 GB and asking for the same again: its own ceiling
+        // must not count against it.
+        let holding = Room {
+            committed: gb,
+            already: gb,
+            ..empty
+        };
+        assert_eq!(fits(holding, gb, 1, say), None);
+        assert_eq!(fits(holding, 4 * gb, 1, say), None, "and it may grow");
+        assert!(fits(holding, 5 * gb, 1, say).is_some(), "up to the machine");
+
+        // Somebody else's 3 GB is not this service's to spend.
+        let crowded = Room {
+            committed: 3 * gb + gb,
+            already: gb,
+            ..empty
+        };
+        assert_eq!(fits(crowded, gb, 1, say), None);
+        let refusal = fits(crowded, 2 * gb, 1, say).expect("refused");
+        // With the numbers in it: "refused" alone is a form somebody
+        // fights with by trying smaller values.
+        assert!(refusal.contains("4.0 GB to promise"), "{refusal}");
+        assert!(refusal.contains("3.0 GB is already promised"), "{refusal}");
+    }
+
+    /// A node that cannot measure itself must not stop somebody setting
+    /// a limit.
+    ///
+    /// The first version had no such case and refused *everything* on
+    /// any machine whose total it could not read — found by running the
+    /// test above on a laptop with no `/proc/meminfo`, where
+    /// `allocatable` came out nought and every ceiling was too big for
+    /// it. A reserve you cannot measure is not one you can hold back,
+    /// and a rule made of a missing number is not a rule.
+    #[test]
+    fn what_cannot_be_measured_is_not_enforced() {
+        let unknown = Room {
+            allocatable: 0,
+            known: false,
+            committed: 0,
+            already: 0,
+        };
+        assert_eq!(
+            fits(
+                unknown,
+                1024 * 1024 * 1024 * 1024,
+                99,
+                crate::node::memory::human
+            ),
+            None,
+            "an unreadable machine does not get to refuse"
+        );
+
+        // Nought that *was* read is a different answer: a machine with
+        // nothing left to promise refuses, and says so.
+        let full = Room {
+            known: true,
+            ..unknown
+        };
+        assert!(fits(full, 1, 1, crate::node::memory::human).is_some());
     }
 
     /// A slot that comes back has to come back empty.

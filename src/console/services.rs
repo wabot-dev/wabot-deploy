@@ -1045,37 +1045,6 @@ impl ServicePages {
                         ))
                     }
 
-                    // The section carries the id, because the id is
-                    // where a save comes back to. The field's own was
-                    // `memory` too, and two elements with one id is a
-                    // fragment that lands on whichever the browser
-                    // finds first.
-                    <section class="stack" id="memory">
-                        <p class="card-label">(t("Memory"))</p>
-                        <form method="post" action=(format!("{here}/memory")) class="card stack">
-                            <label for="memory-size">(t("Memory"))</label>
-                            <select id="memory-size" name="memory">
-                                @for rung in crate::platform::presets::LADDER {
-                                    @if Some(rung) == service.memory_limit {
-                                        <option value=(rung.to_string()) selected>(
-                                            crate::platform::presets::label(rung)
-                                        )</option>
-                                    } @else {
-                                        <option value=(rung.to_string())>(
-                                            crate::platform::presets::label(rung)
-                                        )</option>
-                                    }
-                                }
-                            </select>
-                            <p class="field-hint">(t("The ceiling on the container and the engine's \
-                                 own settings, together. It takes effect at the next deployment: a \
-                                 cgroup limit is written when the container is created, and nothing \
-                                 reaches into a running one to change it."))</p>
-                            <div class="actions">
-                                <button type="submit">(t("Save"))</button>
-                            </div>
-                        </form>
-                    </section>
                 } @else {
                     <section class="stack" id="releases">
                         <p class="card-label">(t("Releases"))</p>
@@ -1139,6 +1108,79 @@ impl ServicePages {
                         }
                     </section>
                 }
+
+                // What a container may take, for every kind of service.
+                //
+                // The memory half used to be a database's alone, because
+                // that is where presets were invented — and a plain
+                // container could take the machine's memory with nothing
+                // on any page to stop it. The column was always on
+                // `service`; only the form was not.
+                //
+                // The section carries the id, because the id is where a
+                // save comes back to. The memory field's own was
+                // `memory` too, and two elements with one id is a
+                // fragment that lands on whichever the browser finds
+                // first.
+                <section class="stack" id="memory">
+                    <p class="card-label">(t("Resources"))</p>
+                    <form method="post" action=(format!("{here}/memory")) class="card stack">
+                        <label for="memory-size">(t("Memory"))</label>
+                        <select id="memory-size" name="memory">
+                            <option value="">(t("no ceiling"))</option>
+                            @for rung in crate::platform::presets::LADDER {
+                                @if Some(rung) == service.memory_limit {
+                                    <option value=(rung.to_string()) selected>(
+                                        crate::platform::presets::label(rung)
+                                    )</option>
+                                } @else {
+                                    <option value=(rung.to_string())>(
+                                        crate::platform::presets::label(rung)
+                                    )</option>
+                                }
+                            }
+                        </select>
+                        // A database's ceiling is not only a ceiling: it
+                        // picks `shared_buffers` and five other numbers,
+                        // and saying so is the difference between an
+                        // operator choosing a size and choosing a
+                        // configuration.
+                        @if service.kind.is_managed() {
+                            <p class="field-hint">(t("The ceiling on the container and the engine's \
+                                 own settings, together. It takes effect at the next deployment: a \
+                                 cgroup limit is written when the container is created, and nothing \
+                                 reaches into a running one to change it."))</p>
+                        } @else {
+                            <p class="field-hint">(t("Over this, the kernel kills the container \
+                                 rather than letting it swap — which is the outcome to want, \
+                                 because a process quietly swapping is invisible until everything \
+                                 on the node is slow."))</p>
+                        }
+
+                        <label for="cpu-size">(t("CPU"))</label>
+                        <select id="cpu-size" name="cpu">
+                            <option value="">(t("no ceiling"))</option>
+                            @for rung in crate::platform::presets::CPU_LADDER {
+                                @if Some(rung) == service.cpu_millicores {
+                                    <option value=(rung.to_string()) selected>(
+                                        crate::platform::presets::cpu_label(rung)
+                                    )</option>
+                                } @else {
+                                    <option value=(rung.to_string())>(
+                                        crate::platform::presets::cpu_label(rung)
+                                    )</option>
+                                }
+                            }
+                        </select>
+                        <p class="field-hint">(t("Over this the container is throttled, not \
+                             killed — it runs slowly rather than stopping. A ceiling is also \
+                             what is reserved for it: the node counts what it has promised, \
+                             and refuses to promise more than it has."))</p>
+                        <div class="actions">
+                            <button type="submit">(t("Save"))</button>
+                        </div>
+                    </form>
+                </section>
 
                 // A database's port is not a list to add to. It has
                 // exactly one, 5432, written by the node when the database
@@ -2784,8 +2826,22 @@ impl ServiceApi {
             Ok(wanted) => wanted,
             Err(reason) => return Ok(back_with_error(&here, &reason)),
         };
+        let cpu = match crate::platform::presets::parse_cpu(field(&form, "cpu")) {
+            Ok(cpu) => cpu,
+            Err(reason) => return Ok(back_with_error(&here, &reason)),
+        };
+
+        // **What is left, after what is already promised.** A ceiling is
+        // also a reservation here, so accepting one the node cannot keep
+        // would make every other number on the page a guess. Counted
+        // against what this service already holds, or raising a ceiling
+        // would be refused by its own current value.
+        if let Some(reason) = self.state.deployer.room_for(&service, wanted, cpu).await {
+            return Ok(back_with_error(&here, &reason));
+        }
 
         services::set_memory_limit(&self.state.database, &service.id, wanted).await?;
+        services::set_cpu_limit(&self.state.database, &service.id, cpu).await?;
 
         let command = crate::deploy::jobs::DeployService {
             service_id: service.id.clone(),

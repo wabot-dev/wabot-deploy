@@ -367,6 +367,7 @@ impl NodePages {
         // every two seconds, and walking containerd's tree that often
         // would be this node's own reading of itself, at the top of its
         // own CPU column.
+        let committed = self.state.deployer.committed().await;
         let disk = crate::node::disk::breakdown(
             &self.state.config.node.data_dir,
             std::path::Path::new(crate::node::disk::CONTAINERD_ROOT),
@@ -425,7 +426,7 @@ impl NodePages {
                     // arriving here by clicking a link left the page a
                     // snapshot with no sign that it was one.
                     (live_cards(
-                        &node.id, &disk, &cells, &state, &policy,
+                        &node.id, &disk, &committed, &cells, &state, &policy,
                         domain.as_deref(), &query, &snapshot,
                     ))
 
@@ -1426,7 +1427,14 @@ const SOURCES: &[(&str, &str)] = &[
     ("file", "Read from files on this node"),
 ];
 
-fn memory_card(snapshot: &Snapshot) -> impl Renderable + '_ {
+fn memory_card<'a>(
+    snapshot: &'a Snapshot,
+    // What this node has promised, against what it may promise. A
+    // ceiling is a reservation here, so these two decide whether another
+    // service fits — and an operator who cannot see them experiences
+    // that rule as a form that says no.
+    committed: &'a crate::deploy::Committed,
+) -> impl Renderable + 'a {
     let containers = snapshot.containers_total();
 
     rsx! {
@@ -1487,7 +1495,34 @@ fn memory_card(snapshot: &Snapshot) -> impl Renderable + '_ {
             <dl class="kv">
                 <dt>(t("CPU"))</dt>
                 <dd data-cell="cpu">("—")</dd>
+                <dt>(t("Promised"))</dt>
+                <dd>
+                    (memory::human(committed.memory))(t(" of "))
+                    (memory::human(crate::platform::presets::allocatable_memory(snapshot.total)))
+                    (" · ")
+                    (crate::platform::presets::cpu_label(committed.cpu))(t(" of "))
+                    (crate::platform::presets::cpu_label(
+                        crate::node::cpu::allocatable_millicores()
+                    ))
+                </dd>
             </dl>
+            // The number that cannot be counted, said rather than
+            // folded in. A container with no ceiling may take
+            // everything, and a sum that quietly omitted them would be
+            // a figure somebody trusts for a decision it cannot
+            // support.
+            @if committed.unbounded > 0 {
+                <p class="field-hint">
+                    (committed.unbounded)(t(" copies here have no memory ceiling, so what is \
+                         promised is a floor rather than a total — any of them may take what \
+                         is left."))
+                </p>
+            } @else {
+                <p class="field-hint">(t("What a service may take is also what is reserved for \
+                     it: this node counts what it has promised and refuses to promise more. \
+                     What it keeps for itself — the console, the edge, containerd — is already \
+                     out of these figures."))</p>
+            }
 
             @if snapshot.swap_total > 0 {
                 <dl class="kv">
@@ -1610,6 +1645,7 @@ fn width(snapshot: &Snapshot, bytes: u64) -> String {
 fn live_cards<'a>(
     node_id: &'a str,
     disk: &'a crate::node::disk::Breakdown,
+    committed: &'a crate::deploy::Committed,
     cells: &'a CertificateCells,
     state: &'a CertificateState,
     policy: &'a crate::edge::policy::Policy,
@@ -1619,7 +1655,7 @@ fn live_cards<'a>(
 ) -> impl Renderable + 'a {
     let inner = rsx! {
         (certificate_card(cells, state, policy, domain, query))
-        (memory_card(snapshot))
+        (memory_card(snapshot, committed))
         (disk_card(disk))
     }
     .render()
@@ -2461,7 +2497,9 @@ pub(crate) mod tests {
     #[test]
     fn every_streamed_cell_has_a_place_on_the_page() {
         let snapshot = snapshot();
-        let rendered = memory_card(&snapshot).render().into_inner();
+        let rendered = memory_card(&snapshot, &Default::default())
+            .render()
+            .into_inner();
         let payload = cells(&snapshot, None);
 
         for key in payload.cells.keys() {
@@ -2504,7 +2542,7 @@ pub(crate) mod tests {
 
         // And the first paint still needs the whole declaration, because
         // there it is the attribute.
-        assert!(memory_card(&snapshot)
+        assert!(memory_card(&snapshot, &Default::default())
             .render()
             .into_inner()
             .contains("style=\"width:"));
@@ -2515,7 +2553,9 @@ pub(crate) mod tests {
     #[test]
     fn the_first_paint_and_the_stream_agree() {
         let snapshot = snapshot();
-        let rendered = memory_card(&snapshot).render().into_inner();
+        let rendered = memory_card(&snapshot, &Default::default())
+            .render()
+            .into_inner();
 
         for value in cells(&snapshot, None).cells.values() {
             if value.contains("of 0 B") {

@@ -32,9 +32,9 @@
 //! container seeing the host's ports.
 
 use oci_spec::runtime::{
-    Capability, LinuxBuilder, LinuxCapabilitiesBuilder, LinuxMemoryBuilder, LinuxNamespace,
-    LinuxNamespaceBuilder, LinuxNamespaceType, LinuxResourcesBuilder, Mount, MountBuilder,
-    ProcessBuilder, RootBuilder, Spec, SpecBuilder, UserBuilder,
+    Capability, LinuxBuilder, LinuxCapabilitiesBuilder, LinuxCpuBuilder, LinuxMemoryBuilder,
+    LinuxNamespace, LinuxNamespaceBuilder, LinuxNamespaceType, LinuxResourcesBuilder, Mount,
+    MountBuilder, ProcessBuilder, RootBuilder, Spec, SpecBuilder, UserBuilder,
 };
 
 use super::images::ImageConfig;
@@ -103,6 +103,21 @@ pub struct ContainerRequest {
     /// `None` is what every container had until there were presets: no
     /// ceiling, and one process can take the machine.
     pub memory_limit: Option<u64>,
+    /// The most CPU this container may have, in **millicores** — a
+    /// thousand is one core, and 2500 is two and a half.
+    ///
+    /// Millicores rather than a fraction or a core count, because that
+    /// is the unit `node::cpu` already reports in: a limit and a reading
+    /// an operator compares should not need arithmetic between them. It
+    /// is also the one absolute unit here — a percentage means something
+    /// different on a one-core node and a thirty-two-core one, which is
+    /// exactly the comparison somebody placing a service is making.
+    ///
+    /// `None` is no ceiling, which is what every container had. A
+    /// container may then take every core, and on a one-core node that
+    /// is the node — including the console somebody would use to stop
+    /// it.
+    pub cpu_millicores: Option<u32>,
     /// What this container was created with, for something later to
     /// compare against.
     ///
@@ -161,8 +176,8 @@ pub fn build(image: &ImageConfig, request: &ContainerRequest) -> SpecResult<Spec
         .namespaces(namespaces(request.network_ns.as_deref())?)
         .masked_paths(masked_paths())
         .readonly_paths(readonly_paths());
-    if let Some(limit) = request.memory_limit {
-        linux = linux.resources(resources(limit)?);
+    if request.memory_limit.is_some() || request.cpu_millicores.is_some() {
+        linux = linux.resources(resources(request.memory_limit, request.cpu_millicores)?);
     }
     let linux = linux
         .build()
@@ -270,22 +285,59 @@ pub const DEFAULT_SHM: u64 = 64 * 1024 * 1024;
 /// ceiling starts swapping instead of failing, and a database that is
 /// quietly swapping is worse than one that was refused the memory —
 /// the first is invisible until everything on the node is slow.
-fn resources(limit: u64) -> SpecResult<oci_spec::runtime::LinuxResources> {
-    let limit = i64::try_from(limit).map_err(|_| {
-        SpecError::Invalid("that memory limit does not fit in the spec's own type".into())
-    })?;
+fn resources(
+    memory_limit: Option<u64>,
+    cpu_millicores: Option<u32>,
+) -> SpecResult<oci_spec::runtime::LinuxResources> {
+    let mut resources = LinuxResourcesBuilder::default();
 
-    let memory = LinuxMemoryBuilder::default()
-        .limit(limit)
-        .swap(limit)
-        .build()
-        .map_err(|error| SpecError::Build(error.to_string()))?;
+    if let Some(limit) = memory_limit {
+        let limit = i64::try_from(limit).map_err(|_| {
+            SpecError::Invalid("that memory limit does not fit in the spec's own type".into())
+        })?;
+        resources = resources.memory(
+            LinuxMemoryBuilder::default()
+                .limit(limit)
+                .swap(limit)
+                .build()
+                .map_err(|error| SpecError::Build(error.to_string()))?,
+        );
+    }
 
-    LinuxResourcesBuilder::default()
-        .memory(memory)
+    if let Some(millicores) = cpu_millicores.filter(|millicores| *millicores > 0) {
+        // `quota` microseconds of CPU in every `period` microseconds,
+        // which crun writes as `cpu.max`. A hundred-millisecond period
+        // is the kernel's own default and what everything else in this
+        // world uses; changing it changes how *bursty* a container may
+        // be, which is not what a ceiling is being asked for.
+        //
+        // Quota is allowed to exceed the period — that is how a limit
+        // above one core is expressed, and 2500 millicores becomes
+        // 250000/100000. Nothing here caps it at the machine's core
+        // count: a ceiling larger than the machine is harmless and
+        // refusing it would mean this file needing to know how many
+        // cores the node has.
+        let quota = i64::from(millicores) * (CPU_PERIOD as i64) / 1_000;
+        resources = resources.cpu(
+            LinuxCpuBuilder::default()
+                .period(CPU_PERIOD)
+                .quota(quota)
+                .build()
+                .map_err(|error| SpecError::Build(error.to_string()))?,
+        );
+    }
+
+    resources
         .build()
         .map_err(|error| SpecError::Build(error.to_string()))
 }
+
+/// The window a CPU quota is measured over, in microseconds.
+///
+/// The kernel's default. A shorter one makes a container that bursts
+/// stutter; a longer one lets it take the machine for a noticeable
+/// moment before it is throttled.
+const CPU_PERIOD: u64 = 100_000;
 
 /// The mounts every Linux container needs, then the node's own.
 ///
@@ -821,6 +873,98 @@ mod tests {
             .expect("options");
         assert!(options.contains(&"ro".to_string()));
         assert!(!options.contains(&"rw".to_string()), "both would be a lie");
+    }
+
+    /// A CPU ceiling reaches the spec as a quota over a period, which
+    /// is what crun writes into `cpu.max`.
+    ///
+    /// The half that shipped without the other: `memory.max` was
+    /// written and nothing wrote this, so a container that could not
+    /// take the machine's memory could still take every core it had —
+    /// and on a one-core node that is the console, the edge and the
+    /// deploy path with it.
+    ///
+    /// Millicores in, microseconds out. A quota **larger** than the
+    /// period is how a ceiling above one core is expressed, and nothing
+    /// caps it at the machine's cores: a limit bigger than the machine
+    /// is harmless, and refusing it would mean this file knowing how
+    /// many cores the node has.
+    #[test]
+    fn a_cpu_limit_reaches_the_spec_as_a_quota_over_a_period() {
+        let quota_for = |millicores| {
+            let spec = build(
+                &nginx(),
+                &ContainerRequest {
+                    cpu_millicores: Some(millicores),
+                    ..Default::default()
+                },
+            )
+            .expect("spec");
+            let cpu = spec
+                .linux()
+                .as_ref()
+                .expect("linux")
+                .resources()
+                .as_ref()
+                .expect("resources")
+                .cpu()
+                .clone()
+                .expect("cpu");
+            (cpu.quota(), cpu.period())
+        };
+
+        // Half a core: half the period.
+        assert_eq!(quota_for(500), (Some(50_000), Some(100_000)));
+        assert_eq!(quota_for(1_000), (Some(100_000), Some(100_000)));
+        // And two and a half, which is a quota over the period.
+        assert_eq!(quota_for(2_500), (Some(250_000), Some(100_000)));
+    }
+
+    /// The two ceilings are independent, and either alone still writes
+    /// `resources`.
+    ///
+    /// Guarded because the branch that decides is one `if` over two
+    /// fields: an earlier version wrote resources only when memory was
+    /// set, so a service with a CPU ceiling and no memory one got
+    /// neither — silently, which is the worst way to not have a limit.
+    #[test]
+    fn either_ceiling_alone_still_reaches_the_spec() {
+        let resources = |request| {
+            build(&nginx(), &request)
+                .expect("spec")
+                .linux()
+                .as_ref()
+                .expect("linux")
+                .resources()
+                .clone()
+        };
+
+        let cpu_only = resources(ContainerRequest {
+            cpu_millicores: Some(500),
+            ..Default::default()
+        })
+        .expect("resources");
+        assert!(cpu_only.cpu().is_some());
+        assert!(
+            cpu_only.memory().is_none(),
+            "and nothing it did not ask for"
+        );
+
+        let memory_only = resources(ContainerRequest {
+            memory_limit: Some(64 * 1024 * 1024),
+            ..Default::default()
+        })
+        .expect("resources");
+        assert!(memory_only.memory().is_some());
+        assert!(memory_only.cpu().is_none());
+
+        // A container that asked for neither is unbounded, as it always
+        // was. Not `resources().is_none()`: the builder fills that in
+        // with the device rules every container gets, so the claim is
+        // about the two fields this writes and nothing else.
+        let neither = resources(ContainerRequest::default()).expect("the device rules");
+        assert!(neither.memory().is_none());
+        assert!(neither.cpu().is_none());
     }
 
     /// The ceiling the presets exist to set. `swap` carries the same

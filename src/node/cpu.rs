@@ -123,6 +123,12 @@ pub fn between(before: &Sample, after: &Sample) -> Option<Busy> {
 /// respects an affinity mask and a cgroup quota, so a node confined to two
 /// cores of a big machine reports two — which is the number its own limits
 /// make true.
+/// What may be promised to containers: every core, less what the node
+/// keeps for its own console, edge and reconcile loop.
+pub fn allocatable_millicores() -> u32 {
+    crate::platform::presets::allocatable_cpu(cores() * 1_000)
+}
+
 fn cores() -> u32 {
     std::thread::available_parallelism()
         .map(|count| count.get() as u32)

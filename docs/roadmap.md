@@ -126,7 +126,7 @@ somebody adds an input**, and that is now three for three: the badge
 words covering one of two functions, the settings-redirect list naming
 three of six forms, and this.
 
-## 4. What a node has, and what a container may take
+## 4. What a node has, and what a container may take — done
 
 The inputs a scheduler needs, and useful before there is one.
 
@@ -136,10 +136,19 @@ Adding it is small — the same place in the spec, and CPU is already
 measured in millicores, which is the unit that makes a limit and a
 reading comparable.
 
-**Requests, as distinct from limits.** A limit is what a container may
-not exceed; a request is what the scheduler must reserve. Today there is
-only the first. Without the second, placement is guesswork dressed as a
-decision.
+**Requests, as distinct from limits — decided against.** A limit is what
+a container may not exceed; a request is what a scheduler must reserve,
+and Kubernetes separates them to buy density: the sum of requests fits
+while the sum of limits does not. What that costs is that the
+interesting failures happen under load, on the fullest machine, at the
+moment somebody was already busy.
+
+**Here the limit is the reservation.** A node with 1 GB holds four
+256 MB services and refuses the fifth. Conservative, and predictable —
+and for a platform whose whole claim is "one binary on a box you own"
+the second is worth more. Overcommit, if it is ever wanted, is a second
+column and a page explaining the trade, not a default discovered during
+an incident.
 
 **Capacity, allocatable, committed.** The node measures what it *is
 using* — `node::memory`, `node::cpu`, `node::disk`. A scheduler needs
@@ -148,6 +157,22 @@ itself and the OS, minus the sum of requests already placed. That
 reserve should be configurable and should have a sane default, because
 a node that promises its last 200 MB is a node whose own console dies
 first.
+
+**Built:** `cpu.max` from a millicore ladder, memory offered for plain
+services too — it was a database's alone, so a container could take the
+machine's memory with nothing on any page to stop it — a node reserve
+that is a fraction *and* a floor (15 % of the 1 GB test node is under
+what this process and containerd use; a flat 256 MB on a 32 GB machine
+is a rounding error), and a refusal that names the numbers.
+
+Two things worth carrying. The judgement is **pure** and separate from
+the four readings it needs: the first version was not, and it refused
+*everything* on a machine whose total it could not read — a rule made
+of a missing number. What cannot be measured is not enforced. And a
+service's own ceiling is subtracted before the sum, or raising one is
+refused by its own current value: a form somebody can set once and never
+change their mind in, which is worse than no check because it looks like
+a rule.
 
 **Disk quota is not like the other two, and should be planned
 separately.** Volumes share a filesystem and nothing enforces a share of

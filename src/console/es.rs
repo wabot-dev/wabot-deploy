@@ -27,6 +27,10 @@
 /// list a thousand entries long is only maintainable if there is one
 /// place a given string can be.
 pub(crate) const TABLE: &[(&str, &str)] = &[
+    (
+        " copies here have no memory ceiling, so what is promised is a floor rather than a total — any of them may take what is left.",
+        " copias de aquí no tienen techo de memoria, así que lo prometido es un mínimo y no un total — cualquiera de ellas puede llevarse lo que queda.",
+    ),
     (" free", " libres"),
     (" here", " aquí"),
     (" is available.", " está disponible."),
@@ -316,6 +320,14 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
     ("Open", "Abrir"),
     ("Outcome", "Resultado"),
     ("Output", "Salida"),
+    (
+        "Over this the container is throttled, not killed — it runs slowly rather than stopping. A ceiling is also what is reserved for it: the node counts what it has promised, and refuses to promise more than it has.",
+        "Por encima de esto el contenedor se estrangula, no se mata — va lento en vez de pararse. Un techo es además lo que se le reserva: el nodo cuenta lo que ha prometido, y se niega a prometer más de lo que tiene.",
+    ),
+    (
+        "Over this, the kernel kills the container rather than letting it swap — which is the outcome to want, because a process quietly swapping is invisible until everything on the node is slow.",
+        "Por encima de esto el kernel mata el contenedor en vez de dejarlo hacer swap — que es el resultado que se quiere, porque un proceso haciendo swap en silencio es invisible hasta que todo el nodo va lento.",
+    ),
     ("Overlay address", "Dirección overlay"),
     ("Overview", "Resumen"),
     ("Password", "Contraseña"),
@@ -332,6 +344,10 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
     ("Private", "Privada"),
     ("Project", "Proyecto"),
     ("Projects", "Proyectos"),
+    (
+        "Promised",
+        "Prometido",
+    ),
     ("Public", "Pública"),
     ("Public key", "Clave pública"),
     ("Publish", "Publicar"),
@@ -356,6 +372,10 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
     (
         "Resolves in every container of this project, on any node holding a copy — the long name in the world's DNS too. Neither reaches the database from outside the node: that is a published port, which is not built.",
         "Resuelve en cada contenedor de este proyecto, en cualquier nodo que sostenga una copia — el nombre largo también en el DNS del mundo. Ninguno alcanza la base desde fuera del nodo: eso es publicar un puerto, que no está construido.",
+    ),
+    (
+        "Resources",
+        "Recursos",
     ),
     ("Restarting", "Reiniciando"),
     ("Restore", "Restaurar"),
@@ -529,6 +549,10 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
     ("Waiting", "Esperando"),
     ("Waiting for that node", "Esperando a ese nodo"),
     ("Waiting to be collected", "Esperando a ser recogido"),
+    (
+        "What a service may take is also what is reserved for it: this node counts what it has promised and refuses to promise more. What it keeps for itself — the console, the edge, containerd — is already out of these figures.",
+        "Lo que un servicio puede llevarse es también lo que se le reserva: este nodo cuenta lo que ha prometido y se niega a prometer más. Lo que guarda para sí — la consola, el edge, containerd — ya está fuera de estas cifras.",
+    ),
     ("What is in it", "Qué lleva"),
     (
         "What services keep. One disk per copy — two copies of a database on one machine are two databases.",

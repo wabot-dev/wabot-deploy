@@ -120,6 +120,11 @@ pub struct Service {
     /// there were presets. A number here reaches the OCI spec as
     /// `memory.max` with swap turned off — see `runtime::spec`.
     pub memory_limit: Option<u64>,
+    /// The most CPU its containers may have, in millicores. `None` is no
+    /// ceiling, and **the ceiling is also the reservation** — see
+    /// `migrations/0038_cpu_limit.sql` for why there is no second number
+    /// for a request.
+    pub cpu_millicores: Option<u32>,
     pub kind: Kind,
 }
 
@@ -206,6 +211,7 @@ pub async fn create(
         // were presets. Choosing one is `set_memory_limit`, and a
         // database picks one at creation.
         memory_limit: None,
+        cpu_millicores: None,
         // A plain container. `databases::create` calls `set_kind`
         // straight after this, for the same reason `set_origin` is
         // separate: the default is the honest one, and forgetting to
@@ -301,11 +307,10 @@ pub async fn in_project(
         .read(move |connection| {
             connection
                 .query_row(
-                    "SELECT \"id\", \"project_id\", \"name\", \"slug\", \"image\", \
-                     \"env\", \"desired_state\", \"last_error\", \"address\", \
-                     \"track_tag\", \"auto_deploy\", \"origin_node_id\", \"memory_limit\", \
-                     \"kind\" \
-                     FROM service WHERE \"project_id\" = ?1 AND \"slug\" = ?2",
+                    &format!(
+                        "SELECT {COLUMNS} FROM service \
+                         WHERE \"project_id\" = ?1 AND \"slug\" = ?2"
+                    ),
                     (project_id, slug),
                     decode,
                 )
@@ -314,6 +319,17 @@ pub async fn in_project(
         .await?)
 }
 
+/// The columns `decode` reads, in the order it reads them.
+///
+/// **One list, because three queries share one decoder.** They were
+/// written out three times, and adding a column meant remembering all
+/// three — miss one and it is not a compile error but
+/// `InvalidColumnIndex(14)` at runtime, from whichever page happened to
+/// use that query. Which is exactly what adding `cpu_millicores` did.
+const COLUMNS: &str = "\"id\", \"project_id\", \"name\", \"slug\", \"image\", \"env\", \
+     \"desired_state\", \"last_error\", \"address\", \"track_tag\", \"auto_deploy\", \
+     \"origin_node_id\", \"memory_limit\", \"kind\", \"cpu_millicores\"";
+
 pub async fn all(
     database: &SqliteDatabase,
     project_id: Option<&str>,
@@ -321,10 +337,7 @@ pub async fn all(
     let filter = project_id.map(str::to_string);
     Ok(database
         .read(move |connection| {
-            let sql = "SELECT \"id\", \"project_id\", \"name\", \"slug\", \"image\", \
-                       \"env\", \"desired_state\", \"last_error\", \"address\", \
-                       \"track_tag\", \"auto_deploy\", \"origin_node_id\", \
-                       \"memory_limit\", \"kind\" FROM service";
+            let sql = format!("SELECT {COLUMNS} FROM service");
             match filter {
                 Some(project) => connection
                     .prepare(&format!(
@@ -360,6 +373,7 @@ fn decode(row: &wabot::sqlite::rusqlite::Row<'_>) -> wabot::sqlite::rusqlite::Re
         origin_node_id: row.get(11)?,
         memory_limit: row.get::<_, Option<i64>>(12)?.map(|bytes| bytes as u64),
         kind: Kind::parse(&row.get::<_, String>(13)?),
+        cpu_millicores: row.get::<_, Option<i64>>(14)?.map(|milli| milli as u32),
     })
 }
 
@@ -487,10 +501,7 @@ pub async fn find(database: &SqliteDatabase, id: &str) -> PlatformResult<Option<
         .read(move |connection| {
             connection
                 .query_row(
-                    "SELECT \"id\", \"project_id\", \"name\", \"slug\", \"image\", \
-                     \"env\", \"desired_state\", \"last_error\", \"address\", \
-                     \"track_tag\", \"auto_deploy\", \"origin_node_id\", \"memory_limit\", \
-                     \"kind\" FROM service WHERE \"id\" = ?1",
+                    &format!("SELECT {COLUMNS} FROM service WHERE \"id\" = ?1"),
                     [id],
                     decode,
                 )
@@ -554,6 +565,42 @@ pub async fn set_memory_limit(
     Ok(())
 }
 
+/// Cap how much CPU a service's containers may have, in millicores.
+///
+/// Refused unless it is one of the rungs on offer, the same shape
+/// `set_memory_limit` follows and for the same reason: a field that took
+/// any number would be a field somebody types 50 into, which is a
+/// container that cannot finish starting.
+///
+/// Takes effect at the next deployment — a cgroup limit is written into
+/// the spec when the container is created, and nothing here reaches into
+/// a running one to change it.
+pub async fn set_cpu_limit(
+    database: &SqliteDatabase,
+    service_id: &str,
+    millicores: Option<u32>,
+) -> PlatformResult<()> {
+    if let Some(millicores) = millicores {
+        if !super::presets::CPU_LADDER.contains(&millicores) {
+            return Err(PlatformError::Refused(
+                "that is not one of the CPU sizes on offer".into(),
+            ));
+        }
+    }
+    let (id, millicores) = (service_id.to_string(), millicores.map(i64::from));
+    database
+        .write(move |connection| {
+            connection.execute(
+                "UPDATE service SET \"cpu_millicores\" = ?2, \"updated_at\" = ?3 \
+                 WHERE \"id\" = ?1",
+                (id, millicores, now_ms()),
+            )?;
+            Ok(())
+        })
+        .await?;
+    Ok(())
+}
+
 /// Replace a service's environment.
 pub async fn set_env(
     database: &SqliteDatabase,
@@ -606,6 +653,7 @@ mod tests {
             origin_node_id: None,
             auto_deploy: true,
             memory_limit: None,
+            cpu_millicores: None,
             kind: Kind::Container,
         };
 

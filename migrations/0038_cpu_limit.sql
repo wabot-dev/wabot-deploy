@@ -1,0 +1,39 @@
+-- The most CPU a service's containers may have.
+--
+-- ## The other half of a ceiling
+--
+-- `memory_limit` shipped and this did not, so a container that could not
+-- take the machine's memory could still take every core it had — and on
+-- a one-core node that is the console, the edge and the deploy path
+-- along with it. A ceiling on one resource and not the other is a
+-- ceiling somebody believes in.
+--
+-- ## Millicores
+--
+-- A thousand is one core; 2500 is two and a half. The same unit
+-- `node::cpu` already reports in, so a limit and a reading do not need
+-- arithmetic between them — and the only absolute one available, since
+-- a percentage means something different on a one-core node and a
+-- thirty-two-core one. That difference is exactly the comparison
+-- somebody placing a service is making.
+--
+-- ## And it is the reservation, not only the ceiling
+--
+-- **There is deliberately no second column for a request.** Kubernetes
+-- separates what a container is guaranteed from what it may burst to,
+-- and buys density with it: the sum of requests may fit while the sum of
+-- limits does not. What it costs is that the interesting failures happen
+-- under load, on the machine that was fullest, at the moment somebody
+-- was already busy.
+--
+-- Here the limit is what is reserved. A node with 1 GB holds four
+-- 256 MB services and refuses the fifth. That is conservative and it is
+-- predictable, and for a platform whose whole claim is "one binary on a
+-- box you own" the second is worth more than the first. If overcommit is
+-- ever wanted it is a second column and a page that explains the trade —
+-- not a default somebody discovers during an incident.
+--
+-- NULL is no ceiling, which is what every existing service has. A
+-- default here would be this migration throttling somebody's service at
+-- a number nobody chose.
+ALTER TABLE service ADD COLUMN cpu_millicores INTEGER;
