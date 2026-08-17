@@ -284,9 +284,59 @@ re-join.
 
 ### A restore onto a new machine with a different address
 
-Reasoned from the code and **not yet run**, which in this project is the
-difference between an answer and a claim. Two things decide it, and both
-are already true:
+**Run, on 2026-08-16, and it works.** An Alpine VM on a laptop was given
+the Alpine node's backup while that node was stopped and its overlay
+interface removed — a machine genuinely absent, not merely quiet.
+
+The result is stronger than the question asked, because the VM was not
+merely at a different address: it was at `192.168.5.15`, behind the
+laptop's NAT and the house's, reaching the world from a residential IP
+on an ephemeral source port.
+
+- **It became that node.** Overlay `10.42.0.4`, public key
+  `lm+nx301…`, its authority, its grants.
+- **The authority learned where it now is, unaided.** Ubuntu's peer
+  endpoint moved from `172.104.24.252:51820` to `45.238.144.52:54208` —
+  a different address *and* a different port — and then back again when
+  the real node returned. Both times from an incoming handshake, with
+  nothing configured. That is the roaming the tunnel was built around,
+  and it survives double NAT.
+- **`channel verified in 368 ms (answered 302)`**: the authority reached
+  the restored node over the overlay and got an HTTP answer, not just a
+  handshake.
+- **HTTPS worked immediately, on the real Let's Encrypt certificates.**
+  `HTTP 200` for the node's own hostname, and **zero** ACME orders or
+  challenges — the certificates and the account key are rows, so they
+  travel in `node.db`, and freshness meant nothing had to be asked of
+  the authority at all.
+- **The services came back**, all three containers, from a backup
+  carrying no images: `nginx:alpine` was pulled fresh, and on **arm64**,
+  because a public base image comes back with a pull whatever the
+  machine is. The backup is architecture-independent — nothing in it is
+  a binary.
+
+And the names report earned itself on the first real run. It printed the
+disagreement it exists for:
+
+```
+  names       what has to reach this machine:
+                deploy.alpine.tobaw.shop → 172.104.24.252
+              this machine goes out from 192.168.5.15
+```
+
+— the names still pointing at the machine that died, this one somewhere
+else entirely, and the node correctly declining to decide which of those
+is wrong.
+
+**One bug came out of it**, and only a brand-new machine could have
+produced it: `install` fetches containerd, crun and the CNI plugins with
+`curl`, which a minimal Alpine does not have — and `curl` was neither in
+the `PROGRAMS` table that gets installed nor installed before the step
+that used it. Every node this had run on already had curl.
+
+The reasoning that predicted all this follows. It was right, which is
+worth knowing about the reasoning, and it is not why the section can now
+say the thing works:
 
 - **A node's advertised endpoint is a name, not an address** —
   `{domain}:{port}`. What a node says about itself carries no IP.
@@ -295,16 +345,26 @@ are already true:
   from. That is WireGuard roaming, and `network::tunnel` was built
   around it.
 
-So a **joined** node restored onto a new address should heal with no
-manual step: it dials its authority by name, and the authority learns
-where it now is. A **public** node needs its DNS repointed first,
-because everything that reaches it reaches it by name — the console,
-other nodes dialling in, and the ACME challenge. Until then `acme::ensure`
-**refuses to order** rather than burning validations against an
-authority that locks the account at five an hour: a check built for a
-moved hostname, covering a moved machine for free.
+So a **joined** node restored onto a new address heals with no manual
+step: it dials its authority by name, and the authority learns where it
+now is. A **public** node needs its DNS repointed first, because
+everything that reaches it reaches it by name — the console, other nodes
+dialling in, and the ACME challenge.
 
-Worth running before anybody depends on it.
+**The one thing the run did not settle** is what happens when a
+certificate on such a node comes up for renewal. `acme::ensure` asks
+`dns::resolves_here`, which compares a name against *the node's own
+domain* — and on a rebuilt machine that domain still resolves, to the
+machine that died. Every name agrees with it and the check says `Here`.
+The restored VM never reached that code, because its certificates had
+months left and freshness stopped it first. So the protection that would
+refuse to spend an order is, in this specific case, **structurally
+blind**, and the thing standing between a moved public node and a
+locked ACME account is that its certificates are not due yet.
+
+That is what the names report is for, and why it prints rather than
+decides. A check that could decide would need something the node cannot
+have: proof that traffic from outside arrives here.
 
 ## 6. Placement that decides
 
