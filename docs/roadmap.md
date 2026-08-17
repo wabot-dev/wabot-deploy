@@ -384,9 +384,54 @@ saying what it must *not* be:
   what it holds" is worth more than any bin-packing heuristic, and it is
   the operation every upgrade and every hardware failure needs.
 
-## 7. Disk that cleans up after itself
+## 7. Disk that cleans up after itself — done
 
-Four kinds of rubbish, all known and none collected:
+`wabot-deploy clean` shows what it would take; `--apply` takes it. Four
+kinds of rubbish, and the shape of the command is the interesting part:
+
+**It stops before the data.** Three kinds are regenerable — a container's
+generated configuration, its hosts file, its log. The fourth is a volume,
+and a volume nothing claims is usually a replica that *moved to another
+node*, so "the replica is gone" and "the data is wanted" are both true at
+once. That is exactly the case a tidy default destroys. Named, left, and
+`--volumes` is a separate word. On Alpine it correctly refused 62 MB.
+
+**A digest is nobody's, a tag is somebody's.** Every push leaves a
+digest-only record beside the tag, never replaced and never named again;
+that is the image leak. A tag is something a person typed and may be what
+they roll back to, so tags are reported and left.
+
+Three faults came out of running it, and **all three were about the
+numbers rather than the deletions** — which is worth carrying, because
+the deletions are what everyone reviews:
+
+- The size printed was the *manifest descriptor's*, a few kB of JSON. A
+  453 MB image read as `3 kB`, which is worse than no figure at all,
+  because keeping everything then looks free.
+- Summing the manifest tree *as published* counts platforms this machine
+  never pulled: 361 MB reported for a 41 MB image. It asks the content
+  store per blob now.
+- The closing line implied the disk would move, and on Ubuntu it did not
+  budge — correctly, because every digest record removed still had a tag
+  pointing at the same manifest. A cleanup that appears to have done
+  nothing is one somebody runs again harder.
+
+The remaining disagreement with `ctr images ls` is deliberate: `ctr`
+reports the platform you would run, this reports what the store holds for
+the whole index. `hello-world` is 14.7 KiB to one and 321 MB to the
+other, and for "should this go" the second is the question.
+
+And **a third copy of one derivation was nearly born**: `doctor` had its
+own "what does this node claim", `backup` had another, and `clean` needed
+a third — while `doctor`'s own comment already said why that is a
+mistake. `Deployer::claimed` is the one now, and `None` from it means
+*unreadable*, never *nothing claimed*.
+
+What is left here is a retention policy for container logs; they are
+bounded at 8 MB each, which was the fix, and age is still not a reason
+anything goes.
+
+The four kinds as they were:
 
 - **Images.** Nothing garbage-collects them. 1.6 GB of containerd on a
   20 GB test node, which the new disk card now makes visible.
@@ -428,7 +473,7 @@ node that runs for a year and a node that fills up in six months.
 | 4 | Limits, requests, node capacity | the scheduler's inputs, useful alone |
 | 5 | Backup and restore | data safety before more machines |
 | 6 | Scheduler | needs 4 to decide and 2 to react |
-| 7 | Disk cleanup | a year of uptime rather than six months |
+| 7 | Disk cleanup | done — a year of uptime rather than six months |
 | 8 | Audit, metrics, signing | the second conversation, not the first |
 
 ## What is deliberately not here
