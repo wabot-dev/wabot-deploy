@@ -64,6 +64,28 @@ pub struct Config {
     pub overlay: OverlayConfig,
     #[serde(default)]
     pub log: LogConfig,
+    #[serde(default)]
+    pub backup: BackupConfig,
+}
+
+/// Where `backup --out s3://…` gets its credentials.
+///
+/// **In the config file and not in the database, on purpose.** A
+/// credential that can read every backup in the network is precisely the
+/// thing that must not be inside the thing being backed up: restore a
+/// node from a copy that carried it, and you have restored that node's
+/// ability to reach every other node's backups. `config.toml` is
+/// root-only, is not in any backup, and is the file an operator already
+/// owns.
+///
+/// Absent is the ordinary case. A node with no section here can still
+/// back up to a path or over SSH — SSH uses the operator's own keys and
+/// needs nothing stored.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BackupConfig {
+    #[serde(default)]
+    pub s3: Option<crate::commands::s3::Credentials>,
 }
 
 /// The private network between nodes.

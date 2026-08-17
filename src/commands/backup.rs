@@ -308,7 +308,7 @@ pub async fn run(config: Config, into: Option<String>) -> anyhow::Result<i32> {
     }
 
     println!();
-    match crate::commands::destination::send(&root, &destination) {
+    match crate::commands::destination::send(&root, &destination, &config).await {
         Ok(what) => {
             println!("  sent        {what} → {}", destination.display());
             // Only now. The staging copy is this backup's only existence
@@ -638,10 +638,38 @@ pub fn keeping(taken: &[(PathBuf, Manifest)], now: i64) -> (Vec<&PathBuf>, Vec<&
 /// happens.
 pub async fn restore_node(
     config: Config,
-    from: PathBuf,
+    from: String,
     identity: Option<Identity>,
     force: bool,
 ) -> anyhow::Result<i32> {
+    let source = match Destination::parse(&from) {
+        Ok(source) => source,
+        Err(reason) => {
+            println!("{reason}");
+            return Ok(1);
+        }
+    };
+
+    // A remote backup is brought here first — into the same
+    // `<root>/nodes/<id>/<moment>` shape, because the restore finds the
+    // shared blob store by walking up from it.
+    let brought = config
+        .node
+        .data_dir
+        .join("backups")
+        .join(format!(".fetched-{}", crate::platform::now_ms()));
+    if source.is_remote() {
+        println!("fetching {}", source.display());
+    }
+    let from = match crate::commands::destination::fetch(&source, &brought, &config).await {
+        Ok(path) => path,
+        Err(reason) => {
+            println!("  could not fetch it: {reason}");
+            let _ = std::fs::remove_dir_all(&brought);
+            return Ok(1);
+        }
+    };
+
     let Ok(text) = std::fs::read_to_string(from.join("manifest.json")) else {
         println!("{} is not a backup: no manifest.json in it", from.display());
         return Ok(1);
@@ -807,6 +835,18 @@ pub async fn restore_node(
     }
 
     report_names(&config).await;
+
+    // The download is consumed by now — the database is in place, the
+    // volumes are unpacked and the blobs are in containerd — so keeping
+    // it is a second copy of a backup that already exists where it came
+    // from. Left behind on any earlier failure, deliberately, which is
+    // every path that returned before here.
+    if source.is_remote() {
+        match std::fs::remove_dir_all(&brought) {
+            Ok(()) => {}
+            Err(error) => println!("  fetched     {} left behind: {error}", brought.display()),
+        }
+    }
 
     println!();
     println!("  Start the node. Reconciliation brings the services back up.");

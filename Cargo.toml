@@ -182,6 +182,12 @@ hyper-rustls = { version = "0.27", default-features = false, features = [
 
 # Verifying release downloads before anything runs them.
 sha2 = "0.10"
+# HMAC-SHA256, which is all SigV4 needs beyond the sha2 already here,
+# and the one primitive not worth writing by hand. Same authors as sha2.
+# It is here rather than an AWS SDK on purpose: the SDK is a tower of
+# crates to sign four headers, and this node talks to one API with three
+# verbs.
+hmac = "0.12"
 thiserror = "2"
 anyhow = "1"
 toml = "0.8"

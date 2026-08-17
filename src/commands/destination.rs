@@ -177,13 +177,122 @@ impl Destination {
 /// `root` is the staging directory holding the whole shape —
 /// `blobs/sha256/…` and `nodes/<id>/<taken at>/…` — so what arrives is
 /// the same layout, and a shared root stays shared.
-pub fn send(root: &Path, to: &Destination) -> Result<String, String> {
+pub async fn send(
+    root: &Path,
+    to: &Destination,
+    config: &crate::config::Config,
+) -> Result<String, String> {
     match to {
         Destination::Local(_) => Ok("already there".into()),
         Destination::Ssh { host, path } => send_over_ssh(root, host, path),
-        Destination::S3 { .. } => {
-            Err("s3:// is not wired up yet — use ssh:// or a path for now".into())
+        Destination::S3 { bucket, prefix } => {
+            // Named as a thing to write rather than a thing that is
+            // missing, because "no credentials" says what is wrong and
+            // not what to do about it.
+            let credentials = config.backup.s3.as_ref().ok_or_else(|| {
+                format!(
+                    "no credentials for s3://{bucket}. Add them to {}:\n\n  \
+                     [backup.s3]\n  \
+                     access_key_id = \"…\"\n  \
+                     secret_access_key = \"…\"\n  \
+                     region = \"us-east-1\"\n  \
+                     # endpoint = \"https://…\"   # for anything that is not Amazon's own S3",
+                    crate::config::DEFAULT_CONFIG_PATH
+                )
+            })?;
+            send_to_s3(root, credentials, bucket, prefix).await
         }
+    }
+}
+
+/// Every file under the staging root, as a key relative to it.
+fn files_under(root: &Path) -> Vec<(PathBuf, String)> {
+    let mut found = Vec::new();
+    let mut queue = vec![root.to_path_buf()];
+    while let Some(directory) = queue.pop() {
+        let Ok(entries) = std::fs::read_dir(&directory) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            match path.is_dir() {
+                true => queue.push(path),
+                false => {
+                    if let Ok(relative) = path.strip_prefix(root) {
+                        // Forward slashes whatever the platform: an
+                        // object key is not a path, and the shape has to
+                        // match what a restore will ask for.
+                        let key = relative
+                            .components()
+                            .map(|part| part.as_os_str().to_string_lossy().to_string())
+                            .collect::<Vec<_>>()
+                            .join("/");
+                        found.push((path, key));
+                    }
+                }
+            }
+        }
+    }
+    found
+}
+
+/// Upload the staging root, skipping blobs the bucket already holds.
+///
+/// **One listing, not a HEAD per blob.** A network's blobs number in the
+/// thousands, and asking about each one is thousands of round trips
+/// before a byte moves. The listing is of `blobs/` only: everything under
+/// `nodes/` belongs to this run and is new by definition, so asking about
+/// it would be a request whose answer is always no.
+async fn send_to_s3(
+    root: &Path,
+    credentials: &crate::commands::s3::Credentials,
+    bucket: &str,
+    prefix: &str,
+) -> Result<String, String> {
+    let at = |key: &str| match prefix.is_empty() {
+        true => key.to_string(),
+        false => format!("{prefix}/{key}"),
+    };
+
+    let already: std::collections::HashSet<String> =
+        crate::commands::s3::list(credentials, bucket, &at("blobs/"))
+            .await
+            .map_err(|error| error.to_string())?
+            .into_iter()
+            .collect();
+
+    let (mut sent, mut skipped, mut bytes) = (0u32, 0u32, 0u64);
+    for (path, key) in files_under(root) {
+        let object = at(&key);
+        // The name is the hash, so a blob already there is *the* blob
+        // for that digest — there is nothing to compare and no version
+        // to be stale. See `commands::blobs`.
+        if key.starts_with("blobs/") && already.contains(&object) {
+            skipped += 1;
+            continue;
+        }
+        let body = std::fs::read(&path).map_err(|error| format!("{}: {error}", path.display()))?;
+        bytes += body.len() as u64;
+        crate::commands::s3::put(credentials, bucket, &object, body)
+            .await
+            .map_err(|error| error.to_string())?;
+        sent += 1;
+    }
+
+    match skipped {
+        0 => Ok(format!("{sent} object(s), {}", human(bytes))),
+        _ => Ok(format!(
+            "{sent} object(s), {} — {skipped} blob(s) already there",
+            human(bytes)
+        )),
+    }
+}
+
+fn human(bytes: u64) -> String {
+    match bytes {
+        0..=999 => format!("{bytes} B"),
+        1_000..=999_999 => format!("{} kB", bytes / 1_000),
+        _ => format!("{} MB", bytes / 1_000_000),
     }
 }
 
@@ -248,6 +357,189 @@ fn transferred(output: &str) -> String {
         .find_map(|line| line.strip_prefix("Number of regular files transferred: "))
         .map(|count| format!("{} sent", count.trim()))
         .unwrap_or_else(|| "sent".into())
+}
+
+/// Bring a backup here from wherever it is, and answer with its path.
+///
+/// **The local shape has to be reproduced, not just the files.**
+/// `restore_images` finds the shared blob store by walking three levels
+/// up from the backup directory — `<root>/nodes/<id>/<taken at>` — so a
+/// download that dropped the files somewhere flat would restore a
+/// database and no images, and would say it had worked.
+///
+/// Only the blobs this backup's manifest names are fetched, not the whole
+/// shared store. On a network root that store holds every node's layers,
+/// and a restore needs one node's.
+pub async fn fetch(
+    from: &Destination,
+    staging: &Path,
+    config: &crate::config::Config,
+) -> Result<PathBuf, String> {
+    let Destination::Local(path) = from else {
+        return fetch_remote(from, staging, config).await;
+    };
+    Ok(path.clone())
+}
+
+async fn fetch_remote(
+    from: &Destination,
+    staging: &Path,
+    config: &crate::config::Config,
+) -> Result<PathBuf, String> {
+    from.preflight()?;
+
+    // The last two components name the node and the moment, and the
+    // local copy has to sit under the same two so that the walk upwards
+    // finds `blobs/` beside them.
+    let remote = match from {
+        Destination::Ssh { path, .. } => path.clone(),
+        Destination::S3 { prefix, .. } => prefix.clone(),
+        Destination::Local(_) => unreachable!("handled by the caller"),
+    };
+    let parts: Vec<&str> = remote.trim_matches('/').split('/').collect();
+    let (node, moment) = match parts.as_slice() {
+        [.., node, moment] => (*node, *moment),
+        _ => {
+            return Err(format!(
+                "{} does not look like a backup — expected …/nodes/<node id>/<taken at>",
+                from.display()
+            ))
+        }
+    };
+    let here = staging.join("nodes").join(node).join(moment);
+    std::fs::create_dir_all(&here).map_err(|error| format!("{}: {error}", here.display()))?;
+
+    match from {
+        Destination::Ssh { host, path } => {
+            run(
+                "rsync",
+                &[
+                    "-a",
+                    &format!("{host}:{path}/"),
+                    &format!("{}/", here.display()),
+                ],
+            )?;
+        }
+        Destination::S3 { bucket, prefix } => {
+            let credentials = s3_credentials(config, bucket)?;
+            let keys = crate::commands::s3::list(credentials, bucket, &format!("{prefix}/"))
+                .await
+                .map_err(|error| error.to_string())?;
+            if keys.is_empty() {
+                return Err(format!("{} holds nothing", from.display()));
+            }
+            for key in keys {
+                let name = key.rsplit('/').next().unwrap_or(&key).to_string();
+                let bytes = crate::commands::s3::get(credentials, bucket, &key)
+                    .await
+                    .map_err(|error| error.to_string())?;
+                std::fs::write(here.join(&name), bytes)
+                    .map_err(|error| format!("{name}: {error}"))?;
+            }
+        }
+        Destination::Local(_) => unreachable!("handled by the caller"),
+    }
+
+    fetch_blobs(from, staging, &here, config).await?;
+    Ok(here)
+}
+
+/// The blobs this backup's manifest names, and only those.
+async fn fetch_blobs(
+    from: &Destination,
+    staging: &Path,
+    here: &Path,
+    config: &crate::config::Config,
+) -> Result<(), String> {
+    let Ok(text) = std::fs::read_to_string(here.join("manifest.json")) else {
+        // No manifest is a problem, and it is `restore-node`'s to report:
+        // it says which format it expected and what it found. Failing
+        // here would replace that with something vaguer.
+        return Ok(());
+    };
+    let Ok(manifest) = serde_json::from_str::<crate::commands::backup::Manifest>(&text) else {
+        return Ok(());
+    };
+
+    let digests: Vec<String> = manifest
+        .images
+        .iter()
+        .flat_map(|kept| kept.blobs.iter().map(|(digest, _)| digest.clone()))
+        .collect();
+    if digests.is_empty() {
+        return Ok(());
+    }
+
+    // `<root>/nodes/<id>/<moment>` is `here`, so the root is three up —
+    // the same walk `restore_images` makes.
+    let root = match from {
+        Destination::Ssh { path, .. } => remote_root(path),
+        Destination::S3 { prefix, .. } => remote_root(prefix),
+        Destination::Local(_) => return Ok(()),
+    };
+
+    let mut wanted = 0;
+    for digest in &digests {
+        let Some(local) = crate::commands::blobs::path(staging, digest) else {
+            continue;
+        };
+        if local.exists() {
+            continue;
+        }
+        if let Some(parent) = local.parent() {
+            std::fs::create_dir_all(parent).map_err(|error| format!("{error}"))?;
+        }
+        let hex = digest.trim_start_matches("sha256:");
+        match from {
+            Destination::Ssh { host, .. } => {
+                run(
+                    "rsync",
+                    &[
+                        "-a",
+                        &format!("{host}:{root}/blobs/sha256/{hex}"),
+                        &local.to_string_lossy(),
+                    ],
+                )?;
+            }
+            Destination::S3 { bucket, .. } => {
+                let credentials = s3_credentials(config, bucket)?;
+                let key = match root.is_empty() {
+                    true => format!("blobs/sha256/{hex}"),
+                    false => format!("{root}/blobs/sha256/{hex}"),
+                };
+                let bytes = crate::commands::s3::get(credentials, bucket, &key)
+                    .await
+                    .map_err(|error| error.to_string())?;
+                std::fs::write(&local, bytes).map_err(|error| format!("{hex}: {error}"))?;
+            }
+            Destination::Local(_) => return Ok(()),
+        }
+        wanted += 1;
+    }
+    println!("  blobs       {wanted} fetched of {} named", digests.len());
+    Ok(())
+}
+
+/// Three components up from `…/nodes/<id>/<moment>`.
+fn remote_root(path: &str) -> String {
+    let trimmed = path.trim_end_matches('/');
+    let mut parts: Vec<&str> = trimmed.split('/').collect();
+    for _ in 0..3 {
+        parts.pop();
+    }
+    parts.join("/")
+}
+
+fn s3_credentials<'a>(
+    config: &'a crate::config::Config,
+    bucket: &str,
+) -> Result<&'a crate::commands::s3::Credentials, String> {
+    config.backup.s3.as_ref().ok_or_else(|| {
+        format!(
+            "no credentials for s3://{bucket}. Add a [backup.s3] section to {}",
+            crate::config::DEFAULT_CONFIG_PATH
+        )
+    })
 }
 
 /// A program this needs, and the package it comes in.

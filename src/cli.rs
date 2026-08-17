@@ -145,9 +145,13 @@ pub enum Command {
     /// backed up — see `--same-node` and `--new-node`, one of which is
     /// required.
     RestoreNode {
-        /// The backup directory: `<root>/nodes/<node id>/<taken at>`.
-        #[arg(long, value_name = "PATH")]
-        from: std::path::PathBuf,
+        /// The backup: `<root>/nodes/<node id>/<taken at>`, as a path,
+        /// `ssh://[user@]host/…` or `s3://bucket/…`.
+        ///
+        /// A remote one is brought here first, under the same shape, so
+        /// that the shared blob store is where the restore expects it.
+        #[arg(long, value_name = "BACKUP")]
+        from: String,
 
         /// This machine is that node. Its id, keys, grants and
         /// enrolments come back, and the network never notices the

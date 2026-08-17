@@ -2952,6 +2952,7 @@ dependencies = [
  "defguard_wireguard_rs",
  "form_urlencoded",
  "futures-util",
+ "hmac",
  "http-body-util",
  "hyper",
  "hyper-rustls",
