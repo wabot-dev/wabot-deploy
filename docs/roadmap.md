@@ -190,8 +190,13 @@ hard:
 - **The node's own database.** Easy, and already done on every update:
   `VACUUM INTO` a copy, because a byte copy of a live SQLite is a copy
   of a half-finished transaction.
-- **Images.** Do not back these up. They are in a registry and come
-  back with a pull.
+- **Images.** ~~Do not back these up. They are in a registry and come
+  back with a pull.~~ **Wrong, and the question that found it was
+  "would the restored node run?"** A public base image does come back
+  with a pull. A node's *own* build does not: this node's registry is
+  the only copy, and it is on the disk that just died. So what is kept
+  is what nothing else holds, deduplicated by digest across the whole
+  network — see below.
 - **Volumes.** The hard one. A file copy of a running Postgres data
   directory is a torn copy that restores into a database that will not
   start — the same class of mistake as copying SQLite by hand. A managed
@@ -211,6 +216,66 @@ So a restore has to ask a question, out loud: **am I the same node, or a
 new one?** "The same" restores the identity with the data and the
 network never notices. "A new one" restores the data alone and takes a
 re-join. Both are legitimate; guessing is not.
+
+### What was built, and what it took to find
+
+`backup`, `restore` and `restore-node` are in the tree, with point-in-
+time recovery on top of WAL archiving. **Verified on the nodes**: PITR
+end to end (three rows deleted and recovered into a second database,
+the original untouched), image deduplication (ten blobs written, then
+zero on the second run), and a full node restore on Alpine — a planted
+ghost project gone, the identity kept, and the **WireGuard session never
+interrupted**, which the handshake age and byte counters proved
+afterwards.
+
+Four things that only a node run could have said:
+
+- **One root for the whole network, and the name is the hash.** An OCI
+  blob is addressed by the sha256 of its contents, so a file already
+  there under a digest *is* the blob for that digest. Skipping what
+  exists is not an optimisation, it is the definition — and it makes a
+  shared root safe to write from several machines at once, because the
+  worst two simultaneous writers can do is write identical bytes.
+- **A backup carries what something claims.** A volume directory
+  outlives the copy that made it, deliberately. So the disk holds
+  directories for copies moved off or thrown off this node, and copying
+  them is weight in every backup for ever with no row to restore them
+  under: 62 MB of a moved database on Alpine, which was *the entire
+  backup* — 62.4 MB became 496 KB. Skipped and **named**, because "my
+  backup has everything on the disk" is the assumption, and a backup is
+  the worst place to be quietly wrong.
+- **Unknown is not empty.** The dangerous reading of an unreadable
+  query is "nothing is claimed", which turns one failure into a backup
+  that holds no volumes and looks like a backup. With no list,
+  everything is claimed — the shape `fits` already takes for a machine
+  that cannot say how much memory it has.
+- **`archive_timeout` is a floor, not a promise.** Measured two to three
+  minutes for a value of sixty seconds. The recovery window is wider
+  than the setting says.
+
+### A restore onto a new machine with a different address
+
+Reasoned from the code and **not yet run**, which in this project is the
+difference between an answer and a claim. Two things decide it, and both
+are already true:
+
+- **A node's advertised endpoint is a name, not an address** —
+  `{domain}:{port}`. What a node says about itself carries no IP.
+- **The other direction is learned from the handshake.** A node that can
+  dial sets a keepalive; the peer's address is whatever its packets came
+  from. That is WireGuard roaming, and `network::tunnel` was built
+  around it.
+
+So a **joined** node restored onto a new address should heal with no
+manual step: it dials its authority by name, and the authority learns
+where it now is. A **public** node needs its DNS repointed first,
+because everything that reaches it reaches it by name — the console,
+other nodes dialling in, and the ACME challenge. Until then `acme::ensure`
+**refuses to order** rather than burning validations against an
+authority that locks the account at five an hour: a check built for a
+moved hostname, covering a moved machine for free.
+
+Worth running before anybody depends on it.
 
 ## 6. Placement that decides
 
