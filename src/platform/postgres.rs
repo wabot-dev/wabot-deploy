@@ -100,6 +100,17 @@ pub enum Role {
     Primary,
     /// Follows the primary and refuses them.
     Standby,
+    /// Being restored: unpack a base backup, replay the log to a moment,
+    /// and then be an ordinary primary of its own.
+    ///
+    /// Its own role rather than a flag on `Primary`, because what the
+    /// deploy path does with an empty volume is completely different —
+    /// `initdb` for one and an unpack for the other — and the two are
+    /// indistinguishable from the volume, which is empty either way. An
+    /// `initdb` where a restore was meant produces an empty database
+    /// that starts, answers, and looks exactly like a restore that
+    /// worked.
+    Restoring,
 }
 
 impl Role {
@@ -107,6 +118,7 @@ impl Role {
         match self {
             Role::Primary => "primary",
             Role::Standby => "standby",
+            Role::Restoring => "restoring",
         }
     }
 }
@@ -336,14 +348,14 @@ pub fn recovery_arguments(memory_limit: u64, target: Option<&str>) -> Vec<String
 
     push(&mut arguments, "restore_command", &restore_command());
     push(&mut arguments, "recovery_target_action", "promote");
-    match target {
-        // A moment. Postgres parses this as a timestamp in the server's
-        // time zone, which is UTC here — see `console::layout::exactly`,
-        // which labels it for the same reason.
-        Some(target) => push(&mut arguments, "recovery_target_time", target),
-        // No target is "as far as the log goes", which is what a node
-        // being rebuilt wants: the last moment that was archived.
-        None => {}
+    // A moment, parsed by Postgres as a timestamp in the server's time
+    // zone — which is UTC here, and why `console::layout::exactly`
+    // labels every time it shows.
+    //
+    // No target is "as far as the log goes", which is what a node being
+    // rebuilt wants: the last moment that was archived.
+    if let Some(target) = target {
+        push(&mut arguments, "recovery_target_time", target);
     }
 
     // **Never archives.** A restored database replaying somebody else's

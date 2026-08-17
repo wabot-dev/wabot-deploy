@@ -33,6 +33,10 @@ pub struct Preparation {
     /// the conninfo is built from, kept apart because `pg_basebackup`
     /// takes a host and a port rather than a connection string.
     pub primary_endpoint: Option<(String, u16)>,
+    /// What this copy unpacks before it starts, when it is being
+    /// restored. Carried back out of `prepare` so the deploy path has
+    /// the two directories without deriving them a second time.
+    pub restoring: Option<Restoring>,
     /// The ceiling this copy is about to run at, which for a standby is
     /// also the thing its data directory has to be able to bear. Taken
     /// from here rather than recomputed by the caller: it is one of the
@@ -82,6 +86,27 @@ pub struct Plan<'a> {
     /// has not archived, so an archive that cannot be written fills the
     /// disk and stops the database. See `postgres::archive_command`.
     pub archiving: bool,
+    /// What this copy unpacks and replays, when it is being restored
+    /// into rather than initialised.
+    pub restoring: Option<Restoring>,
+}
+
+/// Where a restore reads from.
+///
+/// Two directories, because they live under different roots: the base
+/// backup under `backups/` and the archive under `wal/`. The caller
+/// connects them through the container id, which the backup layout puts
+/// at the end of one path and `archive_dir` keys the other on — see
+/// `prepare_engine`, where that derivation is named.
+#[derive(Debug, Clone)]
+pub struct Restoring {
+    /// The backup directory holding `base.tar.gz` and `pg_wal.tar.gz`.
+    pub base: PathBuf,
+    /// The **original** database's archive, mounted read-only.
+    pub archive: PathBuf,
+    /// The moment to stop at. `None` is "as far as the log goes", which
+    /// is what a node being rebuilt wants.
+    pub target: Option<String>,
 }
 
 impl Plan<'_> {
@@ -121,6 +146,15 @@ pub fn prepare(plan: &Plan<'_>) -> std::io::Result<Preparation> {
 
     let args = match plan.role {
         postgres::Role::Primary => postgres::primary_arguments(plan.limit(), plan.archiving),
+        // Replaying an archive to a moment. Never archiving of its own —
+        // see `postgres::recovery_arguments`, where the other half of
+        // that rule is the read-only mount.
+        postgres::Role::Restoring => postgres::recovery_arguments(
+            plan.limit(),
+            plan.restoring
+                .as_ref()
+                .and_then(|restoring| restoring.target.as_deref()),
+        ),
         postgres::Role::Standby => postgres::standby_arguments(
             plan.limit(),
             // A standby with nowhere to dial would come up as a
@@ -164,8 +198,9 @@ pub fn prepare(plan: &Plan<'_>) -> std::io::Result<Preparation> {
         .into_iter()
         .collect(),
         // `PGDATA` still, because the entrypoint uses it to find the
-        // directory it is not going to initialise.
-        postgres::Role::Standby => {
+        // directory it is not going to initialise. The same for a
+        // restore, whose directory arrives from a base backup.
+        postgres::Role::Standby | postgres::Role::Restoring => {
             vec![("PGDATA".to_string(), postgres::PGDATA.to_string())]
         }
     };
@@ -197,11 +232,30 @@ pub fn prepare(plan: &Plan<'_>) -> std::io::Result<Preparation> {
                     read_only: false,
                 });
             }
+            // A restore reads somebody else's archive, and **read-only**
+            // is half the rule that keeps it from damaging what it is
+            // restoring from. The other half is `archive_mode=off` in
+            // its arguments: a promoted copy starts a new timeline, and
+            // archiving that into the original's directory would put a
+            // second history beside the first.
+            if let Some(restoring) = &plan.restoring {
+                mounts.push(BindMount {
+                    source: restoring.base.clone(),
+                    destination: postgres::BASE_MOUNT.to_string(),
+                    read_only: true,
+                });
+                mounts.push(BindMount {
+                    source: restoring.archive.clone(),
+                    destination: postgres::ARCHIVE_MOUNT.to_string(),
+                    read_only: true,
+                });
+            }
             mounts
         },
         shm_size: Some(presets::shm_for(plan.limit())),
         role: plan.role,
         primary_endpoint: plan.primary.clone(),
+        restoring: plan.restoring.clone(),
         max_connections: postgres::tuning(plan.limit()).max_connections,
     })
 }
@@ -513,6 +567,8 @@ mod tests {
             primary_slot: 1,
             primary_endpoint: None,
             owner_domain: None,
+            restored_from: None,
+            recovery_target: None,
         }
     }
 
@@ -524,6 +580,7 @@ mod tests {
     ) -> Plan<'a> {
         Plan {
             archiving: false,
+            restoring: None,
             data_dir,
             container_id,
             database: row,

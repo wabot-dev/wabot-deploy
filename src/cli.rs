@@ -97,6 +97,33 @@ pub enum Command {
         out: Option<std::path::PathBuf>,
     },
 
+    /// Restore a database to a moment, as a new one beside it.
+    ///
+    /// **Never the original rewound.** Rewinding is irreversible and
+    /// leaves the read-only copies ahead of their primary; this makes a
+    /// copy, so the original goes on serving while somebody takes what
+    /// they came for.
+    ///
+    /// It unpacks and replays at its next deployment. How far back it
+    /// can reach is bounded by the oldest backup on the node, and how
+    /// recent by the last archived segment — the database's own page
+    /// says both.
+    Restore {
+        /// Which database, by the name the console shows.
+        #[arg(value_name = "DATABASE")]
+        database: String,
+
+        /// The moment, in UTC: `2026-08-16 14:32`. Left out, it replays
+        /// as far as the archived log goes.
+        #[arg(long, value_name = "MOMENT")]
+        to: Option<String>,
+
+        /// What to call the copy. Defaults to the original's name with
+        /// `-restored` after it.
+        #[arg(long, value_name = "NAME")]
+        into: Option<String>,
+    },
+
     /// Talk to containerd and report what it says.
     ///
     /// Not part of running a node: it exists because the containerd

@@ -778,6 +778,20 @@ impl Deployer {
                 .await?;
         }
 
+        // A copy being restored gets its base backup unpacked first, for
+        // the same reason a standby gets seeded: the container is a
+        // server that expects to find a data directory, and this is
+        // where it comes from. Skipped once the volume holds one —
+        // recovery is Postgres's business from there, and it deletes
+        // `recovery.signal` itself when it finishes.
+        if let Some(prepared) = &prepared {
+            if let Some(restoring) = &prepared.restoring {
+                if !database::seeded(&self.config.node.data_dir, &id) {
+                    self.unpack_base(&client, service, &id, restoring).await?;
+                }
+            }
+        }
+
         // A standby with an empty volume gets the primary copied into
         // it first. Before the container, because the container is the
         // server that expects to find a data directory there — and
@@ -2376,6 +2390,78 @@ impl Deployer {
         }
     }
 
+    /// Unpack a base backup into a copy that is being restored.
+    ///
+    /// One container of the engine's own image, which is where `tar`,
+    /// `gunzip` and the `postgres` user are — the same reasoning as the
+    /// seeder, the health check and the ownership fixer.
+    ///
+    /// **A failure here must stop the deployment.** The alternative is a
+    /// server started on an empty or half-unpacked data directory: the
+    /// first runs `initdb` and produces a database that looks restored
+    /// and holds nothing, and the second is a cluster with some of its
+    /// files. Both start. Both are wrong in a way somebody discovers by
+    /// reading rows that are not there.
+    async fn unpack_base(
+        &self,
+        client: &Containerd,
+        service: &Service,
+        id: &str,
+        restoring: &database::Restoring,
+    ) -> DeployResult<()> {
+        let data_dir = &self.config.node.data_dir;
+        let unpacker = format!("{id}.unpack");
+
+        let request = ContainerRequest {
+            command: postgres::unpack_base(),
+            mounts: vec![
+                BindMount {
+                    source: volumes::ensure(data_dir, id, postgres::VOLUME)?,
+                    destination: postgres::DATA_MOUNT.to_string(),
+                    read_only: false,
+                },
+                // Read-only, because this is somebody else's backup and
+                // the copy being made from it must not be able to touch
+                // it.
+                BindMount {
+                    source: restoring.base.clone(),
+                    destination: postgres::BASE_MOUNT.to_string(),
+                    read_only: true,
+                },
+            ],
+            ..Default::default()
+        };
+
+        let log = logs::prepare(data_dir, &unpacker).ok();
+        let outcome = containers::run_to_completion(
+            client,
+            &unpacker,
+            &service.image,
+            &request,
+            None,
+            log.as_deref(),
+            BACKUP_DEADLINE,
+        )
+        .await;
+        let said = logs::tail(data_dir, &unpacker, 1_000).unwrap_or_default();
+        logs::discard(data_dir, &unpacker);
+
+        match outcome {
+            Ok(0) => {
+                tracing::info!(
+                    service = %service.slug, from = %restoring.base.display(),
+                    target = restoring.target.as_deref().unwrap_or("the end of the log"),
+                    "unpacked a base backup; the server will replay from here"
+                );
+                Ok(())
+            }
+            Ok(code) => Err(DeployError::Refused(format!(
+                "could not unpack the backup (exit {code}): {said}"
+            ))),
+            Err(error) => Err(DeployError::Refused(error.to_string())),
+        }
+    }
+
     /// Copy the primary's data directory into a standby's empty volume.
     ///
     /// A container of its own, run to completion before the standby is
@@ -2573,7 +2659,9 @@ impl Deployer {
         // copy of somebody's data and answering as though it were
         // current.
         let primary = match role {
-            postgres::Role::Primary => None,
+            // A restored copy dials nobody: it replays an archive
+            // rather than following a server.
+            postgres::Role::Primary | postgres::Role::Restoring => None,
             postgres::Role::Standby => {
                 let endpoint = self.primary_endpoint(&row, &placements, &nodes, net)?;
                 if endpoint.is_none() {
@@ -2636,8 +2724,36 @@ impl Deployer {
         );
 
         let archiving = crate::node::settings::archiving(&self.database).await;
+        // Where a restore reads from. The archive is the **original's** —
+        // a restore replays somebody else's log — and this is the one
+        // place the two are connected.
+        //
+        // The container id comes off the end of the backup path, which
+        // is a derivation and worth naming as one: `back_up_engines`
+        // writes each volume as `volumes/<container id>`, and
+        // `archive_dir` is keyed on the same id. One convention, used at
+        // both ends. What guards it is the manifest's `format` — a
+        // layout that changed without changing that number would break
+        // this quietly, which is what the number is for.
+        let restoring = match (&row.restored_from, role) {
+            (Some(from), postgres::Role::Restoring) => {
+                let base = std::path::PathBuf::from(from);
+                let container = base
+                    .file_name()
+                    .map(|name| name.to_string_lossy().to_string())
+                    .unwrap_or_default();
+                Some(database::Restoring {
+                    archive: database::archive_dir(&self.config.node.data_dir, &container),
+                    base,
+                    target: row.recovery_target.clone(),
+                })
+            }
+            _ => None,
+        };
+
         Ok(Some(database::prepare(&database::Plan {
             archiving,
+            restoring,
             data_dir: &self.config.node.data_dir,
             container_id: &replica.container_id(&project.slug, &service.slug),
             database: &row,

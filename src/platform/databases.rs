@@ -92,11 +92,34 @@ pub struct Database {
     /// else — see migration `0032`: a name that changed with the
     /// machine holding it was no name at all.
     pub owner_domain: Option<String>,
+    /// The backup this was restored from, and the moment it was asked to
+    /// stop at. Provenance rather than state: Postgres clears
+    /// `recovery.signal` itself when recovery finishes, and these stay so
+    /// that somebody reading the row in three weeks can tell where it
+    /// came from. See `migrations/0041_restored_from.sql`.
+    pub restored_from: Option<String>,
+    pub recovery_target: Option<String>,
 }
 
 impl Database {
     /// Whether this copy is the one that accepts writes.
+    /// What this copy is, which decides what a deployment does with an
+    /// empty volume.
+    ///
+    /// **Restoring outranks primary.** A database being restored has a
+    /// primary slot like any other, and if that were asked first the
+    /// deploy path would run `initdb` into the volume a base backup was
+    /// meant to be unpacked into — producing an empty database that
+    /// starts, answers, and looks exactly like a restore that worked.
+    ///
+    /// It stops being `Restoring` when the volume holds a cluster:
+    /// unpacking happened, recovery is Postgres's business from there,
+    /// and `recovery.signal` is deleted by Postgres itself when it
+    /// finishes. So this is about the *unpack*, not about the replay.
     pub fn role_of(&self, slot: u32) -> postgres::Role {
+        if self.restored_from.is_some() && slot == self.primary_slot {
+            return postgres::Role::Restoring;
+        }
         match slot == self.primary_slot {
             true => postgres::Role::Primary,
             false => postgres::Role::Standby,
@@ -181,6 +204,8 @@ pub async fn create(
         // name it under its own domain.
         primary_endpoint: None,
         owner_domain: None,
+        restored_from: None,
+        recovery_target: None,
     };
 
     let stored = row.clone();
@@ -428,6 +453,104 @@ fn instruction(
     .map_err(|error| PlatformError::Refused(error.to_string()))
 }
 
+/// Make a database that will be restored into, rather than initialised.
+///
+/// **A new database, never the original rewound.** Rewinding is
+/// irreversible — everything after the chosen moment is gone, which is
+/// exactly what somebody looking for one dropped table does not want —
+/// and it breaks the standbys, which are then ahead of their primary and
+/// have to be seeded again. A copy leaves the original untouched: take
+/// what you came for and throw the copy away.
+///
+/// Almost `create`, and the differences are the point:
+///
+/// * The **credentials are the original's**. A restored copy that
+///   generated new ones would be a database nobody's connection string
+///   opens, at the moment somebody is in a hurry.
+/// * The **version is the original's**, because a data directory built
+///   by 17 is not one 18 will open.
+/// * It is marked as recovering, so the deploy path unpacks and replays
+///   rather than running `initdb` into an empty volume — which would
+///   produce an empty database that looks exactly like a successful
+///   restore.
+pub async fn restore_into(
+    database: &SqliteDatabase,
+    source: &Database,
+    project_id: &str,
+    name: &str,
+    memory_limit: u64,
+    // The backup directory it unpacks, and the moment it stops at.
+    from: &str,
+    target: Option<&str>,
+) -> PlatformResult<(Service, Database)> {
+    let service = super::services::create(
+        database,
+        project_id,
+        name,
+        &postgres::image_for(&source.version),
+        &[],
+    )
+    .await?;
+    super::services::set_kind(database, &service.id, Kind::Postgres).await?;
+    super::services::set_memory_limit(database, &service.id, Some(memory_limit)).await?;
+    super::volumes::create(
+        database,
+        &service.id,
+        postgres::VOLUME,
+        postgres::DATA_MOUNT,
+    )
+    .await?;
+    super::ports::create(database, &service.id, postgres::PORT, false, None).await?;
+
+    let row = Database {
+        service_id: service.id.clone(),
+        engine: source.engine,
+        version: source.version.clone(),
+        // The original's, so the string somebody already has opens it.
+        admin_user: source.admin_user.clone(),
+        admin_password: source.admin_password.clone(),
+        database_name: source.database_name.clone(),
+        replication_user: source.replication_user.clone(),
+        replication_password: source.replication_password.clone(),
+        primary_slot: 1,
+        primary_endpoint: None,
+        owner_domain: None,
+        restored_from: Some(from.to_string()),
+        recovery_target: target.map(str::to_string),
+    };
+
+    let stored = row.clone();
+    database
+        .write(move |connection| {
+            connection.execute(
+                "INSERT INTO database \
+                   (\"service_id\", \"engine\", \"version\", \"admin_user\", \
+                    \"admin_password\", \"database_name\", \"replication_user\", \
+                    \"replication_password\", \"primary_slot\", \"restored_from\", \
+                    \"recovery_target\", \"created_at\") \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+                (
+                    stored.service_id,
+                    stored.engine.as_str(),
+                    stored.version,
+                    stored.admin_user,
+                    stored.admin_password,
+                    stored.database_name,
+                    stored.replication_user,
+                    stored.replication_password,
+                    stored.primary_slot,
+                    stored.restored_from,
+                    stored.recovery_target,
+                    now_ms(),
+                ),
+            )?;
+            Ok(())
+        })
+        .await?;
+
+    Ok((service, row))
+}
+
 /// What this database is called, in full.
 ///
 /// **A row when the operator chose one, derived when they have not.** The
@@ -624,7 +747,7 @@ pub async fn of_service(
 const COLUMNS: &str = "\"service_id\", \"engine\", \"version\", \"admin_user\", \
                        \"admin_password\", \"database_name\", \"replication_user\", \
                        \"replication_password\", \"primary_slot\", \"primary_endpoint\", \
-                       \"owner_domain\"";
+                       \"owner_domain\", \"restored_from\", \"recovery_target\"";
 
 fn decode(row: &Row<'_>) -> wabot::sqlite::rusqlite::Result<Database> {
     Ok(Database {
@@ -639,6 +762,8 @@ fn decode(row: &Row<'_>) -> wabot::sqlite::rusqlite::Result<Database> {
         primary_slot: row.get::<_, i64>(8)? as u32,
         primary_endpoint: row.get(9)?,
         owner_domain: row.get(10)?,
+        restored_from: row.get(11)?,
+        recovery_target: row.get(12)?,
     })
 }
 

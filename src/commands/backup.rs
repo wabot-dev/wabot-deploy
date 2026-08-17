@@ -204,10 +204,7 @@ pub async fn run(config: Config, into: Option<PathBuf>) -> anyhow::Result<i32> {
 /// answer. An operator who asked for last Tuesday and got Thursday's
 /// data with no warning would find out by reading rows that should not
 /// exist.
-pub fn base_for<'a>(
-    taken: &'a [(PathBuf, Manifest)],
-    target: i64,
-) -> Option<&'a (PathBuf, Manifest)> {
+pub fn base_for(taken: &[(PathBuf, Manifest)], target: i64) -> Option<&(PathBuf, Manifest)> {
     // `taken` is newest first, so the first one at or before the target
     // is the newest such — no scan of the rest.
     taken
@@ -460,6 +457,126 @@ pub fn keeping(taken: &[(PathBuf, Manifest)], now: i64) -> (Vec<&PathBuf>, Vec<&
     (keep, drop)
 }
 
+/// Restore one database to a moment, as a new one beside it.
+///
+/// **Never the original rewound.** Rewinding is irreversible —
+/// everything after the chosen moment is gone, which is exactly what
+/// somebody hunting one dropped table does not want — and it leaves the
+/// standbys ahead of their primary, needing to be seeded again. A copy
+/// leaves the original serving: take what you came for and throw the
+/// copy away.
+///
+/// The moment is UTC, spelled the way the console shows it, because the
+/// server parses it in its own time zone and that is UTC here.
+pub async fn restore(
+    config: Config,
+    service_slug: String,
+    target: Option<String>,
+    into: Option<String>,
+) -> anyhow::Result<i32> {
+    let database = crate::db::open(&config.database_path()).await?;
+
+    let services = crate::platform::services::all(&database, None).await?;
+    let Some(source) = services
+        .iter()
+        .find(|service| service.slug == service_slug && service.kind.is_managed())
+    else {
+        println!("no database called {service_slug:?} on this node");
+        return Ok(1);
+    };
+    let Some(row) = crate::platform::databases::of_service(&database, &source.id).await? else {
+        println!("{service_slug} has no engine row");
+        return Ok(1);
+    };
+    let Some(project) = crate::platform::projects::find(&database, &source.project_id).await?
+    else {
+        println!("{service_slug} belongs to no project");
+        return Ok(1);
+    };
+
+    // Which backup can reach that moment. Anything else is a restore
+    // that lands somewhere the operator did not ask for — see
+    // `base_for`, where the direction of replay is the whole reason.
+    let at = match &target {
+        Some(text) => match parse_target(text) {
+            Some(at) => at,
+            None => {
+                println!("{text:?} is not a moment. Try 2026-08-16 14:32");
+                return Ok(1);
+            }
+        },
+        None => crate::platform::now_ms(),
+    };
+    let backups = taken(&config.node.data_dir);
+    let Some((path, manifest)) = base_for(&backups, at) else {
+        println!("no backup on this node was taken before that moment.");
+        println!("The oldest is what bounds how far back a restore can reach.");
+        return Ok(1);
+    };
+
+    let container = format!("{}.{}", project.slug, source.slug);
+    let from = path.join("volumes").join(&container);
+    if !from.join("base.tar.gz").exists() {
+        println!("{} holds no copy of {service_slug}", path.display());
+        return Ok(1);
+    }
+
+    let name = into.unwrap_or_else(|| format!("{}-restored", source.slug));
+    let (restored, _) = crate::platform::databases::restore_into(
+        &database,
+        &row,
+        &project.id,
+        &name,
+        source
+            .memory_limit
+            .unwrap_or(crate::platform::presets::SMALLEST),
+        &from.to_string_lossy(),
+        target.as_deref(),
+    )
+    .await?;
+
+    println!("restoring {service_slug} into {}", restored.slug);
+    println!(
+        "  from      {} ({})",
+        path.display(),
+        super::super::console::layout::exactly(manifest.taken_at)
+    );
+    match &target {
+        Some(target) => println!("  up to     {target} UTC"),
+        None => println!("  up to     as far as the archived log goes"),
+    }
+    println!();
+    println!("  It unpacks and replays at its next deployment. The original is");
+    println!("  untouched and still serving — this is a copy beside it.");
+
+    database.close().await?;
+    Ok(0)
+}
+
+/// Read a moment as somebody would type it: `2026-08-16 14:32`.
+///
+/// UTC, because the server parses `recovery_target_time` in its own time
+/// zone and that is UTC here — and because the console labels every time
+/// it shows for exactly this reason.
+pub fn parse_target(text: &str) -> Option<i64> {
+    let text = text.trim();
+    let (date, clock) = text.split_once([' ', 'T'])?;
+    let mut parts = date.split('-');
+    let year: i32 = parts.next()?.parse().ok()?;
+    let month: u8 = parts.next()?.parse().ok()?;
+    let day: u8 = parts.next()?.parse().ok()?;
+
+    let mut clock = clock.split(':');
+    let hour: u8 = clock.next()?.parse().ok()?;
+    let minute: u8 = clock.next()?.parse().ok()?;
+    let second: u8 = clock.next().and_then(|s| s.parse().ok()).unwrap_or(0);
+
+    let date =
+        time::Date::from_calendar_date(year, time::Month::try_from(month).ok()?, day).ok()?;
+    let clock = time::Time::from_hms(hour, minute, second).ok()?;
+    Some(date.with_time(clock).assume_utc().unix_timestamp() * 1000)
+}
+
 /// Copy every volume, each the way its owner allows.
 async fn copy_volumes(
     database: &wabot::sqlite::SqliteDatabase,
@@ -651,7 +768,7 @@ mod tests {
             )
         };
         // Newest first, as `taken` returns them.
-        let backups = vec![at(10 * day), at(5 * day), at(1 * day)];
+        let backups = vec![at(10 * day), at(5 * day), at(day)];
 
         // A moment between two backups starts from the earlier one.
         let picked = base_for(&backups, 7 * day).expect("one before it");
@@ -673,6 +790,39 @@ mod tests {
         // silently getting one that is too late.
         assert!(base_for(&backups, 12 * 60 * 60 * 1000).is_none());
         assert!(base_for(&[], 5 * day).is_none());
+    }
+
+    /// A moment is read the way somebody types it, and refused rather
+    /// than guessed at. A restore that silently landed on the wrong day
+    /// because a string was misread is the failure with no symptom.
+    #[test]
+    fn a_moment_reads_the_way_somebody_types_it() {
+        // Both separators, because one is what a person writes and the
+        // other is what a machine hands over.
+        let noon = parse_target("2026-08-16 12:00").expect("a moment");
+        assert_eq!(parse_target("2026-08-16T12:00"), Some(noon));
+        // Seconds are optional, and default to the start of the minute —
+        // "restore to 14:32" means the beginning of that minute.
+        assert_eq!(parse_target("2026-08-16 12:00:00"), Some(noon));
+        assert_eq!(parse_target("2026-08-16 12:00:30"), Some(noon + 30_000));
+
+        // UTC, which is what the server parses it as. The number is
+        // checked against an independent implementation rather than
+        // written from memory — the first version of this line was a
+        // day out, and a date constant that is wrong in a test is a
+        // test that agrees with the bug.
+        assert_eq!(noon, 1_786_881_600_000);
+
+        for nonsense in [
+            "yesterday",
+            "2026-08-16",
+            "2026-13-01 00:00",
+            "2026-08-32 00:00",
+            "2026-08-16 25:00",
+            "",
+        ] {
+            assert!(parse_target(nonsense).is_none(), "{nonsense:?}");
+        }
     }
 
     /// The four answers, and the one that matters most is `NoAnchor`.

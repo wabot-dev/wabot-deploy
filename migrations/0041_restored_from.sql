@@ -1,0 +1,36 @@
+-- Where a database came from, when it did not come from `initdb`.
+--
+-- ## Why a database has to say this about itself
+--
+-- The deploy path decides what to do with an empty volume by asking the
+-- rows. For every database until now the answer was the same: let the
+-- image's entrypoint run `initdb` and make a new cluster. A database
+-- being restored needs the opposite — unpack a base backup and replay
+-- the log onto it — and the two are indistinguishable from the volume,
+-- which is empty either way.
+--
+-- Getting that wrong is the worst shape a failure can take here: an
+-- `initdb` into what should have been a restore produces an empty
+-- database that starts, answers, and looks exactly like a restore that
+-- worked. Somebody finds out by querying for the row they were trying to
+-- recover.
+--
+-- ## Kept rather than cleared
+--
+-- Postgres deletes `recovery.signal` itself when recovery finishes, so
+-- nothing here has to be unset for the database to become ordinary.
+-- These two columns stay as **provenance**: an operator looking at a
+-- database called `orders-recovered` in three weeks deserves to be able
+-- to read where it came from and which moment it holds, rather than
+-- working it out from its name.
+--
+-- NULL is the ordinary case — a database that was created rather than
+-- restored, which is every row that exists today.
+ALTER TABLE database ADD COLUMN "restored_from" TEXT;
+
+-- The moment it was asked to stop at, as it was typed.
+--
+-- NULL alongside a set `restored_from` means "as far as the log goes",
+-- which is what a node being rebuilt wants and a different request from
+-- a moment somebody chose.
+ALTER TABLE database ADD COLUMN "recovery_target" TEXT;

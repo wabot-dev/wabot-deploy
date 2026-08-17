@@ -139,6 +139,10 @@ fn migrations() -> Vec<Migration> {
             "0040_archiving_default",
             include_str!("../migrations/0040_archiving_default.sql"),
         ),
+        Migration::new(
+            "0041_restored_from",
+            include_str!("../migrations/0041_restored_from.sql"),
+        ),
     ]
 }
 
