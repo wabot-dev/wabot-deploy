@@ -870,9 +870,14 @@ impl Deployer {
         // was about the disk — nothing bounded the file — and the page
         // it left behind told the owner of a plain container that its
         // output had not been kept and to deploy it again, which could
-        // never work. `logs::trim_all` is the bound now, and it belongs
-        // to the disk rather than to who wrote the configuration.
-        let log = logs::prepare(&self.config.node.data_dir, &id).ok();
+        // never work. `logs::sweep` is the bound now, and it belongs to
+        // the disk rather than to who wrote the configuration.
+        //
+        // **`resume`, not `prepare`.** This used to truncate, so every
+        // deployment threw away the evidence of why the last one had to
+        // happen. A restart is precisely when somebody wants what came
+        // before it.
+        let log = logs::resume(&self.config.node.data_dir, &id).ok();
 
         match containers::run(
             &client,
@@ -1273,6 +1278,23 @@ impl Deployer {
             };
             for entry in entries.flatten() {
                 let name = entry.file_name().to_string_lossy().to_string();
+                // A rotated log is `<id>.log.2`, so stripping `.log`
+                // fails and the file was invisible to this — immortal
+                // and unreported, which is the worst pair. The generation
+                // number comes off first, and only when what is left ends
+                // in `.log`, so a replica called `web.2` is not read as a
+                // generation of `web`.
+                let name = match suffix == ".log" {
+                    true => match name.rsplit_once('.') {
+                        Some((rest, tail))
+                            if tail.parse::<usize>().is_ok() && rest.ends_with(".log") =>
+                        {
+                            rest.to_string()
+                        }
+                        _ => name,
+                    },
+                    false => name,
+                };
                 let Some(id) = name.strip_suffix(suffix) else {
                     continue;
                 };
@@ -3199,6 +3221,46 @@ fn usable_nameservers(contents: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A rotated log belongs to its container, and an orphan's whole
+    /// history has to be reportable.
+    ///
+    /// `foo.log.2` does not end in `.log`, so stripping that suffix
+    /// failed and the file was invisible here — while `logs::discard`
+    /// only removed the live one. Between them nothing could see or
+    /// remove a rotated log, which is how a file becomes immortal.
+    ///
+    /// And the second half matters as much: a replica is `web.2`, whose
+    /// live log is `web.2.log`. Reading that as a generation of `web`
+    /// would report a running copy's log as rubbish.
+    #[test]
+    fn a_rotated_log_is_reported_with_its_container_and_a_replica_is_not() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let logs = dir.path().join("logs");
+        std::fs::create_dir_all(&logs).expect("mkdir");
+
+        // A container nothing claims, with a rotated generation.
+        std::fs::write(logs.join("gone.web.log"), "x").expect("write");
+        std::fs::write(logs.join("gone.web.log.2"), "x").expect("write");
+        // And a claimed replica whose id ends in a number.
+        std::fs::write(logs.join("shop.web.2.log"), "x").expect("write");
+
+        let found = Deployer::leftovers(dir.path(), &["shop.web.2".to_string()]);
+        let names: Vec<String> = found
+            .iter()
+            .map(|(_, path)| path.file_name().unwrap().to_string_lossy().to_string())
+            .collect();
+
+        assert!(names.contains(&"gone.web.log".to_string()), "{names:?}");
+        assert!(
+            names.contains(&"gone.web.log.2".to_string()),
+            "the rotated one is reported too: {names:?}"
+        );
+        assert!(
+            !names.contains(&"shop.web.2.log".to_string()),
+            "a claimed replica's log is not rubbish: {names:?}"
+        );
+    }
 
     fn port(container_port: u16, hostname: Option<&str>) -> Port {
         Port {

@@ -214,16 +214,20 @@ pub async fn run(config: Config) -> anyhow::Result<i32> {
             move |cancel| async move {
                 loop {
                     let data_dir = deployer.config().node.data_dir.clone();
-                    // On the blocking pool: it reads and rewrites files,
-                    // and a log that has grown to eight megabytes is
-                    // eight megabytes of read on whatever thread asks.
-                    let trimmed = tokio::task::spawn_blocking(move || {
-                        crate::deploy::logs::trim_all(&data_dir)
-                    })
-                    .await
-                    .unwrap_or(0);
-                    if trimmed > 0 {
-                        tracing::info!(trimmed, "container logs trimmed to their last part");
+                    // On the blocking pool: it stats every log, renames
+                    // some and removes others, and doing that on an
+                    // executor thread stops the console answering.
+                    let swept =
+                        tokio::task::spawn_blocking(move || crate::deploy::logs::sweep(&data_dir))
+                            .await
+                            .unwrap_or_default();
+                    if swept.did_anything() {
+                        tracing::info!(
+                            trimmed = swept.trimmed,
+                            aged_out = swept.aged_out,
+                            over_budget = swept.over_budget,
+                            "container logs swept"
+                        );
                     }
 
                     tokio::select! {

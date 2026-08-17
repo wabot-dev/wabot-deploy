@@ -58,6 +58,16 @@ pub struct ServiceLogs {
     /// This is the console's only numeric query parameter, which is why
     /// nothing had found it.
     pub slot: Option<String>,
+
+    /// Show everything kept rather than the end of the live file.
+    ///
+    /// The default is the last window of what is being written now,
+    /// which is what somebody watching a deployment wants. This is for
+    /// the other question — *what has this been doing* — whose answer is
+    /// on the far side of one or more restarts.
+    ///
+    /// A string for the same reason `slot` is: a query parameter is text.
+    pub all: Option<String>,
 }
 
 /// The same service, from the page that changes it.
@@ -686,14 +696,52 @@ impl ServicePages {
             .and_then(|slot| slot.parse::<u32>().ok())
             .filter(|slot| mine.contains(slot))
             .or(mine.first().copied());
-        let opened = match slot {
-            Some(slot) => crate::deploy::logs::read_from(
-                &self.state.config.node.data_dir,
-                &crate::platform::replicas::container_id_for(&project.slug, &service.slug, slot),
-                0,
-            ),
-            None => None,
+        let everything = query.all.is_some();
+        let container = slot.map(|slot| {
+            crate::platform::replicas::container_id_for(&project.slug, &service.slug, slot)
+        });
+        // Two readings of one file, and the difference is which question
+        // is being asked. The live tail is for watching; the whole kept
+        // history — every rotated generation and the live file as one —
+        // is for finding out what happened before the restart.
+        let opened = match (&container, everything) {
+            (Some(container), false) => {
+                crate::deploy::logs::read_from(&self.state.config.node.data_dir, container, 0)
+            }
+            (Some(container), true) => {
+                crate::deploy::logs::history(
+                    &self.state.config.node.data_dir,
+                    container,
+                    512 * 1024,
+                )
+                .map(|text| crate::deploy::logs::Chunk {
+                    text,
+                    // Not a place to follow from: the history ends
+                    // where the live file does, and a stream that
+                    // resumed from an offset into a concatenation
+                    // would be reading the wrong bytes. So the whole
+                    // view does not stream, and says so.
+                    next: 0,
+                    restarted: false,
+                })
+                // A container with no file at all reads as absent
+                // here too, which is the distinction the page makes
+                // below.
+                .or_else(|| {
+                    crate::deploy::logs::read_from(&self.state.config.node.data_dir, container, 0)
+                })
+            }
+            (None, _) => None,
         };
+        // Whether there is older history to offer, so the link is absent
+        // when it would lead to the same bytes.
+        let has_history = container
+            .as_ref()
+            .map(|container| {
+                crate::deploy::logs::kept_generations(&self.state.config.node.data_dir, container)
+                    > 0
+            })
+            .unwrap_or(false);
         // Whether there is a file at all, kept apart from whether it
         // has anything in it — see the page.
         let kept = opened.is_some();
@@ -753,15 +801,44 @@ impl ServicePages {
                 @if let Some(slot) = slot {
                     <section class="card stack">
                         <div class="split">
-                            <p class="card-label">(t("Output"))</p>
+                            @if everything {
+                                <p class="card-label">(t("Everything kept"))</p>
+                            } @else {
+                                <p class="card-label">(t("Output"))</p>
+                            }
                             // Written by the island, and rendered
                             // whether or not scripting is on: a label
                             // that only appears with a script is one
                             // somebody without a script cannot read.
-                            <span class="tile-detail" data-logs-state>
-                                (t("Not following — reload to see more"))
-                            </span>
+                            @if everything {
+                                // The whole view does not follow: its
+                                // offsets are into a concatenation, so
+                                // resuming from one would read the wrong
+                                // bytes. Said plainly rather than
+                                // leaving a stream label that lies.
+                                <a class="btn btn-ghost btn-sm"
+                                   href=(format!(
+                                       "/projects/{project_slug}/services/{service_slug}/logs?slot={slot}"
+                                   ))>(t("Follow what it is saying now"))</a>
+                            } @else {
+                                // Written by the island, and rendered
+                                // whether or not scripting is on: a label
+                                // that only appears with a script is one
+                                // somebody without a script cannot read.
+                                <span class="tile-detail" data-logs-state>
+                                    (t("Not following — reload to see more"))
+                                </span>
+                            }
                         </div>
+                        @if has_history && !everything {
+                            <p class="tile-detail">
+                                (t("Older output is kept from before the last restarts."))
+                                " "
+                                <a href=(format!(
+                                    "/projects/{project_slug}/services/{service_slug}/logs?slot={slot}&all=1"
+                                ))>(t("Show everything kept"))</a>
+                            </p>
+                        }
                         <pre class="log" data-logs-out
                              data-slot=(slot)
                              data-from=(from)>(&text)</pre>
