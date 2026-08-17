@@ -27,6 +27,34 @@
 //! a file that is mid-write, and only the person who knows what runs in
 //! there knows whether that matters.
 //!
+//! ## One root for the whole network
+//!
+//! Every node points at the same backup root, which is what makes an
+//! S3 bucket or one directory on one machine the answer for a network
+//! rather than for a node. Two things follow, and the second is why it
+//! is worth doing at all:
+//!
+//! - **What is a node's own goes under its own id.** Two nodes writing
+//!   `manifest.json` at the top of a shared root would be one node's
+//!   backup, alternately.
+//! - **Image layers go once, under their digest.** Two nodes running
+//!   the same base image hold the same bytes; a backup that copied them
+//!   per node would store the network's images as many times as there
+//!   are machines. See `commands::blobs`, where the name being the hash
+//!   is the whole of the deduplication.
+//!
+//! ```text
+//! <root>/
+//!   blobs/sha256/<hex>              every node, once
+//!   nodes/<node id>/<taken at>/
+//!     manifest.json
+//!     node.db
+//!     volumes/<container>/
+//! ```
+//!
+//! The local default under `data_dir/backups` has the same shape, so
+//! sending it somewhere shared is a copy rather than a conversion.
+//!
 //! ## A directory, not an archive
 //!
 //! No tar, no compression, no new dependency. What comes out is
@@ -68,6 +96,29 @@ pub struct Manifest {
     pub node_name: Option<String>,
     /// One entry per volume copied.
     pub volumes: Vec<Copied>,
+    /// The images this node's services need, which nowhere else has.
+    #[serde(default)]
+    pub images: Vec<Kept>,
+}
+
+/// One image, and the blobs it is made of.
+///
+/// The digests are in the shared store — see `commands::blobs` — and
+/// this is the list that says which of them belong to this reference.
+/// Without it a restore would have the bytes and no way to know which
+/// image they add up to.
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+pub struct Kept {
+    /// The reference as containerd knows it, which is what a service
+    /// asks for.
+    pub reference: String,
+    /// The image's own top descriptor: what the manifest list or
+    /// manifest is, so a restore can recreate the image record.
+    pub digest: String,
+    pub media_type: String,
+    /// Every blob, with its size. The size is recorded because
+    /// containerd wants it when the blob goes back in.
+    pub blobs: Vec<(String, i64)>,
 }
 
 /// One volume, and what its copy is worth.
@@ -97,13 +148,20 @@ pub const FORMAT: u32 = 1;
 pub async fn run(config: Config, into: Option<PathBuf>) -> anyhow::Result<i32> {
     let database = crate::db::open(&config.database_path()).await?;
 
-    let into = into.unwrap_or_else(|| {
-        config
-            .node
-            .data_dir
-            .join("backups")
-            .join(format!("node-{}", crate::platform::now_ms()))
-    });
+    // Where this node's own things go under whichever root was named —
+    // see the module docs. A node with no id of its own has never been
+    // on a network and cannot collide with anybody, so it gets a name
+    // that says so rather than a blank path segment.
+    let me = crate::network::me(&database).await.ok().flatten();
+    let root = into.unwrap_or_else(|| config.node.data_dir.join("backups"));
+    let into = root
+        .join("nodes")
+        .join(
+            me.as_ref()
+                .map(|node| node.id.clone())
+                .unwrap_or_else(|| "this-node".into()),
+        )
+        .join(crate::platform::now_ms().to_string());
 
     // Refused rather than merged. A backup written over another one is
     // two half-backups that look like one, and the shapes that produces
@@ -115,7 +173,6 @@ pub async fn run(config: Config, into: Option<PathBuf>) -> anyhow::Result<i32> {
     }
     std::fs::create_dir_all(&into)?;
 
-    let me = crate::network::me(&database).await.ok().flatten();
     println!("backing up to {}", into.display());
 
     // The database first. It carries the identity, the grants, the keys
@@ -133,6 +190,9 @@ pub async fn run(config: Config, into: Option<PathBuf>) -> anyhow::Result<i32> {
 
     let mut volumes = copy_volumes(&database, &config, &into).await;
     volumes.extend(back_up_engines(&database, &config, &into).await);
+    // Into the *root*, not this backup's directory: blobs are the part
+    // every node shares, and one node's copy of a layer is every node's.
+    let images = keep_images(&database, &root).await;
     let manifest = Manifest {
         format: FORMAT,
         taken_by: format!("wabot-deploy {}", crate::api::VERSION),
@@ -140,6 +200,7 @@ pub async fn run(config: Config, into: Option<PathBuf>) -> anyhow::Result<i32> {
         node_id: me.as_ref().map(|node| node.id.clone()),
         node_name: me.as_ref().map(|node| node.name.clone()),
         volumes,
+        images,
     };
     std::fs::write(
         into.join("manifest.json"),
@@ -410,15 +471,26 @@ pub const KEEP_DAYS: i64 = 7;
 /// not is worse than no row — this way the disk is the record and
 /// cannot disagree with itself.
 pub fn taken(data_dir: &Path) -> Vec<(PathBuf, Manifest)> {
-    let mut found: Vec<(PathBuf, Manifest)> = std::fs::read_dir(data_dir.join("backups"))
-        .into_iter()
-        .flatten()
-        .flatten()
-        .filter_map(|entry| {
-            let manifest = std::fs::read_to_string(entry.path().join("manifest.json")).ok()?;
-            Some((entry.path(), serde_json::from_str(&manifest).ok()?))
-        })
-        .collect();
+    // Every node's, not only this one's. A shared root holds several,
+    // and the manifest says whose each is — reading them all is what
+    // lets a rebuilt machine be pointed at the root and find the backup
+    // of the node it is replacing.
+    let mut found: Vec<(PathBuf, Manifest)> =
+        std::fs::read_dir(data_dir.join("backups").join("nodes"))
+            .into_iter()
+            .flatten()
+            .flatten()
+            .flat_map(|node| {
+                std::fs::read_dir(node.path())
+                    .into_iter()
+                    .flatten()
+                    .flatten()
+            })
+            .filter_map(|entry| {
+                let manifest = std::fs::read_to_string(entry.path().join("manifest.json")).ok()?;
+                Some((entry.path(), serde_json::from_str(&manifest).ok()?))
+            })
+            .collect();
     found.sort_by_key(|(_, manifest): &(PathBuf, Manifest)| -manifest.taken_at);
     found
 }
@@ -671,6 +743,142 @@ async fn copy_volumes(
     copied
 }
 
+/// Keep the images nothing else has.
+///
+/// **The node is the registry.** A pushed image lives in this node's own
+/// containerd content store and nowhere else — so `docker.io/...` comes
+/// back with a pull and `<this node>/project/service` does not. A backup
+/// that skipped these would restore a node whose every pushed service
+/// asks itself for an image it no longer holds, and fails at the pull.
+///
+/// **Only what a service is running.** Not every tag ever pushed, which
+/// is a registry's job and grows without bound. Restoring a node is
+/// coming back up, and coming back up needs the image each service would
+/// deploy. What a CI system pushed last year is what a CI system has.
+///
+/// Blobs go to the shared store under their digest, so a network of
+/// nodes running the same base image keeps it once.
+async fn keep_images(database: &wabot::sqlite::SqliteDatabase, root: &Path) -> Vec<Kept> {
+    let Some(domain) = crate::node::settings::domain(database, &Config::default()).await else {
+        // With no name of its own this node has no registry anybody
+        // pushed to, so there is nothing here that a pull cannot get.
+        return Vec::new();
+    };
+    let Ok(services) = crate::platform::services::all(database, None).await else {
+        return Vec::new();
+    };
+    let Ok(client) = crate::runtime::client::Containerd::connect().await else {
+        println!("  images      containerd is not answering; none kept");
+        return Vec::new();
+    };
+
+    let mut kept: Vec<Kept> = Vec::new();
+    let (mut written, mut shared) = (0usize, 0usize);
+
+    for service in &services {
+        // What it would actually deploy: the release that is running,
+        // or the image on the service when nothing has been pushed.
+        let reference = match crate::platform::releases::of_service(database, &service.id).await {
+            Ok(releases) => releases
+                .into_iter()
+                .find(|release| release.deployed_at.is_some())
+                .map(|release| release.reference)
+                .unwrap_or_else(|| service.image.clone()),
+            Err(_) => service.image.clone(),
+        };
+
+        // Ours or somebody's. A public image is somebody else's to keep,
+        // and copying it here would be gigabytes of what a pull returns.
+        if !reference.starts_with(&format!("{domain}/")) {
+            continue;
+        }
+        if kept.iter().any(|one| one.reference == reference) {
+            continue;
+        }
+
+        match keep_one(&client, root, &reference).await {
+            Ok((one, new, old)) => {
+                println!(
+                    "  image       {reference}  {} blob(s), {new} new",
+                    one.blobs.len()
+                );
+                written += new;
+                shared += old;
+                kept.push(one);
+            }
+            // Named and skipped, like a database that could not be
+            // copied: a backup missing one image is one somebody can
+            // still use for everything else.
+            Err(reason) => println!("  image       {reference} — NOT KEPT: {reason}"),
+        }
+    }
+
+    // **Said either way.** Nothing kept is a real and common answer — a
+    // node whose services all run public images has nothing here that a
+    // pull cannot get — and it is indistinguishable from a bug that kept
+    // nothing, unless the command says which. "My images are in the
+    // backup" is what somebody assumes by default.
+    match kept.is_empty() {
+        true => println!(
+            "  images      none of this node's own are in use; public ones come back with a pull"
+        ),
+        false => println!(
+            "  images      {} kept, {written} blob(s) written, {shared} already shared",
+            kept.len()
+        ),
+    }
+    kept
+}
+
+/// One image: its tree, its bytes, and where they went.
+async fn keep_one(
+    client: &crate::runtime::client::Containerd,
+    root: &Path,
+    reference: &str,
+) -> Result<(Kept, usize, usize), String> {
+    let target = crate::runtime::images::image_target(client, reference)
+        .await
+        .map_err(|error| error.to_string())?;
+    let blobs = crate::commands::blobs::tree_of(client, reference).await?;
+
+    let (mut written, mut shared) = (0usize, 0usize);
+    for (digest, size) in &blobs {
+        // Asked before read: the point of a shared store is that the
+        // second node does not move the bytes at all, and reading a
+        // layer out of containerd to discover it is already there would
+        // be the copy this exists to avoid.
+        if crate::commands::blobs::have(root, digest) {
+            shared += 1;
+            continue;
+        }
+        let descriptor = containerd_client::types::Descriptor {
+            media_type: String::new(),
+            digest: digest.clone(),
+            size: *size,
+            annotations: Default::default(),
+        };
+        let bytes = crate::runtime::content::read(client, &descriptor)
+            .await
+            .map_err(|error| format!("{digest}: {error}"))?;
+        match crate::commands::blobs::put(root, digest, &bytes) {
+            Ok(true) => written += 1,
+            Ok(false) => shared += 1,
+            Err(error) => return Err(format!("{digest}: {error}")),
+        }
+    }
+
+    Ok((
+        Kept {
+            reference: reference.to_string(),
+            digest: target.digest,
+            media_type: target.media_type,
+            blobs,
+        },
+        written,
+        shared,
+    ))
+}
+
 /// Let every managed engine here copy itself.
 ///
 /// One `pg_basebackup` per database, taken from a read-only copy when
@@ -810,6 +1018,7 @@ mod tests {
                     node_id: None,
                     node_name: None,
                     volumes: Vec::new(),
+                    images: Vec::new(),
                 },
             )
         };
@@ -959,6 +1168,7 @@ mod tests {
                     node_id: None,
                     node_name: None,
                     volumes: Vec::new(),
+                    images: Vec::new(),
                 },
             )
         };
@@ -1005,6 +1215,7 @@ mod tests {
                 bytes: 4096,
                 how: How::CrashConsistent,
             }],
+            images: Vec::new(),
         };
 
         let json = serde_json::to_string(&manifest).expect("serialise");

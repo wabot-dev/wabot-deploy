@@ -376,7 +376,7 @@ fn parse_port(declared: &str) -> Option<u16> {
 }
 
 /// The descriptor an image record points at.
-async fn image_target(
+pub async fn image_target(
     client: &Containerd,
     reference: &str,
 ) -> ClientResult<containerd_client::types::Descriptor> {

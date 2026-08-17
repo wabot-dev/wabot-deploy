@@ -5,6 +5,7 @@
 //! the commands stay testable without one.
 
 pub mod backup;
+pub mod blobs;
 pub mod containerd;
 pub mod doctor;
 pub mod install;
