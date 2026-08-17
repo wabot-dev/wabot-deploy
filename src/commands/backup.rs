@@ -6,11 +6,23 @@
 //! - **The node's own database.** `VACUUM INTO`, which is what the
 //!   updater already uses: a byte copy of a live SQLite is a copy of a
 //!   half-finished transaction.
-//! - **Images.** Deliberately not copied. They are in a registry and
-//!   come back with a pull, and a backup that carried them would be
-//!   gigabytes of things somebody else is already keeping.
+//! - **Images this node is the only copy of.** Its own builds, which no
+//!   registry anywhere else is holding. A public base image is not
+//!   copied: it comes back with a pull, and carrying it would be
+//!   gigabytes of something somebody else already keeps.
 //! - **Volumes.** The hard one, and the reason this is a command rather
 //!   than a `cp -a`.
+//!
+//! ## And only what something claims
+//!
+//! A volume directory outlives the copy that made it — nothing deletes
+//! one, on purpose, because it is data somebody may still want. So the
+//! disk holds directories for copies that have been moved off this node
+//! or thrown off it, and those are **not** in a backup: there is no row
+//! to restore them under, so they would be weight in every copy for ever
+//! with nothing behind it. `backup` names each one it skipped, because
+//! "my backup has everything on the disk" is the assumption, and a
+//! backup is the worst place to be quietly wrong.
 //!
 //! ## A file copy of a running database is not a backup
 //!
@@ -920,13 +932,14 @@ async fn copy_volumes(
         return Vec::new();
     };
 
-    // Which container ids belong to a managed engine, so the ones that
-    // need their own tool can be told from the ones that do not. Read
-    // from the rows rather than guessed from the directory name: the
-    // name carries a project and a service and says nothing about what
-    // runs inside.
-    let managed = managed_containers(database).await;
+    // What this node's rows claim, and which of those needs its own
+    // tool. Both read from the rows rather than guessed from the
+    // directory name: the name carries a project and a service and says
+    // nothing about whether anything still runs there or what is
+    // inside.
+    let claimed = containers_here(database).await;
     let mut copied = Vec::new();
+    let mut orphans = Vec::new();
 
     for entry in entries.flatten() {
         if !entry.path().is_dir() {
@@ -935,11 +948,29 @@ async fn copy_volumes(
         let container = entry.file_name().to_string_lossy().to_string();
         let destination = into.join("volumes").join(&container);
 
+        // **Storage no copy claims is not backed up.** It is data
+        // somebody may still want — which is why nothing deletes it —
+        // but it is not part of what this node *is*: there is no row to
+        // put it back under, so it would be weight in every backup for
+        // ever with no restore behind it. 62 MB of a database that had
+        // been moved off the Alpine node, in each copy, found by
+        // watching one run.
+        //
+        // Named rather than skipped quietly, because "the backup has
+        // everything on the disk" is what somebody would otherwise
+        // assume, and finding out it did not is the one moment when
+        // being wrong about a backup costs the most.
+        //
         // A managed engine's data directory is copied by the engine —
         // see the module docs — and that happens below, per service,
         // because it needs the rows to know which copy to read from.
-        if managed.contains(&container) {
-            continue;
+        match take(&container, claimed.as_ref()) {
+            Take::Copy => {}
+            Take::Engine => continue,
+            Take::Skip => {
+                orphans.push(container);
+                continue;
+            }
         }
 
         match copy_tree(&entry.path(), &destination) {
@@ -953,6 +984,17 @@ async fn copy_volumes(
             }
             Err(error) => println!("  volume      {container} — could not copy: {error}"),
         }
+    }
+
+    if !orphans.is_empty() {
+        println!(
+            "  volumes     {} skipped, claimed by no copy of any service:",
+            orphans.len()
+        );
+        for orphan in &orphans {
+            println!("                {orphan}");
+        }
+        println!("              Yours to keep or remove; `doctor` lists them too.");
     }
     copied
 }
@@ -1154,30 +1196,68 @@ async fn back_up_engines(
     copied
 }
 
-/// The container ids of every copy of a managed engine on this node.
-async fn managed_containers(database: &wabot::sqlite::SqliteDatabase) -> Vec<String> {
+/// What a backup does with one directory under the volume root.
+#[derive(Debug, PartialEq, Eq)]
+enum Take {
+    /// A file copy, here and now. The manifest calls it
+    /// crash-consistent, in those words.
+    Copy,
+    /// The engine that owns it copies it — later, and per service,
+    /// because that needs the rows to know which copy to read from.
+    Engine,
+    /// Left behind, and named. See the call site for why.
+    Skip,
+}
+
+/// Which of the three, given what this node's rows claim.
+///
+/// `None` for the claims is not "nothing is claimed". Rows this node
+/// could not read are no grounds for deciding somebody's data is
+/// rubbish, so with no list everything is claimed — the shape `fits`
+/// takes for a machine that cannot say how much memory it has.
+fn take(container: &str, claimed: Option<&std::collections::HashMap<String, bool>>) -> Take {
+    match claimed {
+        None => Take::Copy,
+        Some(claimed) => match claimed.get(container) {
+            Some(true) => Take::Engine,
+            Some(false) => Take::Copy,
+            None => Take::Skip,
+        },
+    }
+}
+
+/// Every container id this node's rows claim, and whether it is a
+/// managed engine.
+async fn containers_here(
+    database: &wabot::sqlite::SqliteDatabase,
+) -> Option<std::collections::HashMap<String, bool>> {
     let (Ok(services), Ok(projects), Ok(mine)) = (
         crate::platform::services::all(database, None).await,
         crate::platform::projects::all(database).await,
         crate::platform::replicas::here(database).await,
     ) else {
-        return Vec::new();
+        // Not an empty map. The caller reads absence from the map as
+        // "nothing claims this directory", and rows it could not read
+        // are not evidence of that — see the comment at the call.
+        return None;
     };
 
-    mine.iter()
-        .filter_map(|replica| {
-            let service = services
-                .iter()
-                .find(|service| service.id == replica.service_id)?;
-            if !service.kind.is_managed() {
-                return None;
-            }
-            let project = projects
-                .iter()
-                .find(|project| project.id == service.project_id)?;
-            Some(replica.container_id(&project.slug, &service.slug))
-        })
-        .collect()
+    Some(
+        mine.iter()
+            .filter_map(|replica| {
+                let service = services
+                    .iter()
+                    .find(|service| service.id == replica.service_id)?;
+                let project = projects
+                    .iter()
+                    .find(|project| project.id == service.project_id)?;
+                Some((
+                    replica.container_id(&project.slug, &service.slug),
+                    service.kind.is_managed(),
+                ))
+            })
+            .collect(),
+    )
 }
 
 /// Copy a directory, and say how much it holds.
@@ -1211,6 +1291,48 @@ fn human(bytes: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn claims(entries: &[(&str, bool)]) -> std::collections::HashMap<String, bool> {
+        entries
+            .iter()
+            .map(|(id, managed)| (id.to_string(), *managed))
+            .collect()
+    }
+
+    /// A directory no copy of any service claims is left where it is.
+    ///
+    /// It is data somebody may still want, which is why nothing deletes
+    /// it — and it is not part of what this node is, so carrying it in
+    /// every backup for ever would be weight with no restore behind it:
+    /// there is no row to put it back under. The Alpine node had 62 MB
+    /// of a database that had been moved off it, copied every time.
+    #[test]
+    fn a_volume_nothing_claims_is_not_backed_up() {
+        let claimed = claims(&[("shop.web.1", false), ("shop.db.1", true)]);
+
+        assert_eq!(take("shop.web.1", Some(&claimed)), Take::Copy);
+        assert_eq!(take("shop.db.1", Some(&claimed)), Take::Engine);
+        assert_eq!(take("gone.orders.3", Some(&claimed)), Take::Skip);
+    }
+
+    /// Rows this node could not read are no grounds for deciding
+    /// somebody's data is rubbish.
+    ///
+    /// The dangerous reading of an empty list is "nothing is claimed",
+    /// which would turn one unreadable query into a backup that
+    /// silently holds no volumes at all — and looks like a backup. So
+    /// unknown means everything is copied, which is what this command
+    /// did before it could tell the difference.
+    #[test]
+    fn rows_that_cannot_be_read_mean_copy_everything() {
+        assert_eq!(take("shop.web.1", None), Take::Copy);
+        assert_eq!(take("gone.orders.3", None), Take::Copy);
+
+        // And an empty list is a different answer from a missing one:
+        // this node genuinely runs nothing, so nothing is claimed.
+        let none = claims(&[]);
+        assert_eq!(take("gone.orders.3", Some(&none)), Take::Skip);
+    }
 
     /// **The newest backup at or before the moment, never the newest of
     /// all.** Replaying only goes forwards, so a backup taken after the
