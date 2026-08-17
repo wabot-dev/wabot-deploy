@@ -269,12 +269,8 @@ Publishing a release is outward-facing. Ask first.
 
 - Reconcile checks whether a container runs, not whether its port
   mappings match the rows.
-- Container logs are kept across restarts and bounded three ways, but
-  nothing **searches** them and no line carries a timestamp — the
-  container's own bytes are stored untouched, and only the boundary this
-  writes at each start says when anything happened. Timestamping would
-  mean reading the stream rather than letting the shim write the file,
-  which is a reader process per container.
+- Container logs are kept across restarts and bounded three ways, and
+  nothing **searches** them.
 - No image garbage collection.
 - The updater does not rewrite the systemd unit; a release that changes
   it has to say so in its notes.
@@ -298,6 +294,23 @@ Publishing a release is outward-facing. Ask first.
   at all. The meter on the memory page froze that way for as long as it
   has existed, and the numbers beside it kept moving, so it read as
   working. There is a test on the payload's shape now.
+
+**A log has no timestamps because a reader can block the container.**
+containerd's shim does offer what would give them — `binary:///path`
+hands the streams to a program, which is how nerdctl timestamps. The
+protocol is measured and written down in `deploy::logs`, including the
+part that is a trap: fd 3 is stdout, fd 4 stderr, and **fd 5 is a
+readiness pipe containerd blocks on until it closes**.
+It was refused on 2026-08-17, and the reason is the one that chose
+`file://` in the first place arriving from a new direction: a FIFO nobody
+reads fills up and blocks the container's first write, and a binary
+logger *is* a reader. One that dies or stalls on a full disk hangs the
+service it was watching, at the moment things are already going wrong.
+The memory objection was checked and does not hold — a shim is already
+16.6 MB per container and a logger sharing this binary's text pages would
+be under one. The cost of refusing is named, not worked around: no
+per-line timestamp, stdout and stderr merged, and rotation only at a
+container start because the shim holds the inode.
 
 **Nothing asks a certificate authority for a name that does not point
 here.** The check existed — `dns::resolves_here`, with four answers and a

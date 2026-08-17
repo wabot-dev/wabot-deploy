@@ -53,6 +53,42 @@
 //! the fixer, the unpacker and the seeder are read once, immediately,
 //! and discarded. Keeping their history would be keeping noise.
 //!
+//! ## Why not `binary://`, which would give timestamps
+//!
+//! containerd's shim understands a third scheme, and it is the answer to
+//! the obvious question: `binary:///path/to/logger` hands the streams to
+//! a program, which can do anything — timestamp every line, keep stdout
+//! and stderr apart, rotate its own file. It is what nerdctl uses for
+//! `logs --timestamps`. The protocol, **measured on a node** rather than
+//! recalled, because it is not obvious and one part of it is a trap:
+//!
+//! - `CONTAINER_ID` and `CONTAINER_NAMESPACE` in the environment.
+//! - **fd 3** is the container's stdout, **fd 4** its stderr.
+//! - **fd 5 is a readiness pipe, and containerd blocks until it closes.**
+//!   A logger that only reads 3 and 4 hangs the container's creation for
+//!   ever, which is exactly what the first attempt here did.
+//!
+//! It works, and it was **deliberately not taken** (2026-08-17). The
+//! reason is the paragraph at the top of this module, arriving from a new
+//! direction: `file://` was chosen because a FIFO nobody reads fills up
+//! and blocks the container's first write, and **a binary logger is a
+//! reader**. One that dies, or stalls on a full disk, blocks the service
+//! it was watching. Losing log lines is bad; hanging a service to keep
+//! them is worse, and the whole point of a log is the moment things are
+//! already going wrong.
+//!
+//! The cost that *was* checked and turned out not to matter: a process
+//! per container. On the Alpine node a `containerd-shim` is already
+//! 16.6 MB resident per container and accepted, and a logger from this
+//! same static binary would share its text pages with the running node —
+//! well under a megabyte each. The objection to this is safety, not
+//! memory.
+//!
+//! What it costs to have refused: no per-line timestamp, so nothing here
+//! can answer *when*; stdout and stderr merged with no marker; and
+//! rotation only at a start, because the shim holds the inode. All three
+//! are named rather than worked around.
+//!
 //! ## Retention, in three dimensions because one is not a bound
 //!
 //! - **Per file**: at [`MAX_BYTES`] a log is *rotated*, not trimmed.
