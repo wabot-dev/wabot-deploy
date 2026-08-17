@@ -106,7 +106,7 @@ pub fn run(https_port: u16, http_port: u16, check_ports: bool) -> Vec<Check> {
         privileges(),
         architecture(),
         init_system(),
-        network_tools(),
+        required_programs(),
         cgroup_v2(),
         overlayfs(),
         memory(),
@@ -190,24 +190,30 @@ fn init_system() -> Check {
     }
 }
 
-/// The programs a container's network is built with.
+/// The programs this node shells out to.
 ///
-/// Advisory rather than blocking because `install` installs them — but
-/// worth naming here, because without them everything succeeds until
-/// the first deploy, which then fails with `failed to locate iptables`
-/// on a page nobody associates with the install.
-fn network_tools() -> Check {
+/// Advisory rather than blocking because `install` adds them — but
+/// worth naming here, because each goes missing in its own way and
+/// none of them says what it was. Without `iptables` everything
+/// succeeds until the first deploy, which fails with `failed to locate
+/// iptables` on a page nobody associates with the install; without
+/// `curl` the install itself dies on its first download, reporting a
+/// file that does not exist.
+///
+/// It says what each one is *for* rather than only naming it, because
+/// "missing curl" on a machine that has no browser reads as optional.
+fn required_programs() -> Check {
     let missing = crate::bootstrap::runtime::missing_programs();
     if missing.is_empty() {
-        return Check::pass("network tools", "iptables, ip");
+        return Check::pass("programs", "iptables, ip, curl");
     }
-    let packages: Vec<&str> = missing.iter().map(|program| program.package).collect();
+    let wanted: Vec<String> = missing
+        .iter()
+        .map(|program| format!("{} (for {})", program.package, program.what_for))
+        .collect();
     Check::advisory(
-        "network tools",
-        format!(
-            "missing {} — `install` adds them; without them a container gets no network",
-            packages.join(" and ")
-        ),
+        "programs",
+        format!("missing {} — `install` adds them", wanted.join(", ")),
     )
 }
 

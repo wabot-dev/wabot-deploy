@@ -55,6 +55,14 @@ pub const SOCKET: &str = "/run/containerd/containerd.sock";
 /// in a directory it owns.
 pub const CRUN_PATH: &str = "/usr/local/bin/crun";
 
+/// What fetches containerd, crun and the CNI plugins.
+///
+/// A constant because two places need to agree about it and once did
+/// not: the code that runs it, and the [`PROGRAMS`] table that gets it
+/// installed. A minimal Alpine has no curl, and the install died on its
+/// first download naming a file rather than a package.
+pub const DOWNLOADER: &str = "curl";
+
 /// Where the CNI plugins land. Not a choice: `/opt/cni/bin` is the
 /// path the whole ecosystem defaults to, and a container runtime
 /// looking for them looks there.
@@ -190,6 +198,28 @@ fn version_of(program: &str, args: &[&str]) -> Option<String> {
 pub fn ensure() -> RuntimeResult<String> {
     let mut done: Vec<String> = Vec::new();
 
+    // **The tools first, because the downloads below use one of them.**
+    // This block sat under the three installs, and on a minimal Alpine
+    // that ordering is fatal: `install_containerd` shells out to `curl`,
+    // which is not in the base image, so the install died with `could
+    // not run curl: No such file or directory (os error 2)` — a message
+    // about a file, naming neither the program nor the package, from a
+    // step that had said it was downloading containerd.
+    //
+    // Found on a brand-new machine, which is the only place it exists:
+    // every node this has ever run on had curl already.
+    let missing = missing_programs();
+    if !missing.is_empty() {
+        install_packages(&missing)?;
+        done.push(
+            missing
+                .iter()
+                .map(|program| program.package)
+                .collect::<Vec<_>>()
+                .join(" + "),
+        );
+    }
+
     if status().containerd.is_none() {
         install_containerd()?;
         done.push(format!("containerd {CONTAINERD_VERSION}"));
@@ -201,23 +231,6 @@ pub fn ensure() -> RuntimeResult<String> {
     if !cni_installed() {
         install_cni()?;
         done.push(format!("cni plugins {CNI_VERSION}"));
-    }
-
-    // The programs the network path shells out to. Not everything
-    // ships them: Alpine has neither, and the failure surfaces much
-    // later — as a container that will not start, with `failed to
-    // locate iptables` on a page, long after the install said it was
-    // done.
-    let missing = missing_programs();
-    if !missing.is_empty() {
-        install_packages(&missing)?;
-        done.push(
-            missing
-                .iter()
-                .map(|program| program.package)
-                .collect::<Vec<_>>()
-                .join(" + "),
-        );
     }
     // Asked of the machine, not of this run: a node that was rebooted
     // without the sysctl file, or one where somebody turned it off,
@@ -388,7 +401,7 @@ pub struct Program {
 /// is the CNI contract for one of them and the simplest correct thing
 /// for the other — and the reason a missing package is discovered at
 /// deploy time instead of at compile time.
-pub const PROGRAMS: [Program; 2] = [
+pub const PROGRAMS: [Program; 3] = [
     Program {
         command: "iptables",
         package: "iptables",
@@ -401,6 +414,15 @@ pub const PROGRAMS: [Program; 2] = [
         // busybox ships an `ip` without `netns`, which is the half
         // this needs.
         what_for: "creating a network namespace per container",
+    },
+    Program {
+        command: DOWNLOADER,
+        package: DOWNLOADER,
+        // The one this list forgot, and the only one `install` needs
+        // before it can do anything else — containerd, crun and the CNI
+        // plugins are all fetched with it. A minimal Alpine has no curl,
+        // so the install died on its first download.
+        what_for: "downloading containerd, crun and the CNI plugins",
     },
 ];
 
@@ -577,11 +599,17 @@ fn download(what: &'static str, url: &str, expected: &str) -> RuntimeResult<Path
     let destination = std::env::temp_dir().join(format!("wabot-deploy-{what}"));
     tracing::info!(%url, "downloading");
 
-    // curl rather than an HTTP client in-process: it is on every
-    // machine that can reach a package mirror, it handles the
+    // curl rather than an HTTP client in-process: it handles the
     // redirect GitHub serves, and it keeps a TLS stack and a
     // resumable-download implementation out of this binary.
-    let output = Command::new("curl")
+    //
+    // The claim that used to open this comment was "it is on every
+    // machine that can reach a package mirror", and a minimal Alpine
+    // disproved it — which is why the name is now a constant this
+    // module's `PROGRAMS` table also reads. The install installs what
+    // it is about to use, and the two cannot drift apart into a table
+    // that has forgotten one.
+    let output = Command::new(DOWNLOADER)
         .args([
             "--fail",
             "--location",
