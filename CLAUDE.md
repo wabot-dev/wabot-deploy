@@ -269,6 +269,12 @@ Publishing a release is outward-facing. Ask first.
 
 - Reconcile checks whether a container runs, not whether its port
   mappings match the rows.
+- Container logs are kept across restarts and bounded three ways, but
+  nothing **searches** them and no line carries a timestamp — the
+  container's own bytes are stored untouched, and only the boundary this
+  writes at each start says when anything happened. Timestamping would
+  mean reading the stream rather than letting the shim write the file,
+  which is a reader process per container.
 - No image garbage collection.
 - The updater does not rewrite the systemd unit; a release that changes
   it has to say so in its notes.

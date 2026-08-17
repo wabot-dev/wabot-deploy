@@ -427,9 +427,29 @@ a third — while `doctor`'s own comment already said why that is a
 mistake. `Deployer::claimed` is the one now, and `None` from it means
 *unreadable*, never *nothing claimed*.
 
-What is left here is a retention policy for container logs; they are
-bounded at 8 MB each, which was the fix, and age is still not a reason
-anything goes.
+**Container logs are done too, and they were the interesting half.** They
+were truncated at every container start, so a deployment threw away the
+evidence of why it had to happen. Now a service's log is appended to for
+ever with a boundary line per start, and retention has three dimensions
+because one is not a bound: 8 MB per file then rotate, two generations
+and fourteen days per container, and **512 MB across the node** — the
+last being the only real bound, since the old 8 MB cap was per container
+times an unbounded number of containers.
+
+Two things the node taught, and the first is the sort of thing no test
+would have:
+
+- **Rotating during the sweep leaves a running container writing into the
+  rotated file.** containerd's shim holds the inode rather than the name,
+  so the live file sat at zero bytes while the service talked — a page
+  reading it would have reported a healthy container as quiet. Rotation
+  happens at a container *start* now, where the previous shim is gone.
+  The container that never restarts and never stops talking keeps a far
+  higher ceiling where its front is dropped loudly.
+- **`discard` left rotated files behind for ever, invisibly.** It removed
+  only the live file, and the orphan scan recognised a log by its `.log`
+  suffix, which `foo.log.2` has not got. Two bounds, neither able to see
+  the file — which is exactly how something becomes immortal.
 
 The four kinds as they were:
 
