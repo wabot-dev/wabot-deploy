@@ -62,7 +62,12 @@ CNI or ACME, it is not verified until it ran on a real node.
 
 **The ledger records; it does not decide.** Install steps are
 convergent — each one asks about the thing, not about the history. This
-rule was learned three times.
+rule was learned three times, and a fourth outside `install`:
+`restore-node` refused to run while the node was up by asking
+`is_active`, and `rc-service stop` returns `[ ok ]` with `status:
+stopped` while the daemon drains for another seven seconds. It asks the
+process table now. A service manager's answer is a ledger entry like any
+other.
 
 **A boolean attribute is written by branching, not by a value.** `rsx!`
 renders `hidden=(false)` as `hidden="false"`, and HTML reads `hidden`,

@@ -253,6 +253,35 @@ Four things that only a node run could have said:
   minutes for a value of sixty seconds. The recovery window is wider
   than the setting says.
 
+### The restore report, and the three faults it uncovered
+
+A restore now ends by naming what has to reach this machine, where each
+name points, and what address this machine goes out from — **shown, not
+judged**. `backup` is deliberately left alone: a node whose DNS is
+broken needs a backup *more*, DNS is not this node's state and will have
+changed by restore time, and tying a local offline operation to a
+network lookup is a backup you do not have when a resolver is slow.
+
+Writing that one report turned up three separate faults, all invisible
+locally, all behind a single `database is locked`:
+
+- **A SQLite database is three files.** Replacing `node.db` with
+  `std::fs::copy` left the *previous* database's `-wal` and `-shm`
+  beside it, so the next open replays one database's pages into another
+  — and produces a file that opens.
+- **`close` is a checkpoint, not a close.** It takes `&self`; the writer
+  connection lives inside the handle until the handle is dropped.
+- **A stop returns before the process does.** `rc-service stop` printed
+  `[ ok ]`, `status` said `stopped`, and the node drained for **seven
+  more seconds**. The guard asked `is_active` — the ledger answering
+  about history — and now asks the process table, which is the thing.
+  Same rule as install steps, in a place nobody expected it.
+
+That third one had a consequence worse than the lock: `--new-node` calls
+`forget_self` *after* the copy, so restoring on a running node gave the
+operator the old identity, an error, and no sentence telling them to
+re-join.
+
 ### A restore onto a new machine with a different address
 
 Reasoned from the code and **not yet run**, which in this project is the
