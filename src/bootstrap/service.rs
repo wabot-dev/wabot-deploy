@@ -153,6 +153,60 @@ pub fn is_active() -> bool {
     Init::detect().is_active(SERVICE_NAME)
 }
 
+/// What to type to stop the node, in this machine's own init's words.
+pub fn stop_command() -> Option<String> {
+    Init::detect().stop_command(SERVICE_NAME)
+}
+
+/// Another `wabot-deploy` holding this machine, if there is one.
+///
+/// **Asked of the process table, not of the service manager**, which is
+/// the ledger rule in a place nobody expected to need it. `is_active`
+/// answers "does the init think it stopped this", and there are at
+/// least three ways for that to be true while a node is still running:
+///
+/// - **A stop returns before the process exits.** `rc-service stop`
+///   printed `[ ok ]`, `status` said `stopped`, and the daemon served
+///   for several seconds more while it drained connections — which in
+///   production is a deliberately long window. Measured on Alpine: two
+///   seconds after a successful stop, the old pid was still there.
+/// - **An orphan from a restart.** OpenRC's supervisor stops the
+///   process it started and nothing else.
+/// - **Somebody ran `serve` by hand.**
+///
+/// Each of those is a live process holding the database that
+/// `restore-node` is about to overwrite, and the init has no idea.
+///
+/// Matched by the binary's *name*, because a process that was upgraded
+/// under itself has an `exe` link pointing at a deleted inode — the
+/// case `running_current_binary` exists for — and it is still very much
+/// running.
+pub fn another_instance() -> Option<u32> {
+    let me = std::process::id();
+    let name = Path::new(BINARY_PATH).file_name()?.to_str()?;
+
+    for entry in std::fs::read_dir("/proc").ok()?.flatten() {
+        let Ok(pid) = entry.file_name().to_string_lossy().parse::<u32>() else {
+            continue;
+        };
+        if pid == me {
+            continue;
+        }
+        // Unreadable is not evidence of anything: a process that
+        // vanished between the listing and the read, or one belonging
+        // to somebody else. Both are silence, not an answer.
+        let Ok(exe) = std::fs::read_link(format!("/proc/{pid}/exe")) else {
+            continue;
+        };
+        let running = exe.to_string_lossy();
+        let running = running.strip_suffix(" (deleted)").unwrap_or(&running);
+        if Path::new(running).file_name().and_then(|n| n.to_str()) == Some(name) {
+            return Some(pid);
+        }
+    }
+    None
+}
+
 /// Is there anything here that can keep the node running?
 pub fn supervised() -> bool {
     Init::detect().supervises()
@@ -285,6 +339,21 @@ mod tests {
     use super::*;
 
     const CONFIG: &str = "/etc/wabot-deploy/config.toml";
+
+    /// The guard must not find the process asking the question.
+    ///
+    /// `restore-node` refuses when another `wabot-deploy` is running,
+    /// and `restore-node` is itself a `wabot-deploy` — so a scan that
+    /// counted itself would refuse every restore that has ever been
+    /// asked for, with a message naming its own pid.
+    ///
+    /// Under `cargo test` the binary is the test harness rather than
+    /// the installed one, so this asserts the property that survives
+    /// either way: whatever comes back is never this process.
+    #[test]
+    fn the_running_check_does_not_find_itself() {
+        assert_ne!(another_instance(), Some(std::process::id()));
+    }
 
     fn unit() -> String {
         unit_file(Path::new(CONFIG))

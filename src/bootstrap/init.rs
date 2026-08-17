@@ -147,6 +147,22 @@ impl Init {
         }
     }
 
+    /// What an operator types to stop this service, in their own init's
+    /// words.
+    ///
+    /// Text rather than an action, because the caller that wants this
+    /// is `restore-node` refusing to run — and a command that stopped
+    /// the node *for* somebody, as part of refusing to do the thing
+    /// they asked for, is a surprise in the direction of taking their
+    /// node down.
+    pub fn stop_command(self, name: &str) -> Option<String> {
+        match self {
+            Self::Systemd => Some(format!("systemctl stop {name}")),
+            Self::OpenRc => Some(format!("rc-service {name} stop")),
+            Self::None => None,
+        }
+    }
+
     pub fn is_active(self, name: &str) -> bool {
         match self {
             Self::Systemd => Command::new("systemctl")
@@ -279,6 +295,27 @@ fn run(program: &str, args: &[&str]) -> ServiceResult<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A refusal that names a command has to name one that exists here.
+    ///
+    /// `restore-node` stops and tells the operator to stop the node
+    /// first, which is only actionable if the line it prints is the one
+    /// their machine understands. On an init this does not know there
+    /// is no such line, and inventing `systemctl` for a box that has
+    /// never had it sends somebody looking for a missing binary instead
+    /// of at their own process.
+    #[test]
+    fn a_machine_is_only_told_to_type_what_it_has() {
+        assert_eq!(
+            Init::Systemd.stop_command("wabot-deploy").as_deref(),
+            Some("systemctl stop wabot-deploy")
+        );
+        assert_eq!(
+            Init::OpenRc.stop_command("wabot-deploy").as_deref(),
+            Some("rc-service wabot-deploy stop")
+        );
+        assert_eq!(Init::None.stop_command("wabot-deploy"), None);
+    }
 
     /// The distinction the rest of the code branches on: a machine
     /// that can be asked to keep something running, and one that

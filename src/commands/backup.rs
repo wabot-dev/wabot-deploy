@@ -626,6 +626,42 @@ pub async fn restore_node(
         return Ok(1);
     };
 
+    // **Not while the node is running**, and this one is not
+    // overridable.
+    //
+    // The database is put back with `std::fs::copy`, which writes
+    // through the *same inode* the live process has open. That process
+    // keeps a write-ahead log and a shared-memory index built for the
+    // contents that were there a moment ago, and they now describe a
+    // different database entirely — so it can write its old pages back
+    // over the restored ones, and nothing anywhere says it did.
+    //
+    // Two smaller faults sit on top of the same cause, and both were
+    // seen on a node before this guard existed: the report at the end
+    // could not read the names back (`database is locked`), and
+    // `--new-node` fails at `forget_self` *after* the copy — the
+    // operator asked for a new identity, got the old one, and got an
+    // error instead of the sentence telling them to re-join.
+    //
+    // `--over-my-dead-body` is not accepted here because it answers a
+    // different question — "yes, replace the rows I have" — and there
+    // is no version of this somebody means. The last line of a restore
+    // has always been "start the node", which assumed this all along.
+    if let Some(pid) = crate::bootstrap::service::another_instance() {
+        println!();
+        println!("  wabot-deploy is still running here as pid {pid}, and restoring would");
+        println!("  write its database out from under it. Stop it first:");
+        println!();
+        match crate::bootstrap::service::stop_command() {
+            Some(command) => println!("    {command}"),
+            None => println!("    (stop the wabot-deploy process however it was started)"),
+        }
+        println!();
+        println!("  A stop returns before the process does — it drains connections");
+        println!("  first — so wait for the pid to go before restoring.");
+        return Ok(1);
+    }
+
     // What is here now. A node with services of its own is either not
     // the one that died or is one somebody is about to lose.
     let existing = crate::db::open(&config.database_path()).await?;
@@ -661,12 +697,25 @@ pub async fn restore_node(
         })
         .await?;
     existing.close().await?;
+    // **And dropped, because `close` is a checkpoint and not a close.**
+    // It takes `&self`: it empties the reader pool and truncates the
+    // write-ahead log, and the *writer* connection lives on inside the
+    // handle until the handle goes. So a handle still in scope holds a
+    // lock on the file this is about to overwrite, and the next open of
+    // that path — the names report at the end — is refused with
+    // `database is locked` by this very function.
+    //
+    // Which is what happened on a node, and it survived two wrong
+    // diagnoses first: the running service (stopped it, still locked)
+    // and a stale `-wal`/`-shm` beside the file (removed them, still
+    // locked). Both were real faults and neither was this one.
+    drop(existing);
     println!();
     println!("  what was here is at {}", aside.display());
 
     // The database, then what its rows describe. In that order: a
     // volume with no rows is bytes nothing can name.
-    std::fs::copy(from.join("node.db"), config.database_path())?;
+    replace_database(&from.join("node.db"), &config.database_path())?;
     println!("  database    restored");
 
     let volumes = restore_volumes(&from, &config);
@@ -697,6 +746,39 @@ pub async fn restore_node(
     Ok(0)
 }
 
+/// Put a database file in place of another one.
+///
+/// **A SQLite database is three files, and copying one of them over is
+/// how you corrupt the other two.** In WAL mode the pages that have not
+/// been checkpointed live in `-wal`, and `-shm` is the index into it.
+/// `std::fs::copy` onto the main file leaves both of those behind — so
+/// the restored database sits next to the *previous* database's
+/// write-ahead log, and the next process to open it replays those pages
+/// into it. Pages from one database written over another, which is
+/// exactly as bad as it sounds and produces a file that opens.
+///
+/// Found on a node, and it announced itself gently: `database is
+/// locked` from the stale `-shm`, on a restore that otherwise said it
+/// had worked. The lock was the symptom that happened to be visible.
+///
+/// Removed before the copy rather than after, so there is no instant at
+/// which a complete-looking database has somebody else's log beside it.
+fn replace_database(from: &Path, to: &Path) -> std::io::Result<()> {
+    for sidecar in ["-wal", "-shm"] {
+        let mut path = to.as_os_str().to_owned();
+        path.push(sidecar);
+        // Absent is the ordinary case: a cleanly closed database has
+        // checkpointed and removed both.
+        match std::fs::remove_file(PathBuf::from(path)) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error),
+        }
+    }
+    std::fs::copy(from, to)?;
+    Ok(())
+}
+
 /// Where this node's names point, and where this machine is.
 ///
 /// **Shown, not judged.** The one thing a restore cannot verify is the
@@ -717,8 +799,19 @@ pub async fn restore_node(
 /// So both numbers go on the screen and the operator decides. They know
 /// whether there is a NAT in front of this machine; the node does not.
 async fn report_names(config: &Config) {
-    let Ok(database) = crate::db::open(&config.database_path()).await else {
-        return;
+    // Said rather than skipped. The names are the one part of a restore
+    // nothing else will mention, so a silent return here is a node that
+    // finished quietly and is unreachable — which is the failure this
+    // whole report exists to prevent.
+    let database = match crate::db::open(&config.database_path()).await {
+        Ok(database) => database,
+        Err(error) => {
+            println!();
+            println!("  names       could not be read back: {error}");
+            println!("              Check by hand that every name this node answers for");
+            println!("              points at this machine before trusting it.");
+            return;
+        }
     };
     // What this node was chosen to answer for, which is a smaller set
     // than the hostnames it stores: it can own a service that somebody
@@ -1358,6 +1451,60 @@ fn human(bytes: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A restored database must not have the previous one's log beside
+    /// it.
+    ///
+    /// SQLite in WAL mode keeps uncheckpointed pages in `-wal` and an
+    /// index into them in `-shm`. Replacing only the main file leaves
+    /// both, and the next process to open the database replays *those*
+    /// pages into *this* file — one database's writes over another's,
+    /// producing a file that opens and is wrong.
+    ///
+    /// It shipped, and it announced itself as `database is locked` on a
+    /// node: the stale `-shm` was the symptom that happened to be
+    /// visible, on a restore that had already printed `database
+    /// restored`.
+    #[test]
+    fn a_restored_database_does_not_keep_the_old_ones_log() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let live = directory.path().join("node.db");
+        let backup = directory.path().join("backup.db");
+
+        std::fs::write(&live, b"the database that is here now").expect("write");
+        std::fs::write(&backup, b"the database being restored").expect("write");
+        // What a live WAL-mode database leaves on disk.
+        let (wal, shm) = (
+            directory.path().join("node.db-wal"),
+            directory.path().join("node.db-shm"),
+        );
+        std::fs::write(&wal, b"pages of the database that is here now").expect("write");
+        std::fs::write(&shm, b"the index into them").expect("write");
+
+        replace_database(&backup, &live).expect("replace");
+
+        assert_eq!(
+            std::fs::read(&live).expect("read"),
+            b"the database being restored"
+        );
+        assert!(!wal.exists(), "the previous database's log survived");
+        assert!(!shm.exists(), "the previous database's index survived");
+    }
+
+    /// The ordinary case is that neither sidecar is there, because a
+    /// database closed cleanly checkpoints and removes both. Missing is
+    /// not a failure.
+    #[test]
+    fn replacing_a_database_with_no_log_beside_it_is_fine() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let live = directory.path().join("node.db");
+        let backup = directory.path().join("backup.db");
+        std::fs::write(&live, b"here now").expect("write");
+        std::fs::write(&backup, b"restored").expect("write");
+
+        replace_database(&backup, &live).expect("replace");
+        assert_eq!(std::fs::read(&live).expect("read"), b"restored");
+    }
 
     fn claims(entries: &[(&str, bool)]) -> std::collections::HashMap<String, bool> {
         entries
