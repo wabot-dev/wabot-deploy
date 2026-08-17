@@ -1,11 +1,12 @@
 # The book of use cases
 
 Every way somebody uses wabot-deploy, in an order where each case can be
-tried on the state the last one left. Start at chapter 1 on a machine
+tried on the state the last one left. Start at part 1 on a machine
 with nothing on it and work down.
 
-**Each case has a number.** Quote it when something is wrong — "6.4 does
-not work" is a bug report; "the join thing is broken" is a conversation.
+**Each case has a number.** Quote it when something is wrong — "9.14 does
+not work" is a bug report; "the revoke thing is broken" is a
+conversation.
 
 **Each case says what should happen.** Where a case is here *because
 something once went wrong*, it also says what the fault looked like, so
@@ -21,10 +22,11 @@ list of things to try and what to expect back.
 ## Index
 
 **Part 1 — A node from nothing** · [1](#1-a-node-from-nothing)
-1.1 preflight · 1.2 install with no domain · 1.3 install with a domain ·
-1.4 a domain that does not point here · 1.5 staging · 1.6 the setup token ·
-1.7 the first account · 1.8 `doctor` · 1.9 the local CA · 1.10 re-running
-install
+1.1 get the binary · 1.2 check the checksum · 1.3 one static file ·
+1.4 preflight · 1.5 install with no domain · 1.6 install with a domain ·
+1.7 a domain that does not point here · 1.8 staging · 1.9 the setup token ·
+1.10 the first account · 1.11 `doctor` · 1.12 the local CA ·
+1.13 re-running install
 
 **Part 2 — Signing in and looking around** · [2](#2-signing-in-and-looking-around)
 2.1 sign in · 2.2 the wrong password · 2.3 theme · 2.4 language ·
@@ -95,14 +97,44 @@ restart · 13.7 everything kept · 13.8 rotation
 
 ## 1. A node from nothing
 
-A Linux box, root, nothing installed. Ubuntu and Alpine both.
+A Linux box, root, nothing installed — not even this program. Ubuntu and
+Alpine both: one is glibc and systemd, the other musl and OpenRC, and they
+fail differently. **x86_64 only** — the release workflow builds one
+target, so an arm64 machine has no binary to download and has to be
+cross-built for.
 
-**1.1 Preflight.** `wabot-deploy doctor` before installing anything.
+**1.1 Get the binary.** From the releases page, which is the whole of the
+installation story:
+
+```sh
+v=0.10.0   # github.com/wabot-dev/wabot-deploy/releases
+base=https://github.com/wabot-dev/wabot-deploy/releases/download/v$v
+
+curl -fsSLO $base/wabot-deploy-$v-x86_64-linux
+```
+→ One file arrives. No package, no repository to add, nothing to install
+first — that is the claim, and this is where it is either true or not.
+
+**1.2 Check it is the file that was published.**
+`curl -fsSL $base/wabot-deploy-$v-x86_64-linux.sha256 | sha256sum -c -`
+→ `OK`. Do this rather than skip it: the checksum beside the binary is
+what lets somebody verify it came from the project rather than from
+whoever served the page. Nothing is signed yet, so this is the whole of
+the guarantee.
+
+**1.3 It really is one static file.**
+`chmod +x` it, then `--version`, then `ldd` it.
+→ The version prints and `ldd` finds **no** shared libraries: musl,
+statically linked, rustls rather than OpenSSL, no libc to match. The
+release refuses to publish a build where `ldd` says otherwise. That is why
+the same file runs on Ubuntu and on Alpine.
+
+**1.4 Preflight.** `wabot-deploy doctor` before installing anything.
 → It names the operating system, privileges, architecture, init system,
 programs, cgroups, overlayfs and memory. Nothing crashes on a machine
 with no node on it.
 
-**1.2 Install with no domain.** `wabot-deploy install`
+**1.5 Install with no domain.** `wabot-deploy install`
 → Finishes. Says where the config, data and database are, that there is
 no domain and it will serve a self-signed certificate, prints the local
 CA path, starts the node, and prints a setup token.
@@ -110,37 +142,37 @@ CA path, starts the node, and prints a setup token.
 `could not run curl: No such file or directory`. It should install
 `curl`, `iptables` and `iproute2` itself and say so.
 
-**1.3 Install with a domain.** `wabot-deploy install --domain node.example --email you@example`
+**1.6 Install with a domain.** `wabot-deploy install --domain node.example --email you@example`
 on a machine whose DNS already points here.
 → Gets a real certificate. Fails rather than finishing if it cannot,
 unless `--allow-self-signed`.
 
-**1.4 A domain that does not point here.** The same, with a name pointing
+**1.7 A domain that does not point here.** The same, with a name pointing
 elsewhere.
 → Refused with which addresses it found and which this node answers at.
 It must **not** place an order it cannot pass.
 
-**1.5 Staging.** `--acme-staging`
+**1.8 Staging.** `--acme-staging`
 → An untrusted certificate, and no spend against the production account.
 This is the flag to use while a DNS problem is being worked out.
 
-**1.6 The setup token.** `wabot-deploy setup-token`
+**1.9 The setup token.** `wabot-deploy setup-token`
 → A fresh one. It works once and expires in 24 hours.
 
-**1.7 The first account.** Open `https://<node>/setup`, paste the token.
+**1.10 The first account.** Open `https://<node>/setup`, paste the token.
 → An account, signed in. The token no longer works.
 
-**1.8 `doctor`.** `wabot-deploy doctor` on the running node.
+**1.11 `doctor`.** `wabot-deploy doctor` on the running node.
 → `no problems found`, plus containerd's version, the socket, the ports,
 the overlay if there is one, and the migration state. Not translated: it
 prints what somebody pastes into an issue.
 
-**1.9 The local CA.** `https://<node>/ca.crt`, or the file the install
+**1.12 The local CA.** `https://<node>/ca.crt`, or the file the install
 named.
 → Downloads. Trusting it stops the browser warning on a node with no
 public certificate.
 
-**1.10 Re-running install.** `wabot-deploy install` again.
+**1.13 Re-running install.** `wabot-deploy install` again.
 → Converges. It does not repeat what is done, and it does not restart
 the node for nothing. Every step asks about the thing, not about whether
 it ran before.
