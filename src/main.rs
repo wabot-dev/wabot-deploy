@@ -70,9 +70,12 @@ fn main() -> std::process::ExitCode {
             Command::SetupToken => commands::setup_token::run(config).await,
             Command::Passwd { username } => commands::passwd::run(config, &username).await,
             Command::Backup { out } => commands::backup::run(config, out).await,
-            Command::Restore { database, to, into } => {
-                commands::backup::restore(config, database, to, into).await
-            }
+            Command::Restore {
+                database,
+                to,
+                into,
+                from,
+            } => commands::backup::restore(config, database, to, into, from).await,
             Command::Containerd { pull, run, port } => {
                 commands::containerd::run(pull, run, port).await
             }

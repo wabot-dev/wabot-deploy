@@ -635,3 +635,73 @@ because nothing moves one.
 machine it cannot reach is dead will eventually decide it during a
 partition, and two primaries is worse than an outage somebody was told
 about.
+
+
+## Point-in-time recovery, verified on the node
+
+A database can be taken back to a moment: `wabot-deploy restore orders
+--to "2026-08-17 00:16:45"`. Verified end to end on the Ubuntu node —
+three rows created, a base backup taken, the rows deleted, and the
+restore brought them back while the original stayed empty and serving.
+
+Postgres's own account of it:
+
+```text
+redo starts at 0/18000290
+restored log file "000000010000000000000019" from archive
+recovery stopping before commit of transaction 767, time 00:17:51
+selected new timeline ID: 2
+database system is ready to accept connections
+```
+
+### A copy beside the original, never the original rewound
+
+Rewinding is irreversible — everything after the chosen moment is gone,
+which is exactly what somebody hunting one dropped table does not want —
+and it leaves the read-only copies ahead of their primary, needing to be
+seeded again. A copy costs disk and nothing else.
+
+`recovery_target_action = promote`, so the copy finishes recovery and
+opens for writes on a new timeline. The default is `pause`, which for a
+database being restored into a console is a server that comes up
+refusing connections with no obvious way out of it.
+
+### What it is made of
+
+| | |
+|---|---|
+| the anchor | `pg_basebackup -Ft -z`, taken from a read-only copy when there is one |
+| the log | the primary's own `archive_command`, gzipped, one segment a minute |
+| the reach back | the oldest base backup kept |
+| the reach forward | the last archived segment, which is **not** "now" |
+
+Both directions are on the database's page, and three of the four
+answers it can give say "not what you think". The one worth its own red
+badge is log arriving with no base backup to replay it onto: the archive
+fills, the disk goes down, every reading is normal, and it recovers
+nothing.
+
+### Four things the node taught, and no test could
+
+- **The archive directory has the TLS key's fault.** Made by the node as
+  root, written by a server that is not. `archive_command` reported exit
+  code 1 and nothing else — Postgres says the command failed, never what
+  the shell thought of it.
+- **`archive_timeout` is a floor.** The switch is made by the
+  checkpointer when it next wakes: measured at two to three minutes for
+  a value of sixty seconds. A horizon must be the time of the last
+  archived segment rather than "a minute ago".
+- **An idle database archives nothing**, and that is correct — the
+  timeout forces a switch only when there has been activity.
+- **A backup taken with `--out` elsewhere was invisible to `restore`**,
+  which answered "no backup on this node was taken before that moment".
+  True, and read in the middle of a recovery as "you have nothing", by
+  somebody holding it in their hand. `--from <path>` names one.
+
+### What it still does not do
+
+**Restore a node**, as opposed to a database. The identity question —
+same node or new one — is written in `docs/roadmap.md` §5 and the
+manifest already carries what it needs. **And no remote destination
+yet**: a backup on the same disk protects against nothing that has ever
+happened to a disk.

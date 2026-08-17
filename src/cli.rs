@@ -122,6 +122,12 @@ pub enum Command {
         /// `-restored` after it.
         #[arg(long, value_name = "NAME")]
         into: Option<String>,
+
+        /// A backup directory to restore from, when it is not one this
+        /// node keeps — the one you moved off the machine and brought
+        /// back, or one taken with `backup --out` somewhere else.
+        #[arg(long, value_name = "PATH")]
+        from: Option<std::path::PathBuf>,
     },
 
     /// Talk to containerd and report what it says.

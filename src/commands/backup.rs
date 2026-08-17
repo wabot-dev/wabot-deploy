@@ -473,6 +473,7 @@ pub async fn restore(
     service_slug: String,
     target: Option<String>,
     into: Option<String>,
+    from: Option<PathBuf>,
 ) -> anyhow::Result<i32> {
     let database = crate::db::open(&config.database_path()).await?;
 
@@ -507,10 +508,55 @@ pub async fn restore(
         },
         None => crate::platform::now_ms(),
     };
-    let backups = taken(&config.node.data_dir);
+    // A backup somebody names, or the ones this node keeps.
+    //
+    // **Both, because a backup that has been moved is still a backup.**
+    // The first version looked only in `backups/`, so taking one with
+    // `--out /root/somewhere` and then trying to restore from it was
+    // answered with "no backup on this node was taken before that
+    // moment" — true, and read in the middle of a recovery as "you have
+    // nothing", by somebody holding the thing in their hand. Found
+    // doing exactly that.
+    let named = from.as_ref().and_then(|path| {
+        let manifest = std::fs::read_to_string(path.join("manifest.json")).ok()?;
+        Some((
+            path.clone(),
+            serde_json::from_str::<Manifest>(&manifest).ok()?,
+        ))
+    });
+    if let Some(path) = &from {
+        if named.is_none() {
+            println!("{} is not a backup: no manifest.json in it", path.display());
+            return Ok(1);
+        }
+    }
+
+    let backups = match named {
+        Some(one) => vec![one],
+        None => taken(&config.node.data_dir),
+    };
     let Some((path, manifest)) = base_for(&backups, at) else {
-        println!("no backup on this node was taken before that moment.");
-        println!("The oldest is what bounds how far back a restore can reach.");
+        match &from {
+            // A named one that is too new says so about *itself*, which
+            // is a different problem from having none.
+            Some(path) => {
+                println!(
+                    "{} was taken after that moment, so it already holds",
+                    path.display()
+                );
+                println!("whatever you are trying to undo. Replaying only goes forwards.");
+            }
+            None => {
+                println!(
+                    "no backup in {} was taken before that moment.",
+                    config.node.data_dir.join("backups").display()
+                );
+                println!("The oldest one there is what bounds how far back a restore can reach.");
+                println!();
+                println!("If you have one somewhere else — `backup --out` writes wherever it is");
+                println!("told — name it with `--from <path>`.");
+            }
+        }
         return Ok(1);
     };
 
