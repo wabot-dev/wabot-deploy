@@ -71,6 +71,7 @@ fn main() -> std::process::ExitCode {
             Command::Passwd { username } => commands::passwd::run(config, &username).await,
             Command::Backup { out } => commands::backup::run(config, out).await,
             Command::Clean { apply, volumes } => commands::clean::run(config, apply, volumes).await,
+            Command::LogWriter { path } => commands::log_writer::run(path),
             Command::RestoreNode {
                 from,
                 same_node,

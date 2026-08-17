@@ -1168,6 +1168,39 @@ impl ServicePages {
                         </form>
                     </section>
 
+                    <section class="stack" id="logs">
+                        <p class="card-label">(t("Logs"))</p>
+                        <form method="post" action=(format!("{here}/log-timestamps")) class="card stack">
+                            <label class="check">
+                                @if service.log_timestamps {
+                                    <input type="checkbox" name="log_timestamps" value="1" checked>
+                                } @else {
+                                    <input type="checkbox" name="log_timestamps" value="1">
+                                }
+                                (t("Timestamp every line, and mark which stream it came from"))
+                            </label>
+                            // **The cost, in numbers measured on a node.**
+                            // This is a switch whose price is invisible
+                            // until somebody goes looking for history that
+                            // is no longer there, so the figures are on the
+                            // form rather than in a document.
+                            <p class="field-hint">(t("Without this, containerd appends the container's \
+                                 bytes to a file and no process sits in between. With it, one \
+                                 wabot-deploy process per copy reads the output and writes it \
+                                 — which is what makes a timestamp possible, and what the \
+                                 costs below buy."))</p>
+                            <ul class="field-hint">
+                                <li>(t("Memory: about 0.3 MB of private memory per copy. `top` will show nearer 8 MB, and almost all of that is this binary's own code shared with every other wabot-deploy process on the machine — including the node itself. Measured here, on a real service."))</li>
+                                <li>(t("Disk: 28 bytes on every line. On a real service here that is a fifth more, so the same retention budget holds about a sixth fewer lines — timestamps are paid for in history."))</li>
+                                <li>(t("Risk: the reader is between the container and its log. If it stops reading, the container blocks on its next write. It drops lines rather than stopping, which is the whole reason this is offered at all — but it is why the default is off."))</li>
+                            </ul>
+                            <p class="field-hint">(t("Takes effect at the next deployment: containerd cannot change a running container's output."))</p>
+                            <div class="actions">
+                                <button type="submit">(t("Save"))</button>
+                            </div>
+                        </form>
+                    </section>
+
                     <section class="stack" id="environment">
                         <p class="card-label">(t("Environment"))</p>
                         <form method="post" action=(format!("{here}/env")) class="card stack">
@@ -2892,6 +2925,42 @@ impl ServiceApi {
         )
         .await?;
         Ok(see_other(&format!("{here}#releases")))
+    }
+
+    /// Whether this service's output is timestamped as it is written.
+    ///
+    /// **No deployment is queued.** The other settings forms redeploy,
+    /// because a memory ceiling or an environment variable is meaningless
+    /// until the container is recreated with it. This one is the same in
+    /// principle and different in kind: it puts a process between a
+    /// running container and its log, so restarting somebody's service
+    /// the instant they tick a box would be the switch doing more than it
+    /// said. The form says it takes effect at the next deployment, and
+    /// that is exactly what happens.
+    #[post("/projects/:project/services/:service/log-timestamps")]
+    #[raw]
+    #[middleware(SessionMiddleware)]
+    async fn log_timestamps(&self, request: Request) -> RestResult<Response> {
+        let path = request.uri().path().to_string();
+        let Some((project, service, _)) = self.locate(&path).await? else {
+            return Ok(see_other("/?error=no+such+service"));
+        };
+        let here = format!(
+            "/projects/{}/services/{}/settings",
+            project.slug, service.slug
+        );
+
+        let form = match read_form(request).await {
+            Ok(form) => form,
+            Err(response) => return Ok(response),
+        };
+        services::set_log_timestamps(
+            &self.state.database,
+            &service.id,
+            checked(&form, "log_timestamps"),
+        )
+        .await?;
+        Ok(see_other(&format!("{here}#logs")))
     }
 
     /// Change the environment, and redeploy with it.

@@ -102,6 +102,26 @@ pub enum Command {
         out: Option<String>,
     },
 
+    /// Write a container's output, with a timestamp on every line.
+    ///
+    /// **Not for people.** containerd's shim starts this when a container
+    /// using `binary://` logging starts, one process per container, and
+    /// hands it the streams on file descriptors 3 and 4. Running it by
+    /// hand does nothing useful.
+    #[command(hide = true)]
+    LogWriter {
+        /// The file to append to.
+        ///
+        /// **Positional, and that is forced by containerd.** A
+        /// `binary://` URI's query arrives as bare arguments in order —
+        /// `?a=1&b=2` becomes `a 1 b 2`, measured on a node — so the URI
+        /// is written `binary:///usr/local/bin/wabot-deploy?log-writer=<path>`
+        /// and the query key *is* the subcommand name. A `--path` flag
+        /// here would need a query key of `--path`, which is not a thing
+        /// a URL can carry cleanly.
+        path: std::path::PathBuf,
+    },
+
     /// Take away what nothing claims: orphan files, surplus database
     /// copies from updates, and image records nothing can name.
     ///

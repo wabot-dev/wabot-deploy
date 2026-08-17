@@ -12,6 +12,7 @@ pub mod destination;
 pub mod doctor;
 pub mod install;
 pub mod join;
+pub mod log_writer;
 pub mod passwd;
 pub mod s3;
 pub mod serve;

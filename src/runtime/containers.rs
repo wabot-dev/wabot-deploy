@@ -67,7 +67,7 @@ pub async fn run(
     credential: Option<&super::images::Credential>,
     // Where the container's output goes, if anywhere. Also not the
     // spec's: it is how the task is created, not what runs.
-    log: Option<&std::path::Path>,
+    log: Option<&str>,
 ) -> ClientResult<TaskStatus> {
     // Whatever is there under this id is the previous deployment.
     remove(client, id).await?;
@@ -111,20 +111,21 @@ pub async fn run(
             source,
         })?;
 
-    // A `file://` URI, or nothing. containerd's default is to discard,
+    // A logging URI, or nothing. containerd's default is to discard,
     // which is right for a container whose configuration somebody else
     // wrote — and wrong for one the node configured itself, where
     // "exit 1" with no reason is the node hiding its own mistake.
     //
-    // A file rather than a FIFO: the original comment here warned that
-    // a FIFO nobody reads fills and blocks the container's first write,
-    // and that is true. The shim appends to a file with no reader
-    // involved.
+    // **Built by the caller**, because there are two schemes and the
+    // choice belongs to the service rather than to this function:
+    // `file://`, where the shim appends and no reader exists to block
+    // the container, and `binary://`, where a reader does. See
+    // `deploy::logs`.
+    //
+    // The same URI for both streams. With `file://` that merges them
+    // with no marker, which is one of the things the other scheme fixes.
     let (stdout, stderr) = match log {
-        Some(path) => {
-            let uri = super::super::deploy::logs::uri(path);
-            (uri.clone(), uri)
-        }
+        Some(uri) => (uri.to_string(), uri.to_string()),
         None => (String::new(), String::new()),
     };
 
@@ -176,7 +177,7 @@ pub async fn run_to_completion(
     image: &str,
     request: &ContainerRequest,
     credential: Option<&super::images::Credential>,
-    log: Option<&std::path::Path>,
+    log: Option<&str>,
     deadline: std::time::Duration,
 ) -> ClientResult<u32> {
     run(client, id, image, request, credential, log).await?;

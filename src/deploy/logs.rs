@@ -126,6 +126,24 @@ pub fn uri(path: &Path) -> String {
     format!("file://{}", path.display())
 }
 
+/// The other URI: hand the streams to this binary, which stamps them.
+///
+/// **The query key is the subcommand name**, because a `binary://`
+/// query arrives at the program as bare positional arguments in order —
+/// `?a=1&b=2` becomes `a 1 b 2`. Measured on a node; it is not in any
+/// documentation this found. So `?log-writer=<path>` produces exactly
+/// `wabot-deploy log-writer <path>`.
+///
+/// Off by default and per service — see `migrations/0042` and
+/// `commands::log_writer` for the hazard it takes on.
+pub fn stamping_uri(path: &Path) -> String {
+    format!(
+        "binary://{}?log-writer={}",
+        crate::bootstrap::service::BINARY_PATH,
+        path.display()
+    )
+}
+
 /// Make the directory and empty the file, ready for **a one-shot run**.
 ///
 /// Truncating, which is right for exactly one kind of container: the

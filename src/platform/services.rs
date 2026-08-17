@@ -125,6 +125,13 @@ pub struct Service {
     /// `migrations/0038_cpu_limit.sql` for why there is no second number
     /// for a request.
     pub cpu_millicores: Option<u32>,
+    /// Whether this service's output is timestamped as it is written.
+    ///
+    /// Off by default, and the default matters more than usual here:
+    /// turning it on puts a reader between the container and its log, and
+    /// a reader that stops reading blocks the container. See
+    /// `commands::log_writer`.
+    pub log_timestamps: bool,
     pub kind: Kind,
 }
 
@@ -212,6 +219,7 @@ pub async fn create(
         // database picks one at creation.
         memory_limit: None,
         cpu_millicores: None,
+        log_timestamps: false,
         // A plain container. `databases::create` calls `set_kind`
         // straight after this, for the same reason `set_origin` is
         // separate: the default is the honest one, and forgetting to
@@ -328,7 +336,8 @@ pub async fn in_project(
 /// use that query. Which is exactly what adding `cpu_millicores` did.
 const COLUMNS: &str = "\"id\", \"project_id\", \"name\", \"slug\", \"image\", \"env\", \
      \"desired_state\", \"last_error\", \"address\", \"track_tag\", \"auto_deploy\", \
-     \"origin_node_id\", \"memory_limit\", \"kind\", \"cpu_millicores\"";
+     \"origin_node_id\", \"memory_limit\", \"kind\", \"cpu_millicores\", \
+     \"log_timestamps\"";
 
 pub async fn all(
     database: &SqliteDatabase,
@@ -374,6 +383,7 @@ fn decode(row: &wabot::sqlite::rusqlite::Row<'_>) -> wabot::sqlite::rusqlite::Re
         memory_limit: row.get::<_, Option<i64>>(12)?.map(|bytes| bytes as u64),
         kind: Kind::parse(&row.get::<_, String>(13)?),
         cpu_millicores: row.get::<_, Option<i64>>(14)?.map(|milli| milli as u32),
+        log_timestamps: row.get::<_, i64>(15)? != 0,
     })
 }
 
@@ -601,6 +611,32 @@ pub async fn set_cpu_limit(
     Ok(())
 }
 
+/// Turn timestamped logging on or off for one service.
+///
+/// Takes effect at the next deployment, not now: the logging URI is
+/// chosen when a container is created and containerd cannot change a
+/// running container's stdio. The console says so on the switch, because
+/// a setting that saves and appears to do nothing is one somebody clicks
+/// twice.
+pub async fn set_log_timestamps(
+    database: &SqliteDatabase,
+    service_id: &str,
+    on: bool,
+) -> PlatformResult<()> {
+    let id = service_id.to_string();
+    database
+        .write(move |connection| {
+            connection.execute(
+                "UPDATE service SET \"log_timestamps\" = ?2, \"updated_at\" = ?3 \
+                 WHERE \"id\" = ?1",
+                (id, i64::from(on), now_ms()),
+            )?;
+            Ok(())
+        })
+        .await?;
+    Ok(())
+}
+
 /// Replace a service's environment.
 pub async fn set_env(
     database: &SqliteDatabase,
@@ -634,6 +670,7 @@ pub async fn delete(database: &SqliteDatabase, service_id: &str) -> PlatformResu
 
 #[cfg(test)]
 mod tests {
+
     /// containerd's own rule, copied from the error it answers with.
     /// A container id it refuses is a deployment that fails after the
     /// network is already built.
@@ -654,6 +691,7 @@ mod tests {
             auto_deploy: true,
             memory_limit: None,
             cpu_millicores: None,
+            log_timestamps: false,
             kind: Kind::Container,
         };
 

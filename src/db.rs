@@ -143,6 +143,10 @@ fn migrations() -> Vec<Migration> {
             "0041_restored_from",
             include_str!("../migrations/0041_restored_from.sql"),
         ),
+        Migration::new(
+            "0042_log_timestamps",
+            include_str!("../migrations/0042_log_timestamps.sql"),
+        ),
     ]
 }
 
@@ -189,6 +193,44 @@ fn runner(database: &SqliteDatabase) -> MigrationRunner {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Every file in `migrations/` is in the list above.
+    ///
+    /// **A guard that enumerates its inputs is right until somebody adds
+    /// an input**, and this list is the fourth place in this repository to
+    /// prove it. Writing `0042_log_timestamps.sql` and not registering it
+    /// produced no error anywhere: the column simply did not exist, and
+    /// SQLite's oldest misfeature turned the missing identifier
+    /// `"log_timestamps"` in a `SELECT` into the *string literal*
+    /// `log_timestamps` — so the query succeeded and the decoder was
+    /// handed text where it wanted a number.
+    ///
+    /// A test suite that only ran the migrations it knew about could never
+    /// have found that. This reads the directory.
+    #[test]
+    fn every_migration_on_disk_is_registered() {
+        let directory = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("migrations");
+        let mut on_disk: Vec<String> = std::fs::read_dir(&directory)
+            .expect("the migrations directory")
+            .flatten()
+            .filter_map(|entry| {
+                let name = entry.file_name().to_string_lossy().to_string();
+                name.strip_suffix(".sql").map(str::to_string)
+            })
+            .collect();
+        on_disk.sort();
+
+        let mut registered: Vec<String> = migrations()
+            .iter()
+            .map(|migration| migration.id.to_string())
+            .collect();
+        registered.sort();
+
+        assert_eq!(
+            on_disk, registered,
+            "the migrations directory and the list in this file disagree"
+        );
+    }
 
     #[tokio::test]
     async fn the_schema_applies_and_is_idempotent() {

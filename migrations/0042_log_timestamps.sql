@@ -1,0 +1,42 @@
+-- Whether this service's output is timestamped as it is written.
+--
+-- ## Why it is a choice and not the default
+--
+-- containerd can hand a container's streams to a program instead of
+-- appending them to a file — `binary:///path`, which is how nerdctl
+-- timestamps. That program can stamp every line, keep stdout and stderr
+-- apart, and rotate its own file properly.
+--
+-- What it also is, is a **reader**. And the reason this platform writes
+-- logs with `file://` in the first place is that a reader which stops
+-- reading fills the pipe and blocks the container's next write — the
+-- comment at the top of `deploy::logs` has said so since before any of
+-- this existed. A logger that dies, or stalls on a full disk, hangs the
+-- service it was watching, at the moment things are already going wrong.
+--
+-- So it is per service and off by default. A node upgraded to this
+-- version changes no behaviour at all, and the operator who wants
+-- timestamps takes on the risk for the one service they want them for,
+-- having been shown what it costs.
+--
+-- ## The costs, which the console shows rather than implies
+--
+-- - **Memory**: one process per copy of the service. Measured on the
+--   Alpine node, and it needs two numbers rather than one: **0.32 MB of
+--   private memory** each, inside a resident footprint of 8.1 MB that is
+--   almost entirely this binary's text pages — shared with every other
+--   `wabot-deploy` process on the machine, the node included. The first
+--   number is the cost; the second is what `top` prints, and a form
+--   quoting only the first could be called a liar by `top`.
+-- - **Disk**: the prefix is 28 bytes — `2026-08-17T20:03:18Z stdout ` —
+--   against a mean line of 148 bytes measured on a real nginx here. So
+--   about a fifth more bytes per line, which under an unchanged
+--   retention budget means the same file holds roughly a sixth fewer
+--   lines. Timestamps are paid for in history.
+--
+-- Both numbers belong on the form, not in a document nobody opens: this
+-- is a switch whose cost is invisible until somebody is looking for a
+-- log that is no longer there.
+--
+-- 0 is the ordinary case, and every row that exists today.
+ALTER TABLE service ADD COLUMN "log_timestamps" INTEGER NOT NULL DEFAULT 0;

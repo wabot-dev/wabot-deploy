@@ -295,22 +295,33 @@ Publishing a release is outward-facing. Ask first.
   has existed, and the numbers beside it kept moving, so it read as
   working. There is a test on the payload's shape now.
 
-**A log has no timestamps because a reader can block the container.**
-containerd's shim does offer what would give them — `binary:///path`
-hands the streams to a program, which is how nerdctl timestamps. The
-protocol is measured and written down in `deploy::logs`, including the
-part that is a trap: fd 3 is stdout, fd 4 stderr, and **fd 5 is a
-readiness pipe containerd blocks on until it closes**.
-It was refused on 2026-08-17, and the reason is the one that chose
-`file://` in the first place arriving from a new direction: a FIFO nobody
-reads fills up and blocks the container's first write, and a binary
-logger *is* a reader. One that dies or stalls on a full disk hangs the
-service it was watching, at the moment things are already going wrong.
-The memory objection was checked and does not hold — a shim is already
-16.6 MB per container and a logger sharing this binary's text pages would
-be under one. The cost of refusing is named, not worked around: no
-per-line timestamp, stdout and stderr merged, and rotation only at a
-container start because the shim holds the inode.
+**Timestamped logs are a switch, and the switch shows its price.**
+`file://` is the default: containerd appends the container's bytes and no
+process sits between them, which is why it cannot stamp a line or say
+which stream it came from. `binary:///path` hands the streams to a
+program instead — `wabot-deploy log-writer`, one process per copy. The
+protocol is measured and written down in `commands::log_writer`, including
+the part that is a trap: fd 3 is stdout, fd 4 is stderr, and **fd 5 is a
+readiness pipe containerd blocks on until it closes** — a logger that
+reads only 3 and 4 hangs container creation for ever, with no error
+anywhere.
+
+Off by default per service, because it reintroduces the hazard that chose
+`file://` in the first place: a pipe nobody drains fills up and blocks
+the container's next write. So the writer has **no `?` in its loop** — a
+failure drains and discards, because losing lines is bad and hanging a
+service is worse.
+
+**A cost stated on a form has to be one the machine agrees with.** The
+first version of this said "under 1 MB per copy", which is true of
+private memory (0.32 MB measured) and would have been called a liar by
+`top`, where each logger reads 8.1 MB — almost all of it this binary's
+own text, shared with every other `wabot-deploy` process including the
+node. Both numbers are on the form now. So is the disk one: the prefix
+is 28 bytes against a mean line of 148 measured here, so the same
+retention budget holds about a sixth fewer lines. **Timestamps are paid
+for in history**, and that is the sentence somebody needs before they
+turn it on, not after they go looking for a log that is no longer there.
 
 **Nothing asks a certificate authority for a name that does not point
 here.** The check existed — `dns::resolves_here`, with four answers and a

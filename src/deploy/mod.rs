@@ -878,6 +878,14 @@ impl Deployer {
         // happen. A restart is precisely when somebody wants what came
         // before it.
         let log = logs::resume(&self.config.node.data_dir, &id).ok();
+        // Which of the two schemes this container's output takes. The
+        // stamping one puts a reader between the container and its file
+        // — see `commands::log_writer` — so it is per service and off
+        // unless somebody chose it.
+        let log_uri = log.as_ref().map(|path| match service.log_timestamps {
+            true => logs::stamping_uri(path),
+            false => logs::uri(path),
+        });
 
         match containers::run(
             &client,
@@ -885,7 +893,7 @@ impl Deployer {
             &service.image,
             &request,
             credential.as_ref(),
-            log.as_deref(),
+            log_uri.as_deref(),
         )
         .await
         {
@@ -2210,6 +2218,7 @@ impl Deployer {
             )
             .await;
             let log = logs::prepare(data_dir, &fixer).ok();
+            let log = log.map(|path| logs::uri(&path));
             let code = containers::run_to_completion(
                 client,
                 &fixer,
@@ -2304,6 +2313,7 @@ impl Deployer {
 
         let data_dir = &self.config.node.data_dir;
         let log = logs::prepare(data_dir, &id).map_err(|error| error.to_string())?;
+        let log = logs::uri(&log);
         let outcome = containers::run_to_completion(
             &client,
             &id,
@@ -2449,6 +2459,7 @@ impl Deployer {
         };
 
         let log = logs::prepare(data_dir, &asker).map_err(|e| e.to_string())?;
+        let log = logs::uri(&log);
         let outcome = containers::run_to_completion(
             &client,
             &asker,
@@ -2513,6 +2524,7 @@ impl Deployer {
         };
 
         let log = logs::prepare(data_dir, &unpacker).ok();
+        let log = log.map(|path| logs::uri(&path));
         let outcome = containers::run_to_completion(
             client,
             &unpacker,
@@ -2611,6 +2623,7 @@ impl Deployer {
         let mut last = String::new();
         for attempt in 1..=SEED_ATTEMPTS {
             let log = logs::prepare(data_dir, &seeder).ok();
+            let log = log.map(|path| logs::uri(&path));
             let outcome = containers::run_to_completion(
                 client,
                 &seeder,
