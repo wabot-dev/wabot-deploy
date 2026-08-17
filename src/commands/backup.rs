@@ -1204,7 +1204,14 @@ async fn copy_volumes(
     // directory name: the name carries a project and a service and says
     // nothing about whether anything still runs there or what is
     // inside.
-    let claimed = containers_here(database).await;
+    let claimed = crate::deploy::Deployer::claimed(database)
+        .await
+        .map(|claims| {
+            claims
+                .into_iter()
+                .map(|claim| (claim.container, claim.managed))
+                .collect::<std::collections::HashMap<_, _>>()
+        });
     let mut copied = Vec::new();
     let mut orphans = Vec::new();
 
@@ -1491,40 +1498,6 @@ fn take(container: &str, claimed: Option<&std::collections::HashMap<String, bool
             None => Take::Skip,
         },
     }
-}
-
-/// Every container id this node's rows claim, and whether it is a
-/// managed engine.
-async fn containers_here(
-    database: &wabot::sqlite::SqliteDatabase,
-) -> Option<std::collections::HashMap<String, bool>> {
-    let (Ok(services), Ok(projects), Ok(mine)) = (
-        crate::platform::services::all(database, None).await,
-        crate::platform::projects::all(database).await,
-        crate::platform::replicas::here(database).await,
-    ) else {
-        // Not an empty map. The caller reads absence from the map as
-        // "nothing claims this directory", and rows it could not read
-        // are not evidence of that — see the comment at the call.
-        return None;
-    };
-
-    Some(
-        mine.iter()
-            .filter_map(|replica| {
-                let service = services
-                    .iter()
-                    .find(|service| service.id == replica.service_id)?;
-                let project = projects
-                    .iter()
-                    .find(|project| project.id == service.project_id)?;
-                Some((
-                    replica.container_id(&project.slug, &service.slug),
-                    service.kind.is_managed(),
-                ))
-            })
-            .collect(),
-    )
 }
 
 /// Copy a directory, and say how much it holds.

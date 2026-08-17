@@ -102,6 +102,25 @@ pub enum Command {
         out: Option<String>,
     },
 
+    /// Take away what nothing claims: orphan files, surplus database
+    /// copies from updates, and image records nothing can name.
+    ///
+    /// Shows by default. `--apply` removes. Volumes are never removed
+    /// without `--volumes` as well: they are the only thing on the list
+    /// nobody can make again.
+    Clean {
+        /// Actually remove it.
+        #[arg(long)]
+        apply: bool,
+
+        /// Include volumes nothing claims. For good — a volume is the
+        /// one kind of rubbish here that may be somebody's only copy of
+        /// something, usually because the replica moved to another node
+        /// rather than because the data stopped mattering.
+        #[arg(long, requires = "apply")]
+        volumes: bool,
+    },
+
     /// Restore a database to a moment, as a new one beside it.
     ///
     /// **Never the original rewound.** Rewinding is irreversible and

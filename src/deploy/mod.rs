@@ -90,6 +90,24 @@ pub enum Observed {
 /// deployment is seconds of work against a socket that may have been
 /// restarted since the last one, and a cached channel that has to be
 /// revalidated is more machinery than reconnecting.
+/// One copy of a service this node claims.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Claim {
+    pub container: String,
+    /// A managed engine copies its own volume with its own tool, and a
+    /// plain service's is a file copy. The distinction belongs here
+    /// rather than at each caller because it is read off the same row.
+    pub managed: bool,
+}
+
+impl Claim {
+    /// Just the container ids, for the callers that only ask "is this
+    /// claimed".
+    pub fn containers(claims: &[Claim]) -> Vec<String> {
+        claims.iter().map(|claim| claim.container.clone()).collect()
+    }
+}
+
 pub struct Deployer {
     database: Arc<SqliteDatabase>,
     /// Written once at startup and bind-mounted into every container.
@@ -1196,6 +1214,46 @@ impl Deployer {
     /// The three small ones hold nothing anybody wants back — they are
     /// rebuilt from the rows — but a thing this node cannot explain is
     /// not a thing it should delete on sight.
+    /// Every copy of a service this node claims, and whether its engine
+    /// copies its own volume.
+    ///
+    /// **One derivation, because three places had grown their own.**
+    /// `doctor` compared the disk against its list, `backup` decided what
+    /// to copy from its list, and `clean` was about to remove things
+    /// according to a third — and `doctor`'s own comment already said why
+    /// that is a mistake: two answers to "what is claimed" means a
+    /// disagreement that reads as *this data belongs to nothing*, which
+    /// is the sentence before somebody deletes it.
+    ///
+    /// `None` when the rows could not be read, and it must stay `None`
+    /// rather than becoming an empty list: every caller reads absence
+    /// from this as "nothing claims that", and a failed query is not
+    /// evidence of that. It is what stops a broken database from turning
+    /// into an empty backup or a `clean` that removes a running node's
+    /// volumes.
+    pub async fn claimed(database: &SqliteDatabase) -> Option<Vec<Claim>> {
+        let (Ok(projects), Ok(services), Ok(mine)) = (
+            crate::platform::projects::all(database).await,
+            crate::platform::services::all(database, None).await,
+            crate::platform::replicas::here(database).await,
+        ) else {
+            return None;
+        };
+
+        Some(
+            mine.iter()
+                .filter_map(|replica| {
+                    let service = services.iter().find(|s| s.id == replica.service_id)?;
+                    let project = projects.iter().find(|p| p.id == service.project_id)?;
+                    Some(Claim {
+                        container: replica.container_id(&project.slug, &service.slug),
+                        managed: service.kind.is_managed(),
+                    })
+                })
+                .collect(),
+        )
+    }
+
     pub fn leftovers(data_dir: &std::path::Path, live: &[String]) -> Vec<(&'static str, PathBuf)> {
         let mut found: Vec<(&'static str, PathBuf)> = volumes::orphans(data_dir, live)
             .into_iter()

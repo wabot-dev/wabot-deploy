@@ -298,6 +298,123 @@ pub async fn exists(client: &Containerd, reference: &str) -> ClientResult<bool> 
     }
 }
 
+/// Every image containerd holds in this namespace.
+///
+/// The size here is the **manifest descriptor's**, which is a few
+/// kilobytes of JSON and not what the image weighs — see [`weight`] for
+/// that. The first version of this printed it beside a reference and
+/// asked an operator to decide from it: a 453 MB image read as `3 kB`,
+/// which is worse than printing nothing, because it makes keeping
+/// everything look free.
+pub async fn all(client: &Containerd) -> ClientResult<Vec<Held>> {
+    let response = ImagesClient::new(client.channel())
+        .list(
+            client.request(containerd_client::services::v1::ListImagesRequest { filters: vec![] }),
+        )
+        .await
+        .map_err(|source| ClientError::Call {
+            call: "Images.List",
+            source,
+        })?;
+
+    Ok(response
+        .into_inner()
+        .images
+        .into_iter()
+        .map(|image| Held {
+            size: image.target.as_ref().map(|target| target.size).unwrap_or(0),
+            reference: image.name,
+        })
+        .collect())
+}
+
+/// One image as containerd lists it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Held {
+    pub reference: String,
+    pub size: i64,
+}
+
+impl Held {
+    /// Is this a reference nothing can ask for by name?
+    ///
+    /// A push leaves two records: the tag somebody chose, and a
+    /// digest-only reference for the same manifest. The digest one is how
+    /// a registry client fetches by content, and it is never replaced —
+    /// so every push adds one for ever, and nothing ever names it again.
+    ///
+    /// That is the leak this cleans, and it is the only kind of image
+    /// record that can be removed without guessing at intent: a tag is
+    /// something an operator typed.
+    pub fn is_digest_only(&self) -> bool {
+        self.reference.contains("@sha256:")
+    }
+}
+
+/// What this image occupies on **this** machine, in bytes.
+///
+/// The manifest tree is walked for the digests, and then each one is
+/// asked of the local content store — summing only what is there.
+///
+/// **Asking the store is the half that matters**, and the first version
+/// did not: it summed the tree as *published*, so `python:3.12-slim`
+/// reported 361 MB against the 41 MB it occupies here — a multi-platform
+/// index names a manifest per architecture and containerd pulls one.
+/// Figures like that make every image look enormous and hide the one
+/// that is.
+///
+/// **It does not agree with `ctr images ls`, on purpose.** `ctr` reports
+/// the platform-matched manifest — what you would run — and this reports
+/// what the store is holding for the whole index. On the Ubuntu test node
+/// `hello-world` is 14.7 KiB to `ctr` and 321 MB here, because its index
+/// carries Windows manifests whose layers are in the store. For "should
+/// this be deleted" the second number is the relevant one; the
+/// disagreement is real and both are right about different questions.
+///
+/// **And it is not the space deleting it would free.** Layers are shared,
+/// so two images differing by one each report the whole of themselves and
+/// removing either frees only what the other does not hold. These numbers
+/// do not add up to the disk and must not be presented as if they did.
+pub async fn weight(client: &Containerd, reference: &str) -> Option<i64> {
+    let blobs = crate::commands::blobs::tree_of(client, reference)
+        .await
+        .ok()?;
+
+    let mut total = 0;
+    for (digest, _) in blobs {
+        // The store's own size, not the descriptor's: the descriptor is
+        // what the registry published and this is what is here.
+        if let Ok(Some(size)) = crate::runtime::content::exists(client, &digest).await {
+            total += size;
+        }
+    }
+    Some(total)
+}
+
+/// Drop an image record.
+///
+/// **The record, not the content.** containerd's garbage collector
+/// reclaims blobs nothing references, on its own schedule — so this is
+/// the step that makes them unreferenced, and the space comes back after
+/// rather than during. A command that reported freed bytes here would be
+/// reporting a number it cannot know.
+pub async fn forget(client: &Containerd, reference: &str) -> ClientResult<()> {
+    ImagesClient::new(client.channel())
+        .delete(
+            client.request(containerd_client::services::v1::DeleteImageRequest {
+                name: reference.to_string(),
+                sync: true,
+                target: None,
+            }),
+        )
+        .await
+        .map_err(|source| ClientError::Call {
+            call: "Images.Delete",
+            source,
+        })?;
+    Ok(())
+}
+
 /// Pull only if it is not already here.
 pub async fn ensure(
     client: &Containerd,

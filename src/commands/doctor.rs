@@ -606,20 +606,10 @@ fn newest_backup(directory: &std::path::Path) -> Option<(std::path::PathBuf, usi
 /// Reading it any other way would let the two disagree, and the
 /// disagreement would read as "this data belongs to nothing".
 async fn live_containers(database: &wabot::sqlite::SqliteDatabase) -> anyhow::Result<Vec<String>> {
-    let projects = crate::platform::projects::all(database).await?;
-    let services = crate::platform::services::all(database, None).await?;
-    let mut ids = Vec::new();
-
-    for replica in crate::platform::replicas::here(database).await? {
-        let Some(service) = services.iter().find(|s| s.id == replica.service_id) else {
-            continue;
-        };
-        let Some(project) = projects.iter().find(|p| p.id == service.project_id) else {
-            continue;
-        };
-        ids.push(replica.container_id(&project.slug, &service.slug));
-    }
-    Ok(ids)
+    crate::deploy::Deployer::claimed(database)
+        .await
+        .map(|claims| crate::deploy::Claim::containers(&claims))
+        .ok_or_else(|| anyhow::anyhow!("could not read what this node claims"))
 }
 
 /// Whether a memory ceiling written into the spec will be honoured.

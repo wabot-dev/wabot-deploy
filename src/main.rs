@@ -70,6 +70,7 @@ fn main() -> std::process::ExitCode {
             Command::SetupToken => commands::setup_token::run(config).await,
             Command::Passwd { username } => commands::passwd::run(config, &username).await,
             Command::Backup { out } => commands::backup::run(config, out).await,
+            Command::Clean { apply, volumes } => commands::clean::run(config, apply, volumes).await,
             Command::RestoreNode {
                 from,
                 same_node,

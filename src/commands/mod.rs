@@ -6,6 +6,7 @@
 
 pub mod backup;
 pub mod blobs;
+pub mod clean;
 pub mod containerd;
 pub mod destination;
 pub mod doctor;
