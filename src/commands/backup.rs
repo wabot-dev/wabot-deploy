@@ -690,9 +690,76 @@ pub async fn restore_node(
         );
     }
 
+    report_names(&config).await;
+
     println!();
     println!("  Start the node. Reconciliation brings the services back up.");
     Ok(0)
+}
+
+/// Where this node's names point, and where this machine is.
+///
+/// **Shown, not judged.** The one thing a restore cannot verify is the
+/// one thing it most changes: a node rebuilt on new hardware has a new
+/// address, and every check this codebase has is blind to that.
+/// `resolves_here` compares a name against the node's own domain — and
+/// that domain still resolves, to the machine that died. Every name
+/// agrees with it, every check says `Here`, and nothing arrives.
+///
+/// It is not made a rule for the reason `deploy::dns` gives: behind NAT
+/// a machine sees a private address while the world reaches it at
+/// another, so a node that refused to finish a restore over a mismatch
+/// would be wrong on every box behind a router. And refusing is the
+/// wrong shape anyway — restoring before repointing DNS is a sensible
+/// order and often the only possible one, because the names are in the
+/// backup.
+///
+/// So both numbers go on the screen and the operator decides. They know
+/// whether there is a NAT in front of this machine; the node does not.
+async fn report_names(config: &Config) {
+    let Ok(database) = crate::db::open(&config.database_path()).await else {
+        return;
+    };
+    // What this node was chosen to answer for, which is a smaller set
+    // than the hostnames it stores: it can own a service that somebody
+    // else serves. The same list `acme` orders certificates for, so
+    // what is checked here is exactly what will be asked of the world.
+    let names = crate::edge::acme::wanted_names(&database, config).await;
+    let _ = database.close().await;
+
+    println!();
+    if names.is_empty() {
+        println!("  names       none — this node answers for nothing by name, so there");
+        println!("              is no DNS record that has to point at this machine.");
+        return;
+    }
+
+    println!("  names       what has to reach this machine:");
+    for name in &names {
+        let found = crate::deploy::dns::lookup(name).await;
+        let where_to = match found.is_empty() {
+            true => "does not resolve".to_string(),
+            false => found
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join(", "),
+        };
+        println!("                {name} → {where_to}");
+    }
+
+    match crate::deploy::dns::outbound_address() {
+        Some(address) => println!("              this machine goes out from {address}"),
+        None => println!("              this machine could not say which address it goes out from"),
+    }
+
+    println!();
+    println!("              Agreeing is not proof and disagreeing is not a fault —");
+    println!("              behind NAT this machine sees a private address while the");
+    println!("              world reaches it at another. You know which this is.");
+    println!("              If the records still point at the machine this replaced,");
+    println!("              move them: until then nothing arrives, and a certificate");
+    println!("              cannot be renewed for a name that does not come here.");
 }
 
 /// Which node this machine becomes.

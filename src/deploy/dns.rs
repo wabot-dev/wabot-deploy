@@ -98,6 +98,35 @@ pub async fn resolves_here(hostname: &str, node_domain: &str) -> Resolution {
     }
 }
 
+/// The address this machine would use to reach the world.
+///
+/// **Not proof of anything, and offered as one number beside another.**
+/// The module docs say why the checks above refuse to depend on this:
+/// behind NAT a machine sees a private address while the world reaches
+/// it at a different one, so a rule built on this would be wrong on
+/// every node behind a router.
+///
+/// It earns its place in exactly one situation — a node that has just
+/// been *restored onto different hardware*, where the comparison the
+/// rest of this module makes is structurally blind. `resolves_here`
+/// compares a name against the node's own domain, and on a rebuilt
+/// machine that domain still resolves: to the machine that died. Every
+/// name agrees with it, everything reads `Here`, and nothing arrives.
+///
+/// So `restore-node` prints this beside where the names point and says
+/// it cannot decide. The operator knows whether there is a NAT in front
+/// of this box; the node does not.
+///
+/// No packet is sent. Connecting a UDP socket only consults the routing
+/// table, which is the question being asked: *which of my addresses
+/// would leave this machine?*
+pub fn outbound_address() -> Option<IpAddr> {
+    let socket = std::net::UdpSocket::bind("0.0.0.0:0").ok()?;
+    // A public address that need not answer, and will not be contacted.
+    socket.connect("192.0.2.1:443").ok()?;
+    socket.local_addr().ok().map(|address| address.ip())
+}
+
 /// Is there a wildcard record under `node_domain`?
 ///
 /// Probed with a random label, because a wildcard is invisible to a
@@ -125,7 +154,7 @@ fn random_label() -> String {
 /// whatever search domains are configured, which is the answer that
 /// actually matters. It also means no resolver library, no timeout
 /// knobs, and no second opinion about what DNS is.
-async fn lookup(hostname: &str) -> BTreeSet<IpAddr> {
+pub async fn lookup(hostname: &str) -> BTreeSet<IpAddr> {
     let hostname = hostname.trim().trim_end_matches('.').to_string();
     if hostname.is_empty() {
         return BTreeSet::new();
@@ -156,6 +185,32 @@ pub fn suggested_hostname(service_slug: &str, project_slug: &str, node_domain: &
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The number `restore-node` shows beside a DNS answer has to be an
+    /// address this machine actually holds.
+    ///
+    /// The way this trick fails is quiet and specific: a UDP socket
+    /// that is bound and never connected reports `0.0.0.0`, which is a
+    /// perfectly good-looking answer and means nothing. Printed beside
+    /// a real address, it would invite somebody rebuilding a node to
+    /// conclude their DNS is wrong when it is not.
+    ///
+    /// `None` is a legitimate answer — a machine with no route out —
+    /// so the claim is about what it says when it says anything.
+    #[test]
+    fn the_address_this_machine_goes_out_from_is_a_real_one() {
+        let Some(address) = outbound_address() else {
+            return;
+        };
+        assert!(
+            !address.is_unspecified(),
+            "{address} is the wildcard, not an address this machine holds"
+        );
+        assert!(
+            !address.is_loopback(),
+            "{address} is loopback; the route asked for was a public address"
+        );
+    }
 
     #[test]
     fn the_suggestion_reads_as_a_hostname() {
