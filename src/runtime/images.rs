@@ -375,6 +375,70 @@ fn parse_port(declared: &str) -> Option<u16> {
     port.parse().ok()
 }
 
+/// Create or update the image record containerd resolves by name.
+///
+/// The GC root, which is the part that is easy to leave out: the label
+/// is what stops the manifest — and through it every layer — from being
+/// collected the next time containerd tidies up. An image record without
+/// it is one that works until it does not.
+///
+/// An existing name is updated rather than refused. Pushing `:latest`
+/// again is what a tag is for, and a restore writing over a name it
+/// already holds is the same operation.
+pub async fn record(
+    client: &Containerd,
+    name: &str,
+    digest: &str,
+    size: i64,
+    media_type: &str,
+) -> ClientResult<()> {
+    let image = containerd_client::services::v1::Image {
+        name: name.to_string(),
+        target: Some(containerd_client::types::Descriptor {
+            media_type: media_type.to_string(),
+            digest: digest.to_string(),
+            size,
+            ..Default::default()
+        }),
+        labels: std::collections::HashMap::from([(
+            "containerd.io/gc.ref.content.target".to_string(),
+            digest.to_string(),
+        )]),
+        ..Default::default()
+    };
+
+    match ImagesClient::new(client.channel())
+        .create(
+            client.request(containerd_client::services::v1::CreateImageRequest {
+                image: Some(image.clone()),
+                ..Default::default()
+            }),
+        )
+        .await
+    {
+        Ok(_) => Ok(()),
+        Err(status) if status.code() == tonic::Code::AlreadyExists => {
+            ImagesClient::new(client.channel())
+                .update(
+                    client.request(containerd_client::services::v1::UpdateImageRequest {
+                        image: Some(image),
+                        ..Default::default()
+                    }),
+                )
+                .await
+                .map(|_| ())
+                .map_err(|source| ClientError::Call {
+                    call: "Images.Update",
+                    source,
+                })
+        }
+        Err(source) => Err(ClientError::Call {
+            call: "Images.Create",
+            source,
+        }),
+    }
+}
+
 /// The descriptor an image record points at.
 pub async fn image_target(
     client: &Containerd,

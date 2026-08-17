@@ -70,6 +70,19 @@ fn main() -> std::process::ExitCode {
             Command::SetupToken => commands::setup_token::run(config).await,
             Command::Passwd { username } => commands::passwd::run(config, &username).await,
             Command::Backup { out } => commands::backup::run(config, out).await,
+            Command::RestoreNode {
+                from,
+                same_node,
+                new_node,
+                over_my_dead_body,
+            } => {
+                let identity = match (same_node, new_node) {
+                    (true, _) => Some(commands::backup::Identity::Same),
+                    (_, true) => Some(commands::backup::Identity::New),
+                    _ => None,
+                };
+                commands::backup::restore_node(config, from, identity, over_my_dead_body).await
+            }
             Command::Restore {
                 database,
                 to,

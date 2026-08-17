@@ -96,12 +96,6 @@ pub fn put(root: &Path, digest: &str, bytes: &[u8]) -> std::io::Result<bool> {
 
 /// Read one back.
 ///
-/// The restore half, which does not exist yet — a node being rebuilt
-/// reads these back into its own content store and recreates the image
-/// records from the manifest's `images`. Kept here rather than written
-/// when that lands, because the pair is what makes the store make
-/// sense: a `put` with no `get` is a directory nobody can explain.
-#[allow(dead_code)]
 pub fn get(root: &Path, digest: &str) -> std::io::Result<Vec<u8>> {
     let Some(path) = path(root, digest) else {
         return Err(std::io::Error::new(
@@ -172,6 +166,61 @@ pub async fn tree_of(
     wanted.sort();
     wanted.dedup();
     Ok(wanted)
+}
+
+/// Put one image back into containerd, blobs first.
+///
+/// **Blobs before the record, always.** An image record naming content
+/// that is not there is an image containerd lists and cannot run — and
+/// worse, one a `docker pull` from this node's registry would answer
+/// with a manifest whose layers 404. The record is the last thing
+/// written, so at every moment before it the image simply does not
+/// exist yet, which is a state that reads correctly.
+///
+/// A blob that is already in the store is skipped by containerd itself:
+/// `commit` answers `AlreadyExists` and `content::commit` reads that as
+/// nothing to do, because content addressed by its digest is the same
+/// bytes.
+pub async fn put_back(
+    client: &crate::runtime::client::Containerd,
+    root: &Path,
+    kept: &crate::commands::backup::Kept,
+) -> Result<usize, String> {
+    let mut written = 0;
+    for (digest, size) in &kept.blobs {
+        let bytes = get(root, digest).map_err(|error| format!("{digest}: {error}"))?;
+        // The store is content-addressed, so this is a real check
+        // rather than a courtesy: bytes whose hash is not their name
+        // are not the blob, whatever the file was called.
+        if bytes.len() as i64 != *size {
+            return Err(format!(
+                "{digest} should be {size} bytes and the backup holds {}",
+                bytes.len()
+            ));
+        }
+        crate::runtime::content::commit(
+            client,
+            &format!("restore-{digest}"),
+            digest,
+            *size,
+            bytes,
+            Default::default(),
+        )
+        .await
+        .map_err(|error| format!("{digest}: {error}"))?;
+        written += 1;
+    }
+
+    crate::runtime::images::record(
+        client,
+        &kept.reference,
+        &kept.digest,
+        kept.size,
+        &kept.media_type,
+    )
+    .await
+    .map_err(|error| format!("{}: {error}", kept.reference))?;
+    Ok(written)
 }
 
 /// Whether this is something to open rather than only to keep.

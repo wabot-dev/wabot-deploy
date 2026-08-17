@@ -14,10 +14,6 @@
 //! next collection deletes the image out from under a service that is
 //! about to be deployed from it.
 
-use std::collections::HashMap;
-
-use containerd_client::services::v1::images_client::ImagesClient;
-use containerd_client::services::v1::{CreateImageRequest, UpdateImageRequest};
 use containerd_client::types::Descriptor;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
@@ -264,6 +260,12 @@ async fn release(
 }
 
 /// Create or update the image record containerd resolves by name.
+///
+/// One line, because the same thing is done when a backup is restored:
+/// `runtime::images::record` is the implementation and this is the
+/// registry's door to it. It was written twice, and the copy here was
+/// the one carrying the GC-root label that stops the manifest being
+/// collected — a second copy is a second chance to leave that out.
 async fn create_image(
     client: &crate::runtime::client::Containerd,
     name: &str,
@@ -271,47 +273,9 @@ async fn create_image(
     size: i64,
     media_type: &str,
 ) -> RestResult<()> {
-    let image = containerd_client::services::v1::Image {
-        name: name.to_string(),
-        target: Some(Descriptor {
-            media_type: media_type.to_string(),
-            digest: digest.to_string(),
-            size,
-            ..Default::default()
-        }),
-        // The image is a GC root, and this is what stops the manifest
-        // it points at from being collected.
-        labels: HashMap::from([(
-            "containerd.io/gc.ref.content.target".to_string(),
-            digest.to_string(),
-        )]),
-        ..Default::default()
-    };
-
-    let created = ImagesClient::new(client.channel())
-        .create(client.request(CreateImageRequest {
-            image: Some(image.clone()),
-            ..Default::default()
-        }))
-        .await;
-
-    match created {
-        Ok(_) => Ok(()),
-        // A tag that already exists is the normal case: pushing
-        // `:latest` again is what a tag is for. Moving it is an
-        // update, not a failure.
-        Err(status) if status.code() == tonic::Code::AlreadyExists => {
-            ImagesClient::new(client.channel())
-                .update(client.request(UpdateImageRequest {
-                    image: Some(image),
-                    ..Default::default()
-                }))
-                .await
-                .map_err(internal)?;
-            Ok(())
-        }
-        Err(error) => Err(internal(error)),
-    }
+    crate::runtime::images::record(client, name, digest, size, media_type)
+        .await
+        .map_err(internal)
 }
 
 /// What this reference resolves to, if this node has it.

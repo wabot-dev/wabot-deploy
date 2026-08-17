@@ -224,6 +224,41 @@ pub fn internal_name(id: &str) -> String {
     format!("{}.node", id.to_ascii_lowercase())
 }
 
+/// Throw away this node's identity, so the next start mints a new one.
+///
+/// **Everything that says who this machine is to other machines**: its
+/// own row, the authorities it takes orders from, the credentials it
+/// presents to them, and the grants it made to them. Restoring a backup
+/// onto a *different* node means holding somebody else's data, and
+/// keeping any of these would mean two machines answering to one id —
+/// which the overlay resolves by the two of them fighting over an
+/// address.
+///
+/// The rows about *other* nodes go too. They describe a relationship
+/// this machine no longer has: a node it never joined, holding a key it
+/// cannot use.
+///
+/// The one thing deliberately kept is everything that is not the
+/// network — projects, services, volumes, databases. Taking the data
+/// and being a new node is the whole point of asking.
+pub async fn forget_self(database: &SqliteDatabase) -> NetworkResult<()> {
+    database
+        .write(move |connection| {
+            connection.execute("DELETE FROM node", [])?;
+            connection.execute("DELETE FROM authority", [])?;
+            connection.execute("DELETE FROM node_grant", [])?;
+            connection.execute("DELETE FROM enrolment", [])?;
+            // Errands are addressed to node ids that no longer mean
+            // anything here, and one addressed to the id this machine
+            // has just stopped being would be carried out by whoever
+            // takes that id next.
+            connection.execute("DELETE FROM errand", [])?;
+            Ok(())
+        })
+        .await?;
+    Ok(())
+}
+
 pub async fn ensure_self(database: &SqliteDatabase, config: &Config) -> NetworkResult<Node> {
     let existing = me(database).await?;
     let domain = crate::node::settings::domain(database, config).await;
@@ -929,6 +964,78 @@ pub(crate) mod tests {
             find(&database, &me.id).await.expect("query").is_some(),
             "this node deleted itself"
         );
+    }
+
+    /// Taking somebody else's data without taking their name.
+    ///
+    /// **Two machines answering to one node id** is what the alternative
+    /// produces, and the overlay settles that by having them fight over
+    /// an address. So everything that says who this machine is to other
+    /// machines goes: its own row, the authorities it obeys, what it
+    /// presents to them, and what it granted them.
+    ///
+    /// And everything that is *not* the network stays, because taking
+    /// the data is the whole reason somebody asked for this.
+    #[tokio::test]
+    async fn a_new_node_keeps_the_data_and_none_of_the_identity() {
+        let database = database().await;
+        ensure_self(&database, &Config::default())
+            .await
+            .expect("self");
+        grant(&database, "nd-authority", "a-secret")
+            .await
+            .expect("grant");
+        save(
+            &database,
+            &Node {
+                id: "nd-other".into(),
+                name: "other.example".into(),
+                kind: Kind::Public,
+                endpoint: Some("other.example:443".into()),
+                public_key: None,
+                overlay_ip: Some("10.42.0.9".into()),
+                is_self: false,
+                last_seen_at: None,
+                allows: Vec::new(),
+                ca_pem: None,
+            },
+        )
+        .await
+        .expect("saved");
+
+        // Something that is not the network, which must survive.
+        let project = crate::platform::projects::create(&database, "keep-me")
+            .await
+            .expect("project");
+
+        assert!(me(&database).await.expect("query").is_some());
+        forget_self(&database).await.expect("forgotten");
+
+        assert!(me(&database).await.expect("query").is_none(), "its own row");
+        assert!(
+            all(&database).await.expect("query").is_empty(),
+            "and every row about another node, which describe a relationship this machine no longer has"
+        );
+        assert!(
+            authorities(&database).await.expect("query").is_empty(),
+            "and the authorities it took orders from"
+        );
+
+        // The data, untouched — the reason somebody asked.
+        assert!(
+            crate::platform::projects::find(&database, &project.id)
+                .await
+                .expect("query")
+                .is_some(),
+            "the data is what a new node was taking"
+        );
+
+        // And the next start mints a fresh identity rather than the old
+        // one, which is what makes it a different node.
+        let fresh = ensure_self(&database, &Config::default())
+            .await
+            .expect("a new id");
+        assert!(!fresh.id.is_empty());
     }
 
     /// "This used to be allowed" is what somebody comes to the page to

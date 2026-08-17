@@ -130,6 +130,38 @@ pub enum Command {
         from: Option<std::path::PathBuf>,
     },
 
+    /// Put a whole node back from a backup.
+    ///
+    /// Destructive: it replaces this node's database with the backup's,
+    /// and the rows that are here now go with it. What was here is
+    /// copied aside first, whatever happens.
+    ///
+    /// It will not guess whether this machine *is* the node that was
+    /// backed up — see `--same-node` and `--new-node`, one of which is
+    /// required.
+    RestoreNode {
+        /// The backup directory: `<root>/nodes/<node id>/<taken at>`.
+        #[arg(long, value_name = "PATH")]
+        from: std::path::PathBuf,
+
+        /// This machine is that node. Its id, keys, grants and
+        /// enrolments come back, and the network never notices the
+        /// machine was replaced. This is rebuilding what died.
+        #[arg(long, conflicts_with = "new_node")]
+        same_node: bool,
+
+        /// This machine takes the data and is somebody else. It mints a
+        /// new identity and has to join again; the original node stays
+        /// whatever it is.
+        #[arg(long, conflicts_with = "same_node")]
+        new_node: bool,
+
+        /// Restore even though this node already has services of its
+        /// own. They go with the database being replaced.
+        #[arg(long)]
+        over_my_dead_body: bool,
+    },
+
     /// Talk to containerd and report what it says.
     ///
     /// Not part of running a node: it exists because the containerd

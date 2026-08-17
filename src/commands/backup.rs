@@ -116,6 +116,10 @@ pub struct Kept {
     /// manifest is, so a restore can recreate the image record.
     pub digest: String,
     pub media_type: String,
+    /// The top descriptor's size, which containerd wants when the image
+    /// record goes back in.
+    #[serde(default)]
+    pub size: i64,
     /// Every blob, with its size. The size is recorded because
     /// containerd wants it when the blob goes back in.
     pub blobs: Vec<(String, i64)>,
@@ -529,6 +533,216 @@ pub fn keeping(taken: &[(PathBuf, Manifest)], now: i64) -> (Vec<&PathBuf>, Vec<&
     (keep, drop)
 }
 
+/// Put a whole node back from a backup.
+///
+/// ## The question it will not answer for you
+///
+/// **Am I the same node, or a new one?** The id is minted at `install`,
+/// kept for ever, and is what every other machine calls this one —
+/// along with the WireGuard key, the enrolment secrets and the grants,
+/// all of which are in the database this restores. Keeping them makes
+/// this machine *be* the node that died: the network never notices.
+/// Minting new ones makes it a different node that happens to hold the
+/// same data, which then has to re-join while everybody else goes on
+/// holding rows about a ghost.
+///
+/// Both are legitimate — rebuilding a dead machine wants the first,
+/// cloning one for a test wants the second — and guessing is not. So it
+/// is a flag with no default, and the command refuses without it.
+///
+/// ## What it will not do
+///
+/// **Restore onto a node that is already running something.** A node
+/// with services of its own is either not the one that died or is one
+/// somebody is about to lose. `--over-my-dead-body` is the way to say
+/// it anyway, and the current database is copied aside first whatever
+/// happens.
+pub async fn restore_node(
+    config: Config,
+    from: PathBuf,
+    identity: Option<Identity>,
+    force: bool,
+) -> anyhow::Result<i32> {
+    let Ok(text) = std::fs::read_to_string(from.join("manifest.json")) else {
+        println!("{} is not a backup: no manifest.json in it", from.display());
+        return Ok(1);
+    };
+    let manifest: Manifest = match serde_json::from_str(&text) {
+        Ok(manifest) => manifest,
+        Err(error) => {
+            println!(
+                "{} has a manifest this version cannot read: {error}",
+                from.display()
+            );
+            return Ok(1);
+        }
+    };
+    if manifest.format > FORMAT {
+        println!(
+            "that backup was written by a newer wabot-deploy (format {} against {FORMAT}).",
+            manifest.format
+        );
+        println!("Upgrade this node before restoring it.");
+        return Ok(1);
+    }
+
+    println!("restoring from {}", from.display());
+    println!(
+        "  taken       {} by {}",
+        super::super::console::layout::exactly(manifest.taken_at),
+        manifest.taken_by
+    );
+    println!(
+        "  of node     {} ({})",
+        manifest.node_name.as_deref().unwrap_or("unnamed"),
+        manifest.node_id.as_deref().unwrap_or("no id")
+    );
+    println!(
+        "  holds       {} volume(s), {} image(s)",
+        manifest.volumes.len(),
+        manifest.images.len()
+    );
+
+    let Some(identity) = identity else {
+        println!();
+        println!("  It will not guess whether this machine is that node.");
+        println!();
+        println!("    --same-node  keep its id, keys and grants. The network never notices");
+        println!("                 the machine was replaced. This is rebuilding what died.");
+        println!("    --new-node   take the data and mint a new identity. It has to join");
+        println!("                 again, and the original stays whatever it is.");
+        return Ok(1);
+    };
+
+    // What is here now. A node with services of its own is either not
+    // the one that died or is one somebody is about to lose.
+    let existing = crate::db::open(&config.database_path()).await?;
+    let running = crate::platform::services::all(&existing, None)
+        .await
+        .map(|services| services.len())
+        .unwrap_or(0);
+    if running > 0 && !force {
+        println!();
+        println!("  this node already has {running} service(s). Restoring replaces its");
+        println!("  database with the backup's, and those rows go with it.");
+        println!();
+        println!("  If that is what you mean: --over-my-dead-body");
+        return Ok(1);
+    }
+
+    // The current database, aside, before anything replaces it. Even a
+    // restore somebody asked for twice is one they can be wrong about,
+    // and this is the only copy of what is here now.
+    let aside = config
+        .node
+        .data_dir
+        .join("backups")
+        .join(format!("replaced-{}.db", crate::platform::now_ms()));
+    if let Some(parent) = aside.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let destination = aside.to_string_lossy().to_string();
+    existing
+        .write(move |connection| {
+            connection.execute("VACUUM INTO ?1", [destination])?;
+            Ok(())
+        })
+        .await?;
+    existing.close().await?;
+    println!();
+    println!("  what was here is at {}", aside.display());
+
+    // The database, then what its rows describe. In that order: a
+    // volume with no rows is bytes nothing can name.
+    std::fs::copy(from.join("node.db"), config.database_path())?;
+    println!("  database    restored");
+
+    let volumes = restore_volumes(&from, &config);
+    let images = restore_images(&from, &manifest, &config).await;
+    println!("  volumes     {volumes} restored");
+    println!("  images      {images} restored");
+
+    // A new identity is the *absence* of the old one: `ensure_self`
+    // mints one at the next start, the same way a fresh install does.
+    // Done after the copy rather than by editing the backup, so the
+    // file on disk is always exactly what was backed up.
+    if identity == Identity::New {
+        let database = crate::db::open(&config.database_path()).await?;
+        crate::network::forget_self(&database).await?;
+        database.close().await?;
+        println!("  identity    cleared; this node will mint a new one and must re-join");
+    } else {
+        println!(
+            "  identity    kept: this machine is {}",
+            manifest.node_id.as_deref().unwrap_or("that node")
+        );
+    }
+
+    println!();
+    println!("  Start the node. Reconciliation brings the services back up.");
+    Ok(0)
+}
+
+/// Which node this machine becomes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Identity {
+    /// The one the backup was taken from, keys and all.
+    Same,
+    /// A different one holding the same data.
+    New,
+}
+
+/// Copy every volume back out of the backup.
+fn restore_volumes(from: &Path, config: &Config) -> usize {
+    let Ok(entries) = std::fs::read_dir(from.join("volumes")) else {
+        return 0;
+    };
+    let mut restored = 0;
+
+    for entry in entries.flatten() {
+        let container = entry.file_name().to_string_lossy().to_string();
+        let into = crate::platform::volumes::root(&config.node.data_dir).join(&container);
+
+        // A managed engine's backup is two tarballs, not a directory
+        // tree — the deploy path unpacks those, because unpacking is
+        // what makes them a data directory. Copied across as they are.
+        match copy_tree(&entry.path(), &into) {
+            Ok(_) => restored += 1,
+            Err(error) => println!("  volume      {container} — NOT RESTORED: {error}"),
+        }
+    }
+    restored
+}
+
+/// Put every image back into containerd.
+async fn restore_images(from: &Path, manifest: &Manifest, config: &Config) -> usize {
+    if manifest.images.is_empty() {
+        return 0;
+    }
+    // The blobs are in the *shared* store at the root, which is two
+    // levels above this backup: `<root>/nodes/<id>/<taken at>`.
+    let root = from
+        .parent()
+        .and_then(|path| path.parent())
+        .and_then(|path| path.parent())
+        .map(|path| path.to_path_buf())
+        .unwrap_or_else(|| config.node.data_dir.join("backups"));
+
+    let Ok(client) = crate::runtime::client::Containerd::connect().await else {
+        println!("  images      containerd is not answering; none restored");
+        return 0;
+    };
+
+    let mut restored = 0;
+    for kept in &manifest.images {
+        match crate::commands::blobs::put_back(&client, &root, kept).await {
+            Ok(_) => restored += 1,
+            Err(reason) => println!("  image       {} — NOT RESTORED: {reason}", kept.reference),
+        }
+    }
+    restored
+}
+
 /// Restore one database to a moment, as a new one beside it.
 ///
 /// **Never the original rewound.** Rewinding is irreversible —
@@ -872,6 +1086,7 @@ async fn keep_one(
             reference: reference.to_string(),
             digest: target.digest,
             media_type: target.media_type,
+            size: target.size,
             blobs,
         },
         written,
