@@ -91,10 +91,15 @@ pub enum Command {
     /// understand it. Move it off the machine; a backup on the same
     /// disk protects against nothing that has ever happened to a disk.
     Backup {
-        /// Where to write it. Must not exist — a backup written over
-        /// another one is two half-backups that look like one.
-        #[arg(long, value_name = "PATH")]
-        out: Option<std::path::PathBuf>,
+        /// Where to write it: a path, `ssh://[user@]host/path`, or
+        /// `s3://bucket/prefix`.
+        ///
+        /// Must not exist — a backup written over another one is two
+        /// half-backups that look like one. A remote destination is
+        /// built here and sent, and the local copy is removed only once
+        /// the transfer has said it worked.
+        #[arg(long, value_name = "DESTINATION")]
+        out: Option<String>,
     },
 
     /// Restore a database to a moment, as a new one beside it.

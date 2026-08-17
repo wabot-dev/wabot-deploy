@@ -83,6 +83,7 @@
 
 use std::path::{Path, PathBuf};
 
+use crate::commands::destination::Destination;
 use crate::config::Config;
 
 /// What a backup directory holds, and how it was made.
@@ -161,7 +162,28 @@ pub enum How {
 /// The format this binary writes and reads.
 pub const FORMAT: u32 = 1;
 
-pub async fn run(config: Config, into: Option<PathBuf>) -> anyhow::Result<i32> {
+pub async fn run(config: Config, into: Option<String>) -> anyhow::Result<i32> {
+    // Read before anything is built, so a destination somebody mistyped
+    // costs nothing. A `pg_basebackup` of every database first and *then*
+    // "that is not a scheme I know" is a lot of work to throw away.
+    let destination = match into.as_deref().map(Destination::parse) {
+        Some(Ok(destination)) => destination,
+        Some(Err(reason)) => {
+            println!("{reason}");
+            return Ok(1);
+        }
+        None => Destination::Local(config.node.data_dir.join("backups")),
+    };
+
+    // And the same for what the send will need. `rsync` being absent is
+    // true before the backup starts and still true twenty minutes later,
+    // so learning it at the moment of use means every database copied
+    // for nothing.
+    if let Err(reason) = destination.preflight() {
+        println!("{reason}");
+        return Ok(1);
+    }
+
     let database = crate::db::open(&config.database_path()).await?;
 
     // Where this node's own things go under whichever root was named —
@@ -169,7 +191,19 @@ pub async fn run(config: Config, into: Option<PathBuf>) -> anyhow::Result<i32> {
     // on a network and cannot collide with anybody, so it gets a name
     // that says so rather than a blank path segment.
     let me = crate::network::me(&database).await.ok().flatten();
-    let root = into.unwrap_or_else(|| config.node.data_dir.join("backups"));
+    // A remote destination is built here first and sent at the end — see
+    // `destination`'s module docs for why it cannot be streamed. The
+    // staging root sits inside `data_dir` so that it is the same
+    // filesystem the volumes are on, which is what makes the copies a
+    // rename's worth of work rather than a second full write.
+    let root = match &destination {
+        Destination::Local(path) => path.clone(),
+        _ => config
+            .node
+            .data_dir
+            .join("backups")
+            .join(format!(".sending-{}", crate::platform::now_ms())),
+    };
     let into = root
         .join("nodes")
         .join(
@@ -189,16 +223,19 @@ pub async fn run(config: Config, into: Option<PathBuf>) -> anyhow::Result<i32> {
     }
     std::fs::create_dir_all(&into)?;
 
-    println!("backing up to {}", into.display());
+    match destination.is_remote() {
+        true => println!("backing up to {}", destination.display()),
+        false => println!("backing up to {}", into.display()),
+    }
 
     // The database first. It carries the identity, the grants, the keys
     // and every row that describes what the volumes below are *for* — a
     // volume without it is bytes nothing can name.
     let db_copy = into.join("node.db");
-    let destination = db_copy.to_string_lossy().to_string();
+    let db_copy_path = db_copy.to_string_lossy().to_string();
     database
         .write(move |connection| {
-            connection.execute("VACUUM INTO ?1", [destination])?;
+            connection.execute("VACUUM INTO ?1", [db_copy_path])?;
             Ok(())
         })
         .await?;
@@ -262,10 +299,40 @@ pub async fn run(config: Config, into: Option<PathBuf>) -> anyhow::Result<i32> {
     }
 
     database.close().await?;
+
+    if !destination.is_remote() {
+        println!();
+        println!("  Move it off this machine. A backup on the same disk protects");
+        println!("  against nothing that has ever happened to a disk.");
+        return Ok(0);
+    }
+
     println!();
-    println!("  Move it off this machine. A backup on the same disk protects");
-    println!("  against nothing that has ever happened to a disk.");
-    Ok(0)
+    match crate::commands::destination::send(&root, &destination) {
+        Ok(what) => {
+            println!("  sent        {what} → {}", destination.display());
+            // Only now. The staging copy is this backup's only existence
+            // until the transfer says otherwise, and removing it before
+            // that would be a command that reports success and holds
+            // nothing.
+            match std::fs::remove_dir_all(&root) {
+                Ok(()) => {}
+                Err(error) => println!("  local copy  {} left behind: {error}", root.display()),
+            }
+            Ok(0)
+        }
+        Err(reason) => {
+            println!("  NOT SENT    {reason}");
+            println!();
+            // Kept, and named. The bytes exist and the operator is the
+            // only one who can decide what to do about a destination
+            // that refused them — retrying by hand is a one-line rsync
+            // from here.
+            println!("  The backup is complete and still on this machine:");
+            println!("    {}", into.display());
+            Ok(1)
+        }
+    }
 }
 
 /// Which backup a restore to this moment has to start from.
