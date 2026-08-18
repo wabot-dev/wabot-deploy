@@ -282,10 +282,15 @@ pub async fn create(
 /// string, a scheme somebody pasted, whitespace in the middle.
 fn validate_image(image: &str) -> PlatformResult<()> {
     let image = image.trim();
+    // **Empty is a state, not a mistake.** A service can be created with
+    // no image and wait for the first push to its own repository — which
+    // is how somebody deploys their own application, and used to mean
+    // typing a reference for an image that did not exist yet. What
+    // refuses to act on it is the deploy path, which has something to say
+    // about it; a validator can only refuse the creation. Reported by
+    // Jorge.
     if image.is_empty() {
-        return Err(PlatformError::Refused(
-            "an image reference is required".into(),
-        ));
+        return Ok(());
     }
     if image.contains("://") {
         return Err(PlatformError::Refused(format!(
@@ -618,6 +623,22 @@ pub async fn set_cpu_limit(
 /// running container's stdio. The console says so on the switch, because
 /// a setting that saves and appears to do nothing is one somebody clicks
 /// twice.
+impl Service {
+    /// No image yet, so there is nothing to run.
+    ///
+    /// A service can be created without one and wait for the first push
+    /// to its own repository — which is the ordinary way somebody
+    /// deploys their own application, and used to mean typing a
+    /// reference for an image that did not exist yet.
+    ///
+    /// Empty rather than `Option<String>`: fifty-odd places read this
+    /// field, and a nullable column would have every one of them decide
+    /// what absent means. One question, asked here.
+    pub fn awaiting_push(&self) -> bool {
+        self.image.trim().is_empty()
+    }
+}
+
 pub async fn set_log_timestamps(
     database: &SqliteDatabase,
     service_id: &str,

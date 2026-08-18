@@ -137,11 +137,19 @@ impl ServicePages {
                     <label for="name">(t("Name"))</label>
                     <input id="name" name="name" type="text" autocomplete="off" required autofocus>
 
-                    <label for="image">(t("Image"))</label>
+                    <label for="image">(t("Image, if you have one"))</label>
+                    // Not `required`. A service for your own application
+                    // has no image until you have pushed one, and this
+                    // field being mandatory meant typing a reference for
+                    // something that did not exist yet. Reported by
+                    // Jorge.
                     <input id="image" name="image" type="text" autocomplete="off" class="mono"
-                           placeholder="docker.io/library/nginx:alpine" required>
+                           placeholder="docker.io/library/nginx:alpine">
                     <p class="field-hint">(t("A reference containerd can resolve. Fully qualified — \
                          there is no implicit registry here."))</p>
+                    <p class="field-hint">(t("Leave it empty for your own application: the service \
+                         waits, and the first push to its own repository becomes its first \
+                         release. The page will show you the two commands."))</p>
 
                     <label for="env">(t("Environment"))</label>
                     <textarea id="env" name="env" autocomplete="off" rows="6" class="mono"
@@ -1212,6 +1220,26 @@ impl ServicePages {
                                  for somebody to deploy it from the service page."))</p>
                             <div class="actions">
                                 <button type="submit">(t("Save"))</button>
+                            </div>
+                        </form>
+                    </section>
+
+                    <section class="stack" id="image">
+                        <p class="card-label">(t("Image"))</p>
+                        // The form that did not exist. A service was
+                        // pinned to whatever it was created with, and
+                        // this card's own push example told people to
+                        // "point the service at this reference" with
+                        // nothing to point it with. Reported by Jorge.
+                        <form method="post" action=(format!("{here}/image")) class="card stack">
+                            <input id="service-image" name="image" type="text" autocomplete="off"
+                                   class="mono" value=(&service.image)
+                                   placeholder="docker.io/library/nginx:alpine">
+                            <p class="field-hint">(t("Saving redeploys the service with this image. \
+                                 Empty makes it wait for a push to its own repository \
+                                 instead."))</p>
+                            <div class="actions">
+                                <button type="submit">(t("Save image"))</button>
                             </div>
                         </form>
                     </section>
@@ -3058,6 +3086,61 @@ impl ServiceApi {
         // be offered "confirm form resubmission".
         self.enqueue(&service.id, Some(&release.id)).await;
         Ok(see_other(&here))
+    }
+
+    /// Point the service at a different image, and redeploy with it.
+    ///
+    /// **There was no way to do this**, which is the fault Jorge found
+    /// while being told by this very page to point a service at a
+    /// reference: the field existed only on the creation form, so a
+    /// service was pinned for life to whatever it was made with.
+    ///
+    /// Empty is allowed and means "wait for a push to your own
+    /// repository" — the deploy path says so on the row rather than
+    /// attempting a pull with no reference.
+    #[post("/projects/:project/services/:service/image")]
+    #[raw]
+    #[middleware(SessionMiddleware)]
+    async fn set_image(&self, request: Request) -> RestResult<Response> {
+        let path = request.uri().path().to_string();
+        let Some((project, service, _)) = self.locate(&path).await? else {
+            return Ok(see_other("/?error=no+such+service"));
+        };
+        let here = format!(
+            "/projects/{}/services/{}/settings",
+            project.slug, service.slug
+        );
+
+        // The check that counts. This page does not show the form for a
+        // managed database — the node writes that row from the engine's —
+        // and a rule the browser enforces is a courtesy.
+        if service.kind.is_managed() {
+            return Ok(back_with_error(
+                &here,
+                "the node writes this for a managed database",
+            ));
+        }
+
+        let form = match read_form(request).await {
+            Ok(form) => form,
+            Err(response) => return Ok(response),
+        };
+        let image = field(&form, "image");
+        if let Err(reason) = services::set_image(&self.state.database, &service.id, image).await {
+            return Ok(back_with_error(&here, &reason.to_string()));
+        }
+
+        // Queued rather than run here, the same as every other settings
+        // form: pulling an image inside a POST is what held a request
+        // open long enough to be offered "confirm form resubmission".
+        let command = crate::deploy::jobs::DeployService {
+            service_id: service.id.clone(),
+            release_id: None,
+        };
+        if let Err(error) = wabot::async_jobs::run_command(&self.state.container, &command).await {
+            tracing::error!(%error, "could not queue the deployment");
+        }
+        Ok(see_other(&format!("{here}#image")))
     }
 
     /// What tag to watch, and whether a push goes out on its own.

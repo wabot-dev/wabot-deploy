@@ -221,20 +221,62 @@ async fn release(
     let services = services::all(&state.database, Some(&pusher.project.id)).await?;
     let mut recorded = false;
 
+    // **A service's own repository is `<project>/<service>`**, and a push
+    // to it is a release for that service whatever its image field says.
+    //
+    // This used to require the field to name the pushed repository — and
+    // the console's push card tells somebody to push to exactly this
+    // reference while offering no way to change that field, because there
+    // is no form for it anywhere. So the console's own instruction
+    // produced a push the node accepted into the registry and then
+    // ignored: the image stored, the release absent, and nothing saying
+    // why. Reported by Jorge, who was right that editing a field should
+    // not be part of pushing.
+    //
+    // Sound rather than merely convenient: the token guard already
+    // refuses a repository that is not this project's, a slug is unique
+    // within a project, and deploying a release runs `release.pinned()` —
+    // the digest — so the image field was never what a release ran.
+    let by_slug = name
+        .split_once('/')
+        .filter(|(project, _)| *project == pusher.project.slug)
+        .map(|(_, service)| service.to_string());
+
     for service in services {
-        let Some(service_reference) = images::Reference::parse(&service.image) else {
-            continue;
-        };
-        // Compared by name rather than by full reference: the client
-        // pushed to a host it dialled, and the service may name the
-        // same repository with or without one.
-        if service_reference.name() != name {
+        // Either the service's own repository, or an image field that
+        // names the pushed one. The second is kept because a service
+        // deliberately pointed at `<host>/<something-else>` is a thing
+        // somebody can have set up, and this is not the release that
+        // takes it away.
+        let named_here = images::Reference::parse(&service.image)
+            .is_some_and(|reference| reference.name() == name);
+        if by_slug.as_deref() != Some(service.slug.as_str()) && !named_here {
             continue;
         }
         if images::tracked_tag(&service.image, service.track_tag.as_deref()).as_deref()
             != Some(reference)
         {
             continue;
+        }
+
+        // **The service now runs what was pushed, so its row says so.**
+        //
+        // Without this the field keeps naming wherever the service was
+        // created from — Docker Hub, usually — and the page goes on
+        // telling somebody a push here can never reach it, immediately
+        // after one did. Deploying a release pins the digest either way,
+        // so this changes nothing about what runs; it changes what the
+        // console can say truthfully, and it is what makes the *next*
+        // push match by name as well as by slug.
+        //
+        // Only when it differs, so an ordinary push writes nothing.
+        if service.image != pushed {
+            if let Err(error) = services::set_image(&state.database, &service.id, &pushed).await {
+                // Reported and not fatal: the release below is the thing
+                // that was asked for, and refusing it because a field
+                // could not be tidied would lose the push.
+                tracing::warn!(%error, service = %service.slug, "could not adopt the pushed image");
+            }
         }
 
         let release = releases::record(
@@ -376,6 +418,42 @@ fn missing() -> Response {
 
 #[cfg(test)]
 mod tests {
+    /// A push to a service's own repository is a release for it, whatever
+    /// its image field says — including when it says nothing.
+    ///
+    /// This required the field to name the pushed repository, and the
+    /// console's push card tells somebody to push to exactly this
+    /// reference while offering no way to change that field: there was no
+    /// form for it anywhere. So the console's own instruction produced a
+    /// push the node stored and then ignored — the release absent, and
+    /// nothing saying why. Reported by Jorge, who was right that editing a
+    /// field should not be part of pushing.
+    #[test]
+    fn a_services_own_repository_is_the_one_it_watches() {
+        // The rule, as the matcher applies it: the first segment is the
+        // project and the second is the service's slug.
+        for (pushed, project, slug, matches) in [
+            ("wabot/nginx-2", "wabot", "nginx-2", true),
+            // Another project's repository is not this service's, and the
+            // token guard refuses it before this is reached anyway.
+            ("other/nginx-2", "wabot", "nginx-2", false),
+            // Same project, different service.
+            ("wabot/api", "wabot", "nginx-2", false),
+            // No slash at all is not a project repository.
+            ("nginx-2", "wabot", "nginx-2", false),
+        ] {
+            let by_slug = pushed
+                .split_once('/')
+                .filter(|(p, _)| *p == project)
+                .map(|(_, service)| service.to_string());
+            assert_eq!(
+                by_slug.as_deref() == Some(slug),
+                matches,
+                "{pushed} against {project}/{slug}"
+            );
+        }
+    }
+
     use super::*;
 
     #[test]

@@ -396,6 +396,29 @@ impl Deployer {
         project: &Project,
         service: &Service,
     ) -> DeployResult<Option<Ipv4Addr>> {
+        // **Nothing to run yet.** A service created without an image is
+        // waiting for the first push to its own repository, and there is
+        // no reference to pull. Said on the row rather than attempted:
+        // containerd's answer to an empty reference is not a sentence
+        // anybody can act on, and this is a state somebody chose rather
+        // than a failure.
+        if service.awaiting_push() {
+            services::set_desired_state(&self.database, &service.id, DesiredState::Running).await?;
+            services::set_last_error(
+                &self.database,
+                &service.id,
+                Some(
+                    "no image yet — push one to this service's repository, or set one in settings",
+                ),
+            )
+            .await?;
+            tracing::info!(
+                service = %service.slug,
+                "nothing to deploy: this service has no image yet"
+            );
+            return Ok(None);
+        }
+
         let mine = self.mine(service).await?;
         let Some(first) = mine.first().cloned() else {
             services::set_desired_state(&self.database, &service.id, DesiredState::Running).await?;

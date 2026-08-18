@@ -239,6 +239,10 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
     ("Id", "Id"),
     ("Image", "Imagen"),
     (
+        "Image, if you have one",
+        "Imagen, si ya tienes una",
+    ),
+    (
         "Inside the container",
         "Dentro del contenedor",
     ),
@@ -273,6 +277,10 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
     ),
     ("Key file", "Fichero de la clave"),
     ("Last update", "Última actualización"),
+    (
+        "Leave it empty for your own application: the service waits, and the first push to its own repository becomes its first release. The page will show you the two commands.",
+        "Déjala vacía para tu propia aplicación: el servicio espera, y el primer push a su propio repositorio se convierte en su primera versión. La página te dará los dos comandos.",
+    ),
     (
         "Lets a database be restored to any minute, rather than only to the moment of a backup. It costs disk — a segment a minute per database, compressed — and it takes effect at each database's next deployment.",
         "Permite restaurar una base de datos a cualquier minuto, y no sólo al momento de un backup. Cuesta disco — un segmento por minuto y base de datos, comprimido — y surte efecto en el siguiente despliegue de cada base de datos.",
@@ -443,10 +451,18 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
     ("Save", "Guardar"),
     ("Save domain", "Guardar dominio"),
     ("Save environment", "Guardar entorno"),
+    (
+        "Save image",
+        "Guardar imagen",
+    ),
     ("Save name", "Guardar nombre"),
     ("Save placement", "Guardar colocación"),
     ("Save source", "Guardar origen"),
     ("Saving redeploys the service with these values. The image it runs does not change.", "Guardar redespliega el servicio con estos valores. La imagen que ejecuta no cambia."),
+    (
+        "Saving redeploys the service with this image. Empty makes it wait for a push to its own repository instead.",
+        "Guardar redespliega el servicio con esta imagen. Vacía hace que espere un push a su propio repositorio.",
+    ),
     ("Send this link", "Envía este enlace"),
     ("Serve over HTTPS at a hostname", "Servir por HTTPS en un nombre"),
     ("Served by", "Servido por"),
