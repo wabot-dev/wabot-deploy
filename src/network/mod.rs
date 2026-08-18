@@ -909,6 +909,12 @@ pub(crate) mod tests {
             named.endpoint.as_deref(),
             Some(&*format!("node.example:{}", config.edge.https_port))
         );
+        // **And the name**, which is the half somebody sees. A node
+        // serving `node-1.tobaw.shop` with a real certificate was titled
+        // `localhost` — the machine's own hostname, taken at install
+        // because there was no domain then, and never recomputed when
+        // one arrived. Reported by Jorge.
+        assert_eq!(named.name, "node.example");
 
         crate::node::settings::set_domain(&database, None)
             .await

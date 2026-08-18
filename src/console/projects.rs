@@ -248,16 +248,15 @@ impl ProjectPages {
                     }
 
                     @if rows.is_empty() {
+                        // No second pair of buttons here. The ones in the
+                        // header are on this page whether or not the list
+                        // is empty, so an empty project showed both a
+                        // hand's width apart — which reads as two
+                        // different things rather than one. The projects
+                        // list above already had this right; this page
+                        // did not follow it. Reported by Jorge.
                         <section class="empty">
                             <p>(t("No services yet."))</p>
-                            @if allowed.may_deploy() {
-                                <div class="row">
-                                    <a class="btn btn-secondary" href=(&new_database)>(
-                                        t("Create database")
-                                    )</a>
-                                    <a class="btn" href=(&new_service)>(t("Create service"))</a>
-                                </div>
-                            }
                         </section>
                     } @else {
                         (service_table(&project, &rows, allowed))
@@ -417,7 +416,12 @@ impl ProjectPages {
                         <p class="card-label">(t("Danger zone"))</p>
                         <p class="tile-detail">(t("Deleting a project deletes every service under it. \
                              Nothing is stopped first — do that yourself."))</p>
-                        <form method="post" action=(format!("{here}/delete"))>
+                        // Typing the name is the confirmation — see the
+                        // handler, which is where it is actually checked.
+                        <form method="post" action=(format!("{here}/delete")) class="stack">
+                            <label for="confirm">(t("Type the name to confirm: "))(&project.slug)</label>
+                            <input id="confirm" name="confirm" type="text" autocomplete="off"
+                                   class="mono" required placeholder=(&project.slug)>
                             <button class="btn btn-danger" type="submit">(t("Delete project"))</button>
                         </form>
                     </section>
@@ -1700,10 +1704,20 @@ impl ProjectApi {
 
     /// Delete a project and, by cascade, its services.
     ///
-    /// A POST, so nothing a browser prefetches can trigger it, and no
-    /// confirmation dialog: a dialog needs JavaScript, and this console
-    /// works without it. The button lives under a "Danger zone"
-    /// heading, which is the warning.
+    /// A POST, so nothing a browser prefetches can trigger it, and the
+    /// project's name has to be typed.
+    ///
+    /// **There used to be no confirmation at all**, and the reasoning
+    /// written here for that was: a dialog needs JavaScript, this console
+    /// works without it, and the "Danger zone" heading is the warning.
+    /// Half right, and the wrong conclusion — a *dialog* needs scripting,
+    /// a text field does not, and a heading is not a warning. This
+    /// deletes every service under the project. Reported by Jorge, who
+    /// pressed the equivalent button on a service.
+    ///
+    /// Checked here rather than trusted from the form: `required` is a
+    /// courtesy the browser extends, and a request can be constructed by
+    /// hand.
     #[post("/projects/:project/delete")]
     #[raw]
     #[middleware(SessionMiddleware)]
@@ -1717,10 +1731,22 @@ impl ProjectApi {
             // Already gone, or never theirs. Both answer the same.
             return Ok(see_other("/"));
         };
+        let settings = format!("/projects/{}/settings", project.slug);
         if !allowed.may_administer() {
             return Ok(back_with_error(
                 &format!("/projects/{}", project.slug),
                 "only an owner can delete this project",
+            ));
+        }
+
+        let form = match read_form(request).await {
+            Ok(form) => form,
+            Err(response) => return Ok(response),
+        };
+        if field(&form, "confirm").trim() != project.slug {
+            return Ok(back_with_error(
+                &settings,
+                "type the project's name to confirm the deletion",
             ));
         }
 
@@ -2633,6 +2659,7 @@ mod tests {
             .harness
             .post("/projects/doomed/delete")
             .header("cookie", &cookie)
+            .form(&[("confirm", "doomed")])
             .send()
             .await;
         response.assert_status(StatusCode::SEE_OTHER);
@@ -2649,6 +2676,65 @@ mod tests {
                 .is_empty(),
             "the cascade took the services"
         );
+    }
+
+    /// A deletion nobody confirmed does not happen.
+    ///
+    /// There was no confirmation at all — one click removed a project and
+    /// every service under it. The reasoning recorded for that was that a
+    /// dialog needs JavaScript and this console works without it, which is
+    /// true of dialogs and not of text fields. Reported by Jorge.
+    ///
+    /// Posted without the field, and then with the wrong name, because
+    /// `required` in the markup is a courtesy the browser extends and a
+    /// request can be constructed by hand.
+    #[tokio::test]
+    async fn a_project_is_not_deleted_without_its_name_typed() {
+        let console = Console::new().await;
+        let cookie = console.signed_in().await;
+        console
+            .harness
+            .post("/projects")
+            .header("cookie", &cookie)
+            .form(&[("name", "keepme")])
+            .send()
+            .await;
+
+        for body in [vec![], vec![("confirm", "something-else")]] {
+            console
+                .harness
+                .post("/projects/keepme/delete")
+                .header("cookie", &cookie)
+                .form(&body)
+                .send()
+                .await;
+            let list = listing(&console, &cookie).await;
+            assert!(
+                list.contains("keepme"),
+                "the project survived a deletion nobody confirmed"
+            );
+        }
+
+        // And with the name, it goes.
+        console
+            .harness
+            .post("/projects/keepme/delete")
+            .header("cookie", &cookie)
+            .form(&[("confirm", "keepme")])
+            .send()
+            .await;
+        assert!(!listing(&console, &cookie).await.contains("keepme"));
+    }
+
+    /// The project list as somebody signed in sees it.
+    async fn listing(console: &Console, cookie: &str) -> String {
+        console
+            .harness
+            .get("/")
+            .header("cookie", cookie)
+            .send()
+            .await
+            .body
     }
 
     /// Deleting something already gone is the outcome that was asked
@@ -2670,6 +2756,7 @@ mod tests {
                 .harness
                 .post("/projects/doomed/delete")
                 .header("cookie", &cookie)
+                .form(&[("confirm", "doomed")])
                 .send()
                 .await;
             assert_eq!(response.header("location"), Some("/"));

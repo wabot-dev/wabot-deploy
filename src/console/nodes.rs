@@ -1762,6 +1762,38 @@ impl NodeApi {
     /// hostname is: asking a certificate authority to validate a name
     /// that does not point here spends one of five hourly attempts to
     /// be told what a lookup would have said for free.
+    /// Recompute what this node's own row says about itself.
+    ///
+    /// **The domain is the input to three derived things**, and changing
+    /// it used to update none of them: the node's `name`, whether it is
+    /// `Public` or `Private`, and the `endpoint` other nodes dial. All
+    /// three are computed by `network::ensure_self` from the domain, and
+    /// `ensure_self` ran at install and at boot — so setting a domain
+    /// from this page left the row describing the machine as it was
+    /// before, until the next restart.
+    ///
+    /// Jorge saw the visible half: a node serving `node-1.tobaw.shop`
+    /// with a real certificate, titled `localhost` — the machine's own
+    /// hostname, taken at install because there was no domain then. The
+    /// invisible half is worse, because a row that says private with no
+    /// endpoint is what another node would be told.
+    ///
+    /// The same shape this project keeps meeting: derived state that
+    /// nothing recomputes when its input changes. Phase 7 learned it for
+    /// input arriving over the network; this one arrives from a form, and
+    /// nobody was listening there either.
+    async fn refresh_self(&self) {
+        if let Err(error) =
+            crate::network::ensure_self(&self.state.database, &self.state.config).await
+        {
+            // Reported and not fatal: the domain *is* saved, the
+            // certificate work is queued, and refusing the whole request
+            // over this would leave the operator retyping a name that
+            // was accepted.
+            tracing::warn!(%error, "could not refresh this node's own row after a domain change");
+        }
+    }
+
     #[post("/nodes/certificate")]
     #[raw]
     #[middleware(SessionMiddleware)]
@@ -1794,6 +1826,7 @@ impl NodeApi {
 
         if typed.is_empty() {
             set_domain(&self.state.database, None).await;
+            self.refresh_self().await;
             self.forget(previous.as_deref(), None).await;
             return Ok(super::auth::back_with_error(
                 here,
@@ -1814,6 +1847,7 @@ impl NodeApi {
         }
 
         set_domain(&self.state.database, Some(&domain)).await;
+        self.refresh_self().await;
         // A name change invalidates whatever is being served: the old
         // certificate does not carry the new name. Clearing the last
         // failure is part of that — it was about the old name, and

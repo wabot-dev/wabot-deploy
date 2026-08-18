@@ -222,10 +222,17 @@ part of the value. → Saved, redeployed.
 values come back.
 **3.8 Stop.** → Containers go, rows stay.
 **3.9 Deploy again.** → Comes back.
-**3.10 Delete.** → Confirmed first. Containers, volumes and rows go.
+**3.10 Delete.** → **The name has to be typed.** Containers, volumes and
+rows go. Try it with the wrong name and with the field empty, and with
+scripting off: `required` is the browser's courtesy and the check that
+counts is on the POST.
+**↩** There was no confirmation at all — one press and it was gone. The
+reasoning recorded for that was "a dialog needs JavaScript and this
+console works without it, and the Danger zone heading is the warning":
+true of dialogs, false of text fields, and a heading is not a warning.
 **3.11 A project with a service in it.** Try to delete the project.
-→ Says what is in the way, or takes it all with a confirmation. Whichever
-it does, it says which.
+→ Takes every service with it, and needs the project's name typed for the
+same reason 3.10 does.
 
 ---
 

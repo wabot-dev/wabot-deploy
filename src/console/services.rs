@@ -365,7 +365,6 @@ impl ServicePages {
             super::projects::where_it_runs(&placements),
             super::projects::elsewhere_of(&placements),
         );
-        let back = format!("/projects/{}", project.slug);
         let settings = format!(
             "/projects/{}/services/{}/settings",
             project.slug, service.slug
@@ -404,7 +403,11 @@ impl ServicePages {
                         @if allowed.may_deploy() {
                             <a class="btn btn-secondary" href=(&settings)>(t("Settings"))</a>
                         }
-                        <a class="btn btn-ghost" href=(&back)>(t("Back to project"))</a>
+                        // No "Back to project" here: the breadcrumb's
+                        // arrow above already goes there, and one thing
+                        // must not be doable two ways — a second control
+                        // for it reads as a second destination. Reported
+                        // by Jorge.
                     </div>
                 </div>
 
@@ -555,11 +558,34 @@ impl ServicePages {
                 <section class="stack">
                     <div class="split">
                         <p class="card-label">(t("Releases"))</p>
-                        <span class="who">(
-                            format!("watching :{}", crate::platform::images::tracked_tag(
-                                &service.image, service.track_tag.as_deref()
-                            ).unwrap_or_else(|| "—".into()))
-                        )</span>
+                        // **Only where a push here could match.** The
+                        // badge appeared for every service, including one
+                        // running an image from another registry — and
+                        // for those it read the *foreign* tag, so a
+                        // service on `docker.io/library/nginx:alpine`
+                        // announced `watching :alpine` directly above
+                        // this card's own sentence saying a push to this
+                        // node can never land on it, and above a copyable
+                        // command proposing `:latest`. Three answers to
+                        // one question. Reported by Jorge.
+                        //
+                        // The tag itself is deliberately *not* defaulted
+                        // to `latest`: it is the tag a push must carry to
+                        // become a release, and for a service pinned to
+                        // this node's `…/app:v2` that is `v2` — watching
+                        // `latest` there would ignore the push that
+                        // matters and record ones the service would never
+                        // pull. Where a push *can* match, the service
+                        // names this registry, and a reference made from
+                        // the console's own example carries `latest`
+                        // anyway.
+                        @if let Some(Push::To(_)) = &push {
+                            <span class="who">(
+                                format!("watching :{}", crate::platform::images::tracked_tag(
+                                    &service.image, service.track_tag.as_deref()
+                                ).unwrap_or_else(|| "latest".into()))
+                            )</span>
+                        }
                     </div>
                     @if releases.is_empty() {
                         <p class="tile-detail">(t("Nothing has been pushed yet. Create a push token on the \
@@ -1482,16 +1508,30 @@ impl ServicePages {
                         <p class="tile-detail">(t("Deleting a database stops it and removes everything \
                              it stored on this node. There is no undo and there is no backup — a \
                              read-only copy is not one, because a deletion reaches it too."))</p>
-                        <form method="post" action=(format!("{here}/delete"))>
-                            <button class="btn btn-danger" type="submit">(t("Delete database and its data"))</button>
-                        </form>
                     } @else {
                         <p class="tile-detail">(t("Deleting a service stops its container and removes it. The \
                              images it was built from stay in the registry."))</p>
-                        <form method="post" action=(format!("{here}/delete"))>
-                            <button class="btn btn-danger" type="submit">(t("Delete service"))</button>
-                        </form>
                     }
+                    // **Typing the name is the confirmation.** There was
+                    // none: one click and it was gone. The reasoning
+                    // written down for that was "a dialog needs
+                    // JavaScript and this console works without it, and
+                    // the Danger zone heading is the warning" — half
+                    // right, and the wrong conclusion. A *dialog* needs
+                    // scripting; a field does not, and this one is
+                    // checked on the POST, which is the check that
+                    // counts. A heading is not a warning. Reported by
+                    // Jorge, who pressed it.
+                    <form method="post" action=(format!("{here}/delete")) class="stack">
+                        <label for="confirm">(t("Type the name to confirm: "))(&service.slug)</label>
+                        <input id="confirm" name="confirm" type="text" autocomplete="off"
+                               class="mono" required placeholder=(&service.slug)>
+                        @if service.kind.is_managed() {
+                            <button class="btn btn-danger" type="submit">(t("Delete database and its data"))</button>
+                        } @else {
+                            <button class="btn btn-danger" type="submit">(t("Delete service"))</button>
+                        }
+                    </form>
                 </section>
         }
             .render()
@@ -3142,6 +3182,26 @@ impl ServiceApi {
             // Already gone is the outcome they asked for.
             return Ok(see_other("/"));
         };
+        let here = format!(
+            "/projects/{}/services/{}/settings",
+            project.slug, service.slug
+        );
+
+        // **The check that counts.** The form asks for the name to be
+        // typed and marks the field `required`, and both of those are
+        // courtesies the browser extends — this console has to work with
+        // scripting off and a request can be constructed by hand, so the
+        // comparison happens here or it does not happen.
+        let form = match read_form(request).await {
+            Ok(form) => form,
+            Err(response) => return Ok(response),
+        };
+        if field(&form, "confirm").trim() != service.slug {
+            return Ok(back_with_error(
+                &here,
+                "type the service's name to confirm the deletion",
+            ));
+        }
 
         // The container first. A row deleted while its container runs
         // is a container nothing will ever clean up: the id is derived
@@ -3150,8 +3210,9 @@ impl ServiceApi {
         // And the storage, before the rows: the directory is derived
         // from the container id, which is derived from the rows, so
         // deleting them first would leave data on the disk that nothing
-        // can name. This is the one caller of `volumes::discard` and
-        // the danger zone is the confirmation it needs.
+        // can name. This is the one caller of `volumes::discard`, and
+        // the typed name above is the confirmation it needs — the
+        // heading it used to rely on was not one.
         self.state
             .deployer
             .discard_storage(&project, &service)
@@ -5205,6 +5266,56 @@ mod tests {
 
     /// The POST answers before the work happens. Holding the request
     /// open for an image pull is what offered somebody "confirm form
+    /// A service is not deleted without its name typed.
+    ///
+    /// There was no confirmation: one press of the danger-zone button
+    /// removed the service, its container and — for a database — every
+    /// byte it had stored. Reported by Jorge, who pressed it.
+    ///
+    /// Posted with the wrong name as well as with none, because
+    /// `required` in the markup is a courtesy the browser extends and a
+    /// request can be constructed by hand.
+    #[tokio::test]
+    async fn a_service_is_not_deleted_without_its_name_typed() {
+        let console = Console::new().await;
+        let cookie = console.signed_in().await;
+        console
+            .harness
+            .post("/projects")
+            .header("cookie", &cookie)
+            .form(&[("name", "one")])
+            .send()
+            .await;
+        console
+            .harness
+            .post("/projects/one/services")
+            .header("cookie", &cookie)
+            .form(&[("name", "web"), ("image", "docker.io/library/nginx:alpine")])
+            .send()
+            .await;
+
+        for body in [vec![], vec![("confirm", "not-web")]] {
+            console
+                .harness
+                .post("/projects/one/services/web/delete")
+                .header("cookie", &cookie)
+                .form(&body)
+                .send()
+                .await;
+            let page = console
+                .harness
+                .get("/projects/one")
+                .header("cookie", &cookie)
+                .send()
+                .await
+                .body;
+            assert!(
+                page.contains("web"),
+                "the service survived a deletion nobody confirmed"
+            );
+        }
+    }
+
     /// resubmission" when they reloaded.
     #[tokio::test]
     async fn deploying_answers_without_waiting_for_the_deployment() {
@@ -5295,6 +5406,7 @@ mod tests {
             .harness
             .post(&format!("/projects/{slug}/services/web/delete"))
             .header("cookie", &cookie)
+            .form(&[("confirm", "web")])
             .send()
             .await;
         response.assert_status(StatusCode::SEE_OTHER);
@@ -5332,6 +5444,7 @@ mod tests {
             .harness
             .post("/projects/one/services/web/delete")
             .header("cookie", &cookie)
+            .form(&[("confirm", "web")])
             .send()
             .await;
 

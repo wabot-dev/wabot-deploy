@@ -115,7 +115,6 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
     ("At least 12 characters. A phrase beats a puzzle — this console can start containers on the machine.", "Doce caracteres como mínimo. Una frase vale más que un acertijo — esta consola puede arrancar contenedores en la máquina."),
     ("At least 12 characters. Nobody here will ever see it.", "Doce caracteres como mínimo. Aquí nadie va a verla nunca."),
     ("Back to", "Volver a"),
-    ("Back to project", "Volver al proyecto"),
     ("Back to service", "Volver al servicio"),
     ("Backup", "Copia de seguridad"),
     ("Before you join", "Antes de unirte"),
@@ -607,6 +606,10 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
     ),
     ("Tokens this node minted", "Tokens que acuñó este nodo"),
     ("Try again", "Reintentar"),
+    (
+        "Type the name to confirm: ",
+        "Escribe el nombre para confirmar: ",
+    ),
     ("Unknown", "Desconocido"),
     ("Untick anything you would rather not agree to. You can revoke any of it later from this page, and this node keeps working either way.", "Desmarca lo que prefieras no aceptar. Puedes revocar cualquier parte más tarde desde esta página, y este nodo sigue funcionando igual."),
     ("Updates", "Actualizaciones"),
