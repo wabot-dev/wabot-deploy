@@ -71,9 +71,29 @@ impl Reference {
 /// reference already names — so a service created against `:latest`
 /// watches `latest` without anybody configuring it.
 pub fn tracked_tag(image: &str, track_tag: Option<&str>) -> Option<String> {
+    let _ = image;
     match track_tag {
         Some(tag) if !tag.trim().is_empty() => Some(tag.trim().to_string()),
-        _ => Reference::parse(image).map(|reference| reference.tag),
+        // **`latest`, not the tag the service's image happens to carry.**
+        //
+        // It used to be the image's, and the settings form has always
+        // shown `latest` as this field's placeholder — so the interface
+        // promised one thing and the code did another. A service running
+        // `docker.io/library/nginx:alpine` with an empty field was
+        // watching `alpine`: a tag borrowed from somebody else's
+        // repository, for a registry the image is not even in.
+        //
+        // Which of the two to keep was decided by the placeholder. It is
+        // the part an operator reads, it said `latest`, and every
+        // reference the console's own push example produces carries
+        // `latest` too. Making the code agree with what the form already
+        // promised is a smaller surprise than changing the promise.
+        //
+        // A service pinned to `…/app:v2` in this registry now needs `v2`
+        // typed here to record releases from a `v2` push — and the badge
+        // on the service page says which tag is watched, so that is a
+        // visible state rather than a silent one. Reported by Jorge.
+        _ => Some("latest".into()),
     }
 }
 
@@ -145,11 +165,23 @@ mod tests {
         assert_eq!(bare.name(), "nginx");
     }
 
+    /// Nothing chosen means `latest`, whatever tag the image carries.
+    ///
+    /// This asserted the opposite — that a service watches the tag it
+    /// was created with — and the settings form has always shown
+    /// `latest` as this field's placeholder. So the interface promised
+    /// one thing and the code did another, and a service running
+    /// `docker.io/library/nginx:alpine` announced `watching :alpine`: a
+    /// tag borrowed from a repository this node does not host.
+    ///
+    /// The placeholder decided it. It is the part somebody reads, and
+    /// every reference the console's own push example produces carries
+    /// `latest`. Reported by Jorge.
     #[test]
-    fn a_service_watches_the_tag_it_was_created_with() {
+    fn nothing_chosen_means_latest() {
         assert_eq!(
             tracked_tag("docker.io/library/nginx:alpine", None).as_deref(),
-            Some("alpine")
+            Some("latest")
         );
         assert_eq!(
             tracked_tag("node.example/team/api", None).as_deref(),
@@ -163,10 +195,14 @@ mod tests {
             tracked_tag("node.example/team/api:v1", Some("production")).as_deref(),
             Some("production")
         );
-        // Empty is not a setting.
+        // Empty is not a setting, so it falls to the default rather than
+        // to the image's `v1`. A service pinned to a tag in this
+        // registry has to say so here, and the badge on its page shows
+        // which tag is watched so that this is visible rather than
+        // silent.
         assert_eq!(
             tracked_tag("node.example/team/api:v1", Some("  ")).as_deref(),
-            Some("v1")
+            Some("latest")
         );
     }
 

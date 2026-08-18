@@ -569,16 +569,13 @@ impl ServicePages {
                         // command proposing `:latest`. Three answers to
                         // one question. Reported by Jorge.
                         //
-                        // The tag itself is deliberately *not* defaulted
-                        // to `latest`: it is the tag a push must carry to
-                        // become a release, and for a service pinned to
-                        // this node's `…/app:v2` that is `v2` — watching
-                        // `latest` there would ignore the push that
-                        // matters and record ones the service would never
-                        // pull. Where a push *can* match, the service
-                        // names this registry, and a reference made from
-                        // the console's own example carries `latest`
-                        // anyway.
+                        // The tag itself defaults to `latest` — see
+                        // `images::tracked_tag`, where the settings
+                        // form's own placeholder decided it. A service
+                        // pinned to `…/app:v2` in this registry has to
+                        // say so in that field, and this badge is what
+                        // makes the difference visible instead of
+                        // silent.
                         @if let Some(Push::To(_)) = &push {
                             <span class="who">(
                                 format!("watching :{}", crate::platform::images::tracked_tag(
