@@ -179,6 +179,10 @@ fn upgrade_target(request: &Request<Body>) -> Option<HeaderValue> {
 fn rewrite(upstream: SocketAddr, request: Request<Body>) -> Option<Request<Body>> {
     let (mut parts, body) = request.into_parts();
 
+    // **Read before the URI is rewritten**, because in HTTP/2 this is
+    // where the client's authority lives — see the `Host` handling below.
+    let authority = parts.uri.authority().map(|authority| authority.to_string());
+
     let path_and_query = parts
         .uri
         .path_and_query()
@@ -205,11 +209,29 @@ fn rewrite(upstream: SocketAddr, request: Request<Body>) -> Option<Request<Body>
     parts.version = hyper::Version::HTTP_11;
 
     strip_hop_by_hop(&mut parts.headers);
-    // The original Host is preserved: an application routing on it —
-    // and many do — must see what the client asked for, not the
-    // loopback address we happen to be dialling.
+    // The client's own authority reaches the container, whichever
+    // protocol it arrived by.
+    //
+    // **HTTP/2 has no `Host` header.** The authority travels in the
+    // `:authority` pseudo-header, which hyper puts in the request's URI
+    // and not in its headers — so `contains_key(HOST)` is false for every
+    // browser request, and this used to fill it in with the address we
+    // happened to be dialling. The container then saw
+    // `Host: 10.42.1.27`, and nginx answered `/json/` with
+    // `301 Location: http://10.42.1.27/json/`: a redirect to an address
+    // nobody outside the node can reach, for a page that was working.
+    //
+    // It is not only redirects. Anything an application builds from the
+    // host it believes it is serving was wrong — canonical links, cookie
+    // domains, absolute asset URLs, OAuth callbacks. The comment here
+    // said the original Host was preserved, and it was, for the one kind
+    // of client that sends one.
+    //
+    // Reported by Jorge, whose pushed image served fine from inside the
+    // node and would not load from a browser.
     if !parts.headers.contains_key(HOST) {
-        if let Ok(value) = HeaderValue::from_str(&upstream.to_string()) {
+        let value = authority.unwrap_or_else(|| upstream.to_string());
+        if let Ok(value) = HeaderValue::from_str(&value) {
             parts.headers.insert(HOST, value);
         }
     }
@@ -358,10 +380,40 @@ mod tests {
         );
     }
 
+    /// A request with no `Host` header still tells the container which
+    /// name the client asked for.
+    ///
+    /// **This is every browser request.** HTTP/2 has no `Host` header —
+    /// the authority travels in the `:authority` pseudo-header, which
+    /// hyper puts in the URI — so this branch is the normal path and not
+    /// the odd one. It used to fill in the address being dialled, and the
+    /// container answered redirects with it: `301 Location:
+    /// http://10.42.1.27/json/`, to an address nobody outside the node can
+    /// reach, for a page that was serving perfectly. Reported by Jorge.
+    ///
+    /// This test asserted the old behaviour, which is why the fault
+    /// shipped: it was named for what the code did rather than for what an
+    /// application needs.
     #[test]
-    fn a_request_without_a_host_gets_the_upstream_as_one() {
+    fn a_request_with_no_host_header_carries_the_clients_own_authority() {
         let upstream = SocketAddr::from(([127, 0, 0, 1], 8080));
         let rewritten = rewrite(upstream, request(&[])).expect("rewrite");
+        assert_eq!(rewritten.headers().get(HOST).unwrap(), "example.com");
+    }
+
+    /// And with neither, the address being dialled is all there is.
+    ///
+    /// An origin-form request over HTTP/1.1 with no `Host` — which is
+    /// malformed, and reaches here anyway — has no name to carry, so the
+    /// upstream's own address is the only answer that is not empty.
+    #[test]
+    fn with_no_name_at_all_the_upstream_is_the_host() {
+        let upstream = SocketAddr::from(([127, 0, 0, 1], 8080));
+        let bare = Request::builder()
+            .uri("/path?q=1")
+            .body(Body::empty())
+            .expect("request");
+        let rewritten = rewrite(upstream, bare).expect("rewrite");
         assert_eq!(rewritten.headers().get(HOST).unwrap(), "127.0.0.1:8080");
     }
 }
