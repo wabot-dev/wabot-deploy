@@ -180,7 +180,17 @@ pub async fn put(
         // a deployment can unpack later. Worth saying, because a
         // deployment that then fails would otherwise be the first
         // anybody hears of it.
-        tracing::warn!(image = %pinned, %error, "received but not unpacked");
+        // The deploy unpacks too — `images::ensure` asks whether an image
+        // is *usable* rather than merely present, which is what a pushed
+        // one is not. Before that, this warning was the only trace and
+        // what somebody saw was a deploy refusing with `no unpacked
+        // layer`: true, and nothing they could act on. Reported by Jorge,
+        // whose first push to his own service could not be deployed.
+        tracing::warn!(
+            image = %pinned, %error,
+            "received but not unpacked — the deploy will try again, and if it fails the reason \
+             lands on the service"
+        );
     }
 
     let released = release(state, pusher, name, reference, &digest).await?;

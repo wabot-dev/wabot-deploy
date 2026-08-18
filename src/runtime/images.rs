@@ -422,6 +422,25 @@ pub async fn ensure(
     credential: Option<&Credential>,
 ) -> ClientResult<bool> {
     if exists(client, reference).await? {
+        // **Present is not the same as usable.** `pull` unpacks as part
+        // of the transfer, so for a pulled image these two questions have
+        // the same answer — and for a *pushed* one they do not. A push
+        // puts blobs in the content store through the registry API, and
+        // the only thing that unpacks them is a line in the push handler
+        // whose failure is a warning nobody reads. The deploy then failed
+        // with `no unpacked layer …`, which is true and unactionable.
+        //
+        // So the image is unpacked here too, and `unpack` is convergent:
+        // it skips every layer whose snapshot already exists, so the
+        // ordinary case costs one lookup per layer and writes nothing.
+        //
+        // Reported by Jorge, whose first successful push to his own
+        // service could not be deployed. The push-time unpack logged
+        // success for twelve layers and none of their chain ids existed
+        // afterwards — which is a thing to understand separately, and not
+        // a reason for a deploy to depend on somebody else having done
+        // this.
+        unpack(client, reference).await?;
         return Ok(false);
     }
     pull(client, reference, credential).await?;
