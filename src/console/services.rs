@@ -1143,7 +1143,11 @@ impl ServicePages {
                     <div class="stack-sm">
                         <h1>(t("Settings"))</h1>
                     </div>
-                    <a class="btn btn-ghost" href=(&here)>(t("Back to service"))</a>
+                    // No "Back to service" here either: the breadcrumb
+                    // above already goes there. Third time this pattern
+                    // was reported, so there is now a test that fails on
+                    // the fourth — see
+                    // `no_page_offers_a_way_back_the_breadcrumb_already_is`.
                 </div>
 
                 @if let Some(message) = &query.error {
@@ -1254,8 +1258,54 @@ impl ServicePages {
                                 <tbody>
                                     @for revision in history.iter().skip(1) {
                                         <tr>
+                                            // **What restoring this would
+                                            // leave.** The row said only
+                                            // how many values there were
+                                            // and the raw word `edit`, so
+                                            // choosing between two
+                                            // revisions meant guessing —
+                                            // and the button replaces the
+                                            // running environment.
+                                            // Reported by Jorge.
+                                            //
+                                            // A `<details>` rather than a
+                                            // second page: it is native,
+                                            // so it opens with scripting
+                                            // off, and it keeps a long
+                                            // history readable. The values
+                                            // are shown in full because
+                                            // the textarea above already
+                                            // shows the current ones that
+                                            // way — hiding only the old
+                                            // ones would protect nothing.
                                             <td class="tile-detail">
-                                                (revision.env.len())(t(" values · "))(&revision.reason)
+                                                <details>
+                                                    <summary>
+                                                        <span class="mono">(super::layout::exactly(revision.created_at))</span>
+                                                        (" · ")
+                                                        @if revision.env.len() == 1 {
+                                                            (t("1 value"))
+                                                        } @else {
+                                                            (revision.env.len())(t(" values"))
+                                                        }
+                                                        (" · ")
+                                                        @if revision.reason == "revert" {
+                                                            (t("restored"))
+                                                        } @else {
+                                                            (t("edited"))
+                                                        }
+                                                    </summary>
+                                                    @if revision.env.is_empty() {
+                                                        <p>(t("No values — restoring this clears the environment."))</p>
+                                                    } @else {
+                                                        <pre class="mono">(
+                                                            revision.env.iter()
+                                                                .map(|(key, value)| format!("{key}={value}"))
+                                                                .collect::<Vec<_>>()
+                                                                .join("\n")
+                                                        )</pre>
+                                                    }
+                                                </details>
                                             </td>
                                             <td>
                                                 <form method="post"

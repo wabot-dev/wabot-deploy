@@ -744,6 +744,58 @@ pub fn style_tag() -> impl Renderable {
 
 #[cfg(test)]
 mod tests {
+    /// No page offers a button back to where it came from.
+    ///
+    /// **The breadcrumb above the title is the way back**, and one thing
+    /// must not be doable two ways — a second control for it reads as a
+    /// second destination. This was reported three times: a "Back to
+    /// project" button on a service, a "Back to service" on its settings,
+    /// and before those the duplicated create buttons on an empty project.
+    /// Three reports of one principle is where a rule earns a test.
+    ///
+    /// It reads the console's own sources, so a fourth one fails here
+    /// rather than in somebody's screenshot. `Cancel` on a form is a
+    /// different thing and stays: it abandons an edit, which the
+    /// breadcrumb does not say anything about.
+    #[test]
+    fn no_page_offers_a_way_back_the_breadcrumb_already_is() {
+        let mut found = Vec::new();
+        for entry in std::fs::read_dir(concat!(env!("CARGO_MANIFEST_DIR"), "/src/console"))
+            .expect("the console's own directory")
+            .flatten()
+        {
+            let name = entry.file_name().to_string_lossy().to_string();
+            if !name.ends_with(".rs") {
+                continue;
+            }
+            let source = std::fs::read_to_string(entry.path()).expect("read");
+            for (number, line) in source.lines().enumerate() {
+                let trimmed = line.trim_start();
+                // Only what a page renders. A comment saying where a
+                // handler redirects to is prose about the same subject
+                // and not a control.
+                if trimmed.starts_with("//") {
+                    continue;
+                }
+                // Rendered *content*, which in `rsx!` is `>(…)`. The
+                // first version of this matched the text anywhere and
+                // caught the breadcrumb arrow's own `title` and
+                // `aria-label` — which say "Back to <where>" and should,
+                // because that is the accessible name of the one control
+                // this rule exists to protect. The label somebody reads is
+                // what must not be duplicated; the name a screen reader
+                // announces for the arrow is the arrow.
+                if line.contains(">(t(\"Back to") {
+                    found.push(format!("{name}:{}", number + 1));
+                }
+            }
+        }
+        assert!(
+            found.is_empty(),
+            "these render a way back the breadcrumb already is: {found:?}"
+        );
+    }
+
     /// The design system's `button[type="submit"]` outranks its own
     /// variant classes, so a submit that asks to be secondary or ghost
     /// comes out primary black. Every form button on this console is a
