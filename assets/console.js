@@ -230,8 +230,23 @@
         // own card carries a copy of the copy-here's failure, and reading
         // it from this payload rather than adding a second field is what
         // keeps the two from disagreeing.
+        // The service card's copy, which wants the *failure* only.
+        //
+        // `detail` is overloaded — its own doc says "an address while it
+        // is up, a reason while it is not" — so writing it here put a
+        // running container's address into an element styled as a
+        // failure: a healthy service with a red band under it reading
+        // `10.42.1.13`. Introduced by the fix that made this element
+        // always present, and reported the same day.
+        //
+        // The table below can show either, because there the class
+        // follows the badge. This one is red by definition, so it takes
+        // the reason or nothing.
         var elsewhere = host.querySelector('[data-replica-detail="' + id + '"]');
-        if (elsewhere) set(elsewhere, state.detail);
+        if (elsewhere) {
+          var failing = state.badge && state.badge.indexOf('danger') !== -1;
+          set(elsewhere, failing ? state.detail : '');
+        }
 
         var detail = cell.querySelector('[data-detail]');
         if (detail) {
