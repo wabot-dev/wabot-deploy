@@ -414,8 +414,15 @@ impl ProjectPages {
                 @if allowed.may_administer() {
                     <section class="card stack">
                         <p class="card-label">(t("Danger zone"))</p>
-                        <p class="tile-detail">(t("Deleting a project deletes every service under it. \
-                             Nothing is stopped first — do that yourself."))</p>
+                        // Says what happens rather than what does not.
+                        // It used to read "Nothing is stopped first — do
+                        // that yourself", which was true of the code and
+                        // told somebody to go and do a thing the page
+                        // gave them no way to do — and left containers
+                        // running and volumes on disk when they did not.
+                        <p class="tile-detail">(t("Deleting a project stops and removes every service \
+                             under it, and takes everything its databases stored on this node. \
+                             There is no undo."))</p>
                         // Typing the name is the confirmation — see the
                         // handler, which is where it is actually checked.
                         <form method="post" action=(format!("{here}/delete")) class="stack">
@@ -1750,6 +1757,34 @@ impl ProjectApi {
             ));
         }
 
+        // **Every service is taken down first, one at a time.**
+        //
+        // This used to be the row deletion alone, and `ON DELETE CASCADE`
+        // took the service rows with it — which is not the same as taking
+        // the *services*. Nothing stopped a container and nothing removed
+        // a volume, so deleting a project left its containers running and
+        // its data on the disk, and the handler for deleting a *service*
+        // has said why that is unrecoverable since it was written: the
+        // container id is derived from the rows, so losing the rows loses
+        // the handle. Nothing could ever clean them up again.
+        //
+        // Jorge found both halves and reported them as two things: a
+        // project deleted without a word about what happened to what was
+        // inside it, and an alert counting three storage directories
+        // nothing claimed. One bug.
+        //
+        // In order per service, and the same order the service page uses:
+        // the container, then the storage, then the rows. The cascade
+        // still removes the service rows — this is what has to happen
+        // before it does.
+        let services = services::all(&self.state.database, Some(&project.id))
+            .await
+            .unwrap_or_default();
+        for service in &services {
+            self.state.deployer.tear_down(&project, service).await;
+            self.state.deployer.discard_storage(&project, service).await;
+        }
+
         projects::delete(&self.state.database, &project.id).await?;
         Ok(see_other("/"))
     }
@@ -2735,6 +2770,57 @@ mod tests {
             .send()
             .await
             .body
+    }
+
+    /// The danger zone says what deleting a project does to what is in it.
+    ///
+    /// It used to read "Nothing is stopped first — do that yourself",
+    /// which was true of the code and told somebody to go and do something
+    /// the page gave them no way to do. It was also the visible half of a
+    /// real fault: the cascade took the service *rows* and nothing stopped
+    /// a container or removed a volume, so a deleted project left its
+    /// containers running and its data on disk — unreachable for ever,
+    /// because a container id is derived from the rows that had just gone.
+    ///
+    /// Jorge reported the two halves separately: a project deleted with no
+    /// word about what happened to what was inside it, and an alert
+    /// counting three storage directories nothing claimed. One bug.
+    ///
+    /// The teardown itself needs containerd, so it is verified on a node.
+    /// What a test can hold is the promise on the page — and a promise
+    /// that drifts from the code is how the old wording survived.
+    #[tokio::test]
+    async fn the_danger_zone_says_what_goes_with_a_project() {
+        let console = Console::new().await;
+        let cookie = console.signed_in().await;
+        console
+            .harness
+            .post("/projects")
+            .header("cookie", &cookie)
+            .form(&[("name", "doomed")])
+            .send()
+            .await;
+
+        let page = console
+            .harness
+            .get("/projects/doomed/settings")
+            .header("cookie", &cookie)
+            .send()
+            .await
+            .body;
+
+        assert!(
+            page.contains("stops and removes every service"),
+            "{page:.0}"
+        );
+        assert!(
+            page.contains("its databases stored"),
+            "it does not say the databases' data goes"
+        );
+        assert!(
+            !page.contains("do that yourself"),
+            "it still tells somebody to stop things the page cannot stop"
+        );
     }
 
     /// Deleting something already gone is the outcome that was asked

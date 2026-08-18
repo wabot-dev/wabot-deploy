@@ -1580,7 +1580,20 @@ fn memory_card<'a>(
 /// walking containerd's tree every two seconds would put this node at
 /// the top of its own CPU column.
 fn disk_card(disk: &crate::node::disk::Breakdown) -> impl Renderable + '_ {
-    let width = |bytes: u64| format!("{:.4}%", disk.percent_of_total(bytes));
+    // Through `bar_width`, which is the only thing that writes one of
+    // these. This card had its own closure emitting a bare `7.0000%` —
+    // and a `style` attribute wants a *declaration*, so the browser threw
+    // the whole thing away and every segment had no width. The bar was
+    // flat and empty while the numbers under it were right, which is what
+    // makes this kind of fault survive: nothing looks broken, it just
+    // looks like nothing is using the disk. Reported by Jorge.
+    //
+    // The exact mirror of the memory meter's bug, one page over: there a
+    // *declaration* was assigned where the CSSOM wanted a value
+    // (`style.width = "width:12%"`), here a value was written where the
+    // attribute wanted a declaration. One helper now, so the two cannot
+    // disagree again.
+    let width = |bytes: u64| bar_width(disk.percent_of_total(bytes));
 
     rsx! {
         <section class="card stack">
@@ -1663,7 +1676,19 @@ fn percent(snapshot: &Snapshot, bytes: u64) -> String {
 
 /// The same share as a declaration, for the attribute in the first paint.
 fn width(snapshot: &Snapshot, bytes: u64) -> String {
-    format!("width:{}", percent(snapshot, bytes))
+    bar_width(snapshot.percent_of_total(bytes))
+}
+
+/// A meter segment's width, as a `style` attribute's whole contents.
+///
+/// **A declaration, not a value.** `style="7%"` is not CSS and a browser
+/// discards the attribute entirely — silently, leaving a bar that renders
+/// flat while the figures beside it are correct. Every meter in this
+/// console goes through here so that there is one place to be right, and
+/// `every_meter_width_is_a_declaration` fails on a second one that does
+/// not.
+fn bar_width(percent: f64) -> String {
+    format!("width:{percent:.4}%")
 }
 
 /// The two cards that update themselves, in one island host.
@@ -2655,6 +2680,49 @@ pub(crate) mod tests {
             .render()
             .into_inner()
             .contains("style=\"width:"));
+    }
+
+    /// Every meter's width goes through `bar_width`.
+    ///
+    /// The test above asserts the shape for the *memory* card, and the
+    /// disk card shipped with its own closure formatting a bare
+    /// `7.0000%` — beside a correct helper of the same name in the same
+    /// file. A `style` attribute wants a declaration, so the browser
+    /// discarded it and the bar rendered flat while the figures under it
+    /// were right: it read as a node using no disk rather than as a broken
+    /// bar. Reported by Jorge.
+    ///
+    /// So this reads the source instead of one card's output. One place to
+    /// be right is worth nothing unless everything goes through it, and a
+    /// third card is exactly how this happened a second time.
+    #[test]
+    fn every_meter_width_is_a_declaration() {
+        let source = include_str!("nodes.rs");
+        // Assembled rather than written out, or this scan finds its own
+        // predicate and reports the line it is reading from.
+        let needle = concat!("style", "=(");
+        let mut wrong = Vec::new();
+        for (number, line) in source.lines().enumerate() {
+            if line.trim_start().starts_with("//") || !line.contains(needle) {
+                continue;
+            }
+            if !line.contains("width(") {
+                wrong.push(number + 1);
+            }
+        }
+        assert!(
+            wrong.is_empty(),
+            "these write a style attribute without going through bar_width: {wrong:?}"
+        );
+    }
+
+    /// And what it produces is a declaration, in both directions of the
+    /// confusion that caused this twice.
+    #[test]
+    fn a_meter_width_is_a_declaration_and_not_a_bare_value() {
+        assert_eq!(bar_width(7.5), "width:7.5000%");
+        // Zero is still sized, rather than left for whatever was there.
+        assert_eq!(bar_width(0.0), "width:0.0000%");
     }
 
     /// The figures are formatted once, on the server, so the first

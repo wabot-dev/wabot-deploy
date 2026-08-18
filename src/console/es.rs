@@ -169,7 +169,10 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
     ("Delete project", "Borrar proyecto"),
     ("Delete service", "Borrar servicio"),
     ("Deleting a database stops it and removes everything it stored on this node. There is no undo and there is no backup — a read-only copy is not one, because a deletion reaches it too.", "Eliminar una base de datos la para y borra todo lo que guardó en este nodo. No hay vuelta atrás y no hay copia de seguridad — una réplica de solo lectura no lo es, porque el borrado también llega hasta ella."),
-    ("Deleting a project deletes every service under it. Nothing is stopped first — do that yourself.", "Borrar un proyecto borra todos sus servicios. No se para nada antes — eso hazlo tú."),
+    (
+        "Deleting a project stops and removes every service under it, and takes everything its databases stored on this node. There is no undo.",
+        "Borrar un proyecto para y elimina todos los servicios que tiene dentro, y se lleva todo lo que sus bases de datos guardaron en este nodo. No hay vuelta atrás.",
+    ),
     ("Deleting a service stops its container and removes it. The images it was built from stay in the registry.", "Borrar un servicio para su contenedor y lo quita. Las imágenes con las que se construyó siguen en el registry."),
     ("Deploy a push automatically", "Desplegar automáticamente al subir"),
     ("Deploy this", "Desplegar esta"),

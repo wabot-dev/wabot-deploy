@@ -95,7 +95,7 @@ pub async fn gather(state: &super::ConsoleState) -> PlatformResult<Vec<Concern>>
     copies_that_stopped_answering(state, &mut concerns).await;
     certificates_that_would_not_issue(state, &mut concerns).await?;
     errands_that_were_refused(state, &mut concerns).await;
-    what_nothing_claims(state, &mut concerns);
+    what_nothing_claims(state, &mut concerns).await;
 
     concerns.sort_by_key(|concern| std::cmp::Reverse(concern.weight));
     Ok(concerns)
@@ -248,10 +248,26 @@ async fn errands_that_were_refused(state: &super::ConsoleState, concerns: &mut V
 /// cannot explain is one somebody can still recover from. What it costs
 /// is disk, slowly, which is why it belongs on a page rather than only
 /// in a command somebody runs when they already suspect something.
-fn what_nothing_claims(state: &super::ConsoleState, concerns: &mut Vec<Concern>) {
+async fn what_nothing_claims(state: &super::ConsoleState, concerns: &mut Vec<Concern>) {
     // Deliberately not the disk walk: this is a `read_dir` per kind
     // against a list of live ids, and it runs when a page is drawn.
-    let live = Vec::new();
+    //
+    // **The list has to be the real one.** It was `Vec::new()`, so every
+    // directory on the disk compared as unclaimed and the card fired on
+    // any node running anything — Jorge's said three, followed the link,
+    // and found nothing wrong, because nothing was. A notice that cries
+    // wolf is worse than no notice: this card's whole value is being
+    // absent when there is nothing, and it cannot be absent if it counts
+    // healthy services.
+    //
+    // `Deployer::claimed` is the one derivation of what this node claims,
+    // shared with `doctor` and `backup` — and `None` from it means the
+    // rows could not be read, which is not grounds for calling anything
+    // rubbish. Silence then, rather than a count of everything.
+    let Some(claims) = crate::deploy::Deployer::claimed(&state.database).await else {
+        return;
+    };
+    let live = crate::deploy::Claim::containers(&claims);
     let leftovers = crate::deploy::Deployer::leftovers(&state.config.node.data_dir, &live);
     if leftovers.is_empty() {
         return;
@@ -261,7 +277,15 @@ fn what_nothing_claims(state: &super::ConsoleState, concerns: &mut Vec<Concern>)
         what: "Storage nothing claims".into(),
         which: format!("{}", leftovers.len()),
         why: String::new(),
-        go: "/nodes".into(),
+        // This node's own page, which is where the disk card is. `/nodes`
+        // is the list of machines and says nothing about storage, so the
+        // link answered "see" with a page that had nothing to see —
+        // reported alongside the false count, and a separate fault from
+        // it.
+        go: match crate::network::me(&state.database).await {
+            Ok(Some(me)) => format!("/nodes/{}", me.id),
+            _ => "/nodes".into(),
+        },
     });
 }
 
