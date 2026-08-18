@@ -998,6 +998,12 @@ impl ServicePages {
             .cloned()
             .collect();
         let serving = crate::platform::edges::of_service(&self.state.database, &service.id).await?;
+        // Read once for the page rather than per hostname: the card asks
+        // the same question for every name, and this is how it answers it
+        // with the same function the stream uses.
+        let orders = crate::network::errand::all(&self.state.database)
+            .await
+            .unwrap_or_default();
 
         // Where the copies are and where they could be. On this page
         // because the form that changes them is on this page now — the
@@ -1136,6 +1142,8 @@ impl ServicePages {
         layout::head(&format!("{} settings", service.name));
         // The account's language, around the render and no wider:
         // the strings are read here, and nothing awaits inside.
+        // Taken before the closure below, which moves `project`.
+        let live_project = project.slug.clone();
         let body = super::language::scoped(account.language, || {
             rsx! {
             (layout::style_tag())
@@ -1509,7 +1517,7 @@ impl ServicePages {
                                     @if let Some(hostname) = &port.hostname {
                                         (served_by_form(
                                             &project, &service, hostname,
-                                            &public_nodes, &serving,
+                                            &public_nodes, &serving, &orders,
                                         ))
                                     }
                                 }
@@ -1597,6 +1605,24 @@ impl ServicePages {
             .render()
             .into_inner()
         });
+
+        // **The same stream the detail page opens.** This page had none,
+        // so two badges on it were correct only at the instant they
+        // rendered and stayed wrong until somebody reloaded: `Asked`
+        // beside a name already being served, and `Certificate on the
+        // way` after the certificate had arrived. Both were reported, and
+        // they were one fault — the hooks (`data-edge`, `data-name`) were
+        // already in this markup and nothing was feeding them.
+        //
+        // Rendered first, then wrapped, for the reason the detail page
+        // gives: `rsx!` expands to a closure that captures by move.
+        let body = wabot::ui::hypertext::island(
+            "project-live",
+            &serde_json::json!({ "project": live_project }),
+            hypertext::Raw::dangerously_create(&body),
+        )
+        .render()
+        .into_inner();
 
         Ok(frame.render(body).into_view().into())
     }
@@ -2397,12 +2423,39 @@ fn node_option<'a>(
 /// one flex line — a label, the boxes and a button, all in a row — which
 /// is what fitted inside the cell it used to live in and reads as one
 /// run-on sentence anywhere else.
+/// The most recent instruction to one node about one name.
+///
+/// The same filter `edge_cells` uses, so the two cannot disagree about
+/// which errand is the current one.
+fn latest_for<'a>(
+    orders: &'a [crate::network::errand::Record],
+    hostname: &str,
+    node_id: &str,
+) -> Option<&'a crate::network::errand::Record> {
+    orders
+        .iter()
+        .filter(|order| order.node_id == node_id)
+        .filter(|order| order.kind == crate::network::errand::Kind::Edge)
+        .filter(|order| {
+            order
+                .payload
+                .get("hostname")
+                .and_then(|value| value.as_str())
+                == Some(hostname)
+        })
+        .max_by_key(|order| order.created_at)
+}
+
 fn served_by_form<'a>(
     project: &'a crate::platform::projects::Project,
     service: &'a services::Service,
     hostname: &'a str,
     public: &'a [crate::network::Node],
     serving: &'a [(String, String)],
+    // Every instruction this node has queued, so the badge below can be
+    // computed here rather than written optimistically and corrected by
+    // a stream that may not reach this page.
+    orders: &'a [crate::network::errand::Record],
 ) -> impl Renderable + 'a {
     let chosen: Vec<&str> = serving
         .iter()
@@ -2438,12 +2491,24 @@ fn served_by_form<'a>(
                     // claimed, a certificate was ordered, and none of
                     // it came back here — so the only honest reading of
                     // a ticked box was "somebody asked for this once".
+                    // **Computed, not assumed.** This wrote `Asked`
+                    // whenever a box was ticked and left the stream to
+                    // replace it — so a page the stream does not reach
+                    // said `Asked` for ever, and Jorge's node said it
+                    // about a name it was already serving with a
+                    // certificate. Its errand table was empty: with
+                    // nothing pending the answer was always "serving",
+                    // and nothing worked that out.
+                    //
+                    // The same function the stream uses, so the first
+                    // paint and every update after it read the same.
+                    @let cell = super::projects::edge_cell(latest_for(orders, hostname, &node.id));
                     <span class=(match chosen.contains(&node.id.as_str()) {
-                              true => "badge badge-info",
+                              true => cell.badge,
                               false => "badge badge-info is-hidden",
                           })
                           data-edge=(format!("{}|{}", hostname, node.id))>
-                        <span class="dot dot-info dot-pulse"></span>(t("Asked"))
+                        <span class=(cell.dot)></span>(super::language::word(&cell.word))
                     </span>
                 </label>
             }
@@ -4208,6 +4273,45 @@ mod tests {
     ///   replica addresses; nothing about it reads the port table. The
     ///   first version gave a worker nothing at all, which is the case
     ///   where somebody most needs to be told the name.
+    /// The settings page opens the stream its badges depend on.
+    ///
+    /// Two of them are wrong the moment anything changes and stay wrong
+    /// until a reload: `Asked` beside a name already being served, and
+    /// `Certificate on the way` after the certificate arrived. The hooks
+    /// were in the markup and nothing fed them, because this page hosted
+    /// no island. Reported by Jorge, twice, as two faults.
+    #[tokio::test]
+    async fn the_settings_page_opens_the_live_stream() {
+        let console = Console::new().await;
+        let cookie = console.signed_in().await;
+        console
+            .harness
+            .post("/projects")
+            .header("cookie", &cookie)
+            .form(&[("name", "one")])
+            .send()
+            .await;
+        console
+            .harness
+            .post("/projects/one/services")
+            .header("cookie", &cookie)
+            .form(&[("name", "web"), ("image", "docker.io/library/nginx:alpine")])
+            .send()
+            .await;
+
+        let page = console
+            .harness
+            .get("/projects/one/services/web/settings")
+            .header("cookie", &cookie)
+            .send()
+            .await
+            .body;
+        assert!(
+            page.contains("project-live"),
+            "the settings page hosts no live island"
+        );
+    }
+
     #[tokio::test]
     async fn a_service_shows_every_way_in_and_always_its_own_name() {
         let database = crate::db::open_in_memory().await.expect("open");

@@ -833,13 +833,13 @@ pub(crate) struct NameCell {
 /// One node asked to serve one name, as far as the asking has got.
 #[derive(serde::Serialize)]
 pub(crate) struct EdgeCell {
-    badge: &'static str,
-    dot: &'static str,
+    pub(crate) badge: &'static str,
+    pub(crate) dot: &'static str,
     /// Owned, because it is translated on the way out and the Spanish for
     /// a constant is a different constant. One allocation per edge per
     /// tick, against a second spelling of `language::word` for static
     /// text — which is the kind of pair that drifts.
-    word: String,
+    pub(crate) word: String,
 }
 
 /// How far each edge instruction has got.
@@ -888,36 +888,54 @@ async fn edge_cells(
                 })
                 .max_by_key(|order| order.created_at);
 
-            let cell = match latest {
-                Some(order) if order.error.is_some() => EdgeCell {
-                    badge: "badge badge-danger",
-                    dot: "dot dot-danger",
-                    word: "Refused".into(),
-                },
-                Some(order) if order.done() => EdgeCell {
-                    badge: "badge badge-success",
-                    dot: "dot dot-success",
-                    word: "Serving".into(),
-                },
-                Some(_) => EdgeCell {
-                    badge: "badge badge-info",
-                    dot: "dot dot-info dot-pulse",
-                    word: "Asked".into(),
-                },
-                // No errand at all: this node itself, which needs none.
-                None => EdgeCell {
-                    badge: "badge badge-success",
-                    dot: "dot dot-success",
-                    word: "Serving".into(),
-                },
-            };
-            cells.insert(format!("{hostname}|{node_id}"), cell);
+            cells.insert(format!("{hostname}|{node_id}"), edge_cell(latest));
         }
     }
     cells
 }
 
 /// What every replica of every service in this project is doing.
+/// How far the instruction to one node has got.
+///
+/// **Shared with the page's own render**, which is the point. The edges
+/// card wrote `Asked` into its markup whenever a box was ticked and left
+/// the stream to correct it — so a page the stream does not reach said
+/// `Asked` for ever. Jorge's node said it about a name it was already
+/// serving with a certificate, and its errand table was empty: with
+/// nothing pending, the answer was always "serving" and nothing computed
+/// it.
+///
+/// The server knows this when it renders.
+/// `the_first_paint_and_the_stream_agree` is a test on the node page for
+/// exactly this shape; this card did not have it.
+pub(crate) fn edge_cell(latest: Option<&crate::network::errand::Record>) -> EdgeCell {
+    match latest {
+        Some(order) if order.error.is_some() => EdgeCell {
+            badge: "badge badge-danger",
+            dot: "dot dot-danger",
+            word: "Refused".into(),
+        },
+        Some(order) if order.done() => EdgeCell {
+            badge: "badge badge-success",
+            dot: "dot dot-success",
+            word: "Serving".into(),
+        },
+        Some(_) => EdgeCell {
+            badge: "badge badge-info",
+            dot: "dot dot-info dot-pulse",
+            word: "Asked".into(),
+        },
+        // Nothing pending and nothing refused: this node answers for the
+        // name. A single-node install has never had an errand in its
+        // life, and this is the branch it lives in.
+        None => EdgeCell {
+            badge: "badge badge-success",
+            dot: "dot dot-success",
+            word: "Serving".into(),
+        },
+    }
+}
+
 async fn replica_cells(
     state: &super::ConsoleState,
     project: &crate::platform::projects::Project,
