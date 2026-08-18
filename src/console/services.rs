@@ -479,8 +479,21 @@ impl ServicePages {
                             matches!(observed, crate::deploy::Observed::Running { .. }),
                         ))
                     }
-                    @if let Some(failure) = here.as_ref().and_then(|r| r.last_error.as_ref()) {
-                        <p class="failure">(failure)</p>
+                    // Always rendered, empty when there is nothing, and
+                    // hooked to the copy here by its replica id — the
+                    // stream already carries every replica's reason, so
+                    // this reads the same value the table below does
+                    // rather than a second copy of it in the payload.
+                    //
+                    // It was conditional, so a deployment that failed
+                    // after the page loaded left this card silent until a
+                    // refresh while the badge said `Failed`. Reported by
+                    // Jorge. `:empty` hides it.
+                    @if let Some(replica) = here.as_ref() {
+                        <p class="failure detail-line"
+                           data-replica-detail=(&replica.id)>(
+                            replica.last_error.clone().unwrap_or_default()
+                        )</p>
                     }
                 </section>
 
@@ -2416,12 +2429,23 @@ fn placement_state<'a>(
         // The line under it: an address while it is up, a reason while it
         // is not. `failure` is the class the stream writes a reason into,
         // and it is what the page has always used for one.
-        @if !cell.detail.is_empty() {
-            @if cell.badge.contains("danger") {
-                <p class="failure">(&cell.detail)</p>
-            } @else {
-                <span class="tile-detail">(&cell.detail)</span>
-            }
+        // **Always rendered, even empty.** The stream can only write into
+        // an element the server already put there — `console.js` looks the
+        // line up and does nothing when it is missing — so a row that had
+        // nothing to say when the page loaded could never gain a reason.
+        // A deployment that failed a second later flipped the badge to
+        // `Failed` live and dropped the *why* on the floor, and it took a
+        // manual refresh to see it. Reported by Jorge, mistyping an image
+        // name.
+        //
+        // `:empty` hides it, so an empty line costs no space. The class
+        // carries the severity and the island rewrites it from the badge,
+        // because a line that starts grey and becomes a failure has to
+        // turn red with it.
+        @if cell.badge.contains("danger") {
+            <p class="failure detail-line" data-detail>(&cell.detail)</p>
+        } @else {
+            <p class="tile-detail detail-line" data-detail>(&cell.detail)</p>
         }
     }
 }

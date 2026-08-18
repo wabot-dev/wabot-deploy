@@ -301,6 +301,31 @@ wabot-outlet {
    than no band. */
 .failure:empty { display: none; }
 
+/* The same rule for the line under a replica's badge, which is grey while
+   the copy is fine and red when it is not — so it cannot be `.failure`
+   from the start. It is rendered empty and always present for the reason
+   above, and `console.js` swaps its class along with its text. The
+   principle was already written down here and `placement_state` had not
+   followed it: a copy that failed after the page loaded flipped its badge
+   live and lost the reason until a refresh. */
+.detail-line:empty { display: none; }
+
+/* And the space above it. The shared rule further up gives `.badge +
+   .failure` a *left* margin, which is right for a detail sitting inline
+   beside a badge and does nothing for one below it — this is a block, so
+   a left margin was an indent and the red band sat flush against the
+   badge. Reported by Jorge.
+ *
+ * The line is always below the badge now, whatever the state, which is
+ * also what lets it keep its element across a change of severity: a
+ * detail that moved from beside the badge to under it depending on
+ * whether things were going well would move the row's contents around
+ * under somebody reading them. */
+.badge + .detail-line {
+  margin-left: 0;
+  margin-top: var(--sp-1);
+}
+
 /* What `console.js` hides. `!important` because these sit inside flex
    and grid containers, whose `display` on the child would otherwise
    win over the `hidden` attribute's user-agent rule — the field would

@@ -220,8 +220,25 @@
           // ever restyles one that is there.
           if (dot) dot.className = state.dot;
         }
-        var detail = cell.querySelector('.failure, .tile-detail');
-        if (detail) set(detail, state.detail);
+        // The line under the badge. Looked up by attribute rather than by
+        // class, because the class is what changes: a copy that was fine
+        // and then failed goes from `tile-detail` to `failure`, and
+        // matching on the class would stop finding the element exactly
+        // when it matters. The server renders it empty rather than
+        // omitting it, or there would be nothing here to find.
+        // The same reason, wherever else the page shows it. The service's
+        // own card carries a copy of the copy-here's failure, and reading
+        // it from this payload rather than adding a second field is what
+        // keeps the two from disagreeing.
+        var elsewhere = host.querySelector('[data-replica-detail="' + id + '"]');
+        if (elsewhere) set(elsewhere, state.detail);
+
+        var detail = cell.querySelector('[data-detail]');
+        if (detail) {
+          set(detail, state.detail);
+          var danger = state.badge && state.badge.indexOf('danger') !== -1;
+          detail.className = (danger ? 'failure' : 'tile-detail') + ' detail-line';
+        }
 
         // Its share of the machine, in its own cell rather than inside the
         // state one: the state is a badge and this is a number, and a
