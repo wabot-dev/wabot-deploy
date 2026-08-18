@@ -1150,8 +1150,6 @@ impl ServicePages {
         layout::head(&format!("{} settings", service.name));
         // The account's language, around the render and no wider:
         // the strings are read here, and nothing awaits inside.
-        // Taken before the closure below, which moves `project`.
-        let live_project = project.slug.clone();
         let body = super::language::scoped(account.language, || {
             rsx! {
             (layout::style_tag())
@@ -1633,24 +1631,6 @@ impl ServicePages {
             .render()
             .into_inner()
         });
-
-        // **The same stream the detail page opens.** This page had none,
-        // so two badges on it were correct only at the instant they
-        // rendered and stayed wrong until somebody reloaded: `Asked`
-        // beside a name already being served, and `Certificate on the
-        // way` after the certificate had arrived. Both were reported, and
-        // they were one fault — the hooks (`data-edge`, `data-name`) were
-        // already in this markup and nothing was feeding them.
-        //
-        // Rendered first, then wrapped, for the reason the detail page
-        // gives: `rsx!` expands to a closure that captures by move.
-        let body = wabot::ui::hypertext::island(
-            "project-live",
-            &serde_json::json!({ "project": live_project }),
-            hypertext::Raw::dangerously_create(&body),
-        )
-        .render()
-        .into_inner();
 
         Ok(frame.render(body).into_view().into())
     }
@@ -4356,15 +4336,25 @@ mod tests {
     ///   replica addresses; nothing about it reads the port table. The
     ///   first version gave a worker nothing at all, which is the case
     ///   where somebody most needs to be told the name.
-    /// The settings page opens the stream its badges depend on.
+    /// The settings page's badges are right when it renders, and it hosts
+    /// no stream.
     ///
-    /// Two of them are wrong the moment anything changes and stay wrong
-    /// until a reload: `Asked` beside a name already being served, and
-    /// `Certificate on the way` after the certificate arrived. The hooks
-    /// were in the markup and nothing fed them, because this page hosted
-    /// no island. Reported by Jorge, twice, as two faults.
+    /// It briefly hosted the project's live stream so two badges would
+    /// update in place — `Asked` beside a name already served, and
+    /// `Certificate on the way` after the certificate arrived. Navigating
+    /// to and from this page then stopped working: the URL changed and the
+    /// view did not. Reported by Jorge within minutes of it shipping, and
+    /// **reverted on that evidence rather than on a proven cause** — the
+    /// detail page hosts the same island safely, so what breaks when two
+    /// views both host one is still unexplained.
+    ///
+    /// It costs little, because both badges are computed on the server:
+    /// the edges one through the same `edge_cell` the stream uses, and the
+    /// certificate one from whether the name is secured. This page is
+    /// correct when it loads and a reload is how a change shows — which is
+    /// a smaller wrong than a page you cannot leave.
     #[tokio::test]
-    async fn the_settings_page_opens_the_live_stream() {
+    async fn the_settings_page_hosts_no_stream() {
         let console = Console::new().await;
         let cookie = console.signed_in().await;
         console
@@ -4390,8 +4380,8 @@ mod tests {
             .await
             .body;
         assert!(
-            page.contains("project-live"),
-            "the settings page hosts no live island"
+            !page.contains("project-live"),
+            "the settings page hosts the stream again, which broke navigating away from it"
         );
     }
 
