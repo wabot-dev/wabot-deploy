@@ -13,7 +13,7 @@ missing before this belongs in front of real traffic, and in what order.
 ## Install
 
 ```sh
-v=0.12.0  # https://github.com/wabot-dev/wabot-deploy/releases
+v=0.13.0  # https://github.com/wabot-dev/wabot-deploy/releases
 base=https://github.com/wabot-dev/wabot-deploy/releases/download/v$v
 
 curl -fsSLO $base/wabot-deploy-$v-x86_64-linux
