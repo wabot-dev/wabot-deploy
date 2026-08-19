@@ -70,6 +70,29 @@ impl Reference {
 /// Its own setting when it has one, and otherwise the tag its image
 /// reference already names — so a service created against `:latest`
 /// watches `latest` without anybody configuring it.
+/// The tag that means "whatever I push".
+///
+/// A glob is the shape people expect for this, and exactly one of them is
+/// supported. `v*` is refused rather than read as a literal tag nobody
+/// will ever push — a setting that silently matches nothing is the kind of
+/// quiet failure this console keeps having to remove.
+pub const EVERY_TAG: &str = "*";
+
+/// Does a push carrying `tag` belong to this service's watched set?
+///
+/// The question `tracked_tag` cannot answer once `*` exists, and the one
+/// the registry actually asks. Kept apart from the display so that "which
+/// tag is watched" and "does this push count" cannot drift: the badge on
+/// the page and the decision in the registry come from one place each, and
+/// this is the deciding one.
+pub fn watches(image: &str, track_tag: Option<&str>, tag: &str) -> bool {
+    match tracked_tag(image, track_tag) {
+        Some(watched) if watched == EVERY_TAG => true,
+        Some(watched) => watched == tag,
+        None => false,
+    }
+}
+
 pub fn tracked_tag(image: &str, track_tag: Option<&str>) -> Option<String> {
     let _ = image;
     match track_tag {
@@ -177,6 +200,32 @@ mod tests {
     /// The placeholder decided it. It is the part somebody reads, and
     /// every reference the console's own push example produces carries
     /// `latest`. Reported by Jorge.
+    /// `*` watches whatever arrives.
+    ///
+    /// Asked for by Jorge: a service whose every push should go out,
+    /// without naming a tag each time. It is the one glob supported, and
+    /// the reason is in `EVERY_TAG`.
+    #[test]
+    fn a_star_watches_every_tag() {
+        let image = "node.example/wabot/api:latest";
+        for pushed in ["latest", "v2", "2026-08-19", "anything-at-all"] {
+            assert!(watches(image, Some("*"), pushed), "{pushed}");
+        }
+    }
+
+    /// And a named tag still watches only itself.
+    #[test]
+    fn a_named_tag_watches_only_itself() {
+        let image = "node.example/wabot/api:latest";
+        assert!(watches(image, Some("v2"), "v2"));
+        assert!(!watches(image, Some("v2"), "latest"));
+
+        // Including the default, which is `latest` and not everything —
+        // the star has to be asked for.
+        assert!(watches(image, None, "latest"));
+        assert!(!watches(image, None, "v2"));
+    }
+
     #[test]
     fn nothing_chosen_means_latest() {
         assert_eq!(

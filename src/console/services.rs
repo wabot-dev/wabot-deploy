@@ -598,11 +598,17 @@ impl ServicePages {
                         // makes the difference visible instead of
                         // silent.
                         @if let Some(Push::To(_)) = &push {
-                            <span class="who">(
-                                format!("watching :{}", crate::platform::images::tracked_tag(
-                                    &service.image, service.track_tag.as_deref()
-                                ).unwrap_or_else(|| "latest".into()))
-                            )</span>
+                            @let watched = crate::platform::images::tracked_tag(
+                                &service.image, service.track_tag.as_deref()
+                            ).unwrap_or_else(|| "latest".into());
+                            // `watching :*` is a badge nobody can read.
+                            // The star is the way it is *written*, not the
+                            // way it is said.
+                            @if watched == crate::platform::images::EVERY_TAG {
+                                <span class="who">(t("watching every tag"))</span>
+                            } @else {
+                                <span class="who">(format!("watching :{watched}"))</span>
+                            }
                         }
                     </div>
                     @if releases.is_empty() {
@@ -1224,6 +1230,10 @@ impl ServicePages {
                             <input id="track_tag" name="track_tag" type="text" autocomplete="off" class="mono"
                                    value=(service.track_tag.clone().unwrap_or_default())
                                    placeholder="latest">
+                            <p class="field-hint">(t("One tag exactly, or `*` for every tag — which \
+                                 deploys whatever you push. Empty means `latest`. Patterns like \
+                                 `v*` are refused rather than stored as the name of a tag nobody \
+                                 will push."))</p>
                             <label class="check">
                                 // `checked="false"` checks it. This box read
                                 // as on whatever the row said, and saving the

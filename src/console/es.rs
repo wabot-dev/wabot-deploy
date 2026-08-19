@@ -364,6 +364,10 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
         "Uno por contenedor en marcha. El coste del runtime, no el de la imagen.",
     ),
     (
+        "One tag exactly, or `*` for every tag — which deploys whatever you push. Empty means `latest`. Patterns like `v*` are refused rather than stored as the name of a tag nobody will push.",
+        "Una etiqueta exacta, o `*` para todas — lo que despliega cualquier cosa que subas. Vacío significa `latest`. Patrones como `v*` se rechazan en vez de guardarse como el nombre de una etiqueta que nadie va a subir.",
+    ),
+    (
         "Only to tell one unspent token from another. The node names itself when it joins, and that \
          is the name this console shows.",
         "Sólo para distinguir un token sin gastar de otro. El nodo se nombra a sí mismo al unirse, \
@@ -703,6 +707,10 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
     ),
     ("this node", "este nodo"),
     ("used", "usada"),
+    (
+        "watching every tag",
+        "vigilando todas las etiquetas",
+    ),
 ];
 
 /// The Spanish for one English string.

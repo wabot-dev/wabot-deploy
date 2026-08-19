@@ -276,8 +276,10 @@ async fn release(
         // dangerous — recording is a row, deploying replaces what is
         // running. Reported by Jorge, who wanted to see the image he had
         // sent.
-        let watched = images::tracked_tag(&service.image, service.track_tag.as_deref()).as_deref()
-            == Some(reference);
+        // Through `watches`, which is the only thing that answers this —
+        // `*` means every tag, and a comparison against one name cannot
+        // express that.
+        let watched = images::watches(&service.image, service.track_tag.as_deref(), reference);
 
         // **The service now runs what was pushed, so its row says so.**
         //

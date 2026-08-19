@@ -492,6 +492,19 @@ pub async fn set_tracking(
     track_tag: Option<&str>,
     auto_deploy: bool,
 ) -> PlatformResult<()> {
+    // A partial glob is refused rather than stored as a literal tag.
+    // `*` on its own means every tag; `v*` would otherwise be saved as the
+    // name of a tag nobody will ever push, and a setting that silently
+    // matches nothing is the quietest kind of wrong.
+    if let Some(tag) = track_tag.map(str::trim).filter(|tag| !tag.is_empty()) {
+        if tag.contains('*') && tag != crate::platform::images::EVERY_TAG {
+            return Err(PlatformError::Refused(format!(
+                "{tag:?} is not a tag. Use `*` on its own to watch every tag, or write one \
+                 tag exactly — patterns are not matched."
+            )));
+        }
+    }
+
     let (id, tag) = (service_id.to_string(), track_tag.map(str::to_string));
     database
         .write(move |connection| {
