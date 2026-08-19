@@ -74,6 +74,10 @@ impl Proxy {
     }
 
     async fn forward_plain(&self, upstream: SocketAddr, request: Request<Body>) -> Response<Body> {
+        // Kept before the rewrite, which replaces the URI with the
+        // upstream's, so the response half can tell "the host the client
+        // asked for" from any other host an application might redirect to.
+        let asked_for = client_authority(&request);
         let Some(outbound) = rewrite(upstream, request) else {
             return bad_gateway("bad upstream address");
         };
@@ -83,6 +87,7 @@ impl Proxy {
                 let (parts, body) = response.into_parts();
                 let mut response = Response::from_parts(parts, Body::new(body));
                 strip_hop_by_hop(response.headers_mut());
+                upgrade_location(response.headers_mut(), &asked_for);
                 response
             }
             Err(error) => {
@@ -230,13 +235,96 @@ fn rewrite(upstream: SocketAddr, request: Request<Body>) -> Option<Request<Body>
     // Reported by Jorge, whose pushed image served fine from inside the
     // node and would not load from a browser.
     if !parts.headers.contains_key(HOST) {
-        let value = authority.unwrap_or_else(|| upstream.to_string());
+        let value = authority.clone().unwrap_or_else(|| upstream.to_string());
         if let Ok(value) = HeaderValue::from_str(&value) {
             parts.headers.insert(HOST, value);
         }
     }
 
+    // What the client used, for an application that asks.
+    //
+    // The hop to the container is plain HTTP — it has to be, the two hops
+    // are separate negotiations — so anything reading the scheme off its
+    // own connection sees `http` and builds `http://` links for a site
+    // served over TLS. These three headers are how every reverse proxy
+    // says otherwise, and this one was not saying it.
+    //
+    // `X-Forwarded-Proto` is always `https`: this proxy is only reached
+    // through the TLS listener, and the plain-HTTP one redirects rather
+    // than proxying.
+    parts
+        .headers
+        .insert("x-forwarded-proto", HeaderValue::from_static("https"));
+    if let Some(authority) = &authority {
+        if let Ok(value) = HeaderValue::from_str(authority) {
+            parts.headers.insert("x-forwarded-host", value);
+        }
+    }
+
     Some(Request::from_parts(parts, body))
+}
+
+/// The name the client asked for, whichever protocol it arrived by.
+///
+/// HTTP/2 puts it in the URI's authority and HTTP/1.1 in `Host`, and this
+/// is the one place that difference is resolved.
+fn client_authority(request: &Request<Body>) -> Option<String> {
+    request
+        .uri()
+        .authority()
+        .map(|authority| authority.to_string())
+        .or_else(|| {
+            request
+                .headers()
+                .get(HOST)
+                .and_then(|value| value.to_str().ok())
+                .map(str::to_string)
+        })
+}
+
+/// Put `https` back on a `Location` the upstream built from its own
+/// connection.
+///
+/// **A container cannot know it is behind TLS.** The hop to it is plain
+/// HTTP by design, so an application that builds an absolute redirect from
+/// the scheme it sees writes `http://` — and a browser following that
+/// arrives at the plain-HTTP listener, which redirects it back, which is a
+/// loop for a page that works. `X-Forwarded-Proto` is sent as well, and
+/// this is for everything that does not read it: plain nginx, most
+/// notably, which uses `$scheme`.
+///
+/// **Only for the host the client asked for.** A redirect to somewhere
+/// else is somebody else's site and its scheme is not ours to change —
+/// rewriting that would be this proxy deciding another host speaks TLS.
+///
+/// Reported by Jorge: `301 Location: http://…/json/` on a page served over
+/// HTTPS, which his browser followed into a loop.
+fn upgrade_location(headers: &mut hyper::HeaderMap, asked_for: &Option<String>) {
+    let Some(asked_for) = asked_for else {
+        return;
+    };
+    let Some(location) = headers
+        .get(hyper::header::LOCATION)
+        .and_then(|value| value.to_str().ok())
+    else {
+        return;
+    };
+
+    let prefix = format!("http://{asked_for}");
+    if !location.starts_with(&prefix) {
+        return;
+    }
+    // The host must end there, or `http://example.com.evil/` would match
+    // `http://example.com`.
+    let rest = &location[prefix.len()..];
+    if !(rest.is_empty() || rest.starts_with('/') || rest.starts_with('?')) {
+        return;
+    }
+
+    let upgraded = format!("https://{asked_for}{rest}");
+    if let Ok(value) = HeaderValue::from_str(&upgraded) {
+        headers.insert(hyper::header::LOCATION, value);
+    }
 }
 
 fn strip_hop_by_hop(headers: &mut hyper::HeaderMap) {
@@ -399,6 +487,71 @@ mod tests {
         let upstream = SocketAddr::from(([127, 0, 0, 1], 8080));
         let rewritten = rewrite(upstream, request(&[])).expect("rewrite");
         assert_eq!(rewritten.headers().get(HOST).unwrap(), "example.com");
+    }
+
+    /// A `Location` the container built from its own scheme is repaired.
+    ///
+    /// The hop to a container is plain HTTP by design, so nginx answered a
+    /// page served over TLS with `301 Location: http://…/json/`. A browser
+    /// following that reaches the plain-HTTP listener, which redirects it
+    /// back — a loop, for a page that works. Reported by Jorge.
+    #[test]
+    fn a_location_the_upstream_built_from_http_is_put_back_on_https() {
+        let asked = Some("app.example".to_string());
+        let mut headers = hyper::HeaderMap::new();
+        headers.insert(
+            hyper::header::LOCATION,
+            HeaderValue::from_static("http://app.example/json/"),
+        );
+        upgrade_location(&mut headers, &asked);
+        assert_eq!(
+            headers.get(hyper::header::LOCATION).unwrap(),
+            "https://app.example/json/"
+        );
+    }
+
+    /// And a redirect to anywhere else is left exactly as it is.
+    ///
+    /// The scheme another host speaks is not this proxy's to decide, and
+    /// the prefix check has to end at the host or `http://app.example.evil`
+    /// would match `http://app.example`.
+    #[test]
+    fn a_location_pointing_elsewhere_is_not_touched() {
+        let asked = Some("app.example".to_string());
+        for original in [
+            "http://somewhere.else/path",
+            "http://app.example.evil/path",
+            "https://app.example/already",
+            "/relative",
+        ] {
+            let mut headers = hyper::HeaderMap::new();
+            headers.insert(
+                hyper::header::LOCATION,
+                HeaderValue::from_str(original).expect("a header"),
+            );
+            upgrade_location(&mut headers, &asked);
+            assert_eq!(
+                headers.get(hyper::header::LOCATION).unwrap(),
+                original,
+                "{original} was rewritten"
+            );
+        }
+    }
+
+    /// The container is told what the client used, because it cannot see
+    /// it: the hop to it is plain HTTP.
+    #[test]
+    fn the_upstream_is_told_the_client_arrived_over_tls() {
+        let upstream = SocketAddr::from(([127, 0, 0, 1], 8080));
+        let rewritten = rewrite(upstream, request(&[])).expect("rewrite");
+        assert_eq!(
+            rewritten.headers().get("x-forwarded-proto").unwrap(),
+            "https"
+        );
+        assert_eq!(
+            rewritten.headers().get("x-forwarded-host").unwrap(),
+            "example.com"
+        );
     }
 
     /// And with neither, the address being dialled is all there is.
