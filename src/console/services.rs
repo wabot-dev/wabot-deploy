@@ -649,7 +649,23 @@ impl ServicePages {
                                         <td class="mono"
                                             title=(format!("{}\n{}", release.reference, release.digest))>
                                             (release.tag())
-                                            <span class="tile-detail">(release.short_digest())</span>
+                                            // A block, because `span` put
+                                            // the digest *beside* the tag
+                                            // with nothing between them —
+                                            // `newsha256:af618a130cbe`,
+                                            // one unreadable word where
+                                            // the comment above promised
+                                            // two lines. `.tile-detail`
+                                            // is written for a block (it
+                                            // zeroes a paragraph's
+                                            // margin) and says nothing
+                                            // about `display`, so putting
+                                            // it on an inline element
+                                            // styled the colour and left
+                                            // the layout to the default.
+                                            // Reported by Jorge, from the
+                                            // page.
+                                            <div class="tile-detail">(release.short_digest())</div>
                                         </td>
                                         <td class="tile-detail">(release.source.label())</td>
                                         <td>
@@ -5811,6 +5827,70 @@ mod tests {
     }
 
     /// And it is on the page, with the button that takes it.
+    /// The digest sits in a block, so it renders under the tag rather
+    /// than against it.
+    ///
+    /// They read as `newsha256:af618a130cbe`, one unreadable word, under a
+    /// comment promising two lines. `.tile-detail` on a `span`: the class
+    /// carries colour and a zeroed margin and says nothing about
+    /// `display`, so it styled the text and left the layout at inline.
+    ///
+    /// The assertion is on the element rather than the text because the
+    /// text never showed it — the first version of this test passed
+    /// against the broken markup, since `new<span …>sha256:` does not
+    /// contain `newsha256:`. Nothing separated them on screen and
+    /// everything separated them in the source, which is why only Jorge
+    /// could see it.
+    #[tokio::test]
+    async fn a_release_shows_its_digest_under_its_tag() {
+        let console = Console::new().await;
+        let cookie = console.signed_in().await;
+        service(&console, &cookie).await;
+        let project = projects::find(&console.database, "my-api")
+            .await
+            .expect("query")
+            .expect("made");
+        let made = services::create(
+            &console.database,
+            &project.id,
+            "api",
+            "node.example.com/my-api/api:latest",
+            &[],
+        )
+        .await
+        .expect("service");
+        crate::platform::releases::record(
+            &console.database,
+            &made.id,
+            "node.example.com/my-api/api:new",
+            "sha256:af618a130cbe1ecf7a82570bc32056e00e4c01edba81aca520bc1890fdee5009",
+            crate::platform::releases::Source::Push,
+        )
+        .await
+        .expect("release");
+
+        let body = console
+            .harness
+            .get("/projects/my-api/services/api")
+            .header("cookie", &cookie)
+            .send()
+            .await
+            .body;
+
+        // The short digest as *text*, not the full one inside the cell's
+        // `title` — which is where a plain `find` lands, and did.
+        let rendered = "sha256:af618a130cbe<";
+        let at = body
+            .find(rendered)
+            .unwrap_or_else(|| panic!("no digest on the page: {body}"));
+        let opens = body[..at].rfind('<').expect("an element around it");
+        let element = &body[opens..at];
+        assert!(
+            element.starts_with("<div"),
+            "the digest is inline against the tag, not on its own line: {element}"
+        );
+    }
+
     #[tokio::test]
     async fn the_releases_card_says_how_to_push() {
         let console = Console::new().await;
