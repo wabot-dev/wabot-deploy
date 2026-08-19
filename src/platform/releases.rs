@@ -63,6 +63,23 @@ pub struct Release {
 }
 
 impl Release {
+    /// The tag this was pushed as: `latest`, `v2`, `2026-08-19`.
+    ///
+    /// What tells two releases of one service apart at a glance — the
+    /// repository is the same on every one of them, and the digest is
+    /// eight hex characters nobody can hold in their head. Falls back to
+    /// the whole reference when there is no tag to take, which is a
+    /// digest-pinned reference and reads as itself.
+    pub fn tag(&self) -> &str {
+        // From the last colon, and only if it is after the last slash: a
+        // registry may carry a port, and `node:5000/app` has a colon that
+        // is not a tag's.
+        match self.reference.rsplit_once(':') {
+            Some((before, tag)) if !before.ends_with('/') && !tag.contains('/') => tag,
+            _ => &self.reference,
+        }
+    }
+
     /// The digest as somebody would read it: `sha256:1a2b3c4d`.
     ///
     /// Enough to tell two builds apart at a glance, and the full value
@@ -240,6 +257,44 @@ fn decode(row: &wabot::sqlite::rusqlite::Row<'_>) -> wabot::sqlite::rusqlite::Re
 
 #[cfg(test)]
 mod tests {
+    fn released(reference: &str) -> Release {
+        Release {
+            id: "rl-1".into(),
+            service_id: "sv-1".into(),
+            reference: reference.into(),
+            digest: "sha256:1a2b3c4d5e6f".into(),
+            source: Source::Push,
+            created_at: 0,
+            deployed_at: None,
+        }
+    }
+
+    /// The tag is what tells two releases of one service apart.
+    ///
+    /// The list showed only eight hex characters of digest under a column
+    /// headed "Image", which distinguishes nothing — the repository is
+    /// identical on every row, and the digest is not something anybody
+    /// holds in their head. Reported by Jorge, who wanted to see which
+    /// image he had pushed.
+    #[test]
+    fn a_release_is_known_by_its_tag() {
+        assert_eq!(released("node.example/wabot/api:latest").tag(), "latest");
+        assert_eq!(released("node.example/wabot/api:v2").tag(), "v2");
+    }
+
+    /// A registry's port is not a tag.
+    ///
+    /// `node:5000/app` has a colon before the last slash, and taking the
+    /// text after the last colon would call the tag `5000/app`.
+    #[test]
+    fn a_port_in_the_registry_is_not_mistaken_for_one() {
+        assert_eq!(released("node:5000/wabot/api:v2").tag(), "v2");
+        // And with no tag at all, the reference reads as itself rather
+        // than as a tag that is not there.
+        let pinned = released("node.example/wabot/api");
+        assert_eq!(pinned.tag(), "node.example/wabot/api");
+    }
+
     use super::*;
     use crate::platform::{projects, services};
 

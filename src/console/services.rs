@@ -621,8 +621,29 @@ impl ServicePages {
                             <tbody>
                                 @for release in &releases {
                                     <tr>
-                                        <td class="mono" title=(&release.digest)>
-                                            (release.short_digest())
+                                        // **The tag first, the digest
+                                        // under it.** This showed only
+                                        // the short digest under a column
+                                        // headed "Image", and eight hex
+                                        // characters are not something
+                                        // anybody can tell apart — least
+                                        // of all "which of these did I
+                                        // push". The reference has always
+                                        // been on the row and nothing
+                                        // rendered it. Reported by Jorge.
+                                        //
+                                        // The tag rather than the whole
+                                        // reference, because the
+                                        // repository is identical on
+                                        // every row of this table and a
+                                        // column of the same forty
+                                        // characters distinguishes
+                                        // nothing. The whole thing is in
+                                        // the title, with the digest.
+                                        <td class="mono"
+                                            title=(format!("{}\n{}", release.reference, release.digest))>
+                                            (release.tag())
+                                            <span class="tile-detail">(release.short_digest())</span>
                                         </td>
                                         <td class="tile-detail">(release.source.label())</td>
                                         <td>

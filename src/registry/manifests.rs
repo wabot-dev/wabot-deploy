@@ -263,11 +263,21 @@ async fn release(
         if by_slug.as_deref() != Some(service.slug.as_str()) && !named_here {
             continue;
         }
-        if images::tracked_tag(&service.image, service.track_tag.as_deref()).as_deref()
-            != Some(reference)
-        {
-            continue;
-        }
+        // **The watched tag decides what deploys, not what is recorded.**
+        //
+        // A push to this service's own repository is a version of this
+        // service whatever tag it carries, so it belongs in the list
+        // either way and `Deploy` beside it is how somebody rolls to it
+        // deliberately. This used to `continue` here, so a push to any
+        // other tag vanished: accepted by the registry, stored on the
+        // disk, absent from the page, and nothing saying why.
+        //
+        // Two questions were on one line and only one of them is
+        // dangerous — recording is a row, deploying replaces what is
+        // running. Reported by Jorge, who wanted to see the image he had
+        // sent.
+        let watched = images::tracked_tag(&service.image, service.track_tag.as_deref()).as_deref()
+            == Some(reference);
 
         // **The service now runs what was pushed, so its row says so.**
         //
@@ -280,7 +290,11 @@ async fn release(
         // push match by name as well as by slug.
         //
         // Only when it differs, so an ordinary push writes nothing.
-        if service.image != pushed {
+        // Adopted only for the watched tag: a push to another tag is a
+        // version somebody may want *later*, and repointing the service at
+        // it would change what an ordinary deploy pulls — the one thing a
+        // push nobody is watching must not do.
+        if watched && service.image != pushed {
             if let Err(error) = services::set_image(&state.database, &service.id, &pushed).await {
                 // Reported and not fatal: the release below is the thing
                 // that was asked for, and refusing it because a field
@@ -299,7 +313,10 @@ async fn release(
         .await?;
         recorded = true;
 
-        if service.auto_deploy {
+        // Both conditions, and they mean different things: `auto_deploy`
+        // is "go out on a push", `watched` is "on *this* tag". A push to
+        // any other tag is now recorded and waits to be deployed by hand.
+        if watched && service.auto_deploy {
             // Deployed here rather than by a background sweep: the
             // push is the event, and a CI run that succeeds should
             // mean the thing is out — not that something will notice
