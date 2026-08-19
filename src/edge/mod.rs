@@ -191,6 +191,32 @@ pub async fn serve_http(
 /// Plain text, exactly the key authorization and nothing else: the
 /// authority compares the body byte for byte, so a trailing newline or
 /// a JSON wrapper fails the order.
+/// `/v2/` and `/v2` are one route, for the paths this node serves itself.
+///
+/// The root is left alone: `/` trimmed to the empty string is not a path,
+/// and the console's own landing page lives there.
+fn trim_trailing_slash(request: Request) -> Request {
+    let (mut parts, body) = request.into_parts();
+    let path = parts.uri.path();
+    if path.len() < 2 || !path.ends_with('/') {
+        return Request::from_parts(parts, body);
+    }
+
+    let trimmed = path.trim_end_matches('/');
+    let trimmed = match trimmed.is_empty() {
+        true => "/",
+        false => trimmed,
+    };
+    let rebuilt = match parts.uri.query() {
+        Some(query) => format!("{trimmed}?{query}"),
+        None => trimmed.to_string(),
+    };
+    if let Ok(uri) = rebuilt.parse() {
+        parts.uri = uri;
+    }
+    Request::from_parts(parts, body)
+}
+
 async fn acme_challenge(
     State(state): State<HttpState>,
     wabot::rest::axum::extract::Path(token): wabot::rest::axum::extract::Path<String>,
@@ -232,6 +258,20 @@ async fn dispatch(State(state): State<EdgeState>, request: Request) -> Response 
         // call. No socket, no second serialization, no port.
         Upstream::ControlPlane => {
             use tower::ServiceExt;
+            // **Our own routes keep the convenience; forwarded ones do
+            // not.** The listener serves both, and turning normalisation
+            // off for the whole of it took it away from paths this node
+            // owns — which are written expecting `/v2` and `/v2/` to be
+            // one route. `docker push` asks for `/v2/`, the OCI version
+            // check, and got a 404: the push failed with `unauthorized`,
+            // which is what a client says when it cannot complete the
+            // handshake it never got to start.
+            //
+            // My own regression, from the fix that stopped trimming for
+            // the proxy. The decision belongs here, where it is already
+            // known whose path this is, rather than at the listener where
+            // it is not.
+            let request = trim_trailing_slash(request);
             match state.control_plane.clone().oneshot(request).await {
                 Ok(response) => response,
                 // `Router`'s error type is `Infallible`; this arm
@@ -312,6 +352,37 @@ fn not_found() -> Response {
 
 #[cfg(test)]
 mod tests {
+    /// `/v2/` and `/v2` are one route for the paths this node serves, and
+    /// a forwarded path keeps every character.
+    ///
+    /// Turning normalisation off at the listener — so a proxied `/json/`
+    /// would stop reaching a container as `/json` — took it away from this
+    /// node's own routes too, which are written expecting both spellings.
+    /// `docker push` asks for `/v2/`, the OCI version check, got a 404,
+    /// and reported `unauthorized`: what a client says when it cannot
+    /// finish a handshake it never began. My own regression, from the fix
+    /// one version earlier.
+    #[test]
+    fn only_the_paths_this_node_serves_lose_a_trailing_slash() {
+        let trimmed = |path: &str| {
+            let request = Request::builder()
+                .uri(format!("https://node.example{path}"))
+                .body(wabot::rest::axum::body::Body::empty())
+                .expect("request");
+            trim_trailing_slash(request).uri().to_string()
+        };
+
+        // The one docker asks for.
+        assert!(trimmed("/v2/").ends_with("/v2"));
+        // Already without, and left alone.
+        assert!(trimmed("/v2").ends_with("/v2"));
+        // The query survives the rewrite.
+        assert!(trimmed("/v2/thing/?a=1").ends_with("/v2/thing?a=1"));
+        // And the root is not trimmed into nothing: the console's landing
+        // page lives there, and the empty string is not a path.
+        assert!(trimmed("/").ends_with('/'));
+    }
+
     use super::*;
     use wabot::rest::axum::routing::get;
     use wabot::testing::RestHarness;
