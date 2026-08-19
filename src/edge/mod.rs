@@ -120,6 +120,18 @@ pub async fn serve_https(
         router,
         RestServerConfig::new(bind)
             .with_tls(TlsMode::Resolver(resolver))
+            // **The path belongs to the container, not to us.** The
+            // framework trims a trailing slash by default so `/users/` and
+            // `/users` reach one route, which is right for a server that
+            // owns its paths and wrong for a proxy: `/json/` reached a
+            // container as `/json`, its own nginx answered `301 → /json/`,
+            // and the browser looped for ever on a page that served
+            // correctly when asked directly. Nothing logged the rewrite.
+            //
+            // Reported by Jorge, and settled by reading the *container's*
+            // access log — which showed a request for `/json` that nobody
+            // had made.
+            .without_trailing_slash_normalization()
             .with_shutdown(cancel),
     )
     .await
@@ -162,7 +174,14 @@ pub async fn serve_http(
     serve_on(
         listener,
         router,
-        RestServerConfig::new(bind).with_shutdown(cancel),
+        // Here too. This listener only redirects to HTTPS, and it builds
+        // that redirect from the path it was given — so a trimmed slash
+        // would send `http://host/json/` to `https://host/json`, and the
+        // container would answer *that* with a redirect back. The loop
+        // would survive the fix on the other listener.
+        RestServerConfig::new(bind)
+            .without_trailing_slash_normalization()
+            .with_shutdown(cancel),
     )
     .await
 }
