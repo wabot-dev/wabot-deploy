@@ -107,7 +107,7 @@ pub struct ServiceSettings {
 /// blank, so a hand-typed URL lands somewhere real.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Tab {
-    General,
+    Image,
     Database,
     Environment,
     Resources,
@@ -120,7 +120,7 @@ impl Tab {
     /// changes with the reader's language is one that cannot be shared.
     pub fn slug(self) -> &'static str {
         match self {
-            Tab::General => "general",
+            Tab::Image => "image",
             Tab::Database => "database",
             Tab::Environment => "environment",
             Tab::Resources => "resources",
@@ -131,7 +131,7 @@ impl Tab {
 
     fn label(self) -> &'static str {
         match self {
-            Tab::General => t("General"),
+            Tab::Image => t("Image"),
             Tab::Database => t("Database"),
             Tab::Environment => t("Environment"),
             Tab::Resources => t("Resources"),
@@ -142,7 +142,7 @@ impl Tab {
 
     fn parse(slug: &str) -> Option<Self> {
         [
-            Tab::General,
+            Tab::Image,
             Tab::Database,
             Tab::Environment,
             Tab::Resources,
@@ -158,7 +158,7 @@ impl Tab {
         match service.kind.is_managed() {
             true => vec![Tab::Database, Tab::Resources, Tab::Advanced],
             false => vec![
-                Tab::General,
+                Tab::Image,
                 Tab::Environment,
                 Tab::Resources,
                 Tab::Network,
@@ -467,7 +467,7 @@ impl ServicePages {
         // the tag: a bare `/settings` is a redirect now, and sending
         // somebody through one to reach a named section is a hop that
         // exists only because the caller did not say what it wanted.
-        let settings = Tab::General.path(&project.slug, &service.slug);
+        let settings = Tab::Image.path(&project.slug, &service.slug);
         let logs = format!("/projects/{}/services/{}/logs", project.slug, service.slug);
         let domain = crate::node::settings::domain(&self.state.database, &self.state.config).await;
         let exposure = exposure(&service, &project.slug, &ports, domain.as_deref());
@@ -1299,6 +1299,10 @@ impl ServicePages {
 
         let add = format!("{here}/ports");
         let domain = crate::node::settings::domain(&self.state.database, &self.state.config).await;
+        // What a push at this service would have to be called. The same
+        // function the service's own page uses, so the two cannot disagree
+        // about the name — which is the whole content of this card.
+        let push = push(&service, &project.slug, domain.as_deref());
         let suggestion = match &domain {
             Some(domain) => {
                 let name = dns::suggested_hostname(&service.slug, &project.slug, domain);
@@ -1383,37 +1387,11 @@ impl ServicePages {
                     }
 
                 }
-                @if tab == Tab::General {
-                    <section class="stack" id="releases">
-                        <p class="card-label">(t("Releases"))</p>
-                        <form method="post" action=(format!("{here}/tracking")) class="card stack">
-                            <label for="track_tag">(t("Tag to watch"))</label>
-                            <input id="track_tag" name="track_tag" type="text" autocomplete="off" class="mono"
-                                   value=(service.track_tag.clone().unwrap_or_default())
-                                   placeholder="latest">
-                            <p class="field-hint">(t("One tag exactly, or `*` for every tag — which \
-                                 deploys whatever you push. Empty means `latest`. Patterns like \
-                                 `v*` are refused rather than stored as the name of a tag nobody \
-                                 will push."))</p>
-                            <label class="check">
-                                // `checked="false"` checks it. This box read
-                                // as on whatever the row said, and saving the
-                                // form then turned it on for real.
-                                @if service.auto_deploy {
-                                    <input type="checkbox" name="auto_deploy" value="1" checked>
-                                } @else {
-                                    <input type="checkbox" name="auto_deploy" value="1">
-                                }
-                                (t("Deploy a push automatically"))
-                            </label>
-                            <p class="field-hint">(t("Without this, a push is recorded as a release and waits \
-                                 for somebody to deploy it from the service page."))</p>
-                            <div class="actions">
-                                <button type="submit">(t("Save"))</button>
-                            </div>
-                        </form>
-                    </section>
-
+                @if tab == Tab::Image {
+                    // **The image first, then what happens on a push.**
+                    // The tracking form used to be above, so the tab
+                    // opened on a rule about pushes before saying what
+                    // the service runs. Asked for in this order by Jorge.
                     <section class="stack" id="image">
                         <p class="card-label">(t("Image"))</p>
                         // The form that did not exist. A service was
@@ -1432,6 +1410,50 @@ impl ServicePages {
                                 <button type="submit">(t("Save image"))</button>
                             </div>
                         </form>
+                    </section>
+
+                    <section class="stack" id="releases">
+                        <p class="card-label">(t("Automatic deployment"))</p>
+                        <form method="post" action=(format!("{here}/tracking")) class="card stack">
+                            // The switch before the field it governs: the
+                            // tag only means anything once a push is
+                            // allowed to deploy, and the form read the
+                            // other way round.
+                            <label class="check">
+                                // `checked="false"` checks it. This box read
+                                // as on whatever the row said, and saving the
+                                // form then turned it on for real.
+                                @if service.auto_deploy {
+                                    <input type="checkbox" name="auto_deploy" value="1" checked>
+                                } @else {
+                                    <input type="checkbox" name="auto_deploy" value="1">
+                                }
+                                (t("Deploy a push automatically"))
+                            </label>
+                            <p class="field-hint">(t("Without this, a push is recorded as a release and waits \
+                                 for somebody to deploy it from the service page."))</p>
+
+                            <label for="track_tag">(t("Tag to watch"))</label>
+                            <input id="track_tag" name="track_tag" type="text" autocomplete="off" class="mono"
+                                   value=(service.track_tag.clone().unwrap_or_default())
+                                   placeholder="latest">
+                            <p class="field-hint">(t("Pushing to this tag deploys the image \
+                                 immediately. You can use * to deploy automatically whatever you \
+                                 push."))</p>
+                            <p class="field-hint">(t("Empty means `latest`. Patterns like `v*` are \
+                                 refused rather than stored as the name of a tag nobody will \
+                                 push."))</p>
+                            <div class="actions">
+                                <button type="submit">(t("Save"))</button>
+                            </div>
+                        </form>
+
+                        // What to type, on the page that decides what a
+                        // push does. The service's own page has the whole
+                        // sequence behind a disclosure; this is the one
+                        // command, with the name in full, because the
+                        // question here is "what do I push to".
+                        (push_target(&push))
                     </section>
                 }
                 @if tab == Tab::Advanced {
@@ -2138,6 +2160,14 @@ fn push(
     };
     let tag = crate::platform::images::tracked_tag(&service.image, service.track_tag.as_deref())
         .unwrap_or_else(|| "latest".into());
+    // **A star is a rule, not a tag.** `*` matches every tag on the way
+    // in; it is not something anybody types after a colon, and a command
+    // ending `:*` is one somebody pastes and watches fail. The example
+    // shows `latest` — which the rule accepts along with everything else.
+    let tag = match tag == crate::platform::images::EVERY_TAG {
+        true => "latest".to_string(),
+        false => tag,
+    };
 
     // The token guard refuses a repository that is not the project's,
     // and `release` compares names before tags — so an image from
@@ -2161,6 +2191,65 @@ fn push(
             service.slug
         ))),
     }
+}
+
+/// The one command, with the name in full, on the tab that decides what
+/// a push does.
+///
+/// The service's own page has the whole sequence — build, then push —
+/// behind a disclosure, because there it is read once while setting the
+/// service up. Here the question is narrower: the field above says which
+/// tag is watched, and this says what to push at it.
+///
+/// Not translated, and the sentence around it is: it is pasted into a
+/// terminal, and a terminal does not speak Spanish.
+fn push_target(push: &Option<Push>) -> impl Renderable + '_ {
+    let (copy, copied) = (t("Copy"), t("Copied"));
+    let command = match push {
+        Some(Push::To(target)) => format!("docker push {target}"),
+        _ => String::new(),
+    };
+    let inner = rsx! {
+        <div class="dsn stack-sm">
+            @if !command.is_empty() {
+                <div class="dsn-line">
+                    <pre class="dsn-value" data-copy
+                         data-copy-label=(copy) data-copied-label=(copied)>(&command)</pre>
+                </div>
+                <p class="field-hint">(t("After docker login with a push token from the project \
+                     page."))</p>
+            }
+            // The dead ends, each said rather than left blank. A card
+            // headed "what to push at" with nothing under it is one
+            // somebody reads as broken rather than as not applicable.
+            @if matches!(push, Some(Push::Elsewhere(_))) {
+                <p class="field-hint">(t("This service runs an image from another registry, so \
+                     nothing pushed to this node can land on it — a push is matched to a service \
+                     by the name it carries. Point it at this node's registry above, and the \
+                     command appears."))</p>
+            }
+            @if matches!(push, Some(Push::Pinned)) {
+                <p class="field-hint">(t("This service is pinned to one image by digest, which \
+                     names bytes rather than a name a push can move. Give it a tag above for \
+                     pushes to reach it."))</p>
+            }
+            @if matches!(push, Some(Push::Nameless)) {
+                <p class="field-hint">(t("This node has no domain, so its registry has no name a \
+                     client could dial. Give the node one in its settings, and the command to \
+                     push here appears."))</p>
+            }
+        </div>
+    }
+    .render()
+    .into_inner();
+
+    // XSS SAFETY: the markup above is this function's own, and the
+    // reference inside it went through `rsx!`'s escaping.
+    wabot::ui::hypertext::island(
+        "copy",
+        &serde_json::json!({}),
+        hypertext::Raw::dangerously_create(&inner),
+    )
 }
 
 /// Two commands that put an image on this service, and a button to take
@@ -3324,7 +3413,7 @@ impl ServiceApi {
             return Ok(see_other("/?error=no+such+service"));
         };
         let here = format!(
-            "/projects/{}/services/{}/settings/general",
+            "/projects/{}/services/{}/settings/image",
             project.slug, service.slug
         );
 
@@ -3372,7 +3461,7 @@ impl ServiceApi {
         // Back to the page the form is on, not the one it used to
         // share with the service's state.
         let here = format!(
-            "/projects/{}/services/{}/settings/general",
+            "/projects/{}/services/{}/settings/image",
             project.slug, service.slug
         );
 
@@ -6151,7 +6240,7 @@ mod tests {
         // has, which is where a link kept from before the tabs lands.
         assert_eq!(
             landing!("/projects/my-api/services/api/settings"),
-            "/projects/my-api/services/api/settings/general"
+            "/projects/my-api/services/api/settings/image"
         );
         let database = format!("/projects/my-api/services/{}/settings", made.0.slug);
         assert_eq!(landing!(database.clone()), format!("{database}/database"));
@@ -6164,13 +6253,87 @@ mod tests {
         );
         assert_eq!(
             landing!("/projects/my-api/services/api/settings/database"),
-            "/projects/my-api/services/api/settings/general"
+            "/projects/my-api/services/api/settings/image"
         );
         // As is a word that is not a tab at all.
         assert_eq!(
             landing!("/projects/my-api/services/api/settings/nonsense"),
-            "/projects/my-api/services/api/settings/general"
+            "/projects/my-api/services/api/settings/image"
         );
+    }
+
+    /// The image tab: what it runs, then what a push does to it.
+    ///
+    /// Ordered by Jorge, section by section — the image first, because a
+    /// tab that opened on a rule about pushes said what happens to the
+    /// service before saying what the service is; then the switch, then
+    /// the tag it governs, then the one command to type.
+    #[tokio::test]
+    async fn the_image_tab_reads_in_the_order_it_was_asked_for() {
+        let console = Console::new().await;
+        let cookie = console.signed_in().await;
+        service(&console, &cookie).await;
+        crate::node::settings::set_domain(&console.database, Some("node.example.com"))
+            .await
+            .expect("domain");
+        let project = projects::find(&console.database, "my-api")
+            .await
+            .expect("query")
+            .expect("made");
+        let made = services::create(
+            &console.database,
+            &project.id,
+            "api",
+            "node.example.com/my-api/api:latest",
+            &[],
+        )
+        .await
+        .expect("service");
+        services::set_tracking(
+            &console.database,
+            &made.id,
+            Some(crate::platform::images::EVERY_TAG),
+            true,
+        )
+        .await
+        .expect("watch everything");
+
+        let body = console
+            .harness
+            .get("/projects/my-api/services/api/settings/image")
+            .header("cookie", &cookie)
+            .send()
+            .await
+            .body;
+
+        let at = |needle: &str| {
+            body.find(needle)
+                .unwrap_or_else(|| panic!("{needle} is not on the tab: {body}"))
+        };
+        // The image, then the switch, then the tag, then the command.
+        assert!(
+            at("Save image") < at("auto_deploy"),
+            "the image comes first"
+        );
+        assert!(
+            at("auto_deploy") < at(r#"id="track_tag""#),
+            "then the switch"
+        );
+        assert!(
+            at(r#"id="track_tag""#) < at("docker push"),
+            "then the command"
+        );
+
+        // **A star is a rule, not a tag.** This service watches every tag,
+        // and the example still has to be something somebody can paste:
+        // `docker push …:*` is a command that fails.
+        assert!(
+            body.contains("docker push node.example.com/my-api/api:latest"),
+            "the example is not pastable: {body}"
+        );
+        assert!(!body.contains(":*"), "a star reached the command: {body}");
+        // And it can be taken.
+        assert!(body.contains(r#"data-island="copy""#), "{body}");
     }
 
     /// A service takes any size; a database picks from the list.
@@ -6432,7 +6595,7 @@ mod tests {
         // section that quietly appears on two tabs is a section somebody
         // saves twice.
         let mut seen = Vec::new();
-        for tab in ["general", "environment", "resources", "network", "advanced"] {
+        for tab in ["image", "environment", "resources", "network", "advanced"] {
             let body = console
                 .harness
                 .get(&format!("{page}/settings/{tab}"))
@@ -6459,7 +6622,7 @@ mod tests {
         assert_eq!(
             seen,
             vec![
-                ("/tracking\"", "general"),
+                ("/tracking\"", "image"),
                 ("/env\"", "environment"),
                 ("name=\"env\"", "environment"),
                 ("name=\"container_port\"", "network"),

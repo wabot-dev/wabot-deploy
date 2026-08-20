@@ -122,6 +122,10 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
     ("Address", "Dirección"),
     ("Administrator — everything", "Administrador — todo"),
     ("Advanced", "Avanzado"),
+    (
+        "After docker login with a push token from the project page.",
+        "Después de docker login con un token de push de la página del proyecto.",
+    ),
     ("Allowed", "Permitido"),
     (
         "Already thrown out. Its containers are stopped and the node that placed it has been told — or will be, the next time it asks.",
@@ -149,6 +153,7 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
         "At least 12 characters. Nobody here will ever see it.",
         "Doce caracteres como mínimo. Aquí nadie va a verla nunca.",
     ),
+    ("Automatic deployment", "Despliegue automático"),
     ("Back to", "Volver a"),
     ("Backup", "Copia de seguridad"),
     ("Before you join", "Antes de unirte"),
@@ -237,6 +242,10 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
     ("Download", "Descarga"),
     ("Download the authority", "Descargar la autoridad"),
     ("Earlier attempts", "Intentos anteriores"),
+    (
+        "Empty means `latest`. Patterns like `v*` are refused rather than stored as the name of a tag nobody will push.",
+        "Vacío significa `latest`. Los patrones como `v*` se rechazan en vez de guardarse como el nombre de una etiqueta que nadie va a pushear.",
+    ),
     ("Environment", "Entorno"),
     ("Error: ", "Error: "),
     (
@@ -519,6 +528,10 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
     ),
     ("Published", "Publicada"),
     ("Push tokens", "Tokens de subida"),
+    (
+        "Pushing to this tag deploys the image immediately. You can use * to deploy automatically whatever you push.",
+        "Al hacer push a esta etiqueta, la imagen se despliega inmediatamente, puedes usar * para desplegar automáticamente cualquier imagen pusheada.",
+    ),
     ("Queued for that node", "En cola para ese nodo"),
     ("Reachable at", "Se llega en"),
     (
@@ -806,8 +819,16 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
     ),
     ("This service is not running anywhere.", "Este servicio no corre en ningún sitio."),
     (
+        "This service is pinned to one image by digest, which names bytes rather than a name a push can move. Give it a tag above for pushes to reach it.",
+        "Este servicio está fijado a una imagen por digest, que nombra bytes y no un nombre que un push pueda mover. Dale una etiqueta arriba para que los pushes lo alcancen.",
+    ),
+    (
         "This service is pinned to one image by digest, which names bytes rather than a name a push can move. Give it a tag in settings for pushes to reach it.",
         "Este servicio está fijado a una imagen por digest, que nombra bytes y no un nombre que una subida pueda mover. Dale una etiqueta en ajustes para que las subidas le lleguen.",
+    ),
+    (
+        "This service runs an image from another registry, so nothing pushed to this node can land on it — a push is matched to a service by the name it carries. Point it at this node's registry above, and the command appears.",
+        "Este servicio corre una imagen de otro registro, así que nada de lo que se pushee a este nodo puede aterrizar en él — un push se empareja con un servicio por el nombre que lleva. Apúntalo al registro de este nodo arriba, y el comando aparece.",
     ),
     (
         "This service runs an image from another registry, so nothing pushed to this node can land on it — a push is matched to a service by the name it carries. Point the service at this reference instead, and push that:",
