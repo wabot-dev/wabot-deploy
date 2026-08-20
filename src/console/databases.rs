@@ -135,10 +135,11 @@ fn settings_of(
     project: &crate::platform::projects::Project,
     service: &crate::platform::services::Service,
 ) -> String {
-    format!(
-        "/projects/{}/services/{}/settings",
-        project.slug, service.slug
-    )
+    // The tab, not the bare path: `/settings` is a redirect to the first
+    // tab now, and a save that lands on a redirect is a save whose
+    // fragment is dropped on the way — which is the same "a save that
+    // hides what it did" this function exists to prevent.
+    super::services::Tab::Database.path(&project.slug, &service.slug)
 }
 
 /// The rung offered first.

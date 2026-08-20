@@ -120,6 +120,7 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
     ("Add port", "Añadir puerto"),
     ("Address", "Dirección"),
     ("Administrator — everything", "Administrador — todo"),
+    ("Advanced", "Avanzado"),
     ("All nodes", "Todos los nodos"),
     ("Allowed", "Permitido"),
     (
@@ -274,6 +275,7 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
         "From the nodes page of the node you are joining: invite a node there, and it shows one token, once. Pasting it here does what `wabot-deploy join` does in a terminal — this node records that one as an authority and tells it so. The same token can be pasted again if something goes wrong part-way.",
         "Desde la página de nodos del nodo al que te unes: invita un nodo allí, y enseña un token, una vez. Pegarlo aquí hace lo que hace `wabot-deploy join` en una terminal — este nodo anota aquel como autoridad y se lo dice. El mismo token se puede volver a pegar si algo sale mal a medias.",
     ),
+    ("General", "General"),
     ("Going back", "Volver atrás"),
     ("Have it answer for this node's hostnames", "Que responda por los nombres de este nodo"),
     ("Have this node answer for its hostnames", "Que este nodo responda por sus nombres"),
@@ -366,6 +368,7 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
         "Necesita un dominio que resuelva aquí. Sin una dirección que el mundo pueda marcar, este nodo es privado quiera o no.",
     ),
     ("Needs you", "Te necesita"),
+    ("Network", "Red"),
     ("New", "Nuevo"),
     ("New ones on", "Las nuevas en"),
     ("No build here", "Sin binario aquí"),
@@ -915,7 +918,7 @@ mod tests {
     /// A word that is the same in both languages, listed rather than
     /// allowed silently. Otherwise "translated to itself" cannot tell a
     /// deliberate `Swap` from a line somebody pasted and forgot.
-    const THE_SAME_IN_BOTH: &[&str] = &["CPU", "Error: ", "Id", "Logs", "Swap"];
+    const THE_SAME_IN_BOTH: &[&str] = &["CPU", "Error: ", "General", "Id", "Logs", "Swap"];
 
     #[test]
     fn nothing_is_left_untranslated_by_accident() {

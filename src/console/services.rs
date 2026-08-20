@@ -79,11 +79,101 @@ pub struct ServiceLogs {
 pub struct ServiceSettings {
     pub project: String,
     pub service: String,
+    /// Which tab, from the path. Absent on the bare `/settings`, which
+    /// redirects to the first one a service has.
+    pub tab: Option<String>,
     pub error: Option<String>,
     /// What a DNS check just said, carried back from the POST that ran
     /// it. Not stored: it describes the world a second ago, and the
     /// next attempt asks again.
     pub checked: Option<String>,
+}
+
+/// Which tab of a service's settings a page is showing.
+///
+/// **One URL each**, rather than one page that hides and shows with
+/// script. A tab can be linked, opened in another window and read with
+/// scripting off, and the page sends only the sections it is showing —
+/// which is the actual cause of the scroll this replaced. Twelve sections
+/// in a column meant the way to reach the last one was to know it was
+/// there.
+///
+/// The set depends on the kind, and not as a courtesy: a managed database
+/// has no image, no tag and no environment — the node writes all three
+/// from the engine's row — and no ports, edges or certificates of the sort
+/// this console serves, because Postgres speaks its own protocol on a
+/// published port. Offering it those tabs would be offering five empty
+/// pages. A tab it does not have is redirected rather than rendered
+/// blank, so a hand-typed URL lands somewhere real.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Tab {
+    General,
+    Database,
+    Environment,
+    Resources,
+    Network,
+    Advanced,
+}
+
+impl Tab {
+    /// The path segment. Not translated: it is a URL, and a URL that
+    /// changes with the reader's language is one that cannot be shared.
+    pub fn slug(self) -> &'static str {
+        match self {
+            Tab::General => "general",
+            Tab::Database => "database",
+            Tab::Environment => "environment",
+            Tab::Resources => "resources",
+            Tab::Network => "network",
+            Tab::Advanced => "advanced",
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Tab::General => t("General"),
+            Tab::Database => t("Database"),
+            Tab::Environment => t("Environment"),
+            Tab::Resources => t("Resources"),
+            Tab::Network => t("Network"),
+            Tab::Advanced => t("Advanced"),
+        }
+    }
+
+    fn parse(slug: &str) -> Option<Self> {
+        [
+            Tab::General,
+            Tab::Database,
+            Tab::Environment,
+            Tab::Resources,
+            Tab::Network,
+            Tab::Advanced,
+        ]
+        .into_iter()
+        .find(|tab| tab.slug() == slug)
+    }
+
+    /// The tabs this service has, in the order they are shown.
+    pub fn of(service: &services::Service) -> Vec<Tab> {
+        match service.kind.is_managed() {
+            true => vec![Tab::Database, Tab::Resources, Tab::Advanced],
+            false => vec![
+                Tab::General,
+                Tab::Environment,
+                Tab::Resources,
+                Tab::Network,
+                Tab::Advanced,
+            ],
+        }
+    }
+
+    /// Where a save on this tab comes back to.
+    pub fn path(self, project: &str, service: &str) -> String {
+        format!(
+            "/projects/{project}/services/{service}/settings/{}",
+            self.slug()
+        )
+    }
 }
 
 #[injectable]
@@ -373,10 +463,11 @@ impl ServicePages {
             super::projects::where_it_runs(&placements),
             super::projects::elsewhere_of(&placements),
         );
-        let settings = format!(
-            "/projects/{}/services/{}/settings",
-            project.slug, service.slug
-        );
+        // The tab, because every use of this link is about the image or
+        // the tag: a bare `/settings` is a redirect now, and sending
+        // somebody through one to reach a named section is a hop that
+        // exists only because the caller did not say what it wanted.
+        let settings = Tab::General.path(&project.slug, &service.slug);
         let logs = format!("/projects/{}/services/{}/logs", project.slug, service.slug);
         let domain = crate::node::settings::domain(&self.state.database, &self.state.config).await;
         let exposure = exposure(&service, &project.slug, &ports, domain.as_deref());
@@ -998,7 +1089,30 @@ impl ServicePages {
     /// lands, this one is opened to change something and left again.
     /// Every form that used to crowd that page is here, and every POST
     /// behind them comes back here rather than to the page it left.
+    /// The bare path is not a page: it sends you to the first tab this
+    /// service has, so there is one place each section lives and one URL
+    /// that names it.
     #[view("/projects/:project/services/:service/settings")]
+    #[middleware(SessionMiddleware)]
+    async fn settings_root(&self, query: ServiceSettings) -> UiResult<ViewOutcome> {
+        let Some(account) = signed_in(&self.auth) else {
+            return Ok(Redirect::found("/sign-in").into());
+        };
+        let Some((project, _)) =
+            access::find_project(&self.state.database, &account, &query.project).await?
+        else {
+            return Ok(Redirect::found("/?error=no+such+project").into());
+        };
+        let Some(service) =
+            services::in_project(&self.state.database, &project.id, &query.service).await?
+        else {
+            return Ok(Redirect::found(format!("/projects/{}", project.slug)).into());
+        };
+        let first = Tab::of(&service)[0];
+        Ok(Redirect::found(first.path(&project.slug, &service.slug)).into())
+    }
+
+    #[view("/projects/:project/services/:service/settings/:tab")]
     #[middleware(SessionMiddleware)]
     async fn settings(&self, query: ServiceSettings) -> UiResult<ViewOutcome> {
         let Some(account) = signed_in(&self.auth) else {
@@ -1022,6 +1136,20 @@ impl ServicePages {
         if !allowed.may_deploy() {
             return Ok(Redirect::found(here).into());
         }
+
+        // A tab this kind of service does not have goes to the first one
+        // it does, rather than rendering a page with nothing on it. That
+        // covers a hand-typed URL and, more usefully, a link kept from
+        // before a service became something else.
+        let tabs = Tab::of(&service);
+        let Some(tab) = query
+            .tab
+            .as_deref()
+            .and_then(Tab::parse)
+            .filter(|tab| tabs.contains(tab))
+        else {
+            return Ok(Redirect::found(tabs[0].path(&project.slug, &service.slug)).into());
+        };
 
         let ports = ports::of_service(&self.state.database, &service.id).await?;
         let history = config_history::of_service(&self.state.database, &service.id).await?;
@@ -1207,6 +1335,22 @@ impl ServicePages {
                     // `no_page_offers_a_way_back_the_breadcrumb_already_is`.
                 </div>
 
+                // Links, not buttons and not script: each tab is a page.
+                // `aria-current` rather than only a class, because "which
+                // one am I on" is the whole information a tab bar carries
+                // and a colour is not available to everybody reading it.
+                <nav class="tabs" aria-label=(t("Settings"))>
+                    @for entry in &tabs {
+                        @if *entry == tab {
+                            <a href=(entry.path(&project.slug, &service.slug))
+                               class="tab active" aria-current="page">(entry.label())</a>
+                        } @else {
+                            <a href=(entry.path(&project.slug, &service.slug))
+                               class="tab">(entry.label())</a>
+                        }
+                    }
+                </nav>
+
                 @if let Some(message) = &query.error {
                     (layout::error_note(message))
                 }
@@ -1219,7 +1363,7 @@ impl ServicePages {
                 // three from the engine's row, and a form here would be
                 // one whose value the next deployment overwrites. What
                 // is left to choose is the size.
-                @if service.kind.is_managed() {
+                @if tab == Tab::Database {
                     @if let Some(name) = names.first() {
                         (super::databases::name_card(
                             &database_actions.0,
@@ -1238,7 +1382,8 @@ impl ServicePages {
                         ))
                     }
 
-                } @else {
+                }
+                @if tab == Tab::General {
                     <section class="stack" id="releases">
                         <p class="card-label">(t("Releases"))</p>
                         <form method="post" action=(format!("{here}/tracking")) class="card stack">
@@ -1288,6 +1433,8 @@ impl ServicePages {
                             </div>
                         </form>
                     </section>
+                }
+                @if tab == Tab::Advanced {
 
                     <section class="stack" id="logs">
                         <p class="card-label">(t("Logs"))</p>
@@ -1321,6 +1468,8 @@ impl ServicePages {
                             </div>
                         </form>
                     </section>
+                }
+                @if tab == Tab::Environment {
 
                     <section class="stack" id="environment">
                         <p class="card-label">(t("Environment"))</p>
@@ -1404,6 +1553,7 @@ impl ServicePages {
                         }
                     </section>
                 }
+                @if tab == Tab::Resources {
 
                 // What a container may take, for every kind of service.
                 //
@@ -1511,6 +1661,7 @@ impl ServicePages {
                         </div>
                     </form>
                 </section>
+                }
 
                 // A database's port is not a list to add to. It has
                 // exactly one, 5432, written by the node when the database
@@ -1520,7 +1671,7 @@ impl ServicePages {
                 // be reached through. Its name, its certificate and its
                 // published port are three cards on the service's own
                 // page.
-                @if !service.kind.is_managed() {
+                @if tab == Tab::Network {
                 <section class="stack" id="ports">
                     <p class="card-label">(t("Ports"))</p>
                     @if ports.is_empty() {
@@ -1586,7 +1737,7 @@ impl ServicePages {
                 // running and what it is using — stays there: reading and
                 // deciding are the split this console draws everywhere
                 // else.
-                @if service.is_ours() {
+                @if tab == Tab::Advanced && service.is_ours() {
                     (placement_card(
                         &project, &service, &placements, &placement_nodes, &silent, &queued,
                     ))
@@ -1615,7 +1766,10 @@ impl ServicePages {
                 // an edge. Offering the choice would be offering a thing
                 // the node cannot do. Its certificate and its port are
                 // two cards of its own, and they say the true version.
-                @if service.is_ours() && !service.kind.is_managed() && !public_nodes.is_empty() {
+                @if tab == Tab::Network
+                    && service.is_ours()
+                    && !public_nodes.is_empty()
+                {
                     @if ports.iter().any(|port| port.hostname.is_some()) {
                         <section class="stack" id="edges">
                             <p class="card-label">(t("Who answers for these names"))</p>
@@ -1637,7 +1791,7 @@ impl ServicePages {
                     }
                 }
 
-                @if !certificates.is_empty() && !service.kind.is_managed() {
+                @if tab == Tab::Network && !certificates.is_empty() {
                     <section class="stack" id="certificates">
                         <p class="card-label">(t("Certificates"))</p>
                         <p class="tile-detail">(t("One per hostname. A node with no public DNS, or a name a \
@@ -1666,6 +1820,7 @@ impl ServicePages {
                         }
                     </section>
                 }
+                @if tab == Tab::Advanced {
 
                 // Last on the page, always. Deleting is not one setting
                 // among the others and reading it as one is how somebody
@@ -1708,6 +1863,7 @@ impl ServicePages {
                         }
                     </form>
                 </section>
+                }
         }
             .render()
             .into_inner()
@@ -2932,7 +3088,7 @@ impl ServiceApi {
         // Back to the page the form is on, not the one it used to
         // share with the service's state.
         let here = format!(
-            "/projects/{}/services/{}/settings",
+            "/projects/{}/services/{}/settings/network",
             project.slug, service.slug
         );
 
@@ -3031,7 +3187,7 @@ impl ServiceApi {
         // Back to the page the form is on, not the one it used to
         // share with the service's state.
         let here = format!(
-            "/projects/{}/services/{}/settings",
+            "/projects/{}/services/{}/settings/network",
             project.slug, service.slug
         );
 
@@ -3071,7 +3227,7 @@ impl ServiceApi {
             return Ok(see_other("/?error=no+such+service"));
         };
         let here = format!(
-            "/projects/{}/services/{}/settings",
+            "/projects/{}/services/{}/settings/network",
             project.slug, service.slug
         );
 
@@ -3168,7 +3324,7 @@ impl ServiceApi {
             return Ok(see_other("/?error=no+such+service"));
         };
         let here = format!(
-            "/projects/{}/services/{}/settings",
+            "/projects/{}/services/{}/settings/general",
             project.slug, service.slug
         );
 
@@ -3216,7 +3372,7 @@ impl ServiceApi {
         // Back to the page the form is on, not the one it used to
         // share with the service's state.
         let here = format!(
-            "/projects/{}/services/{}/settings",
+            "/projects/{}/services/{}/settings/general",
             project.slug, service.slug
         );
 
@@ -3266,7 +3422,7 @@ impl ServiceApi {
             return Ok(see_other("/?error=no+such+service"));
         };
         let here = format!(
-            "/projects/{}/services/{}/settings",
+            "/projects/{}/services/{}/settings/advanced",
             project.slug, service.slug
         );
 
@@ -3299,7 +3455,7 @@ impl ServiceApi {
             return Ok(see_other("/"));
         };
         let here = format!(
-            "/projects/{}/services/{}/settings",
+            "/projects/{}/services/{}/settings/resources",
             project.slug, service.slug
         );
 
@@ -3360,7 +3516,7 @@ impl ServiceApi {
         // Back to the page the form is on, not the one it used to
         // share with the service's state.
         let here = format!(
-            "/projects/{}/services/{}/settings",
+            "/projects/{}/services/{}/settings/environment",
             project.slug, service.slug
         );
 
@@ -3407,7 +3563,7 @@ impl ServiceApi {
         // Back to the page the form is on, not the one it used to
         // share with the service's state.
         let here = format!(
-            "/projects/{}/services/{}/settings",
+            "/projects/{}/services/{}/settings/environment",
             project.slug, service.slug
         );
         let account = signed_in(&self.auth);
@@ -3473,10 +3629,7 @@ impl ServiceApi {
             // Already gone is the outcome they asked for.
             return Ok(see_other("/"));
         };
-        let here = format!(
-            "/projects/{}/services/{}/settings",
-            project.slug, service.slug
-        );
+        let here = Tab::Advanced.path(&project.slug, &service.slug);
 
         // **The check that counts.** The form asks for the name to be
         // typed and marks the field `required`, and both of those are
@@ -3620,7 +3773,7 @@ impl ServiceApi {
         // the detail page after they saved one is the console deciding
         // they had finished.
         let here = format!(
-            "/projects/{}/services/{}/settings",
+            "/projects/{}/services/{}/settings/advanced",
             project.slug, service.slug
         );
         let _ = back;
@@ -3744,7 +3897,7 @@ impl ServiceApi {
         };
         // Settings, where the card is — see `placement` above.
         let here = format!(
-            "/projects/{}/services/{}/settings",
+            "/projects/{}/services/{}/settings/network",
             project.slug, service.slug
         );
 
@@ -5938,6 +6091,85 @@ mod tests {
         );
     }
 
+    /// A service's settings are tabs, and the set depends on the kind.
+    ///
+    /// Twelve sections in one column meant the way to reach the last one
+    /// was to know it was there — reported by Jorge, who could not get to
+    /// them by scrolling. One URL each, so a tab can be linked and read
+    /// with scripting off, and the page sends only what it shows.
+    ///
+    /// A managed database gets three, not five: it has no image, no tag
+    /// and no environment — the node writes all three from the engine's
+    /// row — and no ports, edges or certificates of the kind this console
+    /// serves, because Postgres speaks its own protocol on a published
+    /// port. Offering it those two tabs would be offering empty pages.
+    #[tokio::test]
+    async fn a_tab_a_service_does_not_have_lands_on_one_it_does() {
+        let console = Console::new().await;
+        let cookie = console.signed_in().await;
+        service(&console, &cookie).await;
+        let project = projects::find(&console.database, "my-api")
+            .await
+            .expect("query")
+            .expect("made");
+        services::create(
+            &console.database,
+            &project.id,
+            "api",
+            "node.example.com/my-api/api:latest",
+            &[],
+        )
+        .await
+        .expect("service");
+        let made = crate::platform::databases::create(
+            &console.database,
+            &project.id,
+            "Orders",
+            "17",
+            crate::platform::presets::LADDER[1],
+        )
+        .await
+        .expect("database");
+
+        macro_rules! landing {
+            ($path:expr) => {
+                console
+                    .harness
+                    .get(&$path)
+                    .header("cookie", &cookie)
+                    .send()
+                    .await
+                    .header("location")
+                    .unwrap_or_default()
+            };
+        }
+
+        // The bare path is not a page: it names the first tab each kind
+        // has, which is where a link kept from before the tabs lands.
+        assert_eq!(
+            landing!("/projects/my-api/services/api/settings"),
+            "/projects/my-api/services/api/settings/general"
+        );
+        let database = format!("/projects/my-api/services/{}/settings", made.0.slug);
+        assert_eq!(landing!(database.clone()), format!("{database}/database"));
+
+        // And a tab that kind does not have is a redirect, not a blank
+        // page. `general` on a database, `database` on a plain service.
+        assert_eq!(
+            landing!(format!("{database}/general")),
+            format!("{database}/database")
+        );
+        assert_eq!(
+            landing!("/projects/my-api/services/api/settings/database"),
+            "/projects/my-api/services/api/settings/general"
+        );
+        // As is a word that is not a tab at all.
+        assert_eq!(
+            landing!("/projects/my-api/services/api/settings/nonsense"),
+            "/projects/my-api/services/api/settings/general"
+        );
+    }
+
     /// A service takes any size; a database picks from the list.
     ///
     /// Jorge asked for the free choice and named the exception in the same
@@ -5971,7 +6203,7 @@ mod tests {
 
         let plain = console
             .harness
-            .get("/projects/my-api/services/api/settings")
+            .get("/projects/my-api/services/api/settings/resources")
             .header("cookie", &cookie)
             .send()
             .await
@@ -6009,7 +6241,7 @@ mod tests {
         let body = console
             .harness
             .get(&format!(
-                "/projects/my-api/services/{}/settings",
+                "/projects/my-api/services/{}/settings/resources",
                 made.0.slug
             ))
             .header("cookie", &cookie)
@@ -6190,21 +6422,47 @@ mod tests {
         }
         assert!(reading.contains("/settings"), "and it links to them");
 
-        let writing = console
-            .harness
-            .get(&format!("{page}/settings"))
-            .header("cookie", &cookie)
-            .send()
-            .await
-            .body;
-        for form in [
-            "/tracking\"",
-            "/env\"",
-            "name=\"container_port\"",
-            "name=\"env\"",
-        ] {
-            assert!(writing.contains(form), "{form} is missing: {writing}");
+        // And each form is on exactly one tab. Naming the tab is the point
+        // of the assertion: the four used to be one column somebody
+        // scrolled, so "it is on the settings page" was all there was to
+        // say. Now where a thing lives is a fact worth pinning, and a
+        // section that quietly appears on two tabs is a section somebody
+        // saves twice.
+        let mut seen = Vec::new();
+        for tab in ["general", "environment", "resources", "network", "advanced"] {
+            let body = console
+                .harness
+                .get(&format!("{page}/settings/{tab}"))
+                .header("cookie", &cookie)
+                .send()
+                .await
+                .body;
+            for form in [
+                "/tracking\"",
+                "/env\"",
+                "name=\"container_port\"",
+                "name=\"env\"",
+            ] {
+                if body.contains(form) {
+                    seen.push((form, tab));
+                }
+            }
+            // The bar is on every one of them, and says which is current.
+            assert!(
+                body.contains(r#"aria-current="page""#),
+                "the {tab} tab does not say it is current: {body}"
+            );
         }
+        assert_eq!(
+            seen,
+            vec![
+                ("/tracking\"", "general"),
+                ("/env\"", "environment"),
+                ("name=\"env\"", "environment"),
+                ("name=\"container_port\"", "network"),
+            ],
+            "a form is missing, or on more than one tab"
+        );
     }
 
     /// A database's storage was a number in a column and nothing that
@@ -6290,13 +6548,13 @@ mod tests {
         // at the top of a page they were half-way down. The fragment is
         // the only lever there is with scripting off, which is the
         // console's rule — the runtime boosts links and not submits.
-        let writing = console
-            .harness
-            .get(&settings)
-            .header("cookie", &cookie)
-            .send()
-            .await
-            .body;
+        //
+        // Since the sections became tabs, the page each form returns to is
+        // one of several — so the anchor is looked for on **the page the
+        // redirect actually names**, fetched from the `Location` itself
+        // rather than from a URL this test decides. A form that came back
+        // to the wrong tab would otherwise pass by landing on a page whose
+        // anchor happens to exist somewhere else.
 
         // `on_page` is false for a card that renders only sometimes:
         // the edges one needs a public node and a name for it to answer
@@ -6334,9 +6592,16 @@ mod tests {
             // is a fragment the browser ignores, silently, which is the
             // half-applied shape this console has been bitten by
             // before.
+            let landed = console
+                .harness
+                .get(location.split('#').next().expect("a path"))
+                .header("cookie", &cookie)
+                .send()
+                .await
+                .body;
             assert!(
-                !on_page || writing.contains(&format!("id=\"{anchor}\"")),
-                "nothing on the page is #{anchor}"
+                !on_page || landed.contains(&format!("id=\"{anchor}\"")),
+                "nothing on the page {action} lands on is #{anchor}"
             );
         }
 
@@ -6364,14 +6629,6 @@ mod tests {
         crate::node::settings::set_domain(&console.database, Some("node.example.com"))
             .await
             .expect("domain");
-
-        let writing = console
-            .harness
-            .get(&format!("{database}/settings"))
-            .header("cookie", &cookie)
-            .send()
-            .await
-            .body;
 
         // `saved` is false where a test cannot get a save through: a
         // certificate of any source is refused unless the node's own
@@ -6418,9 +6675,16 @@ mod tests {
                 !saved || location.ends_with(&format!("#{anchor}")),
                 "{action} landed at the top: {location}"
             );
+            let landed = console
+                .harness
+                .get(location.split('#').next().expect("a path"))
+                .header("cookie", &cookie)
+                .send()
+                .await
+                .body;
             assert!(
-                writing.contains(&format!("id=\"{anchor}\"")),
-                "nothing on the page is #{anchor}"
+                landed.contains(&format!("id=\"{anchor}\"")),
+                "nothing on the page {action} lands on is #{anchor}"
             );
         }
     }
@@ -6455,7 +6719,7 @@ mod tests {
 
         let response = console
             .harness
-            .get(&format!("{page}/settings"))
+            .get(&format!("{page}/settings/network"))
             .header("cookie", &member)
             .send()
             .await;
@@ -6495,7 +6759,7 @@ mod tests {
 
         let body = console
             .harness
-            .get(&format!("{page}/settings"))
+            .get(&format!("{page}/settings/network"))
             .header("cookie", &cookie)
             .send()
             .await
@@ -6530,7 +6794,7 @@ mod tests {
 
         let body = console
             .harness
-            .get(&format!("{page}/settings"))
+            .get(&format!("{page}/settings/network"))
             .header("cookie", &cookie)
             .send()
             .await
@@ -6616,7 +6880,7 @@ mod tests {
 
         let body = console
             .harness
-            .get(&format!("{page}/settings"))
+            .get(&format!("{page}/settings/network"))
             .header("cookie", &cookie)
             .send()
             .await
@@ -6748,7 +7012,7 @@ mod tests {
 
         let body = console
             .harness
-            .get(&format!("{page}/settings"))
+            .get(&format!("{page}/settings/network"))
             .header("cookie", &cookie)
             .send()
             .await
@@ -6769,7 +7033,7 @@ mod tests {
 
         let body = console
             .harness
-            .get(&format!("{page}/settings"))
+            .get(&format!("{page}/settings/network"))
             .header("cookie", &cookie)
             .send()
             .await

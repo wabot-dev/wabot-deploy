@@ -465,6 +465,36 @@ details[open] > summary { margin-bottom: var(--sp-4); }
    governs the push commands, which are three lines, and a button stretched
    down three lines is not a control anybody aims at. */
 
+/* The tab bar on a service's settings.
+ *
+ * Links, and styled like the side nav's rather than as a new idiom: the
+ * current one is a soft contrast chip, which is what "you are here" already
+ * looks like everywhere else in this console. No underline, because an
+ * underline is a border and the design system has none.
+ *
+ * It scrolls sideways instead of wrapping. Five tabs fit on a laptop and
+ * six do not on a phone, and a bar that wraps to two lines stops reading as
+ * one row of choices. */
+.tabs {
+  display: flex;
+  gap: var(--sp-2);
+  overflow-x: auto;
+  margin-bottom: var(--sp-5);
+}
+.tabs .tab {
+  flex: 0 0 auto;
+  padding: var(--sp-2) var(--sp-3);
+  border-radius: var(--r-md);
+  color: rgb(var(--c-fg-muted));
+  font-size: var(--fs-sm);
+  font-weight: 500;
+  text-decoration: none;
+}
+.tabs .tab.active {
+  background: rgb(var(--c-bg-contrast));
+  color: rgb(var(--c-fg));
+}
+
 /* Release notes. Written by somebody else, arriving as Markdown, and
    rendered here as ordinary prose — narrow enough to read, with the
    bullets and code the notes actually use. */
