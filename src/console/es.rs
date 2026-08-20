@@ -32,6 +32,7 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
         " copies here have no memory ceiling, so what is promised is a floor rather than a total — any of them may take what is left.",
         " copias de aquí no tienen techo de memoria, así que lo prometido es un mínimo y no un total — cualquiera de ellas puede llevarse lo que queda.",
     ),
+    (" for services.", " para los servicios."),
     (" free", " libres"),
     (" here", " aquí"),
     (" is available.", " está disponible."),
@@ -191,6 +192,10 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
         "Cores, like 0.5 or 2 — or millicores with an m, like 500m. Over this the container is throttled, not killed: it runs slowly rather than stopping. A ceiling is also what is reserved for it — the node counts what it has promised, and refuses to promise more than it has.",
         "Núcleos, como 0.5 o 2 — o milicores con una m, como 500m. Por encima de esto el contenedor se estrangula, no se mata: va lento en vez de pararse. Un techo es además lo que se le reserva — el nodo cuenta lo que ha prometido, y se niega a prometer más de lo que tiene.",
     ),
+    (
+        "Cores, like 0.5, or millicores with an m. Empty means the default of a quarter core.",
+        "Núcleos, como 0.5, o milicores con una m. Vacío es el valor por defecto, un cuarto de núcleo.",
+    ),
     ("Could not read the release list: ", "No se pudo leer la lista de versiones: "),
     ("Create account", "Crear cuenta"),
     ("Create administrator", "Crear administrador"),
@@ -338,12 +343,17 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
         "Guardar allí una copia de los datos de este nodo",
     ),
     ("Keep the write-ahead log", "Guardar el log de escritura anticipada"),
+    (
+        "Kept for the console, the edge, containerd and everything else on this machine. Empty means the default, which is 15 % with a floor of 256 MB.",
+        "Se guarda para la consola, el edge, containerd y todo lo demás de esta máquina. Vacío es el valor por defecto: 15 % con un suelo de 256 MB.",
+    ),
     ("Key file", "Fichero de la clave"),
     ("Last update", "Última actualización"),
     (
         "Leave it empty for your own application: the service waits, and the first push to its own repository becomes its first release. The page will show you the two commands.",
         "Déjala vacía para tu propia aplicación: el servicio espera, y el primer push a su propio repositorio se convierte en su primera versión. La página te dará los dos comandos.",
     ),
+    ("Leaves ", "Deja "),
     (
         "Lets a database be restored to any minute, rather than only to the moment of a backup. It costs disk — a segment a minute per database, compressed — and it takes effect at each database's next deployment.",
         "Permite restaurar una base de datos a cualquier minuto, y no sólo al momento de un backup. Cuesta disco — un segmento por minuto y base de datos, comprimido — y surte efecto en el siguiente despliegue de cada base de datos.",
@@ -528,6 +538,7 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
         "Replicas can be placed here — its own services included. A small node can own projects and run none of them.",
         "Se pueden colocar réplicas aquí — las de sus propios servicios incluidas. Un nodo pequeño puede tener proyectos y no ejecutar ninguno.",
     ),
+    ("Reserved for the node", "Reservado para el nodo"),
     (
         "Resolves in every container of this project, on any node holding a copy — the long name in the world's DNS too. Neither reaches the database from outside the node: that is a published port, which is not built.",
         "Resuelve en cada contenedor de este proyecto, en cualquier nodo que sostenga una copia — el nombre largo también en el DNS del mundo. Ninguno alcanza la base desde fuera del nodo: eso es publicar un puerto, que no está construido.",

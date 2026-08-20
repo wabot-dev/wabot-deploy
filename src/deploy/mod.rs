@@ -1142,11 +1142,19 @@ impl Deployer {
 
         let committed = self.committed().await;
         let total = self.memory().await.total;
+        // What the operator said this machine keeps for itself, read here
+        // rather than inside the arithmetic: `presets` is pure and stays
+        // that way.
+        let reserved_memory = crate::node::settings::memory_reserve(&self.database).await;
+        let reserved_cpu = crate::node::settings::cpu_reserve(&self.database).await;
 
         if let Some(bytes) = memory {
             let refusal = fits(
                 Room {
-                    allocatable: crate::platform::presets::allocatable_memory(total),
+                    allocatable: crate::platform::presets::allocatable_memory(
+                        total,
+                        reserved_memory,
+                    ),
                     known: total > 0,
                     committed: committed.memory,
                     already: service.memory_limit.unwrap_or(0),
@@ -1161,7 +1169,7 @@ impl Deployer {
         }
 
         if let Some(millicores) = cpu {
-            let cores = crate::node::cpu::allocatable_millicores();
+            let cores = crate::node::cpu::allocatable_millicores(reserved_cpu);
             return fits(
                 Room {
                     allocatable: u64::from(cores),

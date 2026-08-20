@@ -56,6 +56,8 @@ pub async fn set_domain(database: &SqliteDatabase, domain: Option<&str>) -> Sqli
 /// Whether this node keeps the write-ahead log of its databases, so
 /// that one can be restored to a point in time.
 const ARCHIVING: &str = "wal.archiving";
+const MEMORY_RESERVE: &str = "node.memory_reserve";
+const CPU_RESERVE: &str = "node.cpu_reserve";
 
 /// Whether point-in-time recovery is on for this node.
 ///
@@ -88,6 +90,52 @@ pub async fn archiving(database: &SqliteDatabase) -> bool {
 /// Turn it on, or off.
 pub async fn set_archiving(database: &SqliteDatabase, on: bool) -> SqliteResult<()> {
     write(database, ARCHIVING, if on { "on" } else { "off" }).await
+}
+
+/// What this node keeps for itself, in bytes, when the operator has said.
+///
+/// `None` means the default, which is a fraction *and* a floor — see
+/// `presets::default_memory_reserve`. Stored rather than computed because
+/// the default cannot be right for every machine: it is deliberately
+/// generous on a small node, and on a 32 GB box 15 % is five gigabytes
+/// nothing is using.
+pub async fn memory_reserve(database: &SqliteDatabase) -> Option<u64> {
+    match read(database, MEMORY_RESERVE).await {
+        Ok(Some(value)) => value.trim().parse().ok(),
+        _ => None,
+    }
+}
+
+/// Set it, or clear it back to the default with `None`.
+pub async fn set_memory_reserve(database: &SqliteDatabase, bytes: Option<u64>) -> SqliteResult<()> {
+    write(
+        database,
+        MEMORY_RESERVE,
+        &bytes.map(|bytes| bytes.to_string()).unwrap_or_default(),
+    )
+    .await
+}
+
+/// The same for CPU, in millicores.
+pub async fn cpu_reserve(database: &SqliteDatabase) -> Option<u32> {
+    match read(database, CPU_RESERVE).await {
+        Ok(Some(value)) => value.trim().parse().ok(),
+        _ => None,
+    }
+}
+
+pub async fn set_cpu_reserve(
+    database: &SqliteDatabase,
+    millicores: Option<u32>,
+) -> SqliteResult<()> {
+    write(
+        database,
+        CPU_RESERVE,
+        &millicores
+            .map(|millicores| millicores.to_string())
+            .unwrap_or_default(),
+    )
+    .await
 }
 
 /// What the last certificate attempt said, if it failed.

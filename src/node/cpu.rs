@@ -125,11 +125,20 @@ pub fn between(before: &Sample, after: &Sample) -> Option<Busy> {
 /// make true.
 /// What may be promised to containers: every core, less what the node
 /// keeps for its own console, edge and reconcile loop.
-pub fn allocatable_millicores() -> u32 {
-    crate::platform::presets::allocatable_cpu(cores() * 1_000)
+/// `reserve` is the operator's answer, or `None` for the default.
+///
+/// A parameter because this is sync and has no database: the two callers
+/// that have one read it and hand it over, which also keeps the number
+/// testable against a value rather than against a row.
+pub fn allocatable_millicores(reserve: Option<u32>) -> u32 {
+    crate::platform::presets::allocatable_cpu(cores() * 1_000, reserve)
 }
 
-fn cores() -> u32 {
+/// How many the machine has.
+///
+/// Public because the reserves form says what a number leaves for
+/// services, and that sentence needs the total.
+pub fn cores() -> u32 {
     std::thread::available_parallelism()
         .map(|count| count.get() as u32)
         .unwrap_or(1)

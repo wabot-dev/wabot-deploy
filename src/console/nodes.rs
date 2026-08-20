@@ -396,6 +396,14 @@ impl NodePages {
         )
         .await;
         let archiving = crate::node::settings::archiving(&self.state.database).await;
+        let reserves = (
+            crate::node::settings::memory_reserve(&self.state.database).await,
+            crate::node::settings::cpu_reserve(&self.state.database).await,
+        );
+        // What the machine is, for the "leaves this much" line. The
+        // reading, not a stream: this page does not host the meters.
+        let snapshot = self.state.deployer.memory().await;
+        let cores = crate::node::cpu::cores();
 
         let facts = super::certificate_facts(&self.state).await;
         let policy = crate::edge::policy::for_name(
@@ -436,6 +444,7 @@ impl NodePages {
                     (layout::error_note(message))
                 }
                 (capabilities_card(hosts, edges, reachable, archiving))
+                (reserves_card(&snapshot, reserves, cores))
                 // The certificate's own cells stream, so it keeps the
                 // island — with only its half of the markup, which the
                 // runtime tolerates: a cell it cannot find is skipped.
@@ -534,6 +543,10 @@ impl NodePages {
         // would be this node's own reading of itself, at the top of its
         // own CPU column.
         let committed = self.state.deployer.committed().await;
+        let reserves = (
+            crate::node::settings::memory_reserve(&self.state.database).await,
+            crate::node::settings::cpu_reserve(&self.state.database).await,
+        );
         let disk = crate::node::disk::breakdown(
             &self.state.config.node.data_dir,
             std::path::Path::new(crate::node::disk::CONTAINERD_ROOT),
@@ -560,7 +573,7 @@ impl NodePages {
                     // `<script>`, which a boosted navigation never runs —
                     // arriving here by clicking a link left the page a
                     // snapshot with no sign that it was one.
-                    (live_cards(&node.id, &disk, &committed, &snapshot))
+                    (live_cards(&node.id, &disk, &committed, &snapshot, reserves))
 
                     // Outside the island: none of it streams, and a card
                     // inside the host would be replaced by an update that
@@ -688,6 +701,110 @@ pub(crate) fn offering(capability: network::capability::Capability) -> &'static 
 /// showing. Offering to answer for names needs an address the world can
 /// dial, and a switch that could be turned on to no effect is a promise
 /// the node cannot keep.
+/// Whether a reserve is one this machine can keep, and why not.
+///
+/// Pure, and separate from the handler for the reason `deploy::fits` is:
+/// the interesting half is the refusal, and a test cannot produce a real
+/// reading — there is no containerd in the harness, so every measurement
+/// is nought and the check it exercises is the one that never fires.
+///
+/// `in_use` is everything outside any container's cgroup: this binary,
+/// containerd and the shims. That is what a reserve is *for*, which is why
+/// it is also the floor — the old constant of 256 MB was a guess standing
+/// in for this number, chosen because 15 % of a 1 GB node is under what
+/// the node was measured using.
+fn reserve_refusal(
+    total: u64,
+    in_use: u64,
+    committed: u64,
+    wanted: u64,
+    say: impl Fn(u64) -> String,
+) -> Option<String> {
+    if wanted < in_use {
+        return Some(format!(
+            "this node is using {} for itself right now — reserving {} would promise memory it is \
+             already spending",
+            say(in_use),
+            say(wanted)
+        ));
+    }
+    let left = total.saturating_sub(wanted);
+    match left < committed {
+        true => Some(format!(
+            "{} is already promised to services, and that would leave {}",
+            say(committed),
+            say(left)
+        )),
+        false => None,
+    }
+}
+
+/// What this machine keeps for itself, and what is left for services.
+///
+/// It was two constants: 15 % of memory with a floor of 256 MB, and a
+/// quarter core. Those are a reasonable guess and cannot be right for
+/// every machine — deliberately generous on a small node, and on a 32 GB
+/// box 15 % is five gigabytes nothing is using. Asked for by Jorge.
+///
+/// The refusal is the interesting half and it is on the POST: a reserve
+/// under what this node's own processes are *measured* using right now is
+/// refused with the reading, because the node can answer that question
+/// about itself and a constant cannot.
+fn reserves_card<'a>(
+    snapshot: &'a Snapshot,
+    reserves: (Option<u64>, Option<u32>),
+    cores: u32,
+) -> impl Renderable + 'a {
+    let (memory, cpu) = reserves;
+    let default_memory = crate::platform::presets::default_memory_reserve(snapshot.total);
+    let memory_value = memory
+        .map(crate::platform::presets::size_field)
+        .unwrap_or_default();
+    let cpu_value = cpu
+        .map(crate::platform::presets::cores_field)
+        .unwrap_or_default();
+    let default_cpu =
+        crate::platform::presets::cores_field(crate::platform::presets::NODE_RESERVE_MILLICORES);
+    let default_memory_label = crate::platform::presets::label(default_memory);
+    let allocatable = crate::node::memory::human(crate::platform::presets::allocatable_memory(
+        snapshot.total,
+        memory,
+    ));
+    let allocatable_cpu = crate::platform::presets::cpu_label(
+        crate::platform::presets::allocatable_cpu(cores * 1_000, cpu),
+    );
+
+    rsx! {
+        <section class="card stack" id="reserves">
+            <p class="card-label">(t("Reserved for the node"))</p>
+            <form method="post" action="/node/reserves" class="stack">
+                <label for="memory-reserve">(t("Memory"))</label>
+                <input id="memory-reserve" name="memory" type="text" autocomplete="off"
+                       placeholder=(&default_memory_label) value=(&memory_value)>
+                <p class="field-hint">(t("Kept for the console, the edge, containerd and \
+                     everything else on this machine. Empty means the default, which is 15 % \
+                     with a floor of 256 MB."))</p>
+
+                <label for="cpu-reserve">(t("CPU"))</label>
+                <input id="cpu-reserve" name="cpu" type="text" autocomplete="off"
+                       placeholder=(&default_cpu) value=(&cpu_value)>
+                <p class="field-hint">(t("Cores, like 0.5, or millicores with an m. Empty means \
+                     the default of a quarter core."))</p>
+
+                // The consequence, in the units the rest of the console
+                // uses. A reserve is only meaningful as "what is left",
+                // and an operator typing a number should not have to do
+                // the subtraction to find out what they did.
+                <p class="field-hint">(t("Leaves "))(&allocatable)(t(" and "))
+                    (&allocatable_cpu)(t(" for services."))</p>
+                <div class="actions">
+                    <button type="submit">(t("Save"))</button>
+                </div>
+            </form>
+        </section>
+    }
+}
+
 fn capabilities_card(
     hosts: bool,
     edges: bool,
@@ -1607,6 +1724,10 @@ fn memory_card<'a>(
     // service fits — and an operator who cannot see them experiences
     // that rule as a form that says no.
     committed: &'a crate::deploy::Committed,
+    // What the operator said this machine keeps for itself, memory then
+    // CPU, or `None` each for the default. It reaches the "promised of"
+    // figure, which is the whole point of the setting being editable.
+    reserves: (Option<u64>, Option<u32>),
 ) -> impl Renderable + 'a {
     let containers = snapshot.containers_total();
 
@@ -1671,11 +1792,11 @@ fn memory_card<'a>(
                 <dt>(t("Promised"))</dt>
                 <dd>
                     (memory::human(committed.memory))(t(" of "))
-                    (memory::human(crate::platform::presets::allocatable_memory(snapshot.total)))
+                    (memory::human(crate::platform::presets::allocatable_memory(snapshot.total, reserves.0)))
                     (" · ")
                     (crate::platform::presets::cpu_label(committed.cpu))(t(" of "))
                     (crate::platform::presets::cpu_label(
-                        crate::node::cpu::allocatable_millicores()
+                        crate::node::cpu::allocatable_millicores(reserves.1)
                     ))
                 </dd>
             </dl>
@@ -1876,9 +1997,10 @@ fn live_cards<'a>(
     disk: &'a crate::node::disk::Breakdown,
     committed: &'a crate::deploy::Committed,
     snapshot: &'a Snapshot,
+    reserves: (Option<u64>, Option<u32>),
 ) -> impl Renderable + 'a {
     let inner = rsx! {
-        (memory_card(snapshot, committed))
+        (memory_card(snapshot, committed, reserves))
         (disk_card(disk))
     }
     .render()
@@ -2083,6 +2205,101 @@ impl NodeApi {
     /// Turning `edge` off makes this node **private**, which is not a
     /// separate switch and must not become one: private has never meant
     /// anything except "does not offer to answer for names".
+    /// What this machine keeps for itself.
+    ///
+    /// **The floor is a measurement, not a constant.** A reserve under
+    /// what this node's own processes are using right now — this binary,
+    /// containerd, the shims — is refused with the reading, because the
+    /// node can answer that question about itself and 256 MB cannot. The
+    /// old constant was chosen for exactly this reason and had to guess.
+    ///
+    /// And a reserve that leaves less than is already promised is refused
+    /// too, naming the figure: the ceilings on existing services are
+    /// reservations, so accepting it would make every "does this fit"
+    /// answer on the node wrong until somebody deleted something.
+    #[post("/node/reserves")]
+    #[raw]
+    #[middleware(SessionMiddleware)]
+    async fn set_reserves(&self, request: Request) -> RestResult<Response> {
+        let here = "/node";
+        let Some(account) = signed_in(&self.auth) else {
+            return Ok(super::auth::see_other("/sign-in"));
+        };
+        if !account.is_admin() {
+            return Ok(super::auth::see_other("/"));
+        }
+        let form = match super::auth::read_form(request).await {
+            Ok(form) => form,
+            Err(response) => return Ok(response),
+        };
+
+        let memory = match crate::platform::presets::parse_size(super::auth::field(&form, "memory"))
+        {
+            Ok(bytes) => bytes,
+            Err(reason) => return Ok(super::auth::back_with_error(here, &reason)),
+        };
+        let cpu = match crate::platform::presets::parse_cores(super::auth::field(&form, "cpu")) {
+            Ok(millicores) => millicores,
+            Err(reason) => return Ok(super::auth::back_with_error(here, &reason)),
+        };
+
+        let snapshot = self.state.deployer.memory().await;
+        let committed = self.state.deployer.committed().await;
+
+        if let Some(bytes) = memory {
+            // Everything outside anybody's cgroup, which is what a
+            // reserve is for.
+            let in_use = snapshot.node + snapshot.containerd + snapshot.shims;
+            if let Some(reason) = reserve_refusal(
+                snapshot.total,
+                in_use,
+                committed.memory,
+                bytes,
+                crate::node::memory::human,
+            ) {
+                return Ok(super::auth::back_with_error(here, &reason));
+            }
+        }
+
+        if let Some(millicores) = cpu {
+            // No floor from a reading here: the node's own CPU use is a
+            // rate the stream computes from two samples, and a form has
+            // one. `parse_cores` already refuses below a tenth of a core.
+            if let Some(reason) = reserve_refusal(
+                u64::from(crate::node::cpu::cores() * 1_000),
+                0,
+                u64::from(committed.cpu),
+                u64::from(millicores),
+                |millicores| {
+                    crate::platform::presets::cpu_label(
+                        u32::try_from(millicores).unwrap_or(u32::MAX),
+                    )
+                },
+            ) {
+                return Ok(super::auth::back_with_error(here, &reason));
+            }
+        }
+
+        // Logged rather than propagated, the way `set_domain` does it
+        // here: a write that fails leaves the previous number in place,
+        // and the page redraws it — which is a truthful page rather than
+        // a 500.
+        if let Err(error) =
+            crate::node::settings::set_memory_reserve(&self.state.database, memory).await
+        {
+            tracing::error!(%error, "could not store the memory reserve");
+        }
+        if let Err(error) = crate::node::settings::set_cpu_reserve(&self.state.database, cpu).await
+        {
+            tracing::error!(%error, "could not store the CPU reserve");
+        }
+        // Nothing is redeployed. A reserve decides what the node will
+        // *accept* next; it does not reach into a container's cgroup, and
+        // restarting every service because a number moved would be a
+        // setting that costs an outage.
+        Ok(super::auth::see_other(&format!("{here}#reserves")))
+    }
+
     #[post("/node/capabilities")]
     #[raw]
     #[middleware(SessionMiddleware)]
@@ -2799,7 +3016,7 @@ pub(crate) mod tests {
     #[test]
     fn every_streamed_cell_has_a_place_on_the_page() {
         let snapshot = snapshot();
-        let rendered = memory_card(&snapshot, &Default::default())
+        let rendered = memory_card(&snapshot, &Default::default(), (None, None))
             .render()
             .into_inner();
         let payload = cells(&snapshot, None);
@@ -2844,7 +3061,7 @@ pub(crate) mod tests {
 
         // And the first paint still needs the whole declaration, because
         // there it is the attribute.
-        assert!(memory_card(&snapshot, &Default::default())
+        assert!(memory_card(&snapshot, &Default::default(), (None, None))
             .render()
             .into_inner()
             .contains("style=\"width:"));
@@ -2898,7 +3115,7 @@ pub(crate) mod tests {
     #[test]
     fn the_first_paint_and_the_stream_agree() {
         let snapshot = snapshot();
-        let rendered = memory_card(&snapshot, &Default::default())
+        let rendered = memory_card(&snapshot, &Default::default(), (None, None))
             .render()
             .into_inner();
 
@@ -2911,6 +3128,135 @@ pub(crate) mod tests {
                 "the page does not show {value}"
             );
         }
+    }
+
+    /// A reserve the machine cannot keep is refused, with the reading.
+    ///
+    /// The floor used to be a constant — 256 MB — chosen because 15 % of a
+    /// 1 GB node is 154 MB, which is under what this process plus
+    /// containerd were measured using. That was a guess standing in for a
+    /// measurement, and once the number is the operator's the node can
+    /// answer the question about itself.
+    ///
+    /// Asked of the pure function and not through the page, because there
+    /// is no containerd in the harness: every reading is nought there, so
+    /// a POST would exercise the one branch that never fires.
+    #[test]
+    fn a_reserve_the_node_cannot_keep_is_refused() {
+        let mb = 1024 * 1024;
+        let say = |bytes: u64| format!("{} MB", bytes / mb);
+
+        // Under what the node itself is using: refused, and it says the
+        // number it measured rather than a rule.
+        let refusal = reserve_refusal(1024 * mb, 161 * mb, 0, 6 * mb, say)
+            .expect("6 MB is under 161 MB of measured use");
+        assert!(refusal.contains("161 MB"), "{refusal}");
+        assert!(
+            refusal.contains("6 MB"),
+            "and what was asked for: {refusal}"
+        );
+
+        // Room for what is already promised: refused, naming the promise.
+        let refusal = reserve_refusal(1024 * mb, 161 * mb, 700 * mb, 512 * mb, say)
+            .expect("512 MB reserved leaves 512 MB against 700 MB promised");
+        assert!(refusal.contains("700 MB"), "{refusal}");
+        assert!(
+            refusal.contains("512 MB"),
+            "and what would be left: {refusal}"
+        );
+
+        // And a number that fits both is accepted.
+        assert_eq!(
+            reserve_refusal(1024 * mb, 161 * mb, 300 * mb, 256 * mb, say),
+            None
+        );
+        // Exactly what is in use is enough: the floor is "not less than".
+        assert_eq!(reserve_refusal(1024 * mb, 161 * mb, 0, 161 * mb, say), None);
+    }
+
+    /// Empty means the default, and a number survives the round trip.
+    #[tokio::test]
+    async fn a_reserve_is_stored_and_cleared_from_the_page() {
+        let console = Console::new().await;
+        let cookie = console.signed_in().await;
+        macro_rules! save {
+            ($memory:expr) => {{
+                let response = console
+                    .harness
+                    .post("/node/reserves")
+                    .header("cookie", &cookie)
+                    .form(&[("memory", $memory), ("cpu", "")])
+                    .send()
+                    .await;
+                response.header("location").unwrap_or_default().to_string()
+            }};
+        }
+
+        let saved = save!("512 MB");
+        assert!(saved.ends_with("/node#reserves"), "{saved}");
+        assert_eq!(
+            crate::node::settings::memory_reserve(&console.database).await,
+            Some(512 * 1024 * 1024)
+        );
+
+        // Empty is "whatever this machine's size implies", not nought.
+        save!("");
+        assert_eq!(
+            crate::node::settings::memory_reserve(&console.database).await,
+            None,
+            "empty is the default, not zero"
+        );
+
+        // And a size the parser refuses never reaches the row.
+        let refused = save!("lots");
+        assert!(refused.contains("error="), "{refused}");
+    }
+
+    /// Settings adjusts; it does not report.
+    ///
+    /// The meters were on this page when it was `/nodes`, and Jorge asked
+    /// twice for them to go: nothing on them is adjustable, and the same
+    /// readings are on the node's own page in the network. The second ask
+    /// came with a screenshot, and this is the assertion that was missing
+    /// — I had checked the source and told him it was already done, which
+    /// is not the same as knowing.
+    #[tokio::test]
+    async fn the_settings_page_has_no_meters_on_it() {
+        let console = Console::new().await;
+        let cookie = console.signed_in().await;
+        let body = console
+            .harness
+            .get("/node")
+            .header("cookie", &cookie)
+            .send()
+            .await
+            .body;
+
+        // The meter's own markup, not the word: `Memory` is a label a
+        // future card could reuse, while `data-meter` and `data-bar` are
+        // what a bar *is*.
+        assert!(
+            !body.contains("data-meter"),
+            "a meter is on the settings page: {body}"
+        );
+        assert!(!body.contains(r#"data-bar="#), "and so is a bar: {body}");
+        // What it is for is still here.
+        assert!(body.contains("/node/capabilities"), "{body}");
+        assert!(body.contains("/node/certificate"), "{body}");
+
+        // And the readings are on the node's page, which is where they
+        // belong — so this is a move and not a deletion.
+        let node = console
+            .harness
+            .get(&console.node_path)
+            .header("cookie", &cookie)
+            .send()
+            .await
+            .body;
+        assert!(
+            node.contains("data-meter"),
+            "the readings went nowhere: {node}"
+        );
     }
 
     /// The network is where you look; `/node` is what you change.

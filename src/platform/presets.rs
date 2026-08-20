@@ -35,15 +35,26 @@ pub const NODE_RESERVE_FLOOR: u64 = 256 * MB;
 /// and neither grows with the size of the machine.
 pub const NODE_RESERVE_MILLICORES: u32 = 250;
 
+/// The reserve when nobody has chosen one.
+///
+/// A fraction *and* a floor, for the reason above.
+pub fn default_memory_reserve(total: u64) -> u64 {
+    (total * NODE_RESERVE_FRACTION / 100).max(NODE_RESERVE_FLOOR)
+}
+
 /// How much of a machine may be promised to containers.
-pub fn allocatable_memory(total: u64) -> u64 {
-    let reserve = (total * NODE_RESERVE_FRACTION / 100).max(NODE_RESERVE_FLOOR);
-    total.saturating_sub(reserve)
+///
+/// `reserve` is the operator's answer, or `None` for the default. It is a
+/// parameter rather than a read inside because this is called from the
+/// deploy path and from two pages, and a function that reaches for the
+/// database is one that cannot be tested against a number.
+pub fn allocatable_memory(total: u64, reserve: Option<u64>) -> u64 {
+    total.saturating_sub(reserve.unwrap_or_else(|| default_memory_reserve(total)))
 }
 
 /// The same for CPU. `total` is the machine's cores in millicores.
-pub fn allocatable_cpu(total: u32) -> u32 {
-    total.saturating_sub(NODE_RESERVE_MILLICORES)
+pub fn allocatable_cpu(total: u32, reserve: Option<u32>) -> u32 {
+    total.saturating_sub(reserve.unwrap_or(NODE_RESERVE_MILLICORES))
 }
 
 /// The CPU rungs, in millicores. A thousand is one core.
@@ -319,23 +330,23 @@ mod tests {
     fn a_node_keeps_enough_of_itself_at_either_end_of_the_range() {
         // The test node: the floor is what protects it.
         let small = 1024 * MB;
-        assert_eq!(allocatable_memory(small), small - NODE_RESERVE_FLOOR);
+        assert_eq!(allocatable_memory(small, None), small - NODE_RESERVE_FLOOR);
         assert!(
-            small - allocatable_memory(small) > small * 15 / 100,
+            small - allocatable_memory(small, None) > small * 15 / 100,
             "the floor wins where the fraction is too little"
         );
 
         // A big machine: the fraction is what protects it.
         let large = 32 * 1024 * MB;
-        assert_eq!(allocatable_memory(large), large - large * 15 / 100);
+        assert_eq!(allocatable_memory(large, None), large - large * 15 / 100);
         assert!(
-            large - allocatable_memory(large) > NODE_RESERVE_FLOOR,
+            large - allocatable_memory(large, None) > NODE_RESERVE_FLOOR,
             "the fraction wins where the floor is nothing"
         );
 
         // And a machine smaller than the floor promises nothing rather
         // than wrapping into a very large number.
-        assert_eq!(allocatable_memory(128 * MB), 0);
+        assert_eq!(allocatable_memory(128 * MB, None), 0);
     }
 
     /// CPU's reserve is flat, because the node's own work does not grow
@@ -343,9 +354,9 @@ mod tests {
     /// whether there is one core or thirty-two.
     #[test]
     fn the_cpu_reserve_does_not_grow_with_the_machine() {
-        assert_eq!(allocatable_cpu(1_000), 750);
-        assert_eq!(allocatable_cpu(32_000), 31_750);
-        assert_eq!(allocatable_cpu(100), 0, "and never wraps");
+        assert_eq!(allocatable_cpu(1_000, None), 750);
+        assert_eq!(allocatable_cpu(32_000, None), 31_750);
+        assert_eq!(allocatable_cpu(100, None), 0, "and never wraps");
     }
 
     /// A rung reads the way somebody thinks about it. "Half a core" is
