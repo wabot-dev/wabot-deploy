@@ -480,7 +480,7 @@ impl NodePages {
                 .filter(|record| record.node_id == node.id)
                 .collect();
             layout::head(&node.name);
-            let frame = Frame::new(&account, Area::Settings, &projects, None, path);
+            let frame = Frame::new(&account, Area::Network, &projects, None, path);
             // The account's language, around the render and no wider:
             // the strings are read here, and nothing awaits inside.
             let body = super::language::scoped(account.language, || {
@@ -491,7 +491,6 @@ impl NodePages {
                             <h1>(&node.name)</h1>
                             <p class="slug-preview">(t("joined · "))(reach(&node))</p>
                         </div>
-                        <a class="btn btn-ghost" href="/network">(t("All nodes"))</a>
                     </div>
                     @if let Some(message) = &query.error {
                         (layout::error_note(message))
@@ -542,7 +541,7 @@ impl NodePages {
         let path = format!("/network/{}", node.id);
 
         layout::head(&node.name);
-        let frame = Frame::new(&account, Area::Settings, &projects, None, path);
+        let frame = Frame::new(&account, Area::Network, &projects, None, path);
         // The account's language, around the render and no wider:
         // the strings are read here, and nothing awaits inside.
         let body = super::language::scoped(account.language, || {
@@ -553,7 +552,6 @@ impl NodePages {
                             <h1>(&node.name)</h1>
                             <p class="slug-preview">("wabot-deploy ")(crate::api::VERSION)</p>
                         </div>
-                        <a class="btn btn-ghost" href="/network">(t("All nodes"))</a>
                     </div>
 
                     // One island around both cards: the stream replaces

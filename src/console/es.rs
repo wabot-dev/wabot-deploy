@@ -121,7 +121,6 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
     ("Address", "Dirección"),
     ("Administrator — everything", "Administrador — todo"),
     ("Advanced", "Avanzado"),
-    ("All nodes", "Todos los nodos"),
     ("Allowed", "Permitido"),
     (
         "Already thrown out. Its containers are stopped and the node that placed it has been told — or will be, the next time it asks.",

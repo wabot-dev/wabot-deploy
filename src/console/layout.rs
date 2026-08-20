@@ -838,15 +838,30 @@ mod tests {
                 if trimmed.starts_with("//") {
                     continue;
                 }
-                // Rendered *content*, which in `rsx!` is `>(…)`. The
-                // first version of this matched the text anywhere and
-                // caught the breadcrumb arrow's own `title` and
-                // `aria-label` — which say "Back to <where>" and should,
-                // because that is the accessible name of the one control
-                // this rule exists to protect. The label somebody reads is
-                // what must not be duplicated; the name a screen reader
-                // announces for the arrow is the arrow.
-                if line.contains(">(t(\"Back to") {
+                // **The style, not the words.** This asked for the
+                // phrase `Back to` and so missed `All nodes` on a node's
+                // page — the fourth report, and the one that proved the
+                // shape CLAUDE.md keeps naming: a guard that enumerates
+                // its inputs is right until somebody adds an input. There
+                // is no end to the ways to spell "go up".
+                //
+                // What every one of them has in common is the quietest
+                // style in the system. So: a link rendered as a ghost
+                // button is a way back, unless its label is one of the
+                // exceptions below.
+                //
+                // It can be wrong in the safe direction. A tertiary
+                // *forward* link would fail here and want a sentence
+                // saying why it is not a way back — which is the right
+                // friction for this control, since the alternative has now
+                // shipped four times.
+                const NOT_A_WAY_BACK: &[&str] = &[
+                    // Abandons an edit, which the breadcrumb says nothing
+                    // about. Named in the original rule.
+                    "Cancel",
+                ];
+                let ghost = trimmed.starts_with("<a class=\"btn btn-ghost\"");
+                if ghost && !NOT_A_WAY_BACK.iter().any(|label| line.contains(label)) {
                     found.push(format!("{name}:{}", number + 1));
                 }
             }

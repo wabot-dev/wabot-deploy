@@ -184,7 +184,10 @@ fn verb(segment: &str) -> Option<String> {
 /// shape rather than by anybody noticing.
 fn collection(segment: &str) -> Option<String> {
     Some(match segment {
-        "nodes" => t("Nodes").to_string(),
+        // Singular, and not `network`: the area's own crumb already links
+        // the list, so answering for it here would put "Red / Nodos"
+        // above a node with the same destination twice.
+        "node" => t("Node").to_string(),
         "people" => t("People").to_string(),
         "updates" => t("Updates").to_string(),
         _ => return None,
@@ -909,31 +912,38 @@ mod tests {
         assert_eq!(new.last().expect("last"), &("New".to_string(), None));
 
         // A collection that *is* a page keeps its own crumb.
-        let nodes = trail_for(Area::Settings, "/nodes");
+        let node = trail_for(Area::Settings, "/node");
         assert_eq!(
-            nodes.last().expect("last"),
-            &("Nodes".to_string(), Some("/nodes".to_string()))
+            node.last().expect("last"),
+            &("Node".to_string(), Some("/node".to_string()))
         );
-        // A pair used to swallow the collection it came out of, so this
-        // read "Settings / nd-abc" — no list in the trail, and no way
-        // back either, since "Settings" names an area and carries no
-        // href for the arrow to use. Every settings page one level deep
-        // was like it.
-        let one_node = trail_for(Area::Settings, "/nodes/nd-abc");
+
+        // A node's own page is in the network, and the area's crumb is
+        // what leads back to the list.
+        //
+        // It read "Settings / nd-abc" — the wrong area lit in the header,
+        // and no way back either, since "Settings" names an area and
+        // carries no href for the arrow to use. Reported by Jorge from
+        // the page. The area answers with a link now, so `collection`
+        // deliberately says nothing about `network`: a crumb for the list
+        // would be the same destination twice in one trail.
+        let one_node = trail_for(Area::Network, "/network/nd-abc");
         assert_eq!(
             one_node,
             vec![
-                ("Settings".to_string(), None),
-                ("Nodes".to_string(), Some("/nodes".to_string())),
-                ("nd-abc".to_string(), Some("/nodes/nd-abc".to_string())),
+                ("Network".to_string(), Some("/network".to_string())),
+                ("nd-abc".to_string(), Some("/network/nd-abc".to_string())),
             ],
-            "an id is not prettified, and the list it came from is a crumb"
+            "an id is not prettified, and the area is the way back"
         );
 
         // What the arrow reads: the crumb before the last, which has to
         // be somewhere it can go.
-        for path in ["/nodes/nd-abc", "/updates/v0.9.0"] {
-            let trail = trail_for(Area::Settings, path);
+        for (area, path) in [
+            (Area::Network, "/network/nd-abc"),
+            (Area::Settings, "/updates/v0.9.0"),
+        ] {
+            let trail = trail_for(area, path);
             let parent = &trail[trail.len() - 2];
             assert!(parent.1.is_some(), "{path} has no way back: {:?}", trail);
         }
@@ -945,7 +955,7 @@ mod tests {
             "/projects/db-test/services/orders",
             "/projects/db-test/services/orders/settings",
             "/projects/db-test/databases/new",
-            "/nodes/nd-abc",
+            "/network/nd-abc",
         ] {
             for (label, href) in trail_for(Area::Projects, path) {
                 let Some(href) = href else { continue };
