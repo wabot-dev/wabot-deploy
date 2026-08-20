@@ -1,6 +1,28 @@
 name: ci
 
-on: [push, pull_request]
+# Branches, never tags. A tag pushed alongside the commit it names ran
+# this three times over one commit: `ci` for the branch, `ci` again for
+# the tag, and `release`. The second was the same three commands on the
+# same sha under a different name.
+#
+# The gate on a tag is `release.yml`'s own `Check` step, which is there
+# because a tag can point at a commit this workflow never saw — so
+# excluding tags here does not leave one ungated, it stops paying twice
+# for the one that is.
+on:
+  push:
+    branches:
+      - "**"
+  pull_request:
+
+# A push that supersedes another cancels it. Two commits a minute apart
+# otherwise hold two runners to answer about the older one.
+#
+# Per ref, so main and a branch never cancel each other. `release` has no
+# group of its own on purpose: a publish is not something to interrupt.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   check:
