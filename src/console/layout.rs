@@ -179,13 +179,27 @@ wabot-outlet {
   padding: 0;
 }
 /* And the glyph is sized here rather than by the `width` on each SVG.
-   The box was widened once without the glyph following it, so an
-   18-pixel icon sat in a 36-pixel button and read as shrunken — twice.
-   One rule that every icon button obeys is the fix; the attributes on
-   the SVGs are what a browser uses before this stylesheet arrives. */
+   One rule that every icon button obeys; the attributes on the SVGs are
+   what a browser uses before this stylesheet arrives.
+
+   **This has now been judged from both ends.** It was 18px, and read as
+   shrunken twice — a box widened without the glyph following it. It went
+   to 22px, and Jorge reports that as too big, on the header controls and
+   on the copy button beside a connection string.
+
+   18px in a 36px box is what was called shrunken, so the difference is
+   not the number alone: `stroke-width` is 2 on every one of these, and a
+   heavy stroke at 22px is what reads as bulk. So the glyph comes down to
+   20px and the stroke to 1.75 — lighter at close to the same size, which
+   is the axis neither judgement was moving.
+
+   If it still reads large, the box is the next knob and not this: 2.25rem
+   with a 20px glyph is a ratio of 0.56, and the copy button's box is tied
+   to the height of the block beside it on purpose. */
 .btn-icon svg {
-  width: 1.375rem;
-  height: 1.375rem;
+  width: 1.25rem;
+  height: 1.25rem;
+  stroke-width: 1.75;
 }
 
 /* Which half of the theme toggle is real, while nobody has chosen.
