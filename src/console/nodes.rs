@@ -161,10 +161,6 @@ impl NodePages {
                     .ok()
                     .map(|terms| (token, terms))
             });
-        // Whether this node has an address another one could be told to
-        // call back on. Derived rather than set — see
-        // `network::Node::may_be_edge`.
-        let may_enrol = nodes.iter().any(|node| node.is_self && node.may_be_edge());
 
         layout::head("Network");
         let frame = Frame::new(&account, Area::Network, &projects, None, "/network");
@@ -173,25 +169,9 @@ impl NodePages {
         let body = super::language::scoped(account.language, || {
             rsx! {
                 (layout::style_tag())
-                <div class="split">
-                    <div class="stack-sm">
-                        <h1>(t("Network"))</h1>
-                        <p class="tagline">(t("This node, and the ones that have agreed to take \
-                             instructions from it."))</p>
-                    </div>
-                    // The two things that change what is on the network,
-                    // each on its own page. They were forms on this one,
-                    // which made a list somebody checks into a page with
-                    // two consequential buttons half-way down it.
-                    <div class="actions">
-                        @if may_enrol {
-                            <a class="btn" href="/network/invite">(t("Invite a node"))</a>
-                            <a class="btn btn-secondary" href="/network/join">(t("Join a network"))</a>
-                        } @else {
-                            <a class="btn" href="/network/join">(t("Join a network"))</a>
-                        }
-                    </div>
-                </div>
+                <h1>(t("Network"))</h1>
+                <p class="tagline">(t("This node, and the ones that have agreed to take \
+                     instructions from it."))</p>
                 @if let Some(message) = &query.error {
                     (layout::error_note(message))
                 }
@@ -2973,10 +2953,18 @@ pub(crate) mod tests {
         );
 
         let network = get!("/network").body;
-        // The list, and the two things that change what is on it — as
-        // links to their own pages, not as forms on this one.
-        assert!(network.contains("/network/invite"), "{network}");
-        assert!(network.contains("/network/join"), "{network}");
+        // The list, and the two things that change what is on it — in the
+        // side nav, which is where this area's own column was empty. They
+        // were buttons in the page's header first, and an empty sidebar
+        // beside them was the thing Jorge saw.
+        let sidebar = network
+            .split_once(r#"<div class="side-inner">"#)
+            .map(|(_, rest)| rest.split("</aside>").next().unwrap_or_default())
+            .expect("a sidebar");
+        assert!(
+            sidebar.contains("/network/invite") && sidebar.contains("/network/join"),
+            "the network area's column is empty: {sidebar}"
+        );
         // And none of the switches: those are settings.
         assert!(
             !network.contains("/node/capabilities"),

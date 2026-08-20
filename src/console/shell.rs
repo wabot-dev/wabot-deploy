@@ -531,6 +531,33 @@ impl Frame {
                             (self.project_nav(slug))
                         }
                     }
+                    @if self.area == Area::Network {
+                        <p class="side-label">(t("Network"))</p>
+                        <nav>
+                            // The list first, then the two things that
+                            // change what is on it. They were buttons in
+                            // the page's own header, which left this
+                            // column empty on the one area that had
+                            // somewhere to put them.
+                            //
+                            // Both are always offered, including on a node
+                            // that cannot mint a token: `enrol_card` is
+                            // written to *say why not*, so the link leads
+                            // to an answer rather than to a refusal. That
+                            // is the difference from hiding Settings from
+                            // a member, who would be bounced with nothing.
+                            <a href="/network"
+                               class=(current(self.path == "/network"))>(t("Nodes"))</a>
+                            <a href="/network/invite"
+                               class=(current(self.path == "/network/invite"))>(
+                                   t("Invite a node")
+                               )</a>
+                            <a href="/network/join"
+                               class=(current(self.path == "/network/join"))>(
+                                   t("Join a network")
+                               )</a>
+                        </nav>
+                    }
                     @if self.area == Area::Settings {
                         <p class="side-label">(t("Settings"))</p>
                         <nav>
