@@ -184,7 +184,7 @@ async fn certificates_that_would_not_issue(
                 .await
                 .unwrap_or_else(|| "this node".into()),
             why: first_line(&reason),
-            go: "/nodes".into(),
+            go: "/network".into(),
         });
     }
 
@@ -201,7 +201,7 @@ async fn certificates_that_would_not_issue(
             what: "A certificate would not issue".into(),
             which: hostname.clone(),
             why: first_line(reason),
-            go: "/nodes".into(),
+            go: "/network".into(),
         });
     }
     Ok(())
@@ -236,7 +236,7 @@ async fn errands_that_were_refused(state: &super::ConsoleState, concerns: &mut V
             what: "An instruction was refused".into(),
             which: name,
             why: first_line(reason),
-            go: "/nodes".into(),
+            go: "/network".into(),
         });
     }
 }
@@ -283,8 +283,8 @@ async fn what_nothing_claims(state: &super::ConsoleState, concerns: &mut Vec<Con
         // reported alongside the false count, and a separate fault from
         // it.
         go: match crate::network::me(&state.database).await {
-            Ok(Some(me)) => format!("/nodes/{}", me.id),
-            _ => "/nodes".into(),
+            Ok(Some(me)) => format!("/network/{}", me.id),
+            _ => "/network".into(),
         },
     });
 }
@@ -393,7 +393,7 @@ mod tests {
                 what: "Storage nothing claims".into(),
                 which: "3".into(),
                 why: String::new(),
-                go: "/nodes".into(),
+                go: "/network".into(),
             },
             Concern {
                 weight: Weight::Wrong,

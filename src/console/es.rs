@@ -272,8 +272,8 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
         "Desde el directorio con el Dockerfile, después de docker login con un token de subida de la página del proyecto.",
     ),
     (
-        "From the nodes page of the node you are joining: invite a node there, and it shows one token, once. Pasting it here does what `wabot-deploy join` does in a terminal — this node records that one as an authority and tells it so. The same token can be pasted again if something goes wrong part-way.",
-        "Desde la página de nodos del nodo al que te unes: invita un nodo allí, y enseña un token, una vez. Pegarlo aquí hace lo que hace `wabot-deploy join` en una terminal — este nodo anota aquel como autoridad y se lo dice. El mismo token se puede volver a pegar si algo sale mal a medias.",
+        "From the network page of the node you are joining: invite a node there, and it shows one token, once. Pasting it here does what `wabot-deploy join` does in a terminal — this node records that one as an authority and tells it so. The same token can be pasted again if something goes wrong part-way.",
+        "Desde la página de red del nodo al que te unes: invita un nodo allí, y enseña un token, una vez. Pegarlo aquí hace lo que hace `wabot-deploy join` en una terminal — este nodo anota aquel como autoridad y se lo dice. El mismo token se puede volver a pegar si algo sale mal a medias.",
     ),
     ("General", "General"),
     ("Going back", "Volver atrás"),
@@ -843,6 +843,10 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
     (
         "What this copy has written since it started. The file is emptied on every deployment, so this is the current attempt and not a history.",
         "Lo que esta copia ha escrito desde que arrancó. El fichero se vacía en cada despliegue, así que esto es el intento actual y no un historial.",
+    ),
+    (
+        "What this machine does, and the name it answers to.",
+        "Lo que hace esta máquina, y el nombre al que responde.",
     ),
     ("What this node does", "Qué hace este nodo"),
     ("When", "Cuándo"),

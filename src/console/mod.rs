@@ -402,7 +402,7 @@ pub(crate) mod tests {
                 ui: wabot::testing::UiHarness::new(router),
                 database,
                 setup_token,
-                node_path: format!("/nodes/{}", me.id),
+                node_path: format!("/network/{}", me.id),
             }
         }
 
@@ -681,11 +681,25 @@ pub(crate) mod tests {
         assert_eq!(
             node.island_props("node-live"),
             Some(serde_json::json!({
-                "node": console.node_path.trim_start_matches("/nodes/"),
+                "node": console.node_path.trim_start_matches("/network/"),
             })),
             "the client needs the id to open the stream"
         );
-        assert!(node.has_island("fields"), "and the certificate form");
+        // The certificate form went to `/node` with the rest of what is
+        // editable, and its island with it. The meters stayed here, which
+        // is why the stream host is on both — the runtime skips a cell it
+        // cannot find, so each page carries only its half.
+        let settings = ui.get("/node").await;
+        assert!(
+            settings.has_island("fields"),
+            "the certificate form: {}",
+            settings.html()
+        );
+        assert!(
+            settings.has_island("node-live"),
+            "and its cells still stream: {}",
+            settings.html()
+        );
     }
 
     /// A stylesheet the browser cannot parse renders an unstyled page,
@@ -718,7 +732,7 @@ pub(crate) mod tests {
         let cookie = console.signed_in().await;
         let body = console
             .harness
-            .get(&console.node_path)
+            .get("/node")
             .header("cookie", &cookie)
             .send()
             .await
@@ -727,7 +741,7 @@ pub(crate) mod tests {
         assert!(body.contains("self-signed"), "{body}");
         assert!(body.contains("below"), "and points at the form: {body}");
         assert!(
-            body.contains("/nodes/certificate"),
+            body.contains("/node/certificate"),
             "which is on this page: {body}"
         );
     }
@@ -741,7 +755,7 @@ pub(crate) mod tests {
         let cookie = console.signed_in().await;
         let body = console
             .harness
-            .get("/nodes")
+            .get("/network")
             .header("cookie", &cookie)
             .send()
             .await

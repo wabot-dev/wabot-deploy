@@ -117,11 +117,20 @@ const GEAR: &str = r#"<svg width="15" height="15" viewBox="0 0 24 24" fill="none
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Area {
     Projects,
-    /// Everything about the machine rather than about the work on it:
-    /// the nodes, the people, the updates. One word in the header
-    /// instead of three, because they are one question — "how is this
-    /// installation set up" — and none of them is somewhere anybody
-    /// spends the day.
+    /// The nodes and how they relate: what is on the network, what each
+    /// one is doing, and adding to it.
+    ///
+    /// Its own word in the header because it answers a question somebody
+    /// asks while things are running — "is that node all right" — where
+    /// Settings answers one asked once. It used to be an item inside
+    /// Settings, which meant checking a node and configuring this one
+    /// were the same place, and adding a node was a trip between two
+    /// pages that had the same name.
+    Network,
+    /// Everything editable about this installation: this machine, the
+    /// people, the updates. One word in the header instead of three,
+    /// because they are one question — "how is this set up" — and none of
+    /// them is somewhere anybody spends the day.
     Settings,
 }
 
@@ -321,6 +330,7 @@ impl Frame {
         let segments: Vec<&str> = self.path.split('/').filter(|s| !s.is_empty()).collect();
         let mut trail = vec![match self.area {
             Area::Projects => (t("Projects").to_string(), Some("/".to_string())),
+            Area::Network => (t("Network").to_string(), Some("/network".to_string())),
             Area::Settings => (t("Settings").to_string(), None),
         }];
 
@@ -404,10 +414,17 @@ impl Frame {
                 </a>
                 <nav>
                     <a href="/" class=(current(self.area == Area::Projects))>(t("Projects"))</a>
-                    // The node, its people and what it runs on belong to
-                    // whoever runs the node, and they are one place now
-                    // rather than three top-level words. A member has
-                    // projects and nothing else to see here.
+                    // The network is beside Projects rather than inside
+                    // Settings: looking at a node is something somebody
+                    // does while work is running, and it used to share a
+                    // word with the page that configures this machine.
+                    @if self.admin {
+                        <a href="/network"
+                           class=(current(self.area == Area::Network))>(t("Network"))</a>
+                    }
+                    // The people and what this runs on belong to whoever
+                    // runs the node. A member has projects and nothing
+                    // else to see here.
                     @if self.admin {
                         <a href="/settings" class=(current(self.area == Area::Settings))
                            title=(t("Settings"))>
@@ -517,8 +534,12 @@ impl Frame {
                     @if self.area == Area::Settings {
                         <p class="side-label">(t("Settings"))</p>
                         <nav>
-                            <a href="/nodes"
-                               class=(current(self.path.starts_with("/nodes")))>(t("Nodes"))</a>
+                            // Singular, and it means this machine. The
+                            // plural was the list, which is its own area
+                            // now — this is the one node whose settings
+                            // are here to change.
+                            <a href="/node"
+                               class=(current(self.path.starts_with("/node")))>(t("Node"))</a>
                             <a href="/people"
                                class=(current(self.path == "/people"))>(t("People"))</a>
                             <a href="/updates"
