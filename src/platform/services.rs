@@ -573,11 +573,24 @@ pub async fn set_memory_limit(
     service_id: &str,
     bytes: Option<u64>,
 ) -> PlatformResult<()> {
+    // **A floor, not a list.** The ladder used to be the rule here, and
+    // it was the wrong shape for a plain container: an operator who knows
+    // their service needs 300 MB had to pick 256 or 512. What the machine
+    // actually requires is a minimum — below it nothing starts.
+    //
+    // A *database's* ceiling is still a rung, and that check stays in
+    // `databases`, which is where the reason lives: the size picks
+    // `shared_buffers` and five other numbers, so it is a configuration
+    // and not only a limit. Enforced there rather than here because this
+    // function is handed an id and would have to read the row back to
+    // learn the kind.
     if let Some(bytes) = bytes {
-        if !super::presets::LADDER.contains(&bytes) {
-            return Err(PlatformError::Refused(
-                "that is not one of the sizes on offer".into(),
-            ));
+        if bytes < super::presets::MIN_MEMORY {
+            return Err(PlatformError::Refused(format!(
+                "{} is under {}, which is less than a container needs to start",
+                super::presets::label(bytes),
+                super::presets::label(super::presets::MIN_MEMORY)
+            )));
         }
     }
     let (id, bytes) = (service_id.to_string(), bytes.map(|bytes| bytes as i64));
@@ -595,10 +608,11 @@ pub async fn set_memory_limit(
 
 /// Cap how much CPU a service's containers may have, in millicores.
 ///
-/// Refused unless it is one of the rungs on offer, the same shape
-/// `set_memory_limit` follows and for the same reason: a field that took
-/// any number would be a field somebody types 50 into, which is a
-/// container that cannot finish starting.
+/// Refused below `presets::MIN_MILLICORES`, the same shape
+/// `set_memory_limit` follows and for the same reason. This used to
+/// require a rung, arguing that a field taking any number is a field
+/// somebody types 50 into — which is a container that cannot finish
+/// starting, and an argument for a floor rather than for a list.
 ///
 /// Takes effect at the next deployment — a cgroup limit is written into
 /// the spec when the container is created, and nothing here reaches into
@@ -609,10 +623,12 @@ pub async fn set_cpu_limit(
     millicores: Option<u32>,
 ) -> PlatformResult<()> {
     if let Some(millicores) = millicores {
-        if !super::presets::CPU_LADDER.contains(&millicores) {
-            return Err(PlatformError::Refused(
-                "that is not one of the CPU sizes on offer".into(),
-            ));
+        if millicores < super::presets::MIN_MILLICORES {
+            return Err(PlatformError::Refused(format!(
+                "{} is under {}, which is less than a container needs to start",
+                super::presets::cpu_label(millicores),
+                super::presets::cpu_label(super::presets::MIN_MILLICORES)
+            )));
         }
     }
     let (id, millicores) = (service_id.to_string(), millicores.map(i64::from));

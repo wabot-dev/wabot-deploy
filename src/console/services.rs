@@ -1422,20 +1422,48 @@ impl ServicePages {
                     <p class="card-label">(t("Resources"))</p>
                     <form method="post" action=(format!("{here}/memory")) class="card stack">
                         <label for="memory-size">(t("Memory"))</label>
-                        <select id="memory-size" name="memory">
-                            <option value="">(t("no ceiling"))</option>
-                            @for rung in crate::platform::presets::LADDER {
-                                @if Some(rung) == service.memory_limit {
-                                    <option value=(rung.to_string()) selected>(
-                                        crate::platform::presets::label(rung)
-                                    )</option>
-                                } @else {
-                                    <option value=(rung.to_string())>(
-                                        crate::platform::presets::label(rung)
-                                    )</option>
+                        // **A list only where the size is also a
+                        // configuration.** A database's ceiling picks
+                        // `shared_buffers` and five other numbers, so a
+                        // rung is a thing an operator can reason about;
+                        // for a plain container the same list meant
+                        // somebody who knows their service needs 300 MB
+                        // had to choose 256 or 512. Free field there, and
+                        // the ladder stays as suggestions beside it.
+                        @if service.kind.is_managed() {
+                            <select id="memory-size" name="memory">
+                                <option value="">(t("no ceiling"))</option>
+                                @for rung in crate::platform::presets::LADDER {
+                                    @if Some(rung) == service.memory_limit {
+                                        <option value=(rung.to_string()) selected>(
+                                            crate::platform::presets::label(rung)
+                                        )</option>
+                                    } @else {
+                                        <option value=(rung.to_string())>(
+                                            crate::platform::presets::label(rung)
+                                        )</option>
+                                    }
                                 }
-                            }
-                        </select>
+                            </select>
+                        } @else {
+                            <input id="memory-size" name="memory" type="text"
+                                   list="memory-sizes" autocomplete="off"
+                                   placeholder=(t("no ceiling"))
+                                   value=(service.memory_limit
+                                       .map(crate::platform::presets::size_field)
+                                       .unwrap_or_default())>
+                            // Suggestions, not a constraint: the field
+                            // takes anything the machine can keep, and a
+                            // datalist is plain HTML, so this is still a
+                            // page that works with scripting off.
+                            <datalist id="memory-sizes">
+                                @for rung in crate::platform::presets::LADDER {
+                                    <option value=(
+                                        crate::platform::presets::size_field(rung)
+                                    )></option>
+                                }
+                            </datalist>
+                        }
                         // A database's ceiling is not only a ceiling: it
                         // picks `shared_buffers` and five other numbers,
                         // and saying so is the difference between an
@@ -1447,31 +1475,37 @@ impl ServicePages {
                                  cgroup limit is written when the container is created, and nothing \
                                  reaches into a running one to change it."))</p>
                         } @else {
-                            <p class="field-hint">(t("Over this, the kernel kills the container \
-                                 rather than letting it swap — which is the outcome to want, \
-                                 because a process quietly swapping is invisible until everything \
-                                 on the node is slow."))</p>
+                            <p class="field-hint">(t("A size, like 512 MB or 1.5 GB — a bare \
+                                 number is megabytes. Over this the kernel kills the container \
+                                 rather than letting it swap, which is the outcome to want: a \
+                                 process quietly swapping is invisible until everything on the \
+                                 node is slow."))</p>
                         }
 
                         <label for="cpu-size">(t("CPU"))</label>
-                        <select id="cpu-size" name="cpu">
-                            <option value="">(t("no ceiling"))</option>
+                        // Free for every kind, including a database:
+                        // nothing derives a setting from the CPU ceiling
+                        // the way `postgres::tuning` derives six from the
+                        // memory one, so there is no configuration here to
+                        // keep on a rung.
+                        <input id="cpu-size" name="cpu" type="text"
+                               list="cpu-sizes" autocomplete="off"
+                               placeholder=(t("no ceiling"))
+                               value=(service.cpu_millicores
+                                   .map(crate::platform::presets::cores_field)
+                                   .unwrap_or_default())>
+                        <datalist id="cpu-sizes">
                             @for rung in crate::platform::presets::CPU_LADDER {
-                                @if Some(rung) == service.cpu_millicores {
-                                    <option value=(rung.to_string()) selected>(
-                                        crate::platform::presets::cpu_label(rung)
-                                    )</option>
-                                } @else {
-                                    <option value=(rung.to_string())>(
-                                        crate::platform::presets::cpu_label(rung)
-                                    )</option>
-                                }
+                                <option value=(
+                                    crate::platform::presets::cores_field(rung)
+                                )></option>
                             }
-                        </select>
-                        <p class="field-hint">(t("Over this the container is throttled, not \
-                             killed — it runs slowly rather than stopping. A ceiling is also \
-                             what is reserved for it: the node counts what it has promised, \
-                             and refuses to promise more than it has."))</p>
+                        </datalist>
+                        <p class="field-hint">(t("Cores, like 0.5 or 2 — or millicores with an \
+                             m, like 500m. Over this the container is throttled, not killed: it \
+                             runs slowly rather than stopping. A ceiling is also what is reserved \
+                             for it — the node counts what it has promised, and refuses to \
+                             promise more than it has."))</p>
                         <div class="actions">
                             <button type="submit">(t("Save"))</button>
                         </div>
@@ -3273,11 +3307,22 @@ impl ServiceApi {
             Ok(form) => form,
             Err(response) => return Ok(response),
         };
-        let wanted = match crate::platform::presets::parse(field(&form, "memory")) {
+        // The form asks the two kinds differently, so the POST reads them
+        // differently — a database's ceiling is a rung because it is also
+        // an engine configuration, and a plain container's is whatever the
+        // node can keep. The check that counts is here either way: the
+        // select is a courtesy the browser offers and a POST can be made
+        // by hand.
+        let memory = field(&form, "memory");
+        let wanted = match service.kind.is_managed() {
+            true => crate::platform::presets::parse(memory),
+            false => crate::platform::presets::parse_size(memory),
+        };
+        let wanted = match wanted {
             Ok(wanted) => wanted,
             Err(reason) => return Ok(back_with_error(&here, &reason)),
         };
-        let cpu = match crate::platform::presets::parse_cpu(field(&form, "cpu")) {
+        let cpu = match crate::platform::presets::parse_cores(field(&form, "cpu")) {
             Ok(cpu) => cpu,
             Err(reason) => return Ok(back_with_error(&here, &reason)),
         };
@@ -5827,6 +5872,161 @@ mod tests {
     }
 
     /// And it is on the page, with the button that takes it.
+    /// A size the ladder does not have is saved, and a database's is not.
+    ///
+    /// The select was never the restriction: `services::set_memory_limit`
+    /// refused anything off the ladder, so a hand-made POST was refused
+    /// too. That check is a floor now — a machine truth, since below a few
+    /// megabytes nothing starts — and the rung requirement stays where the
+    /// reason for it lives, which is a database.
+    #[tokio::test]
+    async fn a_service_takes_a_size_the_ladder_does_not_have() {
+        let console = Console::new().await;
+        let cookie = console.signed_in().await;
+        service(&console, &cookie).await;
+        let project = projects::find(&console.database, "my-api")
+            .await
+            .expect("query")
+            .expect("made");
+        let made = services::create(
+            &console.database,
+            &project.id,
+            "api",
+            "node.example.com/my-api/api:latest",
+            &[],
+        )
+        .await
+        .expect("service");
+
+        console
+            .harness
+            .post("/projects/my-api/services/api/memory")
+            .header("cookie", &cookie)
+            .form(&[("memory", "300 MB"), ("cpu", "0.75")])
+            .send()
+            .await;
+
+        let after = services::find(&console.database, &made.id)
+            .await
+            .expect("query")
+            .expect("still there");
+        assert_eq!(
+            after.memory_limit,
+            Some(300 * 1024 * 1024),
+            "a size between two rungs did not survive the POST"
+        );
+        assert_eq!(after.cpu_millicores, Some(750));
+
+        // And under what a container needs to start is still refused,
+        // which is the whole of what the ladder was protecting.
+        console
+            .harness
+            .post("/projects/my-api/services/api/memory")
+            .header("cookie", &cookie)
+            .form(&[("memory", "1 MB"), ("cpu", "")])
+            .send()
+            .await;
+        let after = services::find(&console.database, &made.id)
+            .await
+            .expect("query")
+            .expect("still there");
+        assert_eq!(
+            after.memory_limit,
+            Some(300 * 1024 * 1024),
+            "1 MB was accepted: {:?}",
+            after.memory_limit
+        );
+    }
+
+    /// A service takes any size; a database picks from the list.
+    ///
+    /// Jorge asked for the free choice and named the exception in the same
+    /// breath, and the exception is the interesting half: a database's
+    /// ceiling is not only a cgroup limit, it picks `shared_buffers` and
+    /// five other numbers through `postgres::tuning`. A rung is a size an
+    /// operator can reason about *as a configuration*; 300 MB is not.
+    ///
+    /// The form is asserted here and the POST in
+    /// `a_service_takes_a_size_the_ladder_does_not_have`, because a select
+    /// is a courtesy the browser offers and the check that counts is on
+    /// the way in.
+    #[tokio::test]
+    async fn only_a_database_chooses_its_memory_from_a_list() {
+        let console = Console::new().await;
+        let cookie = console.signed_in().await;
+        service(&console, &cookie).await;
+        let project = projects::find(&console.database, "my-api")
+            .await
+            .expect("query")
+            .expect("made");
+        services::create(
+            &console.database,
+            &project.id,
+            "api",
+            "node.example.com/my-api/api:latest",
+            &[],
+        )
+        .await
+        .expect("service");
+
+        let plain = console
+            .harness
+            .get("/projects/my-api/services/api/settings")
+            .header("cookie", &cookie)
+            .send()
+            .await
+            .body;
+        // The element name is assembled rather than written, because
+        // `every_field_says_what_may_be_autofilled_into_it` reads this
+        // file as text and takes the opening of a field literal for a
+        // field — one with no `autocomplete` on it. It found these three,
+        // and then found the sentence that explained the first fix.
+        let input = |id: &str| format!("{}{} id=\"{id}\"", "<inp", "ut");
+        assert!(
+            plain.contains(&input("memory-size")),
+            "a plain service should take any size: {plain}"
+        );
+        assert!(
+            plain.contains(&input("cpu-size")),
+            "and any CPU ceiling: {plain}"
+        );
+        // The rungs are still there — as suggestions, which is what a list
+        // is good for once it stops being the only answer.
+        assert!(
+            plain.contains(r#"<datalist id="memory-sizes""#),
+            "the ladder is gone rather than offered: {plain}"
+        );
+
+        let made = crate::platform::databases::create(
+            &console.database,
+            &project.id,
+            "Orders",
+            "17",
+            crate::platform::presets::LADDER[1],
+        )
+        .await
+        .expect("database");
+        let body = console
+            .harness
+            .get(&format!(
+                "/projects/my-api/services/{}/settings",
+                made.0.slug
+            ))
+            .header("cookie", &cookie)
+            .send()
+            .await
+            .body;
+        assert!(
+            body.contains(r#"<select id="memory-size""#),
+            "a database's memory is a list: {body}"
+        );
+        // And its CPU is not: nothing derives a setting from it.
+        assert!(
+            body.contains(&input("cpu-size")),
+            "a database's CPU should be free: {body}"
+        );
+    }
+
     /// The digest sits in a block, so it renders under the tag rather
     /// than against it.
     ///
