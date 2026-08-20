@@ -129,6 +129,23 @@ pub struct Report {
     /// the operator can see is public.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub endpoint: Option<String>,
+    /// How full that machine is: memory used of total, disk free of total.
+    ///
+    /// `None` from a node older than this field, which leaves the columns
+    /// alone rather than clearing them — the same rule `endpoint`, `allows`
+    /// and `ca` follow, and for the same reason: a report that omits a
+    /// field must not undo what is known.
+    ///
+    /// It travels on every report and is **never** part of "something
+    /// changed". A reading differs each time by construction, so counting
+    /// it would rebuild the route table, rewrite every container's
+    /// `/etc/hosts` and wake the certificate loop every fifteen seconds —
+    /// the storm `record` was fixed for, arriving through a field nobody
+    /// thought of as a decision. `note_reachability` returns `()` and
+    /// cannot feed the count, which is what makes that structural rather
+    /// than remembered.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usage: Option<super::Usage>,
     /// What the reporting node has agreed the *reader* may ask of it.
     ///
     /// Comma-separated, stored on that node's row — see migration
@@ -509,6 +526,7 @@ impl NetworkApi {
             report.endpoint.as_deref(),
             report.allows.as_deref(),
             report.ca.as_deref(),
+            report.usage,
         )
         .await
         {
@@ -655,6 +673,7 @@ impl NetworkApi {
         let recorded = super::save(
             &self.database,
             &Node {
+                usage: None,
                 id: arriving.node.clone(),
                 // Whatever it calls itself. Cosmetic, and the enrolment
                 // already carries what the operator called it — but a
@@ -850,6 +869,7 @@ async fn note_reachability(
     endpoint: Option<&str>,
     allows: Option<&str>,
     ca: Option<&str>,
+    usage: Option<super::Usage>,
 ) -> NetworkResult<()> {
     let Some(node) = super::find(database, node_id).await? else {
         return Ok(());
@@ -893,6 +913,10 @@ async fn note_reachability(
         &Node {
             allows,
             ca_pem,
+            // Absent is an older node, so the last reading stays. It is
+            // stale rather than wrong, and the page says when it was
+            // heard from.
+            usage: usage.or(node.usage),
             // Derived from the endpoint rather than reported, the same
             // way this node decides its own: a kind somebody can send
             // is a kind somebody can send wrongly, and an unrecognised
@@ -1534,6 +1558,139 @@ mod tests {
     /// what lets a node revoke something and have the other side stop
     /// offering it within one interval — rather than at a next join
     /// that never comes.
+    /// A reading cannot be counted as movement, by construction.
+    ///
+    /// This is the trap this file was already fixed for once. A reading
+    /// differs on every report, so if it counted the authority would
+    /// rebuild its route table, rewrite every container's `/etc/hosts` and
+    /// wake the certificate loop every fifteen seconds for as long as both
+    /// nodes were up — 41 rebuilds in ten minutes, measured, when `record`
+    /// had that shape.
+    ///
+    /// Two facts keep it from coming back, and both are read out of the
+    /// source because that is where they live. `note_reachability` writes
+    /// the reading and returns `()`, which cannot be added to a count; and
+    /// `record` — the one function whose answer *is* the count — never
+    /// mentions the reading at all. A test on a response body cannot say
+    /// either thing: the handler answers `{"settled": true}` and nothing
+    /// else, so an assertion about a count passes no matter what. That is
+    /// how the first version of this passed.
+    #[test]
+    fn a_reading_cannot_be_mistaken_for_movement() {
+        let source = include_str!("api.rs");
+
+        let signature = source
+            .split("async fn note_reachability(")
+            .nth(1)
+            .expect("the function that writes the reading");
+        let signature = signature.split('{').next().expect("its signature");
+        assert!(
+            signature.contains("NetworkResult<()>"),
+            "the writer of the reading answers with something countable: {signature}"
+        );
+
+        let counted = source
+            .split("async fn record(")
+            .nth(1)
+            .expect("the function whose answer is the count");
+        let counted = counted.split("\nasync fn ").next().expect("its body");
+        assert!(
+            !counted.contains("usage"),
+            "the reading is written where the count is decided: {counted}"
+        );
+    }
+
+    /// How full a node is travels, and a new reading is not a change.
+    ///
+    /// A node's page had nothing to say about a machine it cannot reach:
+    /// the report carried replicas, an endpoint and a list of permissions
+    /// and nothing about the machine itself. Asked for by Jorge, so the
+    /// network area answers the question somebody opens it with.
+    ///
+    /// That a reading is **not** movement is asserted separately, by
+    /// `a_reading_cannot_be_mistaken_for_movement` — it is a property of
+    /// the shape and not of a response body, and the first version of this
+    /// test looked for a count the handler does not send, so it passed
+    /// against anything.
+    #[tokio::test]
+    async fn how_full_a_node_is_travels_and_is_not_a_change() {
+        let authority = authority().await;
+        authority
+            .harness
+            .post("/api/network/join")
+            .header("authorization", format!("Bearer {}", authority.secret))
+            .json(&arriving())
+            .send()
+            .await
+            .assert_ok();
+
+        let report =
+            |usage: serde_json::Value| serde_json::json!({ "replicas": [], "usage": usage });
+        macro_rules! send {
+            ($body:expr) => {
+                authority
+                    .harness
+                    .post("/api/network/report")
+                    .header("authorization", format!("Bearer {}", authority.secret))
+                    .json(&$body)
+                    .send()
+                    .await
+            };
+        }
+
+        send!(report(serde_json::json!({
+            "memory_total": 972u64 * 1024 * 1024,
+            "memory_used": 363u64 * 1024 * 1024,
+            "disk_total": 24u64 * 1024 * 1024 * 1024,
+            "disk_free": 22u64 * 1024 * 1024 * 1024,
+        })))
+        .assert_ok();
+
+        let after = super::super::find(&authority.database, "nd-joining001")
+            .await
+            .expect("query")
+            .expect("joined");
+        let usage = after.usage.expect("the reading arrived");
+        assert_eq!(usage.memory_used, 363 * 1024 * 1024);
+        assert_eq!(usage.disk_free, 22 * 1024 * 1024 * 1024);
+
+        // **A new reading is not news.** The response says how many
+        // replicas moved, and a report whose only difference is the
+        // machine being a little fuller must say none — otherwise every
+        // report is movement and the authority rebuilds everything on a
+        // node where nothing happened.
+        send!(report(serde_json::json!({
+            "memory_total": 972u64 * 1024 * 1024,
+            "memory_used": 501u64 * 1024 * 1024,
+            "disk_total": 24u64 * 1024 * 1024 * 1024,
+            "disk_free": 21u64 * 1024 * 1024 * 1024,
+        })))
+        .assert_ok();
+        // A fuller machine is still written.
+        let after = super::super::find(&authority.database, "nd-joining001")
+            .await
+            .expect("query")
+            .expect("joined");
+        assert_eq!(
+            after.usage.expect("still there").memory_used,
+            501 * 1024 * 1024
+        );
+
+        // A report that omits it leaves the last reading alone, the way
+        // `endpoint`, `allows` and `ca` are left: an older node must not
+        // blank a column by not knowing about it.
+        send!(serde_json::json!({ "replicas": [] })).assert_ok();
+        let after = super::super::find(&authority.database, "nd-joining001")
+            .await
+            .expect("query")
+            .expect("joined");
+        assert_eq!(
+            after.usage.expect("kept").memory_used,
+            501 * 1024 * 1024,
+            "an older node's report cleared the reading"
+        );
+    }
+
     #[tokio::test]
     async fn what_a_node_allows_travels_on_its_report() {
         let authority = authority().await;

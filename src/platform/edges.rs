@@ -226,6 +226,7 @@ mod tests {
 
     fn node(id: &str, overlay: &str, is_self: bool) -> crate::network::Node {
         crate::network::Node {
+            usage: None,
             id: id.into(),
             name: id.into(),
             kind: crate::network::Kind::Public,

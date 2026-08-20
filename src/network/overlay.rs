@@ -139,6 +139,7 @@ mod tests {
         save(
             database,
             &Node {
+                usage: None,
                 id: id.into(),
                 name: id.into(),
                 kind: Kind::Private,

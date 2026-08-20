@@ -147,6 +147,10 @@ fn migrations() -> Vec<Migration> {
             "0042_log_timestamps",
             include_str!("../migrations/0042_log_timestamps.sql"),
         ),
+        Migration::new(
+            "0043_node_usage",
+            include_str!("../migrations/0043_node_usage.sql"),
+        ),
     ]
 }
 

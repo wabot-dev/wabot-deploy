@@ -511,6 +511,7 @@ impl NodePages {
                     // is what went, and this is the record of every
                     // instruction, including the ones the service page
                     // now sends.
+                    (usage_card(&node, node.last_seen_at.map(layout::when)))
                     (errands_card(&node.id, &orders))
 
                     <section class="card stack">
@@ -1082,6 +1083,56 @@ fn reach(node: &network::Node) -> String {
 /// where this node would reach it. A node that has never enrolled
 /// anybody and never joined anything has neither of the middle two, and
 /// says so rather than showing an empty row.
+/// How full another machine is, from what it last reported.
+///
+/// This node's own page has meters, read live; a node it cannot reach had
+/// nothing at all — the report carried replicas, an endpoint and a list of
+/// permissions and said nothing about the machine. So the network area
+/// answered every question except the one somebody opens it with.
+///
+/// Two lines rather than the meter and its five parts. The parts are that
+/// machine's internals, its own console draws them, and no decision here
+/// turns on which process holds which megabyte. Whether it is running out
+/// is the thing another node needs.
+///
+/// A node that has not reported since these columns existed says so,
+/// rather than showing nought — which would read as an idle machine.
+fn usage_card<'a>(node: &'a network::Node, seen: Option<String>) -> impl Renderable + 'a {
+    rsx! {
+        <section class="card stack">
+            <p class="card-label">(t("How full it is"))</p>
+            @if let Some(usage) = node.usage {
+                <dl class="kv">
+                    <dt>(t("Memory"))</dt>
+                    <dd class="mono">
+                        (crate::node::memory::human(usage.memory_used))(t(" of "))
+                        (crate::node::memory::human(usage.memory_total))
+                    </dd>
+                    <dt>(t("Disk"))</dt>
+                    <dd class="mono">
+                        (crate::node::memory::human(
+                            usage.disk_total.saturating_sub(usage.disk_free)
+                        ))(t(" of "))
+                        (crate::node::memory::human(usage.disk_total))
+                        (" · ")
+                        (crate::node::memory::human(usage.disk_free))(t(" free"))
+                    </dd>
+                </dl>
+                // When, because a reading with no time on it is one
+                // somebody trusts after the node has stopped reporting.
+                @if let Some(seen) = &seen {
+                    <p class="field-hint">(t("As reported "))(seen)(".")</p>
+                }
+            } @else {
+                <p class="field-hint">(t("Nothing yet. A node reports this every fifteen \
+                     seconds once it is running a version that sends it — until then this \
+                     says nothing rather than nought, which would read as an idle \
+                     machine."))</p>
+            }
+        </section>
+    }
+}
+
 fn network_card(node: &network::Node) -> impl Renderable + '_ {
     rsx! {
         <section class="card stack">
@@ -4171,6 +4222,7 @@ pub(crate) mod tests {
         crate::network::save(
             &console.database,
             &crate::network::Node {
+                usage: None,
                 id: id.into(),
                 name: "alpine.example".into(),
                 kind: Kind::Private,

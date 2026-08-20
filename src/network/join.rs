@@ -121,6 +121,7 @@ pub async fn join(
     }
 
     let authority = Node {
+        usage: None,
         id: token.authority.clone(),
         name: token.name.clone(),
         // It has an address this node just reached, which is the whole

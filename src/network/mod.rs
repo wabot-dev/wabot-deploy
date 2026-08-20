@@ -112,6 +112,23 @@ impl Kind {
     }
 }
 
+/// What a node said about how full it is.
+///
+/// Four numbers, and they are **never** part of "something changed". A
+/// reading differs on every report by definition, so counting it as
+/// movement would have every report rebuild the route table, rewrite every
+/// container's `/etc/hosts` and wake the certificate loop — the storm
+/// `api::record` was already fixed for once, arriving through a field
+/// nobody thought of as a decision. `note_reachability` cannot do that:
+/// it returns `()` and never feeds the caller's count.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct Usage {
+    pub memory_total: u64,
+    pub memory_used: u64,
+    pub disk_total: u64,
+    pub disk_free: u64,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Node {
     pub id: String,
@@ -132,6 +149,18 @@ pub struct Node {
     /// `node_grant`, and it travels on the report it already sends. See
     /// migration `0026`.
     pub allows: Vec<capability::Capability>,
+    /// How full that machine is, as it last reported: memory used of
+    /// total, then disk free of total.
+    ///
+    /// `None` for a node that has not reported since the columns existed,
+    /// and for this node — which reads its own meters live and does not
+    /// need a stored copy. A page that says nothing is right about a node
+    /// it has not heard from; a zero would read as an empty machine.
+    ///
+    /// Totals rather than the breakdown on purpose. Which process holds
+    /// which megabyte is that machine's internals and its own console
+    /// shows them; what another node needs is "is it running out".
+    pub usage: Option<Usage>,
     /// The certificate authority it presented, so a call *to* it over the
     /// overlay can be verified rather than merely encrypted.
     ///
@@ -172,12 +201,33 @@ fn read(row: &Row<'_>) -> wabot::sqlite::rusqlite::Result<Node> {
         last_seen_at: row.get(7)?,
         allows: capability::parse_list(&row.get::<_, Option<String>>(8)?.unwrap_or_default()),
         ca_pem: row.get(9)?,
+        // All four or none. A row with some of them is a node that
+        // reported before the columns existed and cannot have any, so
+        // there is no partial case to represent — and `Some` with a zero
+        // in it would render as a machine with no memory.
+        usage: match (
+            row.get::<_, Option<i64>>(10)?,
+            row.get::<_, Option<i64>>(11)?,
+            row.get::<_, Option<i64>>(12)?,
+            row.get::<_, Option<i64>>(13)?,
+        ) {
+            (Some(memory_total), Some(memory_used), Some(disk_total), Some(disk_free)) => {
+                Some(Usage {
+                    memory_total: memory_total as u64,
+                    memory_used: memory_used as u64,
+                    disk_total: disk_total as u64,
+                    disk_free: disk_free as u64,
+                })
+            }
+            _ => None,
+        },
     })
 }
 
 const COLUMNS: &str = "\"id\", \"name\", \"kind\", \"endpoint\", \"public_key\", \
                        \"overlay_ip\", \"is_self\", \"last_seen_at\", \"allows\", \
-                       \"ca_pem\"";
+                       \"ca_pem\", \"memory_total\", \"memory_used\", \"disk_total\", \
+                       \"disk_free\"";
 
 /// Write, or bring up to date, the row for the node this process is.
 ///
@@ -288,6 +338,7 @@ pub async fn ensure_self(database: &SqliteDatabase, config: &Config) -> NetworkR
     };
 
     let node = Node {
+        usage: None,
         id: match &existing {
             Some(node) => node.id.clone(),
             None => format!("nd-{}", wabot::prelude::password::generate(12)),
@@ -399,8 +450,9 @@ pub async fn save(database: &SqliteDatabase, node: &Node) -> NetworkResult<()> {
             connection.execute(
                 "INSERT INTO node \
                    (\"id\", \"name\", \"kind\", \"endpoint\", \"public_key\", \"overlay_ip\", \
-                    \"is_self\", \"joined_at\", \"last_seen_at\", \"allows\", \"ca_pem\") \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11) \
+                    \"is_self\", \"joined_at\", \"last_seen_at\", \"allows\", \"ca_pem\", \
+                    \"memory_total\", \"memory_used\", \"disk_total\", \"disk_free\") \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15) \
                  ON CONFLICT (\"id\") DO UPDATE SET \
                    \"name\" = excluded.\"name\", \
                    \"kind\" = excluded.\"kind\", \
@@ -409,7 +461,11 @@ pub async fn save(database: &SqliteDatabase, node: &Node) -> NetworkResult<()> {
                    \"overlay_ip\" = excluded.\"overlay_ip\", \
                    \"last_seen_at\" = excluded.\"last_seen_at\", \
                    \"allows\" = excluded.\"allows\", \
-                   \"ca_pem\" = excluded.\"ca_pem\"",
+                   \"ca_pem\" = excluded.\"ca_pem\", \
+                   \"memory_total\" = excluded.\"memory_total\", \
+                   \"memory_used\" = excluded.\"memory_used\", \
+                   \"disk_total\" = excluded.\"disk_total\", \
+                   \"disk_free\" = excluded.\"disk_free\"",
                 (
                     node.id,
                     node.name,
@@ -422,6 +478,15 @@ pub async fn save(database: &SqliteDatabase, node: &Node) -> NetworkResult<()> {
                     node.last_seen_at,
                     capability::to_list(&node.allows),
                     node.ca_pem,
+                    // Bound as four values rather than a struct, and every
+                    // one of them named in the INSERT above. A parameter
+                    // nobody uses is not a warning — `adopt` bound
+                    // `owner_domain` and left the column out of its
+                    // statement, and the fix reached nobody.
+                    node.usage.map(|usage| usage.memory_total as i64),
+                    node.usage.map(|usage| usage.memory_used as i64),
+                    node.usage.map(|usage| usage.disk_total as i64),
+                    node.usage.map(|usage| usage.disk_free as i64),
                 ),
             )?;
             Ok(())
@@ -797,6 +862,7 @@ pub(crate) mod tests {
 
     fn node(id: &str, kind: Kind, endpoint: Option<&str>) -> Node {
         Node {
+            usage: None,
             id: id.into(),
             name: id.into(),
             kind,
@@ -994,6 +1060,7 @@ pub(crate) mod tests {
         save(
             &database,
             &Node {
+                usage: None,
                 id: "nd-other".into(),
                 name: "other.example".into(),
                 kind: Kind::Public,

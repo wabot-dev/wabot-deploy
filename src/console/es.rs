@@ -135,6 +135,7 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
     ("Any minute", "Cualquier minuto"),
     ("Any moment between ", "Cualquier momento entre "),
     ("As", "Como"),
+    ("As reported ", "Según reportó "),
     ("Ask it to run this", "Pedirle que lo ejecute"),
     ("Ask that node to let this one:", "Pedirle a ese nodo que deje a este:"),
     ("Ask whoever invited you for another.", "Pídele otra a quien te invitó."),
@@ -284,6 +285,7 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
     ("Have it answer for this node's hostnames", "Que responda por los nombres de este nodo"),
     ("Have this node answer for its hostnames", "Que este nodo responda por sus nombres"),
     ("Holds", "Ocupa"),
+    ("How full it is", "Qué tan lleno está"),
     ("How many", "Cuántas"),
     ("How to push", "Cómo subir una imagen"),
     ("Id", "Id"),
@@ -433,6 +435,10 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
     (
         "Nothing yet. A container that has only just started may not have written anything.",
         "Nada todavía. Un contenedor que acaba de arrancar puede no haber escrito nada.",
+    ),
+    (
+        "Nothing yet. A node reports this every fifteen seconds once it is running a version that sends it — until then this says nothing rather than nought, which would read as an idle machine.",
+        "Nada todavía. Un nodo reporta esto cada quince segundos en cuanto corre una versión que lo envía — hasta entonces esto no dice nada, en vez de cero, que se leería como una máquina en reposo.",
     ),
     (
         "Nothing, and there is no edge to choose: an edge terminates TLS and proxies HTTP, while Postgres speaks its own protocol with TLS inside the server. Reaching one from outside is a published port, which is not built yet.",

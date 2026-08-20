@@ -902,6 +902,7 @@ mod tests {
         crate::network::save(
             &database,
             &crate::network::Node {
+                usage: None,
                 id: "nd-far".into(),
                 name: "far.example".into(),
                 kind: crate::network::Kind::Private,

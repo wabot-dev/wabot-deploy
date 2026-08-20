@@ -822,6 +822,7 @@ mod tests {
             super::super::save(
                 &database,
                 &Node {
+                    usage: None,
                     id: id.into(),
                     name: id.into(),
                     kind,
@@ -870,6 +871,7 @@ mod tests {
         super::super::save(
             &database,
             &Node {
+                usage: None,
                 id: "nd-hub".into(),
                 name: "hub".into(),
                 kind: super::super::Kind::Public,
@@ -913,6 +915,7 @@ mod tests {
             super::super::save(
                 &database,
                 &Node {
+                    usage: None,
                     id: id.into(),
                     name: id.into(),
                     kind: super::super::Kind::Private,

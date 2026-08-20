@@ -527,7 +527,37 @@ async fn report_for(
         // is: a node enrolled before phase 9 becomes reachable on its next
         // poll rather than needing to join again.
         ca: crate::edge::certs::ca_certificate_pem(database).await.ok(),
+        // How full this machine is. Read here rather than stored: it is
+        // this node's own answer about itself, and the only place that can
+        // be asked. The authority's page for this node showed nothing at
+        // all before — it has no meters for a machine it cannot reach.
+        usage: Some(usage(config)),
     })
+}
+
+/// This machine's own totals, for the report.
+///
+/// Totals and not the breakdown: which process holds which megabyte is
+/// this machine's internals, its own console shows them, and no decision
+/// on another node turns on them. What the other end needs is whether
+/// this one is running out.
+fn usage(config: &Config) -> super::Usage {
+    // No container pids, and it costs nothing: `used()` is
+    // `total - available`, both straight from the kernel, and the map only
+    // decides how the *parts* are attributed. The parts do not travel, so
+    // asking containerd for a pid per replica would be a round trip for a
+    // number this report does not carry.
+    let snapshot = crate::node::memory::read(&std::collections::BTreeMap::new());
+    let disk = crate::node::disk::breakdown(
+        &config.node.data_dir,
+        std::path::Path::new(crate::node::disk::CONTAINERD_ROOT),
+    );
+    super::Usage {
+        memory_total: snapshot.total,
+        memory_used: snapshot.used(),
+        disk_total: disk.filesystem.total,
+        disk_free: disk.filesystem.available,
+    }
 }
 
 /// Do what one errand says, or say why not.
@@ -1135,6 +1165,7 @@ mod tests {
         crate::network::save(
             &database,
             &crate::network::Node {
+                usage: None,
                 id: "nd-up".into(),
                 name: "up.example".into(),
                 kind: crate::network::Kind::Public,

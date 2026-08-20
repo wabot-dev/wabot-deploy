@@ -5265,6 +5265,7 @@ mod tests {
         crate::network::save(
             &console.database,
             &crate::network::Node {
+                usage: None,
                 id: "nd-elsewhere1".into(),
                 name: "alpine.example".into(),
                 kind: crate::network::Kind::Private,
@@ -5359,6 +5360,7 @@ mod tests {
         crate::network::save(
             &console.database,
             &crate::network::Node {
+                usage: None,
                 id: "nd-elsewhere2".into(),
                 name: "alpine.example".into(),
                 kind: crate::network::Kind::Private,
@@ -5407,6 +5409,7 @@ mod tests {
         crate::network::save(
             &console.database,
             &crate::network::Node {
+                usage: None,
                 id: "nd-elsewhere1".into(),
                 name: "alpine.example".into(),
                 kind: crate::network::Kind::Private,
