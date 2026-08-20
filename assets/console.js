@@ -101,20 +101,48 @@
   // boosted navigation swaps the view and a listener attached once belongs
   // to markup that is gone.
 
+  // The glyph, and the glyph that says it worked. Two overlapping sheets
+  // and a tick — the same shape, stroke width and `currentColor` as every
+  // other icon in this console, which is what keeps a button built here
+  // from looking like it came from somewhere else.
+  var COPY_GLYPH =
+    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" ' +
+    'stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+    '<rect x="9" y="9" width="11" height="11" rx="2"/>' +
+    '<path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>';
+  var DONE_GLYPH =
+    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" ' +
+    'stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+    '<polyline points="20 6 9 17 4 12"/></svg>';
+
   wabot.island('copy', function (host) {
     var made = [];
     host.querySelectorAll('[data-copy]').forEach(function (block) {
       var button = document.createElement('button');
       button.type = 'button';
-      button.className = 'btn btn-secondary btn-sm dsn-copy';
-      button.textContent = block.dataset.copyLabel || 'Copy';
+      // No `btn-sm`: the height comes from `.dsn-copy`, which matches the
+      // block beside it.
+      button.className = 'btn btn-secondary btn-icon dsn-copy';
+      // **The word becomes the accessible name, not the label.** An icon
+      // on its own is a control with nothing to read out and nothing to
+      // hover, so the translated string moves here rather than being
+      // dropped — this is the one place the icon costs something, and it
+      // is paid rather than skipped.
+      var name = function (text) {
+        button.setAttribute('aria-label', text);
+        button.title = text;
+      };
+      name(block.dataset.copyLabel || 'Copy');
+      button.innerHTML = COPY_GLYPH;
       button.addEventListener('click', function () {
         var text = block.textContent;
         var said = function () {
-          var was = button.textContent;
-          button.textContent = block.dataset.copiedLabel || 'Copied';
+          var was = button.getAttribute('aria-label');
+          name(block.dataset.copiedLabel || 'Copied');
+          button.innerHTML = DONE_GLYPH;
           window.setTimeout(function () {
-            button.textContent = was;
+            name(was);
+            button.innerHTML = COPY_GLYPH;
           }, 1200);
         };
         // The modern one needs a secure context, which a node reached by

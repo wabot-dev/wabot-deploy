@@ -429,10 +429,41 @@ details[open] > summary { margin-bottom: var(--sp-4); }
    hidden by `[data-dsn]` and revealed one at a time by the radios; a
    service's are a list and every one of them is on screen, which is the
    difference between "which do you want" and "what does this offer". */
-.dsn-line { display: flex; align-items: center; gap: var(--sp-3); }
+/* The button is exactly as tall as the block it stands beside, and square,
+   because it is only its icon.
+ *
+ * `--dsn-height` is one line of `.dsn-value`: its font-size times its
+ * line-height, plus its padding twice. It is arithmetic over the same
+ * numbers the block itself uses, so it is declared here — one place, read
+ * by the button — rather than a measured pixel value that stops being
+ * true the next time the block's padding changes.
+ *
+ * `flex-start` rather than `center` for the block that holds more than one
+ * line: the push commands are two or three, and a button centred against
+ * them floats in the middle of a paragraph. Aligned to the top it sits on
+ * the first line, which is where a control belongs. For a single line the
+ * two are identical, since the heights are the same by construction. */
+.dsn-line {
+  --dsn-height: calc(0.82rem * 1.5 + var(--sp-3) * 2);
+  display: flex;
+  align-items: flex-start;
+  gap: var(--sp-3);
+}
 .dsn-line[data-dsn] { display: none; }
 .dsn-line .dsn-value { flex: 1 1 auto; min-width: 0; }
 .dsn-line .btn { flex: 0 0 auto; }
+/* Overriding `.btn-icon`'s 2.25rem, which is sized for the header's
+   controls and has nothing beside it to line up with. The glyph keeps the
+   one size every icon button uses — the box is taller here, and 22px in it
+   is the same proportion the shell's buttons already read at. */
+.dsn-copy { width: var(--dsn-height); height: var(--dsn-height); }
+/* One limit worth knowing: `.dsn-value` scrolls sideways, and on a
+   platform whose scrollbars take space rather than overlay the content, a
+   string long enough to scroll makes the block taller than this by the
+   scrollbar's height. `align-items: stretch` would follow it exactly and
+   was the first shape of this — it cannot be used, because the same rule
+   governs the push commands, which are three lines, and a button stretched
+   down three lines is not a control anybody aims at. */
 
 /* Release notes. Written by somebody else, arriving as Markdown, and
    rendered here as ordinary prose — narrow enough to read, with the
@@ -851,6 +882,65 @@ mod tests {
     /// is defined. This reads the stylesheet the pages actually load —
     /// not a copy of it — so the file being editable does not make it
     /// unguarded.
+    /// A button that is only an icon still has a name to read out.
+    ///
+    /// The copy control was the translated word `Copy`; it is a glyph now,
+    /// on Jorge's ask, and a glyph is nothing to a screen reader and
+    /// nothing to hover. So the word moved to `aria-label` rather than
+    /// being dropped — the one cost of the icon, and the one that is easy
+    /// to lose in a later simplification of the island.
+    ///
+    /// Read out of the asset because that is what the node serves. There
+    /// is no JavaScript in the test suite, so this is the only place the
+    /// claim can be made at all.
+    #[test]
+    fn the_copy_button_has_a_name_and_not_only_a_glyph() {
+        let script = include_str!("../../assets/console.js");
+        let island = script
+            .split("wabot.island('copy'")
+            .nth(1)
+            .expect("the copy island");
+        // Up to the next island, so a name set somewhere else cannot pass
+        // for this one.
+        let island = island.split("wabot.island(").next().expect("its body");
+
+        // The *set*, not any mention: a first version of this asked for
+        // `aria-label` anywhere in the island and passed with the
+        // assignment deleted, because reading the attribute back mentions
+        // it too. A test that survives the deletion it exists to catch is
+        // worse than none.
+        assert!(
+            island.contains(concat!("setAttribute('", "aria-label'")),
+            "an icon with nothing to read out: {island}"
+        );
+        // An icon rather than a word — the glyph is a constant above, so
+        // the island is asked about the glyph and the file about the SVG.
+        assert!(
+            island.contains("COPY_GLYPH"),
+            "the button renders no glyph: {island}"
+        );
+        let glyph = script
+            .split("COPY_GLYPH =")
+            .nth(1)
+            .expect("the glyph")
+            .split(';')
+            .next()
+            .expect("its value");
+        assert!(glyph.contains("<svg"), "and the glyph is not one: {glyph}");
+        assert!(
+            glyph.contains("currentColor"),
+            "an icon that does not follow the theme: {glyph}"
+        );
+        // The translated strings still reach it. The markup carries them,
+        // and dropping them would leave the English fallback on a Spanish
+        // page — which `every_string_the_console_asks_for_is_translated`
+        // cannot see, because the words are attributes rather than text.
+        assert!(
+            island.contains("copyLabel") && island.contains("copiedLabel"),
+            "the translated words are gone: {island}"
+        );
+    }
+
     #[test]
     fn the_two_dark_palettes_agree() {
         let sheet = include_str!("../../assets/wabot.css");
