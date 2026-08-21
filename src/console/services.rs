@@ -1789,40 +1789,35 @@ impl ServicePages {
                                             </form>
                                         </td>
                                     </tr>
-                                    // **The reason on its own line.** An ACME
-                                    // failure is a sentence — `DNS problem:
-                                    // NXDOMAIN looking up A for …` — and a
-                                    // column either truncates it or wrecks the
-                                    // table. An error is a value somebody acts
-                                    // on, so it gets the room to be read.
+                                    // **The reason on its own line, and only
+                                    // the reason.** An ACME failure is a
+                                    // sentence — `DNS problem: NXDOMAIN
+                                    // looking up A for …` — and a column
+                                    // either truncates it or wrecks the table.
+                                    // An error is a value somebody acts on, so
+                                    // it gets the room to be read.
                                     //
-                                    // And the source is changed here rather
-                                    // than in a section of its own, which is
-                                    // what merging the two lists cost: a
-                                    // disclosure, because it is opened once
-                                    // and scrolled past every other time.
-                                    @if let Some((port_id, hostname, cells, policy)) = certificate {
-                                        <tr class="port-detail">
-                                            <td colspan="5">
-                                                @if !cells.failure.is_empty() {
+                                    // Changing the source afterwards was here
+                                    // in a disclosure and is gone at Jorge's
+                                    // ask: the way to change it is to remove
+                                    // the port and expose it again. One way to
+                                    // do a thing, and the choice is made where
+                                    // it matters — before the first order.
+                                    @if let Some((_, _, cells, _)) = certificate {
+                                        @if !cells.failure.is_empty() {
+                                            <tr class="port-detail">
+                                                <td colspan="5">
                                                     <p class="failure">(&cells.failure)</p>
-                                                }
-                                                <details>
-                                                    <summary>(t("Change the certificate"))</summary>
-                                                    (super::nodes::certificate_source_form(
-                                                        &format!("{here}/ports/{port_id}/certificate"),
-                                                        policy,
-                                                    ))
-                                                </details>
-                                                <p class="field-hint">(hostname)</p>
-                                            </td>
-                                        </tr>
+                                                </td>
+                                            </tr>
+                                        }
                                     }
                                 }
                             </tbody>
                         </table>
                     }
 
+                    <p class="card-label">(t("Expose a port"))</p>
                     (port_form(&add, &suggestion, account.is_admin()))
                 </section>
                 }
@@ -6419,6 +6414,13 @@ mod tests {
         let console = Console::new().await;
         let cookie = console.signed_in().await;
         let page = service(&console, &cookie).await;
+        // Without a domain the form does not offer HTTPS at all, so it
+        // does not offer a source either. A first version of this asserted
+        // the field and passed on the *disclosure's* copy of it — which
+        // was the thing being deleted.
+        crate::node::settings::set_domain(&console.database, Some("example.com"))
+            .await
+            .expect("domain");
         let project = crate::platform::projects::find(&console.database, "my-api")
             .await
             .expect("query")
@@ -7224,14 +7226,24 @@ mod tests {
         port.id
     }
 
-    /// Every name the node serves gets the same three answers. The
-    /// node's own domain had a page first; that is the only thing
-    /// special about it.
+    /// The certificate is chosen when the port is exposed, and not after.
+    ///
+    /// Every name the node serves gets the same three answers — the node's
+    /// own domain had a page first, and that is the only thing special
+    /// about it. What changed is *where* the choice is made: this used to
+    /// be a control per hostname, one row of the old certificates section,
+    /// and Jorge asked for it to go. Changing it means removing the port
+    /// and exposing it again, which is one way to do a thing rather than
+    /// two, and it puts the choice before the first order rather than
+    /// after it.
     #[tokio::test]
-    async fn a_service_hostname_gets_its_own_certificate_control() {
+    async fn the_certificate_is_chosen_when_the_port_is_exposed() {
         let console = Console::new().await;
         let cookie = console.signed_in().await;
         let page = service(&console, &cookie).await;
+        crate::node::settings::set_domain(&console.database, Some("example.com"))
+            .await
+            .expect("domain");
         let port_id = hostname_on(&console, "api.example.com").await;
 
         let body = console
@@ -7242,13 +7254,15 @@ mod tests {
             .await
             .body;
         assert!(body.contains("api.example.com"), "{body}");
-        assert!(
-            body.contains(&format!("{page}/ports/{port_id}/certificate")),
-            "the form posts for this port: {body}"
-        );
+        // All three, on the form that exposes a port.
         assert!(
             body.contains("Read from files on this node"),
-            "and offers all three: {body}"
+            "the form does not offer all three: {body}"
+        );
+        // And nothing per hostname afterwards.
+        assert!(
+            !body.contains(&format!("{page}/ports/{port_id}/certificate")),
+            "a per-port control is still rendered: {body}"
         );
     }
 
