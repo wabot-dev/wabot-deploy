@@ -151,6 +151,10 @@ fn migrations() -> Vec<Migration> {
             "0043_node_usage",
             include_str!("../migrations/0043_node_usage.sql"),
         ),
+        Migration::new(
+            "0044_log_budget",
+            include_str!("../migrations/0044_log_budget.sql"),
+        ),
     ]
 }
 

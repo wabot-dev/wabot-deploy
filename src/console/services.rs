@@ -1503,6 +1503,27 @@ impl ServicePages {
                                 <li>(t("Risk: the reader is between the container and its log. If it stops reading, the container blocks on its next write. It drops lines rather than stopping, which is the whole reason this is offered at all — but it is why the default is off."))</li>
                             </ul>
                             <p class="field-hint">(t("Takes effect at the next deployment: containerd cannot change a running container's output."))</p>
+
+                            // **Bytes, because the question is disk.** The
+                            // per-container rule was a *count* of
+                            // generations, so "how much may this service
+                            // keep" had no answer and no dial — and the two
+                            // services on a node that matter are never the
+                            // two that talk the same amount.
+                            <label for="log_budget">(t("Keep at most"))</label>
+                            <input id="log_budget" name="log_budget" type="text" autocomplete="off"
+                                   class="mono"
+                                   placeholder=(t("two rotations"))
+                                   value=(service.log_budget
+                                       .map(crate::platform::presets::size_field)
+                                       .unwrap_or_default())>
+                            <p class="field-hint">(t("Per copy, and the live log counts against it \
+                                 — a service with two copies on this machine writes two. Oldest \
+                                 history is dropped first, and what the container is saying now \
+                                 is never dropped. Empty keeps two rotations behind the live \
+                                 file, whatever they weigh."))</p>
+                            <p class="field-hint">(t("The node's own budget still applies over \
+                                 all of them, so this can ask for more than it gets."))</p>
                             <div class="actions">
                                 <button type="submit">(t("Save"))</button>
                             </div>
@@ -3451,69 +3472,6 @@ impl ServiceApi {
         Ok(see_other(&format!("{here}#ports")))
     }
 
-    /// Choose where one hostname's certificate comes from.
-    ///
-    /// The same three answers as the node's own name, because it is
-    /// the same question. The file pair is read and checked here,
-    /// before the choice is stored: a policy that cannot work would
-    /// fail on every pass of the renewal loop with the reason in the
-    /// journal, and a mismatched pair installed would break the
-    /// handshake for this hostname outright.
-    #[post("/projects/:project/services/:service/ports/:port/certificate")]
-    #[raw]
-    #[middleware(SessionMiddleware)]
-    async fn set_port_certificate(&self, request: Request) -> RestResult<Response> {
-        let path = request.uri().path().to_string();
-        let segments = super::auth::segments(&path);
-        let Some((project, service, _)) = self.locate(&path).await? else {
-            return Ok(see_other("/?error=no+such+service"));
-        };
-        let here = format!(
-            "/projects/{}/services/{}/settings/network",
-            project.slug, service.slug
-        );
-
-        let ["projects", _, "services", _, "ports", port_id, "certificate"] = segments.as_slice()
-        else {
-            return Ok(see_other(&here));
-        };
-
-        // This service's port, and one that actually has a name to
-        // certify. An id from another page must not repoint somebody
-        // else's certificate.
-        let Some(hostname) = ports::of_service(&self.state.database, &service.id)
-            .await?
-            .into_iter()
-            .find(|port| port.id == *port_id)
-            .and_then(|port| port.hostname)
-        else {
-            return Ok(see_other(&here));
-        };
-
-        let form = match read_form(request).await {
-            Ok(form) => form,
-            Err(response) => return Ok(response),
-        };
-
-        let renew_with = match super::nodes::source_from(&form, &hostname) {
-            Ok(renew_with) => renew_with,
-            Err(reason) => return Ok(back_with_error(&here, &reason)),
-        };
-        if let Err(error) = super::nodes::store_source(
-            &self.state.database,
-            &self.state.config,
-            &hostname,
-            &renew_with,
-        )
-        .await
-        {
-            return Ok(back_with_error(&here, &error));
-        }
-        self.state.certificates.now();
-
-        Ok(see_other(&format!("{here}#certificates")))
-    }
-
     /// Deploy one release — the newest, or an older one, which is
     /// what a rollback is.
     #[post("/projects/:project/services/:service/releases/:release/deploy")]
@@ -3672,6 +3630,15 @@ impl ServiceApi {
             Ok(form) => form,
             Err(response) => return Ok(response),
         };
+        let budget = match crate::platform::presets::parse_bytes(field(&form, "log_budget")) {
+            Ok(budget) => budget,
+            Err(reason) => return Ok(back_with_error(&here, &reason)),
+        };
+        if let Err(error) =
+            services::set_log_budget(&self.state.database, &service.id, budget).await
+        {
+            tracing::error!(%error, "could not store the log budget");
+        }
         services::set_log_timestamps(
             &self.state.database,
             &service.id,
@@ -6437,6 +6404,70 @@ mod tests {
         );
     }
 
+    /// The log budget is typed on the page and reaches the row.
+    ///
+    /// Retention was three constants and the per-container one was a
+    /// *count* of generations, so a service that talks a lot and one that
+    /// barely speaks were held to the same two files. Asked for by Jorge.
+    #[tokio::test]
+    async fn a_service_says_how_much_log_it_keeps() {
+        let console = Console::new().await;
+        let cookie = console.signed_in().await;
+        let page = service(&console, &cookie).await;
+        let project = projects::find(&console.database, "my-api")
+            .await
+            .expect("query")
+            .expect("made");
+        let made = services::in_project(&console.database, &project.id, "web")
+            .await
+            .expect("query")
+            .expect("present");
+
+        console
+            .harness
+            .post(&format!("{page}/log-timestamps"))
+            .header("cookie", &cookie)
+            .form(&[("log_budget", "200 MB")])
+            .send()
+            .await;
+        let after = services::find(&console.database, &made.id)
+            .await
+            .expect("query")
+            .expect("still there");
+        assert_eq!(after.log_budget, Some(200 * 1024 * 1024));
+
+        // Empty is the default — two rotations, whatever they weigh — and
+        // not nought, which would mean keeping no history at all.
+        console
+            .harness
+            .post(&format!("{page}/log-timestamps"))
+            .header("cookie", &cookie)
+            .form(&[("log_budget", "")])
+            .send()
+            .await;
+        let after = services::find(&console.database, &made.id)
+            .await
+            .expect("query")
+            .expect("still there");
+        assert_eq!(after.log_budget, None, "empty is the default, not zero");
+
+        // And a size below what a container needs to *start* is fine
+        // here: keeping only the live log is a real answer, which is why
+        // this field does not use the memory parser's floor.
+        console
+            .harness
+            .post(&format!("{page}/log-timestamps"))
+            .header("cookie", &cookie)
+            .form(&[("log_budget", "1 MB")])
+            .send()
+            .await;
+        let after = services::find(&console.database, &made.id)
+            .await
+            .expect("query")
+            .expect("still there");
+        assert_eq!(after.log_budget, Some(1024 * 1024));
+    }
+
     /// One table: the port, what it is, where it answers, its certificate.
     ///
     /// They were two sections, so "is my service reachable and is its
@@ -7344,54 +7375,6 @@ mod tests {
             "required only with the box: {body}"
         );
         super::super::nodes::tests::conditions_name_real_controls(&body);
-    }
-
-    /// Refused while there is somebody to tell. A pair stored and found
-    /// wrong later fails on every pass of the renewal loop, with the
-    /// reason in a journal nobody is reading.
-    #[tokio::test]
-    async fn a_file_pair_for_another_name_is_refused_and_not_stored() {
-        let console = Console::new().await;
-        let cookie = console.signed_in().await;
-        let page = service(&console, &cookie).await;
-        let port_id = hostname_on(&console, "api.example.com").await;
-
-        let dir = tempfile::tempdir().expect("tempdir");
-        let key = rcgen::KeyPair::generate().expect("key");
-        let certificate = rcgen::CertificateParams::new(vec!["other.example.com".to_string()])
-            .expect("params")
-            .self_signed(&key)
-            .expect("sign");
-        let cert_path = dir.path().join("x.crt");
-        let key_path = dir.path().join("x.key");
-        std::fs::write(&cert_path, certificate.pem()).expect("write");
-        std::fs::write(&key_path, key.serialize_pem()).expect("write");
-
-        let response = console
-            .harness
-            .post(&format!("{page}/ports/{port_id}/certificate"))
-            .header("cookie", &cookie)
-            .form(&[
-                ("renew_with", "file"),
-                ("cert_path", cert_path.to_str().expect("path")),
-                ("key_path", key_path.to_str().expect("path")),
-            ])
-            .send()
-            .await;
-        let location = response.header("location").expect("redirected");
-        assert!(location.contains("error="), "it said no: {location}");
-
-        assert_eq!(
-            crate::edge::policy::for_name(
-                &console.database,
-                &crate::config::Config::default(),
-                "api.example.com",
-            )
-            .await
-            .renew_with,
-            crate::edge::policy::RenewWith::Acme,
-            "and stored nothing"
-        );
     }
 
     /// The default answer: a service exposes nothing.

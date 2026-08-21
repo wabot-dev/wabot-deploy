@@ -1,0 +1,15 @@
+-- How much disk a service's logs may keep, per copy.
+--
+-- Retention was three constants: rotate at 8 MB, keep two generations
+-- behind the live file, and a budget across the whole node. The middle
+-- one is a *count*, so "how much disk is this service allowed" had no
+-- answer and no dial — and the two services on a node that matter are
+-- never the two that talk the same amount.
+--
+-- Per copy, like `memory_limit`: a ceiling on a service is a ceiling on
+-- each of its containers, and two copies on one machine write two logs.
+--
+-- NULL is the default, which is `GENERATIONS`. Not a number written here,
+-- because a stored default goes stale the day the constant moves and then
+-- says the opposite of what the node does.
+ALTER TABLE service ADD COLUMN log_budget INTEGER;

@@ -170,6 +170,26 @@ pub const MIN_MILLICORES: u32 = 100;
 /// Base 1024 throughout, so `1 GB` here is the gibibyte a VPS invoice
 /// calls a gigabyte — the same choice the labels already made.
 pub fn parse_size(text: &str) -> Result<Option<u64>, String> {
+    let bytes = parse_bytes(text)?;
+    if let Some(bytes) = bytes {
+        if bytes < MIN_MEMORY {
+            return Err(format!(
+                "{} is under {}, which is less than a container needs to start",
+                label(bytes),
+                label(MIN_MEMORY)
+            ));
+        }
+    }
+    Ok(bytes)
+}
+
+/// The same spellings, with no floor.
+///
+/// Split out for the log budget, whose floor is a different question: a
+/// budget under one rotation is a service that keeps only its live log,
+/// which is a thing somebody may well want and is not a service that
+/// cannot start.
+pub fn parse_bytes(text: &str) -> Result<Option<u64>, String> {
     let text = text.trim();
     if text.is_empty() {
         return Ok(None);
@@ -204,15 +224,7 @@ pub fn parse_size(text: &str) -> Result<Option<u64>, String> {
     if bytes > u64::MAX as f64 {
         return Err(format!("{text:?} is larger than any machine"));
     }
-    let bytes = bytes as u64;
-    if bytes < MIN_MEMORY {
-        return Err(format!(
-            "{} is under {}, which is less than a container needs to start",
-            label(bytes),
-            label(MIN_MEMORY)
-        ));
-    }
-    Ok(Some(bytes))
+    Ok(Some(bytes as u64))
 }
 
 /// A CPU ceiling somebody typed: `0.5`, `2`, `1.5`, or `500m`.

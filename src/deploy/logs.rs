@@ -310,7 +310,7 @@ impl Swept {
 /// **A live file is never dropped**, by any of the three rules. A node
 /// out of log budget still answers "what is this container saying now",
 /// which is the question people ask while something is on fire.
-pub fn sweep(data_dir: &Path) -> Swept {
+pub fn sweep(data_dir: &Path, budgets: &std::collections::BTreeMap<String, u64>) -> Swept {
     let directory = data_dir.join("logs");
     let mut swept = Swept::default();
 
@@ -347,14 +347,53 @@ pub fn sweep(data_dir: &Path) -> Swept {
     }
 
     // Surplus and old generations.
+    //
+    // **A service with a budget is not counted here.** The count and the
+    // budget answer the same question in different units, and applying
+    // both would mean a 500 MB budget still keeping two generations —
+    // a number that only works downwards is a number that lies.
     for old in generations(&directory) {
-        let too_many = old.index > GENERATIONS;
+        let has_budget = container_of(&old.path)
+            .and_then(|id| budget_for(&id, budgets))
+            .is_some();
+        let too_many = !has_budget && old.index > GENERATIONS;
         let too_old = old.age.map(|age| age > MAX_AGE).unwrap_or(false);
         if !too_many && !too_old {
             continue;
         }
         if std::fs::remove_file(&old.path).is_ok() {
             swept.aged_out += 1;
+        }
+    }
+
+    // What each service said it may keep, oldest generation first.
+    //
+    // The live file counts against it and is never dropped: a budget under
+    // one rotation means "keep only what this container is saying now",
+    // which is a legitimate answer and the question asked while something
+    // is on fire.
+    for (id, budget) in per_container(&directory, budgets) {
+        let mut kept: Vec<Generation> = generations(&directory)
+            .into_iter()
+            .filter(|old| container_of(&old.path).as_deref() == Some(id.as_str()))
+            .collect();
+        let mut total = live_logs(&directory)
+            .iter()
+            .filter(|path| container_of(path).as_deref() == Some(id.as_str()))
+            .filter_map(|path| std::fs::metadata(path).ok())
+            .map(|metadata| metadata.len())
+            .sum::<u64>()
+            + kept.iter().map(|old| old.size).sum::<u64>();
+
+        kept.sort_by_key(|old| std::cmp::Reverse(old.index));
+        for old in kept {
+            if total <= budget {
+                break;
+            }
+            if std::fs::remove_file(&old.path).is_ok() {
+                total = total.saturating_sub(old.size);
+                swept.over_budget += 1;
+            }
         }
     }
 
@@ -387,6 +426,54 @@ pub fn sweep(data_dir: &Path) -> Swept {
         );
     }
     swept
+}
+
+/// The container a log file belongs to: `<id>.log` and `<id>.log.3` are
+/// both `<id>`.
+fn container_of(path: &Path) -> Option<String> {
+    let name = path.file_name()?.to_str()?;
+    let (id, _) = name.split_once(".log")?;
+    match id.is_empty() {
+        true => None,
+        false => Some(id.to_string()),
+    }
+}
+
+/// The budget for a container, from the budget of the service it is a
+/// copy of.
+///
+/// Slot 1 is `project.service` and the rest are `project.service.2`, so a
+/// key matches directly or with a numeric slot taken off. Written against
+/// `replicas::container_id_for`, which is the one place that rule lives.
+fn budget_for(id: &str, budgets: &std::collections::BTreeMap<String, u64>) -> Option<u64> {
+    if let Some(budget) = budgets.get(id) {
+        return Some(*budget);
+    }
+    let (service, slot) = id.rsplit_once('.')?;
+    match slot.chars().all(|character| character.is_ascii_digit()) {
+        true => budgets.get(service).copied(),
+        false => None,
+    }
+}
+
+/// Every container in this directory that has a budget, and what it is.
+fn per_container(
+    directory: &Path,
+    budgets: &std::collections::BTreeMap<String, u64>,
+) -> std::collections::BTreeMap<String, u64> {
+    let mut found = std::collections::BTreeMap::new();
+    let paths = live_logs(directory)
+        .into_iter()
+        .chain(generations(directory).into_iter().map(|old| old.path));
+    for path in paths {
+        let Some(id) = container_of(&path) else {
+            continue;
+        };
+        if let Some(budget) = budget_for(&id, budgets) {
+            found.insert(id, budget);
+        }
+    }
+    found
 }
 
 /// `<id>.log` — the file a shim is appending to.
@@ -670,7 +757,7 @@ mod tests {
         let full = std::fs::metadata(&noisy).expect("stat").len();
 
         // Nothing is over the shipped bound, so the pass leaves both.
-        assert_eq!(sweep(dir.path()), Swept::default());
+        assert_eq!(sweep(dir.path(), &Default::default()), Swept::default());
         assert_eq!(std::fs::metadata(&noisy).expect("stat").len(), full);
 
         // The small one is untouched too.
@@ -754,7 +841,7 @@ mod tests {
 
         // The sweep leaves it alone: it is under the live ceiling, and
         // rotating it here is the thing that would break.
-        assert_eq!(sweep(dir.path()), Swept::default());
+        assert_eq!(sweep(dir.path(), &Default::default()), Swept::default());
         assert!(std::fs::metadata(&live).expect("stat").len() > MAX_BYTES);
 
         // The next start rotates it, and the new run begins in a file
@@ -791,7 +878,7 @@ mod tests {
         }
         std::fs::write(&live, &written).expect("write");
 
-        let swept = sweep(dir.path());
+        let swept = sweep(dir.path(), &Default::default());
         assert_eq!(swept.trimmed, 1);
         let kept = std::fs::metadata(&live).expect("stat").len();
         assert!(kept <= MAX_BYTES, "{kept} bytes kept");
@@ -824,7 +911,7 @@ mod tests {
             std::fs::write(with_index(&live, index), format!("gen {index}\n")).expect("write");
         }
 
-        let swept = sweep(dir.path());
+        let swept = sweep(dir.path(), &Default::default());
         assert_eq!(swept.aged_out, 2, "the two past the count");
         assert!(live.exists(), "the live file is never dropped");
         for index in 1..=GENERATIONS {
@@ -847,7 +934,7 @@ mod tests {
         std::fs::write(&replica, "the second copy\n").expect("write");
 
         assert_eq!(generations(&dir.path().join("logs")).len(), 0);
-        assert_eq!(sweep(dir.path()), Swept::default());
+        assert_eq!(sweep(dir.path(), &Default::default()), Swept::default());
         assert!(replica.exists(), "a replica's log is not a rotated file");
     }
 
@@ -1062,5 +1149,100 @@ mod tests {
         prepare(dir.path(), "demo.db").expect("prepared");
         discard(dir.path(), "demo.db");
         assert!(!path(dir.path(), "demo.db").exists());
+    }
+
+    /// A service's own budget, in bytes, replacing the count.
+    ///
+    /// The per-container rule was `GENERATIONS` — two files behind the
+    /// live one — so "how much disk may this service keep" had no answer.
+    /// Asked for by Jorge.
+    ///
+    /// **It replaces the count rather than joining it.** Both answer the
+    /// same question in different units, and applying both would mean a
+    /// generous budget still keeping two generations: a number that only
+    /// works downwards is a number that lies. So a container with a budget
+    /// keeps as many rotations as fit, and one without keeps two.
+    #[test]
+    fn a_budget_replaces_the_generation_count_in_both_directions() {
+        let dir = tempfile::tempdir().expect("temp");
+        let logs = dir.path().join("logs");
+        std::fs::create_dir_all(&logs).expect("mkdir");
+
+        let write = |name: &str, bytes: usize| {
+            std::fs::write(logs.join(name), vec![b'x'; bytes]).expect("write");
+        };
+        // Four rotations behind a small live file, for two containers.
+        for id in ["demo.roomy", "demo.tight"] {
+            write(&format!("{id}.log"), 1024);
+            for index in 1..=4 {
+                write(&format!("{id}.log.{index}"), 1024 * 1024);
+            }
+        }
+
+        let budgets = std::collections::BTreeMap::from([
+            // Room for three of the four, plus the live file.
+            ("demo.roomy".to_string(), 3 * 1024 * 1024 + 4096),
+            // Room for none of them.
+            ("demo.tight".to_string(), 4096),
+        ]);
+        sweep(dir.path(), &budgets);
+
+        let kept = |id: &str| {
+            (1..=4)
+                .filter(|index| logs.join(format!("{id}.log.{index}")).exists())
+                .count()
+        };
+        assert_eq!(
+            kept("demo.roomy"),
+            3,
+            "a budget above two generations keeps more"
+        );
+        assert_eq!(kept("demo.tight"), 0, "and one below keeps none");
+        // The live file is never dropped by any of this: it is what the
+        // container is saying now, which is the question asked while
+        // something is on fire.
+        for id in ["demo.roomy", "demo.tight"] {
+            assert!(
+                logs.join(format!("{id}.log")).exists(),
+                "{id} lost its live log"
+            );
+        }
+    }
+
+    /// A service with no budget keeps the count, and a slot follows its
+    /// service.
+    ///
+    /// Slot 1 is `project.service` and the rest carry `.2`, so a budget
+    /// set on the service has to reach a copy whose id it does not equal.
+    #[test]
+    fn a_replica_takes_the_budget_of_the_service_it_is_a_copy_of() {
+        let dir = tempfile::tempdir().expect("temp");
+        let logs = dir.path().join("logs");
+        std::fs::create_dir_all(&logs).expect("mkdir");
+        let write = |name: &str, bytes: usize| {
+            std::fs::write(logs.join(name), vec![b'x'; bytes]).expect("write");
+        };
+        for id in ["demo.web.2", "demo.other"] {
+            write(&format!("{id}.log"), 1024);
+            for index in 1..=4 {
+                write(&format!("{id}.log.{index}"), 1024 * 1024);
+            }
+        }
+
+        let budgets = std::collections::BTreeMap::from([("demo.web".to_string(), 4096)]);
+        sweep(dir.path(), &budgets);
+
+        let kept = |id: &str| {
+            (1..=4)
+                .filter(|index| logs.join(format!("{id}.log.{index}")).exists())
+                .count()
+        };
+        assert_eq!(
+            kept("demo.web.2"),
+            0,
+            "the copy did not take its service's budget"
+        );
+        // And the service that set none keeps `GENERATIONS`.
+        assert_eq!(kept("demo.other"), GENERATIONS, "the default moved");
     }
 }

@@ -214,13 +214,19 @@ pub async fn run(config: Config) -> anyhow::Result<i32> {
             move |cancel| async move {
                 loop {
                     let data_dir = deployer.config().node.data_dir.clone();
+                    // What each service said its logs may keep, read here
+                    // because `sweep` is a filesystem function and asking
+                    // it to open a database would make it untestable
+                    // against a directory.
+                    let budgets = deployer.log_budgets().await;
                     // On the blocking pool: it stats every log, renames
                     // some and removes others, and doing that on an
                     // executor thread stops the console answering.
-                    let swept =
-                        tokio::task::spawn_blocking(move || crate::deploy::logs::sweep(&data_dir))
-                            .await
-                            .unwrap_or_default();
+                    let swept = tokio::task::spawn_blocking(move || {
+                        crate::deploy::logs::sweep(&data_dir, &budgets)
+                    })
+                    .await
+                    .unwrap_or_default();
                     if swept.did_anything() {
                         tracing::info!(
                             trimmed = swept.trimmed,

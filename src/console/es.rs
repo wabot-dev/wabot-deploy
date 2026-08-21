@@ -357,6 +357,7 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
         "Keep a copy of this node's data over there",
         "Guardar allí una copia de los datos de este nodo",
     ),
+    ("Keep at most", "Guardar como máximo"),
     ("Keep the write-ahead log", "Guardar el log de escritura anticipada"),
     (
         "Kept for the console, the edge, containerd and everything else on this machine. Empty means the default, which is 15 % with a floor of 256 MB.",
@@ -515,6 +516,10 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
     ("Overview", "Resumen"),
     ("Password", "Contraseña"),
     ("People", "Personas"),
+    (
+        "Per copy, and the live log counts against it — a service with two copies on this machine writes two. Oldest history is dropped first, and what the container is saying now is never dropped. Empty keeps two rotations behind the live file, whatever they weigh.",
+        "Por copia, y el log en vivo cuenta dentro — un servicio con dos copias en esta máquina escribe dos. Se descarta primero la historia más vieja, y lo que el contenedor está diciendo ahora no se descarta nunca. Vacío guarda dos rotaciones detrás del archivo en vivo, pesen lo que pesen.",
+    ),
     ("Persistent disks", "Discos persistentes"),
     ("Person", "Persona"),
     ("Placed by", "Colocada por"),
@@ -698,6 +703,10 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
     (
         "The node restarts on its own when the new binary is in place. This page follows along — there is nothing to reload.",
         "El nodo se reinicia solo cuando el binario nuevo está en su sitio. Esta página lo sigue — no hay nada que recargar.",
+    ),
+    (
+        "The node's own budget still applies over all of them, so this can ask for more than it gets.",
+        "El presupuesto del propio nodo sigue aplicando sobre todos, así que esto puede pedir más de lo que recibe.",
     ),
     (
         "The node's, inherited — set a domain on the node and every database it owns is named under it. A copy held on another machine keeps the owner's domain, because the name belongs to the database.",
@@ -933,6 +942,7 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
     ("the box in the rack by the window", "la máquina del rack junto a la ventana"),
     ("the project's settings", "la configuración del proyecto"),
     ("this node", "este nodo"),
+    ("two rotations", "dos rotaciones"),
     ("used", "usada"),
     ("watching every tag", "vigilando todas las etiquetas"),
 ];

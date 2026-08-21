@@ -1495,6 +1495,29 @@ impl Deployer {
     /// The container pids come from containerd rather than from the
     /// process table: a pid alone cannot say which service it is, and
     /// the console's whole point here is attribution.
+    /// What each service said its logs may keep, keyed by the container
+    /// id its copies are named after.
+    ///
+    /// Only the services that chose one: an absent key is the default,
+    /// which is a count of generations rather than a number of bytes, and
+    /// writing a byte figure here for everybody would turn a default into
+    /// a stored decision.
+    pub async fn log_budgets(&self) -> std::collections::BTreeMap<String, u64> {
+        let mut budgets = std::collections::BTreeMap::new();
+        let projects = projects::all(&self.database).await.unwrap_or_default();
+        for project in projects {
+            let found = services::all(&self.database, Some(&project.id))
+                .await
+                .unwrap_or_default();
+            for service in found {
+                if let Some(budget) = service.log_budget {
+                    budgets.insert(service.container_id(&project.slug), budget);
+                }
+            }
+        }
+        budgets
+    }
+
     pub async fn memory(&self) -> crate::node::memory::Snapshot {
         let mut pids = std::collections::BTreeMap::new();
 

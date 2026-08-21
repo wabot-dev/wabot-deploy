@@ -132,6 +132,13 @@ pub struct Service {
     /// a reader that stops reading blocks the container. See
     /// `commands::log_writer`.
     pub log_timestamps: bool,
+    /// How much disk this service's logs may keep, per copy.
+    ///
+    /// `None` is the default, which is `logs::GENERATIONS` behind the live
+    /// file. Not a number stored at creation: a stored default goes stale
+    /// the day the constant moves and then says the opposite of what the
+    /// node does.
+    pub log_budget: Option<u64>,
     pub kind: Kind,
 }
 
@@ -220,6 +227,7 @@ pub async fn create(
         memory_limit: None,
         cpu_millicores: None,
         log_timestamps: false,
+        log_budget: None,
         // A plain container. `databases::create` calls `set_kind`
         // straight after this, for the same reason `set_origin` is
         // separate: the default is the honest one, and forgetting to
@@ -342,7 +350,7 @@ pub async fn in_project(
 const COLUMNS: &str = "\"id\", \"project_id\", \"name\", \"slug\", \"image\", \"env\", \
      \"desired_state\", \"last_error\", \"address\", \"track_tag\", \"auto_deploy\", \
      \"origin_node_id\", \"memory_limit\", \"kind\", \"cpu_millicores\", \
-     \"log_timestamps\"";
+     \"log_timestamps\", \"log_budget\"";
 
 pub async fn all(
     database: &SqliteDatabase,
@@ -389,6 +397,7 @@ fn decode(row: &wabot::sqlite::rusqlite::Row<'_>) -> wabot::sqlite::rusqlite::Re
         kind: Kind::parse(&row.get::<_, String>(13)?),
         cpu_millicores: row.get::<_, Option<i64>>(14)?.map(|milli| milli as u32),
         log_timestamps: row.get::<_, i64>(15)? != 0,
+        log_budget: row.get::<_, Option<i64>>(16)?.map(|bytes| bytes as u64),
     })
 }
 
@@ -668,6 +677,29 @@ impl Service {
     }
 }
 
+/// How much disk its logs may keep, per copy. `None` restores the default.
+///
+/// Takes effect at the next sweep, which runs on a timer — nothing here
+/// deletes a file, and a setting that reached in and truncated a log while
+/// somebody was reading it would be worse than one that waits a minute.
+pub async fn set_log_budget(
+    database: &SqliteDatabase,
+    service_id: &str,
+    bytes: Option<u64>,
+) -> PlatformResult<()> {
+    let (id, bytes) = (service_id.to_string(), bytes.map(|bytes| bytes as i64));
+    database
+        .write(move |connection| {
+            connection.execute(
+                "UPDATE service SET \"log_budget\" = ?2, \"updated_at\" = ?3 WHERE \"id\" = ?1",
+                (id, bytes, now_ms()),
+            )?;
+            Ok(())
+        })
+        .await?;
+    Ok(())
+}
+
 pub async fn set_log_timestamps(
     database: &SqliteDatabase,
     service_id: &str,
@@ -727,6 +759,7 @@ mod tests {
     #[test]
     fn a_container_id_is_one_containerd_accepts() {
         let service = Service {
+            log_budget: None,
             id: "svc-1".into(),
             project_id: "prj-1".into(),
             name: "nginx".into(),
