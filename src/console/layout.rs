@@ -479,6 +479,19 @@ details[open] > summary { margin-bottom: var(--sp-4); }
    governs the push commands, which are three lines, and a button stretched
    down three lines is not a control anybody aims at. */
 
+/* What is published, and the form that adds to it.
+ *
+ * Two things, and the stack's 16px read as one: a row of the table sat
+ * against the top of the card below it, so the last port looked like a
+ * field of the form. Doubled at that one boundary rather than by loosening
+ * `.stack`, which every page in this console is built out of.
+ *
+ * `+ *` because the form arrives wrapped in an island host, and naming the
+ * wrapper here would break the next time something is or is not one. */
+#ports table + * {
+  margin-top: var(--sp-4);
+}
+
 /* The tab bar on a service's settings.
  *
  * Links, and styled like the side nav's rather than as a new idiom: the

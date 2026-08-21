@@ -533,7 +533,7 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
         "Al hacer push a esta etiqueta, la imagen se despliega inmediatamente, puedes usar * para desplegar automáticamente cualquier imagen pusheada.",
     ),
     ("Queued for that node", "En cola para ese nodo"),
-    ("Reachable at", "Se llega en"),
+    ("Reachable at", "Se expone en"),
     (
         "Reachable from any container in this project. The address is reserved for this copy, so it survives a redeployment.",
         "Alcanzable desde cualquier contenedor de este proyecto. La dirección está reservada para esta copia, así que sobrevive a un redespliegue.",
