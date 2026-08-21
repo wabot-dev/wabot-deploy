@@ -173,12 +173,14 @@ impl Tab {
         if service.is_ours() {
             tabs.push(Tab::Replicas);
         }
-        // A managed database has no logs settings — the node writes its
-        // command line, including how it logs. That is where the branch
-        // already was; splitting `Advanced` only made it visible.
-        if !service.kind.is_managed() {
-            tabs.push(Tab::Logs);
-        }
+        // **Including a database.** This was gated to plain containers
+        // because the logs section happened to sit inside the branch that
+        // also held the image, the tag and the environment — three things
+        // the node writes for a database. Timestamping is not one of them:
+        // `try_deploy` reads `service.log_timestamps` for every kind and
+        // hands containerd the same `binary://` either way, so the setting
+        // already worked and only the page withheld it.
+        tabs.push(Tab::Logs);
         tabs.push(Tab::Danger);
         tabs
     }
@@ -6418,11 +6420,20 @@ mod tests {
             landing!("/projects/my-api/services/api/settings/advanced"),
             "/projects/my-api/services/api/settings/image"
         );
-        // A database has no logs tab: the node writes its command line,
-        // including how it logs, so there is nothing there to set.
-        assert_eq!(
-            landing!(format!("{database}/logs")),
-            format!("{database}/database")
+        // A database *does* have a logs tab: `try_deploy` reads
+        // `log_timestamps` for every kind, so the setting was already
+        // reaching Postgres and only the page withheld it.
+        let logs = console
+            .harness
+            .get(&format!("{database}/logs"))
+            .header("cookie", &cookie)
+            .send()
+            .await;
+        assert_eq!(logs.header("location"), None, "a database has no logs tab");
+        assert!(
+            logs.body.contains("log-timestamps"),
+            "and the form is on it: {}",
+            logs.body
         );
     }
 
