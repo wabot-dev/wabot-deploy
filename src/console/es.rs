@@ -827,10 +827,6 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
         "Este servicio está fijado a una imagen por digest, que nombra bytes y no un nombre que una subida pueda mover. Dale una etiqueta en ajustes para que las subidas le lleguen.",
     ),
     (
-        "This service runs an image from another registry, so nothing pushed to this node can land on it — a push is matched to a service by the name it carries. Point it at this node's registry above, and the command appears.",
-        "Este servicio corre una imagen de otro registro, así que nada de lo que se pushee a este nodo puede aterrizar en él — un push se empareja con un servicio por el nombre que lleva. Apúntalo al registro de este nodo arriba, y el comando aparece.",
-    ),
-    (
         "This service runs an image from another registry, so nothing pushed to this node can land on it — a push is matched to a service by the name it carries. Point the service at this reference instead, and push that:",
         "Este servicio corre una imagen de otro registry, así que nada de lo que se suba a este nodo puede caer en él — una subida se empareja con un servicio por el nombre que lleva. Apunta el servicio a esta referencia y sube esa:",
     ),

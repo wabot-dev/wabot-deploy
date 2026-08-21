@@ -2219,12 +2219,6 @@ fn push_target(push: &Option<Push>) -> impl Renderable + '_ {
             // The dead ends, each said rather than left blank. A card
             // headed "what to push at" with nothing under it is one
             // somebody reads as broken rather than as not applicable.
-            @if matches!(push, Some(Push::Elsewhere(_))) {
-                <p class="field-hint">(t("This service runs an image from another registry, so \
-                     nothing pushed to this node can land on it — a push is matched to a service \
-                     by the name it carries. Point it at this node's registry above, and the \
-                     command appears."))</p>
-            }
             @if matches!(push, Some(Push::Pinned)) {
                 <p class="field-hint">(t("This service is pinned to one image by digest, which \
                      names bytes rather than a name a push can move. Give it a tag above for \
