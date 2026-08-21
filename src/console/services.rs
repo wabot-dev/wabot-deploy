@@ -1440,9 +1440,6 @@ impl ServicePages {
                             <p class="field-hint">(t("Pushing to this tag deploys the image \
                                  immediately. You can use * to deploy automatically whatever you \
                                  push."))</p>
-                            <p class="field-hint">(t("Empty means `latest`. Patterns like `v*` are \
-                                 refused rather than stored as the name of a tag nobody will \
-                                 push."))</p>
                             <div class="actions">
                                 <button type="submit">(t("Save"))</button>
                             </div>
@@ -6259,6 +6256,50 @@ mod tests {
         assert_eq!(
             landing!("/projects/my-api/services/api/settings/nonsense"),
             "/projects/my-api/services/api/settings/image"
+        );
+    }
+
+    /// The row from Jorge's node, rendered here.
+    ///
+    /// He reported not seeing the command at all, and the binary on the
+    /// node was mine by sha256 — so the question was whether his *data*
+    /// produced it, not whether the code shipped. This is that row:
+    /// pushed under a tag that is not `latest`, watching every tag.
+    #[tokio::test]
+    async fn the_command_appears_for_a_service_pushed_under_another_tag() {
+        let console = Console::new().await;
+        let cookie = console.signed_in().await;
+        service(&console, &cookie).await;
+        crate::node::settings::set_domain(&console.database, Some("node-1.tobaw.shop"))
+            .await
+            .expect("domain");
+        let project = projects::create(&console.database, "wabot")
+            .await
+            .expect("project");
+        let made = services::create(
+            &console.database,
+            &project.id,
+            "nginx-2",
+            "node-1.tobaw.shop/wabot/nginx-2:new",
+            &[],
+        )
+        .await
+        .expect("service");
+        services::set_tracking(&console.database, &made.id, Some("*"), true)
+            .await
+            .expect("watch everything");
+
+        let body = console
+            .harness
+            .get("/projects/wabot/services/nginx-2/settings/image")
+            .header("cookie", &cookie)
+            .send()
+            .await
+            .body;
+
+        assert!(
+            body.contains("docker push node-1.tobaw.shop/wabot/nginx-2:latest"),
+            "no command for the row this was reported against: {body}"
         );
     }
 
