@@ -269,8 +269,13 @@ Publishing a release is outward-facing. Ask first.
 
 - Reconcile checks whether a container runs, not whether its port
   mappings match the rows.
-- Container logs are kept across restarts and bounded three ways, and
-  nothing **searches** them.
+- ~~Container logs are kept across restarts and bounded three ways, and
+  nothing **searches** them.~~ Done: a GET form over the whole kept
+  history, matches paged, each opening in context. Substring and not a
+  pattern — a regular expression is a way to hang a one-core node from a
+  form. A line number counts over the concatenation, so a sweep that
+  drops the oldest generation shifts them: it is a place, not an address,
+  and the page says the number it counted at.
 - No image garbage collection.
 - The updater does not rewrite the systemd unit; a release that changes
   it has to say so in its notes.

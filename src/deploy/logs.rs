@@ -654,6 +654,96 @@ pub fn history(data_dir: &Path, container_id: &str, limit: usize) -> Option<Stri
     Some(text[start..].to_string())
 }
 
+/// A line of a container's kept history, with where it sits in it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Line {
+    /// 1-based, counted over the whole history — the generations oldest
+    /// first and then the live file, which is the order `history` reads.
+    pub number: usize,
+    pub text: String,
+}
+
+/// What a search found.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Found {
+    pub lines: Vec<Line>,
+    /// How many matched altogether, which is not `lines.len()` once a
+    /// page has been taken out of it.
+    pub total: usize,
+    /// How many lines were read to answer. On the page beside the count,
+    /// because "3 of 41,000" and "3 of 12" are different answers to the
+    /// same question and only one of them means the log is quiet.
+    pub scanned: usize,
+}
+
+/// Every line of a container's history holding `needle`, case-insensitive.
+///
+/// **Substring, not a pattern.** A regular expression is a way for
+/// somebody to hang the node from a form — this reads up to 24 MB per
+/// container and a pathological pattern over that is minutes of one core
+/// on a machine with one — and "the word that was in the error" is what
+/// somebody types. If patterns are ever wanted they want a bound on the
+/// engine, not a crate.
+///
+/// `skip` and `take` page the result. The scan is not paged: the count has
+/// to be true, and a page that said "the first hundred of we do not know"
+/// would not answer the question the count is for.
+pub fn search(
+    data_dir: &Path,
+    container_id: &str,
+    needle: &str,
+    skip: usize,
+    take: usize,
+) -> Found {
+    let needle = needle.trim().to_lowercase();
+    if needle.is_empty() {
+        return Found::default();
+    }
+    let Some(text) = history(data_dir, container_id, usize::MAX) else {
+        return Found::default();
+    };
+
+    let mut found = Found::default();
+    for (index, line) in text.lines().enumerate() {
+        found.scanned += 1;
+        if !line.to_lowercase().contains(&needle) {
+            continue;
+        }
+        found.total += 1;
+        if found.total > skip && found.lines.len() < take {
+            found.lines.push(Line {
+                number: index + 1,
+                text: line.to_string(),
+            });
+        }
+    }
+    found
+}
+
+/// The lines around one of them, so a match can be read in context.
+///
+/// **The number is only as stable as the history is.** It counts over the
+/// concatenation, so a sweep that drops the oldest generation shifts every
+/// number down — a link kept from an hour ago lands somewhere near rather
+/// than exactly. The alternative is a byte offset into a file, which the
+/// trim moves as well; nothing here is a permanent address, and the page
+/// says the number it is showing rather than pretending otherwise.
+pub fn around(data_dir: &Path, container_id: &str, number: usize, radius: usize) -> Vec<Line> {
+    let Some(text) = history(data_dir, container_id, usize::MAX) else {
+        return Vec::new();
+    };
+    let first = number.saturating_sub(radius).max(1);
+    text.lines()
+        .enumerate()
+        .skip(first - 1)
+        .take(radius * 2 + 1)
+        .map(|(index, line)| Line {
+            number: index + 1,
+            text: line.to_string(),
+        })
+        .collect()
+}
+
 /// The last of what a container said, or `None` if it said nothing.
 ///
 /// Bounded, because this ends up in a database column and on a page: a
@@ -1297,5 +1387,83 @@ mod tests {
         );
         // And the service that set none keeps `GENERATIONS`.
         assert_eq!(kept("demo.other"), GENERATIONS, "the default moved");
+    }
+
+    /// Searching reads the generations and the live file as one log.
+    ///
+    /// Which is what "the log of this service" means to somebody who does
+    /// not know this module exists — and it is the whole point of
+    /// searching at all: the line somebody wants is usually before the
+    /// restart that made them look.
+    #[test]
+    fn a_search_crosses_the_rotations() {
+        let dir = tempfile::tempdir().expect("temp");
+        let logs = dir.path().join("logs");
+        std::fs::create_dir_all(&logs).expect("mkdir");
+        // Oldest generation first, as `history` reads them.
+        std::fs::write(logs.join("demo.web.log.2"), "one\nboom in the oldest\n").expect("write");
+        std::fs::write(logs.join("demo.web.log.1"), "three\nfour\n").expect("write");
+        std::fs::write(logs.join("demo.web.log"), "five\nboom in the live one\n").expect("write");
+
+        let found = search(dir.path(), "demo.web", "boom", 0, 10);
+        assert_eq!(found.total, 2, "a rotation was not read");
+        assert_eq!(found.scanned, 6);
+        assert_eq!(found.lines[0].number, 2);
+        assert_eq!(found.lines[0].text, "boom in the oldest");
+        assert_eq!(found.lines[1].number, 6);
+
+        // Case-insensitive, because "the word that was in the error" is
+        // what somebody types.
+        assert_eq!(search(dir.path(), "demo.web", "BOOM", 0, 10).total, 2);
+        // And a substring rather than a pattern: `.` is a dot.
+        assert_eq!(search(dir.path(), "demo.web", "b.om", 0, 10).total, 0);
+    }
+
+    /// A page of matches, with a count that is not the page.
+    ///
+    /// "3 of 41,000" and "3 of 12" are different answers, and only one of
+    /// them means the log is quiet — so the scan is never paged even when
+    /// the result is.
+    #[test]
+    fn a_count_is_of_the_whole_log_and_not_of_the_page() {
+        let dir = tempfile::tempdir().expect("temp");
+        let logs = dir.path().join("logs");
+        std::fs::create_dir_all(&logs).expect("mkdir");
+        let body: String = (1..=50).map(|n| format!("line {n} boom\n")).collect();
+        std::fs::write(logs.join("demo.web.log"), body).expect("write");
+
+        let first = search(dir.path(), "demo.web", "boom", 0, 10);
+        assert_eq!(first.total, 50, "the count is of the whole log");
+        assert_eq!(first.lines.len(), 10, "and the page is a page");
+        assert_eq!(first.lines[0].number, 1);
+
+        let second = search(dir.path(), "demo.web", "boom", 10, 10);
+        assert_eq!(second.total, 50);
+        assert_eq!(
+            second.lines[0].number, 11,
+            "the next page starts after the first"
+        );
+    }
+
+    /// A match can be read in context, and the window holds at the ends.
+    #[test]
+    fn a_line_can_be_read_with_what_surrounds_it() {
+        let dir = tempfile::tempdir().expect("temp");
+        let logs = dir.path().join("logs");
+        std::fs::create_dir_all(&logs).expect("mkdir");
+        let body: String = (1..=20).map(|n| format!("line {n}\n")).collect();
+        std::fs::write(logs.join("demo.web.log"), body).expect("write");
+
+        let window = around(dir.path(), "demo.web", 10, 2);
+        assert_eq!(window.len(), 5);
+        assert_eq!(window[0].number, 8);
+        assert_eq!(window[4].number, 12);
+
+        // At the beginning it does not run off the front, and at the end
+        // it stops where the log does rather than padding.
+        let start = around(dir.path(), "demo.web", 1, 5);
+        assert_eq!(start[0].number, 1);
+        let end = around(dir.path(), "demo.web", 20, 5);
+        assert_eq!(end.last().expect("a line").number, 20);
     }
 }

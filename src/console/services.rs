@@ -59,6 +59,14 @@ pub struct ServiceLogs {
     /// nothing had found it.
     pub slot: Option<String>,
 
+    /// What to look for in everything kept. Absent is no search.
+    pub q: Option<String>,
+    /// Which page of the matches, 1-based. A string for the reason `slot`
+    /// is one.
+    pub page: Option<String>,
+    /// A line number to open the history around, from a match.
+    pub at: Option<String>,
+
     /// Show everything kept rather than the end of the live file.
     ///
     /// The default is the last window of what is being written now,
@@ -929,6 +937,42 @@ impl ServicePages {
             }
             (None, _) => None,
         };
+        // Searching, and reading a match in context. Both over the whole
+        // kept history — the line somebody wants is usually before the
+        // restart that made them look, which is the reason this exists at
+        // all.
+        const PER_PAGE: usize = 50;
+        const RADIUS: usize = 12;
+        let needle = query
+            .q
+            .as_deref()
+            .map(str::trim)
+            .filter(|needle| !needle.is_empty())
+            .map(str::to_string);
+        let page = query
+            .page
+            .as_deref()
+            .and_then(|page| page.parse::<usize>().ok())
+            .filter(|page| *page >= 1)
+            .unwrap_or(1);
+        let found = match (&container, &needle) {
+            (Some(container), Some(needle)) => Some(crate::deploy::logs::search(
+                &self.state.config.node.data_dir,
+                container,
+                needle,
+                (page - 1) * PER_PAGE,
+                PER_PAGE,
+            )),
+            _ => None,
+        };
+        let at = query.at.as_deref().and_then(|at| at.parse::<usize>().ok());
+        let window = match (&container, at) {
+            (Some(container), Some(at)) => {
+                crate::deploy::logs::around(&self.state.config.node.data_dir, container, at, RADIUS)
+            }
+            _ => Vec::new(),
+        };
+
         // Whether there is older history to offer, so the link is absent
         // when it would lead to the same bytes.
         let has_history = container
@@ -1035,9 +1079,86 @@ impl ServicePages {
                                 ))>(t("Show everything kept"))</a>
                             </p>
                         }
-                        <pre class="log" data-logs-out
-                             data-slot=(slot)
-                             data-from=(from)>(&text)</pre>
+                        // **Searching is a link, not a script.** A GET
+                        // form, so a search can be shared, bookmarked and
+                        // gone back from — and it works with scripting
+                        // off, which is the rule this console is built
+                        // to. `slot` rides along or a search would jump
+                        // to another copy.
+                        <form method="get" class="row"
+                              action=(format!(
+                                  "/projects/{project_slug}/services/{service_slug}/logs"
+                              ))>
+                            <input type="hidden" name="slot" value=(slot)>
+                            <input name="q" type="search" autocomplete="off" class="mono"
+                                   value=(needle.clone().unwrap_or_default())
+                                   placeholder=(t("Find in everything kept"))>
+                            <button class="btn btn-secondary" type="submit">(t("Find"))</button>
+                        </form>
+
+                        @if let Some(found) = &found {
+                            @let needle_text = needle.clone().unwrap_or_default();
+                            @if found.total == 0 {
+                                <p class="tile-detail">(t("Nothing matched, in "))
+                                    (found.scanned)(t(" lines kept."))</p>
+                            } @else {
+                                <p class="tile-detail">
+                                    (found.total)(t(" matched, of "))(found.scanned)
+                                    (t(" lines kept."))
+                                </p>
+                                // Every match a link to itself in context.
+                                // The number is what it is counted at, and
+                                // the page says so: a sweep that drops the
+                                // oldest generation shifts them all down,
+                                // so this is a place and not an address.
+                                <table>
+                                    <tbody>
+                                        @for line in &found.lines {
+                                            <tr>
+                                                <td class="mono tile-detail">
+                                                    <a href=(format!(
+                                                        "/projects/{project_slug}/services/{service_slug}/logs?slot={slot}&q={}&page={page}&at={}",
+                                                        urlencode(&needle_text), line.number
+                                                    ))>(line.number)</a>
+                                                </td>
+                                                <td class="mono log-hit">(&line.text)</td>
+                                            </tr>
+                                        }
+                                    </tbody>
+                                </table>
+                                @if found.total > PER_PAGE {
+                                    <div class="row">
+                                        @if page > 1 {
+                                            <a class="btn btn-ghost btn-sm" href=(format!(
+                                                "/projects/{project_slug}/services/{service_slug}/logs?slot={slot}&q={}&page={}",
+                                                urlencode(&needle_text), page - 1
+                                            ))>(t("Newer matches"))</a>
+                                        }
+                                        @if page * PER_PAGE < found.total {
+                                            <a class="btn btn-ghost btn-sm" href=(format!(
+                                                "/projects/{project_slug}/services/{service_slug}/logs?slot={slot}&q={}&page={}",
+                                                urlencode(&needle_text), page + 1
+                                            ))>(t("Older matches"))</a>
+                                        }
+                                    </div>
+                                }
+                            }
+                            @if !window.is_empty() {
+                                @let target = at.unwrap_or(0);
+                                <p class="card-label">(t("Around line "))(target)</p>
+                                <pre class="log">@for line in &window {
+@if line.number == target {
+(">")(" ")(&line.text)("\n")
+} @else {
+("  ")(&line.text)("\n")
+}
+}</pre>
+                            }
+                        } @else {
+                            <pre class="log" data-logs-out
+                                 data-slot=(slot)
+                                 data-from=(from)>(&text)</pre>
+                        }
                         // Three states, not two. "No file" and "an
                         // empty file" look the same on the page and are
                         // not the same thing: a container started before
@@ -2309,6 +2430,20 @@ fn push(
             service.slug
         ))),
     }
+}
+
+/// A search term, safe to put in a link.
+///
+/// `rsx!` escapes for HTML and that is a different job: a needle with a
+/// `&` in it would end the query parameter and start another, and one
+/// with a `#` would turn the rest into a fragment. Both are things
+/// somebody searches a log for.
+fn urlencode(text: &str) -> String {
+    form_urlencoded::Serializer::new(String::new())
+        .append_pair("q", text)
+        .finish()
+        .trim_start_matches("q=")
+        .to_string()
 }
 
 /// The one command, with the name in full, on the tab that decides what
@@ -6409,6 +6544,90 @@ mod tests {
             logs.body.contains("log-timestamps"),
             "and the form is on it: {}",
             logs.body
+        );
+    }
+
+    /// The whole kept history can be searched, and a match opened in it.
+    ///
+    /// The last of the three things CLAUDE.md listed as open about logs:
+    /// they were kept across restarts and bounded three ways, and nothing
+    /// searched them. Asked for by Jorge.
+    ///
+    /// A GET form, so a search is a link: shareable, bookmarkable, and it
+    /// works with scripting off — which is this console's rule and the
+    /// reason somebody opens it at all, since they are usually here
+    /// because something is wrong.
+    #[tokio::test]
+    async fn the_kept_history_can_be_searched_and_read_around_a_match() {
+        let console = Console::new().await;
+        let cookie = console.signed_in().await;
+        let page = service(&console, &cookie).await;
+
+        // A history in three files, as a container that restarted twice
+        // leaves it. The wanted line is in the oldest, which is the case
+        // the feature exists for.
+        let logs = console.data_dir.join("logs");
+        std::fs::create_dir_all(&logs).expect("mkdir");
+        std::fs::write(
+            logs.join("my-api.web.log.2"),
+            "starting\nconnection refused talking to postgres\nexiting\n",
+        )
+        .expect("write");
+        std::fs::write(logs.join("my-api.web.log.1"), "starting\nexiting\n").expect("write");
+        std::fs::write(logs.join("my-api.web.log"), "starting\nlistening on 8080\n")
+            .expect("write");
+
+        let body = console
+            .harness
+            .get(&format!("{page}/logs?q=refused"))
+            .header("cookie", &cookie)
+            .send()
+            .await
+            .body;
+        assert!(
+            body.contains("connection refused talking to postgres"),
+            "the match is not on the page: {body}"
+        );
+        // The count is of the whole log, and it says how much was read —
+        // "1 of 7" and "1 of 40,000" are different answers.
+        assert!(
+            body.contains("7"),
+            "it does not say how much it read: {body}"
+        );
+        // And the match links to itself in context, at the line it was
+        // counted at.
+        assert!(
+            body.contains("at=2"),
+            "no way to open the match in context: {body}"
+        );
+
+        // Which shows the lines around it, including the one after — the
+        // point of context being that the error is rarely the last word.
+        let around = console
+            .harness
+            .get(&format!("{page}/logs?q=refused&at=2"))
+            .header("cookie", &cookie)
+            .send()
+            .await
+            .body;
+        assert!(around.contains("starting"), "{around}");
+        assert!(
+            around.contains("exiting"),
+            "the line after is missing: {around}"
+        );
+
+        // A needle with a `&` in it survives being put in a link, which
+        // is a thing somebody searches a log for.
+        let awkward = console
+            .harness
+            .get(&format!("{page}/logs?q=8080%20%26%20up"))
+            .header("cookie", &cookie)
+            .send()
+            .await
+            .body;
+        assert!(
+            awkward.contains("Nothing matched") || awkward.contains("Nada"),
+            "an awkward needle broke the page: {awkward}"
         );
     }
 

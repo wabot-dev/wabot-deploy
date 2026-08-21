@@ -337,11 +337,23 @@ pub(crate) mod tests {
         /// This node's own page. The id is minted when the node is
         /// installed, so there is no path a test can spell out.
         pub node_path: String,
+        /// Where a container's logs would be, for a test that writes some.
+        pub data_dir: std::path::PathBuf,
+        /// Held so the directory outlives the harness rather than being
+        /// swept away under it while a page is reading.
+        _scratch: tempfile::TempDir,
     }
 
     impl Console {
         pub async fn new() -> Self {
             let database = Arc::new(crate::db::open_in_memory().await.expect("open"));
+            // A data directory of its own. The default is
+            // `/var/lib/wabot-deploy`, which a test must not read and
+            // certainly must not write — and a page that reads a
+            // container's log cannot be tested at all without one.
+            let scratch = tempfile::tempdir().expect("a data dir");
+            let mut config = Config::default();
+            config.node.data_dir = scratch.path().to_path_buf();
             let setup_token = crate::accounts::issue_setup_token(&database)
                 .await
                 .expect("token");
@@ -349,7 +361,7 @@ pub(crate) mod tests {
             // read this table, so a console without it is a console
             // listing nothing — which is not a state a real node is
             // ever in.
-            let me = crate::network::ensure_self(&database, &Config::default())
+            let me = crate::network::ensure_self(&database, &config)
                 .await
                 .expect("this node");
 
@@ -357,7 +369,7 @@ pub(crate) mod tests {
             register(
                 &container,
                 database.clone(),
-                Config::default(),
+                config.clone(),
                 Arc::new(crate::edge::routes::RouteTable::new()),
                 Arc::new(crate::edge::acme::Wake::default()),
             );
@@ -378,7 +390,7 @@ pub(crate) mod tests {
             // neither — on a node `api::register` puts the database in.
             container.register_instance::<SqliteDatabase>(database.clone());
             container.register_instance::<crate::deploy::Deployer>(Arc::new(
-                crate::deploy::Deployer::new(database.clone(), &Config::default()),
+                crate::deploy::Deployer::new(database.clone(), &config),
             ));
             register_transients!(&container, crate::deploy::jobs::DeployHandler);
             // What `run_async_workers` does with its entries, minus the
@@ -403,6 +415,8 @@ pub(crate) mod tests {
                 database,
                 setup_token,
                 node_path: format!("/network/{}", me.id),
+                data_dir: scratch.path().to_path_buf(),
+                _scratch: scratch,
             }
         }
 

@@ -479,6 +479,16 @@ details[open] > summary { margin-bottom: var(--sp-4); }
    governs the push commands, which are three lines, and a button stretched
    down three lines is not a control anybody aims at. */
 
+/* A matching line in a log search.
+ *
+ * Monospace like the log it came from, and it wraps: a match is often the
+ * long line, and a table cell that scrolled sideways would hide the part
+ * somebody searched for. */
+.log-hit {
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
 /* What is published, and the form that adds to it.
  *
  * Two things, and the stack's 16px read as one: a row of the table sat
