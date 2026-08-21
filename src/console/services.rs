@@ -1528,10 +1528,8 @@ impl ServicePages {
                             // fixed size: it is whatever the live file had
                             // reached at the restart that rotated it.
                             <p class="field-hint">(t("Empty keeps two rotations behind the live \
-                                 file. A rotation happens when a container restarts with more \
-                                 than 8 MB written, and holds whatever it had reached — so two \
-                                 of them are 16 MB at least and 64 MB at most, plus the live \
-                                 file."))</p>
+                                 file. No log file passes 8 MB, so that is 24 MB for a copy \
+                                 that has restarted twice."))</p>
                             <p class="field-hint">(t("The node's own budget still applies over \
                                  all of them, so this can ask for more than it gets."))</p>
                             <div class="actions">

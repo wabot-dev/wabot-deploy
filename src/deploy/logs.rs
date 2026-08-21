@@ -192,7 +192,14 @@ pub fn resume(data_dir: &Path, container_id: &str) -> std::io::Result<PathBuf> {
     // **Rotation happens here, at a start, and nowhere else.** The
     // obvious place was the sweep that runs every few minutes, and the
     // node showed why it is the wrong one — see `rotate`.
-    if std::fs::metadata(&path).map(|it| it.len()).unwrap_or(0) > MAX_BYTES {
+    // **`>=`, not `>`, and the ceiling is why.** The sweep trims a live
+    // file back to exactly [`MAX_BYTES`]. With a strict `>` that file
+    // would never rotate again: it is trimmed to 8 MB, grows, is trimmed
+    // to 8 MB, and a restart looks at 8 MB and decides there is nothing to
+    // rotate — so the container that produces the most output would be the
+    // one that keeps no history at all. It only became reachable when
+    // [`LIVE_CEILING`] came down to meet this number.
+    if std::fs::metadata(&path).map(|it| it.len()).unwrap_or(0) >= MAX_BYTES {
         rotate(&path)?;
     }
 
@@ -226,11 +233,28 @@ pub const MAX_BYTES: u64 = 8 * 1024 * 1024;
 
 /// The size a *live* file may reach when nothing ever restarts it.
 ///
-/// Four times [`MAX_BYTES`], because passing it means losing the front of
-/// somebody's log and that should take a container really talking rather
-/// than a busy afternoon. Reaching it is a warning in the journal, not a
-/// routine event.
-pub const LIVE_CEILING: u64 = 4 * MAX_BYTES;
+/// **The same as [`MAX_BYTES`]: no log file passes 8 MB.** Chosen by
+/// Jorge, and it is a trade rather than a tightening.
+///
+/// This was four times, on the argument that passing it loses the front
+/// of somebody's log — where a first failure is — and that should take a
+/// container really talking rather than a busy afternoon. The cost of
+/// that argument was a file four times the size the rest of the module
+/// describes: three files at the old ceiling is 96 MB for one container,
+/// where every comment here said 24.
+///
+/// So the loss is now routine for a chatty container that never restarts,
+/// and it is bounded and predictable instead: 8 MB live, 8 MB a rotation,
+/// 24 MB for a container that has restarted twice. The way to keep more
+/// history is `service.log_budget`, which is a number somebody chose
+/// rather than one they inherited.
+///
+/// **Rotation cannot help here**, and that is why trimming exists at all:
+/// it happens only at a container start, because the shim holds the
+/// file's inode and renaming under a running container leaves it writing
+/// into the rotated file. See [`rotate`]. A container that never restarts
+/// never rotates, whatever the ceiling is.
+pub const LIVE_CEILING: u64 = MAX_BYTES;
 
 /// Keep the last `keep` bytes of one file.
 ///
@@ -261,18 +285,12 @@ pub fn trim(path: &Path, keep: u64) -> std::io::Result<()> {
 /// generations is more history for the container somebody is
 /// investigating and less budget for every other container on the node.
 ///
-/// **What that weighs, corrected.** This said "three files and 24 MB",
-/// which read the rotation threshold as a file size cap. It is not one. A
-/// rotation happens at a container *start*, and only if the live file has
-/// passed [`MAX_BYTES`] — so a rotated file is whatever the live one had
-/// reached by then: more than 8 MB, and up to [`LIVE_CEILING`], which is
-/// where a live file is trimmed. Three files at that ceiling is 96 MB,
-/// four times what the comment claimed.
-///
-/// Nobody was misled, because [`NODE_BUDGET`] is the actual bound and it
-/// is a real one. But this is the figure somebody reads when deciding a
-/// service's own budget, and Jorge asked exactly the question it answered
-/// wrongly: what does a rotation weigh.
+/// **Three files and 24 MB**, which is what this said all along and is
+/// now true. It was not: a rotation holds whatever the live file had
+/// reached, and the live ceiling was four times [`MAX_BYTES`] — so three
+/// files could be 96 MB. Jorge asked what a rotation weighs, the answer
+/// disagreed with the comment, and he chose to move the ceiling rather
+/// than the sentence. See [`LIVE_CEILING`] for what that costs.
 pub const GENERATIONS: usize = 2;
 
 /// How old a rotated file may be, whatever the count.
@@ -350,7 +368,14 @@ pub fn sweep(data_dir: &Path, budgets: &std::collections::BTreeMap<String, u64>)
         match trim(&path, MAX_BYTES) {
             Ok(()) => {
                 swept.trimmed += 1;
-                tracing::warn!(
+                // `debug!`, because this became routine when the ceiling
+                // came down to the rotation threshold: a chatty container
+                // that never restarts is trimmed on most sweeps, and a
+                // warning that fires every few minutes is one nobody
+                // reads. The count is in `Swept` and the sweep logs that
+                // once, which is where "how much history is this node
+                // losing" should be asked.
+                tracing::debug!(
                     file = %path.display(), was = metadata.len(),
                     "a container has written past the live ceiling without restarting; \
                      the beginning of its log was dropped"
@@ -855,17 +880,29 @@ mod tests {
         let live = path(dir.path(), "demo.web");
         std::fs::write(&live, "x".repeat(MAX_BYTES as usize + 1)).expect("write");
 
-        // The sweep leaves it alone: it is under the live ceiling, and
-        // rotating it here is the thing that would break.
-        assert_eq!(sweep(dir.path(), &Default::default()), Swept::default());
-        assert!(std::fs::metadata(&live).expect("stat").len() > MAX_BYTES);
+        // The sweep **never renames**, which is the claim. It trims in
+        // place now — the ceiling is the rotation threshold since Jorge
+        // asked for no file over 8 MB — and the thing that would break is
+        // still absent: no generation appears here.
+        let swept = sweep(dir.path(), &Default::default());
+        assert_eq!(swept.trimmed, 1, "the ceiling did not act");
+        assert!(
+            !with_index(&live, 1).exists(),
+            "the sweep rotated, which leaves a running container writing into the rotated file"
+        );
+        assert_eq!(std::fs::metadata(&live).expect("stat").len(), MAX_BYTES);
 
         // The next start rotates it, and the new run begins in a file
         // holding nothing but its own boundary.
+        //
+        // The generation is what the sweep left — exactly `MAX_BYTES`,
+        // not the `+ 1` it was written with. That the trimmed file still
+        // rotates is the point: with a strict `>` it never would, and the
+        // chattiest container on the node would keep no history at all.
         resume(dir.path(), "demo.web").expect("resumed");
         assert_eq!(
             std::fs::metadata(with_index(&live, 1)).expect("stat").len(),
-            MAX_BYTES + 1
+            MAX_BYTES
         );
         let fresh = std::fs::read_to_string(&live).expect("read");
         assert!(

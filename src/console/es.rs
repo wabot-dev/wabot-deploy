@@ -243,8 +243,8 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
     ("Download the authority", "Descargar la autoridad"),
     ("Earlier attempts", "Intentos anteriores"),
     (
-        "Empty keeps two rotations behind the live file. A rotation happens when a container restarts with more than 8 MB written, and holds whatever it had reached — so two of them are 16 MB at least and 64 MB at most, plus the live file.",
-        "Vacío guarda dos rotaciones detrás del archivo en vivo. Una rotación ocurre cuando un contenedor reinicia con más de 8 MB escritos, y se queda con lo que hubiera alcanzado — así que dos de ellas son 16 MB como mínimo y 64 MB como máximo, más el archivo en vivo.",
+        "Empty keeps two rotations behind the live file. No log file passes 8 MB, so that is 24 MB for a copy that has restarted twice.",
+        "Vacío guarda dos rotaciones detrás del archivo en vivo. Ningún archivo de log pasa de 8 MB, así que son 24 MB para una copia que haya reiniciado dos veces.",
     ),
     (
         "Empty means `latest`. Patterns like `v*` are refused rather than stored as the name of a tag nobody will push.",
