@@ -1657,6 +1657,18 @@ fn certificate_card<'a>(
 /// worth one: the two subtleties here are the file pair being *read* before
 /// it is trusted, and anything unrecognised falling back to ACME rather
 /// than to a file source that could lose a certificate.
+/// What signed it, in three words.
+///
+/// "Valid" says nothing about who signed it, and a name on a self-signed
+/// certificate is a browser warning somebody is about to meet.
+pub(crate) fn source_word(renew_with: &crate::edge::policy::RenewWith) -> &'static str {
+    match renew_with {
+        crate::edge::policy::RenewWith::Acme => t("Let's Encrypt"),
+        crate::edge::policy::RenewWith::SelfSigned => t("self-signed"),
+        crate::edge::policy::RenewWith::File { .. } => t("from a file"),
+    }
+}
+
 pub(crate) fn source_from(
     form: &std::collections::HashMap<String, String>,
     name: &str,

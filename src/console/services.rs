@@ -1695,7 +1695,13 @@ impl ServicePages {
                 // page.
                 @if tab == Tab::Network {
                 <section class="stack" id="ports">
-                    <p class="card-label">(t("Ports"))</p>
+                    // **One table, because it answers one question.** The
+                    // certificates were a second section below this one,
+                    // so "is my service reachable and is its certificate
+                    // all right" meant reading two lists and matching
+                    // hostnames between them by eye. Merged at Jorge's
+                    // ask, and named for what a row is.
+                    <p class="card-label">(t("Exposed ports"))</p>
                     @if ports.is_empty() {
                         <p class="tile-detail">(t("This service exposes nothing. That is the right answer for \
                              a worker; add a port for anything that listens."))</p>
@@ -1703,15 +1709,35 @@ impl ServicePages {
                         <table>
                             <thead>
                                 <tr>
-                                    <th>(t("Container"))</th>
+                                    <th>(t("Port"))</th>
+                                    <th>(t("Type"))</th>
                                     <th>(t("Reachable at"))</th>
+                                    <th>(t("Certificate"))</th>
                                     <th></th>
                                 </tr>
                             </thead>
                             <tbody>
                                 @for port in &ports {
+                                    // What this port is, which is two
+                                    // independent answers and not one: a
+                                    // port can be published on the node's
+                                    // address, served over HTTPS at a
+                                    // name, both, or neither — and neither
+                                    // is a real row, reachable from inside
+                                    // the project and nowhere else.
+                                    @let kind = match (port.host_port.is_some(),
+                                                       port.hostname.is_some()) {
+                                        (true, true) => t("HTTPS · TCP"),
+                                        (false, true) => t("HTTPS"),
+                                        (true, false) => t("TCP"),
+                                        (false, false) => t("internal"),
+                                    };
+                                    @let certificate = certificates
+                                        .iter()
+                                        .find(|(id, ..)| id == &port.id);
                                     <tr>
                                         <td class="mono">(port.container_port)</td>
+                                        <td>(kind)</td>
                                         <td class="mono reach">
                                             <span>(reachable_at(port, domain.as_deref()))</span>
                                             // Rendered whether or not it
@@ -1735,6 +1761,25 @@ impl ServicePages {
                                             }
                                         </td>
                                         <td>
+                                            @if let Some((_, _, cells, policy)) = certificate {
+                                                <span class=(cells.badge)>
+                                                    <span class=(cells.dot)></span>
+                                                    <span>(cells.word)</span>
+                                                </span>
+                                                // The source, because "valid"
+                                                // says nothing about who signed
+                                                // it — and a name on a
+                                                // self-signed certificate is a
+                                                // browser warning somebody is
+                                                // about to meet.
+                                                <span class="tile-detail">(
+                                                    super::nodes::source_word(&policy.renew_with)
+                                                )</span>
+                                            } @else {
+                                                <span class="tile-detail">("—")</span>
+                                            }
+                                        </td>
+                                        <td>
                                             <form method="post"
                                                   action=(format!("{add}/{}/delete", port.id))>
                                                 <button class="btn btn-ghost destructive btn-sm"
@@ -1744,6 +1789,35 @@ impl ServicePages {
                                             </form>
                                         </td>
                                     </tr>
+                                    // **The reason on its own line.** An ACME
+                                    // failure is a sentence — `DNS problem:
+                                    // NXDOMAIN looking up A for …` — and a
+                                    // column either truncates it or wrecks the
+                                    // table. An error is a value somebody acts
+                                    // on, so it gets the room to be read.
+                                    //
+                                    // And the source is changed here rather
+                                    // than in a section of its own, which is
+                                    // what merging the two lists cost: a
+                                    // disclosure, because it is opened once
+                                    // and scrolled past every other time.
+                                    @if let Some((port_id, hostname, cells, policy)) = certificate {
+                                        <tr class="port-detail">
+                                            <td colspan="5">
+                                                @if !cells.failure.is_empty() {
+                                                    <p class="failure">(&cells.failure)</p>
+                                                }
+                                                <details>
+                                                    <summary>(t("Change the certificate"))</summary>
+                                                    (super::nodes::certificate_source_form(
+                                                        &format!("{here}/ports/{port_id}/certificate"),
+                                                        policy,
+                                                    ))
+                                                </details>
+                                                <p class="field-hint">(hostname)</p>
+                                            </td>
+                                        </tr>
+                                    }
                                 }
                             </tbody>
                         </table>
@@ -1818,35 +1892,6 @@ impl ServicePages {
                     }
                 }
 
-                @if tab == Tab::Network && !certificates.is_empty() {
-                    <section class="stack" id="certificates">
-                        <p class="card-label">(t("Certificates"))</p>
-                        <p class="tile-detail">(t("One per hostname. A node with no public DNS, or a name a \
-                             certificate authority cannot reach, is what the other two \
-                             answers are for."))</p>
-                        @for (port_id, hostname, cells, policy) in &certificates {
-                            <div class="card stack">
-                                <div class="split">
-                                    <p class="mono">(hostname)</p>
-                                    <span class=(cells.badge)>
-                                        <span class=(cells.dot)></span>
-                                        <span>(cells.word)</span>
-                                    </span>
-                                </div>
-                                <dl class="kv">
-                                    <dt>(t("Issuer"))</dt>
-                                    <dd>(&cells.issuer)</dd>
-                                    <dt>(t("Renews in"))</dt>
-                                    <dd>(&cells.renews)</dd>
-                                </dl>
-                                (super::nodes::certificate_source_form(
-                                    &format!("{here}/ports/{port_id}/certificate"),
-                                    policy,
-                                ))
-                            </div>
-                        }
-                    </section>
-                }
                 @if tab == Tab::Advanced {
 
                 // Last on the page, always. Deleting is not one setting
@@ -1979,11 +2024,37 @@ fn port_form<'a>(
                                          route one it could not check. The node needs a \
                                          domain before anything can be served over HTTPS."))</p>
                                     @if admin {
-                                        <a class="btn btn-secondary btn-sm" href="/nodes">(t("Set the node's domain"))</a>
+                                        <a class="btn btn-secondary btn-sm" href="/node">(t("Set the node's domain"))</a>
                                     } @else {
                                         <p class="field-hint">(t("Ask whoever runs this node to set one."))</p>
                                     }
                                 }
+                            }
+
+                            // **Chosen here rather than after.** A port
+                            // created with HTTPS took the default and began
+                            // ordering from Let's Encrypt at once, so an
+                            // operator who wanted self-signed was already
+                            // late for the first attempt — and a failed
+                            // order counts against an account that locks at
+                            // five an hour.
+                            @if suggestion.is_some() {
+                                <div class="stack" data-when="https">
+                                    <label for="renew_with">(t("Certificate"))</label>
+                                    <select id="renew_with" name="renew_with">
+                                        <option value="acme">(t("Let's Encrypt"))</option>
+                                        <option value="self_signed">(t("Signed here"))</option>
+                                        <option value="file">(t("Read from files on this node"))</option>
+                                    </select>
+                                    <div class="stack" data-when="renew_with=file">
+                                        <input name="cert_path" type="text" autocomplete="off"
+                                               class="mono" placeholder="/etc/ssl/certs/site.pem"
+                                               data-required-when="renew_with=file">
+                                        <input name="key_path" type="text" autocomplete="off"
+                                               class="mono" placeholder="/etc/ssl/private/site.key"
+                                               data-required-when="renew_with=file">
+                                    </div>
+                                </div>
                             }
 
                             <div class="actions">
@@ -3265,6 +3336,45 @@ impl ServiceApi {
         .await
         {
             Ok(port) => {
+                // **The source before the first order.** `ports::create`
+                // writes the route, and the certificate loop acts on it
+                // within seconds — so a policy stored after this would
+                // arrive too late to stop an order the operator did not
+                // want. A failed order counts against an account that
+                // locks at five an hour.
+                //
+                // Refused rather than defaulted when the paths are wrong:
+                // `source_from` reads the files now, while there is
+                // somebody to tell. The port is already made by then, so
+                // the message says so — losing the port would be worse
+                // than a certificate that needs a second visit.
+                if let Some(hostname) = port.hostname.as_deref() {
+                    match super::nodes::source_from(&form, hostname) {
+                        Ok(renew_with) => {
+                            if let Err(error) = super::nodes::store_source(
+                                &self.state.database,
+                                &self.state.config,
+                                hostname,
+                                &renew_with,
+                            )
+                            .await
+                            {
+                                tracing::error!(%error, "could not store the certificate source");
+                            }
+                        }
+                        Err(reason) => {
+                            self.enqueue(&service.id, None).await;
+                            return Ok(back_with_error(
+                                &here,
+                                &format!(
+                                    "the port was added, and the certificate was left at the \
+                                     default: {reason}"
+                                ),
+                            ));
+                        }
+                    }
+                }
+
                 // Redeployed, because a port is part of how the
                 // container is built: published ports are iptables
                 // rules made when it joins the network, not something
@@ -6289,6 +6399,77 @@ mod tests {
         assert_eq!(
             landing!("/projects/my-api/services/api/settings/nonsense"),
             "/projects/my-api/services/api/settings/image"
+        );
+    }
+
+    /// One table: the port, what it is, where it answers, its certificate.
+    ///
+    /// They were two sections, so "is my service reachable and is its
+    /// certificate all right" meant reading two lists and matching
+    /// hostnames between them by eye. Merged at Jorge's ask.
+    ///
+    /// What this **cannot** cover is the source being stored as the port
+    /// is created. `add_port` asks DNS whether the name points here before
+    /// it accepts one, and no name resolves in a test — which is why every
+    /// hostname test in this file makes its port through the platform. The
+    /// storing itself is `store_source`, which the per-port form has used
+    /// all along; what is new is only when it is called.
+    #[tokio::test]
+    async fn a_port_carries_its_certificate_in_the_same_row() {
+        let console = Console::new().await;
+        let cookie = console.signed_in().await;
+        let page = service(&console, &cookie).await;
+        let project = crate::platform::projects::find(&console.database, "my-api")
+            .await
+            .expect("query")
+            .expect("present");
+        let made = services::in_project(&console.database, &project.id, "web")
+            .await
+            .expect("query")
+            .expect("present");
+        // Published *and* served over HTTPS, which is the pair a single
+        // "Type" column could not hold: the two boxes are independent.
+        ports::create(
+            &console.database,
+            &made.id,
+            8080,
+            true,
+            Some("api.example.com"),
+        )
+        .await
+        .expect("port");
+        crate::edge::policy::set(
+            &console.database,
+            "api.example.com",
+            &crate::edge::policy::RenewWith::SelfSigned,
+        )
+        .await
+        .expect("policy");
+
+        let body = console
+            .harness
+            .get(&format!("{page}/settings/network"))
+            .header("cookie", &cookie)
+            .send()
+            .await
+            .body;
+
+        assert!(body.contains("HTTPS · TCP"), "both answers: {body}");
+        assert!(body.contains("api.example.com"), "{body}");
+        // The certificate is in the row rather than in a section below.
+        assert!(
+            !body.contains(r#"id="certificates""#),
+            "the old section is still there: {body}"
+        );
+        assert!(body.contains("self-signed"), "no source in the row: {body}");
+        // And the form asks for one on the way in, revealed with the HTTPS
+        // box — a port created with HTTPS used to take the default and
+        // start ordering from Let's Encrypt before anybody could say
+        // otherwise, against an account that locks at five failures an
+        // hour.
+        assert!(
+            body.contains(r#"name="renew_with""#),
+            "the add form does not offer a source: {body}"
         );
     }
 

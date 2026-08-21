@@ -182,6 +182,7 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
     ("Certificate file", "Fichero del certificado"),
     ("Certificate on the way", "Certificado en camino"),
     ("Certificates", "Certificados"),
+    ("Change the certificate", "Cambiar el certificado"),
     ("Change the image in settings", "Cambiar la imagen en ajustes"),
     ("Check again", "Comprobar de nuevo"),
     ("Collected", "Recogido"),
@@ -255,6 +256,7 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
     ("Everything kept", "Todo lo guardado"),
     ("Evicted there", "Expulsada allí"),
     ("Expired", "Caducada"),
+    ("Exposed ports", "Puertos expuestos"),
     ("Failed", "Falló"),
     ("Finished", "Terminada"),
     ("Follow what it is saying now", "Seguir lo que está diciendo ahora"),
@@ -291,6 +293,8 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
     ),
     ("General", "General"),
     ("Going back", "Volver atrás"),
+    ("HTTPS", "HTTPS"),
+    ("HTTPS · TCP", "HTTPS · TCP"),
     ("Have it answer for this node's hostnames", "Que responda por los nombres de este nodo"),
     ("Have this node answer for its hostnames", "Que este nodo responda por sus nombres"),
     ("Holds", "Ocupa"),
@@ -365,6 +369,7 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
         "Déjala vacía para tu propia aplicación: el servicio espera, y el primer push a su propio repositorio se convierte en su primera versión. La página te dará los dos comandos.",
     ),
     ("Leaves ", "Deja "),
+    ("Let's Encrypt", "Let's Encrypt"),
     (
         "Lets a database be restored to any minute, rather than only to the moment of a backup. It costs disk — a segment a minute per database, compressed — and it takes effect at each database's next deployment.",
         "Permite restaurar una base de datos a cualquier minuto, y no sólo al momento de un backup. Cuesta disco — un segmento por minuto y base de datos, comprimido — y surte efecto en el siguiente despliegue de cada base de datos.",
@@ -513,6 +518,7 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
     ("Persistent disks", "Discos persistentes"),
     ("Person", "Persona"),
     ("Placed by", "Colocada por"),
+    ("Port", "Puerto"),
     ("Ports", "Puertos"),
     ("Primary", "Primaria"),
     ("Primary — reads and writes", "Primaria — lecturas y escrituras"),
@@ -540,6 +546,7 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
         "Alcanzable desde cualquier contenedor de este proyecto. La dirección está reservada para esta copia, así que sobrevive a un redespliegue.",
     ),
     ("Reaches", "Alcanza"),
+    ("Read from files on this node", "Leer de archivos en este nodo"),
     ("Read it on GitHub", "Leerlo en GitHub"),
     ("Read pool", "Pool de lectura"),
     ("Read pool — refuses writes", "Pool de lectura — rechaza escrituras"),
@@ -617,6 +624,7 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
         "Signed by this node, covering every name above. A container verifies it with the authority the node places at /etc/wabot/ca.crt.",
         "Firmado por este nodo, cubriendo todos los nombres de arriba. Un contenedor lo verifica con la autoridad que el nodo coloca en /etc/wabot/ca.crt.",
     ),
+    ("Signed here", "Firmado aquí"),
     (
         "Somebody who already has an account on this node — adding them here does not create one. A new person is invited from Settings, People.",
         "Alguien que ya tiene cuenta en este nodo — añadirla aquí no crea ninguna. A una persona nueva se la invita desde Ajustes, Personas.",
@@ -630,6 +638,7 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
     ),
     ("Storage nothing claims", "Almacenamiento que nadie reclama"),
     ("Swap", "Swap"),
+    ("TCP", "TCP"),
     ("Tag to watch", "Etiqueta a vigilar"),
     (
         "Takes effect at the next deployment: containerd cannot change a running container's output.",
@@ -840,6 +849,7 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
     ),
     ("Tokens this node minted", "Tokens que acuñó este nodo"),
     ("Try again", "Reintentar"),
+    ("Type", "Tipo"),
     ("Type the name to confirm: ", "Escribe el nombre para confirmar: "),
     ("Unknown", "Desconocido"),
     (
@@ -902,6 +912,8 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
     ("edited", "editado"),
     ("elsewhere", "en otro nodo"),
     ("everything else", "todo lo demás"),
+    ("from a file", "de un archivo"),
+    ("internal", "interno"),
     ("joined · ", "unido · "),
     ("never used", "sin usar"),
     ("newer than what is running", "más nueva que la que corre"),
@@ -916,6 +928,7 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
     ("restored", "restaurado"),
     ("running here", "corriendo aquí"),
     ("runs containers only", "solo ejecuta contenedores"),
+    ("self-signed", "autofirmado"),
     ("the box in the rack by the window", "la máquina del rack junto a la ventana"),
     ("the project's settings", "la configuración del proyecto"),
     ("this node", "este nodo"),
@@ -957,7 +970,20 @@ mod tests {
     /// A word that is the same in both languages, listed rather than
     /// allowed silently. Otherwise "translated to itself" cannot tell a
     /// deliberate `Swap` from a line somebody pasted and forgot.
-    const THE_SAME_IN_BOTH: &[&str] = &["CPU", "Error: ", "General", "Id", "Logs", "Swap"];
+    const THE_SAME_IN_BOTH: &[&str] = &[
+        "CPU",
+        "Error: ",
+        "General",
+        // Two protocols, their pair, and an authority's name. A terminal
+        // and a certificate say these, and neither speaks Spanish.
+        "HTTPS",
+        "HTTPS · TCP",
+        "Id",
+        "Let's Encrypt",
+        "Logs",
+        "Swap",
+        "TCP",
+    ];
 
     #[test]
     fn nothing_is_left_untranslated_by_accident() {
