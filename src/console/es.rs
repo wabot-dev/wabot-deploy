@@ -243,6 +243,10 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
     ("Download the authority", "Descargar la autoridad"),
     ("Earlier attempts", "Intentos anteriores"),
     (
+        "Empty keeps two rotations behind the live file. A rotation happens when a container restarts with more than 8 MB written, and holds whatever it had reached — so two of them are 16 MB at least and 64 MB at most, plus the live file.",
+        "Vacío guarda dos rotaciones detrás del archivo en vivo. Una rotación ocurre cuando un contenedor reinicia con más de 8 MB escritos, y se queda con lo que hubiera alcanzado — así que dos de ellas son 16 MB como mínimo y 64 MB como máximo, más el archivo en vivo.",
+    ),
+    (
         "Empty means `latest`. Patterns like `v*` are refused rather than stored as the name of a tag nobody will push.",
         "Vacío significa `latest`. Los patrones como `v*` se rechazan en vez de guardarse como el nombre de una etiqueta que nadie va a pushear.",
     ),
@@ -517,8 +521,8 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
     ("Password", "Contraseña"),
     ("People", "Personas"),
     (
-        "Per copy, and the live log counts against it — a service with two copies on this machine writes two. Oldest history is dropped first, and what the container is saying now is never dropped. Empty keeps two rotations behind the live file, whatever they weigh.",
-        "Por copia, y el log en vivo cuenta dentro — un servicio con dos copias en esta máquina escribe dos. Se descarta primero la historia más vieja, y lo que el contenedor está diciendo ahora no se descarta nunca. Vacío guarda dos rotaciones detrás del archivo en vivo, pesen lo que pesen.",
+        "Per copy, and the live log counts against it — a service with two copies on this machine writes two. Oldest history is dropped first, and what the container is saying now is never dropped.",
+        "Por copia, y el log en vivo cuenta dentro — un servicio con dos copias en esta máquina escribe dos. Se descarta primero la historia más vieja, y lo que el contenedor está diciendo ahora no se descarta nunca.",
     ),
     ("Persistent disks", "Discos persistentes"),
     ("Person", "Persona"),

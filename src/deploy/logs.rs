@@ -94,7 +94,11 @@
 //! - **Per file**: at [`MAX_BYTES`] a log is *rotated*, not trimmed.
 //!   Trimming dropped the beginning, which is where a first failure is.
 //! - **Per container**: [`GENERATIONS`] kept behind the live file, and
-//!   nothing older than [`MAX_AGE`] whatever the count.
+//!   nothing older than [`MAX_AGE`] whatever the count. A rotation weighs
+//!   whatever the live file had reached at the restart that rotated it —
+//!   over 8 MB, up to [`LIVE_CEILING`] — so this dimension is a count and
+//!   not a size. A service that wants a size sets `log_budget`, which
+//!   replaces the count for its containers.
 //! - **Per node**: [`NODE_BUDGET`] across every log there is, oldest
 //!   generation first. This one is the actual bound — a per-container
 //!   limit times an unbounded number of containers bounds nothing, and
@@ -253,10 +257,22 @@ pub fn trim(path: &Path, keep: u64) -> std::io::Result<()> {
 
 /// How many rotated files are kept behind the live one.
 ///
-/// Two, so a container holds at most three files and 24 MB. The number
-/// is a compromise and worth naming as one: more generations is more
-/// history for the container somebody is investigating and less budget
-/// for every other container on the node.
+/// Two. The number is a compromise and worth naming as one: more
+/// generations is more history for the container somebody is
+/// investigating and less budget for every other container on the node.
+///
+/// **What that weighs, corrected.** This said "three files and 24 MB",
+/// which read the rotation threshold as a file size cap. It is not one. A
+/// rotation happens at a container *start*, and only if the live file has
+/// passed [`MAX_BYTES`] — so a rotated file is whatever the live one had
+/// reached by then: more than 8 MB, and up to [`LIVE_CEILING`], which is
+/// where a live file is trimmed. Three files at that ceiling is 96 MB,
+/// four times what the comment claimed.
+///
+/// Nobody was misled, because [`NODE_BUDGET`] is the actual bound and it
+/// is a real one. But this is the figure somebody reads when deciding a
+/// service's own budget, and Jorge asked exactly the question it answered
+/// wrongly: what does a rotation weigh.
 pub const GENERATIONS: usize = 2;
 
 /// How old a rotated file may be, whatever the count.
