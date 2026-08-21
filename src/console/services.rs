@@ -1303,6 +1303,9 @@ impl ServicePages {
         // function the service's own page uses, so the two cannot disagree
         // about the name — which is the whole content of this card.
         let push = push(&service, &project.slug, domain.as_deref());
+        // Where a push token is made, which is the prerequisite the card
+        // names. A link rather than a sentence saying where to look.
+        let project_settings = format!("/projects/{}/settings", project.slug);
         let suggestion = match &domain {
             Some(domain) => {
                 let name = dns::suggested_hostname(&service.slug, &project.slug, domain);
@@ -1450,7 +1453,7 @@ impl ServicePages {
                         // sequence behind a disclosure; this is the one
                         // command, with the name in full, because the
                         // question here is "what do I push to".
-                        (push_target(&push))
+                        (push_target(&push, &project_settings))
                     </section>
                 }
                 @if tab == Tab::Advanced {
@@ -2200,7 +2203,7 @@ fn push(
 ///
 /// Not translated, and the sentence around it is: it is pasted into a
 /// terminal, and a terminal does not speak Spanish.
-fn push_target(push: &Option<Push>) -> impl Renderable + '_ {
+fn push_target<'a>(push: &'a Option<Push>, tokens: &'a str) -> impl Renderable + 'a {
     let (copy, copied) = (t("Copy"), t("Copied"));
     // **Both references are pushable, and that is the point.** A service
     // running somebody else's image still has a name here, and the
@@ -2225,8 +2228,22 @@ fn push_target(push: &Option<Push>) -> impl Renderable + '_ {
                     <pre class="dsn-value" data-copy
                          data-copy-label=(copy) data-copied-label=(copied)>(&command)</pre>
                 </div>
-                <p class="field-hint">(t("After docker login with a push token from the project \
-                     page."))</p>
+                // **The link is its own string.** An inline link splits a
+                // sentence in two whatever you do, so the split is at a
+                // phrase boundary and the space and the full stop are
+                // literals outside `t` — a translated string that ends in
+                // a space is one somebody trims by accident.
+                //
+                // Worded by Jorge, who called what was here rubbish: it
+                // said "after docker login with a push token from the
+                // project page" and left somebody to find that page.
+                <p class="field-hint">
+                    (t("An example of how to push to this service. First you have to log in with \
+                        a token, which you can generate in"))
+                    (" ")
+                    <a href=(tokens)>(t("the project's settings"))</a>
+                    (".")
+                </p>
                 // Six words, because pushing here does change what the
                 // service runs and somebody should know before they do it.
                 @if replaces {
@@ -6315,6 +6332,12 @@ mod tests {
         assert!(
             body.contains("docker push node-1.tobaw.shop/coffe-store/coffe-landing:latest"),
             "no command for a service running an image from elsewhere: {body}"
+        );
+        // The prerequisite is a link to where a token is made, not a
+        // sentence naming a page and leaving somebody to find it.
+        assert!(
+            body.contains(r#"href="/projects/coffe-store/settings""#),
+            "no way to the tokens: {body}"
         );
         // And it says what pushing it does, in one line rather than four.
         assert!(body.contains("replaces the image"), "{body}");

@@ -122,14 +122,14 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
     ("Address", "Dirección"),
     ("Administrator — everything", "Administrador — todo"),
     ("Advanced", "Avanzado"),
-    (
-        "After docker login with a push token from the project page.",
-        "Después de docker login con un token de push de la página del proyecto.",
-    ),
     ("Allowed", "Permitido"),
     (
         "Already thrown out. Its containers are stopped and the node that placed it has been told — or will be, the next time it asks.",
         "Ya expulsada. Sus contenedores están parados y el nodo que la colocó ya lo sabe — o lo sabrá, la próxima vez que pregunte.",
+    ),
+    (
+        "An example of how to push to this service. First you have to log in with a token, which you can generate in",
+        "Ejemplo de cómo hacer push a este servicio. Como prerrequisito debes hacer login con un token, que puedes generar en",
     ),
     ("An instruction was refused", "Una instrucción fue rechazada"),
     ("And offer it, in return:", "Y ofrecerle, a cambio:"),
@@ -917,6 +917,7 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
     ("running here", "corriendo aquí"),
     ("runs containers only", "solo ejecuta contenedores"),
     ("the box in the rack by the window", "la máquina del rack junto a la ventana"),
+    ("the project's settings", "la configuración del proyecto"),
     ("this node", "este nodo"),
     ("used", "usada"),
     ("watching every tag", "vigilando todas las etiquetas"),
