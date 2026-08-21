@@ -416,6 +416,7 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
     ),
     ("Node", "Nodo"),
     ("Nodes", "Nodos"),
+    ("Nodes that expose the service", "Nodos que exponen el servicio"),
     (
         "Nodes this one has granted authority to. Revoking is one row, and it takes effect here — a node that has been revoked can ask for nothing.",
         "Nodos a los que este ha concedido autoridad. Revocar es una fila, y surte efecto aquí — un nodo revocado no puede pedir nada.",
@@ -886,7 +887,6 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
     ("When", "Cuándo"),
     ("Where the certificate comes from", "De dónde viene el certificado"),
     ("Where this runs", "Dónde corre"),
-    ("Who answers for these names", "Quién responde por estos nombres"),
     ("Withdraw", "Retirar"),
     (
         "Without this, a push is recorded as a release and waits for somebody to deploy it from the service page.",

@@ -1794,7 +1794,12 @@ impl ServicePages {
                 {
                     @if ports.iter().any(|port| port.hostname.is_some()) {
                         <section class="stack" id="edges">
-                            <p class="card-label">(t("Who answers for these names"))</p>
+                            // Named for what it does rather than for the mechanism.
+                            // "Who answers for these names" is how the
+                            // routing thinks about it and meant nothing to
+                            // Jorge, who reads this to decide where his
+                            // service is reachable from.
+                            <p class="card-label">(t("Nodes that expose the service"))</p>
                             <div class="card stack">
                                 @for port in &ports {
                                     @if let Some(hostname) = &port.hostname {
