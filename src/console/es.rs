@@ -801,6 +801,7 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
         "Este nodo, y los que han aceptado tomar instrucciones de él.",
     ),
     ("This release came with no notes.", "Esta versión vino sin notas."),
+    ("This replaces the image above.", "Esto reemplaza la imagen de arriba."),
     (
         "This runs the container. Which nodes answer for the service's name is chosen on the service itself, and can be this node, that one, or both.",
         "Esto ejecuta el contenedor. Qué nodos responden por el nombre del servicio se elige en el propio servicio, y puede ser este nodo, aquel, o los dos.",

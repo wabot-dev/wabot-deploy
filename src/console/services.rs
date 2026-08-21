@@ -2202,10 +2202,22 @@ fn push(
 /// terminal, and a terminal does not speak Spanish.
 fn push_target(push: &Option<Push>) -> impl Renderable + '_ {
     let (copy, copied) = (t("Copy"), t("Copied"));
+    // **Both references are pushable, and that is the point.** A service
+    // running somebody else's image still has a name here, and the
+    // registry matches a push by `<project>/<service>` as well as by the
+    // declared image — so `Elsewhere` carries a command that works today,
+    // not an explanation of why there is none.
+    //
+    // That is what the paragraph here was hiding. Jorge said it made no
+    // sense and it went, which left this card empty on exactly the service
+    // he was looking at: `docker.io/library/nginx:alpine` in project
+    // `coffe-store`. Empty was worse than the paragraph; the command is
+    // better than both.
     let command = match push {
-        Some(Push::To(target)) => format!("docker push {target}"),
+        Some(Push::To(target)) | Some(Push::Elsewhere(target)) => format!("docker push {target}"),
         _ => String::new(),
     };
+    let replaces = matches!(push, Some(Push::Elsewhere(_)));
     let inner = rsx! {
         <div class="dsn stack-sm">
             @if !command.is_empty() {
@@ -2215,6 +2227,11 @@ fn push_target(push: &Option<Push>) -> impl Renderable + '_ {
                 </div>
                 <p class="field-hint">(t("After docker login with a push token from the project \
                      page."))</p>
+                // Six words, because pushing here does change what the
+                // service runs and somebody should know before they do it.
+                @if replaces {
+                    <p class="field-hint">(t("This replaces the image above."))</p>
+                }
             }
             // The dead ends, each said rather than left blank. A card
             // headed "what to push at" with nothing under it is one
@@ -6251,6 +6268,56 @@ mod tests {
             landing!("/projects/my-api/services/api/settings/nonsense"),
             "/projects/my-api/services/api/settings/image"
         );
+    }
+
+    /// The other row from Jorge's node: an image from Docker Hub.
+    ///
+    /// `Coffe Landing` in `Coffe Store`, running
+    /// `docker.io/library/nginx:alpine`. It had a paragraph explaining
+    /// that a push could not reach it; Jorge said that made no sense, it
+    /// went, and the card was then **empty** on the one service he was
+    /// looking at — which is how this got found.
+    ///
+    /// The paragraph was wrong as well as unreadable. The registry matches
+    /// a push by `<project>/<service>` as well as by the declared image,
+    /// so the reference this offers is a command that works today and
+    /// adopts the pushed image. Saying "you cannot" was the console
+    /// describing a rule it had already stopped having.
+    #[tokio::test]
+    async fn a_service_running_somebody_elses_image_still_has_a_command() {
+        let console = Console::new().await;
+        let cookie = console.signed_in().await;
+        service(&console, &cookie).await;
+        crate::node::settings::set_domain(&console.database, Some("node-1.tobaw.shop"))
+            .await
+            .expect("domain");
+        let project = projects::create(&console.database, "Coffe Store")
+            .await
+            .expect("project");
+        services::create(
+            &console.database,
+            &project.id,
+            "Coffe Landing",
+            "docker.io/library/nginx:alpine",
+            &[],
+        )
+        .await
+        .expect("service");
+
+        let body = console
+            .harness
+            .get("/projects/coffe-store/services/coffe-landing/settings/image")
+            .header("cookie", &cookie)
+            .send()
+            .await
+            .body;
+
+        assert!(
+            body.contains("docker push node-1.tobaw.shop/coffe-store/coffe-landing:latest"),
+            "no command for a service running an image from elsewhere: {body}"
+        );
+        // And it says what pushing it does, in one line rather than four.
+        assert!(body.contains("replaces the image"), "{body}");
     }
 
     /// The row from Jorge's node, rendered here.
