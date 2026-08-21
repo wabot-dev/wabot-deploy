@@ -112,7 +112,9 @@ pub enum Tab {
     Environment,
     Resources,
     Network,
-    Advanced,
+    Replicas,
+    Logs,
+    Danger,
 }
 
 impl Tab {
@@ -125,7 +127,9 @@ impl Tab {
             Tab::Environment => "environment",
             Tab::Resources => "resources",
             Tab::Network => "network",
-            Tab::Advanced => "advanced",
+            Tab::Replicas => "replicas",
+            Tab::Logs => "logs",
+            Tab::Danger => "danger",
         }
     }
 
@@ -136,7 +140,9 @@ impl Tab {
             Tab::Environment => t("Environment"),
             Tab::Resources => t("Resources"),
             Tab::Network => t("Network"),
-            Tab::Advanced => t("Advanced"),
+            Tab::Replicas => t("Replicas"),
+            Tab::Logs => t("Logs"),
+            Tab::Danger => t("Danger"),
         }
     }
 
@@ -147,7 +153,9 @@ impl Tab {
             Tab::Environment,
             Tab::Resources,
             Tab::Network,
-            Tab::Advanced,
+            Tab::Replicas,
+            Tab::Logs,
+            Tab::Danger,
         ]
         .into_iter()
         .find(|tab| tab.slug() == slug)
@@ -155,16 +163,24 @@ impl Tab {
 
     /// The tabs this service has, in the order they are shown.
     pub fn of(service: &services::Service) -> Vec<Tab> {
-        match service.kind.is_managed() {
-            true => vec![Tab::Database, Tab::Resources, Tab::Advanced],
-            false => vec![
-                Tab::Image,
-                Tab::Environment,
-                Tab::Resources,
-                Tab::Network,
-                Tab::Advanced,
-            ],
+        let mut tabs = match service.kind.is_managed() {
+            true => vec![Tab::Database, Tab::Resources],
+            false => vec![Tab::Image, Tab::Environment, Tab::Resources, Tab::Network],
+        };
+        // Where the copies go is a decision only the node that placed
+        // them can make. A service that arrived on an errand has none to
+        // offer, so the tab would be a page with nothing on it.
+        if service.is_ours() {
+            tabs.push(Tab::Replicas);
         }
+        // A managed database has no logs settings — the node writes its
+        // command line, including how it logs. That is where the branch
+        // already was; splitting `Advanced` only made it visible.
+        if !service.kind.is_managed() {
+            tabs.push(Tab::Logs);
+        }
+        tabs.push(Tab::Danger);
+        tabs
     }
 
     /// Where a save on this tab comes back to.
@@ -1456,7 +1472,7 @@ impl ServicePages {
                         (push_target(&push, &project_settings))
                     </section>
                 }
-                @if tab == Tab::Advanced {
+                @if tab == Tab::Logs {
 
                     <section class="stack" id="logs">
                         <p class="card-label">(t("Logs"))</p>
@@ -1828,7 +1844,7 @@ impl ServicePages {
                 // running and what it is using — stays there: reading and
                 // deciding are the split this console draws everywhere
                 // else.
-                @if tab == Tab::Advanced && service.is_ours() {
+                @if tab == Tab::Replicas && service.is_ours() {
                     (placement_card(
                         &project, &service, &placements, &placement_nodes, &silent, &queued,
                     ))
@@ -1887,7 +1903,7 @@ impl ServicePages {
                     }
                 }
 
-                @if tab == Tab::Advanced {
+                @if tab == Tab::Danger {
 
                 // Last on the page, always. Deleting is not one setting
                 // among the others and reading it as one is how somebody
@@ -3646,7 +3662,7 @@ impl ServiceApi {
             return Ok(see_other("/?error=no+such+service"));
         };
         let here = format!(
-            "/projects/{}/services/{}/settings/advanced",
+            "/projects/{}/services/{}/settings/logs",
             project.slug, service.slug
         );
 
@@ -3853,7 +3869,7 @@ impl ServiceApi {
             // Already gone is the outcome they asked for.
             return Ok(see_other("/"));
         };
-        let here = Tab::Advanced.path(&project.slug, &service.slug);
+        let here = Tab::Danger.path(&project.slug, &service.slug);
 
         // **The check that counts.** The form asks for the name to be
         // typed and marks the field `required`, and both of those are
@@ -3997,7 +4013,7 @@ impl ServiceApi {
         // the detail page after they saved one is the console deciding
         // they had finished.
         let here = format!(
-            "/projects/{}/services/{}/settings/advanced",
+            "/projects/{}/services/{}/settings/replicas",
             project.slug, service.slug
         );
         let _ = back;
@@ -6395,6 +6411,19 @@ mod tests {
             landing!("/projects/my-api/services/api/settings/nonsense"),
             "/projects/my-api/services/api/settings/image"
         );
+        // `Advanced` was split into three at Jorge's ask, and a link kept
+        // from before names a tab that no longer exists — which is the
+        // same case as a hand-typed word and lands the same way.
+        assert_eq!(
+            landing!("/projects/my-api/services/api/settings/advanced"),
+            "/projects/my-api/services/api/settings/image"
+        );
+        // A database has no logs tab: the node writes its command line,
+        // including how it logs, so there is nothing there to set.
+        assert_eq!(
+            landing!(format!("{database}/logs")),
+            format!("{database}/database")
+        );
     }
 
     /// One table: the port, what it is, where it answers, its certificate.
@@ -6908,7 +6937,15 @@ mod tests {
         // section that quietly appears on two tabs is a section somebody
         // saves twice.
         let mut seen = Vec::new();
-        for tab in ["image", "environment", "resources", "network", "advanced"] {
+        for tab in [
+            "image",
+            "environment",
+            "resources",
+            "network",
+            "replicas",
+            "logs",
+            "danger",
+        ] {
             let body = console
                 .harness
                 .get(&format!("{page}/settings/{tab}"))

@@ -121,7 +121,6 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
     ("Add port", "Añadir puerto"),
     ("Address", "Dirección"),
     ("Administrator — everything", "Administrador — todo"),
-    ("Advanced", "Avanzado"),
     ("Allowed", "Permitido"),
     (
         "Already thrown out. Its containers are stopped and the node that placed it has been told — or will be, the next time it asks.",
@@ -211,6 +210,7 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
     ("Create project", "Crear proyecto"),
     ("Create service", "Crear servicio"),
     ("Create token", "Crear token"),
+    ("Danger", "Peligro"),
     ("Danger zone", "Zona de peligro"),
     ("Database", "Base de datos"),
     ("Database name", "Nombre de la base"),
@@ -561,6 +561,7 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
     ("Remove", "Quitar"),
     ("Renews in", "Se renueva en"),
     ("Replica", "Réplica"),
+    ("Replicas", "Réplicas"),
     (
         "Replicas can be placed here — its own services included. A small node can own projects and run none of them.",
         "Se pueden colocar réplicas aquí — las de sus propios servicios incluidas. Un nodo pequeño puede tener proyectos y no ejecutar ninguno.",
