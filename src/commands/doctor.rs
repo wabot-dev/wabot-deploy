@@ -9,6 +9,19 @@ use std::path::Path;
 use crate::config::Config;
 use crate::ledger::{self, Status, Step};
 
+/// For the one line that names a day. `doctor` is not translated — it
+/// runs on a terminal and prints what somebody pastes into an issue — so
+/// these are in English like the rest of it.
+const WEEKDAYS: [&str; 7] = [
+    "Monday",
+    "Tuesday",
+    "Wednesday",
+    "Thursday",
+    "Friday",
+    "Saturday",
+    "Sunday",
+];
+
 pub async fn run(config: Config, config_path: &Path) -> anyhow::Result<i32> {
     let mut problems = 0usize;
 
@@ -239,6 +252,68 @@ pub async fn run(config: Config, config_path: &Path) -> anyhow::Result<i32> {
             path.display(),
             backups.display()
         );
+    }
+
+    // What this node does about being gone, and whether it worked.
+    //
+    // Here rather than only on the console's Backup tab: a scheduled
+    // backup that has been refused for a week is invisible in a journal
+    // nobody reads, and this report is what somebody pastes into an
+    // issue. The failure counts as a problem, because a node whose
+    // backups are not happening is a node one disk away from nothing.
+    println!();
+    println!("backups");
+    let plan = crate::node::backups::plan(&database).await;
+    match plan.cadence {
+        crate::node::backups::Cadence::Off => {
+            println!("  schedule     none — `wabot-deploy backup` is the only way one is taken")
+        }
+        crate::node::backups::Cadence::Daily => {
+            println!("  schedule     every day at {:02}:00 UTC", plan.hour)
+        }
+        crate::node::backups::Cadence::Weekly => println!(
+            "  schedule     every {} at {:02}:00 UTC",
+            WEEKDAYS
+                .get(usize::from(plan.weekday))
+                .copied()
+                .unwrap_or("Sunday"),
+            plan.hour
+        ),
+    }
+    println!(
+        "  to           {}",
+        plan.destination
+            .clone()
+            .unwrap_or_else(|| backups.display().to_string())
+    );
+    println!("  kept for     {} days", plan.keep_days);
+    // The key and where it points, never the secret. What an operator
+    // needs from a report is "is there one, and is it the one I think" —
+    // and a report gets pasted into issues.
+    match config.s3() {
+        Some(credentials) => println!(
+            "  bucket key   {} · region {} · {}",
+            credentials.access_key_id,
+            credentials.region,
+            credentials.endpoint.as_deref().unwrap_or("Amazon S3")
+        ),
+        None => println!("  bucket key   none — a path or ssh:// needs none"),
+    }
+    let attempt = crate::node::backups::last(&database).await;
+    match attempt.ok_at {
+        Some(at) => println!(
+            "  last good    {} ({})",
+            crate::console::layout::exactly(at),
+            attempt.note.as_deref().unwrap_or("no detail recorded")
+        ),
+        None => println!("  last good    none taken from this node"),
+    }
+    if let Some(reason) = &attempt.error {
+        problems += 1;
+        println!("  LAST FAILED  {reason}");
+        if let Some(at) = attempt.at {
+            println!("               at {}", crate::console::layout::exactly(at));
+        }
     }
 
     println!();

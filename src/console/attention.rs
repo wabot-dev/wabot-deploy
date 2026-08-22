@@ -96,6 +96,7 @@ pub async fn gather(state: &super::ConsoleState) -> PlatformResult<Vec<Concern>>
     certificates_that_would_not_issue(state, &mut concerns).await?;
     errands_that_were_refused(state, &mut concerns).await;
     what_nothing_claims(state, &mut concerns).await;
+    a_backup_that_did_not_work(state, &mut concerns).await;
 
     concerns.sort_by_key(|concern| std::cmp::Reverse(concern.weight));
     Ok(concerns)
@@ -289,6 +290,45 @@ async fn what_nothing_claims(state: &super::ConsoleState, concerns: &mut Vec<Con
     });
 }
 
+/// A backup this node tried to take and could not.
+///
+/// **Wrong, not a notice.** What it means is that there is no copy of
+/// this node from the moment somebody believes there is — and the entire
+/// value of a schedule is not having to check. A destination that has
+/// been refusing for a week is invisible in a journal nobody reads, which
+/// is why `node::backups` stores the reason rather than only logging it.
+///
+/// Nothing here complains about a node that has *no* schedule. That is a
+/// decision, not a failure: an operator whose cron already runs
+/// `wabot-deploy backup` has made it, and a card they cannot silence is a
+/// card they learn to ignore.
+async fn a_backup_that_did_not_work(state: &super::ConsoleState, concerns: &mut Vec<Concern>) {
+    let Some(reason) = crate::node::backups::last(&state.database).await.error else {
+        return;
+    };
+    let plan = crate::node::backups::plan(&state.database).await;
+    concerns.push(Concern {
+        weight: Weight::Wrong,
+        what: "A backup did not work".into(),
+        // Where it was going, which is the part that is usually wrong.
+        // Somebody else's string or this machine's path — never
+        // translated, like every other `which`.
+        which: plan.destination.unwrap_or_else(|| {
+            state
+                .config
+                .node
+                .data_dir
+                .join("backups")
+                .display()
+                .to_string()
+        }),
+        why: first_line(&reason),
+        // The tab, by name rather than by string: a slug that moved would
+        // otherwise leave a concern linking to a redirect.
+        go: super::nodes::NodeTab::Backup.path(),
+    });
+}
+
 /// The card, or nothing at all.
 ///
 /// **Nothing when there is nothing**, which is the property that makes
@@ -368,6 +408,7 @@ mod tests {
             "A certificate would not issue",
             "An instruction was refused",
             "Storage nothing claims",
+            "A backup did not work",
         ] {
             assert!(
                 crate::console::es::lookup(what).is_some(),

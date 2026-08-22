@@ -162,7 +162,49 @@ pub enum How {
 /// The format this binary writes and reads.
 pub const FORMAT: u32 = 1;
 
+/// The command: open the database, take one, and turn how it went into
+/// an exit code.
+///
+/// Thin over [`once`] on purpose. A backup is a scheduled job as well as
+/// a command now — the loop in `serve` takes the same one, with the
+/// running process's own handle — and two implementations of "what a
+/// backup is" would drift the day one of them learned something.
 pub async fn run(config: Config, into: Option<String>) -> anyhow::Result<i32> {
+    let database = crate::db::open(&config.database_path()).await?;
+    let at = crate::platform::now_ms();
+    let outcome = once(&config, &database, into).await;
+    // Recorded here as well as in `node::backups::take_now`, because a
+    // backup somebody typed is a backup of this node: without this the
+    // console's Backup tab said "never from here" while cron took one
+    // every night, which is a page that lies about the one thing it
+    // exists to answer.
+    if let Err(error) = crate::node::backups::record(&database, at, &outcome).await {
+        tracing::warn!(%error, "could not record how the backup went");
+    }
+    // The command owns the handle it opened, so the command closes it.
+    // `once` must not: the scheduled run hands it the *node's* handle,
+    // and closing that would checkpoint and drop the writer connection
+    // the whole process is using.
+    database.close().await?;
+    match outcome {
+        Ok(_) => Ok(0),
+        Err(_) => Ok(1),
+    }
+}
+
+/// One backup, with the caller's database handle.
+///
+/// Returns what it holds, or why there is nothing — both as a sentence
+/// somebody reads: on a terminal it is beneath the narration below, and
+/// on a schedule it is what lands on the row the console's Backup tab
+/// reads. Everything else it has to say it says as it goes, which in the
+/// serving process is the journal, because `println!` and `tracing` are
+/// the same stream there.
+pub async fn once(
+    config: &Config,
+    database: &wabot::sqlite::SqliteDatabase,
+    into: Option<String>,
+) -> Result<String, String> {
     // Read before anything is built, so a destination somebody mistyped
     // costs nothing. A `pg_basebackup` of every database first and *then*
     // "that is not a scheme I know" is a lot of work to throw away.
@@ -170,7 +212,7 @@ pub async fn run(config: Config, into: Option<String>) -> anyhow::Result<i32> {
         Some(Ok(destination)) => destination,
         Some(Err(reason)) => {
             println!("{reason}");
-            return Ok(1);
+            return Err(reason);
         }
         None => Destination::Local(config.node.data_dir.join("backups")),
     };
@@ -181,16 +223,14 @@ pub async fn run(config: Config, into: Option<String>) -> anyhow::Result<i32> {
     // for nothing.
     if let Err(reason) = destination.preflight() {
         println!("{reason}");
-        return Ok(1);
+        return Err(reason);
     }
-
-    let database = crate::db::open(&config.database_path()).await?;
 
     // Where this node's own things go under whichever root was named —
     // see the module docs. A node with no id of its own has never been
     // on a network and cannot collide with anybody, so it gets a name
     // that says so rather than a blank path segment.
-    let me = crate::network::me(&database).await.ok().flatten();
+    let me = crate::network::me(database).await.ok().flatten();
     // A remote destination is built here first and sent at the end — see
     // `destination`'s module docs for why it cannot be streamed. The
     // staging root sits inside `data_dir` so that it is the same
@@ -218,10 +258,11 @@ pub async fn run(config: Config, into: Option<String>) -> anyhow::Result<i32> {
     // — an old volume beside a new database — are the ones nobody
     // notices until a restore.
     if into.exists() {
-        println!("{} already exists; give an empty path", into.display());
-        return Ok(1);
+        let reason = format!("{} already exists; give an empty path", into.display());
+        println!("{reason}");
+        return Err(reason);
     }
-    std::fs::create_dir_all(&into)?;
+    std::fs::create_dir_all(&into).map_err(|error| format!("{}: {error}", into.display()))?;
 
     match destination.is_remote() {
         true => println!("backing up to {}", destination.display()),
@@ -238,14 +279,18 @@ pub async fn run(config: Config, into: Option<String>) -> anyhow::Result<i32> {
             connection.execute("VACUUM INTO ?1", [db_copy_path])?;
             Ok(())
         })
-        .await?;
+        .await
+        .map_err(|error| format!("the node's own database could not be copied: {error}"))?;
     println!("  database    {}", human(file_size(&db_copy)));
 
-    let mut volumes = copy_volumes(&database, &config, &into).await;
-    volumes.extend(back_up_engines(&database, &config, &into).await);
+    let mut volumes = copy_volumes(database, config, &into).await;
+    let engines = back_up_engines(database, config, &into).await;
+    // Moved out of the struct rather than cloned; `missed` below is what
+    // the rest of this function needs from it.
+    volumes.extend(engines.copied);
     // Into the *root*, not this backup's directory: blobs are the part
     // every node shares, and one node's copy of a layer is every node's.
-    let images = keep_images(&database, &root).await;
+    let images = keep_images(database, &root).await;
     let manifest = Manifest {
         format: FORMAT,
         taken_by: format!("wabot-deploy {}", crate::api::VERSION),
@@ -255,30 +300,23 @@ pub async fn run(config: Config, into: Option<String>) -> anyhow::Result<i32> {
         volumes,
         images,
     };
-    std::fs::write(
-        into.join("manifest.json"),
-        serde_json::to_vec_pretty(&manifest)?,
-    )?;
+    let written = serde_json::to_vec_pretty(&manifest)
+        .map_err(|error| format!("the manifest could not be written: {error}"))
+        .and_then(|bytes| {
+            std::fs::write(into.join("manifest.json"), bytes)
+                .map_err(|error| format!("the manifest could not be written: {error}"))
+        });
+    // Refused rather than warned about: a directory with no
+    // `manifest.json` in it is not a backup — `restore` says so in those
+    // words — so a run that could not write one has produced nothing,
+    // whatever else is on the disk.
+    written?;
 
-    let engines = crate::platform::services::all(&database, None)
-        .await
-        .map(|services| {
-            services
-                .iter()
-                .filter(|service| service.kind.is_managed())
-                .count()
-        })
-        .unwrap_or(0);
-    let taken = manifest
-        .volumes
-        .iter()
-        .filter(|copied| copied.how == How::Consistent)
-        .count();
-    if taken < engines {
+    if !engines.missed.is_empty() {
         println!();
         println!(
-            "  {} of {engines} database(s) were NOT copied — see above.",
-            engines - taken
+            "  {} database(s) here were NOT copied — see above.",
+            engines.missed.len()
         );
         println!("  This backup does not hold them.");
     }
@@ -298,28 +336,70 @@ pub async fn run(config: Config, into: Option<String>) -> anyhow::Result<i32> {
         println!("  power. Whether that restores is a question about what runs in them.");
     }
 
-    database.close().await?;
+    // What it holds, in the units the page beside it uses. The database
+    // and the volumes, which is everything under this run's own
+    // directory — the blobs are the network's and are counted by nobody's
+    // backup, on purpose, because they are one copy for every node.
+    let held = format!(
+        "{} in {} volume(s)",
+        human(
+            file_size(&db_copy)
+                + manifest
+                    .volumes
+                    .iter()
+                    .map(|copied| copied.bytes)
+                    .sum::<u64>()
+        ),
+        manifest.volumes.len()
+    );
 
-    if !destination.is_remote() {
-        println!();
-        println!("  Move it off this machine. A backup on the same disk protects");
-        println!("  against nothing that has ever happened to a disk.");
-        return Ok(0);
+    let delivered = match destination.is_remote() {
+        false => {
+            println!();
+            println!("  Move it off this machine. A backup on the same disk protects");
+            println!("  against nothing that has ever happened to a disk.");
+            Ok(format!("{held} in {}", into.display()))
+        }
+        true => remote_copy(&root, &into, &destination, config, &held).await,
+    };
+
+    // **A backup that does not hold a database this node runs did not
+    // work**, whatever the transfer said. The bytes are real and are
+    // named above; what makes this a failure is what it *lacks* — and the
+    // whole point of a schedule is that nobody is reading the narration,
+    // so the shortfall has to be the value that comes back. Found on a
+    // node: a database whose `pg_hba.conf` refused the base backup,
+    // reported as a run that worked and holding nothing.
+    match delivered {
+        Ok(note) if !engines.missed.is_empty() => Err(format!(
+            "{note} — but it does not hold {}",
+            engines.missed.join("; ")
+        )),
+        other => other,
     }
+}
 
+/// Send it, and say where the bytes are either way.
+async fn remote_copy(
+    root: &Path,
+    into: &Path,
+    destination: &Destination,
+    config: &Config,
+    held: &str,
+) -> Result<String, String> {
     println!();
-    match crate::commands::destination::send(&root, &destination, &config).await {
+    match crate::commands::destination::send(root, destination, config).await {
         Ok(what) => {
             println!("  sent        {what} → {}", destination.display());
             // Only now. The staging copy is this backup's only existence
             // until the transfer says otherwise, and removing it before
             // that would be a command that reports success and holds
             // nothing.
-            match std::fs::remove_dir_all(&root) {
+            match std::fs::remove_dir_all(root) {
                 Ok(()) => {}
                 Err(error) => println!("  local copy  {} left behind: {error}", root.display()),
             }
-            Ok(0)
+            Ok(format!("{held} sent to {}", destination.display()))
         }
         Err(reason) => {
             println!("  NOT SENT    {reason}");
@@ -330,7 +410,13 @@ pub async fn run(config: Config, into: Option<String>) -> anyhow::Result<i32> {
             // from here.
             println!("  The backup is complete and still on this machine:");
             println!("    {}", into.display());
-            Ok(1)
+            // The reason, and where the bytes are. A row saying only
+            // "could not send it" would leave whoever reads it looking
+            // for a backup that is right there.
+            Err(format!(
+                "not sent: {reason}. It is still in {}",
+                into.display()
+            ))
         }
     }
 }
@@ -348,12 +434,46 @@ pub async fn run(config: Config, into: Option<String>) -> anyhow::Result<i32> {
 /// answer. An operator who asked for last Tuesday and got Thursday's
 /// data with no warning would find out by reading rows that should not
 /// exist.
-pub fn base_for(taken: &[(PathBuf, Manifest)], target: i64) -> Option<&(PathBuf, Manifest)> {
+pub fn base_for<'a, T>(
+    taken: &'a [(T, Manifest)],
+    target: i64,
+    // The database it has to hold, or `None` for a whole-node restore,
+    // where every backup holds what it holds.
+    container: Option<&str>,
+) -> Option<&'a (T, Manifest)> {
     // `taken` is newest first, so the first one at or before the target
     // is the newest such — no scan of the rest.
+    //
+    // **The manifest answers "does it hold this database".** Not the
+    // disk: the same question has to be answerable of a bucket, and
+    // downloading a backup to find out whether it is the one is the cost
+    // this whole path exists to avoid. `back_up_engines` writes an entry
+    // per volume it copied, so a database it could not copy is absent
+    // from the list.
     taken
         .iter()
-        .find(|(_, manifest)| manifest.taken_at <= target)
+        .filter(|(_, manifest)| manifest.taken_at <= target)
+        .find(|(_, manifest)| match container {
+            Some(container) => holds(manifest, container),
+            None => true,
+        })
+}
+
+/// Which refusal fits: nothing old enough, or nothing holding it.
+///
+/// The two read very differently in the middle of a recovery. "No backup
+/// was taken before that moment" means go back further; "none of them
+/// holds this database" means the backups are fine and this database was
+/// not in them — which is the shape a `pg_hba.conf` that refused the base
+/// backup produced for five days on a real node.
+fn refusal<T>(candidates: &[(T, Manifest)], at: i64, looked: PathBuf) -> NotRestored {
+    match candidates
+        .iter()
+        .any(|(_, manifest)| manifest.taken_at <= at)
+    {
+        true => NotRestored::HoldsNoCopy(looked),
+        false => NotRestored::NothingOldEnough(looked),
+    }
 }
 
 /// What a database can be restored to, and what it cannot.
@@ -472,9 +592,9 @@ fn at(entry: &std::fs::DirEntry) -> Option<i64> {
 ///
 /// Returns what it freed, so the caller can say something on the passes
 /// where it acted and nothing on the many where it did not.
-pub fn sweep(data_dir: &Path, now: i64) -> (usize, u64) {
+pub fn sweep(data_dir: &Path, now: i64, keep_days: i64) -> (usize, u64) {
     let backups = taken(data_dir);
-    let (keep, drop) = keeping(&backups, now);
+    let (keep, drop) = keeping(&backups, now, keep_days);
 
     let mut freed = 0;
     let mut removed = 0;
@@ -539,11 +659,15 @@ pub fn sweep(data_dir: &Path, now: i64) -> (usize, u64) {
 ///
 /// Seven days, and it is the number an operator is really choosing when
 /// they turn archiving on: everything inside it costs disk, and
-/// everything outside it is gone. Not configurable yet — a default that
-/// somebody has to think about is better than a field they have to fill
-/// in before the feature works at all, and this is the value at which
-/// "somebody dropped a table on Friday and noticed on Monday" is
-/// recoverable.
+/// everything outside it is gone. This is the value at which "somebody
+/// dropped a table on Friday and noticed on Monday" is recoverable.
+///
+/// ~~Not configurable yet.~~ It is a field now, on the node's Backup tab
+/// — see [`crate::node::backups`] — and this is what a node that has
+/// never said anything gets. The default stays here rather than moving
+/// there because it is the number this function's own reasoning is
+/// about, and because `sweep` has to be answerable against a directory
+/// with no database anywhere near it.
 pub const KEEP_DAYS: i64 = 7;
 
 /// Every backup this node has taken, newest first.
@@ -554,26 +678,36 @@ pub const KEEP_DAYS: i64 = 7;
 /// not is worse than no row — this way the disk is the record and
 /// cannot disagree with itself.
 pub fn taken(data_dir: &Path) -> Vec<(PathBuf, Manifest)> {
+    taken_in(&data_dir.join("backups"))
+}
+
+/// The same, for a root that is not this node's own.
+///
+/// A destination is a root like any other — one directory on one machine,
+/// or a bucket — and `restore` has to be able to read one it did not
+/// write. Split out when the console learned to restore from wherever the
+/// backups actually are, which for a node with a schedule is *not* here:
+/// the local staging copy is removed the moment the transfer succeeds.
+pub fn taken_in(root: &Path) -> Vec<(PathBuf, Manifest)> {
     // Every node's, not only this one's. A shared root holds several,
     // and the manifest says whose each is — reading them all is what
     // lets a rebuilt machine be pointed at the root and find the backup
     // of the node it is replacing.
-    let mut found: Vec<(PathBuf, Manifest)> =
-        std::fs::read_dir(data_dir.join("backups").join("nodes"))
-            .into_iter()
-            .flatten()
-            .flatten()
-            .flat_map(|node| {
-                std::fs::read_dir(node.path())
-                    .into_iter()
-                    .flatten()
-                    .flatten()
-            })
-            .filter_map(|entry| {
-                let manifest = std::fs::read_to_string(entry.path().join("manifest.json")).ok()?;
-                Some((entry.path(), serde_json::from_str(&manifest).ok()?))
-            })
-            .collect();
+    let mut found: Vec<(PathBuf, Manifest)> = std::fs::read_dir(root.join("nodes"))
+        .into_iter()
+        .flatten()
+        .flatten()
+        .flat_map(|node| {
+            std::fs::read_dir(node.path())
+                .into_iter()
+                .flatten()
+                .flatten()
+        })
+        .filter_map(|entry| {
+            let manifest = std::fs::read_to_string(entry.path().join("manifest.json")).ok()?;
+            Some((entry.path(), serde_json::from_str(&manifest).ok()?))
+        })
+        .collect();
     found.sort_by_key(|(_, manifest): &(PathBuf, Manifest)| -manifest.taken_at);
     found
 }
@@ -590,8 +724,12 @@ pub fn taken(data_dir: &Path) -> Vec<(PathBuf, Manifest)> {
 /// So the anchor is the *last one that predates the window*, which is
 /// what makes the whole window reachable, and it is only dropped once a
 /// newer backup has taken over that job.
-pub fn keeping(taken: &[(PathBuf, Manifest)], now: i64) -> (Vec<&PathBuf>, Vec<&PathBuf>) {
-    let horizon = now - KEEP_DAYS * 24 * 60 * 60 * 1000;
+pub fn keeping(
+    taken: &[(PathBuf, Manifest)],
+    now: i64,
+    keep_days: i64,
+) -> (Vec<&PathBuf>, Vec<&PathBuf>) {
+    let horizon = now - keep_days.max(1) * 24 * 60 * 60 * 1000;
     let mut keep = Vec::new();
     let mut drop = Vec::new();
     let mut anchored = false;
@@ -1041,36 +1179,195 @@ pub async fn restore(
     from: Option<PathBuf>,
 ) -> anyhow::Result<i32> {
     let database = crate::db::open(&config.database_path()).await?;
+    let outcome = restore_one(
+        &config,
+        &database,
+        &service_slug,
+        target.as_deref(),
+        into.as_deref(),
+        from.as_deref(),
+    )
+    .await;
+    database.close().await?;
 
-    let services = crate::platform::services::all(&database, None).await?;
+    let made = match outcome {
+        Ok(made) => made,
+        Err(refusal) => {
+            println!("{refusal}");
+            // The extra sentence a terminal has room for. The console
+            // shows the one above in a strip and has a form to correct;
+            // somebody at a prompt has neither, and the way out of two of
+            // these is a flag they have to be told about.
+            match refusal {
+                NotRestored::NothingOldEnough(_) => {
+                    println!();
+                    println!(
+                        "The oldest one there is what bounds how far back a restore can reach."
+                    );
+                    println!();
+                    println!(
+                        "If you have one somewhere else — `backup --out` writes wherever it is"
+                    );
+                    println!("told — name it with `--from <path>`.");
+                }
+                NotRestored::NamedIsNewer(_) => {
+                    println!("Replaying only goes forwards, so it already holds whatever you are");
+                    println!("trying to undo.");
+                }
+                _ => {}
+            }
+            return Ok(1);
+        }
+    };
+
+    println!("restoring {service_slug} into {}", made.slug);
+    println!(
+        "  from      {} ({})",
+        made.from,
+        super::super::console::layout::exactly(made.taken_at)
+    );
+    match &made.target {
+        Some(target) => println!("  up to     {target} UTC"),
+        None => println!("  up to     as far as the archived log goes"),
+    }
+    println!();
+    println!("  It unpacks and replays at its next deployment. The original is");
+    println!("  untouched and still serving — this is a copy beside it.");
+    Ok(0)
+}
+
+/// The copy a restore is about to bring up.
+///
+/// Rows only: it unpacks and replays at its next deployment, so what this
+/// returns is what somebody has to be told — which backup, from when, and
+/// where it lands.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Restored {
+    /// So a caller that can deploy — the console — can start it without
+    /// looking the service up again by a name it just chose.
+    pub service_id: String,
+    pub slug: String,
+    /// Where the volume comes from, as it is stored on the row: a path
+    /// here, or `s3://…` / `ssh://…` when the backup is not on this
+    /// machine any more. The deployment fetches a remote one before it
+    /// unpacks — see `Deployer::prepare_engine`.
+    pub from: String,
+    pub taken_at: i64,
+    pub target: Option<String>,
+}
+
+/// Why a restore did not start.
+///
+/// Typed rather than a string, because two of these have a way out that
+/// only a terminal can act on and the console must not print a sentence
+/// about a flag it does not have. Each `Display` is one sentence: the
+/// console puts it in a strip, and `restore` prints the rest.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NotRestored {
+    /// No managed database of that name on this node.
+    NoSuchDatabase(String),
+    /// Not a moment anybody could have meant.
+    NotAMoment(String),
+    /// A path that holds no `manifest.json`.
+    NotABackup(PathBuf),
+    /// The named backup was taken *after* the moment asked for.
+    NamedIsNewer(PathBuf),
+    /// Nothing on this node was taken before that moment.
+    NothingOldEnough(PathBuf),
+    /// A backup old enough, holding no copy of *this* database.
+    HoldsNoCopy(PathBuf),
+    /// The rows could not be written.
+    Refused(String),
+}
+
+impl std::fmt::Display for NotRestored {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NoSuchDatabase(slug) => write!(f, "no database called {slug:?} on this node"),
+            Self::NotAMoment(text) => {
+                write!(f, "{text:?} is not a moment. Try 2026-08-16 14:32")
+            }
+            Self::NotABackup(path) => {
+                write!(
+                    f,
+                    "{} is not a backup: no manifest.json in it",
+                    path.display()
+                )
+            }
+            Self::NamedIsNewer(path) => write!(
+                f,
+                "{} was taken after that moment, so it cannot reach it",
+                path.display()
+            ),
+            Self::NothingOldEnough(path) => write!(
+                f,
+                "no backup in {} was taken before that moment",
+                path.display()
+            ),
+            Self::HoldsNoCopy(path) => {
+                write!(f, "{} holds no copy of this database", path.display())
+            }
+            Self::Refused(reason) => write!(f, "{reason}"),
+        }
+    }
+}
+
+/// Restore **one database** into a copy beside it, with the caller's
+/// database handle.
+///
+/// The one implementation, and both doors are thin over it: the command
+/// above and the form on the database's own page. Jorge asked for the
+/// second — the window card said "any moment between these two" and there
+/// was nowhere to go with that.
+///
+/// **A copy, never the original rewound.** The original goes on serving,
+/// which is what makes this a thing somebody can do at all: a restore
+/// that replaced the live database would be a decision nobody can take
+/// back, and comparing the two is most of what a recovery actually is.
+///
+/// Nothing is deployed here. The rows say what to unpack and where to
+/// stop; the deployment that does it belongs to whoever asked — which for
+/// the console is the job it queues next, and for the command is the
+/// operator, who is told.
+pub async fn restore_one(
+    config: &Config,
+    database: &wabot::sqlite::SqliteDatabase,
+    service_slug: &str,
+    target: Option<&str>,
+    into: Option<&str>,
+    from: Option<&Path>,
+) -> Result<Restored, NotRestored> {
+    let refused = |error: crate::platform::PlatformError| NotRestored::Refused(error.to_string());
+
+    let services = crate::platform::services::all(database, None)
+        .await
+        .map_err(refused)?;
     let Some(source) = services
         .iter()
         .find(|service| service.slug == service_slug && service.kind.is_managed())
     else {
-        println!("no database called {service_slug:?} on this node");
-        return Ok(1);
+        return Err(NotRestored::NoSuchDatabase(service_slug.to_string()));
     };
-    let Some(row) = crate::platform::databases::of_service(&database, &source.id).await? else {
-        println!("{service_slug} has no engine row");
-        return Ok(1);
-    };
-    let Some(project) = crate::platform::projects::find(&database, &source.project_id).await?
+    let Some(row) = crate::platform::databases::of_service(database, &source.id)
+        .await
+        .map_err(refused)?
     else {
-        println!("{service_slug} belongs to no project");
-        return Ok(1);
+        return Err(NotRestored::NoSuchDatabase(service_slug.to_string()));
+    };
+    let Some(project) = crate::platform::projects::find(database, &source.project_id)
+        .await
+        .map_err(refused)?
+    else {
+        return Err(NotRestored::NoSuchDatabase(service_slug.to_string()));
     };
 
     // Which backup can reach that moment. Anything else is a restore
     // that lands somewhere the operator did not ask for — see
     // `base_for`, where the direction of replay is the whole reason.
-    let at = match &target {
-        Some(text) => match parse_target(text) {
-            Some(at) => at,
-            None => {
-                println!("{text:?} is not a moment. Try 2026-08-16 14:32");
-                return Ok(1);
-            }
-        },
+    let at = match target {
+        Some(text) => {
+            parse_target(text).ok_or_else(|| NotRestored::NotAMoment(text.to_string()))?
+        }
         None => crate::platform::now_ms(),
     };
     // A backup somebody names, or the ones this node keeps.
@@ -1082,86 +1379,149 @@ pub async fn restore(
     // moment" — true, and read in the middle of a recovery as "you have
     // nothing", by somebody holding the thing in their hand. Found
     // doing exactly that.
-    let named = from.as_ref().and_then(|path| {
+    let named: Option<(PathBuf, Manifest)> = from.and_then(|path| {
         let manifest = std::fs::read_to_string(path.join("manifest.json")).ok()?;
         Some((
-            path.clone(),
+            path.to_path_buf(),
             serde_json::from_str::<Manifest>(&manifest).ok()?,
         ))
     });
-    if let Some(path) = &from {
+    if let Some(path) = from {
         if named.is_none() {
-            println!("{} is not a backup: no manifest.json in it", path.display());
-            return Ok(1);
+            return Err(NotRestored::NotABackup(path.to_path_buf()));
         }
     }
-
-    let backups = match named {
-        Some(one) => vec![one],
-        None => taken(&config.node.data_dir),
-    };
-    let Some((path, manifest)) = base_for(&backups, at) else {
-        match &from {
-            // A named one that is too new says so about *itself*, which
-            // is a different problem from having none.
-            Some(path) => {
-                println!(
-                    "{} was taken after that moment, so it already holds",
-                    path.display()
-                );
-                println!("whatever you are trying to undo. Replaying only goes forwards.");
-            }
-            None => {
-                println!(
-                    "no backup in {} was taken before that moment.",
-                    config.node.data_dir.join("backups").display()
-                );
-                println!("The oldest one there is what bounds how far back a restore can reach.");
-                println!();
-                println!("If you have one somewhere else — `backup --out` writes wherever it is");
-                println!("told — name it with `--from <path>`.");
-            }
-        }
-        return Ok(1);
-    };
 
     let container = format!("{}.{}", project.slug, source.slug);
-    let from = path.join("volumes").join(&container);
-    if !from.join("base.tar.gz").exists() {
-        println!("{} holds no copy of {service_slug}", path.display());
-        return Ok(1);
-    }
 
-    let name = into.unwrap_or_else(|| format!("{}-restored", source.slug));
+    // A backup somebody named is the whole answer: they are holding it,
+    // and its two failures are about *it* rather than about what this
+    // node has.
+    let (unpacks, taken_at) = match named {
+        Some((path, manifest)) => {
+            if manifest.taken_at > at {
+                return Err(NotRestored::NamedIsNewer(path));
+            }
+            if !path
+                .join("volumes")
+                .join(&container)
+                .join("base.tar.gz")
+                .exists()
+            {
+                return Err(NotRestored::HoldsNoCopy(path));
+            }
+            (
+                Destination::Local(path.join("volumes").join(&container)),
+                manifest.taken_at,
+            )
+        }
+        None => {
+            // Here first, because a copy on this disk costs nothing to
+            // read. Only the backups whose volume is really on the disk:
+            // a manifest is a claim, and for a local one the file is the
+            // fact.
+            let here: Vec<(PathBuf, Manifest)> = taken(&config.node.data_dir)
+                .into_iter()
+                .filter(|(path, _)| {
+                    path.join("volumes")
+                        .join(&container)
+                        .join("base.tar.gz")
+                        .exists()
+                })
+                .collect();
+
+            match base_for(&here, at, Some(&container)) {
+                Some((path, manifest)) => (
+                    Destination::Local(path.join("volumes").join(&container)),
+                    manifest.taken_at,
+                ),
+                // **Then wherever this node sends its backups.** With a
+                // destination there is nothing here at all: the local
+                // copy is removed the moment the transfer succeeds, which
+                // is the whole point of having sent it. So a node that
+                // had been backing itself up all week would be told by
+                // the machine that took them that it has none. Jorge
+                // asked exactly this question.
+                None => {
+                    let plan = crate::node::backups::plan(database).await;
+                    // Anywhere that is not the root just searched — a
+                    // bucket, another machine, or a second disk here.
+                    // Comparing against the root rather than asking
+                    // `is_remote` is the difference between "somewhere
+                    // else" and "on another machine", and only the first
+                    // is the question.
+                    let elsewhere = plan
+                        .destination
+                        .as_deref()
+                        .and_then(|text| Destination::parse(text).ok())
+                        .filter(|destination| {
+                            destination != &Destination::Local(config.node.data_dir.join("backups"))
+                        });
+                    let Some(destination) = elsewhere else {
+                        return Err(refusal(&here, at, config.node.data_dir.join("backups")));
+                    };
+                    // The manifests only — a listing and a few hundred
+                    // bytes each. What is downloaded is one volume,
+                    // later, by the deployment that unpacks it.
+                    let there = crate::commands::destination::index(&destination, config)
+                        .await
+                        .map_err(NotRestored::Refused)?;
+                    match base_for(&there, at, Some(&container)) {
+                        Some((at_destination, manifest)) => (
+                            at_destination.child(&format!("volumes/{container}")),
+                            manifest.taken_at,
+                        ),
+                        None => {
+                            return Err(refusal(
+                                &there,
+                                at,
+                                std::path::PathBuf::from(destination.display()),
+                            ))
+                        }
+                    }
+                }
+            }
+        }
+    };
+
+    let name = into
+        .map(str::to_string)
+        .unwrap_or_else(|| format!("{}-restored", source.slug));
     let (restored, _) = crate::platform::databases::restore_into(
-        &database,
+        database,
         &row,
         &project.id,
         &name,
         source
             .memory_limit
             .unwrap_or(crate::platform::presets::SMALLEST),
-        &from.to_string_lossy(),
-        target.as_deref(),
+        &unpacks.display(),
+        target,
     )
-    .await?;
+    .await
+    .map_err(refused)?;
 
-    println!("restoring {service_slug} into {}", restored.slug);
-    println!(
-        "  from      {} ({})",
-        path.display(),
-        super::super::console::layout::exactly(manifest.taken_at)
-    );
-    match &target {
-        Some(target) => println!("  up to     {target} UTC"),
-        None => println!("  up to     as far as the archived log goes"),
-    }
-    println!();
-    println!("  It unpacks and replays at its next deployment. The original is");
-    println!("  untouched and still serving — this is a copy beside it.");
+    Ok(Restored {
+        service_id: restored.id,
+        slug: restored.slug,
+        from: unpacks.display(),
+        taken_at,
+        target: target.map(str::to_string),
+    })
+}
 
-    database.close().await?;
-    Ok(0)
+/// Whether a backup's manifest claims a copy of this database.
+///
+/// The manifest and not the disk, so the same question can be asked of a
+/// bucket without downloading anything: `back_up_engines` writes one
+/// entry per volume it copied, and a database it could not copy is
+/// **absent** from that list. That is what makes "this backup holds it"
+/// answerable before a single byte moves.
+fn holds(manifest: &Manifest, container: &str) -> bool {
+    manifest
+        .volumes
+        .iter()
+        .any(|copied| copied.container == container)
 }
 
 /// Read a moment as somebody would type it: `2026-08-16 14:32`.
@@ -1425,15 +1785,23 @@ async fn back_up_engines(
     database: &wabot::sqlite::SqliteDatabase,
     config: &Config,
     into: &Path,
-) -> Vec<Copied> {
+) -> Engines {
     let (Ok(services), Ok(projects)) = (
         crate::platform::services::all(database, None).await,
         crate::platform::projects::all(database).await,
     ) else {
-        return Vec::new();
+        // Unknown is not empty — the shape this file already keeps for
+        // what a volume claims. Rows that cannot be read say nothing
+        // about whether a database was copied, so this is not a miss;
+        // the copies simply do not happen and the run says so above.
+        return Engines {
+            copied: Vec::new(),
+            missed: vec!["the service rows could not be read".into()],
+        };
     };
     let deployer = crate::deploy::Deployer::new(std::sync::Arc::new(database.clone()), config);
     let mut copied = Vec::new();
+    let mut missed = Vec::new();
 
     for service in services.iter().filter(|service| service.kind.is_managed()) {
         let Some(project) = projects
@@ -1449,7 +1817,7 @@ async fn back_up_engines(
             .back_up_engine(project, service, &destination)
             .await
         {
-            Ok(bytes) => {
+            Ok(Some(bytes)) => {
                 println!("  database    {container}  {}", human(bytes));
                 copied.push(Copied {
                     container,
@@ -1459,15 +1827,37 @@ async fn back_up_engines(
                     how: How::Consistent,
                 });
             }
+            // Somebody else's to copy. Said rather than skipped
+            // silently: a database on the page and absent from the
+            // backup is exactly the thing an operator would otherwise
+            // find out about during a restore.
+            Ok(None) => println!("  database    {container} — runs elsewhere, and is that node's"),
             Err(reason) => {
                 println!("  database    {container} — NOT COPIED: {reason}");
                 // Left on disk rather than removed: a half-written
                 // backup that somebody can look at beats one this
                 // command tidied away.
+                missed.push(format!("{container} ({reason})"));
             }
         }
     }
-    copied
+    Engines { copied, missed }
+}
+
+/// What `back_up_engines` did, and what it could not do.
+///
+/// The two are kept apart because they answer different questions: the
+/// copies go in the manifest, and the misses decide whether this backup
+/// **worked**. Counting instead — managed services against volumes
+/// copied — was the version that reads right and is wrong: a database
+/// placed on another node is not a copy this run owed anybody, and it
+/// would have made every backup on such a node report a shortfall for
+/// ever.
+struct Engines {
+    copied: Vec<Copied>,
+    /// One per managed database **on this node** that could not be
+    /// copied, with the reason.
+    missed: Vec<String>,
 }
 
 /// What a backup does with one directory under the volume root.
@@ -1657,25 +2047,32 @@ mod tests {
         let backups = vec![at(10 * day), at(5 * day), at(day)];
 
         // A moment between two backups starts from the earlier one.
-        let picked = base_for(&backups, 7 * day).expect("one before it");
+        let picked = base_for(&backups, 7 * day, None).expect("one before it");
         assert_eq!(picked.1.taken_at, 5 * day);
 
         // A moment after everything starts from the newest.
         assert_eq!(
-            base_for(&backups, 20 * day).expect("the newest").1.taken_at,
+            base_for(&backups, 20 * day, None)
+                .expect("the newest")
+                .1
+                .taken_at,
             10 * day
         );
 
         // Exactly at a backup is that backup: it holds that moment.
         assert_eq!(
-            base_for(&backups, 5 * day).expect("that one").1.taken_at,
+            base_for(&backups, 5 * day, None)
+                .expect("that one")
+                .1
+                .taken_at,
             5 * day
         );
 
         // And a moment before anything kept has no answer, rather than
         // silently getting one that is too late.
-        assert!(base_for(&backups, 12 * 60 * 60 * 1000).is_none());
-        assert!(base_for(&[], 5 * day).is_none());
+        assert!(base_for(&backups, 12 * 60 * 60 * 1000, None).is_none());
+        let none: [(PathBuf, Manifest); 0] = [];
+        assert!(base_for(&none, 5 * day, None).is_none());
     }
 
     /// A moment is read the way somebody types it, and refused rather
@@ -1806,7 +2203,7 @@ mod tests {
 
         // Newest first, as `taken` returns them.
         let backups = vec![at(1), at(6), at(9), at(20)];
-        let (keep, drop) = keeping(&backups, now);
+        let (keep, drop) = keeping(&backups, now, KEEP_DAYS);
 
         assert_eq!(keep.len(), 3, "and the nine-day-old one anchors the week");
         assert!(keep.iter().any(|path| path.ends_with("backup-9")));
@@ -1817,16 +2214,61 @@ mod tests {
         // outside and nothing is dropped: there is no older one to
         // spare.
         let recent = vec![at(1), at(2)];
-        let (keep, drop) = keeping(&recent, now);
+        let (keep, drop) = keeping(&recent, now, KEEP_DAYS);
         assert_eq!(keep.len(), 2);
         assert!(drop.is_empty());
 
         // And one backup is never dropped, however old. It is the only
         // thing that could be restored.
         let only = vec![at(400)];
-        let (keep, drop) = keeping(&only, now);
+        let (keep, drop) = keeping(&only, now, KEEP_DAYS);
         assert_eq!(keep.len(), 1);
         assert!(drop.is_empty(), "the last backup is not rubbish");
+    }
+
+    /// The window is the operator's, and the anchor rule holds at any
+    /// width of it.
+    ///
+    /// It was a constant, which meant a node with a small disk had no
+    /// answer but to turn the whole thing off. It is a field on the
+    /// node's Backup tab now — see `node::backups` — and this asks the
+    /// same question of a shorter one: the backup *before* the window
+    /// still stays, because it is what makes the whole of the window
+    /// reachable.
+    #[test]
+    fn a_shorter_window_drops_more_and_still_keeps_its_anchor() {
+        let day = 24 * 60 * 60 * 1000i64;
+        let now = 100 * day;
+        let at = |days: i64| {
+            (
+                PathBuf::from(format!("backup-{days}")),
+                Manifest {
+                    format: FORMAT,
+                    taken_by: "test".into(),
+                    taken_at: now - days * day,
+                    node_id: None,
+                    node_name: None,
+                    volumes: Vec::new(),
+                    images: Vec::new(),
+                },
+            )
+        };
+        let backups = vec![at(1), at(6), at(9), at(20)];
+
+        let (keep, drop) = keeping(&backups, now, 2);
+        assert_eq!(keep.len(), 2, "yesterday's, and the six-day-old anchor");
+        assert!(keep.iter().any(|path| path.ends_with("backup-6")));
+        assert_eq!(drop.len(), 2);
+
+        // Nought is not a shorter window — it is every backup expiring
+        // the moment it is taken — so the floor holds here as well as on
+        // the form.
+        let (keep, _) = keeping(&backups, now, 0);
+        assert_eq!(
+            keep.len(),
+            2,
+            "a window of nothing is a day, not the empty set"
+        );
     }
 
     /// A copy is worth what its manifest says it is worth, and the two

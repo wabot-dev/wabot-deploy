@@ -66,6 +66,26 @@ pub fn exactly(at_ms: i64) -> String {
     )
 }
 
+/// A moment, as somebody would type it back.
+///
+/// The same shape `backup::parse_target` reads and `exactly` prints,
+/// minus the zone label — because this one goes into a field, and a field
+/// whose placeholder carries a word the parser refuses is a form that
+/// teaches the wrong thing. The page says UTC beside it.
+pub fn typed(at_ms: i64) -> String {
+    let Ok(moment) = time::OffsetDateTime::from_unix_timestamp(at_ms / 1000) else {
+        return String::new();
+    };
+    format!(
+        "{:04}-{:02}-{:02} {:02}:{:02}",
+        moment.year(),
+        u8::from(moment.month()),
+        moment.day(),
+        moment.hour(),
+        moment.minute(),
+    )
+}
+
 /// A moment, as how long ago it was.
 ///
 /// Relative rather than absolute because every reader of this console

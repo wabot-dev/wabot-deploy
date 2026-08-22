@@ -339,6 +339,10 @@ pub(crate) mod tests {
         pub node_path: String,
         /// Where a container's logs would be, for a test that writes some.
         pub data_dir: std::path::PathBuf,
+        /// The same configuration the pages hold, so a test can ask it
+        /// what the file now says — the bucket credential lives there
+        /// rather than in the database.
+        pub config: Config,
         /// Held so the directory outlives the harness rather than being
         /// swept away under it while a page is reading.
         _scratch: tempfile::TempDir,
@@ -354,6 +358,12 @@ pub(crate) mod tests {
             let scratch = tempfile::tempdir().expect("a data dir");
             let mut config = Config::default();
             config.node.data_dir = scratch.path().to_path_buf();
+            // A config file of its own, because one page writes to it: the
+            // Backup tab keeps the bucket credential in the file rather
+            // than in the database. Without a source path the console
+            // correctly refuses to store one, so a harness without this
+            // would test the refusal and nothing else.
+            config.source = Some(scratch.path().join("config.toml"));
             let setup_token = crate::accounts::issue_setup_token(&database)
                 .await
                 .expect("token");
@@ -416,6 +426,7 @@ pub(crate) mod tests {
                 setup_token,
                 node_path: format!("/network/{}", me.id),
                 data_dir: scratch.path().to_path_buf(),
+                config,
                 _scratch: scratch,
             }
         }

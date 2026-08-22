@@ -705,3 +705,147 @@ same node or new one — is written in `docs/roadmap.md` §5 and the
 manifest already carries what it needs. **And no remote destination
 yet**: a backup on the same disk protects against nothing that has ever
 happened to a disk.
+
+## A database with no read replica could not be backed up
+
+Found on `node-1` on 2026-08-22, by running `wabot-deploy backup` there
+after the console gained a backup schedule. `pg_basebackup` was refused:
+
+```
+FATAL:  no pg_hba.conf entry for replication connection
+        from host "10.42.2.1", user "wabot_replication", SSL encryption
+```
+
+**`10.42.2.1` is the bridge gateway**, and that is where the node's own
+work arrives from: `backup` runs `pg_basebackup` in the host's network
+namespace, so it has no bridge address of its own. The `hostssl
+replication` lines were built from the standbys — every node holding one,
+plus this project's `/24` when a standby runs *here* — and a database with
+no read replica produced **no replication line at all**. So the one
+database on that node had never been in any backup taken there.
+
+Three things about the fix, in `deploy::replication_sources`:
+
+- **The gateway is always admitted**, standby or not, because the node
+  takes base backups of every managed database it runs.
+- **A `/32`, not the subnet.** The gateway is an address no container can
+  be given, so admitting it grants nothing to anything on the bridge. The
+  subnet is still added for a local standby, whose *streaming* connection
+  comes from its own container address.
+- It is a pure function now, so
+  `the_node_may_take_a_base_backup_of_a_database_with_no_standby` can ask
+  it directly. The composition was fifteen lines inside `prepare_engine`
+  and nothing could reach it.
+
+**The second fault is the one that made the first invisible**: `backup`
+compared managed services against volumes copied, printed "1 of 1
+database(s) were NOT copied", and then **reported success**. A schedule
+whose whole point is that nobody reads the narration would have written
+"last good" on a backup holding no database, every night. `back_up_engines`
+now returns what it copied *and* what it missed — a database running on
+another node is `Ok(None)` and not a miss, which is why counting could
+never have been right — and a run that missed one comes back as an error:
+the row, the Backup tab, the attention card and `doctor` all say so, and
+the command exits 1.
+
+`pg_hba.conf` is rewritten on every deployment, so the fix reaches a
+database when that database is next deployed.
+
+**Verified on `node-1` the same night.** Redeploying `coffe-db` wrote
+`hostssl replication wabot_replication 10.42.2.1/32`, and the next
+backup — taken from the console's own button — holds
+`volumes/coffe-store.coffe-db/{backup_manifest, base.tar.gz,
+pg_wal.tar.gz}`: 4.6 MB, and `doctor` reads `last good … 1 volume(s)`
+where it had read `LAST FAILED`. A database that had never been in a
+backup on that node is in one.
+
+## Going back, from the page that says you can
+
+The window card told an operator "any moment between these two" and there
+was nowhere to go with it: `restore` was a command, so recovering meant an
+SSH session in the middle of the thing being recovered from. Asked for by
+Jorge, on the node, looking at that card.
+
+The form is on the database's own page, under the window, and what it does
+is what the command always did:
+
+- **One database, into a copy.** Not the node's backup applied whole. A
+  new service in the same project, the same credentials, its own name —
+  and the original still running and still holding its own data. That is
+  what makes it something somebody can press: nothing is taken away, and
+  comparing the two is most of what a recovery is.
+- **The moment is typed, in UTC**, in the spelling the window prints and
+  `parse_target` reads. Not a `datetime-local` control: that submits the
+  browser's own zone, and a restore an hour from where somebody meant is
+  the failure this whole area exists to prevent. Empty means "as far as
+  the archived log goes".
+- **The form is absent when it could only refuse.** It appears when a
+  backup on this node holds a copy of *this* database — which the window
+  cannot answer, because the window measures the archived log and a log
+  with no base backup under it reaches nothing.
+- **The deployment is queued by the handler.** `restore_into` writes what
+  to unpack and where to stop; the unpacking happens at the first
+  deployment. An operator who pressed Restore asked for a database, not
+  for a service they then have to notice and start.
+- `restore_one` is the one implementation and both doors are thin over it.
+  Its refusals are **typed**, not strings: two of them have a way out that
+  only a terminal has — `--from <path>` for a backup that has been moved —
+  and the console must not print a sentence about a flag it does not have.
+
+**Not verified on a node yet.** The rows are covered by console tests,
+including that a refused restore leaves no half-made database; what has
+not run on a real machine is the unpack-and-replay that follows.
+
+### And when the backup is not on the node any more
+
+Asked straight after: with a schedule and a destination, **nothing is
+here** — the local staging copy is removed the moment the transfer
+succeeds, which is the whole point of having sent it. So the machine that
+had been backing itself up all week would have told its operator it had no
+backups. Three parts to the answer, and one of them was a bug already in
+the tree:
+
+- **The search has a second place to look.** `restore_one` reads this
+  node's own root first, then whatever the plan names — a bucket, another
+  machine, or a second disk here. The comparison is against the root, not
+  `is_remote`: "somewhere else" is the question, and a local second disk
+  is somewhere else.
+- **The manifest answers "does it hold this database".** Not the disk:
+  `back_up_engines` writes one entry per volume it copied, so a database
+  it could not copy is absent from that list — and that makes the question
+  answerable of a bucket for the price of a listing and a few hundred
+  bytes per backup. Downloading one to find out whether it is the one is
+  the cost this path exists to avoid.
+- **The download belongs to the deployment, not to the form.** The row
+  records where the volume comes from (`s3://…/volumes/<container>`), and
+  `prepare_engine` fetches it into `data_dir/fetched/<new container>`
+  before the unpack. A form does not wait minutes on a bucket, a fetch
+  that fails lands on the replica's row like every other deployment
+  failure, and `fetch_dir` is convergent, so a retry does not pay for the
+  bytes twice. `discard` removes the directory with the copy.
+- **`base_for` grew the container filter** and lost nothing: it is one
+  function over `(location, manifest)` pairs, used for the local root and
+  for the destination, generic in the location because one is a path and
+  the other is a bucket key.
+- The two refusals are kept apart on purpose. "No backup was taken before
+  that moment" means go back further; "none of them holds this database"
+  means the backups are fine and this database was not in them — which is
+  exactly the shape the `pg_hba.conf` fault above produced for five days
+  on a real node.
+
+**And the bug this uncovered.** `fetch` from a bucket took the *last
+component* of each key, so every `volumes/<container>/base.tar.gz` in a
+backup landed as one `base.tar.gz` at the top of the staging directory,
+each overwriting the last, and the restore then found no `volumes/` at
+all: **a node restored from a bucket came back with its database, its
+manifest and none of its data**, reporting success the whole way. Nothing
+failed anywhere — the flat files are the ones a node restore reads first.
+`rsync -a` over SSH had always kept the tree; only the bucket path was
+flat. The key's path below the prefix is what it lands under now, and a
+key with `..` in it is refused rather than written — a download must not
+be a way to write anywhere on the disk.
+
+**What is still not there**: `restore --from` takes a local path only, so
+naming *one specific* remote backup for one database is not possible —
+the search picks the newest that can reach the moment. `restore-node
+--from s3://…` names one and now fetches it correctly.

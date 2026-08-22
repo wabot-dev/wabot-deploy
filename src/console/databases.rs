@@ -495,7 +495,91 @@ impl DatabaseApi {
 /// `commands::backup::Window`. The one worth building a card for is
 /// `NoAnchor`: log arriving with no backup to replay it onto looks
 /// exactly like working, and recovers nothing.
-pub fn window_card(window: &crate::commands::backup::Window) -> impl Renderable + '_ {
+/// Go back to a moment — into a copy, never over the original.
+///
+/// Jorge asked for this: the window card said "any moment between these
+/// two" and there was nowhere to go with it. `restore` existed as a
+/// command only, so recovering meant an SSH session in the middle of the
+/// thing you were recovering from.
+///
+/// **Only this database.** Not the node's backup applied whole — what
+/// this asks for is one database's volume out of one backup, unpacked
+/// beside the original, which goes on serving. That is what makes it
+/// something an operator can actually press: nothing is taken away, and
+/// comparing the two is most of what a recovery is.
+///
+/// Absent when there is nothing to reach: no backup holding this
+/// database means the form would refuse whatever was typed, and a form
+/// that cannot succeed is worse than a sentence saying why.
+pub fn restore_card<'a>(
+    project_slug: &'a str,
+    service_slug: &'a str,
+    window: &'a crate::commands::backup::Window,
+    default_name: &'a str,
+    // Where this node sends its backups, when that is not this machine.
+    // Named on the card because it is where the copy will come *from*: a
+    // node with a schedule and a bucket has nothing here at all — the
+    // staging copy is removed the moment the transfer succeeds.
+    elsewhere: Option<&'a str>,
+) -> impl Renderable + 'a {
+    use crate::commands::backup::Window;
+
+    // The end of the window, as a moment somebody can type. It is the
+    // last thing a restore can reach — later than that is a request the
+    // archive cannot answer — so it is the placeholder rather than a
+    // guess at what they want.
+    let latest = match window {
+        Window::Between { to, .. } => super::layout::typed(*to),
+        Window::OnlyTheBackup { at } => super::layout::typed(*at),
+        _ => String::new(),
+    };
+
+    rsx! {
+        <section class="stack">
+            <p class="card-label">(t("Restore into a copy"))</p>
+            <form method="post"
+                  action=(format!("/projects/{project_slug}/services/{service_slug}/restore"))
+                  class="card stack">
+                <label for="restore-at">(t("Up to which moment"))</label>
+                <input id="restore-at" name="at" type="text" autocomplete="off" class="mono"
+                       value="" placeholder=(&latest)>
+                <p class="field-hint">(t("UTC, as the window above reads it: 2026-08-16 14:32. \
+                     Empty means as far as the archived log goes, which is the most recent \
+                     moment there is."))</p>
+
+                <label for="restore-into">(t("Call the copy"))</label>
+                <input id="restore-into" name="into" type="text" autocomplete="off" class="mono"
+                       value="" placeholder=(default_name)>
+                <p class="field-hint">(t("A new database in this project, with the same \
+                     credentials and its own name. The original keeps running and keeps its \
+                     data — this is a copy beside it, and deleting it later costs nothing."))</p>
+                <p class="field-hint">(t("It unpacks the backup and replays the log at its first \
+                     deployment, which starts as soon as you press this. A large database takes \
+                     as long to come up as it took to copy."))</p>
+                @if let Some(destination) = elsewhere {
+                    <p class="field-hint">(t("The backup is looked for on this machine first, \
+                         then at "))<span class="mono">(destination)</span>
+                        (t(" — where a schedule sends them, and where they are the only copy \
+                         once the transfer has succeeded. Downloading it is part of that first \
+                         deployment, so a large one takes as long as it takes."))</p>
+                }
+
+                <div class="actions">
+                    <button class="btn btn-secondary" type="submit">(t("Restore into a copy"))</button>
+                </div>
+            </form>
+        </section>
+    }
+}
+
+pub fn window_card<'a>(
+    window: &'a crate::commands::backup::Window,
+    // The destination, when the backups leave this machine. It changes
+    // what `NoAnchor` *means*: not "there is no backup", which is what
+    // this card used to say, but "there is none here" — and with a bucket
+    // configured that is the ordinary, healthy state.
+    elsewhere: Option<&'a str>,
+) -> impl Renderable + 'a {
     use crate::commands::backup::Window;
 
     rsx! {
@@ -533,14 +617,24 @@ pub fn window_card(window: &crate::commands::backup::Window) -> impl Renderable 
                 Window::NotKeeping => {
                     <p class="field-hint">(t("This node is not keeping the write-ahead log, so a \
                          restore reaches the moment of a backup and no further. The switch is \
-                         on the node's page."))</p>
+                         on the node's Backup tab."))</p>
                 }
                 // The one that looks like it is working.
                 Window::NoAnchor => {
-                    <p class="field-hint">(t("The log is being kept and there is no backup to \
-                         replay it onto. A base backup is what the log is applied to, so until \
-                         one is taken this recovers nothing at all — the disk is being spent on \
-                         something nothing can use."))</p>
+                    @if let Some(destination) = elsewhere {
+                        <p class="field-hint">(t("The log is being kept and no backup is on this \
+                             machine — which is what a destination means: they are sent to "))
+                            <span class="mono">(destination)</span>
+                            (t(" and the local copy is removed once the transfer succeeds. The \
+                             restore below looks there, so this window is the log's reach and \
+                             not the whole answer."))</p>
+                    } @else {
+                        <p class="field-hint">(t("The log is being kept and there is no backup to \
+                             replay it onto. A base backup is what the log is applied to, so \
+                             until one is taken this recovers nothing at all — the disk is being \
+                             spent on something nothing can use. The node's Backup tab is where \
+                             one is scheduled, or taken now."))</p>
+                    }
                 }
                 Window::OnlyTheBackup { at } => {
                     <p class="field-hint">

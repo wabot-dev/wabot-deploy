@@ -24,6 +24,7 @@
 //! runtime's overhead, not the application's, and hiding them in
 //! either column would answer a question nobody asked.
 
+pub mod backups;
 pub mod cpu;
 pub mod disk;
 pub mod memory;

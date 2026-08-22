@@ -366,6 +366,120 @@ That is what the names report is for, and why it prints rather than
 decides. A check that could decide would need something the node cannot
 have: proof that traffic from outside arrives here.
 
+### A schedule, and where it is decided
+
+Everything about a backup used to be an argument or a constant:
+the destination came from `--out`, the recovery window from `KEEP_DAYS`,
+and *when* from whoever remembered to type the command. That is the shape
+of a feature nobody sets up — and a backup nobody scheduled is the backup
+that does not exist on the day the disk does not come back.
+
+It is a decision on the node it binds now, on the console's **Backup**
+tab beside Domain, Capabilities and Resources: where the copy goes, how
+often, at what hour, how long it is kept, and the write-ahead log switch,
+which **moved there from Capabilities**. Point-in-time recovery is the
+*reach* of a backup — the log is replayed onto a base copy — so a switch
+two tabs away from the thing it depends on is one somebody turns on and
+gains nothing by. `node::backups` holds the plan; six things about it are
+worth knowing before touching it:
+
+- **A slot, not an interval.** "Twenty-four hours since the last one"
+  drifts — a node down for an hour moves its backup an hour later for
+  ever — and it cannot answer the question an operator actually wants to
+  decide, which is what time of day this happens. So the pass asks
+  whether the most recent slot has been claimed, which also catches up: a
+  machine that was off at 03:00 takes the backup when it comes back.
+- **One attempt per slot, and the attempt counts even when it failed.**
+  Retrying a refused destination every pass is a `pg_basebackup` of every
+  database every five minutes on a one-core node. The reason lands on the
+  row instead, and the button beside it is how somebody retries on
+  purpose.
+- **Off by default, and an upgrade does not turn it on.** Unlike the
+  write-ahead log — whose default flipped once there was pruning — this
+  writes a copy of every volume somewhere, and the somewhere is a
+  decision. A schedule arriving with a release would fill the disk it was
+  meant to protect.
+- **One implementation, two doors.** `commands::backup::once` takes the
+  caller's database handle: the command opens and closes its own, the
+  loop in `serve` and the console's button hand over the node's. The
+  `close()` had to move out of it — a checkpoint that drops the writer
+  connection is fine for a command that is about to exit and is the whole
+  process for anything else.
+- **The destination is checked when it is typed**, not when the run comes
+  round. `sftp://…` is one letter from a scheme this understands, and a
+  plan saved against it is a job that fails at three in the morning for a
+  reason that was available the moment somebody typed it. `preflight`
+  answers for `rsync`; the form also asks the one thing preflight cannot
+  see, which is a bucket with no `[backup.s3]` on this node.
+- **The failure is a value.** `backup.last_error` is a row, so it reaches
+  the tab and the attention card rather than a journal nobody is reading.
+  Nothing complains about a node with *no* schedule: that is a decision,
+  and an operator whose cron already runs `wabot-deploy backup` has made
+  it.
+
+The window is that operator's too, rather than seven days for everybody —
+a node with a small disk had no answer but to turn the whole thing off.
+`keeping` takes it as an argument and still keeps the backup *before* the
+window, because that is what makes the whole of the window reachable.
+
+**What the node said**, on 2026-08-22 on `node-1`: taking one by hand
+found that the only database there had never been in a backup — its
+`pg_hba.conf` refused the base backup — and that `backup` reported that
+run as a success. Both are fixed and written up in
+[`docs/databases.md`](databases.md); the second is the one that belongs
+here, because a schedule is precisely the case where nobody reads the
+narration. A run that does not hold a database this node runs comes back
+as an error now, and the command exits 1.
+
+Both fixes are **verified on `node-1`**: the console's own button took a
+backup holding a real `pg_basebackup` of the database that had never been
+in one, and the tab, `doctor` and the exit code all agreed with it either
+way — failing before the database was redeployed, good after.
+
+### A bucket configured from the console, and still not in the database
+
+Asked for straight after the schedule: configuring an S3 bucket meant an
+SSH session and a text editor, which is the shape of a feature nobody
+sets up. The mechanism is a card on the Backup tab — and what did **not**
+move is where the credential lands.
+
+- **The console writes `config.toml`.** The property that matters is
+  *which file*, not who writes it: a key that can read every backup in
+  the network must not be inside the thing being backed up, and a backup
+  holds `node.db`, the volumes and the images — not `/etc`. The console
+  is already root on this machine.
+- **Text surgery on one section**, so the operator's comments and key
+  order survive. Re-serializing the whole file through
+  `toml::to_string_pretty` produces valid configuration and throws away
+  everything a person put there. Written to a temporary file and renamed,
+  because a truncated `config.toml` is a node that will not start, and
+  parsed before it is written, because a section this binary cannot read
+  back is the same thing one restart later.
+- **Read at the moment of use**, not from the `Config` cloned at startup
+  — `Config::s3`. Otherwise Save applies at the next restart, which an
+  operator discovers at the second failed backup. It also means editing
+  the file by hand still works, and applies just as immediately.
+- **Not "AWS".** Every provider that speaks the protocol is the same four
+  values, and the endpoint is the one that says which: empty for Amazon,
+  and set for Backblaze, Wasabi, DigitalOcean, MinIO or Ceph — where the
+  client also switches to path-style addressing, which is what most of
+  them want.
+- **Saving asks the bucket.** A listing, when the destination is already
+  one: the same call `send_to_s3` opens with, so a key that saves is a
+  key that works, and `SignatureDoesNotMatch` arrives on the form rather
+  than at three in the morning. Bounded at fifteen seconds, because a
+  wrong endpoint is a connection nobody answers.
+- **The secret goes in and never comes back.** The field renders empty
+  whatever is stored, so empty on save means "keep the one you have" —
+  otherwise every operator who came to fix a region would wipe it. And
+  forgetting a credential is refused while the backups go to a bucket:
+  that plan would fail at the next slot rather than now.
+
+**Still not verified on a node**: a slot firing on its own, and a remote
+destination. The first needs a plan saved and a slot to come round; note
+that an attempt claims every earlier slot, so it cannot be forced by
+picking an hour that has already passed.
+
 ## 6. Placement that decides
 
 Only now. A scheduler is a function of the signals above — capacity to

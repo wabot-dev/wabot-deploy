@@ -162,6 +162,9 @@ pub async fn run(config: Config) -> anyhow::Result<i32> {
     let http_database = database.clone();
     let errands_database = database.clone();
     let errands_config = config.clone();
+    let retention_database = database.clone();
+    let schedule_database = database.clone();
+    let schedule_config = config.clone();
     let https_port = config.edge.https_port;
 
     let outcome = ProjectRunner::new(container.clone())
@@ -252,11 +255,22 @@ pub async fn run(config: Config) -> anyhow::Result<i32> {
         // `read_dir` on the many hours where nothing has expired.
         .service_with_cancel("backup-retention", {
             let deployer = deployer.clone();
+            let database = retention_database.clone();
             move |cancel| async move {
                 loop {
                     let data_dir = deployer.config().node.data_dir.clone();
+                    // Read every pass rather than captured once: the
+                    // window is a field on the node's Backup tab, and a
+                    // number read at startup would go on bounding the
+                    // archive by whatever it was before somebody changed
+                    // it — for as long as the process lived.
+                    let keep_days = crate::node::backups::plan(&database).await.keep_days;
                     let (removed, freed) = tokio::task::spawn_blocking(move || {
-                        crate::commands::backup::sweep(&data_dir, crate::platform::now_ms())
+                        crate::commands::backup::sweep(
+                            &data_dir,
+                            crate::platform::now_ms(),
+                            keep_days,
+                        )
                     })
                     .await
                     .unwrap_or((0, 0));
@@ -267,6 +281,58 @@ pub async fn run(config: Config) -> anyhow::Result<i32> {
                     tokio::select! {
                         _ = cancel.cancelled() => return Ok::<(), anyhow::Error>(()),
                         _ = tokio::time::sleep(std::time::Duration::from_secs(3600)) => {}
+                    }
+                }
+            }
+        })
+        // Whether a backup is owed, and taking it.
+        //
+        // **Its own loop, and it asks about the clock rather than
+        // counting.** The plan names an hour — see
+        // `node::backups::slot_at_or_before` — so what this pass decides
+        // is whether the most recent slot has been claimed. A node that
+        // was off at three o'clock takes the backup when it comes back,
+        // and one that has been up for a week takes one a day.
+        //
+        // Five minutes, which is the accuracy of "at 03:00" and cheap:
+        // two reads of the `setting` table and, on almost every pass,
+        // nothing else. The work itself is minutes long and holds a
+        // process-wide flag, so a button pressed in the console while
+        // this is running is refused rather than doubled.
+        .service_with_cancel("backup-schedule", {
+            let config = schedule_config.clone();
+            let database = schedule_database.clone();
+            move |cancel| async move {
+                loop {
+                    // Waits first. A node that has just started is a node
+                    // whose containers are still coming back, and a
+                    // `pg_basebackup` of every database is the last thing
+                    // it needs in that minute — the slot is not going
+                    // anywhere.
+                    tokio::select! {
+                        _ = cancel.cancelled() => return Ok::<(), anyhow::Error>(()),
+                        _ = tokio::time::sleep(std::time::Duration::from_secs(300)) => {}
+                    }
+
+                    let plan = crate::node::backups::plan(&database).await;
+                    let last = crate::node::backups::last(&database).await.at;
+                    if !crate::node::backups::due(&plan, last, crate::platform::now_ms()) {
+                        continue;
+                    }
+                    tracing::info!(cadence = plan.cadence.as_str(), "a scheduled backup is due");
+                    // No cancellation branch around the run itself.
+                    // Dropping the future mid-`pg_basebackup` would leave
+                    // the container it started behind, where waiting for
+                    // it costs at worst the service manager's stop
+                    // timeout — and a backup on a small node is often
+                    // seconds.
+                    match crate::node::backups::take_now(&config, &database).await {
+                        Ok(held) => tracing::info!(%held, "scheduled backup taken"),
+                        // Warned and recorded — `take_now` writes the
+                        // reason on the row the console reads, because a
+                        // failure that only reaches the journal is a
+                        // failure nobody sees.
+                        Err(reason) => tracing::warn!(%reason, "the scheduled backup did not work"),
                     }
                 }
             }

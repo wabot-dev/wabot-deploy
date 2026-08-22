@@ -66,15 +66,18 @@ pub struct NodePage {
 /// the only one that reads a certificate off disk.
 ///
 /// The slugs deliberately avoid the POST paths beside them
-/// (`/node/capabilities`, `/node/certificate`): a GET view and a POST on
-/// one path do coexist — checked, not assumed — but a form whose action is
-/// the page it is on reads as a coincidence rather than a decision, and
-/// the next person to add a route would have to rediscover that it works.
+/// (`/node/capabilities`, `/node/certificate`, `/node/backups`): a GET
+/// view and a POST on one path do coexist — checked, not assumed — but a
+/// form whose action is the page it is on reads as a coincidence rather
+/// than a decision, and the next person to add a route would have to
+/// rediscover that it works. Hence `backup` for the tab and `backups` for
+/// what it submits to.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum NodeTab {
     Domain,
     Allows,
     Resources,
+    Backup,
 }
 
 impl NodeTab {
@@ -83,6 +86,7 @@ impl NodeTab {
             NodeTab::Domain => "domain",
             NodeTab::Allows => "allows",
             NodeTab::Resources => "resources",
+            NodeTab::Backup => "backup",
         }
     }
 
@@ -94,11 +98,21 @@ impl NodeTab {
             NodeTab::Domain => t("Domain"),
             NodeTab::Allows => t("Capabilities"),
             NodeTab::Resources => t("Resources"),
+            NodeTab::Backup => t("Backup"),
         }
     }
 
-    pub fn all() -> [NodeTab; 3] {
-        [NodeTab::Domain, NodeTab::Allows, NodeTab::Resources]
+    pub fn all() -> [NodeTab; 4] {
+        [
+            NodeTab::Domain,
+            NodeTab::Allows,
+            NodeTab::Resources,
+            // Last, because it is the one somebody sets up once and then
+            // comes back to only to read: what the other three answer is
+            // "what is this node", and this one answers "and what happens
+            // if it is gone".
+            NodeTab::Backup,
+        ]
     }
 
     fn parse(slug: &str) -> Option<Self> {
@@ -474,6 +488,25 @@ impl NodePages {
         )
         .await;
         let archiving = crate::node::settings::archiving(&self.state.database).await;
+        // Only on the tab that shows them. Reading the plan is two rows,
+        // but the list beside it is a `read_dir` and a `manifest.json` per
+        // backup in the root — which is work the domain tab has no use
+        // for, and this page is opened by somebody whose node is unwell.
+        // A flag rather than a row, and read here so the card stays a
+        // function of values — see `node::backups::in_progress`.
+        let running = crate::node::backups::in_progress();
+        let backups = match tab {
+            NodeTab::Backup => Some((
+                crate::node::backups::plan(&self.state.database).await,
+                crate::node::backups::last(&self.state.database).await,
+                crate::commands::backup::taken(&self.state.config.node.data_dir),
+                // Read from the file, like everything else that asks —
+                // and only the key and the endpoint are rendered. The
+                // secret goes in and never comes back out.
+                self.state.config.s3(),
+            )),
+            _ => None,
+        };
         let reserves = (
             crate::node::settings::memory_reserve(&self.state.database).await,
             crate::node::settings::cpu_reserve(&self.state.database).await,
@@ -505,6 +538,29 @@ impl NodePages {
             self.state.config.acme.disabled,
         );
         let cells = certificate_cells(&state, &facts, domain.as_deref());
+        // What an empty destination means, spelled out as the path it
+        // actually is. A placeholder saying "the default" would leave
+        // somebody looking for a directory whose name they were never
+        // told.
+        let default_destination = self
+            .state
+            .config
+            .node
+            .data_dir
+            .join("backups")
+            .display()
+            .to_string();
+        // The file the credential card writes, named on the card. A
+        // secret stored somewhere the operator cannot find is a secret
+        // they cannot remove.
+        let config_path = self
+            .state
+            .config
+            .source
+            .clone()
+            .unwrap_or_else(|| std::path::PathBuf::from(crate::config::DEFAULT_CONFIG_PATH))
+            .display()
+            .to_string();
         let self_id = nodes
             .iter()
             .find(|node| node.is_self)
@@ -517,8 +573,12 @@ impl NodePages {
             rsx! {
                 (layout::style_tag())
                 <h1>(t("Node"))</h1>
-                <p class="tagline">(t("What this machine does, and the name it answers to."))</p>
 
+                // No tagline. The tabs say what is here in four words,
+                // and a sentence between the title and them was a line
+                // Jorge read once and then had to scroll past on every
+                // visit — asked for and removed.
+                //
                 // Links, the same shape a service's settings use.
                 <nav class="tabs" aria-label=(t("Node"))>
                     @for entry in NodeTab::all() {
@@ -544,10 +604,15 @@ impl NodePages {
                     ))
                 }
                 @if tab == NodeTab::Allows {
-                    (capabilities_card(hosts, edges, reachable, archiving))
+                    (capabilities_card(hosts, edges, reachable))
                 }
                 @if tab == NodeTab::Resources {
                     (reserves_card(&snapshot, reserves, cores))
+                }
+                @if let Some((plan, attempt, taken, s3)) = &backups {
+                    (backup_card(plan, archiving, &default_destination))
+                    (bucket_card(s3.as_ref(), &config_path, plan))
+                    (backup_state_card(plan, attempt, taken, &self_id, running))
                 }
             }
             .render()
@@ -903,12 +968,7 @@ fn reserves_card<'a>(
     }
 }
 
-fn capabilities_card(
-    hosts: bool,
-    edges: bool,
-    reachable: bool,
-    archiving: bool,
-) -> impl Renderable {
+fn capabilities_card(hosts: bool, edges: bool, reachable: bool) -> impl Renderable {
     rsx! {
         <section class="stack">
             <p class="card-label">(t("What this node does"))</p>
@@ -949,35 +1009,511 @@ fn capabilities_card(
                     </span>
                 </label>
 
-                // Point-in-time recovery, which is a decision about
-                // *this node's disk* rather than about any one database
-                // — which is why it sits with the other two things the
-                // node either does or does not do.
-                <label class="capability">
-                    @if archiving {
-                        <input type="checkbox" name="archiving" value="1" checked>
-                    } @else {
-                        <input type="checkbox" name="archiving" value="1">
-                    }
-                    <span>
-                        <strong>(t("Keep the write-ahead log"))</strong>
-                        <span class="tile-detail">(t("Lets a database be restored to any minute, \
-                             rather than only to the moment of a backup. It costs disk — a \
-                             segment a minute per database, compressed — and it takes effect \
-                             at each database's next deployment."))</span>
-                        <span class="tile-detail">(t("What it keeps is bounded by the recovery \
-                             window: an hourly pass drops the backups that have expired and \
-                             the log no surviving backup needs. Turning this off frees that \
-                             disk and gives up going back to a minute."))</span>
-                    </span>
-                </label>
-
+                // The write-ahead log used to be here, as a third thing
+                // the node either does or does not do. It is on the
+                // Backup tab now, beside the schedule and the window it
+                // is bounded by: point-in-time recovery is the *reach* of
+                // a backup — no base copy, nothing to replay the log onto
+                // — and a switch two tabs away from the thing it depends
+                // on is a switch somebody turns on and gains nothing by.
 
                 <div class="actions">
                     <button type="submit">(t("Save"))</button>
                 </div>
             </form>
         </section>
+    }
+}
+
+/// Where a copy of this node goes, and when.
+///
+/// One form, because it is one decision: a destination with no schedule
+/// is a field nobody acts on, and a schedule with nowhere to write is a
+/// job that fails at three in the morning. The write-ahead log switch is
+/// here too — it decides how far a restore *reaches* from whatever this
+/// takes, and it was two tabs away from the thing it depends on.
+fn backup_card<'a>(
+    plan: &'a crate::node::backups::Plan,
+    archiving: bool,
+    default_destination: &'a str,
+) -> impl Renderable + 'a {
+    use crate::node::backups::Cadence;
+
+    let destination = plan.destination.clone().unwrap_or_default();
+    let keep_days = plan.keep_days.to_string();
+    // Written out rather than taken from a table so that the scan in
+    // `es.rs` can see them: it reads the source for calls to `t` with a
+    // literal in them, and a label that arrives as a value is a string it
+    // cannot check.
+    let days = [
+        t("Monday"),
+        t("Tuesday"),
+        t("Wednesday"),
+        t("Thursday"),
+        t("Friday"),
+        t("Saturday"),
+        t("Sunday"),
+    ];
+
+    // An island host for the same reason the certificate form is one:
+    // what the runtime hides here is only what does not apply, and with
+    // scripting off every field is visible and the form still submits.
+    wabot::ui::hypertext::island_bare(
+        "fields",
+        rsx! {
+            <section class="stack" id="backup">
+                <p class="card-label">(t("Backing up this node"))</p>
+                <form method="post" action="/node/backups" class="card stack">
+                    <label for="backup-destination">(t("Where the copy goes"))</label>
+                    // The path is a path: not translated, and monospaced
+                    // like every other thing on this console that somebody
+                    // pastes into a terminal.
+                    <input id="backup-destination" name="destination" type="text"
+                           autocomplete="off" class="mono" value=(&destination)
+                           placeholder=(default_destination)>
+                    <p class="field-hint">(t("A directory on this machine, ssh://[user@]host/path, \
+                         or s3://bucket/prefix. Leave it empty and the copy stays here, in the \
+                         path the field shows — which protects against nothing that has ever \
+                         happened to a disk."))</p>
+                    <p class="field-hint">(t("SSH uses this machine's own keys and needs nothing \
+                         stored. S3 needs its credentials in config.toml, which is deliberate: a \
+                         key that can read every backup in the network must not be inside the \
+                         thing being backed up."))</p>
+
+                    <label for="backup-cadence">(t("How often"))</label>
+                    <select id="backup-cadence" name="cadence">
+                        @if plan.cadence == Cadence::Off {
+                            <option value="" selected>(t("Never — I take them myself"))</option>
+                        } @else {
+                            <option value="">(t("Never — I take them myself"))</option>
+                        }
+                        @if plan.cadence == Cadence::Daily {
+                            <option value="daily" selected>(t("Every day"))</option>
+                        } @else {
+                            <option value="daily">(t("Every day"))</option>
+                        }
+                        @if plan.cadence == Cadence::Weekly {
+                            <option value="weekly" selected>(t("Every week"))</option>
+                        } @else {
+                            <option value="weekly">(t("Every week"))</option>
+                        }
+                    </select>
+
+                    // `Cadence::Off` stores as the empty string, which is
+                    // what lets `data-when="cadence"` — the island's
+                    // "this control has a value" — hide the hour when
+                    // nothing is scheduled. One attribute rather than a
+                    // second condition and another script.
+                    <div class="stack" data-when="cadence=weekly">
+                        <label for="backup-weekday">(t("Day"))</label>
+                        <select id="backup-weekday" name="weekday">
+                            @for (index, day) in days.iter().enumerate() {
+                                @if usize::from(plan.weekday) == index {
+                                    <option value=(index.to_string()) selected>(day)</option>
+                                } @else {
+                                    <option value=(index.to_string())>(day)</option>
+                                }
+                            }
+                        </select>
+                    </div>
+                    <div class="stack" data-when="cadence">
+                        <label for="backup-hour">(t("At"))</label>
+                        <select id="backup-hour" name="hour">
+                            @for hour in 0..24u8 {
+                                @if plan.hour == hour {
+                                    <option value=(hour.to_string()) selected>
+                                        (format!("{hour:02}:00"))
+                                    </option>
+                                } @else {
+                                    <option value=(hour.to_string())>
+                                        (format!("{hour:02}:00"))
+                                    </option>
+                                }
+                            }
+                        </select>
+                        <p class="field-hint">(t("UTC, which is what the node keeps. An hour \
+                             chosen in your own zone would be somebody else's afternoon, and a \
+                             copy of every database is not what a busy hour needs."))</p>
+                    </div>
+
+                    <label for="backup-keep">(t("Kept for"))</label>
+                    <input id="backup-keep" name="keep_days" type="text" inputmode="numeric"
+                           autocomplete="off" value=(&keep_days) placeholder="7">
+                    <p class="field-hint">(t("Days. Everything inside the window costs disk and \
+                         everything outside it is gone — an hourly pass drops the backups that \
+                         have expired, and the log no surviving backup needs. The oldest one is \
+                         kept until a newer one can anchor the window, so it is never shorter \
+                         than it says."))</p>
+
+                    <label class="capability">
+                        @if archiving {
+                            <input type="checkbox" name="archiving" value="1" checked>
+                        } @else {
+                            <input type="checkbox" name="archiving" value="1">
+                        }
+                        <span>
+                            <strong>(t("Keep the write-ahead log"))</strong>
+                            <span class="tile-detail">(t("Lets a database be restored to any \
+                                 minute, rather than only to the moment of a backup. It costs \
+                                 disk — a segment a minute per database, compressed — and it \
+                                 takes effect at each database's next deployment."))</span>
+                            <span class="tile-detail">(t("It reaches back to the oldest backup \
+                                 and no further: the log is replayed onto one, so without a \
+                                 backup to anchor it this keeps disk nothing can use."))</span>
+                        </span>
+                    </label>
+
+                    <div class="actions">
+                        <button type="submit">(t("Save"))</button>
+                    </div>
+                </form>
+            </section>
+        },
+    )
+}
+
+/// Ask the bucket, and say what it said — or `None` if there is nothing
+/// to ask.
+///
+/// **A listing.** It needs the same signature, the same host and the same
+/// permission a backup needs, and `send_to_s3` opens with one anyway — so
+/// this is not a weaker check than the real thing, and it writes nothing
+/// into somebody's bucket to find out.
+///
+/// Bounded, because a form that waits on a provider is a page that hangs:
+/// a wrong endpoint is a connection nobody answers, and fifteen seconds is
+/// long enough to be a slow bucket and short enough to be an answer.
+async fn bucket_refusal(
+    destination: Option<&str>,
+    credentials: &crate::commands::s3::Credentials,
+) -> Option<String> {
+    let Some(crate::commands::destination::Destination::S3 { bucket, prefix }) =
+        destination.and_then(|text| crate::commands::destination::Destination::parse(text).ok())
+    else {
+        return None;
+    };
+    match tokio::time::timeout(
+        std::time::Duration::from_secs(15),
+        crate::commands::s3::list(credentials, &bucket, &prefix),
+    )
+    .await
+    {
+        Ok(Ok(_)) => None,
+        // The provider's own words. Never translated and never
+        // paraphrased: "SignatureDoesNotMatch" is what an operator will
+        // search for.
+        Ok(Err(error)) => Some(format!("{bucket} refused it: {error}")),
+        Err(_) => Some(format!(
+            "{bucket} did not answer within fifteen seconds — check the endpoint"
+        )),
+    }
+}
+
+/// The bucket's credential, and where it is kept.
+///
+/// **Jorge asked for this**: configuring a bucket was an SSH session and
+/// a text editor, which is the shape of a feature nobody sets up. What
+/// does *not* change is where it lands — the config file, never the
+/// database, because a key that can read every backup in the network must
+/// not be inside the thing being backed up. So the card says which file,
+/// and the file says the console wrote it.
+///
+/// **Not "AWS".** Every provider that speaks this protocol is one of
+/// these: an endpoint, a region, a key and a secret. Amazon is the case
+/// where the endpoint is left empty.
+///
+/// The secret goes in and never comes back: it renders as an empty field
+/// whatever is stored, and an empty field on save means "keep the one you
+/// have" — which is what makes changing a region a one-field edit rather
+/// than a hunt for a secret nobody wrote down.
+fn bucket_card<'a>(
+    stored: Option<&'a crate::commands::s3::Credentials>,
+    config_path: &'a str,
+    plan: &'a crate::node::backups::Plan,
+) -> impl Renderable + 'a {
+    let key = stored.map(|c| c.access_key_id.clone()).unwrap_or_default();
+    let region = stored
+        .map(|c| c.region.clone())
+        .unwrap_or_else(|| "us-east-1".to_string());
+    let endpoint = stored.and_then(|c| c.endpoint.clone()).unwrap_or_default();
+    // Whether the destination is the bucket these belong to. It decides
+    // one thing: forgetting them while the backups go there would leave a
+    // schedule that cannot work, so that is refused rather than allowed
+    // and reported afterwards.
+    let in_use = plan
+        .destination
+        .as_deref()
+        .and_then(|text| crate::commands::destination::Destination::parse(text).ok())
+        .is_some_and(|destination| {
+            matches!(
+                destination,
+                crate::commands::destination::Destination::S3 { .. }
+            )
+        });
+
+    rsx! {
+        <section class="stack">
+            <p class="card-label">(t("Bucket credentials"))</p>
+            <form method="post" action="/node/backups/credentials" class="card stack">
+                <div class="split">
+                    <span>
+                        @if stored.is_some() {
+                            <span class="dot dot-success"></span>(t("stored"))
+                        } @else {
+                            <span class="dot dot-warning"></span>(t("none on this node"))
+                        }
+                    </span>
+                </div>
+                <p class="field-hint">(t("For any storage that speaks the S3 protocol — Amazon, \
+                     Backblaze, Wasabi, DigitalOcean, MinIO, Ceph. They are kept in "))
+                    <span class="mono">(config_path)</span>
+                    (t(", never in this node's database: a key that can read every backup in the \
+                     network must not be inside the thing being backed up. A backup holds the \
+                     database, the volumes and the images — it does not hold that file."))</p>
+
+                <label for="s3-key">(t("Access key id"))</label>
+                <input id="s3-key" name="access_key_id" type="text" autocomplete="off"
+                       class="mono" value=(&key)>
+
+                <label for="s3-secret">(t("Secret access key"))</label>
+                // `new-password`, or the browser's password manager offers
+                // the operator's own login for this console — which
+                // happened once already on the sign-in form and was found
+                // by somebody looking at the page, not by a test.
+                <input id="s3-secret" name="secret_access_key" type="password"
+                       autocomplete="new-password" class="mono" value="">
+                @if stored.is_some() {
+                    <p class="field-hint">(t("Stored. Leave this empty to keep it — it is never \
+                         shown again, here or anywhere else."))</p>
+                } @else {
+                    <p class="field-hint">(t("Whatever the provider generated. It is written to \
+                         the file above and never rendered back."))</p>
+                }
+
+                <label for="s3-region">(t("Region"))</label>
+                <input id="s3-region" name="region" type="text" autocomplete="off" class="mono"
+                       value=(&region) placeholder="us-east-1">
+                <p class="field-hint">(t("Part of the signature, so a wrong one is a refused \
+                     request rather than a slow one. Providers that have no regions still want \
+                     the one they document — often us-east-1."))</p>
+
+                <label for="s3-endpoint">(t("Endpoint"))</label>
+                <input id="s3-endpoint" name="endpoint" type="text" autocomplete="off"
+                       class="mono" value=(&endpoint)
+                       placeholder="https://s3.us-west-004.backblazeb2.com">
+                <p class="field-hint">(t("Empty for Amazon's own S3. For anything else, the URL \
+                     the provider gives you — and with one set, buckets are addressed as a path \
+                     rather than a subdomain, which is what MinIO and most of the others \
+                     want."))</p>
+
+                <p class="field-hint">(t("Saving asks the bucket to list what it holds, when the \
+                     destination above is one — the same call a backup starts with, so a key \
+                     that saves is a key that works."))</p>
+
+                <div class="actions">
+                    <button type="submit">(t("Save"))</button>
+                </div>
+            </form>
+
+            // Its own form: a second button inside the one above would
+            // submit the fields with it, and forgetting a credential must
+            // not depend on what is typed beside it.
+            @if stored.is_some() {
+                <form method="post" action="/node/backups/credentials/forget" class="card stack">
+                    <p class="field-hint">(t("Removing them takes the section out of the file. \
+                         Nothing else about the plan changes — and backups to a bucket stop \
+                         working, which is why this is refused while the destination is one."))</p>
+                    <div class="actions">
+                        @if in_use {
+                            <button class="btn btn-secondary" type="submit" disabled>
+                                (t("Forget them"))
+                            </button>
+                        } @else {
+                            <button class="btn btn-secondary" type="submit">(t("Forget them"))</button>
+                        }
+                    </div>
+                </form>
+            }
+        </section>
+    }
+}
+
+/// How the last one went, and the button that takes one now.
+///
+/// A card of its own rather than a line on the form: what it says is not
+/// a setting, and the two questions it answers — "is there a copy of this
+/// node anywhere" and "did the last attempt work" — are the ones somebody
+/// opens this tab to ask.
+fn backup_state_card<'a>(
+    plan: &'a crate::node::backups::Plan,
+    attempt: &'a crate::node::backups::Attempt,
+    taken: &'a [(std::path::PathBuf, crate::commands::backup::Manifest)],
+    self_id: &'a str,
+    running: bool,
+) -> impl Renderable + 'a {
+    use crate::node::backups::Cadence;
+
+    let next = crate::node::backups::next_slot(plan, super::now_ms());
+    // Ten, and the count says what was left out. A node kept for a year
+    // with a daily backup would otherwise render a table nobody scrolls.
+    let showing: Vec<&(std::path::PathBuf, crate::commands::backup::Manifest)> =
+        taken.iter().take(10).collect();
+    let remote = plan
+        .destination
+        .as_deref()
+        .and_then(|text| crate::commands::destination::Destination::parse(text).ok())
+        .is_some_and(|destination| destination.is_remote());
+
+    rsx! {
+        <section class="card stack">
+            <div class="split">
+                <p class="card-label">(t("The last one"))</p>
+                // Not a form field: a button that submits nothing but the
+                // request itself. Its own form because a POST inside the
+                // settings form would save the plan as a side effect of
+                // asking for a backup.
+                <form method="post" action="/node/backups/now">
+                    @if running {
+                        <button class="btn btn-secondary" type="submit" disabled>
+                            (t("Backing up…"))
+                        </button>
+                    } @else {
+                        <button class="btn btn-secondary" type="submit">(t("Back up now"))</button>
+                    }
+                </form>
+            </div>
+
+            <dl class="kv">
+                <dt>(t("Last attempt"))</dt>
+                <dd>
+                    @if running {
+                        <span class="dot dot-info"></span>(t("running now"))
+                    } @else if let Some(at) = attempt.at {
+                        (layout::when(at))
+                    } @else {
+                        (t("never from here"))
+                    }
+                </dd>
+                @if let Some(at) = attempt.ok_at {
+                    <dt>(t("Last good one"))</dt>
+                    // Absolute as well as relative: this is the moment a
+                    // restore would land on, and "3 days ago" cannot be
+                    // typed into anything.
+                    <dd>(layout::when(at))(" · ")<span class="mono">(layout::exactly(at))</span></dd>
+                }
+                @if let Some(note) = &attempt.note {
+                    <dt>(t("It held"))</dt>
+                    <dd>(note)</dd>
+                }
+                <dt>(t("Next"))</dt>
+                <dd>
+                    @if plan.cadence == Cadence::Off {
+                        (t("nothing is scheduled"))
+                    } @else if let Some(at) = next {
+                        <span class="mono">(layout::exactly(at))</span>
+                    } @else {
+                        (t("nothing is scheduled"))
+                    }
+                </dd>
+            </dl>
+
+            // The reason the last one failed, where somebody looking for
+            // it will be. It is whatever refused — rsync's words, or an
+            // authority's — so it renders as it arrived.
+            @if let Some(reason) = &attempt.error {
+                <p class="form-error">
+                    <strong>(t("The last attempt did not work: "))</strong>(reason)
+                </p>
+                <p class="field-hint">(t("A slot gets one attempt: a copy of every database \
+                     retried every few minutes is a machine that stops answering. Fix what it \
+                     names and press Back up now, or wait for the next one."))</p>
+            }
+
+            @if showing.is_empty() {
+                <p class="note">(t("Nothing on this machine. A backup taken here and sent \
+                     somewhere else leaves nothing behind, which is the point — this list is \
+                     what is still on this disk."))</p>
+            } @else {
+                <table>
+                    <thead>
+                        <tr>
+                            <th>(t("Taken"))</th>
+                            <th>(t("Holds"))</th>
+                            <th>(t("Of"))</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @for (path, manifest) in &showing {
+                            (backup_row(path, manifest, self_id))
+                        }
+                    </tbody>
+                </table>
+                @if taken.len() > showing.len() {
+                    <p class="note">(t("Showing the newest "))(showing.len().to_string())
+                        (t(" of "))(taken.len().to_string())(t(" on this disk."))</p>
+                }
+            }
+            @if remote {
+                <p class="note">(t("The copies are sent away and the local staging directory is \
+                     removed when the transfer succeeds, so this list is not what the \
+                     destination holds."))</p>
+            }
+        </section>
+    }
+}
+
+/// One backup on the disk.
+fn backup_row<'a>(
+    path: &'a std::path::Path,
+    manifest: &'a crate::commands::backup::Manifest,
+    self_id: &'a str,
+) -> impl Renderable + 'a {
+    let crash = manifest
+        .volumes
+        .iter()
+        .filter(|copied| copied.how == crate::commands::backup::How::CrashConsistent)
+        .count();
+    // Whose it is. A shared root holds several nodes' backups — that is
+    // what makes one bucket the answer for a network — so a row about
+    // another machine has to say so rather than read as this one's.
+    let whose = match manifest.node_id.as_deref() {
+        Some(id) if id == self_id => t("this node").to_string(),
+        Some(_) => manifest
+            .node_name
+            .clone()
+            .or_else(|| manifest.node_id.clone())
+            .unwrap_or_else(|| t("another node").to_string()),
+        None => t("a node with no id").to_string(),
+    };
+
+    rsx! {
+        <tr>
+            <td>
+                <span class="mono">(layout::exactly(manifest.taken_at))</span>
+                // The directory, because moving it off this machine is
+                // the one thing an operator will do with it and `scp`
+                // wants the path.
+                //
+                // **A `<p>`, not a span.** `.tile-detail` carries no
+                // margin of its own, so a span sits flush against what
+                // is beside it: on the node this rendered as
+                // `02:43 UTC/var/lib/…`, one word, and Jorge saw it
+                // before any test did. The class is the same either way
+                // — what makes it a second line is the element.
+                <p class="tile-detail mono">(path.display().to_string())</p>
+            </td>
+            <td>
+                (manifest.volumes.len().to_string())(t(" volume(s)"))
+                @if crash > 0 {
+                    // Named, not folded in. A file copy of a running
+                    // process may restore into a process that will not
+                    // start, and which of the two this is decides whether
+                    // the backup is worth anything.
+                    <p class="tile-detail">(crash.to_string())(t(" copied while running"))</p>
+                }
+            </td>
+            <td>(whose)</td>
+        </tr>
     }
 }
 
@@ -1316,7 +1852,10 @@ fn errand_row(order: &network::errand::Record) -> impl Renderable + '_ {
         <tr>
             <td>
                 (order.kind.as_str())
-                <span class="tile-detail">(&order.id)</span>
+                // A second line, for the reason written on the backup
+                // row above: a `.tile-detail` span renders flush against
+                // what precedes it, so this read as `hostnd-BuhSasl…`.
+                <p class="tile-detail">(&order.id)</p>
             </td>
             <td data-errand=(&order.id)>
                 @if let Some(reason) = &order.error {
@@ -2381,7 +2920,11 @@ impl NodeApi {
     #[raw]
     #[middleware(SessionMiddleware)]
     async fn set_reserves(&self, request: Request) -> RestResult<Response> {
-        let here = "/node";
+        // The tab this form is on, not `/node` — which is a redirect to
+        // the first tab, so a refused reserve carried its message to the
+        // domain page and a saved one landed two tabs from the number it
+        // had just changed.
+        let here = &NodeTab::Resources.path();
         let Some(account) = signed_in(&self.auth) else {
             return Ok(super::auth::see_other("/sign-in"));
         };
@@ -2464,7 +3007,7 @@ impl NodeApi {
     #[raw]
     #[middleware(SessionMiddleware)]
     async fn set_capabilities(&self, request: Request) -> RestResult<Response> {
-        let here = "/node";
+        let here = &NodeTab::Allows.path();
         if signed_in(&self.auth).is_none() {
             return Ok(super::auth::see_other("/sign-in"));
         }
@@ -2489,26 +3032,9 @@ impl NodeApi {
             }
         }
 
-        // Not a capability — nothing is granted to anybody by it — but
-        // the same kind of decision and the same form: something this
-        // node either does or does not do, whose cost is its own.
-        //
-        // **And the databases have to be told.** `archive_mode` is a
-        // postmaster setting written into the container's arguments, so
-        // it changes at the next deployment and reconciliation will not
-        // cause one: it restores what is absent and what has the wrong
-        // ports, and this is neither. Without the redeployment below the
-        // switch reads on, the page says on, and nothing archives —
-        // which is worse than a switch that does nothing, because it is
-        // a page that lies.
-        let was = crate::node::settings::archiving(&self.state.database).await;
-        let wanted = form.contains_key("archiving");
-        if let Err(error) = crate::node::settings::set_archiving(&self.state.database, wanted).await
-        {
-            tracing::warn!(%error, "could not save whether to keep the log");
-        } else if was != wanted {
-            self.redeploy_databases().await;
-        }
+        // The write-ahead log used to be read here, from this form. It
+        // is on the Backup tab now — `set_backups` writes it, and the
+        // redeployment with it.
 
         // The self row carries the answer: `kind` is derived from the
         // edge capability, and every other node learns this one's kind
@@ -2548,6 +3074,334 @@ impl NodeApi {
                 tracing::error!(service = %service.slug, %error, "could not queue it");
             }
         }
+    }
+
+    /// What this node backs itself up to, and when.
+    ///
+    /// **The destination is checked here and not only when the run comes
+    /// round.** A schedule saved against `sftp://…` — one letter from a
+    /// scheme this understands — is a job that fails at three in the
+    /// morning for a reason that was available the moment somebody typed
+    /// it. Same rule as the certificate form, which reads a pair of files
+    /// before it accepts them.
+    #[post("/node/backups")]
+    #[raw]
+    #[middleware(SessionMiddleware)]
+    async fn set_backups(&self, request: Request) -> RestResult<Response> {
+        let here = &NodeTab::Backup.path();
+        let Some(account) = signed_in(&self.auth) else {
+            return Ok(super::auth::see_other("/sign-in"));
+        };
+        if !account.is_admin() {
+            return Ok(super::auth::see_other("/"));
+        }
+        let form = match super::auth::read_form(request).await {
+            Ok(form) => form,
+            Err(response) => return Ok(response),
+        };
+
+        let typed = super::auth::field(&form, "destination");
+        let destination =
+            match typed.is_empty() {
+                // Empty is "keep it here", which is where `backup` with no
+                // `--out` has always written. Stored as nothing rather than
+                // as the path, so a node whose `data_dir` moves does not go
+                // on writing to the old one.
+                true => None,
+                false => match crate::commands::destination::Destination::parse(typed) {
+                    Ok(destination) => {
+                        // What the send will need, asked now. `rsync` missing
+                        // is true today and still true at three in the
+                        // morning, and the message names what to install.
+                        if let Err(reason) = destination.preflight() {
+                            return Ok(super::auth::back_with_error(here, &reason));
+                        }
+                        // And the one thing preflight cannot see: a bucket
+                        // with no credentials on this node. `send` says this
+                        // in five lines with the TOML to paste; a form gets
+                        // the sentence.
+                        // A bucket needs a credential, and the credential
+                        // needs to work. Both asked here: the card below is
+                        // where one is stored, and the listing below is the
+                        // call a backup opens with — so a destination that
+                        // saves is one the next slot can actually write to.
+                        if matches!(
+                            destination,
+                            crate::commands::destination::Destination::S3 { .. }
+                        ) {
+                            match self.state.config.s3() {
+                                None => return Ok(super::auth::back_with_error(
+                                    here,
+                                    "that bucket has no credentials on this node — the card below \
+                                     stores them, in the config file rather than the database",
+                                )),
+                                Some(credentials) => {
+                                    if let Some(reason) =
+                                        bucket_refusal(Some(typed), &credentials).await
+                                    {
+                                        return Ok(super::auth::back_with_error(here, &reason));
+                                    }
+                                }
+                            }
+                        }
+                        Some(typed.to_string())
+                    }
+                    Err(reason) => return Ok(super::auth::back_with_error(here, &reason)),
+                },
+            };
+
+        let keep_days = match super::auth::field(&form, "keep_days") {
+            // The default, which is what the placeholder says.
+            "" => crate::commands::backup::KEEP_DAYS,
+            text => match text.parse::<i64>() {
+                Ok(days) if days >= crate::node::backups::MIN_KEEP_DAYS => days,
+                // Nought is not a shorter window: it is the sweep
+                // deleting the backup it has just taken, and an archive
+                // with nothing to replay onto.
+                Ok(_) => {
+                    return Ok(super::auth::back_with_error(
+                        here,
+                        "a window of no days would delete each backup as soon as it was taken",
+                    ))
+                }
+                Err(_) => {
+                    return Ok(super::auth::back_with_error(
+                        here,
+                        &format!("{text:?} is not a number of days"),
+                    ))
+                }
+            },
+        };
+
+        let plan = crate::node::backups::Plan {
+            destination,
+            cadence: crate::node::backups::Cadence::parse(super::auth::field(&form, "cadence")),
+            // Out of range is the default rather than a refusal: these
+            // arrive from two selects, so a value outside them is a
+            // hand-made request and not somebody who mistyped.
+            hour: super::auth::field(&form, "hour")
+                .parse()
+                .unwrap_or(crate::node::backups::Plan::default().hour)
+                .min(23),
+            weekday: super::auth::field(&form, "weekday")
+                .parse()
+                .unwrap_or(crate::node::backups::Plan::default().weekday)
+                .min(crate::node::backups::SUNDAY),
+            keep_days,
+        };
+        if let Err(error) = crate::node::backups::store(&self.state.database, &plan).await {
+            tracing::error!(%error, "could not store the backup plan");
+            return Ok(super::auth::back_with_error(
+                here,
+                "that could not be saved",
+            ));
+        }
+
+        // **And the databases have to be told.** `archive_mode` is a
+        // postmaster setting written into the container's arguments, so
+        // it changes at the next deployment and reconciliation will not
+        // cause one: it restores what is absent and what has the wrong
+        // ports, and this is neither. Without the redeployment below the
+        // switch reads on, the page says on, and nothing archives —
+        // which is worse than a switch that does nothing, because it is a
+        // page that lies.
+        let was = crate::node::settings::archiving(&self.state.database).await;
+        let wanted = form.contains_key("archiving");
+        if let Err(error) = crate::node::settings::set_archiving(&self.state.database, wanted).await
+        {
+            tracing::warn!(%error, "could not save whether to keep the log");
+        } else if was != wanted {
+            self.redeploy_databases().await;
+        }
+
+        Ok(super::auth::see_other(here))
+    }
+
+    /// Store the bucket's credential — in the file, never in the
+    /// database.
+    ///
+    /// Jorge asked for the mechanism: a bucket used to need an SSH
+    /// session and a text editor. What did not move is *where* it goes,
+    /// and the reasoning is on `config::BackupConfig`: a key that can
+    /// read every backup in the network must not be inside the thing
+    /// being backed up.
+    ///
+    /// **Asked of the provider before it is written**, when the
+    /// destination is a bucket. The call is a listing, which is what a
+    /// backup starts with anyway — so a credential that saves is one that
+    /// works, and a typo is refused here rather than at three in the
+    /// morning by a schedule nobody is watching.
+    #[post("/node/backups/credentials")]
+    #[raw]
+    #[middleware(SessionMiddleware)]
+    async fn set_bucket_credentials(&self, request: Request) -> RestResult<Response> {
+        let here = &NodeTab::Backup.path();
+        let Some(account) = signed_in(&self.auth) else {
+            return Ok(super::auth::see_other("/sign-in"));
+        };
+        if !account.is_admin() {
+            return Ok(super::auth::see_other("/"));
+        }
+        let form = match super::auth::read_form(request).await {
+            Ok(form) => form,
+            Err(response) => return Ok(response),
+        };
+        let Some(path) = self.state.config.source.clone() else {
+            // A node running without a config file has nowhere to put
+            // this. Said rather than written to a guessed path, which
+            // would be a secret stored where nothing reads it.
+            return Ok(super::auth::back_with_error(
+                here,
+                "this node was started without a configuration file, so there is nowhere to keep \
+                 a credential that must not go in the database",
+            ));
+        };
+
+        let stored = self.state.config.s3();
+        let key = super::auth::field(&form, "access_key_id").to_string();
+        let region = super::auth::field(&form, "region").to_string();
+        let endpoint = super::auth::field(&form, "endpoint").to_string();
+        // Empty means "keep the one you have". The field renders empty
+        // whatever is stored — a secret is not shown again — so treating
+        // empty as "clear it" would wipe the credential of anybody who
+        // came to change a region.
+        let secret = match super::auth::field(&form, "secret_access_key") {
+            "" => match stored.as_ref().map(|held| held.secret_access_key.clone()) {
+                Some(held) => held,
+                None => {
+                    return Ok(super::auth::back_with_error(
+                        here,
+                        "the secret access key is needed: there is none stored to keep",
+                    ))
+                }
+            },
+            typed => typed.to_string(),
+        };
+        if key.is_empty() {
+            return Ok(super::auth::back_with_error(
+                here,
+                "the access key id is needed",
+            ));
+        }
+        if region.is_empty() {
+            return Ok(super::auth::back_with_error(
+                here,
+                "a region is needed — providers that have no regions still document one, often \
+                 us-east-1",
+            ));
+        }
+
+        let credentials = crate::commands::s3::Credentials {
+            access_key_id: key,
+            secret_access_key: secret,
+            region,
+            endpoint: match endpoint.is_empty() {
+                true => None,
+                false => Some(endpoint),
+            },
+        };
+
+        // The bucket it is for, if one is already named. Asked before the
+        // write, so a credential that does not work cannot replace one
+        // that does.
+        let plan = crate::node::backups::plan(&self.state.database).await;
+        if let Some(reason) = bucket_refusal(plan.destination.as_deref(), &credentials).await {
+            return Ok(super::auth::back_with_error(here, &reason));
+        }
+
+        if let Err(error) = crate::config::store_s3(&path, Some(&credentials)) {
+            // The reason as the filesystem or the parser put it. Never
+            // the credential — an error message is a place a secret ends
+            // up in a log.
+            tracing::error!(%error, "could not store the bucket credential");
+            return Ok(super::auth::back_with_error(here, &error.to_string()));
+        }
+        Ok(super::auth::see_other(here))
+    }
+
+    /// Take the credential out of the file.
+    #[post("/node/backups/credentials/forget")]
+    #[raw]
+    #[middleware(SessionMiddleware)]
+    async fn forget_bucket_credentials(&self, _request: Request) -> RestResult<Response> {
+        let here = &NodeTab::Backup.path();
+        let Some(account) = signed_in(&self.auth) else {
+            return Ok(super::auth::see_other("/sign-in"));
+        };
+        if !account.is_admin() {
+            return Ok(super::auth::see_other("/"));
+        }
+        let Some(path) = self.state.config.source.clone() else {
+            return Ok(super::auth::back_with_error(
+                here,
+                "this node was started without a configuration file",
+            ));
+        };
+
+        // Refused while the backups go to a bucket. The button is
+        // disabled for the same reason, and this is the check that counts
+        // — a plan that cannot work is worse than a credential somebody
+        // wanted gone, because the failure arrives at the next slot and
+        // not now.
+        let plan = crate::node::backups::plan(&self.state.database).await;
+        if plan
+            .destination
+            .as_deref()
+            .and_then(|text| crate::commands::destination::Destination::parse(text).ok())
+            .is_some_and(|destination| {
+                matches!(
+                    destination,
+                    crate::commands::destination::Destination::S3 { .. }
+                )
+            })
+        {
+            return Ok(super::auth::back_with_error(
+                here,
+                "the backups go to a bucket — change the destination first, or this node would \
+                 keep a schedule it cannot carry out",
+            ));
+        }
+
+        if let Err(error) = crate::config::store_s3(&path, None) {
+            tracing::error!(%error, "could not remove the bucket credential");
+            return Ok(super::auth::back_with_error(here, &error.to_string()));
+        }
+        Ok(super::auth::see_other(here))
+    }
+
+    /// Take one now.
+    ///
+    /// Started and not awaited: a backup is minutes of `pg_basebackup`
+    /// and file copying, and a browser waiting on that times out
+    /// somewhere in the middle — leaving the operator with no page and a
+    /// backup still running. The page it comes back to says one is
+    /// running, and how the last one went.
+    #[post("/node/backups/now")]
+    #[raw]
+    #[middleware(SessionMiddleware)]
+    async fn back_up_now(&self, _request: Request) -> RestResult<Response> {
+        let here = &NodeTab::Backup.path();
+        let Some(account) = signed_in(&self.auth) else {
+            return Ok(super::auth::see_other("/sign-in"));
+        };
+        if !account.is_admin() {
+            return Ok(super::auth::see_other("/"));
+        }
+        // Refused rather than queued. Two of these is two copies of every
+        // database at once on a machine with one core, and a second click
+        // on a button that has not answered yet is the ordinary way to
+        // ask for that.
+        if crate::node::backups::in_progress() {
+            return Ok(super::auth::back_with_error(
+                here,
+                "a backup is already running on this node",
+            ));
+        }
+        crate::node::backups::start_in_background(
+            self.state.config.clone(),
+            self.state.database.clone(),
+        );
+        Ok(super::auth::see_other(here))
     }
 
     /// Mint a join token for a node that does not exist here yet.
@@ -3353,7 +4207,11 @@ pub(crate) mod tests {
         }
 
         let saved = save!("512 MB");
-        assert!(saved.ends_with("/node#reserves"), "{saved}");
+        // Back to the tab the form is on. It was `/node`, which is a
+        // redirect to the first tab — so saving a reserve landed on the
+        // domain page and the fragment pointed at a card that was not
+        // there.
+        assert!(saved.ends_with("/node/resources#reserves"), "{saved}");
         assert_eq!(
             crate::node::settings::memory_reserve(&console.database).await,
             Some(512 * 1024 * 1024)
@@ -3417,6 +4275,7 @@ pub(crate) mod tests {
                 ("/node/certificate", "certificate"),
                 ("/node/capabilities", "capabilities"),
                 ("/node/reserves", "reserves"),
+                ("/node/backups", "backups"),
             ] {
                 if body.contains(form) {
                     seen.push((name, tab.slug()));
@@ -3429,9 +4288,480 @@ pub(crate) mod tests {
                 ("certificate", "domain"),
                 ("capabilities", "allows"),
                 ("reserves", "resources"),
+                // The tab is `backup` and what it submits to is
+                // `backups`: a GET view and a POST can share a path, but
+                // a form whose action is the page it sits on reads as a
+                // coincidence rather than a decision.
+                ("backups", "backup"),
             ],
             "a form is missing, or on more than one tab"
         );
+    }
+
+    /// The tab Jorge asked for, and what had to move onto it.
+    ///
+    /// The write-ahead log switch was on Capabilities, as a third thing
+    /// the node either does or does not do. It belongs beside the
+    /// schedule: point-in-time recovery is how far a restore *reaches*
+    /// from a backup, and with no backup to anchor it the log is disk
+    /// nothing can use.
+    #[tokio::test]
+    async fn the_backup_tab_carries_the_plan_and_the_log_switch() {
+        let console = Console::new().await;
+        let cookie = console.signed_in().await;
+        let body = console
+            .harness
+            .get(&NodeTab::Backup.path())
+            .header("cookie", &cookie)
+            .send()
+            .await
+            .body;
+
+        assert!(body.contains(r#"action="/node/backups""#), "{body}");
+        assert!(
+            body.contains(r#"name="archiving""#),
+            "the log switch is here now: {body}"
+        );
+        assert!(
+            body.contains(r#"action="/node/backups/now""#),
+            "and the button that takes one now: {body}"
+        );
+        // The island hides what does not apply; it does not build the
+        // form. Every field is in the HTML the node produced, which is
+        // what makes this page work with scripting off.
+        assert!(body.contains(r#"data-island="fields""#), "{body}");
+        assert!(body.contains(r#"data-when="cadence=weekly""#), "{body}");
+        conditions_name_real_controls(&body);
+
+        // And it is gone from where it was. A switch on two tabs is a
+        // switch somebody saves twice, with two different answers.
+        let allows = console
+            .harness
+            .get(&NodeTab::Allows.path())
+            .header("cookie", &cookie)
+            .send()
+            .await
+            .body;
+        assert!(
+            !allows.contains(r#"name="archiving""#),
+            "the log switch is still on Capabilities: {allows}"
+        );
+    }
+
+    /// A plan survives the form and comes back selected.
+    ///
+    /// The second half is the half that has been wrong here before:
+    /// `selected` is read by *presence*, so a value rendered as
+    /// `selected=(false)` selects — which is how a selector came to name
+    /// the wrong project. Every option on this form branches.
+    #[tokio::test]
+    async fn a_backup_plan_is_stored_and_comes_back_selected() {
+        let console = Console::new().await;
+        let cookie = console.signed_in().await;
+
+        let saved = console
+            .harness
+            .post("/node/backups")
+            .header("cookie", &cookie)
+            .form(&[
+                ("destination", "/mnt/backups"),
+                ("cadence", "weekly"),
+                ("hour", "4"),
+                ("weekday", "2"),
+                ("keep_days", "30"),
+            ])
+            .send()
+            .await;
+        assert_eq!(saved.header("location"), Some("/node/backup"));
+
+        let plan = crate::node::backups::plan(&console.database).await;
+        assert_eq!(plan.destination.as_deref(), Some("/mnt/backups"));
+        assert_eq!(plan.cadence, crate::node::backups::Cadence::Weekly);
+        assert_eq!(plan.hour, 4);
+        assert_eq!(plan.weekday, 2);
+        assert_eq!(plan.keep_days, 30);
+
+        let body = console
+            .harness
+            .get(&NodeTab::Backup.path())
+            .header("cookie", &cookie)
+            .send()
+            .await
+            .body;
+        assert!(body.contains(r#"value="weekly" selected"#), "{body}");
+        assert!(body.contains(r#"value="4" selected"#), "the hour: {body}");
+        assert!(body.contains(r#"value="2" selected"#), "the day: {body}");
+        assert!(body.contains(r#"value="30""#), "the window: {body}");
+    }
+
+    /// A destination that cannot work is refused when it is typed.
+    ///
+    /// Not when the run comes round. A schedule saved against
+    /// `sftp://…` — one letter from a scheme this understands — is a job
+    /// that fails at three in the morning for a reason that was
+    /// available the moment somebody typed it.
+    #[tokio::test]
+    async fn a_destination_this_node_cannot_write_to_is_refused() {
+        let console = Console::new().await;
+        let cookie = console.signed_in().await;
+        macro_rules! save {
+            ($destination:expr) => {{
+                let response = console
+                    .harness
+                    .post("/node/backups")
+                    .header("cookie", &cookie)
+                    .form(&[
+                        ("destination", $destination),
+                        ("cadence", "daily"),
+                        ("hour", "3"),
+                        ("weekday", "6"),
+                        ("keep_days", "7"),
+                    ])
+                    .send()
+                    .await;
+                response.header("location").unwrap_or_default().to_string()
+            }};
+        }
+
+        let refused = save!("sftp://host/backups");
+        assert!(refused.contains("error="), "{refused}");
+        // A bucket with no credentials on this node: the same answer, and
+        // it names the file to put them in rather than the failure.
+        let no_credentials = save!("s3://somebodys-bucket/nodes");
+        assert!(no_credentials.contains("error="), "{no_credentials}");
+        assert!(
+            no_credentials.contains("card+below"),
+            "and says where they go — the card on this tab, not an SSH session: {no_credentials}"
+        );
+        assert_eq!(
+            crate::node::backups::plan(&console.database).await,
+            crate::node::backups::Plan::default(),
+            "a refused form must store nothing"
+        );
+
+        // And a window of no days, which would delete each backup as
+        // soon as it was taken.
+        let response = console
+            .harness
+            .post("/node/backups")
+            .header("cookie", &cookie)
+            .form(&[
+                ("destination", ""),
+                ("cadence", "daily"),
+                ("hour", "3"),
+                ("weekday", "6"),
+                ("keep_days", "0"),
+            ])
+            .send()
+            .await;
+        let refused = response.header("location").unwrap_or_default().to_string();
+        assert!(refused.contains("error="), "{refused}");
+    }
+
+    /// The switch reaches the row, and the databases are told.
+    ///
+    /// The telling is what makes it more than a checkbox: `archive_mode`
+    /// is a postmaster setting written into the container's arguments, so
+    /// without a redeployment the switch reads on, the page says on, and
+    /// nothing archives.
+    #[tokio::test]
+    async fn the_log_switch_is_saved_from_the_backup_form() {
+        let console = Console::new().await;
+        let cookie = console.signed_in().await;
+        macro_rules! save {
+            ($fields:expr) => {
+                console
+                    .harness
+                    .post("/node/backups")
+                    .header("cookie", &cookie)
+                    .form($fields)
+                    .send()
+                    .await
+            };
+        }
+
+        // A checkbox arrives only when ticked, so its absence is the
+        // answer rather than a missing field.
+        save!(&[("cadence", ""), ("keep_days", "7")]);
+        assert!(!crate::node::settings::archiving(&console.database).await);
+
+        save!(&[("cadence", ""), ("keep_days", "7"), ("archiving", "1")]);
+        assert!(crate::node::settings::archiving(&console.database).await);
+    }
+
+    /// What is on the disk, and whose it is.
+    ///
+    /// A shared backup root holds several nodes' copies — that is what
+    /// makes one bucket the answer for a network rather than for a
+    /// machine — so a row about another node has to say so rather than
+    /// read as this one's.
+    #[tokio::test]
+    async fn a_backup_on_the_disk_says_whose_it_is() {
+        let console = Console::new().await;
+        let cookie = console.signed_in().await;
+
+        let write = |node: &str, at: i64, volumes: usize| {
+            let into = console
+                .data_dir
+                .join("backups")
+                .join("nodes")
+                .join(node)
+                .join(at.to_string());
+            std::fs::create_dir_all(&into).expect("a backup directory");
+            let manifest = serde_json::json!({
+                "format": 1,
+                "taken_by": "wabot-deploy 0.0.0-test",
+                "taken_at": at,
+                "node_id": node,
+                "node_name": format!("{node}.example"),
+                "volumes": (0..volumes).map(|index| serde_json::json!({
+                    "container": format!("demo.orders-{index}"),
+                    "bytes": 1024,
+                    "how": "Consistent",
+                })).collect::<Vec<_>>(),
+                "images": [],
+            });
+            std::fs::write(
+                into.join("manifest.json"),
+                serde_json::to_vec(&manifest).expect("a manifest"),
+            )
+            .expect("write it");
+        };
+
+        let me = crate::network::me(&console.database)
+            .await
+            .expect("read")
+            .expect("this node");
+        write(&me.id, 1_700_000_000_000, 2);
+        write("some-other-node", 1_600_000_000_000, 1);
+
+        let body = console
+            .harness
+            .get(&NodeTab::Backup.path())
+            .header("cookie", &cookie)
+            .send()
+            .await
+            .body;
+        assert!(body.contains("2 volume(s)"), "{body}");
+        assert!(body.contains("this node"), "{body}");
+        assert!(
+            body.contains("some-other-node.example"),
+            "the other node's row names it: {body}"
+        );
+    }
+
+    /// A bucket is configured from the console, and the secret is not in
+    /// the database.
+    ///
+    /// Jorge asked for the mechanism — configuring one was an SSH session
+    /// and a text editor — and the answer is *which file*, not who writes
+    /// it: a key that can read every backup in the network must not be
+    /// inside the thing being backed up.
+    #[tokio::test]
+    async fn a_bucket_credential_is_stored_in_the_file_and_not_the_database() {
+        let console = Console::new().await;
+        let cookie = console.signed_in().await;
+        let path = console.data_dir.join("config.toml");
+
+        let saved = console
+            .harness
+            .post("/node/backups/credentials")
+            .header("cookie", &cookie)
+            .form(&[
+                ("access_key_id", "AKIAEXAMPLE"),
+                ("secret_access_key", "s3cr3t-from-the-provider"),
+                ("region", "us-east-1"),
+                ("endpoint", "https://s3.us-west-004.backblazeb2.com"),
+            ])
+            .send()
+            .await;
+        assert_eq!(saved.header("location"), Some("/node/backup"));
+
+        let file = std::fs::read_to_string(&path).expect("the config file");
+        assert!(file.contains("AKIAEXAMPLE"), "{file}");
+        assert!(file.contains("s3cr3t-from-the-provider"), "{file}");
+
+        // And nowhere near the database. Read as bytes because the
+        // question is "is that string anywhere in this file", not "is
+        // there a row" — a secret that leaked into any column at all
+        // would travel in every backup.
+        let db = std::fs::read(console.data_dir.join("db").join("node.db")).unwrap_or_default();
+        assert!(
+            !String::from_utf8_lossy(&db).contains("s3cr3t-from-the-provider"),
+            "the secret must not be in the node's own database"
+        );
+
+        // The page shows that there is one, and never what it is.
+        let body = console
+            .harness
+            .get(&NodeTab::Backup.path())
+            .header("cookie", &cookie)
+            .send()
+            .await
+            .body;
+        assert!(
+            body.contains("AKIAEXAMPLE"),
+            "the key id is not a secret: {body}"
+        );
+        assert!(
+            !body.contains("s3cr3t-from-the-provider"),
+            "the secret is never rendered back"
+        );
+        assert!(
+            body.contains(r#"action="/node/backups/credentials/forget""#),
+            "and it can be removed: {body}"
+        );
+    }
+
+    /// Changing the region does not mean retyping the secret.
+    ///
+    /// The field renders empty whatever is stored — it is never shown
+    /// again — so empty on save has to mean "keep it". Reading it as
+    /// "clear it" would wipe the credential of everybody who came to fix
+    /// a region, and they would find out at the next backup.
+    #[tokio::test]
+    async fn an_empty_secret_keeps_the_one_that_is_stored() {
+        let console = Console::new().await;
+        let cookie = console.signed_in().await;
+        macro_rules! save {
+            ($secret:expr, $region:expr) => {
+                console
+                    .harness
+                    .post("/node/backups/credentials")
+                    .header("cookie", &cookie)
+                    .form(&[
+                        ("access_key_id", "AKIAEXAMPLE"),
+                        ("secret_access_key", $secret),
+                        ("region", $region),
+                        ("endpoint", ""),
+                    ])
+                    .send()
+                    .await
+            };
+        }
+
+        save!("kept-across-the-edit", "us-east-1");
+        let moved = save!("", "eu-central-1");
+        assert_eq!(moved.header("location"), Some("/node/backup"));
+
+        let stored = console.config.s3().expect("still a credential");
+        assert_eq!(stored.secret_access_key, "kept-across-the-edit");
+        assert_eq!(stored.region, "eu-central-1");
+
+        // With nothing stored there is nothing to keep, and the refusal
+        // says so rather than writing a credential with no secret in it.
+        let bare = Console::new().await;
+        let bare_cookie = bare.signed_in().await;
+        let refused = bare
+            .harness
+            .post("/node/backups/credentials")
+            .header("cookie", &bare_cookie)
+            .form(&[
+                ("access_key_id", "AKIAEXAMPLE"),
+                ("secret_access_key", ""),
+                ("region", "us-east-1"),
+                ("endpoint", ""),
+            ])
+            .send()
+            .await;
+        assert!(
+            refused
+                .header("location")
+                .unwrap_or_default()
+                .contains("error="),
+            "{:?}",
+            refused.header("location")
+        );
+    }
+
+    /// Forgetting the credential while the backups go to a bucket is
+    /// refused.
+    ///
+    /// The button is disabled too, but that is a courtesy — the check
+    /// that counts is here. A plan that cannot be carried out fails at
+    /// the next slot, which is hours after the click that caused it.
+    #[tokio::test]
+    async fn a_credential_in_use_is_not_forgotten_by_accident() {
+        let console = Console::new().await;
+        let cookie = console.signed_in().await;
+        console
+            .harness
+            .post("/node/backups/credentials")
+            .header("cookie", &cookie)
+            .form(&[
+                ("access_key_id", "AKIAEXAMPLE"),
+                ("secret_access_key", "a-secret"),
+                ("region", "us-east-1"),
+                ("endpoint", ""),
+            ])
+            .send()
+            .await;
+        // The destination is written directly: saving it through the form
+        // would ask the bucket, and there is no bucket in a test.
+        crate::node::backups::store(
+            &console.database,
+            &crate::node::backups::Plan {
+                destination: Some("s3://somebodys-bucket/nodes".into()),
+                ..crate::node::backups::Plan::default()
+            },
+        )
+        .await
+        .expect("store the plan");
+
+        let refused = console
+            .harness
+            .post("/node/backups/credentials/forget")
+            .header("cookie", &cookie)
+            .send()
+            .await;
+        assert!(
+            refused
+                .header("location")
+                .unwrap_or_default()
+                .contains("error="),
+            "{:?}",
+            refused.header("location")
+        );
+        assert!(console.config.s3().is_some(), "still stored");
+
+        // Pointed somewhere else, it goes.
+        crate::node::backups::store(&console.database, &crate::node::backups::Plan::default())
+            .await
+            .expect("store the plan");
+        console
+            .harness
+            .post("/node/backups/credentials/forget")
+            .header("cookie", &cookie)
+            .send()
+            .await;
+        assert!(console.config.s3().is_none(), "and it is gone");
+    }
+
+    /// A failure is a value somebody can act on.
+    ///
+    /// A destination that has been refusing for a week is invisible in a
+    /// journal nobody reads, so the reason is on the row — and from there
+    /// on the page and in the attention card.
+    #[tokio::test]
+    async fn the_last_failure_is_on_the_page() {
+        let console = Console::new().await;
+        let cookie = console.signed_in().await;
+        crate::node::backups::record(
+            &console.database,
+            crate::platform::now_ms(),
+            &Err("ssh: connect to host backups.example port 22: no route to host".into()),
+        )
+        .await
+        .expect("record");
+
+        let body = console
+            .harness
+            .get(&NodeTab::Backup.path())
+            .header("cookie", &cookie)
+            .send()
+            .await
+            .body;
+        assert!(body.contains("no route to host"), "{body}");
     }
 
     /// Settings adjusts; it does not report.

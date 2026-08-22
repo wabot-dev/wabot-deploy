@@ -138,6 +138,30 @@ impl Destination {
         !matches!(self, Self::Local(_))
     }
 
+    /// One directory inside this one.
+    ///
+    /// So a caller that has "the backup" can say "this database's volume
+    /// in it" without knowing whether that is a path, a key prefix or a
+    /// directory on another machine. `display()` round-trips the result,
+    /// which is what lets it be stored on a row and parsed back.
+    pub fn child(&self, relative: &str) -> Self {
+        let relative = relative.trim_matches('/');
+        match self {
+            Self::Local(path) => Self::Local(path.join(relative)),
+            Self::Ssh { host, path } => Self::Ssh {
+                host: host.clone(),
+                path: format!("{}/{relative}", path.trim_end_matches('/')),
+            },
+            Self::S3 { bucket, prefix } => Self::S3 {
+                bucket: bucket.clone(),
+                prefix: match prefix.is_empty() {
+                    true => relative.to_string(),
+                    false => format!("{}/{relative}", prefix.trim_end_matches('/')),
+                },
+            },
+        }
+    }
+
     /// Everything that can be checked before a byte is written.
     ///
     /// **Asked first, for the same reason the parse is.** A missing
@@ -189,7 +213,10 @@ pub async fn send(
             // Named as a thing to write rather than a thing that is
             // missing, because "no credentials" says what is wrong and
             // not what to do about it.
-            let credentials = config.backup.s3.as_ref().ok_or_else(|| {
+            // Read from the file now, not from the `Config` this process
+            // started with — see `Config::s3`. A credential saved from
+            // the console applies to this backup.
+            let credentials = config.s3().ok_or_else(|| {
                 format!(
                     "no credentials for s3://{bucket}. Add them to {}:\n\n  \
                      [backup.s3]\n  \
@@ -200,7 +227,7 @@ pub async fn send(
                     crate::config::DEFAULT_CONFIG_PATH
                 )
             })?;
-            send_to_s3(root, credentials, bucket, prefix).await
+            send_to_s3(root, &credentials, bucket, prefix).await
         }
     }
 }
@@ -381,6 +408,205 @@ pub async fn fetch(
     Ok(path.clone())
 }
 
+/// Copy one remote directory here, whatever it holds.
+///
+/// The narrow half of [`fetch`]: no manifest, no blobs, no assumptions
+/// about the shape. `restore_one` uses it to bring **one database's**
+/// volume down out of a backup — the alternative was downloading the
+/// whole node's copy to unpack a directory out of it, which for a node
+/// with three databases is three times the bytes and the wait.
+///
+/// Convergent, like the install steps: a directory that already holds
+/// what was asked for is not fetched again. A deployment that failed
+/// after the download would otherwise pull a hundred gigabytes a second
+/// time to find out it still does not fit.
+pub async fn fetch_dir(
+    from: &Destination,
+    into: &Path,
+    config: &crate::config::Config,
+) -> Result<PathBuf, String> {
+    if let Destination::Local(path) = from {
+        return Ok(path.clone());
+    }
+    from.preflight()?;
+    std::fs::create_dir_all(into).map_err(|error| format!("{}: {error}", into.display()))?;
+
+    match from {
+        Destination::Ssh { host, path } => {
+            run(
+                "rsync",
+                &[
+                    "-a",
+                    &format!("{host}:{path}/"),
+                    &format!("{}/", into.display()),
+                ],
+            )?;
+        }
+        Destination::S3 { bucket, prefix } => {
+            let credentials = s3_credentials(config, bucket)?;
+            let keys = crate::commands::s3::list(&credentials, bucket, &format!("{prefix}/"))
+                .await
+                .map_err(|error| error.to_string())?;
+            if keys.is_empty() {
+                return Err(format!("{} holds nothing", from.display()));
+            }
+            for key in keys {
+                let Some(relative) = under(prefix, &key) else {
+                    continue;
+                };
+                let landing = into.join(&relative);
+                if landing.exists() {
+                    continue;
+                }
+                let bytes = crate::commands::s3::get(&credentials, bucket, &key)
+                    .await
+                    .map_err(|error| error.to_string())?;
+                if let Some(parent) = landing.parent() {
+                    std::fs::create_dir_all(parent)
+                        .map_err(|error| format!("{}: {error}", parent.display()))?;
+                }
+                std::fs::write(&landing, bytes)
+                    .map_err(|error| format!("{}: {error}", landing.display()))?;
+            }
+        }
+        Destination::Local(_) => unreachable!("handled above"),
+    }
+    Ok(into.to_path_buf())
+}
+
+/// Every backup at a destination, newest first, each named so that
+/// [`fetch`] and [`fetch_dir`] can reach it.
+///
+/// **The manifests only.** They are a few hundred bytes each, so asking a
+/// bucket "what have you got" is a listing and a handful of small reads —
+/// which is what makes it something a restore can do before deciding
+/// anything, rather than a download it commits to first.
+pub async fn index(
+    at: &Destination,
+    config: &crate::config::Config,
+) -> Result<Vec<(Destination, crate::commands::backup::Manifest)>, String> {
+    let mut found: Vec<(Destination, crate::commands::backup::Manifest)> = match at {
+        Destination::Local(root) => crate::commands::backup::taken_in(root)
+            .into_iter()
+            .map(|(path, manifest)| (Destination::Local(path), manifest))
+            .collect(),
+        Destination::S3 { bucket, prefix } => {
+            let credentials = s3_credentials(config, bucket)?;
+            let root = match prefix.is_empty() {
+                true => "nodes/".to_string(),
+                false => format!("{prefix}/nodes/"),
+            };
+            let keys = crate::commands::s3::list(&credentials, bucket, &root)
+                .await
+                .map_err(|error| error.to_string())?;
+            let mut found = Vec::new();
+            for key in keys.iter().filter(|key| is_manifest(&root, key)) {
+                let bytes = crate::commands::s3::get(&credentials, bucket, key)
+                    .await
+                    .map_err(|error| error.to_string())?;
+                // A manifest this version cannot read is skipped rather
+                // than fatal: one unreadable backup in a bucket must not
+                // hide the nine beside it that are fine.
+                if let Ok(manifest) = serde_json::from_slice(&bytes) {
+                    found.push((
+                        Destination::S3 {
+                            bucket: bucket.clone(),
+                            prefix: key
+                                .trim_end_matches("manifest.json")
+                                .trim_end_matches('/')
+                                .to_string(),
+                        },
+                        manifest,
+                    ));
+                }
+            }
+            found
+        }
+        Destination::Ssh { host, path } => from_ssh(host, path)?
+            .into_iter()
+            .filter_map(|(directory, text)| {
+                Some((
+                    Destination::Ssh {
+                        host: host.clone(),
+                        path: directory,
+                    },
+                    serde_json::from_str(&text).ok()?,
+                ))
+            })
+            .collect(),
+    };
+    found.sort_by_key(|(_, manifest)| -manifest.taken_at);
+    Ok(found)
+}
+
+/// `<root>nodes/<node>/<moment>/manifest.json`, and nothing deeper.
+///
+/// A key check rather than a suffix one: `volumes/x/manifest.json` does
+/// not exist today, and a backup format that grew one would otherwise
+/// make every volume look like a backup.
+fn is_manifest(root: &str, key: &str) -> bool {
+    let Some(rest) = key.strip_prefix(root) else {
+        return false;
+    };
+    let parts: Vec<&str> = rest.split('/').collect();
+    matches!(parts.as_slice(), [_node, _moment, "manifest.json"])
+}
+
+/// The manifests on the far side of an SSH destination.
+///
+/// Two calls and not one per backup: `find` says where they are, and a
+/// second command prints them with a marker between, because a week of
+/// dailies is seven round trips of a quarter of a second each and this
+/// runs while somebody waits on a form.
+fn from_ssh(host: &str, path: &str) -> Result<Vec<(String, String)>, String> {
+    let root = path.trim_end_matches('/');
+    let listing = run(
+        "ssh",
+        &[
+            host,
+            &format!(
+                "find {} -mindepth 3 -maxdepth 3 -name manifest.json 2>/dev/null || true",
+                quote(&format!("{root}/nodes"))
+            ),
+        ],
+    )?;
+    let manifests: Vec<String> = listing
+        .lines()
+        .map(str::trim)
+        .filter(|line| line.ends_with("manifest.json"))
+        .map(str::to_string)
+        .collect();
+    if manifests.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    // The marker is what makes one stream parseable. `\x1e` is the ASCII
+    // record separator, which cannot appear in JSON text — a `---` line
+    // could, inside a string.
+    let script = manifests
+        .iter()
+        .map(|found| {
+            let quoted = quote(found);
+            format!("printf '\\036%s\\n' {quoted}; cat {quoted}")
+        })
+        .collect::<Vec<_>>()
+        .join("; ");
+    let printed = run("ssh", &[host, &script])?;
+
+    let mut read = Vec::new();
+    for record in printed.split('\u{1e}').skip(1) {
+        let Some((named, text)) = record.split_once('\n') else {
+            continue;
+        };
+        let directory = named
+            .trim()
+            .trim_end_matches("manifest.json")
+            .trim_end_matches('/');
+        read.push((directory.to_string(), text.to_string()));
+    }
+    Ok(read)
+}
+
 async fn fetch_remote(
     from: &Destination,
     staging: &Path,
@@ -422,19 +648,26 @@ async fn fetch_remote(
         }
         Destination::S3 { bucket, prefix } => {
             let credentials = s3_credentials(config, bucket)?;
-            let keys = crate::commands::s3::list(credentials, bucket, &format!("{prefix}/"))
+            let keys = crate::commands::s3::list(&credentials, bucket, &format!("{prefix}/"))
                 .await
                 .map_err(|error| error.to_string())?;
             if keys.is_empty() {
                 return Err(format!("{} holds nothing", from.display()));
             }
             for key in keys {
-                let name = key.rsplit('/').next().unwrap_or(&key).to_string();
-                let bytes = crate::commands::s3::get(credentials, bucket, &key)
+                let Some(relative) = under(prefix, &key) else {
+                    continue;
+                };
+                let bytes = crate::commands::s3::get(&credentials, bucket, &key)
                     .await
                     .map_err(|error| error.to_string())?;
-                std::fs::write(here.join(&name), bytes)
-                    .map_err(|error| format!("{name}: {error}"))?;
+                let landing = here.join(&relative);
+                if let Some(parent) = landing.parent() {
+                    std::fs::create_dir_all(parent)
+                        .map_err(|error| format!("{}: {error}", parent.display()))?;
+                }
+                std::fs::write(&landing, bytes)
+                    .map_err(|error| format!("{}: {error}", landing.display()))?;
             }
         }
         Destination::Local(_) => unreachable!("handled by the caller"),
@@ -442,6 +675,42 @@ async fn fetch_remote(
 
     fetch_blobs(from, staging, &here, config).await?;
     Ok(here)
+}
+
+/// Where a key from the bucket lands under the staging directory.
+///
+/// **The key's path below the prefix, not its last component.** This took
+/// the basename, so every `volumes/<container>/base.tar.gz` in a backup
+/// landed as one `base.tar.gz` at the top — each overwriting the last —
+/// and the restore then looked for a `volumes/` directory that did not
+/// exist. A node fetched from a bucket came back with its database, its
+/// manifest and **none of its data**, reporting success. Nothing failed
+/// anywhere: the flat files are the ones a node restore reads first.
+///
+/// `None` for a key that is not under the prefix, and for anything that
+/// would climb out of the staging directory. A backup is a thing this
+/// node downloads from somewhere else; a `..` in a key is the shape that
+/// turns a download into a write anywhere on the disk.
+fn under(prefix: &str, key: &str) -> Option<PathBuf> {
+    let prefix = prefix.trim_matches('/');
+    let relative = match prefix.is_empty() {
+        true => key.trim_start_matches('/'),
+        false => key
+            .trim_start_matches('/')
+            .strip_prefix(prefix)?
+            .trim_start_matches('/'),
+    };
+    if relative.is_empty() {
+        return None;
+    }
+    let mut path = PathBuf::new();
+    for part in relative.split('/') {
+        if part.is_empty() || part == "." || part == ".." {
+            return None;
+        }
+        path.push(part);
+    }
+    Some(path)
 }
 
 /// The blobs this backup's manifest names, and only those.
@@ -507,7 +776,7 @@ async fn fetch_blobs(
                     true => format!("blobs/sha256/{hex}"),
                     false => format!("{root}/blobs/sha256/{hex}"),
                 };
-                let bytes = crate::commands::s3::get(credentials, bucket, &key)
+                let bytes = crate::commands::s3::get(&credentials, bucket, &key)
                     .await
                     .map_err(|error| error.to_string())?;
                 std::fs::write(&local, bytes).map_err(|error| format!("{hex}: {error}"))?;
@@ -530,14 +799,24 @@ fn remote_root(path: &str) -> String {
     parts.join("/")
 }
 
-fn s3_credentials<'a>(
-    config: &'a crate::config::Config,
+/// The bucket credential, or a sentence saying where one goes.
+///
+/// Owned rather than borrowed, because it is read from the file at the
+/// moment of use — see `Config::s3`, and the console's Backup tab, which
+/// is the other way to put one there.
+fn s3_credentials(
+    config: &crate::config::Config,
     bucket: &str,
-) -> Result<&'a crate::commands::s3::Credentials, String> {
-    config.backup.s3.as_ref().ok_or_else(|| {
+) -> Result<crate::commands::s3::Credentials, String> {
+    config.s3().ok_or_else(|| {
         format!(
-            "no credentials for s3://{bucket}. Add a [backup.s3] section to {}",
-            crate::config::DEFAULT_CONFIG_PATH
+            "no credentials for s3://{bucket}. The node's Backup tab stores them, or add a \
+             [backup.s3] section to {}",
+            config
+                .source
+                .as_deref()
+                .unwrap_or(std::path::Path::new(crate::config::DEFAULT_CONFIG_PATH))
+                .display()
         )
     })
 }
@@ -590,6 +869,108 @@ fn quote(path: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    /// One directory inside a destination, whatever kind it is.
+    ///
+    /// What this builds ends up **on a row** — `database.restored_from` —
+    /// and is parsed back by the deployment that fetches it, so the
+    /// round trip is the property that matters.
+    #[test]
+    fn a_child_of_a_destination_round_trips() {
+        use super::Destination;
+
+        for (parent, expected) in [
+            (
+                Destination::S3 {
+                    bucket: "backups".into(),
+                    prefix: "wabot/nodes/nd-abc/1787366860164".into(),
+                },
+                "s3://backups/wabot/nodes/nd-abc/1787366860164/volumes/shop.orders",
+            ),
+            (
+                Destination::Ssh {
+                    host: "root@keeper".into(),
+                    path: "/srv/backups/nodes/nd-abc/1787366860164".into(),
+                },
+                "ssh://root@keeper/srv/backups/nodes/nd-abc/1787366860164/volumes/shop.orders",
+            ),
+            (
+                Destination::Local("/mnt/disk2/nodes/nd-abc/1787366860164".into()),
+                "/mnt/disk2/nodes/nd-abc/1787366860164/volumes/shop.orders",
+            ),
+        ] {
+            let child = parent.child("volumes/shop.orders");
+            assert_eq!(child.display(), expected);
+            assert_eq!(
+                Destination::parse(&child.display()),
+                Ok(child),
+                "and it reads back as itself"
+            );
+        }
+    }
+
+    /// A manifest is `nodes/<node>/<moment>/manifest.json`, and nothing
+    /// else in the bucket is one.
+    ///
+    /// The listing of a shared root is every key under it, including
+    /// every volume of every node. Matching on the suffix alone would
+    /// make a backup out of anything that happened to end in that name.
+    #[test]
+    fn only_a_backups_own_manifest_counts_as_one() {
+        use super::is_manifest;
+
+        let root = "wabot/nodes/";
+        assert!(is_manifest(
+            root,
+            "wabot/nodes/nd-abc/1787366860164/manifest.json"
+        ));
+        assert!(!is_manifest(
+            root,
+            "wabot/nodes/nd-abc/1787366860164/volumes/shop.orders/manifest.json"
+        ));
+        assert!(!is_manifest(
+            root,
+            "wabot/nodes/nd-abc/1787366860164/node.db"
+        ));
+        assert!(!is_manifest(root, "somebody/else/manifest.json"));
+    }
+
+    /// A fetched backup keeps its shape, or it holds no data.
+    ///
+    /// This took the last component of each key, so every volume's
+    /// `base.tar.gz` landed as one file at the top of the staging
+    /// directory and the restore found no `volumes/` at all — a node
+    /// fetched from a bucket came back with its database and **none of
+    /// its data**, reporting success the whole way. `rsync -a` over SSH
+    /// had always kept the tree; only the bucket path was flat.
+    #[test]
+    fn a_key_lands_where_it_was_in_the_bucket() {
+        use super::under;
+
+        let prefix = "wabot/nodes/nd-abc/1787366860164";
+        assert_eq!(
+            under(prefix, &format!("{prefix}/volumes/shop.orders/base.tar.gz")),
+            Some(std::path::PathBuf::from("volumes/shop.orders/base.tar.gz"))
+        );
+        assert_eq!(
+            under(prefix, &format!("{prefix}/node.db")),
+            Some(std::path::PathBuf::from("node.db"))
+        );
+
+        // Two databases in one backup are two directories, not one file
+        // written twice.
+        let first = under(prefix, &format!("{prefix}/volumes/a.db/base.tar.gz"));
+        let second = under(prefix, &format!("{prefix}/volumes/b.db/base.tar.gz"));
+        assert_ne!(first, second);
+
+        // The prefix itself is not a file, and neither is anything
+        // outside it.
+        assert_eq!(under(prefix, prefix), None);
+        assert_eq!(under(prefix, "somebody/elses/key"), None);
+        // And a key that would climb out of the staging directory is not
+        // a file this node writes. A backup comes from somewhere else.
+        assert_eq!(under(prefix, &format!("{prefix}/../../etc/passwd")), None);
+    }
+
     use super::*;
 
     #[test]

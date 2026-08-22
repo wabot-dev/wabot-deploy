@@ -2313,12 +2313,19 @@ impl Deployer {
     /// Returns what it copied, or why it could not. `Ok` means the tool
     /// exited zero and the directory holds what it wrote — nothing here
     /// verifies the archive itself, and a restore is what does.
+    /// `Ok(None)` when no copy of it is here.
+    ///
+    /// Not an error: a database running on another node is **that
+    /// node's to back up**, and a caller that read "could not copy it"
+    /// would report every service placed elsewhere as a backup that
+    /// failed. The distinction is what lets `backup` say "this holds no
+    /// database" only when it is true.
     pub async fn back_up_engine(
         &self,
         project: &Project,
         service: &Service,
         into: &std::path::Path,
-    ) -> Result<u64, String> {
+    ) -> Result<Option<u64>, String> {
         let row = databases::of_service(&self.database, &service.id)
             .await
             .map_err(|error| error.to_string())?
@@ -2330,12 +2337,14 @@ impl Deployer {
         // A standby first, the primary second. Both must be here and
         // running: a copy elsewhere is that node's to back up, and one
         // with no address is not answering.
-        let from = placements
+        let Some(from) = placements
             .iter()
             .filter(|replica| replica.is_here() && !replica.evicted())
             .filter(|replica| replica.address.is_some())
             .min_by_key(|replica| (replica.slot == row.primary_slot, replica.slot))
-            .ok_or_else(|| "no copy of it is running here".to_string())?;
+        else {
+            return Ok(None);
+        };
         let address = from.address.clone().unwrap_or_default();
 
         std::fs::create_dir_all(into).map_err(|error| error.to_string())?;
@@ -2382,7 +2391,7 @@ impl Deployer {
         logs::discard(data_dir, &id);
 
         match outcome {
-            Ok(0) => Ok(crate::node::disk::used(into).bytes),
+            Ok(0) => Ok(Some(crate::node::disk::used(into).bytes)),
             Ok(code) => Err(format!("pg_basebackup exited {code}: {said}")),
             Err(error) => Err(error.to_string()),
         }
@@ -2821,37 +2830,7 @@ impl Deployer {
             }
         };
 
-        // Everywhere a standby of this database may dial in from.
-        //
-        // The remote ones are their nodes' overlay addresses. A copy
-        // *here* is the one that caught this out: its data directory is
-        // seeded by a `pg_basebackup` running in the host's network
-        // namespace, so the primary sees the **bridge gateway** — and
-        // the subnet line above does not help, because `all` in the
-        // database column does not match a replication connection. On a
-        // node that was six identical refusals in a row, each naming
-        // `10.42.2.1`.
-        let standbys = || {
-            placements
-                .iter()
-                .filter(|other| row.role_of(other.slot) == postgres::Role::Standby)
-                .filter(|other| !other.evicted())
-        };
-        let mut replication_from: Vec<String> = standbys()
-            .filter_map(|other| other.node_id.as_deref())
-            .filter_map(|node_id| {
-                nodes
-                    .iter()
-                    .find(|node| node.id == node_id)
-                    .and_then(|node| node.overlay_ip.clone())
-                    .map(|address| format!("{address}/32"))
-            })
-            .collect();
-        if standbys().any(|other| other.is_here()) {
-            replication_from.push(net.subnet());
-        }
-        replication_from.sort();
-        replication_from.dedup();
+        let replication_from = replication_sources(&row, &placements, &nodes, net);
 
         let published = ports::of_service(&self.database, &service.id)
             .await?
@@ -2884,11 +2863,48 @@ impl Deployer {
         // this quietly, which is what the number is for.
         let restoring = match (&row.restored_from, role) {
             (Some(from), postgres::Role::Restoring) => {
-                let base = std::path::PathBuf::from(from);
-                let container = base
-                    .file_name()
-                    .map(|name| name.to_string_lossy().to_string())
-                    .unwrap_or_default();
+                // The **original's** container id, off the end of the
+                // string and not off a fetched directory: what it keys is
+                // the archive on this node, which is the original's and
+                // is where the replay reads from.
+                let container = from
+                    .trim_end_matches('/')
+                    .rsplit('/')
+                    .next()
+                    .unwrap_or_default()
+                    .to_string();
+                // A backup that is not on this machine is brought here
+                // first. This is the case a schedule creates: with a
+                // remote destination the local staging copy is removed
+                // the moment the transfer succeeds, so the only copy of
+                // last Tuesday is in the bucket.
+                //
+                // Here rather than in `restore_one` because a download is
+                // minutes and a form is not: the rows exist immediately,
+                // the deployment does the work, and a fetch that fails
+                // lands on the replica's row like every other deployment
+                // failure. `fetch_dir` is convergent, so a retry does not
+                // pay for the bytes twice.
+                let base = match crate::commands::destination::Destination::parse(from) {
+                    Ok(remote) if remote.is_remote() => {
+                        let container_id = replica.container_id(&project.slug, &service.slug);
+                        let into = database::fetched_dir(&self.config.node.data_dir, &container_id);
+                        tracing::info!(
+                            service = %service.slug,
+                            from = %remote.display(),
+                            "fetching a backup to restore from"
+                        );
+                        crate::commands::destination::fetch_dir(&remote, &into, &self.config)
+                            .await
+                            .map_err(|reason| {
+                                DeployError::Refused(format!(
+                                    "the backup could not be fetched from {}: {reason}",
+                                    remote.display()
+                                ))
+                            })?
+                    }
+                    _ => std::path::PathBuf::from(from),
+                };
                 Some(database::Restoring {
                     archive: database::archive_dir(&self.config.node.data_dir, &container),
                     base,
@@ -3285,9 +3301,148 @@ fn usable_nameservers(contents: &str) -> Vec<String> {
         .collect()
 }
 
+/// Everywhere a replication connection to this database may come from.
+///
+/// **Two kinds, and the second is not a standby at all.**
+///
+/// * A **standby** on another node arrives as that node's overlay
+///   address: a packet forwarded from the port this node binds on its
+///   overlay is not rewritten, so what Postgres sees is the far node's
+///   address. One on *this* node streams from its own bridge address,
+///   which is why a local one needs the whole `/24`.
+/// * **This node itself**, from the bridge gateway. Work the node runs
+///   dials a container from the host's network namespace and so has no
+///   bridge address of its own — that is how a local standby is seeded,
+///   and it is also how **`backup` takes a base backup of every managed
+///   database, standby or not.**
+///
+/// That last line is the fix for a bug found on `node-1`: the gateway
+/// was admitted only when a standby happened to run here, so a database
+/// with no read replica could not be backed up at all. `wabot-deploy
+/// backup` was refused with `no pg_hba.conf entry for replication
+/// connection from host "10.42.2.1"` and produced a backup holding no
+/// database — while reporting success, because nothing compared what it
+/// held against what this node has.
+///
+/// The gateway is a `/32` rather than the subnet on purpose. It is an
+/// address no container can be given, so admitting it grants nothing to
+/// anything running on the bridge; the subnet is added only for the case
+/// that genuinely needs it.
+fn replication_sources(
+    row: &crate::platform::databases::Database,
+    placements: &[Replica],
+    nodes: &[crate::network::Node],
+    net: &ProjectNetwork,
+) -> Vec<String> {
+    let standbys = || {
+        placements
+            .iter()
+            .filter(|other| row.role_of(other.slot) == postgres::Role::Standby)
+            .filter(|other| !other.evicted())
+    };
+    let mut from: Vec<String> = standbys()
+        .filter_map(|other| other.node_id.as_deref())
+        .filter_map(|node_id| {
+            nodes
+                .iter()
+                .find(|node| node.id == node_id)
+                .and_then(|node| node.overlay_ip.clone())
+                .map(|address| format!("{address}/32"))
+        })
+        .collect();
+    from.push(format!("{}/32", net.gateway()));
+    if standbys().any(|other| other.is_here()) {
+        from.push(net.subnet());
+    }
+    from.sort();
+    from.dedup();
+    from
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A database with no read replica can still be backed up.
+    ///
+    /// The bug this guards was found on `node-1`: the bridge gateway was
+    /// admitted for replication only when a standby happened to run
+    /// here, and `backup` takes its base backup from that very address —
+    /// from the host's network namespace, for every managed database.
+    /// So `wabot-deploy backup` was refused with `no pg_hba.conf entry
+    /// for replication connection from host "10.42.2.1"`, and the backup
+    /// held no database at all.
+    #[test]
+    fn the_node_may_take_a_base_backup_of_a_database_with_no_standby() {
+        let net = ProjectNetwork::new(2).expect("a project network");
+        let row = crate::platform::databases::Database {
+            service_id: "svc-1".into(),
+            engine: crate::platform::databases::Engine::Postgres,
+            version: "17".into(),
+            admin_user: "orders".into(),
+            admin_password: "x".into(),
+            database_name: "orders".into(),
+            replication_user: "wabot_replication".into(),
+            replication_password: "y".into(),
+            primary_slot: 1,
+            primary_endpoint: None,
+            owner_domain: None,
+            restored_from: None,
+            recovery_target: None,
+        };
+        let replica = |slot: u32, node_id: Option<&str>| Replica {
+            id: format!("rp-{slot}"),
+            service_id: "svc-1".into(),
+            node_id: node_id.map(str::to_string),
+            slot,
+            address: Some(format!("10.42.2.{}", 250 + slot)),
+            overlay_port: None,
+            last_error: None,
+            evicted_at: None,
+            reserved_host: Some(u8::try_from(250 + slot).expect("a host octet")),
+            memory_bytes: None,
+            disk_bytes: None,
+            cpu_millicores: None,
+            following: None,
+            wal_held: None,
+        };
+
+        // One copy, here, and nothing following it.
+        let alone = replication_sources(&row, &[replica(1, None)], &[], &net);
+        assert_eq!(
+            alone,
+            vec!["10.42.2.1/32".to_string()],
+            "the gateway is what the node's own base backup arrives from"
+        );
+
+        // A standby on another node: its overlay address, and still the
+        // gateway.
+        let nodes = vec![crate::network::Node {
+            id: "nd-other".into(),
+            name: "other".into(),
+            kind: crate::network::Kind::Private,
+            endpoint: None,
+            public_key: None,
+            overlay_ip: Some("10.42.0.4".into()),
+            is_self: false,
+            last_seen_at: None,
+            allows: Vec::new(),
+            usage: None,
+            ca_pem: None,
+        }];
+        let remote = replication_sources(
+            &row,
+            &[replica(1, None), replica(2, Some("nd-other"))],
+            &nodes,
+            &net,
+        );
+        assert_eq!(remote, vec!["10.42.0.4/32", "10.42.2.1/32"]);
+
+        // A standby *here* streams from its own bridge address, so the
+        // whole subnet is needed — the gateway alone would refuse it.
+        let local = replication_sources(&row, &[replica(1, None), replica(2, None)], &[], &net);
+        assert_eq!(local, vec!["10.42.2.0/24", "10.42.2.1/32"]);
+    }
 
     /// A rotated log belongs to its container, and an orphan's whole
     /// history has to be reportable.

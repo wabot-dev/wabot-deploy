@@ -259,6 +259,18 @@ impl ProjectNetwork {
         )
     }
 
+    /// The bridge's own address on this project's `/24`.
+    ///
+    /// `.1`, by the convention the config below sets up — and worth a
+    /// name because it is not only the containers' default route: work
+    /// the *node* runs in the host's network namespace and dials a
+    /// container arrives from here, so it is what a container's own
+    /// access rules have to admit. `pg_hba.conf` is the case that
+    /// found it, twice.
+    pub fn gateway(&self) -> String {
+        self.host(1)
+    }
+
     fn host(&self, host: u8) -> String {
         let [a, b] = NETWORK_BASE;
         format!("{a}.{b}.{}.{host}", self.index)

@@ -500,12 +500,30 @@ pub fn write_standby_signal(data_dir: &Path, container_id: &str) -> std::io::Res
 /// the container rather than accumulating one directory per copy that
 /// ever existed.
 pub fn discard(data_dir: &Path, container_id: &str) {
-    let path = data_dir.join("config").join(container_id);
-    if let Err(error) = std::fs::remove_dir_all(&path) {
-        if error.kind() != std::io::ErrorKind::NotFound {
-            tracing::warn!(directory = %path.display(), %error, "removing generated configuration");
+    // The generated configuration, and a backup fetched from somewhere
+    // else. The second is not generated but it is not data either: it is
+    // a copy of somebody's bucket, kept only until the unpack, and the
+    // original is still in the bucket. Left behind it would be the
+    // largest directory on the disk with nothing claiming it.
+    for path in [
+        data_dir.join("config").join(container_id),
+        fetched_dir(data_dir, container_id),
+    ] {
+        if let Err(error) = std::fs::remove_dir_all(&path) {
+            if error.kind() != std::io::ErrorKind::NotFound {
+                tracing::warn!(directory = %path.display(), %error, "removing what a copy left");
+            }
         }
     }
+}
+
+/// Where a backup fetched from a destination waits to be unpacked.
+///
+/// Keyed on the container id of the copy being restored — the *new* one —
+/// like every other directory this module owns, so `ls` reads the same on
+/// both sides and `discard` can find it without being told.
+pub fn fetched_dir(data_dir: &Path, container_id: &str) -> PathBuf {
+    data_dir.join("fetched").join(container_id)
 }
 
 /// Where a primary's finished write-ahead log is kept.

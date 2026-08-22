@@ -66,6 +66,16 @@ pub struct Config {
     pub log: LogConfig,
     #[serde(default)]
     pub backup: BackupConfig,
+    /// Where this was read from, for the one thing that has to write a
+    /// value *back*: the bucket credential the console stores.
+    ///
+    /// Skipped by serde in both directions. It is not a setting — a
+    /// config file naming its own path is a fact that goes stale the
+    /// first time somebody copies it — and [`Config::load`] is the only
+    /// thing that fills it in. `None` is a config nobody read from a
+    /// file: a default, a test, an environment-only run.
+    #[serde(skip)]
+    pub source: Option<PathBuf>,
 }
 
 /// Where `backup --out s3://…` gets its credentials.
@@ -74,9 +84,20 @@ pub struct Config {
 /// credential that can read every backup in the network is precisely the
 /// thing that must not be inside the thing being backed up: restore a
 /// node from a copy that carried it, and you have restored that node's
-/// ability to reach every other node's backups. `config.toml` is
-/// root-only, is not in any backup, and is the file an operator already
-/// owns.
+/// ability to reach every other node's backups. A backup holds `node.db`,
+/// the volumes and the images; it does not hold `/etc`.
+///
+/// **The console writes this section**, so configuring a bucket is not an
+/// SSH session — see `config::store_s3` and the Backup tab. What keeps
+/// the property above is *which file* it writes, not who writes it: the
+/// console is already root on this machine, and the secret still lands
+/// somewhere no backup carries.
+///
+/// And it is read back **at the moment of use**, never from a `Config`
+/// cloned at startup — see [`Config::s3`]. Otherwise a credential saved
+/// from the console would not apply until somebody restarted the node,
+/// which is the sort of thing an operator discovers at the second failed
+/// backup.
 ///
 /// Absent is the ordinary case. A node with no section here can still
 /// back up to a path or over SSH — SSH uses the operator's own keys and
@@ -271,6 +292,7 @@ impl Config {
         };
         config.apply_env()?;
         config.validate()?;
+        config.source = Some(path.to_path_buf());
         Ok(config)
     }
 
@@ -347,15 +369,54 @@ impl Config {
         self.node.data_dir.join("certs")
     }
 
+    /// The bucket credential as the file has it **now**.
+    ///
+    /// Read from disk rather than taken from this struct, because the
+    /// console can write it while the node runs: a copy made at startup
+    /// would say "no credentials" to the backup taken a minute after
+    /// somebody saved some. One read per backup, which is nothing beside
+    /// what a backup does.
+    ///
+    /// Falls back to what was loaded when there is no file to read — a
+    /// default `Config`, a test, an environment-only run — so this is
+    /// always the same answer the rest of the code would have given.
+    pub fn s3(&self) -> Option<crate::commands::s3::Credentials> {
+        let Some(path) = &self.source else {
+            return self.backup.s3.clone();
+        };
+        // A struct of its own rather than parsing the whole `Config`:
+        // this must not fail because some *other* section of the file is
+        // newer than this binary, and `deny_unknown_fields` on `Config`
+        // would make it.
+        #[derive(Deserialize, Default)]
+        struct JustBackup {
+            #[serde(default)]
+            backup: BackupConfig,
+        }
+        match std::fs::read_to_string(path) {
+            Ok(text) => match toml::from_str::<JustBackup>(&text) {
+                Ok(read) => read.backup.s3,
+                Err(error) => {
+                    tracing::warn!(%error, path = %path.display(), "could not read the bucket credential");
+                    self.backup.s3.clone()
+                }
+            },
+            Err(_) => self.backup.s3.clone(),
+        }
+    }
+
     /// Serialize for `install` to write.
     pub fn to_toml(&self) -> String {
         let body = toml::to_string_pretty(self).expect("config is serializable");
         format!(
             "# wabot-deploy node configuration.\n\
              #\n\
-             # Written by `wabot-deploy install`; edit freely, it is never\n\
-             # rewritten. Unknown keys are refused rather than ignored, so a\n\
-             # typo fails loudly instead of leaving a default in place.\n\
+             # Written by `wabot-deploy install`; edit freely. The one thing\n\
+             # that rewrites anything here is the console's Backup tab, and\n\
+             # only the [backup.s3] section — the rest of this file, comments\n\
+             # and all, is left exactly as you leave it. Unknown keys are\n\
+             # refused rather than ignored, so a typo fails loudly instead of\n\
+             # leaving a default in place.\n\
              #\n\
              # node.domain seeds the name this node answers to. After the\n\
              # first start it lives in the database, where the console can\n\
@@ -384,6 +445,164 @@ impl Config {
         })?;
         Ok(true)
     }
+}
+
+/// Write the `[backup.s3]` section, or take it out.
+///
+/// **Text surgery, not a re-serialization of the whole file.** Round-
+/// tripping through `toml::to_string_pretty` would produce valid
+/// configuration and throw away every comment and every bit of ordering
+/// the operator put there — and the file's own header says "edit
+/// freely". So this replaces exactly the lines from `[backup.s3]` to the
+/// next section header, and leaves the rest byte for byte.
+///
+/// **Written through a temporary file and renamed.** A truncated
+/// `config.toml` is a node that will not start: `load` refuses a file it
+/// cannot parse, which is the right behaviour and the wrong moment. A
+/// rename is atomic on the same filesystem, so the file is either the old
+/// one or the new one.
+///
+/// **And 0600.** The doc on [`BackupConfig`] calls this file root-only,
+/// and now that the console puts a secret in it that had better be true
+/// rather than whatever the umask was at install.
+pub fn store_s3(
+    path: &Path,
+    credentials: Option<&crate::commands::s3::Credentials>,
+) -> ConfigResult<()> {
+    let existing = match std::fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(source) => {
+            return Err(ConfigError::Read {
+                path: path.to_path_buf(),
+                source,
+            })
+        }
+    };
+
+    let updated = replace_section(&existing, "[backup.s3]", credentials.map(section_for));
+    // Parsed before it is written. A section this built and the file
+    // could not read back is a node that does not come up after the next
+    // restart, discovered by somebody who only clicked Save.
+    toml::from_str::<toml::Table>(&updated).map_err(|source| ConfigError::Parse {
+        path: path.to_path_buf(),
+        source,
+    })?;
+
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|source| ConfigError::Write {
+            path: parent.to_path_buf(),
+            source,
+        })?;
+    }
+    let temporary = path.with_extension("toml.saving");
+    std::fs::write(&temporary, &updated).map_err(|source| ConfigError::Write {
+        path: temporary.clone(),
+        source,
+    })?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&temporary, std::fs::Permissions::from_mode(0o600));
+    }
+    std::fs::rename(&temporary, path).map_err(|source| ConfigError::Write {
+        path: path.to_path_buf(),
+        source,
+    })
+}
+
+/// The section as it goes into the file.
+///
+/// The comment goes with it: somebody reading this file at two in the
+/// morning needs to know that these lines are written by something, and
+/// where from.
+fn section_for(credentials: &crate::commands::s3::Credentials) -> String {
+    let mut section = String::from(
+        "[backup.s3]
+         # Written by the console's Backup tab. Editing it here works too —
+         # it is read at the moment of use, so no restart is needed either
+         # way. It is deliberately not in the database: a key that can read
+         # every backup in the network must not be inside the thing being
+         # backed up.
+",
+    );
+    section.push_str(&format!(
+        "access_key_id = {}
+",
+        toml_string(&credentials.access_key_id)
+    ));
+    section.push_str(&format!(
+        "secret_access_key = {}
+",
+        toml_string(&credentials.secret_access_key)
+    ));
+    section.push_str(&format!(
+        "region = {}
+",
+        toml_string(&credentials.region)
+    ));
+    if let Some(endpoint) = &credentials.endpoint {
+        section.push_str(&format!(
+            "endpoint = {}
+",
+            toml_string(endpoint)
+        ));
+    }
+    section
+}
+
+/// A TOML basic string, escaped.
+///
+/// A secret is whatever the provider generated, and some of them contain
+/// characters — `\`, `"` — that would end the literal early and produce a
+/// file that does not parse or, worse, one that parses to the wrong
+/// value.
+fn toml_string(value: &str) -> String {
+    let escaped = value.replace('\\', "\\\\").replace('"', "\\\"");
+    format!("\"{escaped}\"")
+}
+
+/// Replace one section of a TOML file, or add it, or drop it.
+///
+/// A section runs from its header to the next line that starts one. Pure,
+/// so the awkward cases — no trailing newline, the section last in the
+/// file, a header with a comment after it — are a test rather than a
+/// thing somebody discovers on a node.
+fn replace_section(text: &str, header: &str, body: Option<String>) -> String {
+    let mut out = String::new();
+    let mut lines = text.lines();
+    let mut replaced = false;
+
+    while let Some(line) = lines.next() {
+        if line.trim() != header {
+            out.push_str(line);
+            out.push('\n');
+            continue;
+        }
+        // Found it: skip to the next header, and put the new body here so
+        // the section keeps the place the operator's file gave it.
+        if let Some(body) = &body {
+            out.push_str(body);
+        }
+        replaced = true;
+        for rest in lines.by_ref() {
+            if rest.trim_start().starts_with('[') {
+                out.push_str(rest);
+                out.push('\n');
+                break;
+            }
+        }
+    }
+
+    if !replaced {
+        if let Some(body) = &body {
+            if !out.is_empty() && !out.ends_with("\n\n") {
+                out.push('\n');
+            }
+            out.push_str(body);
+        }
+    }
+    out
 }
 
 fn env_string(name: &str) -> Option<String> {
@@ -437,6 +656,130 @@ mod tests {
         let path = dir.path().join("config.toml");
         std::fs::write(&path, text).expect("write");
         (dir, path)
+    }
+
+    fn some_credentials() -> crate::commands::s3::Credentials {
+        crate::commands::s3::Credentials {
+            access_key_id: "AKIAEXAMPLE".into(),
+            secret_access_key: "a-secret/with\\slashes".into(),
+            region: "us-east-1".into(),
+            endpoint: Some("https://s3.us-west-004.backblazeb2.com".into()),
+        }
+    }
+
+    /// The console has to be able to configure a bucket, and the rest of
+    /// the operator's file has to survive it.
+    ///
+    /// Jorge asked for the mechanism: configuring backups to a bucket was
+    /// an SSH session and a text editor, which is the shape of a feature
+    /// nobody sets up. The file is still where it goes — a key that can
+    /// read every backup in the network must not be inside the thing
+    /// being backed up.
+    #[test]
+    fn a_credential_is_written_without_disturbing_the_file_around_it() {
+        let (_dir, path) = write(
+            "# my own notes\n\
+             [node]\n\
+             domain = \"node.example.com\"   # and a comment on the line\n\n\
+             [log]\n\
+             filter = \"info\"\n",
+        );
+
+        store_s3(&path, Some(&some_credentials())).expect("store");
+        let text = std::fs::read_to_string(&path).expect("read it back");
+
+        assert!(text.contains("# my own notes"), "{text}");
+        assert!(
+            text.contains("domain = \"node.example.com\"   # and a comment on the line"),
+            "the operator's line is untouched: {text}"
+        );
+        assert!(text.contains("[log]"), "{text}");
+
+        // And it is configuration this binary can read — which is the
+        // claim that matters, because a file it cannot parse is a node
+        // that does not come back from its next restart.
+        let config = Config::load(&path).expect("load what was written");
+        let stored = config.s3().expect("a credential");
+        assert_eq!(stored.access_key_id, "AKIAEXAMPLE");
+        assert_eq!(stored.secret_access_key, "a-secret/with\\slashes");
+        assert_eq!(
+            stored.endpoint.as_deref(),
+            Some("https://s3.us-west-004.backblazeb2.com")
+        );
+    }
+
+    /// Saved twice is one section, not two.
+    ///
+    /// Two `[backup.s3]` headers is a file TOML refuses outright, so an
+    /// operator who changed their mind about a region would have taken
+    /// the node down at its next restart.
+    #[test]
+    fn saving_again_replaces_the_section_it_wrote() {
+        let (_dir, path) = write("[node]\ndomain = \"a.example\"\n");
+        store_s3(&path, Some(&some_credentials())).expect("first");
+
+        let mut second = some_credentials();
+        second.region = "eu-central-1".into();
+        second.endpoint = None;
+        store_s3(&path, Some(&second)).expect("second");
+
+        let text = std::fs::read_to_string(&path).expect("read");
+        assert_eq!(text.matches("[backup.s3]").count(), 1, "{text}");
+        let config = Config::load(&path).expect("load");
+        let stored = config.s3().expect("a credential");
+        assert_eq!(stored.region, "eu-central-1");
+        assert_eq!(
+            stored.endpoint, None,
+            "an endpoint that was cleared: {text}"
+        );
+    }
+
+    /// Forgetting it takes the section out and leaves the file working.
+    #[test]
+    fn forgetting_the_credential_removes_only_that_section() {
+        let (_dir, path) = write("[node]\ndomain = \"a.example\"\n\n[log]\nfilter = \"warn\"\n");
+        store_s3(&path, Some(&some_credentials())).expect("store");
+        store_s3(&path, None).expect("forget");
+
+        let text = std::fs::read_to_string(&path).expect("read");
+        assert!(!text.contains("backup.s3"), "{text}");
+        assert!(!text.contains("AKIAEXAMPLE"), "and not the key: {text}");
+        let config = Config::load(&path).expect("load");
+        assert_eq!(config.node.domain.as_deref(), Some("a.example"));
+        assert_eq!(config.log.filter, "warn");
+        assert!(config.s3().is_none());
+    }
+
+    /// The file is read at the moment of use, not once at startup.
+    ///
+    /// This is what makes the console's Save apply to the very next
+    /// backup. A `Config` cloned when the node started would have said
+    /// "no credentials" until somebody restarted it, which is the sort of
+    /// thing an operator finds out about at the second failed backup.
+    #[test]
+    fn the_credential_comes_from_the_file_each_time() {
+        let (_dir, path) = write("[node]\ndomain = \"a.example\"\n");
+        let config = Config::load(&path).expect("load");
+        assert!(config.s3().is_none());
+
+        store_s3(&path, Some(&some_credentials())).expect("store");
+        assert_eq!(
+            config.s3().expect("read again").access_key_id,
+            "AKIAEXAMPLE",
+            "the same Config, and the file has moved on"
+        );
+    }
+
+    /// Root-only, because the console now puts a secret in it.
+    #[cfg(unix)]
+    #[test]
+    fn the_file_holding_a_secret_is_not_world_readable() {
+        use std::os::unix::fs::PermissionsExt;
+        let (_dir, path) = write("[node]\ndomain = \"a.example\"\n");
+        store_s3(&path, Some(&some_credentials())).expect("store");
+
+        let mode = std::fs::metadata(&path).expect("stat").permissions().mode();
+        assert_eq!(mode & 0o777, 0o600, "{mode:o}");
     }
 
     #[test]
