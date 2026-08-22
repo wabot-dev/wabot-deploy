@@ -107,7 +107,7 @@ cross-built for.
 installation story:
 
 ```sh
-v=0.14.0   # github.com/wabot-dev/wabot-deploy/releases
+v=0.15.0   # github.com/wabot-dev/wabot-deploy/releases
 base=https://github.com/wabot-dev/wabot-deploy/releases/download/v$v
 
 curl -fsSLO $base/wabot-deploy-$v-x86_64-linux
