@@ -189,6 +189,29 @@ impl Node {
     }
 }
 
+/// The nodes that could answer for a hostname.
+///
+/// **Two conditions, and the second is learned rather than decided
+/// here.** A node has to be able to be an edge — public, with an address
+/// the world can dial — *and* to let this one ask it: `allows` is what
+/// that machine reported about its own grants, and reading the local
+/// grant table instead answers the opposite question. This node needs no
+/// grant to instruct itself.
+///
+/// One function because the answer is asked in three places now — the
+/// form that chooses edges, the POST that saves them, and the DNS check
+/// that decides whether a name may be used at all — and three copies of
+/// a rule about consent is how one of them ends up out of date.
+pub async fn edge_candidates(database: &SqliteDatabase) -> NetworkResult<Vec<Node>> {
+    let edge = capability::Capability::Edge;
+    Ok(all(database)
+        .await?
+        .into_iter()
+        .filter(|node| node.may_be_edge())
+        .filter(|node| node.is_self || node.allows.contains(&edge))
+        .collect())
+}
+
 fn read(row: &Row<'_>) -> wabot::sqlite::rusqlite::Result<Node> {
     Ok(Node {
         id: row.get(0)?,

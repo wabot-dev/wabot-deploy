@@ -736,7 +736,7 @@ async fn host_service(
             .iter()
             .any(|port| port.container_port == container_port)
         {
-            ports::create(database, &service.id, container_port, false, None)
+            ports::create(database, &service.id, container_port, false, None, &[])
                 .await
                 .map_err(|error| error.to_string())?;
         }
@@ -904,6 +904,7 @@ async fn hold_standby(
             crate::platform::postgres::PORT,
             false,
             None,
+            &[],
         )
         .await
         .map_err(|error| error.to_string())?;

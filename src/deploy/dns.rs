@@ -5,14 +5,32 @@
 //! page that never loads, and an operator with no way to tell which of
 //! the two went wrong.
 //!
-//! ## Compared against the node's own domain, not its IP
+//! ## Compared against a node's own domain, not its IP
 //!
-//! The node cannot reliably know its public address: behind NAT it
-//! sees a private one, and asking an external service for it is a
-//! dependency on somebody else's uptime. But the node's own domain
-//! already resolves to wherever the world reaches it — that is what
-//! makes the console reachable — so "does this name resolve to the
-//! same place" is answerable with two lookups and no assumptions.
+//! A node cannot reliably know its public address: behind NAT it sees a
+//! private one, and asking an external service for it is a dependency on
+//! somebody else's uptime. But a node's own domain already resolves to
+//! wherever the world reaches it — that is what makes its console
+//! reachable — so "does this name resolve to the same place" is
+//! answerable with two lookups and no assumptions.
+//!
+//! ## And not only against *this* node
+//!
+//! **This was the bug.** The question was "does it point here", and a
+//! service can perfectly well be served by another node on the network —
+//! or by several at once. That is what `service_edge` has meant since
+//! phase 7, and the form that accepts a hostname was refusing every name
+//! pointing at any machine but this one.
+//!
+//! So the comparison is against **every node that could answer for it**:
+//! public, dialable, and — for a node that is not this one — one that
+//! `allows` this node to ask (see `network::edge_candidates`). Each is
+//! resolved by its own advertised name, because that is what a node
+//! publishes about itself; an endpoint is `{domain}:{port}`, never an
+//! address.
+//!
+//! What comes back is **which** of them the name reaches, so the caller
+//! can write the rows that make it true rather than assuming this node.
 //!
 //! ## The wildcard probe
 //!
@@ -25,46 +43,111 @@
 use std::collections::BTreeSet;
 use std::net::IpAddr;
 
+/// A node that could answer for a name, and the name that says where it
+/// is.
+///
+/// `at` is the node's *own* name — its domain, or the host part of the
+/// endpoint it advertises. Resolving that is how this module learns an
+/// address without asking any node to know its own.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Reference {
+    pub node_id: String,
+    /// For the sentence a person reads. Never a decision.
+    pub node_name: String,
+    pub at: String,
+    pub is_self: bool,
+}
+
+/// One node a name was found to reach.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Reached {
+    pub node_id: String,
+    pub node_name: String,
+    pub is_self: bool,
+}
+
 /// What a lookup said.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Resolution {
-    /// It resolves here — the same addresses as the node's own domain.
-    Here,
-    /// It resolves, but somewhere else.
+    /// It reaches these nodes — every one whose own name resolves to an
+    /// address this one does too. **The list, not a yes**: it is what the
+    /// caller writes into `service_edge`, because the nodes the name
+    /// actually points at are the ones that can answer for it.
+    Reaches(Vec<Reached>),
+    /// It resolves, and to nothing that could answer for it.
     Elsewhere {
         found: Vec<String>,
-        node: Vec<String>,
+        /// Where each node that could have answered actually is, as
+        /// `name → addresses`, so the operator can see what to point at.
+        known: Vec<String>,
     },
     /// Nothing answered for it.
     Missing,
-    /// The node's own domain does not resolve either, so there is
+    /// No node on this network has a name that resolves, so there is
     /// nothing to compare against. Distinct from `Missing`: this one is
-    /// the node's problem, not the operator's hostname.
+    /// the network's problem, not the operator's hostname.
     NoReference,
 }
 
 impl Resolution {
     pub fn ok(&self) -> bool {
-        matches!(self, Resolution::Here)
+        matches!(self, Resolution::Reaches(reached) if !reached.is_empty())
+    }
+
+    /// Whether it reaches **this** node, which is a different question
+    /// from `ok`: a certificate from a public authority is validated by
+    /// a challenge served from here, so a name that reaches only some
+    /// other machine is one this node must not order for.
+    pub fn reaches_here(&self) -> bool {
+        matches!(self, Resolution::Reaches(reached) if reached.iter().any(|one| one.is_self))
+    }
+
+    /// The nodes it reaches, for the caller that has rows to write.
+    pub fn nodes(&self) -> Vec<String> {
+        match self {
+            Resolution::Reaches(reached) => reached.iter().map(|one| one.node_id.clone()).collect(),
+            _ => Vec::new(),
+        }
     }
 
     /// What to tell somebody staring at a form.
     pub fn explain(&self, hostname: &str) -> String {
         match self {
-            Resolution::Here => format!("{hostname} resolves to this node"),
-            Resolution::Elsewhere { found, node } => format!(
-                "{hostname} resolves to {} — this node answers at {}. \
-                 Point it here and try again.",
+            Resolution::Reaches(reached) if reached.iter().any(|one| one.is_self) => {
+                match reached.len() {
+                    1 => format!("{hostname} resolves to this node"),
+                    _ => format!(
+                        "{hostname} resolves to this node and to {}",
+                        reached
+                            .iter()
+                            .filter(|one| !one.is_self)
+                            .map(|one| one.node_name.clone())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    ),
+                }
+            }
+            Resolution::Reaches(reached) => format!(
+                "{hostname} resolves to {}, which can answer for it",
+                reached
+                    .iter()
+                    .map(|one| one.node_name.clone())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+            Resolution::Elsewhere { found, known } => format!(
+                "{hostname} resolves to {} — no node that can serve it answers there. \
+                 The ones that could: {}. Point the name at one of them and try again.",
                 found.join(", "),
-                node.join(", ")
+                known.join("; ")
             ),
             Resolution::Missing => format!(
                 "{hostname} does not resolve. Add the DNS record, wait for it to \
                  propagate, and try again."
             ),
             Resolution::NoReference => {
-                "this node's own domain does not resolve, so there is nothing to check \
-                 against — set node.domain to a name that points here"
+                "no node on this network has a name that resolves, so there is nothing to \
+                 check against — give this node a domain, or one that can serve it"
                     .into()
             }
         }
@@ -72,9 +155,52 @@ impl Resolution {
 }
 
 /// Does `hostname` resolve to the same place as `node_domain`?
+///
+/// The one-node question, kept because two callers ask exactly it: the
+/// form that sets **this** node's own domain, and `acme::ensure` before
+/// it spends an order — a challenge is served from here, so "here" is
+/// the only answer that helps.
 pub async fn resolves_here(hostname: &str, node_domain: &str) -> Resolution {
-    let node = lookup(node_domain).await;
-    if node.is_empty() {
+    resolves_to(
+        hostname,
+        &[Reference {
+            node_id: String::new(),
+            node_name: "this node".into(),
+            at: node_domain.to_string(),
+            is_self: true,
+        }],
+    )
+    .await
+}
+
+/// Which of these nodes does `hostname` reach?
+///
+/// Every reference is resolved, then intersected with what the hostname
+/// resolves to. **Intersecting rather than comparing whole sets**: a name
+/// behind a pair of A records, or one that resolves to both a v4 and a v6
+/// address, still reaches a node if any address matches. The question is
+/// "does traffic arrive there", not "are these records identical" — and
+/// with several nodes behind one name, arriving at more than one is the
+/// point rather than a problem.
+pub async fn resolves_to(hostname: &str, references: &[Reference]) -> Resolution {
+    let mut known = Vec::new();
+    let mut addresses = Vec::new();
+    for reference in references {
+        let at = lookup(&reference.at).await;
+        if at.is_empty() {
+            continue;
+        }
+        known.push(format!(
+            "{} at {}",
+            reference.node_name,
+            at.iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+        addresses.push((reference, at));
+    }
+    if addresses.is_empty() {
         return Resolution::NoReference;
     }
 
@@ -83,18 +209,22 @@ pub async fn resolves_here(hostname: &str, node_domain: &str) -> Resolution {
         return Resolution::Missing;
     }
 
-    // Intersecting rather than comparing whole sets: a name behind a
-    // pair of A records, or one that resolves to both a v4 and a v6
-    // address, still reaches this node if any address matches. The
-    // question is "does traffic arrive here", not "are these records
-    // identical".
-    if found.intersection(&node).next().is_some() {
-        Resolution::Here
-    } else {
-        Resolution::Elsewhere {
+    let reached: Vec<Reached> = addresses
+        .iter()
+        .filter(|(_, at)| found.intersection(at).next().is_some())
+        .map(|(reference, _)| Reached {
+            node_id: reference.node_id.clone(),
+            node_name: reference.node_name.clone(),
+            is_self: reference.is_self,
+        })
+        .collect();
+
+    match reached.is_empty() {
+        false => Resolution::Reaches(reached),
+        true => Resolution::Elsewhere {
             found: found.iter().map(ToString::to_string).collect(),
-            node: node.iter().map(ToString::to_string).collect(),
-        }
+            known,
+        },
     }
 }
 
@@ -134,7 +264,7 @@ pub fn outbound_address() -> Option<IpAddr> {
 /// only way to see it is to ask for one.
 pub async fn wildcard_works(node_domain: &str) -> bool {
     let probe = format!("{}.{node_domain}", random_label());
-    matches!(resolves_here(&probe, node_domain).await, Resolution::Here)
+    resolves_here(&probe, node_domain).await.ok()
 }
 
 /// A label no zone would have defined on purpose.
@@ -243,10 +373,22 @@ mod tests {
     #[test]
     fn every_outcome_explains_itself() {
         let cases = [
-            Resolution::Here,
+            Resolution::Reaches(vec![Reached {
+                node_id: "nd-self".into(),
+                node_name: "this node".into(),
+                is_self: true,
+            }]),
+            // Reached, and not by this one: the sentence has to name the
+            // machine that will answer, or the operator is left wondering
+            // whether it worked.
+            Resolution::Reaches(vec![Reached {
+                node_id: "nd-other".into(),
+                node_name: "alpine".into(),
+                is_self: false,
+            }]),
             Resolution::Elsewhere {
                 found: vec!["203.0.113.9".into()],
-                node: vec!["198.51.100.4".into()],
+                known: vec!["this node at 198.51.100.4".into()],
             },
             Resolution::Missing,
             Resolution::NoReference,
@@ -256,7 +398,7 @@ mod tests {
             assert!(!message.is_empty());
             if !case.ok() {
                 assert!(
-                    message.contains("try again") || message.contains("node.domain"),
+                    message.contains("try again") || message.contains("domain"),
                     "{message} does not say what to do"
                 );
             }
@@ -267,22 +409,79 @@ mod tests {
     fn a_wrong_answer_names_both_sides() {
         let message = Resolution::Elsewhere {
             found: vec!["203.0.113.9".into()],
-            node: vec!["198.51.100.4".into()],
+            known: vec![
+                "this node at 198.51.100.4".into(),
+                "alpine at 192.0.2.7".into(),
+            ],
         }
         .explain("api.example.com");
 
         assert!(message.contains("203.0.113.9"), "where it points");
-        assert!(message.contains("198.51.100.4"), "where the node is");
+        assert!(message.contains("198.51.100.4"), "where this node is");
+        // And every other node that could have served it, because
+        // pointing the name at one of them is the way out and the
+        // operator cannot pick from a list they were not shown.
+        assert!(message.contains("alpine at 192.0.2.7"), "{message}");
+    }
+
+    /// A name on several nodes reaches several nodes.
+    ///
+    /// The bug this replaced: the answer was a yes or a no about *this*
+    /// machine, so a service exposed through another node — which is what
+    /// `service_edge` has meant since phase 7 — was refused at the form.
+    /// What comes back now is which nodes, because those are the rows
+    /// that make the name actually answerable.
+    #[tokio::test]
+    async fn a_name_can_reach_more_than_one_node() {
+        // `localhost` is the one name that resolves the same everywhere,
+        // so two references to it stand in for two nodes that share an
+        // address — which is also a real case: two machines behind one
+        // NAT.
+        let references = [
+            Reference {
+                node_id: "nd-self".into(),
+                node_name: "this node".into(),
+                at: "localhost".into(),
+                is_self: true,
+            },
+            Reference {
+                node_id: "nd-other".into(),
+                node_name: "alpine".into(),
+                at: "localhost".into(),
+                is_self: false,
+            },
+            // And one that resolves to nothing is simply not a reference:
+            // it must not turn the answer into `NoReference`, which is
+            // about having nothing to compare at all.
+            Reference {
+                node_id: "nd-gone".into(),
+                node_name: "gone".into(),
+                at: "nothing.invalid".into(),
+                is_self: false,
+            },
+        ];
+
+        let outcome = resolves_to("localhost", &references).await;
+        assert_eq!(outcome.nodes(), vec!["nd-self", "nd-other"]);
+        assert!(outcome.ok() && outcome.reaches_here());
+
+        // A name that reaches only the other node is usable — and is not
+        // a name this node may order a certificate for.
+        let elsewhere = resolves_to("localhost", &references[1..]).await;
+        assert_eq!(elsewhere.nodes(), vec!["nd-other"]);
+        assert!(elsewhere.ok(), "it can be served");
+        assert!(
+            !elsewhere.reaches_here(),
+            "and not by a challenge served from here"
+        );
     }
 
     /// localhost is the one name that resolves the same everywhere, so
     /// it is the only real lookup a test can make without a network.
     #[tokio::test]
     async fn a_name_that_resolves_where_the_node_does_is_here() {
-        assert_eq!(
-            resolves_here("localhost", "localhost").await,
-            Resolution::Here
-        );
+        let outcome = resolves_here("localhost", "localhost").await;
+        assert!(outcome.ok() && outcome.reaches_here(), "{outcome:?}");
     }
 
     #[tokio::test]

@@ -3544,7 +3544,7 @@ impl ServiceApi {
         // The hostname is only read when the box is ticked. A name left
         // in the field from a previous attempt must not quietly become
         // a route nobody asked for.
-        let hostname = if checked(&form, "https") {
+        let (hostname, edges) = if checked(&form, "https") {
             let typed = field(&form, "hostname");
             if typed.is_empty() {
                 return Ok(back_with_error(
@@ -3554,23 +3554,33 @@ impl ServiceApi {
             }
             let hostname = ports::normalize_hostname(typed);
 
-            let Some(node_domain) =
-                crate::node::settings::domain(&self.state.database, &self.state.config).await
-            else {
+            // **Every node that could answer for it, not only this one.**
+            // A service can be served from another node on the network —
+            // that is what `service_edge` has meant since phase 7 — and
+            // asking "does it point *here*" refused every such name at
+            // the door. Reported by Jorge, who could not expose a service
+            // through the node that was supposed to expose it.
+            let references = self.edge_references().await?;
+            if references.is_empty() {
                 return Ok(back_with_error(
                     &here,
-                    "this node has no domain of its own, so it cannot check whether \
-                     that name points here — set one on the node page first",
+                    "no node on this network has a domain of its own, so there is nothing to \
+                     check that name against — give this node one on its settings page, or \
+                     join a node that has one",
                 ));
-            };
+            }
 
-            let outcome = dns::resolves_here(&hostname, &node_domain).await;
+            let outcome = dns::resolves_to(&hostname, &references).await;
             if !outcome.ok() {
                 return Ok(back_with_error(&here, &outcome.explain(&hostname)));
             }
-            Some(hostname)
+            // The nodes it actually reaches, which are the only ones that
+            // can serve it. Written as the edge rows for the name — the
+            // default of "this node" would store a hostname this node
+            // does not answer for, shown as served and served by nobody.
+            (Some(hostname), outcome.nodes())
         } else {
-            None
+            (None, Vec::new())
         };
 
         match ports::create(
@@ -3579,6 +3589,7 @@ impl ServiceApi {
             container_port,
             publish,
             hostname.as_deref(),
+            &edges,
         )
         .await
         {
@@ -4427,6 +4438,39 @@ impl ServiceApi {
             .filter(|id| form.contains_key(&format!("edge-{id}")))
             .collect();
 
+        // **And the name has to point at each of them.** Ticking a node
+        // the name does not resolve to writes a row saying it answers,
+        // sends it an errand it carries out, and produces a hostname this
+        // console shows as served and nothing reaches. The same check the
+        // port form makes, in the other place a name is bound to a node —
+        // it was only ever asked in one of the two.
+        let references: Vec<dns::Reference> = self
+            .edge_references()
+            .await?
+            .into_iter()
+            .filter(|reference| chosen.contains(&reference.node_id))
+            .collect();
+        if !chosen.is_empty() && !references.is_empty() {
+            let outcome = dns::resolves_to(&hostname, &references).await;
+            let reached = outcome.nodes();
+            let missing: Vec<String> = references
+                .iter()
+                .filter(|reference| !reached.contains(&reference.node_id))
+                .map(|reference| reference.node_name.clone())
+                .collect();
+            if !missing.is_empty() {
+                return Ok(back_with_error(
+                    &here,
+                    &format!(
+                        "{hostname} does not resolve to {} — a node that the name does not \
+                         reach would answer for traffic that never arrives. Point the record \
+                         at it and try again.",
+                        missing.join(", ")
+                    ),
+                ));
+            }
+        }
+
         let dropped =
             crate::platform::edges::set(&self.state.database, &service.id, &hostname, &chosen)
                 .await?;
@@ -4847,6 +4891,41 @@ impl ServiceApi {
         .map_err(|error| error.to_string())
     }
 
+    /// Every node that could answer for a hostname, and the name that
+    /// says where each one is.
+    ///
+    /// A node's endpoint is `{domain}:{port}` — a **name**, decided that
+    /// way so a node behind NAT still advertises something true — so the
+    /// host part of it is what a lookup can compare. This node uses its
+    /// own domain, which is the same string by a different route.
+    async fn edge_references(&self) -> RestResult<Vec<dns::Reference>> {
+        let mut references = Vec::new();
+        for node in crate::network::edge_candidates(&self.state.database).await? {
+            let at = match node.is_self {
+                true => {
+                    crate::node::settings::domain(&self.state.database, &self.state.config).await
+                }
+                // The port is not part of a lookup, and an endpoint
+                // without one would be a name that never resolves.
+                false => node
+                    .endpoint
+                    .as_deref()
+                    .map(|endpoint| endpoint.rsplit_once(':').map_or(endpoint, |(host, _)| host))
+                    .map(str::to_string),
+            };
+            let Some(at) = at.filter(|at| !at.trim().is_empty()) else {
+                continue;
+            };
+            references.push(dns::Reference {
+                node_id: node.id.clone(),
+                node_name: node.name.clone(),
+                at,
+                is_self: node.is_self,
+            });
+        }
+        Ok(references)
+    }
+
     async fn locate(
         &self,
         path: &str,
@@ -5152,14 +5231,14 @@ mod tests {
 
         // One port, published *and* named: two ways in, not a choice
         // between them.
-        let http = crate::platform::ports::create(&database, &service.id, 80, true, None)
+        let http = crate::platform::ports::create(&database, &service.id, 80, true, None, &[])
             .await
             .expect("port");
         crate::platform::ports::set_hostname(&database, &http.id, Some("shop.example.com"))
             .await
             .expect("named");
         // And a second port, exposed to nobody.
-        crate::platform::ports::create(&database, &service.id, 9000, false, None)
+        crate::platform::ports::create(&database, &service.id, 9000, false, None, &[])
             .await
             .expect("port");
 
@@ -6882,6 +6961,7 @@ mod tests {
             8080,
             true,
             Some("api.example.com"),
+            &[],
         )
         .await
         .expect("port");
@@ -7457,6 +7537,101 @@ mod tests {
         );
     }
 
+    /// A name pointing at another node is accepted, and that node is the
+    /// one recorded as answering for it.
+    ///
+    /// Reported by Jorge: exposing a service through a node that is on
+    /// the network *and can be an edge* was refused, because the check
+    /// asked "does this name point **here**". A service served from
+    /// somewhere else is what `service_edge` has meant since phase 7, and
+    /// the form was the one place that had not heard.
+    ///
+    /// `localhost` stands in for the other node's address: it is the one
+    /// name that resolves the same everywhere, so it is the only real
+    /// lookup a test can make without a network.
+    #[tokio::test]
+    async fn a_hostname_pointing_at_another_edge_node_is_accepted() {
+        let console = Console::new().await;
+        let cookie = console.signed_in().await;
+        let service = service(&console, &cookie).await;
+        crate::network::save(
+            &console.database,
+            &crate::network::Node {
+                usage: None,
+                id: "nd-theedge".into(),
+                name: "edge.example".into(),
+                // Public with an endpoint, and it allows this node to ask
+                // — both halves, or it is not somewhere a name can be
+                // sent. The endpoint is a *name*, which is what makes the
+                // lookup possible at all.
+                kind: crate::network::Kind::Public,
+                endpoint: Some("localhost:443".into()),
+                public_key: Some("k".into()),
+                overlay_ip: Some("10.42.0.9".into()),
+                is_self: false,
+                last_seen_at: None,
+                allows: vec![crate::network::capability::Capability::Edge],
+                ca_pem: None,
+            },
+        )
+        .await
+        .expect("the other node");
+
+        let response = console
+            .harness
+            .post("/projects/my-api/services/web/ports")
+            .header("cookie", &cookie)
+            .form(&[
+                ("container_port", "8080"),
+                ("https", "1"),
+                ("hostname", "localhost"),
+                ("renew_with", "self_signed"),
+            ])
+            .send()
+            .await;
+        let location = response.header("location").unwrap_or_default().to_string();
+        assert!(
+            !location.contains("error="),
+            "a name on another edge node is a name this node may store: {location}"
+        );
+
+        // And the row says *that* node answers for it. The old default —
+        // always this one — would have stored a hostname shown as served
+        // and served by nobody.
+        let serving = crate::platform::edges::nodes_for(&console.database, "localhost")
+            .await
+            .expect("query");
+        assert!(
+            serving.contains(&"nd-theedge".to_string()),
+            "the node the name points at is recorded: {serving:?}"
+        );
+        let _ = service;
+
+        // A name that points nowhere is still refused, and the message
+        // names every node that could have served it — an operator
+        // cannot pick from a list they were not shown.
+        let refused = console
+            .harness
+            .post("/projects/my-api/services/web/ports")
+            .header("cookie", &cookie)
+            .form(&[
+                ("container_port", "8081"),
+                ("https", "1"),
+                ("hostname", "nothing.invalid"),
+                ("renew_with", "self_signed"),
+            ])
+            .send()
+            .await;
+        assert!(
+            refused
+                .header("location")
+                .unwrap_or_default()
+                .contains("error="),
+            "{:?}",
+            refused.header("location")
+        );
+    }
+
     /// The window said "any moment between these two" and there was
     /// nowhere to go with it.
     ///
@@ -8011,9 +8186,16 @@ mod tests {
             .await
             .expect("query")
             .expect("present");
-        let port = ports::create(&console.database, &service.id, 80, false, Some(hostname))
-            .await
-            .expect("port");
+        let port = ports::create(
+            &console.database,
+            &service.id,
+            80,
+            false,
+            Some(hostname),
+            &[],
+        )
+        .await
+        .expect("port");
         port.id
     }
 
@@ -8240,6 +8422,7 @@ mod tests {
             80,
             false,
             Some("api.example.com"),
+            &[],
         )
         .await
         .expect("port");

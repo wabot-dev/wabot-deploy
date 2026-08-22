@@ -45,6 +45,12 @@ pub async fn create(
     container_port: u16,
     publish: bool,
     hostname: Option<&str>,
+    // Which nodes answer for the hostname. **Empty is "whoever this node
+    // is"**, which is what every caller with a name of its own means — a
+    // database's name is a subdomain of this node's domain. A caller that
+    // asked DNS where the name points passes the answer, because the
+    // nodes it reaches are the only ones that can serve it.
+    served_by: &[String],
 ) -> PlatformResult<Port> {
     if container_port == 0 {
         return Err(PlatformError::Refused(
@@ -90,7 +96,7 @@ pub async fn create(
         .map_err(|error| refusal(error, container_port, &port.hostname))?;
 
     if let Some(hostname) = port.hostname.as_deref() {
-        serve_here(database, service_id, hostname).await?;
+        serve_from(database, service_id, hostname, served_by).await?;
     }
     Ok(port)
 }
@@ -112,23 +118,45 @@ pub async fn create(
 /// Skipped on a node with no address the world can dial. Nothing is
 /// wrong: it simply cannot be the one answering, and the picker on the
 /// service page is where somebody chooses who does.
-async fn serve_here(
+/// Who answers for this name, written here rather than by the caller.
+///
+/// A port made with a hostname and no edge row is a name stored, shown,
+/// and served by nobody — which is what the first version did, caught
+/// only because a routing test asserted the route. So this function
+/// exists to be impossible to forget.
+///
+/// `nodes` empty means this one, when it can be an edge at all. Anything
+/// else is a set somebody worked out — for the console, by asking DNS
+/// where the name points, because **the nodes a name reaches are the only
+/// ones that can serve it**. A row naming a node the name does not point
+/// at is an errand that node will carry out for traffic that never
+/// arrives.
+async fn serve_from(
     database: &SqliteDatabase,
     service_id: &str,
     hostname: &str,
+    nodes: &[String],
 ) -> PlatformResult<()> {
-    let Some(me) = crate::network::me(database)
-        .await
-        .ok()
-        .flatten()
-        .filter(|me| me.may_be_edge())
-    else {
-        return Ok(());
+    let mut serving = super::edges::nodes_for(database, hostname).await?;
+    let wanted: Vec<String> = match nodes.is_empty() {
+        true => crate::network::me(database)
+            .await
+            .ok()
+            .flatten()
+            .filter(|me| me.may_be_edge())
+            .map(|me| vec![me.id])
+            .unwrap_or_default(),
+        false => nodes.to_vec(),
     };
 
-    let mut serving = super::edges::nodes_for(database, hostname).await?;
-    if !serving.contains(&me.id) {
-        serving.push(me.id);
+    let mut changed = false;
+    for node in wanted {
+        if !serving.contains(&node) {
+            serving.push(node);
+            changed = true;
+        }
+    }
+    if changed {
         super::edges::set(database, service_id, hostname, &serving).await?;
     }
     Ok(())
@@ -284,7 +312,7 @@ pub async fn set_hostname(
     // node, the same default `create` writes.
     if let (Some(hostname), Some(service_id)) = (hostname, &service_id) {
         match serving.is_empty() {
-            true => serve_here(database, service_id, hostname).await?,
+            true => serve_from(database, service_id, hostname, &[]).await?,
             false => {
                 super::edges::set(database, service_id, hostname, &serving).await?;
             }
@@ -420,9 +448,16 @@ mod tests {
         )
         .await
         .expect("service");
-        let port = create(&database, &service.id, 80, false, Some("old.example.com"))
-            .await
-            .expect("port");
+        let port = create(
+            &database,
+            &service.id,
+            80,
+            false,
+            Some("old.example.com"),
+            &[],
+        )
+        .await
+        .expect("port");
 
         assert_eq!(
             super::super::edges::nodes_for(&database, "old.example.com")
@@ -478,7 +513,7 @@ mod tests {
             .await
             .expect("service");
             ports.push(
-                create(&database, &service.id, 5432, false, None)
+                create(&database, &service.id, 5432, false, None, &[])
                     .await
                     .expect("port"),
             );
@@ -542,7 +577,7 @@ mod tests {
     #[tokio::test]
     async fn a_plain_port_is_exposed_to_nobody() {
         let (database, service) = service().await;
-        let port = create(&database, &service, 8080, false, None)
+        let port = create(&database, &service, 8080, false, None, &[])
             .await
             .expect("created");
 
@@ -557,7 +592,7 @@ mod tests {
     #[tokio::test]
     async fn publishing_allocates_a_node_port() {
         let (database, service) = service().await;
-        let port = create(&database, &service, 5432, true, None)
+        let port = create(&database, &service, 5432, true, None, &[])
             .await
             .expect("created");
 
@@ -571,10 +606,10 @@ mod tests {
     #[tokio::test]
     async fn two_published_ports_never_share_a_node_port() {
         let (database, service) = service().await;
-        let first = create(&database, &service, 5432, true, None)
+        let first = create(&database, &service, 5432, true, None, &[])
             .await
             .expect("created");
-        let second = create(&database, &service, 6379, true, None)
+        let second = create(&database, &service, 6379, true, None, &[])
             .await
             .expect("created");
 
@@ -602,9 +637,16 @@ mod tests {
                 .await
                 .expect("service");
 
-        create(&database, &service.id, 80, false, Some("api.example.com"))
-            .await
-            .expect("created");
+        create(
+            &database,
+            &service.id,
+            80,
+            false,
+            Some("api.example.com"),
+            &[],
+        )
+        .await
+        .expect("created");
 
         assert_eq!(
             super::super::edges::nodes_for(&database, "api.example.com")
@@ -622,7 +664,7 @@ mod tests {
     async fn a_node_with_no_public_address_does_not_take_the_name() {
         let (database, service) = service().await;
 
-        create(&database, &service, 80, false, Some("api.example.com"))
+        create(&database, &service, 80, false, Some("api.example.com"), &[])
             .await
             .expect("created");
 
@@ -635,24 +677,31 @@ mod tests {
     #[tokio::test]
     async fn a_hostname_belongs_to_one_port_on_the_node() {
         let (database, service) = service().await;
-        create(&database, &service, 80, false, Some("api.example.com"))
+        create(&database, &service, 80, false, Some("api.example.com"), &[])
             .await
             .expect("created");
 
-        let error = create(&database, &service, 8080, false, Some("api.example.com"))
-            .await
-            .expect_err("refused");
+        let error = create(
+            &database,
+            &service,
+            8080,
+            false,
+            Some("api.example.com"),
+            &[],
+        )
+        .await
+        .expect_err("refused");
         assert!(error.to_string().contains("already used"), "{error}");
     }
 
     #[tokio::test]
     async fn a_service_cannot_declare_a_port_twice() {
         let (database, service) = service().await;
-        create(&database, &service, 80, false, None)
+        create(&database, &service, 80, false, None, &[])
             .await
             .expect("created");
 
-        let error = create(&database, &service, 80, false, None)
+        let error = create(&database, &service, 80, false, None, &[])
             .await
             .expect_err("refused");
         assert!(error.to_string().contains("already declares"), "{error}");
@@ -661,7 +710,7 @@ mod tests {
     #[tokio::test]
     async fn deleting_a_service_takes_its_ports() {
         let (database, service) = service().await;
-        create(&database, &service, 80, true, Some("a.example.com"))
+        create(&database, &service, 80, true, Some("a.example.com"), &[])
             .await
             .expect("created");
 
@@ -688,6 +737,8 @@ mod tests {
     #[tokio::test]
     async fn port_zero_is_refused() {
         let (database, service) = service().await;
-        assert!(create(&database, &service, 0, false, None).await.is_err());
+        assert!(create(&database, &service, 0, false, None, &[])
+            .await
+            .is_err());
     }
 }

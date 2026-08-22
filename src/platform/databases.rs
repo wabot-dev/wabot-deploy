@@ -182,7 +182,7 @@ pub async fn create(
     // container listens on to bind anything for it — an overlay port
     // for a standby elsewhere, or a host port if somebody publishes
     // it — and publishing is a separate decision somebody confirms.
-    super::ports::create(database, &service.id, postgres::PORT, false, None).await?;
+    super::ports::create(database, &service.id, postgres::PORT, false, None, &[]).await?;
 
     let identifier = identifier(&service.slug);
     let row = Database {
@@ -500,7 +500,7 @@ pub async fn restore_into(
         postgres::DATA_MOUNT,
     )
     .await?;
-    super::ports::create(database, &service.id, postgres::PORT, false, None).await?;
+    super::ports::create(database, &service.id, postgres::PORT, false, None, &[]).await?;
 
     let row = Database {
         service_id: service.id.clone(),

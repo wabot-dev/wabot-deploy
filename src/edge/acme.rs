@@ -696,7 +696,12 @@ pub async fn ensure(
         for name in &names {
             let resolution = crate::deploy::dns::resolves_here(name, &node_domain).await;
             match resolution {
-                crate::deploy::dns::Resolution::Here => {}
+                // Only "here" counts, whatever else the name reaches: the
+                // challenge is served from this node's own table, so an
+                // order for a name that arrives at a different machine is
+                // one of five failures an hour against an account that
+                // locks for all of them.
+                resolution if resolution.reaches_here() => {}
                 // The node's own domain does not resolve, so there is nothing
                 // to compare against. Not a reason to refuse: the authority
                 // validates the *name being asked for*, which may resolve
@@ -713,12 +718,53 @@ pub async fn ensure(
         }
     }
 
+    // **A name several nodes answer for cannot be validated from here
+    // yet.** An HTTP-01 challenge is fetched from one of the addresses
+    // the name resolves to, and the token lives in *this* node's
+    // `acme_challenge` table — so with two edges the authority has a
+    // fair chance of asking the node that does not have it. Each miss is
+    // one of five failures an hour, and the lock is per account: one name
+    // on two nodes would take every other name on this node down with
+    // it.
+    //
+    // Refused rather than attempted, and named on the page. The way out
+    // is the challenge travelling to the other edges of the name, which
+    // is written up in `docs/network.md`; until then a name on several
+    // nodes is served on the local authority's certificate, which is
+    // exactly what `refresh_local` already keeps covering it.
+    if let Some(reason) = shared_with_other_nodes(database, &names).await {
+        return Err(AcmeError::Refused(reason));
+    }
+
     obtain(database, config, &names).await?;
     // Reloaded from storage rather than pushed in: the resolver then
     // serves exactly what a restart would, so there is no state that
     // exists only in this process.
     resolver.replace(&certs::load_all(database).await?)?;
     Ok(true)
+}
+
+/// Why a public authority cannot be asked for one of these names.
+///
+/// Its own function so it can be asked of a database directly: what it
+/// protects is an account lock, and a guard that can only be exercised by
+/// ordering a real certificate is a guard nobody tests.
+async fn shared_with_other_nodes(database: &SqliteDatabase, names: &[String]) -> Option<String> {
+    for name in names {
+        let serving = crate::platform::edges::nodes_for(database, name)
+            .await
+            .unwrap_or_default();
+        if serving.len() > 1 {
+            return Some(format!(
+                "{name} is answered for by {} nodes, and a public authority validates it by \
+                 asking one of them for a token only the ordering node holds. Until the \
+                 challenge is relayed between them, choose one node for this name or keep the \
+                 node's own certificate.",
+                serving.len()
+            ));
+        }
+    }
+    None
 }
 
 /// The background loop: try until it works, then keep it renewed.
@@ -1009,6 +1055,58 @@ mod tests {
             .is_some());
     }
 
+    /// A name two nodes answer for is not asked of a public authority.
+    ///
+    /// An HTTP-01 token lives in the ordering node's own table, so with
+    /// two edges the authority has a fair chance of asking the one that
+    /// does not have it. Each miss is one of five failures an hour and the
+    /// lock is **per account**: one name on two nodes would take every
+    /// other name on this node with it. Guarded until the challenge
+    /// travels — see `docs/network.md`.
+    #[tokio::test]
+    async fn a_name_on_two_nodes_is_not_ordered_for() {
+        let database = database().await;
+        let project = crate::platform::projects::create(&database, "shop")
+            .await
+            .expect("project");
+        let service =
+            crate::platform::services::create(&database, &project.id, "web", "nginx:alpine", &[])
+                .await
+                .expect("service");
+
+        // One node: nothing to refuse.
+        crate::platform::edges::set(
+            &database,
+            &service.id,
+            "shop.example.com",
+            &["nd-one".to_string()],
+        )
+        .await
+        .expect("one edge");
+        assert_eq!(
+            shared_with_other_nodes(&database, &["shop.example.com".to_string()]).await,
+            None
+        );
+
+        // Two, and it says which name and how many rather than "refused".
+        crate::platform::edges::set(
+            &database,
+            &service.id,
+            "shop.example.com",
+            &["nd-one".to_string(), "nd-two".to_string()],
+        )
+        .await
+        .expect("two edges");
+        let reason = shared_with_other_nodes(&database, &["shop.example.com".to_string()])
+            .await
+            .expect("refused");
+        assert!(reason.contains("shop.example.com"), "{reason}");
+        assert!(reason.contains("2 nodes"), "{reason}");
+        // And it says what to do instead, because a name that cannot have
+        // a public certificate still has to be served.
+        assert!(reason.contains("choose one node"), "{reason}");
+    }
+
     /// A name this node serves for another one has no port row here —
     /// the route arrived on an edge errand — so reading only the `port`
     /// table left it answering HTTPS with the local authority's
@@ -1050,9 +1148,16 @@ mod tests {
             crate::platform::services::create(&database, &project.id, "web", "alpine:3.23", &[])
                 .await
                 .expect("service");
-        crate::platform::ports::create(&database, &service.id, 80, false, Some("node.example.com"))
-            .await
-            .expect("port");
+        crate::platform::ports::create(
+            &database,
+            &service.id,
+            80,
+            false,
+            Some("node.example.com"),
+            &[],
+        )
+        .await
+        .expect("port");
 
         assert_eq!(
             wanted_names(&database, &config).await,

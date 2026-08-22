@@ -1027,3 +1027,61 @@ That is the same shape as a deployment: `carry_out` queues one and
 reports itself from `deploy::jobs`, on the next report. The road for the
 outcome to come home is a report the *other* way, which is phase 11 if
 anything ever needs it.
+
+## A name may point at any node that can serve it
+
+**The check was asking the wrong question.** The form that accepts a
+hostname asked `dns::resolves_here` — "does this name point at *this*
+machine" — and a service served from another node is what `service_edge`
+has meant since phase 7. So exposing a service through the node that was
+supposed to expose it was refused at the door. Reported by Jorge, on the
+node, trying to do exactly that.
+
+It resolves the name against **every node that could answer for it** now:
+public, dialable, and — for a node that is not this one — one whose
+`allows` says this node may ask it. Three things about the shape:
+
+- **Each node is resolved by its own advertised name.** An endpoint is
+  `{domain}:{port}`, never an address, because a node behind NAT cannot
+  know its public one. So the comparison is between two sets of addresses
+  that DNS produced, and no node is asked to know where it is.
+- **What comes back is *which* nodes, not a yes.** Those are the rows the
+  caller writes: `ports::create` used to record this node always, which
+  for a name pointing elsewhere is a hostname stored, shown as served,
+  and served by nobody. The list is the answer to "who can serve this",
+  so it is the answer to "who is recorded as serving it".
+- **The same check now guards the other door.** Ticking a node in "Nodes
+  that expose the service" wrote a row and sent an errand without asking
+  DNS anything, which produces the identical fault from the other side.
+  One `edge_candidates` selector, asked in three places, because three
+  copies of a rule about consent is how one of them goes stale.
+
+### And the trap behind it: one name, several nodes
+
+Several nodes answering for one name is the useful case — round-robin DNS
+across two edges is load balancing nobody has to configure — and it is
+**refused for a public certificate today**, on purpose.
+
+An HTTP-01 challenge is fetched from one of the addresses the name
+resolves to, and the token lives in the ordering node's own
+`acme_challenge` table. With two edges, the authority has a fair chance
+of asking the node that does not hold it. Each miss is one of five failed
+validations an hour, and **the lock is per account**: one name on two
+nodes would take every other name on the node down with it. So
+`acme::ensure` refuses a name with more than one edge row and says so on
+the page; the name is still served, on the local authority's certificate,
+which `refresh_local` already keeps covering it.
+
+The way out — chosen, not built — is **the challenge travelling**: the
+ordering node publishes the token to the other edges of that name before
+asking the authority to validate, so whichever address is asked can
+answer. Each node still orders its own certificate, which keeps obeying
+local; what moves between machines is a token that is public by design.
+
+It has a dependency worth knowing before starting: **the overlay is a
+star**, so two nodes enrolled by the same authority have never heard of
+each other and have no WireGuard session — the same wall the database
+standby hit, where the fix was the peer travelling in the errand. An edge
+errand carries one node's instructions today and says nothing about who
+else answers for the name, so it has to carry the co-edges before any
+node can publish anything to them.

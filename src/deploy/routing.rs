@@ -285,7 +285,7 @@ mod tests {
     #[tokio::test]
     async fn a_name_this_node_was_not_chosen_for_is_not_routed_here() {
         let (database, _, service) = node().await;
-        ports::create(&database, &service, 80, false, Some("api.example.com"))
+        ports::create(&database, &service, 80, false, Some("api.example.com"), &[])
             .await
             .expect("port");
         running_at(&database, &service, Some("10.42.1.5")).await;
@@ -435,7 +435,7 @@ mod tests {
     #[tokio::test]
     async fn a_running_service_with_a_hostname_gets_a_route() {
         let (database, _, service) = node().await;
-        ports::create(&database, &service, 80, false, Some("api.example.com"))
+        ports::create(&database, &service, 80, false, Some("api.example.com"), &[])
             .await
             .expect("port");
         running_at(&database, &service, Some("10.42.1.5")).await;
@@ -459,7 +459,7 @@ mod tests {
     #[tokio::test]
     async fn a_stopped_service_has_no_route() {
         let (database, _, service) = node().await;
-        ports::create(&database, &service, 80, false, Some("api.example.com"))
+        ports::create(&database, &service, 80, false, Some("api.example.com"), &[])
             .await
             .expect("port");
         running_at(&database, &service, Some("10.42.1.5")).await;
@@ -484,7 +484,7 @@ mod tests {
     #[tokio::test]
     async fn the_console_keeps_its_own_hostname() {
         let (database, _, service) = node().await;
-        ports::create(&database, &service, 80, false, Some("api.example.com"))
+        ports::create(&database, &service, 80, false, Some("api.example.com"), &[])
             .await
             .expect("port");
         running_at(&database, &service, Some("10.42.1.5")).await;
@@ -511,7 +511,7 @@ mod tests {
     #[tokio::test]
     async fn a_removed_hostname_stops_routing() {
         let (database, _, service) = node().await;
-        let port = ports::create(&database, &service, 80, false, Some("api.example.com"))
+        let port = ports::create(&database, &service, 80, false, Some("api.example.com"), &[])
             .await
             .expect("port");
         running_at(&database, &service, Some("10.42.1.5")).await;
@@ -534,7 +534,7 @@ mod tests {
     #[tokio::test]
     async fn a_published_tcp_port_is_not_a_route() {
         let (database, _, service) = node().await;
-        ports::create(&database, &service, 5432, true, None)
+        ports::create(&database, &service, 5432, true, None, &[])
             .await
             .expect("port");
         running_at(&database, &service, Some("10.42.1.5")).await;
