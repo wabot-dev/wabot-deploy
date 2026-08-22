@@ -908,8 +908,8 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
         "En qué escucha el proceso dentro del contenedor.",
     ),
     (
-        "What this copy has written since it started. The file is emptied on every deployment, so this is the current attempt and not a history.",
-        "Lo que esta copia ha escrito desde que arrancó. El fichero se vacía en cada despliegue, así que esto es el intento actual y no un historial.",
+        "What this copy has written. A deployment marks a line and carries on rather than starting the file again, so this holds every run since the last rotation — and the ones before that are in everything kept.",
+        "Lo que esta copia ha escrito. Un despliegue marca una línea y continúa en vez de empezar el fichero de nuevo, así que esto contiene todas las ejecuciones desde la última rotación — y las anteriores están en todo lo guardado.",
     ),
     (
         "What this machine does, and the name it answers to.",

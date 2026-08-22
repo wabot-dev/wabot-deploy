@@ -783,8 +783,12 @@ pub struct Chunk {
     /// old one: a chunk that ended mid-character keeps the partial bytes
     /// unread rather than replacing them with `U+FFFD` for ever.
     pub next: u64,
-    /// The file started again — a redeployment truncated it, so whatever
-    /// the reader has on screen belongs to a container that is gone.
+    /// The file is **shorter** than where the reader was, so what they
+    /// have on screen is no longer the front of what is there.
+    ///
+    /// Not a redeployment, which appends — see [`resume`]. Either a
+    /// rotation at a container start, or the sweep trimming a live file
+    /// that never restarts.
     pub restarted: bool,
 }
 
@@ -1465,5 +1469,44 @@ mod tests {
         assert_eq!(start[0].number, 1);
         let end = around(dir.path(), "demo.web", 20, 5);
         assert_eq!(end.last().expect("a line").number, 20);
+    }
+
+    /// A deployment keeps what came before it.
+    ///
+    /// The page said the opposite for as long as `resume` has existed —
+    /// "the file is emptied on every deployment" — which was true of
+    /// `prepare`, the behaviour `resume` was written to replace. Nothing
+    /// caught it because nothing asserted the sentence, so this asserts
+    /// the fact instead.
+    #[test]
+    fn a_deployment_marks_the_log_and_keeps_it() {
+        let dir = tempfile::tempdir().expect("temp");
+        std::fs::create_dir_all(dir.path().join("logs")).expect("mkdir");
+        let live = path(dir.path(), "demo.web");
+
+        resume(dir.path(), "demo.web").expect("first run");
+        std::fs::write(
+            &live,
+            format!(
+                "{}\nwhat the first run said\n",
+                std::fs::read_to_string(&live).unwrap().trim()
+            ),
+        )
+        .expect("write");
+
+        // A second deployment, well under the rotation threshold.
+        resume(dir.path(), "demo.web").expect("second run");
+        let text = std::fs::read_to_string(&live).expect("read");
+        assert!(
+            text.contains("what the first run said"),
+            "the deployment threw away what came before it: {text}"
+        );
+        // And the boundary says where the new run begins, so the two are
+        // told apart rather than run together.
+        assert_eq!(
+            text.matches("── wabot-deploy ── started").count(),
+            2,
+            "the runs are not marked apart: {text}"
+        );
     }
 }

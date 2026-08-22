@@ -37,9 +37,13 @@ pub struct ServicePage {
 #[derive(Debug, serde::Serialize)]
 struct LogChunk {
     text: String,
-    /// The file was emptied — a deployment — so what is on screen
-    /// belongs to a container that is gone and the reader is told rather
-    /// than having new output appended to old.
+    /// The file got **shorter** than where the reader was, so what is on
+    /// screen may not be the beginning of what is there now and the
+    /// reader is told rather than having new output appended to old.
+    ///
+    /// Not "a deployment": a deployment appends. This is a rotation at a
+    /// container start, or the sweep trimming a live file that never
+    /// restarts — the two things that make a log lose its front.
     restarted: bool,
 }
 
@@ -1018,9 +1022,17 @@ impl ServicePages {
                 <div class="split">
                     <div class="stack-sm">
                         <h1>(&service_name)</h1>
-                        <p class="tile-detail">(t("What this copy has written since it started. The \
-                             file is emptied on every deployment, so this is the \
-                             current attempt and not a history."))</p>
+                        // **This said the opposite of what happens.** It
+                        // described `prepare`, which truncated on every
+                        // deployment, and `resume` replaced that precisely
+                        // because a deployment is the moment somebody most
+                        // wants what came before it. Nothing updated the
+                        // sentence, so the page promised no history on the
+                        // page that has one. Caught by Jorge reading it.
+                        <p class="tile-detail">(t("What this copy has written. A deployment marks \
+                             a line and carries on rather than starting the file again, so this \
+                             holds every run since the last rotation — and the ones before that \
+                             are in everything kept."))</p>
                     </div>
                     @if mine.len() > 1 {
                         <div class="row">
