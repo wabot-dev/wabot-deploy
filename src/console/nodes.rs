@@ -57,10 +57,66 @@ pub struct NodePage {
 /// it `NodePage`, whose `node` is required, made the route answer with an
 /// extraction failure instead of a page — and the session test found it
 /// by asking what an anonymous request gets.
+/// Which tab of this node's settings a page is showing.
+///
+/// The same shape as a service's, for the same reason: three unrelated
+/// cards in one column meant the way to reach the last was to know it was
+/// there. One URL each, so a tab can be linked and read with scripting
+/// off, and the page loads only what it shows — the certificate tab is
+/// the only one that reads a certificate off disk.
+///
+/// The slugs deliberately avoid the POST paths beside them
+/// (`/node/capabilities`, `/node/certificate`): a GET view and a POST on
+/// one path do coexist — checked, not assumed — but a form whose action is
+/// the page it is on reads as a coincidence rather than a decision, and
+/// the next person to add a route would have to rediscover that it works.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum NodeTab {
+    Domain,
+    Allows,
+    Resources,
+}
+
+impl NodeTab {
+    pub fn slug(self) -> &'static str {
+        match self {
+            NodeTab::Domain => "domain",
+            NodeTab::Allows => "allows",
+            NodeTab::Resources => "resources",
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            // The domain is what somebody comes here for; its certificate
+            // is the consequence of having one, and the card inside still
+            // says so.
+            NodeTab::Domain => t("Domain"),
+            NodeTab::Allows => t("Capabilities"),
+            NodeTab::Resources => t("Resources"),
+        }
+    }
+
+    pub fn all() -> [NodeTab; 3] {
+        [NodeTab::Domain, NodeTab::Allows, NodeTab::Resources]
+    }
+
+    fn parse(slug: &str) -> Option<Self> {
+        Self::all().into_iter().find(|tab| tab.slug() == slug)
+    }
+
+    pub fn path(self) -> String {
+        format!("/node/{}", self.slug())
+    }
+}
+
 #[derive(Debug, Deserialize, Validate, Default)]
 pub struct NodeSettingsPage {
     pub error: Option<String>,
     pub checked: Option<String>,
+    /// Which tab, from the path. Absent on the bare `/node`, which sends
+    /// you to the first one.
+    pub tab: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Validate)]
@@ -365,7 +421,23 @@ impl NodePages {
     /// enrolment forms — so "what does this node do" and "what are my
     /// nodes doing" were one page with one name. Singular here, and the
     /// list is its own area.
+    /// The bare path is not a page: it names the first tab.
     #[view("/node")]
+    #[middleware(SessionMiddleware)]
+    async fn this_node_root(&self) -> UiResult<ViewOutcome> {
+        // Nobody signed in goes to sign in, not to the projects list: the
+        // three answers are different and `the_nodes_pages_need_a_session`
+        // asks every page in the area which one it gives.
+        let Some(account) = signed_in(&self.auth) else {
+            return Ok(Redirect::found("/sign-in").into());
+        };
+        match account.is_admin() {
+            true => Ok(Redirect::found(NodeTab::Domain.path()).into()),
+            false => Ok(Redirect::found("/").into()),
+        }
+    }
+
+    #[view("/node/:tab")]
     #[middleware(SessionMiddleware)]
     async fn this_node(&self, query: NodeSettingsPage) -> UiResult<ViewOutcome> {
         let Some(account) = signed_in(&self.auth) else {
@@ -374,6 +446,12 @@ impl NodePages {
         if !account.is_admin() {
             return Ok(Redirect::found("/").into());
         }
+
+        // A word that is not a tab goes to the first one, which covers a
+        // hand-typed URL and a link kept from before there were tabs.
+        let Some(tab) = query.tab.as_deref().and_then(NodeTab::parse) else {
+            return Ok(Redirect::found(NodeTab::Domain.path()).into());
+        };
 
         let projects = access::projects_for(&self.state.database, &account).await?;
         let nodes = network::all(&self.state.database).await?;
@@ -440,18 +518,37 @@ impl NodePages {
                 (layout::style_tag())
                 <h1>(t("Node"))</h1>
                 <p class="tagline">(t("What this machine does, and the name it answers to."))</p>
+
+                // Links, the same shape a service's settings use.
+                <nav class="tabs" aria-label=(t("Node"))>
+                    @for entry in NodeTab::all() {
+                        @if entry == tab {
+                            <a href=(entry.path()) class="tab active"
+                               aria-current="page">(entry.label())</a>
+                        } @else {
+                            <a href=(entry.path()) class="tab">(entry.label())</a>
+                        }
+                    }
+                </nav>
+
                 @if let Some(message) = &query.error {
                     (layout::error_note(message))
                 }
-                (capabilities_card(hosts, edges, reachable, archiving))
-                (reserves_card(&snapshot, reserves, cores))
-                // The certificate's own cells stream, so it keeps the
-                // island — with only its half of the markup, which the
-                // runtime tolerates: a cell it cannot find is skipped.
-                // The meters are on the node's status page now.
-                (certificate_island(
-                    &self_id, &cells, &state, &policy, domain.as_deref(), &query
-                ))
+                @if tab == NodeTab::Domain {
+                    // The certificate's own cells stream, so it keeps the
+                    // island — with only its half of the markup, which the
+                    // runtime tolerates: a cell it cannot find is skipped.
+                    // The meters are on the node's status page.
+                    (certificate_island(
+                        &self_id, &cells, &state, &policy, domain.as_deref(), &query
+                    ))
+                }
+                @if tab == NodeTab::Allows {
+                    (capabilities_card(hosts, edges, reachable, archiving))
+                }
+                @if tab == NodeTab::Resources {
+                    (reserves_card(&snapshot, reserves, cores))
+                }
             }
             .render()
             .into_inner()
@@ -3275,6 +3372,68 @@ pub(crate) mod tests {
         assert!(refused.contains("error="), "{refused}");
     }
 
+    /// This node's settings are tabs, like a service's.
+    ///
+    /// Three unrelated cards in one column, and Jorge asked for the same
+    /// shape he had asked for on a service. One URL each, so a tab can be
+    /// linked and read with scripting off, and the page loads only what it
+    /// shows — the domain tab is the only one that reads a certificate off
+    /// disk.
+    #[tokio::test]
+    async fn the_nodes_settings_are_tabs() {
+        let console = Console::new().await;
+        let cookie = console.signed_in().await;
+        macro_rules! get {
+            ($path:expr) => {
+                console
+                    .harness
+                    .get($path)
+                    .header("cookie", &cookie)
+                    .send()
+                    .await
+            };
+        }
+
+        // The bare path names the first tab, and so does a word that is
+        // not one — a hand-typed URL, or a link from before there were
+        // tabs at all.
+        assert_eq!(get!("/node").header("location"), Some("/node/domain"));
+        assert_eq!(
+            get!("/node/nonsense").header("location"),
+            Some("/node/domain")
+        );
+
+        // Each card on exactly one tab. A card on two is a card somebody
+        // saves twice.
+        let mut seen = Vec::new();
+        for tab in NodeTab::all() {
+            let body = get!(&tab.path()).body;
+            assert!(
+                body.contains(r#"aria-current="page""#),
+                "the {} tab does not say it is current: {body}",
+                tab.slug()
+            );
+            for (form, name) in [
+                ("/node/certificate", "certificate"),
+                ("/node/capabilities", "capabilities"),
+                ("/node/reserves", "reserves"),
+            ] {
+                if body.contains(form) {
+                    seen.push((name, tab.slug()));
+                }
+            }
+        }
+        assert_eq!(
+            seen,
+            vec![
+                ("certificate", "domain"),
+                ("capabilities", "allows"),
+                ("reserves", "resources"),
+            ],
+            "a form is missing, or on more than one tab"
+        );
+    }
+
     /// Settings adjusts; it does not report.
     ///
     /// The meters were on this page when it was `/nodes`, and Jorge asked
@@ -3287,25 +3446,43 @@ pub(crate) mod tests {
     async fn the_settings_page_has_no_meters_on_it() {
         let console = Console::new().await;
         let cookie = console.signed_in().await;
-        let body = console
-            .harness
-            .get("/node")
-            .header("cookie", &cookie)
-            .send()
-            .await
-            .body;
-
-        // The meter's own markup, not the word: `Memory` is a label a
-        // future card could reuse, while `data-meter` and `data-bar` are
-        // what a bar *is*.
+        // **Every tab, not `/node`.** That path is a redirect now, and a
+        // redirect's body contains no meter — so asking it would pass
+        // whatever the tabs held, which is the shape that has bitten this
+        // session twice already.
+        let mut bodies = Vec::new();
+        for tab in NodeTab::all() {
+            bodies.push(
+                console
+                    .harness
+                    .get(&tab.path())
+                    .header("cookie", &cookie)
+                    .send()
+                    .await
+                    .body,
+            );
+        }
+        for body in &bodies {
+            // The meter's own markup, not the word: `Memory` is a label a
+            // future card could reuse, while `data-meter` and `data-bar`
+            // are what a bar *is*.
+            assert!(
+                !body.contains("data-meter"),
+                "a meter is on the settings page: {body}"
+            );
+            assert!(!body.contains(r#"data-bar="#), "and so is a bar: {body}");
+        }
+        // What it is for is still here, each on its own tab.
         assert!(
-            !body.contains("data-meter"),
-            "a meter is on the settings page: {body}"
+            bodies
+                .iter()
+                .any(|body| body.contains("/node/capabilities")),
+            "the capability switch is on none of them"
         );
-        assert!(!body.contains(r#"data-bar="#), "and so is a bar: {body}");
-        // What it is for is still here.
-        assert!(body.contains("/node/capabilities"), "{body}");
-        assert!(body.contains("/node/certificate"), "{body}");
+        assert!(
+            bodies.iter().any(|body| body.contains("/node/certificate")),
+            "the certificate is on none of them"
+        );
 
         // And the readings are on the node's page, which is where they
         // belong — so this is a move and not a deletion.
@@ -3382,14 +3559,20 @@ pub(crate) mod tests {
             "and so is the certificate: {network}"
         );
 
-        let node = get!("/node").body;
-        assert!(node.contains("/node/capabilities"), "{node}");
-        assert!(node.contains("/node/certificate"), "{node}");
-        // Nothing that adds a node: this page is about the one machine.
-        assert!(
-            !node.contains("/network/enrol"),
-            "the invite form is in settings: {node}"
-        );
+        // `/node` is a redirect to its first tab, and the two forms are on
+        // two of them since Jorge asked for tabs here as well.
+        assert_eq!(get!("/node").header("location"), Some("/node/domain"));
+        let certificate = get!("/node/domain").body;
+        assert!(certificate.contains("/node/certificate"), "{certificate}");
+        let allows = get!("/node/allows").body;
+        assert!(allows.contains("/node/capabilities"), "{allows}");
+        // Nothing that adds a node: these pages are about the one machine.
+        for body in [&certificate, &allows] {
+            assert!(
+                !body.contains("/network/enrol"),
+                "the invite form is in settings: {body}"
+            );
+        }
 
         // Each form is on the page it comes back to. A save that lands
         // somewhere else is a save that hides what it did.
@@ -3469,7 +3652,7 @@ pub(crate) mod tests {
 
         let body = console
             .harness
-            .get("/node")
+            .get("/node/domain")
             .header("cookie", &cookie)
             .send()
             .await
@@ -3544,7 +3727,7 @@ pub(crate) mod tests {
 
         let body = console
             .harness
-            .get("/node")
+            .get("/node/domain")
             .header("cookie", &cookie)
             .send()
             .await
@@ -3573,7 +3756,7 @@ pub(crate) mod tests {
 
         let body = console
             .harness
-            .get("/node")
+            .get("/node/domain")
             .header("cookie", &cookie)
             .send()
             .await

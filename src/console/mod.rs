@@ -703,7 +703,7 @@ pub(crate) mod tests {
         // editable, and its island with it. The meters stayed here, which
         // is why the stream host is on both — the runtime skips a cell it
         // cannot find, so each page carries only its half.
-        let settings = ui.get("/node").await;
+        let settings = ui.get("/node/domain").await;
         assert!(
             settings.has_island("fields"),
             "the certificate form: {}",
@@ -746,7 +746,7 @@ pub(crate) mod tests {
         let cookie = console.signed_in().await;
         let body = console
             .harness
-            .get("/node")
+            .get("/node/domain")
             .header("cookie", &cookie)
             .send()
             .await

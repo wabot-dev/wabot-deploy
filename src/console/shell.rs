@@ -568,6 +568,12 @@ impl Frame {
                             // plural was the list, which is its own area
                             // now — this is the one node whose settings
                             // are here to change.
+                            // `starts_with("/node")` and not `==`: the
+                            // page is `/node/<tab>` now. `/network` does
+                            // not match it — `net` is not `nod` — which is
+                            // luck rather than design, so it is written
+                            // down here before somebody adds `/nodes`
+                            // back.
                             <a href="/node"
                                class=(current(self.path.starts_with("/node")))>(t("Node"))</a>
                             <a href="/people"

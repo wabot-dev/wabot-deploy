@@ -180,6 +180,7 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
     ("CPU", "CPU"),
     ("Can", "Puede"),
     ("Cancel", "Cancelar"),
+    ("Capabilities", "Capacidades"),
     ("Certificate", "Certificado"),
     ("Certificate file", "Fichero del certificado"),
     ("Certificate on the way", "Certificado en camino"),
