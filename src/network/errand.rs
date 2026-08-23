@@ -196,6 +196,41 @@ pub struct Edge {
     /// Each is an overlay address and a port bound to it, never a
     /// container's own: a bridge address is not unique across nodes.
     pub upstreams: Vec<String>,
+    /// **The other nodes that answer for this name**, so this one can
+    /// reach them.
+    ///
+    /// Two nodes enrolled by the same authority have never heard of each
+    /// other and have no WireGuard session — the overlay is a star. The
+    /// owner is the only one that knows the whole set, so the set travels,
+    /// exactly as a standby's primary peer does. What it is *for* is the
+    /// HTTP-01 challenge: a token lives in the ordering node's own table
+    /// and the authority may ask any address the name resolves to.
+    ///
+    /// Absent in an errand written by an older node, which is why it
+    /// defaults: reconciliation re-dispatches at boot and the field
+    /// arrives then.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub peers: Vec<Peer>,
+    /// What the co-edges of this name authenticate to each other with,
+    /// minted by the owner. It authorizes one thing: writing a challenge
+    /// answer for this name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub secret: Option<String>,
+}
+
+/// One co-edge of a name, and everything needed to reach it.
+///
+/// Address and key so a WireGuard session can exist at all; the authority
+/// because `call::to_node` verifies rather than merely encrypting, and a
+/// private node's certificate has no public root that would vouch for it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Peer {
+    pub node_id: String,
+    /// For a log line somebody reads. Never a decision.
+    pub name: String,
+    pub overlay_ip: String,
+    pub public_key: String,
+    pub ca_pem: String,
 }
 
 /// The arguments of a [`Kind::Database`] errand: hold a copy here.
@@ -533,7 +568,7 @@ async fn ring(database: &SqliteDatabase, node_id: &str) {
     // milliseconds to them and nothing at all if the far node is asleep.
     let path = format!("/api/network/wake/{}", me.id);
     tokio::spawn(async move {
-        match super::call::to_node(&node, &path, Some(String::new())).await {
+        match super::call::to_node(&node, &path, Some(String::new()), None).await {
             Ok(status) => tracing::debug!(node = %node.id, %status, "rang"),
             Err(error) => tracing::debug!(node = %node.id, %error, "could not ring"),
         }

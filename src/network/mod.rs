@@ -462,6 +462,52 @@ pub async fn me(database: &SqliteDatabase) -> NetworkResult<Option<Node>> {
         .await?)
 }
 
+/// Learn where another node is, without claiming to know what it is.
+///
+/// **Narrower than [`save`] on purpose.** `save` writes the whole row,
+/// which is right when the answer came from that node about itself — a
+/// join, a report — and wrong here: what arrives in an edge errand is a
+/// *co-edge's* address and key, and writing a full row would overwrite
+/// the kind, the endpoint and the grants of a node this one may already
+/// know well. That would turn an authority into a private node with no
+/// endpoint, and nothing would say why.
+///
+/// So this fills in the three things needed to reach a machine and leaves
+/// every judgement about it alone.
+pub async fn learn_peer(
+    database: &SqliteDatabase,
+    id: &str,
+    name: &str,
+    overlay_ip: &str,
+    public_key: &str,
+    ca_pem: &str,
+) -> NetworkResult<()> {
+    let (id, name, overlay_ip, public_key, ca_pem) = (
+        id.to_string(),
+        name.to_string(),
+        overlay_ip.to_string(),
+        public_key.to_string(),
+        ca_pem.to_string(),
+    );
+    database
+        .write(move |connection| {
+            connection.execute(
+                "INSERT INTO node \
+                   (\"id\", \"name\", \"kind\", \"endpoint\", \"public_key\", \
+                    \"overlay_ip\", \"is_self\", \"joined_at\", \"allows\", \"ca_pem\") \
+                 VALUES (?1, ?2, 'private', NULL, ?3, ?4, 0, ?5, '', ?6) \
+                 ON CONFLICT (\"id\") DO UPDATE SET \
+                   \"public_key\" = excluded.\"public_key\", \
+                   \"overlay_ip\" = excluded.\"overlay_ip\", \
+                   \"ca_pem\" = excluded.\"ca_pem\"",
+                (id, name, public_key, overlay_ip, now_ms(), ca_pem),
+            )?;
+            Ok(())
+        })
+        .await?;
+    Ok(())
+}
+
 /// Write a node, or update what is known about one.
 ///
 /// Convergent, like every install step: it asks about the node, not

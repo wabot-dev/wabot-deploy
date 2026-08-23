@@ -1072,16 +1072,47 @@ nodes would take every other name on the node down with it. So
 the page; the name is still served, on the local authority's certificate,
 which `refresh_local` already keeps covering it.
 
-The way out — chosen, not built — is **the challenge travelling**: the
-ordering node publishes the token to the other edges of that name before
-asking the authority to validate, so whichever address is asked can
-answer. Each node still orders its own certificate, which keeps obeying
-local; what moves between machines is a token that is public by design.
+### The challenge travels — built
 
-It has a dependency worth knowing before starting: **the overlay is a
-star**, so two nodes enrolled by the same authority have never heard of
-each other and have no WireGuard session — the same wall the database
-standby hit, where the fix was the peer travelling in the errand. An edge
-errand carries one node's instructions today and says nothing about who
-else answers for the name, so it has to carry the co-edges before any
-node can publish anything to them.
+The ordering node publishes the token to the other edges of that name
+before asking the authority to validate, so whichever address is asked can
+answer. **The certificate never moves**: each node orders its own, with
+its own account and its own key, which keeps obeying local and means a
+name simply has as many valid certificates as it has edges. What crosses
+machines is a token that is public by design — it is fetched over plain
+HTTP by the authority.
+
+Five things it needed, and each is a decision:
+
+- **The co-edges travel on the errand.** The overlay is a star, so two
+  nodes enrolled by the same authority have never heard of each other and
+  have no WireGuard session — the same wall the database standby hit, and
+  the same fix: `errand::Edge` carries a `Peer` per co-edge with an
+  address, a public key and *that node's authority*, because
+  `call::to_node` verifies rather than merely encrypting and a private
+  node's certificate has no public root.
+- **Learned narrowly.** `network::learn_peer` fills in the address, the
+  key and the CA and touches nothing else. `save` writes the whole row,
+  which is right when a node reported about itself and would here turn an
+  authority into a private node with no endpoint.
+- **A secret per name**, minted by the owner in `edges::set` and handed to
+  every edge on the errand that made them one. It authorizes exactly one
+  thing: writing a challenge answer for that name. It is needed because
+  the overlay authenticates the *channel* and nothing above it says who
+  called — and an unauthenticated challenge endpoint is somebody else
+  getting a certificate for your name. Compared in constant time.
+- **Published before `set_ready`, and all or nothing.** `set_ready` is
+  what starts validation; a co-edge that cannot be reached is an address
+  the authority may still ask, so the order is abandoned instead. An order
+  abandoned before it is ready costs nothing, where a failed validation is
+  one of five an hour.
+- **The old refusal narrowed rather than removed.** Several nodes for one
+  name is fine now; what is still refused is a node that does not *know*
+  its co-edges — the state an edge errand from a version without the field
+  leaves behind. A deployment on the owning node ends it, and the message
+  says so.
+
+**Not verified between nodes yet.** The payload, the learning, the
+endpoint's refusals and the guard are covered by tests; what has not run
+is two real nodes answering for one name and Let's Encrypt asking the one
+that did not order.

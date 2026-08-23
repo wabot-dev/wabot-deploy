@@ -603,7 +603,7 @@ async fn carry_out(
             if !edge.upstreams.is_empty() {
                 allowed(database, authority, super::capability::Capability::Edge).await?;
             }
-            serve_name(database, container, authority, edge).await
+            serve_name(database, config, container, authority, edge).await
         }
         // An instruction from a newer node. Refused with the reason
         // rather than dropped — the authority learns that this node is
@@ -976,6 +976,7 @@ async fn hold_standby(
 /// sent twice must not fail the second time.
 async fn serve_name(
     database: &SqliteDatabase,
+    config: &Config,
     container: &Container,
     authority: &str,
     edge: errand::Edge,
@@ -990,6 +991,51 @@ async fn serve_name(
     {
         Ok(()) => {}
         Err(refused) => return Err(refused.to_string()),
+    }
+
+    // Who else answers for this name, and what to reach them with.
+    //
+    // **Before the route**, because it is what makes the certificate
+    // possible: an HTTP-01 token lives in the ordering node's own table,
+    // and without these this node would order alone for a name the
+    // authority may ask somebody else about. Learned narrowly —
+    // `learn_peer` fills in an address, a key and an authority and
+    // touches no judgement about the node — because a co-edge may be a
+    // machine this one already knows well.
+    for peer in &edge.peers {
+        if let Err(error) = crate::network::learn_peer(
+            database,
+            &peer.node_id,
+            &peer.name,
+            &peer.overlay_ip,
+            &peer.public_key,
+            &peer.ca_pem,
+        )
+        .await
+        {
+            tracing::warn!(%error, node = %peer.node_id, "could not record a co-edge");
+        }
+    }
+    let peer_ids: Vec<String> = edge.peers.iter().map(|peer| peer.node_id.clone()).collect();
+    if let Err(error) =
+        crate::platform::edges::remember_peers(database, &edge.hostname, &peer_ids).await
+    {
+        tracing::warn!(%error, hostname = %edge.hostname, "could not record who else serves it");
+    }
+    if let Some(secret) = &edge.secret {
+        if let Err(error) =
+            crate::platform::edges::accept_secret(database, &edge.hostname, secret).await
+        {
+            tracing::warn!(%error, hostname = %edge.hostname, "could not store the relay secret");
+        }
+    }
+    // And the session those addresses need. The interface compares before
+    // it rebuilds — a restart must not cost a healthy overlay its keys —
+    // so this is a no-op on every pass that learned nothing new.
+    if !edge.peers.is_empty() {
+        if let Err(error) = crate::network::tunnel::ensure(database, config).await {
+            tracing::warn!(%error, "could not add the co-edges to the overlay");
+        }
     }
 
     let upstreams: Vec<std::net::SocketAddr> = edge
@@ -1613,6 +1659,68 @@ mod tests {
     }
 
     /// A name belongs to one authority, and this is where phase 0's
+    /// An edge errand teaches this node who else answers for the name.
+    ///
+    /// **Without this it cannot get a certificate.** A public authority
+    /// fetches the HTTP-01 token from whichever address the name resolves
+    /// to, and the token lives in the ordering node's own table — so every
+    /// co-edge has to be reachable *before* the authority is told to look.
+    /// Two nodes enrolled by the same authority have never heard of each
+    /// other, which is why the set travels rather than being looked up.
+    #[tokio::test]
+    async fn an_edge_errand_says_who_else_answers_for_the_name() {
+        let database = crate::db::open_in_memory().await.expect("open");
+        serve_name(
+            &database,
+            &Config::default(),
+            &Container::new(),
+            "nd-owner",
+            errand::Edge {
+                hostname: "app.example.com".into(),
+                upstreams: vec!["10.42.0.3:30000".into()],
+                peers: vec![errand::Peer {
+                    node_id: "nd-sibling".into(),
+                    name: "alpine".into(),
+                    overlay_ip: "10.42.0.7".into(),
+                    public_key: "0hEr0DzTvMDTRfPPmYFCVCQ1cA0nnUnP+2fFqZBBBGQ=".into(),
+                    ca_pem:
+                        "-----BEGIN CERTIFICATE-----\nnot a real one\n-----END CERTIFICATE-----\n"
+                            .into(),
+                }],
+                secret: Some("the-shared-secret".into()),
+            },
+        )
+        .await
+        .expect("served");
+
+        // The peer is reachable: an address, a key, and the authority that
+        // vouches for its certificate — `call::to_node` verifies rather
+        // than merely encrypting, so the last one is not optional.
+        let sibling = crate::network::find(&database, "nd-sibling")
+            .await
+            .expect("query")
+            .expect("learned");
+        assert_eq!(sibling.overlay_ip.as_deref(), Some("10.42.0.7"));
+        assert!(sibling.public_key.is_some());
+        assert!(sibling.ca_pem.is_some());
+
+        // And the name knows who its co-edges are, with the secret to
+        // reach them.
+        assert_eq!(
+            crate::platform::edges::peers_for(&database, "app.example.com")
+                .await
+                .expect("query"),
+            vec!["nd-sibling".to_string()]
+        );
+        assert_eq!(
+            crate::platform::edges::secret_for(&database, "app.example.com")
+                .await
+                .expect("query")
+                .as_deref(),
+            Some("the-shared-secret")
+        );
+    }
+
     /// claim rule finally does its job: two nodes pointing one hostname
     /// at different backends is not a conflict anything can resolve,
     /// and choosing silently would make the wrong backend look right.
@@ -1622,11 +1730,19 @@ mod tests {
         let edge = errand::Edge {
             hostname: "app.example.com".into(),
             upstreams: vec!["10.42.0.3:30000".into(), "10.42.0.3:30001".into()],
+            peers: Vec::new(),
+            secret: None,
         };
 
-        serve_name(&database, &Container::new(), "nd-first", edge.clone())
-            .await
-            .expect("served");
+        serve_name(
+            &database,
+            &Config::default(),
+            &Container::new(),
+            "nd-first",
+            edge.clone(),
+        )
+        .await
+        .expect("served");
 
         // The route is there, with one upstream per replica.
         let routes = crate::edge::routes::load_all(&database)
@@ -1645,13 +1761,25 @@ mod tests {
         );
 
         // Sent twice by the same authority is the same instruction.
-        serve_name(&database, &Container::new(), "nd-first", edge.clone())
-            .await
-            .expect("again");
+        serve_name(
+            &database,
+            &Config::default(),
+            &Container::new(),
+            "nd-first",
+            edge.clone(),
+        )
+        .await
+        .expect("again");
 
-        let refused = serve_name(&database, &Container::new(), "nd-second", edge)
-            .await
-            .expect_err("refused");
+        let refused = serve_name(
+            &database,
+            &Config::default(),
+            &Container::new(),
+            "nd-second",
+            edge,
+        )
+        .await
+        .expect_err("refused");
         assert!(
             refused.contains("nd-first"),
             "and names who has it: {refused}"
@@ -1667,11 +1795,14 @@ mod tests {
         let database = crate::db::open_in_memory().await.expect("open");
         serve_name(
             &database,
+            &Config::default(),
             &Container::new(),
             "nd-first",
             errand::Edge {
                 hostname: "app.example.com".into(),
                 upstreams: vec!["10.42.0.3:30000".into()],
+                peers: Vec::new(),
+                secret: None,
             },
         )
         .await

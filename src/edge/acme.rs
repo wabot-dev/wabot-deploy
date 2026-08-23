@@ -99,7 +99,7 @@ pub async fn challenge_response(
         .await?)
 }
 
-async fn store_challenge(
+pub(crate) async fn store_challenge(
     database: &SqliteDatabase,
     token: &str,
     response: &str,
@@ -280,6 +280,22 @@ pub async fn obtain(
         let response = challenge.key_authorization().as_str().to_string();
         store_challenge(database, &token, &response, domain).await?;
         tracing::info!(%domain, %token, "answering an http-01 challenge");
+
+        // **Every other node that answers for these names, before the
+        // authority is told to look.** The token is served from whichever
+        // address the name resolves to, and it lives in this node's own
+        // table — so with two edges the authority has a fair chance of
+        // asking the one that has never heard of it.
+        //
+        // Refused rather than attempted when a co-edge cannot be reached:
+        // `set_ready` is what starts validation, and a validation that
+        // fails is one of five an hour against an account that locks for
+        // every name on the node. Nothing is spent by abandoning an order
+        // before it is ready.
+        if let Err(reason) = publish_to_co_edges(database, names, &token, &response).await {
+            clear_challenges(database, domain).await?;
+            return Err(AcmeError::Refused(reason));
+        }
 
         challenge.set_ready().await?;
     }
@@ -754,17 +770,117 @@ async fn shared_with_other_nodes(database: &SqliteDatabase, names: &[String]) ->
         let serving = crate::platform::edges::nodes_for(database, name)
             .await
             .unwrap_or_default();
-        if serving.len() > 1 {
+        if serving.len() < 2 {
+            continue;
+        }
+        // The challenge travels now — see `publish_to_co_edges` — so
+        // several nodes answering for one name is no longer a refusal.
+        // What is still one is not knowing *who* they are: the publish
+        // reads this node's own view of the co-edges, and an empty one
+        // means it would order alone for a name the authority may ask
+        // somebody else about. That is the state an errand from an older
+        // version leaves behind, and a deployment on the owning node ends
+        // it.
+        if crate::platform::edges::peers_for(database, name)
+            .await
+            .unwrap_or_default()
+            .is_empty()
+        {
             return Some(format!(
-                "{name} is answered for by {} nodes, and a public authority validates it by \
-                 asking one of them for a token only the ordering node holds. Until the \
-                 challenge is relayed between them, choose one node for this name or keep the \
-                 node's own certificate.",
+                "{name} is answered for by {} nodes and this one does not know which — a public \
+                 authority would ask an address that has never heard of the challenge. Deploy \
+                 the service again from the node that owns it, which is what tells every edge \
+                 who the others are.",
                 serving.len()
             ));
         }
     }
     None
+}
+
+/// Hand the token to every other node that answers for these names.
+///
+/// **All of them, or none of it.** A co-edge that could not be reached is
+/// an address the authority may still ask, so proceeding would be spending
+/// a validation on a coin toss. The reason names the node, because the
+/// operator's next question is which one.
+///
+/// One publish per co-edge, whatever the name: the names in one order
+/// belong to one service and are answered for by the same nodes — and a
+/// token planted for a sibling name would be harmless anyway, since it
+/// proves nothing without the account key it was derived from.
+async fn publish_to_co_edges(
+    database: &SqliteDatabase,
+    names: &[String],
+    token: &str,
+    response: &str,
+) -> Result<(), String> {
+    let mut told: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    for name in names {
+        let peers = crate::platform::edges::peers_for(database, name)
+            .await
+            .map_err(|error| error.to_string())?;
+        if peers.is_empty() {
+            continue;
+        }
+        let Some(secret) = crate::platform::edges::secret_for(database, name)
+            .await
+            .map_err(|error| error.to_string())?
+        else {
+            // Told who the co-edges are and not how to prove anything to
+            // them. Said rather than silently ordering alone, which is
+            // the hazard this whole path exists to remove.
+            return Err(format!(
+                "{name} is answered for by other nodes and this one has no secret to publish \
+                 the challenge with — the node that owns the service sends it with the edge \
+                 errand, so deploying there is what fixes this"
+            ));
+        };
+
+        for node_id in peers {
+            if !told.insert(node_id.clone()) {
+                continue;
+            }
+            let node = crate::network::find(database, &node_id)
+                .await
+                .map_err(|error| error.to_string())?
+                .ok_or_else(|| {
+                    format!("{name} is answered for by {node_id}, which this node has no row for")
+                })?;
+            let body = serde_json::to_string(&crate::network::api::Challenge {
+                hostname: name.clone(),
+                token: token.to_string(),
+                response: response.to_string(),
+            })
+            .map_err(|error| error.to_string())?;
+
+            match crate::network::call::to_node(
+                &node,
+                "/api/network/challenge",
+                Some(body),
+                Some(&secret),
+            )
+            .await
+            {
+                Ok(status) if status.is_success() => {
+                    tracing::info!(node = %node.name, %name, "the challenge was published")
+                }
+                Ok(status) => {
+                    return Err(format!(
+                        "{} would not take the challenge for {name}: it answered {status}",
+                        node.name
+                    ))
+                }
+                Err(error) => {
+                    return Err(format!(
+                        "{} could not be reached to publish the challenge for {name}: {error}",
+                        node.name
+                    ))
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 /// The background loop: try until it works, then keep it renewed.
@@ -1055,16 +1171,17 @@ mod tests {
             .is_some());
     }
 
-    /// A name two nodes answer for is not asked of a public authority.
+    /// A name two nodes answer for is ordered for **only if this node
+    /// knows who the others are**.
     ///
     /// An HTTP-01 token lives in the ordering node's own table, so with
     /// two edges the authority has a fair chance of asking the one that
-    /// does not have it. Each miss is one of five failures an hour and the
-    /// lock is **per account**: one name on two nodes would take every
-    /// other name on this node with it. Guarded until the challenge
-    /// travels — see `docs/network.md`.
+    /// does not have it — one of five failures an hour, against an account
+    /// whose lock takes every other name on the node with it. The
+    /// challenge travels now, and what this guards is the state where it
+    /// cannot: an edge errand from a version that carried no co-edges.
     #[tokio::test]
-    async fn a_name_on_two_nodes_is_not_ordered_for() {
+    async fn a_name_on_two_nodes_is_not_ordered_for_blind() {
         let database = database().await;
         let project = crate::platform::projects::create(&database, "shop")
             .await
@@ -1088,7 +1205,9 @@ mod tests {
             None
         );
 
-        // Two, and it says which name and how many rather than "refused".
+        // Two, and this node knows both: nothing to refuse, because the
+        // token will be published to the other before the authority is
+        // told to look.
         crate::platform::edges::set(
             &database,
             &service.id,
@@ -1097,14 +1216,31 @@ mod tests {
         )
         .await
         .expect("two edges");
+        assert_eq!(
+            shared_with_other_nodes(&database, &["shop.example.com".to_string()]).await,
+            None,
+            "the challenge travels, so two nodes is not a refusal"
+        );
+
+        // And the state that is still one: the name is served by two and
+        // this node knows of none. That is what an edge errand written by
+        // a version with no `peers` field leaves behind, simulated here
+        // by taking the rows away — there is no other way to be in it.
+        database
+            .write(|connection| {
+                connection.execute("DELETE FROM edge_peer", ())?;
+                Ok(())
+            })
+            .await
+            .expect("forget who they are");
         let reason = shared_with_other_nodes(&database, &["shop.example.com".to_string()])
             .await
             .expect("refused");
         assert!(reason.contains("shop.example.com"), "{reason}");
         assert!(reason.contains("2 nodes"), "{reason}");
-        // And it says what to do instead, because a name that cannot have
-        // a public certificate still has to be served.
-        assert!(reason.contains("choose one node"), "{reason}");
+        // And it says what to do about it, because a name with no
+        // certificate still has to be served.
+        assert!(reason.contains("Deploy the service again"), "{reason}");
     }
 
     /// A name this node serves for another one has no port row here —

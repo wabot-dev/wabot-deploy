@@ -606,7 +606,7 @@ async fn channel_to(node: &crate::network::Node) -> String {
         return "not yet — it has not reported since this version".to_string();
     }
     let started = std::time::Instant::now();
-    match crate::network::call::to_node(node, "/", None).await {
+    match crate::network::call::to_node(node, "/", None, None).await {
         Ok(status) => format!(
             "verified in {} ms (answered {})",
             started.elapsed().as_millis(),

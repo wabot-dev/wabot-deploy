@@ -259,6 +259,35 @@ pub struct NetworkApi {
     doorbell: Arc<super::collect::Doorbell>,
 }
 
+/// What a co-edge asks this node to serve.
+///
+/// The response is the token's key authorization — public by design: it
+/// is fetched over plain HTTP by the authority, which is the whole shape
+/// of an HTTP-01 challenge. What must not be public is the *ability to
+/// choose one*, which is what the secret guards.
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+pub struct Challenge {
+    pub hostname: String,
+    pub token: String,
+    pub response: String,
+}
+
+/// Compare two secrets without leaking where they differ.
+///
+/// A short-circuiting `==` on a secret is a timing oracle: an attacker
+/// who can call this endpoint learns the first wrong byte from how long
+/// the answer took. Length is compared first and then every byte, which
+/// is what makes the time depend on the length alone.
+fn constant_time_eq(held: &[u8], presented: &[u8]) -> bool {
+    if held.len() != presented.len() {
+        return false;
+    }
+    held.iter()
+        .zip(presented)
+        .fold(0u8, |differences, (a, b)| differences | (a ^ b))
+        == 0
+}
+
 #[rest_controller("/api/network")]
 impl NetworkApi {
     /// Come and ask me: an authority saying an errand is waiting.
@@ -298,6 +327,89 @@ impl NetworkApi {
         self.doorbell.ring();
         tracing::debug!(%authority, "rung");
         Ok(json(StatusCode::OK, &Settled { settled: true }))
+    }
+
+    /// Serve a challenge answer for a name this node is a co-edge of.
+    ///
+    /// **Why this exists.** A public authority fetches an HTTP-01 token
+    /// from whichever address the name resolves to, and the token lives in
+    /// the ordering node's own table. With two nodes answering for one
+    /// name, the authority has a fair chance of asking the one that does
+    /// not have it — one of five failed validations an hour, against an
+    /// account whose lock takes every other name on the node with it. So
+    /// the node that ordered publishes the token here first.
+    ///
+    /// **Authenticated, and it has to be.** Everything else called by a
+    /// node over the overlay is either bearing a credential it enrolled
+    /// with or harmless — the doorbell asks this node to do what it was
+    /// going to do anyway. This one is not harmless: somebody who could
+    /// plant a response would get a certificate for a name this node
+    /// serves. The secret is per hostname, minted by the node that owns
+    /// the service and handed to every edge of it on the errand that made
+    /// them one.
+    ///
+    /// Compared in constant time, and only against the secret for the
+    /// name in the body: a secret for one name proves nothing about
+    /// another.
+    #[post("/challenge")]
+    #[raw]
+    async fn challenge(&self, request: Request) -> RestResult<Response> {
+        let presented = request
+            .headers()
+            .get(wabot::rest::axum::http::header::AUTHORIZATION)
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.strip_prefix("Bearer "))
+            .unwrap_or_default()
+            .to_string();
+
+        let Ok(bytes) = wabot::rest::axum::body::to_bytes(request.into_body(), 8 * 1024).await
+        else {
+            return Ok(json(StatusCode::BAD_REQUEST, &Settled { settled: false }));
+        };
+        let Ok(asked) = serde_json::from_slice::<Challenge>(&bytes) else {
+            return Ok(json(StatusCode::BAD_REQUEST, &Settled { settled: false }));
+        };
+
+        let held = crate::platform::edges::secret_for(&self.database, &asked.hostname)
+            .await
+            .ok()
+            .flatten();
+        let Some(held) = held else {
+            // Nothing to compare against is a refusal, not an error: a
+            // name this node is not a co-edge of is one it will not
+            // answer a challenge for.
+            tracing::debug!(hostname = %asked.hostname, "a challenge for a name with no relay secret");
+            return Ok(json(StatusCode::FORBIDDEN, &Settled { settled: false }));
+        };
+        if !constant_time_eq(held.as_bytes(), presented.as_bytes()) {
+            tracing::warn!(hostname = %asked.hostname, "a challenge presented the wrong secret");
+            return Ok(json(StatusCode::FORBIDDEN, &Settled { settled: false }));
+        }
+
+        match crate::edge::acme::store_challenge(
+            &self.database,
+            &asked.token,
+            &asked.response,
+            &asked.hostname,
+        )
+        .await
+        {
+            Ok(()) => {
+                tracing::info!(
+                    hostname = %asked.hostname,
+                    token = %asked.token,
+                    "answering an http-01 challenge for a co-edge"
+                );
+                Ok(json(StatusCode::OK, &Settled { settled: true }))
+            }
+            Err(error) => {
+                tracing::warn!(%error, "could not store a co-edge's challenge");
+                Ok(json(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    &Settled { settled: false },
+                ))
+            }
+        }
     }
 
     /// What this node has asked the caller to do.
@@ -1214,6 +1326,103 @@ mod tests {
             "name": "alpine.example",
             "public_key": "0hEr0DzTvMDTRfPPmYFCVCQ1cA0nnUnP+2fFqZBBBGQ=",
         })
+    }
+
+    /// A co-edge's challenge is served, and only with the secret for
+    /// that name.
+    ///
+    /// **This endpoint has to be authenticated**, unlike every other
+    /// thing a node can be asked over the overlay: somebody who could
+    /// plant a response would get a certificate for a name this node
+    /// serves. The secret is per hostname, minted by the node that owns
+    /// the service, and it is the only thing that makes the write
+    /// possible.
+    #[tokio::test]
+    async fn a_challenge_is_taken_only_from_a_node_that_holds_the_secret() {
+        let authority = authority().await;
+        let project = crate::platform::projects::create(&authority.database, "shop")
+            .await
+            .expect("project");
+        let service = crate::platform::services::create(
+            &authority.database,
+            &project.id,
+            "web",
+            "nginx:alpine",
+            &[],
+        )
+        .await
+        .expect("service");
+        // Being an edge for the name is what mints the secret here.
+        crate::platform::edges::set(
+            &authority.database,
+            &service.id,
+            "shop.example.com",
+            &["nd-other".to_string()],
+        )
+        .await
+        .expect("edges");
+        let secret = crate::platform::edges::secret_for(&authority.database, "shop.example.com")
+            .await
+            .expect("query")
+            .expect("minted");
+
+        let asking = serde_json::json!({
+            "hostname": "shop.example.com",
+            "token": "tok-from-the-other-node",
+            "response": "tok-from-the-other-node.thumbprint",
+        });
+
+        // No secret at all, and the wrong one: both refused, and nothing
+        // stored either time.
+        for presented in ["", "not-the-secret"] {
+            let response = authority
+                .harness
+                .post("/api/network/challenge")
+                .header("authorization", format!("Bearer {presented}"))
+                .json(&asking)
+                .send()
+                .await;
+            assert_eq!(response.status, StatusCode::FORBIDDEN, "{presented:?}");
+        }
+        assert!(
+            crate::edge::acme::challenge_response(&authority.database, "tok-from-the-other-node")
+                .await
+                .expect("read")
+                .is_none(),
+            "a refused publish stores nothing"
+        );
+
+        // And with it, the node answers for a token it did not order.
+        let response = authority
+            .harness
+            .post("/api/network/challenge")
+            .header("authorization", format!("Bearer {secret}"))
+            .json(&asking)
+            .send()
+            .await;
+        response.assert_ok();
+        assert_eq!(
+            crate::edge::acme::challenge_response(&authority.database, "tok-from-the-other-node")
+                .await
+                .expect("read")
+                .as_deref(),
+            Some("tok-from-the-other-node.thumbprint")
+        );
+
+        // A name this node is not an edge of has no secret, so there is
+        // nothing that could authorize one.
+        let elsewhere = authority
+            .harness
+            .post("/api/network/challenge")
+            .header("authorization", format!("Bearer {secret}"))
+            .json(&serde_json::json!({
+                "hostname": "somebody-elses.example.com",
+                "token": "tok-2",
+                "response": "tok-2.thumbprint",
+            }))
+            .send()
+            .await;
+        assert_eq!(elsewhere.status, StatusCode::FORBIDDEN);
     }
 
     /// The whole of phase 1 in one request: a node holding a token

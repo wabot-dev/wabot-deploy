@@ -4486,6 +4486,12 @@ impl ServiceApi {
             let payload = serde_json::to_value(crate::network::errand::Edge {
                 hostname: hostname.clone(),
                 upstreams: Vec::new(),
+                // Nothing to reach and nothing to reach it with: this
+                // errand exists to make a node stop answering, and a
+                // co-edge list would be telling it about a name it is
+                // being taken off.
+                peers: Vec::new(),
+                secret: None,
             })
             .unwrap_or_default();
             crate::network::errand::queue(
@@ -4747,6 +4753,60 @@ impl ServiceApi {
     /// answer changes: a replica moved, added or gone is a different
     /// upstream list, and an edge holding the old one would send
     /// requests to a container that is not there.
+    /// Everyone else who answers for this name, as the node being told
+    /// will need them.
+    ///
+    /// Skipping the recipient itself, and skipping any node this one
+    /// cannot describe: an entry with no overlay address, no key or no
+    /// authority is one the far node could not dial anyway, and a peer it
+    /// cannot verify is one `call::to_node` refuses by design.
+    ///
+    /// **This node's own authority comes from the local CA**, not from its
+    /// row: `ca_pem` is what *other* nodes sent about themselves, so the
+    /// self row has none.
+    async fn co_edges(
+        &self,
+        chosen: &[(String, String)],
+        nodes: &[crate::network::Node],
+        hostname: &str,
+        telling: &str,
+    ) -> Vec<crate::network::errand::Peer> {
+        let mine = crate::edge::certs::ca_certificate_pem(&self.state.database)
+            .await
+            .ok();
+        let mut peers = Vec::new();
+        for (name, node_id) in chosen {
+            if name != hostname || node_id == telling {
+                continue;
+            }
+            let Some(node) = nodes.iter().find(|node| &node.id == node_id) else {
+                continue;
+            };
+            let ca = match node.is_self {
+                true => mine.clone(),
+                false => node.ca_pem.clone(),
+            };
+            let (Some(overlay_ip), Some(public_key), Some(ca_pem)) =
+                (node.overlay_ip.clone(), node.public_key.clone(), ca)
+            else {
+                tracing::debug!(
+                    node = %node.id,
+                    %hostname,
+                    "not carried as a co-edge: no address, key or authority for it"
+                );
+                continue;
+            };
+            peers.push(crate::network::errand::Peer {
+                node_id: node.id.clone(),
+                name: node.name.clone(),
+                overlay_ip,
+                public_key,
+                ca_pem,
+            });
+        }
+        peers
+    }
+
     async fn dispatch_edges(
         &self,
         service: &services::Service,
@@ -4758,7 +4818,7 @@ impl ServiceApi {
         let me = nodes.iter().find(|node| node.is_self).map(|node| &*node.id);
 
         let edge = crate::network::capability::Capability::Edge;
-        for (hostname, node_id) in chosen {
+        for (hostname, node_id) in chosen.clone() {
             // This node's own choice needs no errand — an errand queued
             // for itself is one nobody ever collects, because a node
             // does not poll itself. Its route comes from the local sync
@@ -4783,9 +4843,20 @@ impl ServiceApi {
                 );
                 continue;
             }
+            // The other nodes that answer for this name, with what it
+            // takes to reach them: an address, a key and the authority
+            // that vouches for their certificate. Without this a node
+            // cannot publish a challenge to its co-edges, and two nodes
+            // enrolled by the same authority have no session at all.
+            let peers = self.co_edges(&chosen, &nodes, &hostname, &node_id).await;
+            let secret = crate::platform::edges::secret_for(&self.state.database, &hostname)
+                .await
+                .unwrap_or_default();
             let payload = serde_json::to_value(crate::network::errand::Edge {
                 hostname,
                 upstreams: upstreams.clone(),
+                peers,
+                secret,
             })
             .unwrap_or_default();
 
@@ -7535,6 +7606,124 @@ mod tests {
             body.matches(crate::platform::postgres::DATA_MOUNT).count() >= 2,
             "a disk for each copy: {body}"
         );
+    }
+
+    /// Two nodes for one name, and each is told who the other is.
+    ///
+    /// **Because two edges of one name may never have met.** The overlay
+    /// is a star: nodes enrolled by the same authority have no session and
+    /// no rows about each other. The node that owns the service is the
+    /// only one that knows the whole set, so the set travels on the errand
+    /// that makes each of them an edge — with an address, a key and the
+    /// authority that vouches for its certificate, which is what
+    /// `call::to_node` needs to verify rather than merely encrypt.
+    ///
+    /// What it is all for is the HTTP-01 challenge: the token lives in the
+    /// ordering node's own table, and the authority asks whichever address
+    /// the name resolves to.
+    #[tokio::test]
+    async fn each_edge_of_a_name_is_told_who_the_others_are() {
+        let console = Console::new().await;
+        let cookie = console.signed_in().await;
+        service(&console, &cookie).await;
+        for (id, name) in [
+            ("nd-first1", "first.example"),
+            ("nd-second1", "second.example"),
+        ] {
+            crate::network::save(
+                &console.database,
+                &crate::network::Node {
+                    usage: None,
+                    id: id.into(),
+                    name: name.into(),
+                    kind: crate::network::Kind::Public,
+                    // `localhost` for both: it is the one name that
+                    // resolves the same everywhere, so it stands in for
+                    // two machines the hostname points at.
+                    endpoint: Some("localhost:443".into()),
+                    public_key: Some("0hEr0DzTvMDTRfPPmYFCVCQ1cA0nnUnP+2fFqZBBBGQ=".into()),
+                    overlay_ip: Some(format!("10.42.0.{}", id.len())),
+                    is_self: false,
+                    last_seen_at: None,
+                    allows: vec![crate::network::capability::Capability::Edge],
+                    ca_pem: Some(
+                        "-----BEGIN CERTIFICATE-----\nnot real\n-----END CERTIFICATE-----\n".into(),
+                    ),
+                },
+            )
+            .await
+            .expect("a node");
+        }
+
+        console
+            .harness
+            .post("/projects/my-api/services/web/ports")
+            .header("cookie", &cookie)
+            .form(&[
+                ("container_port", "8080"),
+                ("https", "1"),
+                ("hostname", "localhost"),
+                ("renew_with", "self_signed"),
+            ])
+            .send()
+            .await;
+        console
+            .harness
+            .post("/projects/my-api/services/web/edges")
+            .header("cookie", &cookie)
+            .form(&[
+                ("hostname", "localhost"),
+                ("edge-nd-first1", "1"),
+                ("edge-nd-second1", "1"),
+            ])
+            .send()
+            .await;
+
+        let orders = crate::network::errand::all(&console.database)
+            .await
+            .expect("errands");
+        let to_first = orders
+            .iter()
+            .filter(|order| order.node_id == "nd-first1")
+            .filter_map(|order| {
+                serde_json::from_value::<crate::network::errand::Edge>(order.payload.clone()).ok()
+            })
+            .next_back()
+            .expect("an edge errand for the first node");
+
+        assert_eq!(
+            to_first
+                .peers
+                .iter()
+                .map(|peer| peer.node_id.clone())
+                .collect::<Vec<_>>(),
+            vec!["nd-second1".to_string()],
+            "the other edge, and not itself"
+        );
+        let peer = &to_first.peers[0];
+        assert_eq!(peer.overlay_ip, "10.42.0.10");
+        assert!(
+            !peer.public_key.is_empty(),
+            "an address alone is no session"
+        );
+        assert!(
+            peer.ca_pem.contains("BEGIN CERTIFICATE"),
+            "and verified, not merely encrypted"
+        );
+        assert!(
+            to_first.secret.is_some(),
+            "and something to prove itself with when it publishes a challenge"
+        );
+        // The same secret for both, because it belongs to the name.
+        let to_second = orders
+            .iter()
+            .filter(|order| order.node_id == "nd-second1")
+            .filter_map(|order| {
+                serde_json::from_value::<crate::network::errand::Edge>(order.payload.clone()).ok()
+            })
+            .next_back()
+            .expect("an edge errand for the second node");
+        assert_eq!(to_first.secret, to_second.secret);
     }
 
     /// A name pointing at another node is accepted, and that node is the

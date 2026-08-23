@@ -282,6 +282,11 @@ pub async fn to_node(
     node: &super::Node,
     path: &str,
     body: Option<String>,
+    // A secret for the one thing being asked, when the endpoint needs
+    // one. The overlay says the packets came from that peer and nothing
+    // above it says who called, so an endpoint whose effect is not
+    // harmless carries its own proof — see `api::challenge`.
+    bearer: Option<&str>,
 ) -> Result<StatusCode, CallError> {
     let (Some(address), Some(ca)) = (&node.overlay_ip, &node.ca_pem) else {
         return Err(CallError::Address(
@@ -330,9 +335,15 @@ pub async fn to_node(
         Some(_) => Request::post(&url),
         None => Request::get(&url),
     };
-    let request = builder
+    let mut builder = builder
         .header(USER_AGENT, HeaderValue::from_static(AGENT))
-        .header(CONTENT_TYPE, HeaderValue::from_static("application/json"))
+        .header(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+    if let Some(secret) = bearer {
+        let value = HeaderValue::from_str(&format!("Bearer {secret}"))
+            .map_err(|_| CallError::Address(url.clone(), "that secret is not a header".into()))?;
+        builder = builder.header(AUTHORIZATION, value);
+    }
+    let request = builder
         .body(body.unwrap_or_default())
         .map_err(|error| CallError::Address(url.clone(), error.to_string()))?;
 
