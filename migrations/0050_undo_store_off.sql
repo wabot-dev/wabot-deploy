@@ -1,0 +1,24 @@
+-- Undo a setting no operator could have chosen.
+--
+-- The capabilities form drew a checkbox for `host` and `edge`, and the
+-- handler wrote a setting for every capability in the enum — so saving
+-- that form wrote `node.provides.store = 'off'`, in silence, on every
+-- node whose operator ever touched it. The node then stopped being
+-- offered as somewhere a standby could go and refused the `database`
+-- errands for the copies it already held.
+--
+-- The form is generated from the enum now, so the next capability cannot
+-- arrive without a checkbox. That fixes what will be written; it does
+-- not fix what was.
+--
+-- ## Why deleting the row is the right repair and not an overreach
+--
+-- Because there was **no way to set it**. `store` has never had a
+-- control, so every stored `off` is this bug's handwriting rather than a
+-- decision — and unset means yes, which is what the node was doing
+-- before somebody pressed Save. An operator who does want it off can now
+-- say so, on a form that shows them the answer.
+--
+-- Only `off`, and only that key: a value somebody may yet set to
+-- something else is not this migration's to guess at.
+DELETE FROM setting WHERE "key" = 'node.provides.store' AND "value" = 'off';

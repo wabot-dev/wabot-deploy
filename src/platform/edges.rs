@@ -352,6 +352,9 @@ mod tests {
 
     fn node(id: &str, overlay: &str, is_self: bool) -> crate::network::Node {
         crate::network::Node {
+            update_note: None,
+            version: None,
+            wanted_version: None,
             usage: None,
             id: id.into(),
             name: id.into(),

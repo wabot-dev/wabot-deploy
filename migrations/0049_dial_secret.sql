@@ -1,0 +1,25 @@
+-- What this node presents when it dials *another* one over the overlay.
+--
+-- Every road built so far runs the same way: a member calls its
+-- authority, over TLS to a public endpoint, holding the secret its join
+-- token carried. Phase 9 proved the opposite direction works — a private
+-- node behind NAT answers on its overlay address with a verified
+-- certificate — but nothing on that road says *who is calling*. The
+-- doorbell is unauthenticated on purpose because it carries nothing and
+-- does nothing; anything with an answer in it needs more.
+--
+-- ## Why only one column, and only on this side
+--
+-- Because the verifier stores nothing. A node derives the secret each
+-- authority must present from one key of its own —
+-- `network::dial_secret_for`, keyed by `node.dial.key` in `setting` — so
+-- it can recompute and compare without keeping a copy to be read, and
+-- can hand it out again on every report without having kept it. Rotating
+-- the key withdraws every one of them at once, and every authority
+-- learns the new one on its next report.
+--
+-- This column is the *presenting* side: the secret that node handed this
+-- one, kept in clear because presenting it is what it is for. Exactly
+-- like `authority.secret`, which has been the same thing in the other
+-- direction since phase 1.
+ALTER TABLE node ADD COLUMN dial_secret TEXT;

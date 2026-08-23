@@ -570,10 +570,26 @@ async fn report_for(
     // This node's own reachability, as it sees it. The authority cannot
     // work it out: everything it knows about this node arrived through
     // a token or over the overlay.
-    let endpoint = super::me(database)
-        .await
-        .map_err(|error| error.to_string())?
-        .and_then(|me| me.endpoint);
+    //
+    // **An empty string, never an absent field.** `note_reachability`
+    // reads absent as "an older node cannot say" and keeps what it has,
+    // and empty as "I have none" — a distinction that has to exist,
+    // because a report that omits a field must not undo what arrived at
+    // join. Nothing ever sent the empty one, so a node that *stopped*
+    // being public never told anybody: measured on the test pair, where
+    // the public node still held the private one as
+    // `192.168.1.55:443` — the address that node was named after before
+    // the console answered on its own — and therefore as **public**. It
+    // pointed its tunnel at an address on somebody else's network at
+    // every start, and `may_be_edge` would have offered it for a
+    // hostname it can never answer for.
+    let endpoint = Some(
+        super::me(database)
+            .await
+            .map_err(|error| error.to_string())?
+            .and_then(|me| me.endpoint)
+            .unwrap_or_default(),
+    );
 
     // And what this node has agreed that authority may ask of it. It
     // travels on every report rather than only at join time, for the
@@ -602,7 +618,44 @@ async fn report_for(
         // dial this one at all — on the internet neither has an endpoint,
         // and that has no answer.
         lan: Some(crate::network::lan::addresses()),
+        // What this node is running, so a console elsewhere can say which
+        // machine is behind — and so an instruction to catch up has
+        // something to be compared against.
+        version: Some(crate::api::VERSION.to_string()),
+        // And how the last update went, which is the one thing the errand
+        // path cannot carry: it was settled before the install began.
+        // Empty is "nothing wrong", which clears whatever was there.
+        update_note: Some(update_note(database).await),
+        // And what that node may present when it dials this one back.
+        // Recomputed per authority rather than kept: see
+        // `network::dial_secret_for`.
+        dial: super::dial_secret_for(database, authority)
+            .await
+            .map_err(|error| error.to_string())
+            .ok(),
     })
+}
+
+/// The last update's failure, in one line, or nothing.
+///
+/// Read from the run row on the machine that ran it — the only place it
+/// exists. A run that is still going is not a failure and says nothing:
+/// the version arriving is how success is seen, and a line about an
+/// update in flight would be stale before it landed.
+async fn update_note(database: &SqliteDatabase) -> String {
+    match crate::update::runs::latest(database).await {
+        Ok(Some(run)) if run.status == crate::update::runs::Status::Failed => {
+            let reason = run
+                .detail
+                .unwrap_or_else(|| "no reason recorded".to_string());
+            format!("{} failed: {reason}", run.to_version)
+        }
+        Ok(_) => String::new(),
+        Err(error) => {
+            tracing::warn!(%error, "could not read the last update");
+            String::new()
+        }
+    }
 }
 
 /// This machine's own totals, for the report.
@@ -647,6 +700,11 @@ async fn carry_out(
         allowed(database, authority, needed).await?;
     }
 
+    // Taken before the payload is moved out of `order`. A `command`
+    // errand is identified by it — see `do_once`, where the id is the
+    // whole of what stops an imperative happening twice.
+    let id = order.id.clone();
+
     match order.kind {
         Kind::Host => {
             let host: errand::Host = serde_json::from_value(order.payload)
@@ -683,6 +741,16 @@ async fn carry_out(
             }
             serve_name(database, config, container, authority, edge).await
         }
+        Kind::Manage => {
+            let manage: errand::Manage = serde_json::from_value(order.payload)
+                .map_err(|error| format!("that is not a manage errand: {error}"))?;
+            be_at_release(database, container, authority, &manage.version).await
+        }
+        Kind::Command => {
+            let command: errand::Command = serde_json::from_value(order.payload)
+                .map_err(|error| format!("that is not a command errand: {error}"))?;
+            do_once(database, config, &id, command.action).await
+        }
         // An instruction from a newer node. Refused with the reason
         // rather than dropped — the authority learns that this node is
         // the old one, which is something somebody can act on.
@@ -690,6 +758,163 @@ async fn carry_out(
             Err("this node is older than that instruction and does not know it".into())
         }
     }
+}
+
+/// Be running this release, or say why not.
+///
+/// **Convergent, and that is what makes it safe.** The question asked is
+/// what this node is running, never whether it has been asked before — so
+/// a node already there settles the errand as satisfied at no cost, and a
+/// node that was off when it was queued converges when it comes back.
+///
+/// It also means nothing here depends on winning a race. The install ends
+/// by replacing this process, and the errand is settled by the caller
+/// *after* this returns — so a restart that lands first leaves the errand
+/// pending and it is collected again, at which point either the version
+/// matches and it is satisfied, or it does not and trying again is right.
+///
+/// Everything that can be refused **now** is refused now, while there is
+/// still an errand to answer with. That is where a reason reaches the node
+/// that asked: an unknown tag, or a release with no build for this
+/// machine, would otherwise be a version that quietly never changed. The
+/// same rule the console's own install button follows, for the same
+/// reason.
+async fn be_at_release(
+    database: &SqliteDatabase,
+    container: &Container,
+    authority: &str,
+    tag: &str,
+) -> Result<(), String> {
+    if crate::update::at_release(tag) {
+        return Ok(());
+    }
+    // Refused before anything is downloaded: an update that cannot
+    // restart the node ends with a new binary on disk and the old one
+    // still serving.
+    if !crate::bootstrap::service::supervised() {
+        return Err("nothing supervises this node, so it cannot restart itself".into());
+    }
+    if let Some(existing) = crate::update::runs::in_flight(database)
+        .await
+        .map_err(|error| error.to_string())?
+    {
+        return Err(format!(
+            "an update to {} is already running here",
+            existing.to_version
+        ));
+    }
+
+    let releases = crate::update::shared()
+        .releases()
+        .await
+        .map_err(|error| error.to_string())?;
+    let release = crate::update::github::find(&releases, tag)
+        .ok_or_else(|| format!("no release is tagged {tag}"))?;
+    if !release.installable() {
+        return Err(format!(
+            "{} published no build this node can install",
+            release.tag
+        ));
+    }
+
+    // Obeying is local — the same rule a `host` errand follows. The job
+    // survives this process being replaced, which is the one thing a
+    // spawned task could not do here.
+    wabot::async_jobs::run_command(
+        container,
+        &crate::update::jobs::InstallRelease {
+            tag: release.tag.clone(),
+            asked_by: Some(authority.to_string()),
+        },
+    )
+    .await
+    .map_err(|error| error.to_string())?;
+    Ok(())
+}
+
+/// Do something once, and never twice.
+///
+/// **This is where the ledger decides**, and it is the one place in this
+/// codebase where that is right. Every other instruction is desired state
+/// — "run these slots", "answer for this name", "be on this release" — and
+/// asks about the thing rather than about the history. Nothing about
+/// restarting is like that: asked twice it happens twice, and the process
+/// it kills is the one that would have settled the errand, so being asked
+/// twice is not a corner case but the ordinary path.
+///
+/// So the errand's **id** is the key, written before the thing is done. A
+/// second collection of the same id finds it and does nothing; a node that
+/// wants another restart sends another errand, which has another id.
+async fn do_once(
+    database: &SqliteDatabase,
+    config: &Config,
+    errand_id: &str,
+    action: errand::Action,
+) -> Result<(), String> {
+    if already_obeyed(database, action, errand_id).await? {
+        return Ok(());
+    }
+
+    match action {
+        errand::Action::Restart => {
+            if !crate::bootstrap::service::supervised() {
+                return Err("nothing supervises this node, so it cannot restart itself".into());
+            }
+            // Before the restart, because after it there is no "after".
+            note_obeyed(database, action, errand_id).await?;
+            tracing::info!(errand = %errand_id, "restarting, because another node asked");
+            crate::update::restart().map_err(|error| error.to_string())
+        }
+        errand::Action::BackUp => {
+            // Two at once is two copies of every database on a machine
+            // with one core. The refusal travels, which is the whole
+            // difference from letting it queue.
+            if crate::node::backups::in_progress() {
+                return Err("a backup is already running here".into());
+            }
+            note_obeyed(database, action, errand_id).await?;
+            crate::node::backups::start_in_background(
+                config.clone(),
+                std::sync::Arc::new(database.clone()),
+            );
+            Ok(())
+        }
+        errand::Action::Unknown => {
+            Err("this node is older than that instruction and does not know it".into())
+        }
+    }
+}
+
+/// Whether this exact asking has been carried out already.
+///
+/// Named, because it is the rule and not a detail: an imperative errand
+/// is identified by its **id**, so the same one collected twice does
+/// nothing and a second asking is a second errand. Split out from
+/// [`do_once`] so it can be tested without taking a backup or restarting
+/// the process that is running the test.
+async fn already_obeyed(
+    database: &SqliteDatabase,
+    action: errand::Action,
+    errand_id: &str,
+) -> Result<bool, String> {
+    let obeyed = crate::node::settings::read(database, &obeyed_key(action))
+        .await
+        .map_err(|error| error.to_string())?;
+    Ok(obeyed.as_deref() == Some(errand_id))
+}
+
+async fn note_obeyed(
+    database: &SqliteDatabase,
+    action: errand::Action,
+    errand_id: &str,
+) -> Result<(), String> {
+    crate::node::settings::write(database, &obeyed_key(action), errand_id)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+fn obeyed_key(action: errand::Action) -> String {
+    format!("node.last_obeyed.{}", action.as_str())
 }
 
 /// Refuse an errand this node never agreed to take.
@@ -1290,6 +1515,9 @@ mod tests {
         crate::network::save(
             &database,
             &crate::network::Node {
+                update_note: None,
+                version: None,
+                wanted_version: None,
                 usage: None,
                 id: "nd-up".into(),
                 name: "up.example".into(),
@@ -1604,6 +1832,105 @@ mod tests {
                 .is_empty(),
             "it was refused before anything was written"
         );
+    }
+
+    /// Looking after the machine is its own consent.
+    ///
+    /// A node that agreed to run somebody's containers did not agree to
+    /// let them decide which binary it runs — the two are not the same
+    /// favour, which is the whole reason `manage` is a capability of its
+    /// own rather than something `host` carries.
+    #[tokio::test]
+    async fn a_node_that_never_agreed_to_be_managed_refuses_and_says_so() {
+        let database = crate::db::open_in_memory().await.expect("open");
+        let container = Container::new();
+        crate::network::capability::grant(
+            &database,
+            "nd-a",
+            &[super::super::capability::Capability::Host],
+        )
+        .await
+        .expect("grant");
+
+        for (kind, payload) in [
+            (Kind::Manage, serde_json::json!({ "version": "v9.9.9" })),
+            (Kind::Command, serde_json::json!({ "action": "restart" })),
+        ] {
+            let error = carry_out(
+                &database,
+                &Config::default(),
+                &container,
+                "nd-a",
+                Errand {
+                    id: "er-1".into(),
+                    kind,
+                    payload,
+                },
+            )
+            .await
+            .expect_err("refused");
+            assert!(error.contains("has not agreed to `manage`"), "{error}");
+        }
+    }
+
+    /// An imperative is obeyed once, and the errand's id is what says so.
+    ///
+    /// **The one place the ledger decides.** Every other instruction here
+    /// is desired state and asks about the thing rather than the history;
+    /// nothing about restarting is like that, and the process it kills is
+    /// the one that would have reported the errand settled — so being
+    /// collected again is the ordinary path and not a corner.
+    #[tokio::test]
+    async fn an_imperative_errand_obeyed_once_is_not_obeyed_again() {
+        let database = crate::db::open_in_memory().await.expect("open");
+        let action = errand::Action::BackUp;
+
+        // The ledger and not the doing: `do_once` restarts the process or
+        // spawns a backup, and a test that did either would be testing
+        // the machine it runs on — and the backup flag is process-wide,
+        // so it would flake the test that asserts nothing is running.
+        assert!(!already_obeyed(&database, action, "er-once")
+            .await
+            .expect("read"));
+
+        note_obeyed(&database, action, "er-once")
+            .await
+            .expect("noted");
+        assert!(
+            already_obeyed(&database, action, "er-once")
+                .await
+                .expect("read"),
+            "the same asking is not obeyed twice"
+        );
+        assert!(
+            !already_obeyed(&database, action, "er-twice")
+                .await
+                .expect("read"),
+            "and a new asking is a new errand, considered on its own merits"
+        );
+        // Per action, not one flag for all of them.
+        assert!(
+            !already_obeyed(&database, errand::Action::Restart, "er-once")
+                .await
+                .expect("read"),
+            "one action's ledger says nothing about another's"
+        );
+    }
+
+    /// An action a newer node knows about is a value this one can refuse
+    /// with a sentence, rather than a body it cannot parse.
+    #[tokio::test]
+    async fn an_action_this_version_does_not_know_is_refused_with_a_reason() {
+        let database = crate::db::open_in_memory().await.expect("open");
+        let command: errand::Command =
+            serde_json::from_value(serde_json::json!({ "action": "reformat-the-disk" }))
+                .expect("read as a value");
+        assert_eq!(command.action, errand::Action::Unknown);
+
+        let error = do_once(&database, &Config::default(), "er-1", command.action)
+            .await
+            .expect_err("refused");
+        assert!(error.contains("older than that instruction"), "{error}");
     }
 
     /// Revoking a grant must not block the message that cleans up after

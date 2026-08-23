@@ -937,35 +937,85 @@ impl ServicePages {
             return Ok(Redirect::found(format!("/projects/{}", project.slug)).into());
         };
 
-        // Only the copies that run **here**. A replica elsewhere writes
-        // its log on that machine, and this node has no way to read it —
-        // saying where to look is the honest answer, and the page does.
-        let mut mine: Vec<u32> =
+        // Every copy, read once — this used to ask twice for the same
+        // rows to answer two questions about them.
+        let copies: Vec<crate::platform::replicas::Replica> =
             crate::platform::replicas::of_service(&self.state.database, &service.id)
                 .await?
                 .into_iter()
-                .filter(|replica| replica.is_here() && !replica.evicted())
-                .map(|replica| replica.slot)
+                .filter(|replica| !replica.evicted())
                 .collect();
+        // The copies that run **here**, whose log is a file on this disk.
+        let mut mine: Vec<u32> = copies
+            .iter()
+            .filter(|replica| replica.is_here())
+            .map(|replica| replica.slot)
+            .collect();
         mine.sort_unstable();
-        let elsewhere = crate::platform::replicas::of_service(&self.state.database, &service.id)
-            .await?
-            .into_iter()
-            .any(|replica| !replica.is_here() && !replica.evicted());
+        // And the ones elsewhere, which this node now asks for rather
+        // than telling somebody to go and look. The page said "open the
+        // console of the node holding it" because there was no way to
+        // ask; phase 9 built the road and this is what it was for.
+        let mut away: Vec<(u32, String)> = copies
+            .iter()
+            .filter(|replica| !replica.is_here())
+            .filter_map(|replica| {
+                replica
+                    .node_id
+                    .clone()
+                    .map(|node_id| (replica.slot, node_id))
+            })
+            .collect();
+        away.sort_unstable_by_key(|(slot, _)| *slot);
+        let mut readable: Vec<u32> = mine
+            .iter()
+            .copied()
+            .chain(away.iter().map(|(s, _)| *s))
+            .collect();
+        readable.sort_unstable();
 
-        // Anything that is not a copy running here falls back to the
+        // Anything that is not a copy of this service falls back to the
         // first one rather than erroring: a stale link or a hand-typed
         // number should show a log, not a refusal.
         let slot = query
             .slot
             .as_deref()
             .and_then(|slot| slot.parse::<u32>().ok())
-            .filter(|slot| mine.contains(slot))
-            .or(mine.first().copied());
+            .filter(|slot| readable.contains(slot))
+            .or(readable.first().copied());
         let everything = query.all.is_some();
-        let container = slot.map(|slot| {
+        // Which machine the chosen copy is on. `None` is here, and every
+        // reading below branches on it: a log fetched over the network
+        // has no offset to follow from, nothing to search locally, and no
+        // generations this node can count.
+        let holder = slot.and_then(|slot| {
+            away.iter()
+                .find(|(one, _)| *one == slot)
+                .map(|(_, node)| node.clone())
+        });
+        let container = slot.filter(|_| holder.is_none()).map(|slot| {
             crate::platform::replicas::container_id_for(&project.slug, &service.slug, slot)
         });
+        // Asked for now, and the refusal is the page's to print: a node
+        // with no overlay session, a copy that has written nothing, a
+        // grant withdrawn since. Every one of those is a sentence
+        // somebody can act on.
+        let (remote_text, remote_error) = match (&holder, slot) {
+            (Some(node), Some(slot)) => match crate::network::replica_log(
+                &self.state.database,
+                node,
+                &project.name,
+                &service.name,
+                slot,
+                everything,
+            )
+            .await
+            {
+                Ok(text) => (Some(text), None),
+                Err(reason) => (None, Some(reason)),
+            },
+            _ => (None, None),
+        };
         // Two readings of one file, and the difference is which question
         // is being asked. The live tail is for watching; the whole kept
         // history — every rotated generation and the live file as one —
@@ -1046,11 +1096,15 @@ impl ServicePages {
             .unwrap_or(false);
         // Whether there is a file at all, kept apart from whether it
         // has anything in it — see the page.
-        let kept = opened.is_some();
-        let (text, from) = match &opened {
-            Some(chunk) => (chunk.text.clone(), chunk.next),
-            None => (String::new(), 0),
+        let kept = opened.is_some() || remote_text.is_some();
+        let (text, from) = match (&opened, &remote_text) {
+            (Some(chunk), _) => (chunk.text.clone(), chunk.next),
+            // No offset: what came back is what that node chose to send,
+            // and a number counted there is not a place in anything here.
+            (None, Some(text)) => (text.clone(), 0),
+            (None, None) => (String::new(), 0),
         };
+        let elsewhere = !away.is_empty();
 
         let all_projects = access::projects_for(&self.state.database, &account).await?;
         let frame = Frame::new(
@@ -1069,6 +1123,9 @@ impl ServicePages {
             service.name.clone(),
         );
         let (for_island, service_for_island) = (project_slug.clone(), service_slug.clone());
+        // Read before the render takes `holder`: the island below is for
+        // a copy on this machine and nothing else.
+        let here = holder.is_none();
         let body = super::language::scoped(account.language, || {
             rsx! {
             (layout::style_tag())
@@ -1092,9 +1149,9 @@ impl ServicePages {
                              holds every run since the last rotation — and the ones before that \
                              are in everything kept."))</p>
                     </div>
-                    @if mine.len() > 1 {
+                    @if readable.len() > 1 {
                         <div class="row">
-                            @for one in &mine {
+                            @for one in &readable {
                                 @if Some(*one) == slot {
                                     <span class="badge">(t("Copy "))(one)</span>
                                 } @else {
@@ -1120,7 +1177,16 @@ impl ServicePages {
                             // whether or not scripting is on: a label
                             // that only appears with a script is one
                             // somebody without a script cannot read.
-                            @if everything {
+                            @if holder.is_some() {
+                                // A copy on another machine does not
+                                // follow either, and for a plainer
+                                // reason: this is one answer to one
+                                // question, fetched when the page was
+                                // rendered. Reloading asks again.
+                                <span class="tile-detail">
+                                    (t("Read from the node running it — reload to ask again"))
+                                </span>
+                            } @else if everything {
                                 // The whole view does not follow: its
                                 // offsets are into a concatenation, so
                                 // resuming from one would read the wrong
@@ -1140,7 +1206,7 @@ impl ServicePages {
                                 </span>
                             }
                         </div>
-                        @if has_history && !everything {
+                        @if (has_history || holder.is_some()) && !everything {
                             <p class="tile-detail">
                                 (t("Older output is kept from before the last restarts."))
                                 " "
@@ -1149,22 +1215,33 @@ impl ServicePages {
                                 ))>(t("Show everything kept"))</a>
                             </p>
                         }
+                        @if let Some(reason) = &remote_error {
+                            (layout::error_note(reason))
+                        }
                         // **Searching is a link, not a script.** A GET
                         // form, so a search can be shared, bookmarked and
                         // gone back from — and it works with scripting
                         // off, which is the rule this console is built
                         // to. `slot` rides along or a search would jump
                         // to another copy.
-                        <form method="get" class="row"
-                              action=(format!(
-                                  "/projects/{project_slug}/services/{service_slug}/logs"
-                              ))>
-                            <input type="hidden" name="slot" value=(slot)>
-                            <input name="q" type="search" autocomplete="off" class="mono"
-                                   value=(needle.clone().unwrap_or_default())
-                                   placeholder=(t("Find in everything kept"))>
-                            <button class="btn btn-secondary" type="submit">(t("Find"))</button>
-                        </form>
+                        //
+                        // Only for a copy here. Searching a log on
+                        // another machine means that machine scanning
+                        // it, which is a different endpoint and a
+                        // decision about somebody else's one core — so
+                        // the reading travels and the sweep does not.
+                        @if holder.is_none() {
+                            <form method="get" class="row"
+                                  action=(format!(
+                                      "/projects/{project_slug}/services/{service_slug}/logs"
+                                  ))>
+                                <input type="hidden" name="slot" value=(slot)>
+                                <input name="q" type="search" autocomplete="off" class="mono"
+                                       value=(needle.clone().unwrap_or_default())
+                                       placeholder=(t("Find in everything kept"))>
+                                <button class="btn btn-secondary" type="submit">(t("Find"))</button>
+                            </form>
+                        }
 
                         @if let Some(found) = &found {
                             @let needle_text = needle.clone().unwrap_or_default();
@@ -1224,6 +1301,11 @@ impl ServicePages {
 }
 }</pre>
                             }
+                        } @else if holder.is_some() {
+                            // No `data-logs-out`: the island polls this
+                            // node's own endpoint, and there is nothing
+                            // of this copy here to poll for.
+                            <pre class="log">(&text)</pre>
                         } @else {
                             <pre class="log" data-logs-out
                                  data-slot=(slot)
@@ -1237,7 +1319,12 @@ impl ServicePages {
                         // saying the container is quiet when the truth
                         // is that nobody was listening. Found on a node
                         // — a service running since before this shipped.
-                        @if !kept {
+                        @if !kept && holder.is_some() {
+                            // The reason is already above, in the far
+                            // node's own words. Repeating a guess under
+                            // it would be this node explaining a machine
+                            // it cannot see.
+                        } @else if !kept {
                             <p class="tile-detail">(t("This container was started before its output \
                                  was being kept. Deploy it again and it will \
                                  write from then on."))</p>
@@ -1247,11 +1334,15 @@ impl ServicePages {
                         }
                     </section>
                 } @else if elsewhere {
+                    // Reached when every copy is elsewhere *and* none of
+                    // them has a node recorded — a placement that has not
+                    // been reported yet. Once one has, its slot is
+                    // readable and the panel above is what renders.
                     <section class="card stack">
                         <p>(t("No copy of this service runs on this node."))</p>
-                        <p class="tile-detail">(t("A copy writes its log on the machine that runs it, and \
-                             this node cannot read another one's disk. Open the \
-                             console of the node holding it."))</p>
+                        <p class="tile-detail">(t("A copy writes its log on the machine that runs it. This \
+                             node asks that machine for it — but it has not said which \
+                             machine yet, which it does on its next report."))</p>
                     </section>
                 } @else {
                     <section class="card stack">
@@ -1266,7 +1357,7 @@ impl ServicePages {
         // One stream, for the copy being read. The island needs to know
         // which — a page that opened the wrong slot's stream would show
         // a log that did not match the one it rendered.
-        let body = match slot {
+        let body = match slot.filter(|_| here) {
             Some(slot) => wabot::ui::hypertext::island(
                 "logs-live",
                 &serde_json::json!({
@@ -3469,6 +3560,16 @@ impl ServiceApi {
                 "you may look at this project, not change it",
             ));
         }
+        // A node that originates nothing makes no services either. Belt
+        // as well as braces: the switch refuses to go off while this node
+        // owns a project, so there should be nothing here to add one to —
+        // and "should be" is not a check.
+        if !crate::network::capability::owns(&self.state.database).await {
+            return Ok(back_with_error(
+                &format!("/projects/{}", project.slug),
+                "this node does not own services of its own",
+            ));
+        }
         let form_url = format!("/projects/{}/services/new", project.slug);
 
         let form = match read_form(request).await {
@@ -5467,11 +5568,17 @@ mod tests {
     }
 
     /// A copy elsewhere writes its log on the machine that runs it, and
-    /// this node cannot read another one's disk. Saying where to look is
-    /// the honest answer; an empty panel would read as a quiet
-    /// container.
+    /// this node asks that machine over the overlay — which is what
+    /// phase 9's channel was built for, and what this page said it could
+    /// not do for three phases.
+    ///
+    /// What is asserted here is the half a test can reach: the reading
+    /// is attempted, and when it cannot be had the reason is on the page
+    /// rather than in the journal. That it *arrives* is a two-node
+    /// question — in a test both ends are one database — and it is
+    /// verified on the nodes.
     #[tokio::test]
-    async fn a_log_that_lives_on_another_node_says_so_rather_than_showing_nothing() {
+    async fn a_log_that_lives_on_another_node_is_asked_for_over_the_network() {
         let console = Console::new().await;
         let cookie = console.signed_in().await;
         let service = placed_service(&console, &cookie).await;
@@ -5497,10 +5604,16 @@ mod tests {
             .await;
         let html = page.html();
 
+        // Nothing to follow: the island polls this node's own endpoint,
+        // and there is no copy of this here to poll for.
         assert!(!html.contains("data-logs-out"), "an empty panel: {html}");
+        // And the reason it could not be read is *on the page*. In this
+        // harness the holder is a node with no row, which is one of the
+        // several ways the answer does not arrive — every one of them
+        // ends up here rather than in the journal.
         assert!(
-            html.contains("Open the console of the node holding it"),
-            "{html}"
+            html.contains("no row for the one holding that copy"),
+            "the page has to say why it could not ask: {html}"
         );
     }
 
@@ -5833,6 +5946,9 @@ mod tests {
         crate::network::save(
             &console.database,
             &crate::network::Node {
+                update_note: None,
+                version: None,
+                wanted_version: None,
                 usage: None,
                 id: "nd-elsewhere1".into(),
                 name: "alpine.example".into(),
@@ -5928,6 +6044,9 @@ mod tests {
         crate::network::save(
             &console.database,
             &crate::network::Node {
+                update_note: None,
+                version: None,
+                wanted_version: None,
                 usage: None,
                 id: "nd-elsewhere2".into(),
                 name: "alpine.example".into(),
@@ -5977,6 +6096,9 @@ mod tests {
         crate::network::save(
             &console.database,
             &crate::network::Node {
+                update_note: None,
+                version: None,
+                wanted_version: None,
                 usage: None,
                 id: "nd-elsewhere1".into(),
                 name: "alpine.example".into(),
@@ -7545,6 +7667,9 @@ mod tests {
         crate::network::save(
             &console.database,
             &crate::network::Node {
+                update_note: None,
+                version: None,
+                wanted_version: None,
                 usage: None,
                 id: "nd-theedge".into(),
                 name: "edge.example".into(),
@@ -7635,6 +7760,9 @@ mod tests {
             crate::network::save(
                 &console.database,
                 &crate::network::Node {
+                    update_note: None,
+                    version: None,
+                    wanted_version: None,
                     usage: None,
                     id: id.into(),
                     name: name.into(),
@@ -7748,6 +7876,9 @@ mod tests {
         crate::network::save(
             &console.database,
             &crate::network::Node {
+                update_note: None,
+                version: None,
+                wanted_version: None,
                 usage: None,
                 id: "nd-theedge".into(),
                 name: "edge.example".into(),

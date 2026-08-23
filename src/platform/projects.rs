@@ -23,11 +23,13 @@ impl Project {
     /// A project that arrived on an errand is administered from the
     /// node that sent it: nothing here may change it, and the one thing
     /// this node's operator can always do is throw it out.
-    /// Nothing reads this yet: the project page's own guard and the
-    /// danger zone that evicts one are what do, and they arrive with
-    /// the page that places replicas. `services::Service::is_ours` is
-    /// already the check every service mutation goes through.
-    #[allow(dead_code)]
+    ///
+    /// Read by the capabilities form, which refuses to let a node stop
+    /// being an owner while any of these are still here — a project of
+    /// this node's own on a node that originates nothing would be
+    /// neither editable nor evictable. `services::Service::is_ours` is
+    /// the same check one level down, and every service mutation goes
+    /// through it.
     pub fn is_ours(&self) -> bool {
         self.origin_node_id.is_none()
     }

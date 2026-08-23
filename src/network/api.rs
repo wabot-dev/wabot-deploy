@@ -105,6 +105,26 @@ pub struct Settled {
     pub settled: bool,
 }
 
+/// Which copy's log, in the names both nodes already use for it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LogWanted {
+    pub project: String,
+    pub service: String,
+    pub slot: u32,
+    /// The whole kept history rather than the live file — every rotated
+    /// generation read as one, which is what somebody looking for what
+    /// happened before a restart wants.
+    #[serde(default)]
+    pub all: bool,
+}
+
+/// How much of a log crosses at once.
+///
+/// The same ceiling the local page reads with, so the two views are the
+/// same size — and well under `call::ask_node`'s own bound, which is
+/// what stops a far node's answer being this one's memory problem.
+const MAX_LOG: usize = 512 * 1024;
+
 /// What a joined node asks its authority to do.
 ///
 /// The kind travels as a string rather than as [`errand::Kind`]: a node
@@ -198,6 +218,41 @@ pub struct Report {
     /// public half, which is the whole point of publishing it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ca: Option<String>,
+    /// The release the reporting node is running.
+    ///
+    /// Nothing carried this, so a console looking at its own network could
+    /// not say which machine was behind — and asking one to catch up needs
+    /// to know that first. Learned like the fields above it, `None` from an
+    /// older node leaving the column alone.
+    ///
+    /// **Never part of "something changed."** Nothing is derived from it,
+    /// and `note_reachability` cannot feed the count anyway — the shape
+    /// `record` was fixed into, for the storm a per-report field caused
+    /// once already.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+    /// How the reporting node's last update went, in its own words.
+    ///
+    /// Empty means nothing is wrong. An update errand is settled the
+    /// moment an install *starts* — it must be, because the install ends
+    /// by replacing the process that would have settled it — so this is
+    /// the only road a failed download has back to the node that asked.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub update_note: Option<String>,
+    /// What the reader must present to be listened to when it dials this
+    /// node back over the overlay.
+    ///
+    /// The direction phase 9 opened and left unauthenticated. It travels
+    /// here because this is the one channel that is already both
+    /// authenticated and repeated: the reporting node knows who it is
+    /// talking to, and a node that was enrolled before this existed
+    /// learns it on its next poll rather than needing to join again.
+    ///
+    /// Derived rather than stored — see `network::dial_secret_for` — so
+    /// sending it on every report costs a hash and gives the reader no
+    /// way to be out of date.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dial: Option<String>,
 }
 
 /// One copy, as the node running it sees it.
@@ -325,35 +380,47 @@ impl NetworkApi {
     /// premise below turned out to be false — see `docs/network.md` phase
     /// 9, and `collect::Doorbell` for what it carries and does not.
     ///
-    /// The id in the path is read, not trusted: it bounds the effect to
-    /// authorities this node actually has, and gives the log line a name.
-    /// A stranger who reached this can ask this node to do what it was
-    /// going to do within fifteen seconds anyway.
+    /// **Authenticated now**, which phase 9 wrote down as owed and could
+    /// not build: there was no credential for the direction that dials
+    /// *in*. There is one — see migration `0049` — so the caller says who
+    /// it is instead of the path claiming it.
+    ///
+    /// A node too old to present one is refused, and its rings stop
+    /// shortening the wait. That is the whole cost: the pull loop delivers
+    /// everything within fifteen seconds and always did.
+    ///
+    /// The id in the path is now only the log's second opinion. It is kept
+    /// because the URL shape is what an older authority calls, and because
+    /// a mismatch between it and the credential is worth seeing.
     #[post("/wake/:authority")]
     #[raw]
     async fn wake(&self, request: Request) -> RestResult<Response> {
-        let authority = request
+        let claimed = request
             .uri()
             .path()
             .rsplit('/')
             .next()
             .unwrap_or_default()
             .to_string();
-
-        let known = super::authorities(&self.database)
-            .await
-            .map(|list| list.iter().any(|held| held.node_id == authority))
-            .unwrap_or(false);
-        if !known {
-            // Not an error worth a status code of its own: a node that
-            // was forgotten here is a node whose authority is still
-            // ringing, and it will stop when it next reads its own rows.
-            tracing::debug!(%authority, "rung by a node this one takes no orders from");
-            return Ok(json(StatusCode::OK, &Settled { settled: false }));
-        }
+        let Some(secret) = bearer(&request).map(str::to_string) else {
+            tracing::debug!(%claimed, "rung by somebody presenting nothing");
+            return Ok(refuse(
+                StatusCode::UNAUTHORIZED,
+                "this endpoint needs a secret this node knows you by",
+            ));
+        };
+        // Either credential, because either side may be doing the ringing:
+        // an authority with an errand for this node, or a node that has
+        // just handed one *up* to it. That second one never worked — the
+        // check here was "is the caller an authority", and a member is
+        // not, so phase 10's handed-up errands rang and were declined.
+        let node = match caller(&self.database, &secret).await {
+            Ok(node) => node,
+            Err(response) => return Ok(response),
+        };
 
         self.doorbell.ring();
-        tracing::debug!(%authority, "rung");
+        tracing::debug!(%node, %claimed, "rung");
         Ok(json(StatusCode::OK, &Settled { settled: true }))
     }
 
@@ -687,6 +754,106 @@ impl NetworkApi {
         }
     }
 
+    /// What a copy of your service is saying, on the machine running it.
+    ///
+    /// **The one thing the logs page has always admitted it could not
+    /// do.** A replica writes its log on the disk of the node that runs
+    /// it, and until phase 9 there was no way to ask — which is why that
+    /// page says "open the console of the node holding it".
+    ///
+    /// Reachable by either credential, because either node may be the one
+    /// holding the copy: an authority dials its member over the overlay,
+    /// a member dials its authority's public endpoint. See [`caller`].
+    ///
+    /// ## What guards it
+    ///
+    /// One local read: the service's `origin_node_id`, which is the node
+    /// that placed it. Not a capability of its own — a log comes with
+    /// `host`, the way the registry pull does, because a node that agreed
+    /// to run your containers cannot sensibly refuse you what they write.
+    /// And not the grant table either: the grant answers "may they ask me
+    /// to run this", where the question here is "is this theirs", and the
+    /// rows are the only thing that knows.
+    #[post("/replica-log")]
+    #[raw]
+    async fn replica_log(&self, request: Request) -> RestResult<Response> {
+        let Some(secret) = bearer(&request).map(str::to_string) else {
+            return Ok(refuse(
+                StatusCode::UNAUTHORIZED,
+                "this endpoint needs a secret this node knows you by",
+            ));
+        };
+        let node = match caller(&self.database, &secret).await {
+            Ok(node) => node,
+            Err(response) => return Ok(response),
+        };
+        let Ok(bytes) = wabot::rest::axum::body::to_bytes(request.into_body(), MAX_BODY).await
+        else {
+            return Ok(refuse(StatusCode::BAD_REQUEST, "that request is too large"));
+        };
+        let Ok(asked) = serde_json::from_slice::<LogWanted>(&bytes) else {
+            return Ok(refuse(StatusCode::BAD_REQUEST, "that is not a log request"));
+        };
+
+        // By **name**, which is the vocabulary both ends already share:
+        // an errand carries the project's and the service's names, a
+        // report names a replica by them, and neither node has ever seen
+        // the other's ids.
+        let projects = match crate::platform::projects::all(&self.database).await {
+            Ok(projects) => projects,
+            Err(error) => return Ok(unreadable_platform(error)),
+        };
+        let Some(project) = projects
+            .into_iter()
+            .find(|project| project.name == asked.project)
+        else {
+            return Ok(refuse(StatusCode::NOT_FOUND, "no such project here"));
+        };
+        let services = match crate::platform::services::all(&self.database, Some(&project.id)).await
+        {
+            Ok(services) => services,
+            Err(error) => return Ok(unreadable_platform(error)),
+        };
+        let Some(service) = services
+            .into_iter()
+            .find(|service| service.name == asked.service)
+        else {
+            return Ok(refuse(StatusCode::NOT_FOUND, "no such service here"));
+        };
+        if service.origin_node_id.as_deref() != Some(node.as_str()) {
+            // Said rather than answered with a 404: "that is not yours"
+            // is a different thing from "there is nothing here", and the
+            // node asking can act on the first.
+            return Ok(refuse(
+                StatusCode::FORBIDDEN,
+                "that service was not placed here by you",
+            ));
+        }
+
+        let container =
+            crate::platform::replicas::container_id_for(&project.slug, &service.slug, asked.slot);
+        let data_dir = &self.config.node.data_dir;
+        // The whole kept history, or the live file. The same two readings
+        // the local page offers, asked for the same way.
+        let text = match asked.all {
+            true => crate::deploy::logs::history(data_dir, &container, MAX_LOG)
+                .or_else(|| crate::deploy::logs::tail(data_dir, &container, MAX_LOG)),
+            false => crate::deploy::logs::tail(data_dir, &container, MAX_LOG),
+        };
+        match text {
+            Some(text) => Ok(Response::builder()
+                .status(StatusCode::OK)
+                .header(header::CONTENT_TYPE, "text/plain; charset=utf-8")
+                .body(Body::from(text))
+                .unwrap_or_else(|_| refuse(StatusCode::INTERNAL_SERVER_ERROR, "could not answer"))),
+            // A copy that has never written anything, or one started
+            // before its output was being kept. Not an error, and the
+            // difference between the two is not this node's to explain —
+            // the page that asked says it.
+            None => Ok(refuse(StatusCode::NOT_FOUND, "no log for that copy here")),
+        }
+    }
+
     /// What the caller says about the replicas this node placed there.
     ///
     /// The only way an authority learns anything about a copy it does
@@ -724,21 +891,21 @@ impl NetworkApi {
         // Its own addresses, before the reachability write and beside it:
         // the column is outside `Node` on purpose, so it has a statement
         // of its own — see migration `0046`.
+        // What this node may present when it dials that one back. Its own
+        // statement, like the addresses below and for the same reason:
+        // a credential must not be something a row rebuilt from a report
+        // can take away as a side effect.
+        if let Some(secret) = report.dial.as_deref().filter(|secret| !secret.is_empty()) {
+            if let Err(error) = super::remember_dial_secret(&self.database, &node, secret).await {
+                tracing::warn!(%error, node = %node, "could not record how to dial a node back");
+            }
+        }
         if let Some(addresses) = &report.lan {
             if let Err(error) = super::lan::remember(&self.database, &node, addresses).await {
                 tracing::warn!(%error, node = %node, "could not record a node's own addresses");
             }
         }
-        if let Err(error) = note_reachability(
-            &self.database,
-            &node,
-            report.endpoint.as_deref(),
-            report.allows.as_deref(),
-            report.ca.as_deref(),
-            report.usage,
-        )
-        .await
-        {
+        if let Err(error) = note_reachability(&self.database, &node, &report).await {
             return Ok(unreadable(error));
         }
 
@@ -882,6 +1049,9 @@ impl NetworkApi {
         let recorded = super::save(
             &self.database,
             &Node {
+                update_note: None,
+                version: None,
+                wanted_version: None,
                 usage: None,
                 id: arriving.node.clone(),
                 // Whatever it calls itself. Cosmetic, and the enrolment
@@ -1059,6 +1229,36 @@ async fn asking(database: &SqliteDatabase, secret: &str) -> Result<String, Respo
     }
 }
 
+/// Which node is asking, by either credential it could be holding.
+///
+/// Two roads reach this node and each has its own secret, because each
+/// runs the other way:
+///
+/// * A **member** dials its authority's public endpoint holding the
+///   secret its join token carried — [`asking`], and every endpoint above
+///   this one.
+/// * An **authority** dials a member over the overlay holding the secret
+///   that member derived for it and sent on a report — see
+///   `network::who_dialled`.
+///
+/// An endpoint that can be reached both ways has to accept both, and it
+/// is the same question either way: which node is this. Tried in that
+/// order because the first is a single indexed read and the second is a
+/// hash per authority.
+async fn caller(database: &SqliteDatabase, secret: &str) -> Result<String, Response> {
+    if let Ok(node) = asking(database, secret).await {
+        return Ok(node);
+    }
+    match super::who_dialled(database, secret).await {
+        Ok(Some(node)) => Ok(node),
+        Ok(None) => Err(refuse(
+            StatusCode::UNAUTHORIZED,
+            "this endpoint needs the secret this node gave you to dial it with",
+        )),
+        Err(error) => Err(unreadable(error)),
+    }
+}
+
 /// The secret out of an `Authorization: Bearer` header.
 fn bearer(request: &Request) -> Option<&str> {
     let value = request
@@ -1100,11 +1300,14 @@ fn json<T: Serialize>(status: StatusCode, value: &T) -> Response {
 async fn note_reachability(
     database: &SqliteDatabase,
     node_id: &str,
-    endpoint: Option<&str>,
-    allows: Option<&str>,
-    ca: Option<&str>,
-    usage: Option<super::Usage>,
+    report: &Report,
 ) -> NetworkResult<()> {
+    let (endpoint, allows, ca, usage) = (
+        report.endpoint.as_deref(),
+        report.allows.as_deref(),
+        report.ca.as_deref(),
+        report.usage,
+    );
     let Some(node) = super::find(database, node_id).await? else {
         return Ok(());
     };
@@ -1116,6 +1319,19 @@ async fn note_reachability(
     // field for both answers.
     let endpoint = match endpoint {
         Some(endpoint) if endpoint.trim().is_empty() => None,
+        // **And a private address is not an endpoint.** The rule
+        // `ensure_self` follows for this node's own row, applied to what
+        // arrives: a node named after its LAN address used to report one,
+        // and storing it made that node *public* here — dialled at an
+        // address this machine's network resolves to something else
+        // entirely, and offered as an edge for names it can never answer
+        // for. The sender no longer sends one; this is what heals a row
+        // that already has one, and what stops an older node writing a
+        // new one.
+        Some(endpoint) if is_private_endpoint(endpoint) => {
+            tracing::debug!(node = %node_id, %endpoint, "not an address the world can dial");
+            None
+        }
         Some(endpoint) => Some(endpoint.to_string()),
         None => node.endpoint.clone(),
     };
@@ -1161,6 +1377,16 @@ async fn note_reachability(
             },
             endpoint,
             last_seen_at: Some(now_ms()),
+            // What it is running, and how its last update went. Both are
+            // facts about that machine held by that machine, which is what
+            // makes the report the only road they can travel. Absent is an
+            // older node and changes nothing; an empty note is a node
+            // saying nothing is wrong, and clears what was there.
+            version: report.version.clone().or(node.version.clone()),
+            update_note: report
+                .update_note
+                .clone()
+                .or_else(|| node.update_note.clone()),
             ..node
         },
     )
@@ -1359,6 +1585,31 @@ fn unreadable(error: super::NetworkError) -> Response {
     )
 }
 
+/// Whether `host:port` names an address only its own network can reach.
+///
+/// The host half of it, through the same judgement `ensure_self` makes
+/// about a domain — one definition, because a node that will not
+/// *advertise* a private address must not have one *stored* for it
+/// either, and the two answers disagreeing is how the test pair ended up
+/// with a public row for a private machine.
+fn is_private_endpoint(endpoint: &str) -> bool {
+    let host = endpoint.rsplit_once(':').map_or(endpoint, |(host, _)| host);
+    super::is_private_address(host)
+}
+
+/// The same answer for the other half of the node's storage.
+///
+/// A separate function rather than a generic one: the two error types
+/// come from different modules and neither is this one's to convert,
+/// which is the same reason `NetworkError` exists at all.
+fn unreadable_platform(error: crate::platform::PlatformError) -> Response {
+    tracing::error!(%error, "this node could not read its own rows for a caller");
+    refuse(
+        StatusCode::SERVICE_UNAVAILABLE,
+        "this node could not read its own records; try again",
+    )
+}
+
 fn refuse(status: StatusCode, reason: &str) -> Response {
     json(
         status,
@@ -1448,6 +1699,199 @@ mod tests {
             "name": "alpine.example",
             "public_key": "0hEr0DzTvMDTRfPPmYFCVCQ1cA0nnUnP+2fFqZBBBGQ=",
         })
+    }
+
+    /// A log belongs to whoever placed the copy, and to nobody else.
+    ///
+    /// One local read decides it — the service's origin — because that is
+    /// the only thing that knows whose the copy is. Not a capability of
+    /// its own: reading what your own container wrote comes with having
+    /// been allowed to run it, the way the registry pull does.
+    #[tokio::test]
+    async fn only_the_node_that_placed_a_replica_may_read_its_log() {
+        let authority = authority().await;
+        authority
+            .harness
+            .post("/api/network/join")
+            .header("authorization", format!("Bearer {}", authority.secret))
+            .json(&arriving())
+            .send()
+            .await
+            .assert_ok();
+
+        // A service of this node's own, which the joined node has no
+        // claim on whatever it presents.
+        let project = crate::platform::projects::create(&authority.database, "mine")
+            .await
+            .expect("project");
+        crate::platform::services::create(
+            &authority.database,
+            &project.id,
+            "web",
+            "docker.io/library/nginx:1",
+            &[],
+        )
+        .await
+        .expect("service");
+
+        let asked = serde_json::json!({
+            "project": "mine", "service": "web", "slot": 1u32,
+        });
+        let refused = authority
+            .harness
+            .post("/api/network/replica-log")
+            .header("authorization", format!("Bearer {}", authority.secret))
+            .json(&asked)
+            .send()
+            .await;
+        refused.assert_status(StatusCode::FORBIDDEN);
+        assert!(
+            refused.body.contains("not placed here by you"),
+            "the refusal says which of the two things it is: {}",
+            refused.body
+        );
+
+        // And a secret nobody was given reaches nothing at all.
+        let stranger = authority
+            .harness
+            .post("/api/network/replica-log")
+            .header("authorization", "Bearer made-up")
+            .json(&asked)
+            .send()
+            .await;
+        stranger.assert_status(StatusCode::UNAUTHORIZED);
+    }
+
+    /// A node that stopped being public says so, and is believed.
+    ///
+    /// **The distinction the protocol always had and nothing ever used.**
+    /// An absent `endpoint` means "an older node cannot say" and keeps
+    /// what is stored; an empty one means "I have none". Nothing sent the
+    /// empty one, so a node that stopped being public never told anybody —
+    /// measured on the test pair, where the public node held the private
+    /// one as `192.168.1.55:443` and therefore as **public**: it pointed
+    /// its tunnel at an address on somebody else's network at every start,
+    /// and would have offered that node as an edge for a name it can never
+    /// answer for.
+    ///
+    /// And a private address is refused outright, which is what heals a
+    /// row that already holds one.
+    #[tokio::test]
+    async fn a_node_that_stopped_being_public_stops_being_dialled() {
+        let authority = authority().await;
+        authority
+            .harness
+            .post("/api/network/join")
+            .header("authorization", format!("Bearer {}", authority.secret))
+            .json(&arriving())
+            .send()
+            .await
+            .assert_ok();
+
+        let report = |body: serde_json::Value| {
+            let harness = &authority.harness;
+            let secret = authority.secret.clone();
+            async move {
+                harness
+                    .post("/api/network/report")
+                    .header("authorization", format!("Bearer {secret}"))
+                    .json(&body)
+                    .send()
+                    .await
+                    .assert_ok();
+            }
+        };
+        let stored = || async {
+            super::super::find(&authority.database, "nd-joining001")
+                .await
+                .expect("query")
+                .expect("joined")
+        };
+
+        report(serde_json::json!({ "replicas": [], "endpoint": "elsewhere.example:443" })).await;
+        assert_eq!(
+            stored().await.endpoint.as_deref(),
+            Some("elsewhere.example:443")
+        );
+        assert_eq!(stored().await.kind, Kind::Public);
+
+        // An address only its own network can reach is not an endpoint,
+        // whoever says it is.
+        report(serde_json::json!({ "replicas": [], "endpoint": "192.168.1.55:443" })).await;
+        assert_eq!(
+            stored().await.endpoint,
+            None,
+            "a private address is not somewhere to dial"
+        );
+        assert_eq!(stored().await.kind, Kind::Private);
+
+        report(serde_json::json!({ "replicas": [], "endpoint": "elsewhere.example:443" })).await;
+        assert_eq!(stored().await.kind, Kind::Public, "and it can come back");
+
+        // The empty string: "I have none", which has to be heard.
+        report(serde_json::json!({ "replicas": [], "endpoint": "" })).await;
+        assert_eq!(stored().await.endpoint, None);
+        assert_eq!(stored().await.kind, Kind::Private);
+
+        // An absent field is an older node, and takes nothing away.
+        report(serde_json::json!({ "replicas": [], "endpoint": "elsewhere.example:443" })).await;
+        report(serde_json::json!({ "replicas": [] })).await;
+        assert_eq!(
+            stored().await.endpoint.as_deref(),
+            Some("elsewhere.example:443"),
+            "a report that cannot say must not undo what is known"
+        );
+    }
+
+    /// A report that omits a field must not take away what is known.
+    ///
+    /// The rule every learned column here follows — `endpoint`, `allows`,
+    /// `ca` — and the version is one of them: a node reporting from an
+    /// older binary says nothing about what it is running, and "nothing"
+    /// is not "unknown".
+    #[tokio::test]
+    async fn a_report_without_a_version_leaves_the_column_alone() {
+        let authority = authority().await;
+        authority
+            .harness
+            .post("/api/network/join")
+            .header("authorization", format!("Bearer {}", authority.secret))
+            .json(&arriving())
+            .send()
+            .await
+            .assert_ok();
+
+        let send = |body: serde_json::Value| {
+            let harness = &authority.harness;
+            let secret = authority.secret.clone();
+            async move {
+                harness
+                    .post("/api/network/report")
+                    .header("authorization", format!("Bearer {secret}"))
+                    .json(&body)
+                    .send()
+                    .await
+                    .assert_ok();
+            }
+        };
+
+        send(serde_json::json!({ "replicas": [], "version": "0.6.6" })).await;
+        let after = super::super::find(&authority.database, "nd-joining001")
+            .await
+            .expect("query")
+            .expect("joined");
+        assert_eq!(after.version.as_deref(), Some("0.6.6"));
+
+        send(serde_json::json!({ "replicas": [] })).await;
+        let older = super::super::find(&authority.database, "nd-joining001")
+            .await
+            .expect("query")
+            .expect("joined");
+        assert_eq!(
+            older.version.as_deref(),
+            Some("0.6.6"),
+            "a report that says nothing about the version is not a node with none"
+        );
     }
 
     /// An errand this node has not agreed to is refused **in the answer**.
@@ -1746,22 +2190,53 @@ mod tests {
 
     /// A response that never arrived is re-sent, and the same node
     /// arriving twice is one join.
-    /// The doorbell answers an authority this node takes orders from, and
-    /// declines one it does not — which bounds what an unauthenticated ring
-    /// can set in motion to a round trip this node was going to make
-    /// anyway. See `collect::Doorbell` for why it carries nothing.
+    /// The doorbell asks the caller who it is, rather than believing the
+    /// path.
+    ///
+    /// Phase 9 shipped it unauthenticated and said so, because no
+    /// credential existed for a call *into* a node. One does now, and the
+    /// worst a stranger could do was always small — which is why the
+    /// endpoint could ship at all, not a reason to leave it.
     #[tokio::test]
-    async fn only_an_authority_this_node_answers_to_can_ring_it() {
+    async fn only_a_node_this_one_knows_can_ring_it() {
         let authority = authority().await;
 
-        // Nobody is this node's authority: it is the one enrolling.
-        let response = authority
+        // Nothing presented, and a path that claims to be somebody.
+        authority
             .harness
             .post("/api/network/wake/nd-stranger")
             .send()
+            .await
+            .assert_status(StatusCode::UNAUTHORIZED);
+
+        // A secret nobody was given.
+        authority
+            .harness
+            .post("/api/network/wake/nd-stranger")
+            .header("authorization", "Bearer made-up")
+            .send()
+            .await
+            .assert_status(StatusCode::UNAUTHORIZED);
+
+        // And the node that enrolled through this one, which is the case
+        // the old check declined: a member handing an errand *up* is
+        // ringing about something this node is the one to do.
+        authority
+            .harness
+            .post("/api/network/join")
+            .header("authorization", format!("Bearer {}", authority.secret))
+            .json(&arriving())
+            .send()
+            .await
+            .assert_ok();
+        let response = authority
+            .harness
+            .post("/api/network/wake/nd-joining001")
+            .header("authorization", format!("Bearer {}", authority.secret))
+            .send()
             .await;
         response.assert_ok();
-        assert_eq!(response.value()["settled"], serde_json::json!(false));
+        assert_eq!(response.value()["settled"], serde_json::json!(true));
     }
 
     /// The direction the model did not have: a node this one enrolled

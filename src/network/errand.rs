@@ -57,6 +57,24 @@ pub enum Kind {
     /// refused with a reason instead, which is what that machinery is
     /// for.
     Database,
+    /// Be running this release.
+    ///
+    /// **Desired state, not a command**, which is what lets it travel the
+    /// ordinary way: a node already on that release settles it as
+    /// satisfied, so collecting it twice costs nothing and a node that was
+    /// off when it was queued converges when it comes back. That is also
+    /// why the version is a *tag* and not a URL — the node resolves it
+    /// itself, against the same catalogue its own console reads.
+    Manage,
+    /// Do this once: restart, or take a backup.
+    ///
+    /// The opposite of the kind above, and separated from it for that
+    /// reason rather than for tidiness. Nothing about "restart" is
+    /// convergent — asked twice it happens twice — and the node cannot
+    /// even settle it afterwards, because the restart takes the process
+    /// that would have. So it is settled *before* it is obeyed, and the
+    /// errand's own id is the idempotency key: see `carry_out`.
+    Command,
     /// Anything this version does not know about.
     #[serde(other)]
     Unknown,
@@ -68,6 +86,8 @@ impl Kind {
             Self::Host => "host",
             Self::Edge => "edge",
             Self::Database => "database",
+            Self::Manage => "manage",
+            Self::Command => "command",
             Self::Unknown => "unknown",
         }
     }
@@ -81,6 +101,8 @@ impl Kind {
             "host" => Self::Host,
             "edge" => Self::Edge,
             "database" => Self::Database,
+            "manage" => Self::Manage,
+            "command" => Self::Command,
             _ => Self::Unknown,
         }
     }
@@ -298,6 +320,53 @@ pub struct Standby {
     pub running: bool,
 }
 
+/// The arguments of a [`Kind::Manage`] errand: be on this release.
+///
+/// One field, and it is a **tag** rather than a URL and a checksum. The
+/// node resolves it against the catalogue its own console reads, which
+/// keeps one answer to "what is v0.7.1" per machine and means a release
+/// that published no build *that* node can install is refused there,
+/// with the reason, instead of downloading something it cannot run.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Manage {
+    /// As GitHub names it — `v0.7.1`. Compared against what the node is
+    /// running, which is how this stays convergent.
+    pub version: String,
+}
+
+/// The arguments of a [`Kind::Command`] errand: do this once.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Command {
+    pub action: Action,
+}
+
+/// The one-off things a node can be asked to do to itself.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Action {
+    /// Restart the service. Not "reboot the machine" — this replaces the
+    /// process, and containerd keeps the containers running through it.
+    Restart,
+    /// Take a backup now, wherever this node's own plan sends them.
+    BackUp,
+    /// An action a newer node knows about. A value rather than a parse
+    /// failure, for the reason [`Kind::Unknown`] is one: the node has to
+    /// be able to *read* the instruction in order to refuse it with a
+    /// sentence about versions.
+    #[serde(other)]
+    Unknown,
+}
+
+impl Action {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Restart => "restart",
+            Self::BackUp => "back-up",
+            Self::Unknown => "unknown",
+        }
+    }
+}
+
 /// An errand and what became of it, for the page that lists them.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Record {
@@ -356,6 +425,9 @@ pub fn consent_for(
         // `Store`, not `Host`: keeping somebody's data is a different
         // favour from running somebody's container.
         Kind::Database => Some(super::capability::Capability::Store),
+        // Neither: looking after the machine is not carrying somebody's
+        // work, which is why this capability exists at all.
+        Kind::Manage | Kind::Command => Some(super::capability::Capability::Manage),
         Kind::Edge => {
             let withdrawing = serde_json::from_value::<Edge>(payload.clone())
                 .map(|edge| edge.upstreams.is_empty())
@@ -368,11 +440,12 @@ pub fn consent_for(
     }
 }
 
-/// Ask a node to do something.
+/// Ask a node to do something, once.
 ///
-/// Nothing queues one yet: the console form that does is what removes
-/// this, and it arrives with the meaning of a `host` errand.
-#[allow(dead_code)]
+/// No subject and no comparison, unlike [`queue_if_changed`]: this is for
+/// an instruction that is an *event* — see `Kind::Command`. Asking twice
+/// is two errands on purpose, and what stops the same asking being obeyed
+/// twice is its id.
 pub async fn queue(
     database: &SqliteDatabase,
     node_id: &str,
@@ -638,13 +711,28 @@ async fn ring(database: &SqliteDatabase, node_id: &str) {
     if node.overlay_ip.is_none() || node.ca_pem.is_none() {
         return;
     }
+    // Never itself. An errand this node queued for its own row is
+    // collected by `from_here` in the same pass, and dialling the overlay
+    // to tell itself something would be a call it then refuses — this
+    // node holds no credential for itself, because nobody ever gave it
+    // one.
+    if node.id == me.id {
+        return;
+    }
+
+    // What that node knows this one by. **The doorbell is authenticated
+    // now**, which it could not be until a node had a credential for the
+    // direction that dials *in* — see migration `0049`. A node too old to
+    // have sent one is rung with nothing and refuses, which costs the
+    // fifteen seconds the loop was always allowed to take.
+    let secret = super::credential_to(database, node_id).await;
 
     // Not awaited to completion by the caller's clock: whoever queued this
     // is usually a request somebody is waiting on, and the ring is worth
     // milliseconds to them and nothing at all if the far node is asleep.
     let path = format!("/api/network/wake/{}", me.id);
     tokio::spawn(async move {
-        match super::call::to_node(&node, &path, Some(String::new()), None).await {
+        match super::call::to_node(&node, &path, Some(String::new()), secret.as_deref()).await {
             Ok(status) => tracing::debug!(node = %node.id, %status, "rang"),
             Err(error) => tracing::debug!(node = %node.id, %error, "could not ring"),
         }

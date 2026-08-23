@@ -171,6 +171,27 @@ pub struct Node {
     /// before this existed — dialled the old way, which is not at all. See
     /// migration `0033`.
     pub ca_pem: Option<String>,
+    /// The release that machine is running, as it last reported.
+    ///
+    /// Learned, like the two above. `None` for a node that has not
+    /// reported since the column existed — which is also the node that
+    /// cannot be asked to update, because it does not know the
+    /// instruction.
+    pub version: Option<String>,
+    /// The release it has been **asked** to be running.
+    ///
+    /// A decision made here, not a fact about that machine, and the only
+    /// column on this row that is. It persists once reached: a node that
+    /// was off when somebody asked converges when it comes back, and
+    /// "this network is on v0.7.1" stays readable afterwards.
+    pub wanted_version: Option<String>,
+    /// How that node's last update went, in the words of the machine that
+    /// ran it.
+    ///
+    /// Empty when there is nothing wrong. An update errand is settled
+    /// before the binary is touched — it has to be — so this is the only
+    /// road a failed install has home. See migration `0048`.
+    pub update_note: Option<String>,
 }
 
 impl Node {
@@ -246,13 +267,16 @@ fn read(row: &Row<'_>) -> wabot::sqlite::rusqlite::Result<Node> {
             }
             _ => None,
         },
+        version: row.get(14)?,
+        wanted_version: row.get(15)?,
+        update_note: row.get(16)?,
     })
 }
 
 const COLUMNS: &str = "\"id\", \"name\", \"kind\", \"endpoint\", \"public_key\", \
                        \"overlay_ip\", \"is_self\", \"last_seen_at\", \"allows\", \
                        \"ca_pem\", \"memory_total\", \"memory_used\", \"disk_total\", \
-                       \"disk_free\"";
+                       \"disk_free\", \"version\", \"wanted_version\", \"update_note\"";
 
 /// Write, or bring up to date, the row for the node this process is.
 ///
@@ -340,7 +364,7 @@ pub async fn forget_self(database: &SqliteDatabase) -> NetworkResult<()> {
 /// somebody's split-horizon DNS and their business. What this refuses is
 /// the address itself standing in for a name, which is what makes it an
 /// endpoint no other node can use.
-fn is_private_address(domain: &str) -> bool {
+pub(crate) fn is_private_address(domain: &str) -> bool {
     match domain.trim().parse::<std::net::IpAddr>() {
         Ok(std::net::IpAddr::V4(address)) => {
             address.is_private()
@@ -404,6 +428,19 @@ pub async fn ensure_self(database: &SqliteDatabase, config: &Config) -> NetworkR
     };
 
     let node = Node {
+        update_note: None,
+        // This node's own answer about itself, stored so that every page
+        // and every `doctor` reads one column rather than branching on
+        // whose row it is looking at. It cannot go stale: an update ends
+        // by restarting the process, and this runs at every start.
+        version: Some(crate::api::VERSION.to_string()),
+        // Carried forward, never re-decided. `save` leaves this column
+        // alone, so this is belt as well as braces — and the belt is the
+        // one that would have been noticed, because a wanted version
+        // cleared at every restart looks like an errand that never went.
+        wanted_version: existing
+            .as_ref()
+            .and_then(|node| node.wanted_version.clone()),
         usage: None,
         id: match &existing {
             Some(node) => node.id.clone(),
@@ -563,8 +600,10 @@ pub async fn save(database: &SqliteDatabase, node: &Node) -> NetworkResult<()> {
                 "INSERT INTO node \
                    (\"id\", \"name\", \"kind\", \"endpoint\", \"public_key\", \"overlay_ip\", \
                     \"is_self\", \"joined_at\", \"last_seen_at\", \"allows\", \"ca_pem\", \
-                    \"memory_total\", \"memory_used\", \"disk_total\", \"disk_free\") \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15) \
+                    \"memory_total\", \"memory_used\", \"disk_total\", \"disk_free\", \
+                    \"version\", \"update_note\") \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, \
+                         ?16, ?17) \
                  ON CONFLICT (\"id\") DO UPDATE SET \
                    \"name\" = excluded.\"name\", \
                    \"kind\" = excluded.\"kind\", \
@@ -577,8 +616,22 @@ pub async fn save(database: &SqliteDatabase, node: &Node) -> NetworkResult<()> {
                    \"memory_total\" = excluded.\"memory_total\", \
                    \"memory_used\" = excluded.\"memory_used\", \
                    \"disk_total\" = excluded.\"disk_total\", \
-                   \"disk_free\" = excluded.\"disk_free\"",
-                (
+                   \"disk_free\" = excluded.\"disk_free\", \
+                   \"version\" = excluded.\"version\", \
+                   \"update_note\" = excluded.\"update_note\"",
+                // **`wanted_version` is deliberately not here.** Every
+                // other column on this row is a fact about that machine,
+                // arriving on its report and carried forward by `..node`;
+                // that one is a decision made *here* about it, and it has
+                // its own statement in `want_version`. Writing it through
+                // this upsert would put it at the mercy of every caller
+                // that rebuilds a row from something else — and
+                // `ensure_self` builds one from the config at every
+                // start, which would have cleared it on every restart.
+                //
+                // `params!` and not a tuple: rusqlite's tuple binding
+                // stops at sixteen, and this is seventeen.
+                wabot::sqlite::rusqlite::params![
                     node.id,
                     node.name,
                     node.kind.as_str(),
@@ -599,7 +652,9 @@ pub async fn save(database: &SqliteDatabase, node: &Node) -> NetworkResult<()> {
                     node.usage.map(|usage| usage.memory_used as i64),
                     node.usage.map(|usage| usage.disk_total as i64),
                     node.usage.map(|usage| usage.disk_free as i64),
-                ),
+                    node.version,
+                    node.update_note,
+                ],
             )?;
             Ok(())
         })
@@ -759,6 +814,272 @@ pub async fn credential_for(database: &SqliteDatabase, node_id: &str) -> Option<
             tracing::warn!(%error, "could not read this node's credential for an authority");
             None
         }
+    }
+}
+
+/// Ask a node to be running a release.
+///
+/// A **decision**, written on that node's row and kept: a node that was
+/// off when somebody asked converges when it comes back, and "this
+/// network is on v0.7.1" stays true afterwards rather than being an event
+/// that happened once. Its own statement, for the reason `save` gives.
+///
+/// The instruction that follows from it is queued by
+/// [`dispatch_versions`], here and at every boot — never by this alone.
+/// The lesson of phase 7, three times over: derived state that nothing
+/// recomputes is state that reaches nobody the first time something goes
+/// wrong.
+pub async fn want_version(
+    database: &SqliteDatabase,
+    node_id: &str,
+    tag: Option<&str>,
+) -> NetworkResult<()> {
+    let (node_id, tag) = (node_id.to_string(), tag.map(str::to_string));
+    Ok(database
+        .write(move |connection| {
+            connection.execute(
+                "UPDATE node SET \"wanted_version\" = ?2 WHERE \"id\" = ?1",
+                (node_id, tag),
+            )?;
+            Ok(())
+        })
+        .await?)
+}
+
+/// Queue what every node's wanted version implies, and nothing else.
+///
+/// Convergent on both sides. A node whose reported version already
+/// matches is skipped entirely — so this is free on the boots where
+/// everything is where it should be, which is almost all of them — and
+/// `queue_if_changed` makes a second pass over the same difference cost
+/// nothing either.
+///
+/// **A node that has never reported a version is still asked.** It is
+/// either older than the field or has not been heard from, and in both
+/// cases the errand is the thing that finds out: an old node refuses it
+/// with a sentence about versions, which is an answer somebody can act
+/// on, where silence is not.
+pub async fn dispatch_versions(database: &SqliteDatabase) -> NetworkResult<usize> {
+    let mut queued = 0;
+    for node in all(database).await? {
+        let Some(wanted) = node.wanted_version.clone() else {
+            continue;
+        };
+        if node
+            .version
+            .as_deref()
+            .is_some_and(|running| crate::update::is_release(&wanted, running))
+        {
+            continue;
+        }
+        let payload = serde_json::to_value(errand::Manage {
+            version: wanted.clone(),
+        })
+        .map_err(|error| NetworkError::Refused(error.to_string()))?;
+        if errand::queue_if_changed(
+            database,
+            &node.id,
+            errand::Kind::Manage,
+            "manage:version",
+            &payload,
+        )
+        .await?
+        .is_some()
+        {
+            tracing::info!(node = %node.id, version = %wanted, "asked a node to be on a release");
+            queued += 1;
+        }
+    }
+    Ok(queued)
+}
+
+/// Ask a node to do something once.
+///
+/// Not desired state and not deduplicated: every call is a new errand
+/// with a new id, because "restart" asked twice means twice. The id is
+/// what stops the *same* asking happening twice — see `collect::do_once`.
+pub async fn ask_once(
+    database: &SqliteDatabase,
+    node_id: &str,
+    action: errand::Action,
+) -> NetworkResult<()> {
+    let payload = serde_json::to_value(errand::Command { action })
+        .map_err(|error| NetworkError::Refused(error.to_string()))?;
+    errand::queue(database, node_id, errand::Kind::Command, &payload).await?;
+    Ok(())
+}
+
+// ---------- dialling in ---------------------------------------------------
+//
+// The direction phase 9 proved possible and left unauthenticated. A node
+// answering on its overlay address knows the packets came from a peer and
+// nothing above that says *which*, so anything with an answer in it —
+// a log, a reading, a list — carries a secret of its own.
+
+/// What `authority_id` must present to be listened to by this node.
+///
+/// **Derived, never stored.** One key of this node's own, and the asking
+/// node's id: so this node keeps no copy of the secret to be read out of
+/// its database, can recompute it to hand out again on any report, and
+/// withdraws every one of them at once by rotating the key. A column of
+/// hashes would do the first and neither of the others.
+///
+/// It is not an HMAC and does not need to be. The message is not
+/// attacker-chosen — it is a node id this node already holds a row for —
+/// and the digest is used as a bearer token rather than as a signature
+/// over anything, so the extension attack a bare prefix invites has
+/// nothing to forge: a longer message is not another node's id.
+pub async fn dial_secret_for(
+    database: &SqliteDatabase,
+    authority_id: &str,
+) -> NetworkResult<String> {
+    let key = match crate::node::settings::read(database, DIAL_KEY).await? {
+        Some(key) => key,
+        None => {
+            let key = wabot::prelude::password::generate(48);
+            crate::node::settings::write(database, DIAL_KEY, &key).await?;
+            key
+        }
+    };
+    Ok(crate::accounts::sha256_hex(&format!(
+        "{key}:{authority_id}"
+    )))
+}
+
+const DIAL_KEY: &str = "node.dial.key";
+
+/// Which of this node's authorities presented this, if any.
+///
+/// Recomputed per authority and compared in constant time. A revoked one
+/// is not asked about: revoking is what it is for.
+pub async fn who_dialled(
+    database: &SqliteDatabase,
+    presented: &str,
+) -> NetworkResult<Option<String>> {
+    for authority in authorities(database).await? {
+        if authority.revoked_at.is_some() {
+            continue;
+        }
+        let expected = dial_secret_for(database, &authority.node_id).await?;
+        if crate::accounts::constant_time_eq(presented, &expected) {
+            return Ok(Some(authority.node_id));
+        }
+    }
+    Ok(None)
+}
+
+/// Keep what a node handed this one for dialling it back.
+///
+/// Outside [`Node`] and with a statement of its own, like the LAN
+/// addresses in migration `0046` — and here for a second reason: a row
+/// rebuilt from a report or from the config must not be able to take a
+/// credential away as a side effect.
+pub async fn remember_dial_secret(
+    database: &SqliteDatabase,
+    node_id: &str,
+    secret: &str,
+) -> NetworkResult<()> {
+    let (node_id, secret) = (node_id.to_string(), secret.to_string());
+    Ok(database
+        .write(move |connection| {
+            connection.execute(
+                "UPDATE node SET \"dial_secret\" = ?2 WHERE \"id\" = ?1",
+                (node_id, secret),
+            )?;
+            Ok(())
+        })
+        .await?)
+}
+
+/// What to present when dialling `node_id`, if it has said.
+pub async fn dial_secret_of(database: &SqliteDatabase, node_id: &str) -> Option<String> {
+    let node_id = node_id.to_string();
+    let found: SqliteResult<Option<Option<String>>> = database
+        .read(move |connection| {
+            connection
+                .query_row(
+                    "SELECT \"dial_secret\" FROM node WHERE \"id\" = ?1",
+                    [node_id],
+                    |row| row.get(0),
+                )
+                .optional()
+        })
+        .await;
+    match found {
+        Ok(secret) => secret.flatten(),
+        Err(error) => {
+            tracing::warn!(%error, "could not read what to present to a node");
+            None
+        }
+    }
+}
+
+/// What to present when calling `node_id`, whichever side of the
+/// relationship this node is on.
+///
+/// Two credentials, one question. A node this one takes orders from knows
+/// it by the secret its join token carried; a node this one enrolled
+/// knows it by the secret that node derived and sent on a report. The
+/// door on the other side accepts either — see `api::caller` — so every
+/// caller here picks the one it has rather than knowing which shape of
+/// relationship it is in.
+pub async fn credential_to(database: &SqliteDatabase, node_id: &str) -> Option<String> {
+    match credential_for(database, node_id).await {
+        Some(secret) => Some(secret),
+        None => dial_secret_of(database, node_id).await,
+    }
+}
+
+/// What a copy of one of this node's services is saying, on the machine
+/// running it.
+///
+/// **Over the overlay, in both directions, with whichever credential this
+/// node holds for that one.** A member presents the secret its join token
+/// carried; a node that enrolled the other presents the one that node
+/// derived and sent on a report. The door accepts either — see
+/// `api::caller` — so there is one road here rather than two, and it is
+/// the road that reaches a private node behind NAT.
+///
+/// The reason comes back as the error, whatever it was: a node with no
+/// overlay session, a service it does not think is this one's, a copy
+/// with no log yet. Every one of those is something to print on the page
+/// that asked, and none of them is a failure of this node.
+pub async fn replica_log(
+    database: &SqliteDatabase,
+    holder: &str,
+    project: &str,
+    service: &str,
+    slot: u32,
+    all: bool,
+) -> Result<String, String> {
+    let node = find(database, holder)
+        .await
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "this node has no row for the one holding that copy".to_string())?;
+    let secret = crate::network::credential_to(database, holder)
+        .await
+        .ok_or_else(|| {
+            "that node has not said how to authenticate to it — it has not reported \
+             since this version"
+                .to_string()
+        })?;
+    let body = serde_json::to_string(&api::LogWanted {
+        project: project.to_string(),
+        service: service.to_string(),
+        slot,
+        all,
+    })
+    .map_err(|error| error.to_string())?;
+
+    match call::ask_node(&node, "/api/network/replica-log", Some(body), Some(&secret)).await {
+        Ok((status, text)) if status.is_success() => Ok(text),
+        // The far side answers a refusal as `{"error": …}`, the shape
+        // every other endpoint here uses. Unwrapped so the page shows the
+        // sentence rather than the JSON around it.
+        Ok((_, text)) => Err(serde_json::from_str::<api::Refusal>(&text)
+            .map(|refusal| refusal.error)
+            .unwrap_or(text)),
+        Err(error) => Err(error.to_string()),
     }
 }
 
@@ -940,9 +1261,15 @@ pub async fn honour_offers(database: &SqliteDatabase) -> NetworkResult<usize> {
             continue;
         }
         let mut granted = capability::granted_to(database, &node_id).await;
+        // What the operator has since refused this node in particular.
+        // Skipped rather than filtered afterwards, so this pass writes no
+        // row it would only have to ignore — `granted_to` filters too,
+        // which is what makes the withdrawal hold against any path that
+        // grants blindly.
+        let withdrawn = capability::withdrawn_from(database, &node_id).await;
         let missing: Vec<capability::Capability> = offers
             .into_iter()
-            .filter(|offered| !granted.contains(offered))
+            .filter(|offered| !granted.contains(offered) && !withdrawn.contains(offered))
             .collect();
         if missing.is_empty() {
             continue;
@@ -1113,6 +1440,9 @@ pub(crate) mod tests {
 
     fn node(id: &str, kind: Kind, endpoint: Option<&str>) -> Node {
         Node {
+            update_note: None,
+            version: None,
+            wanted_version: None,
             usage: None,
             id: id.into(),
             name: id.into(),
@@ -1125,6 +1455,76 @@ pub(crate) mod tests {
             allows: Vec::new(),
             ca_pem: None,
         }
+    }
+
+    /// The instruction is convergent, so the pass is free when there is
+    /// nothing to say.
+    ///
+    /// Which is what makes it safe to run at every boot beside the other
+    /// reconciliations: a node already on the release it was asked for is
+    /// asked nothing, for ever, and one that is behind is asked once.
+    #[tokio::test]
+    async fn a_node_already_at_the_wanted_version_needs_no_errand() {
+        let database = crate::db::open_in_memory().await.expect("open");
+        save(&database, &node("nd-there", Kind::Private, None))
+            .await
+            .expect("row");
+
+        want_version(&database, "nd-there", Some("v9.9.9"))
+            .await
+            .expect("asked");
+        assert_eq!(
+            dispatch_versions(&database).await.expect("pass"),
+            1,
+            "a node that is not there is asked"
+        );
+        assert_eq!(
+            dispatch_versions(&database).await.expect("again"),
+            0,
+            "and asked once: the same instruction is not repeated"
+        );
+
+        // It reports that it got there — the tag with its `v`, against a
+        // version without one, which is the only difference the two
+        // spellings ever have.
+        let mut arrived = node("nd-other", Kind::Private, None);
+        arrived.id = "nd-arrived".into();
+        arrived.version = Some("9.9.9".into());
+        arrived.wanted_version = Some("v9.9.9".into());
+        save(&database, &arrived).await.expect("row");
+        want_version(&database, &arrived.id, Some("v9.9.9"))
+            .await
+            .expect("asked");
+
+        let queued = errand::waiting_here(&database, "nd-arrived").await;
+        assert!(
+            queued.map(|waiting| waiting.is_empty()).unwrap_or(true),
+            "a node already there is asked nothing at all"
+        );
+    }
+
+    /// A wanted version is a decision made here, and `ensure_self`
+    /// rebuilds this node's row from the config at every start.
+    ///
+    /// It was cleared on every restart in the first version of this,
+    /// which reads exactly like an instruction that never went.
+    #[tokio::test]
+    async fn restarting_does_not_forget_what_this_node_was_asked_for() {
+        let database = crate::db::open_in_memory().await.expect("open");
+        let config = crate::config::Config::default();
+        let me = ensure_self(&database, &config).await.expect("self");
+
+        want_version(&database, &me.id, Some("v9.9.9"))
+            .await
+            .expect("asked");
+        let again = ensure_self(&database, &config).await.expect("restart");
+
+        assert_eq!(again.wanted_version.as_deref(), Some("v9.9.9"));
+        assert_eq!(
+            again.version.as_deref(),
+            Some(crate::api::VERSION),
+            "and it says what it is running, so no page has to branch on whose row it is"
+        );
     }
 
     /// Being an edge is about being reachable, not about a setting. A
@@ -1311,6 +1711,9 @@ pub(crate) mod tests {
         save(
             &database,
             &Node {
+                update_note: None,
+                version: None,
+                wanted_version: None,
                 usage: None,
                 id: "nd-other".into(),
                 name: "other.example".into(),

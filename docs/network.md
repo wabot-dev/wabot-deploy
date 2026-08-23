@@ -276,7 +276,13 @@ Still open:
 | 7 | Errand: edge | The owner picks public nodes to serve a name; they claim it, get the certificate, and proxy to the replicas | **done** |
 | 8 | Consent | What a join requires and offers, per capability, shown before it is spent | **done** |
 | 9 | The channel | A verified call *to* a private node over the overlay, and the doorbell on top of it | **done**, verified on the nodes |
-| 10 | Groups | Health and failover across the upstreams of one name | |
+| 10 | The direction that had no path | An errand addressed to a node's own row, and to its authority | **done** |
+| 11 | Managed nodes | A node's version travels; another node may keep it up to date, restart it, back it up, and read its copies' logs. And a node may own nothing at all | **written** |
+| 12 | Groups | Health and failover across the upstreams of one name | |
+
+The table used to number Groups 10 while the prose below called the
+direction-with-no-path phase 10. The prose is what anybody cites, so the
+table follows it.
 
 Phases 4 to 7 are **verified between the two nodes** on v0.6.6 — see
 "What the nodes said about 4 to 7" below, and the seven fixes it took.
@@ -957,6 +963,10 @@ The tightening, when it is worth it: the node mints a doorbell token at
 join and the authority presents it. The anchor for that already travels —
 this phase built exactly that road.
 
+**Built in phase 11**, and not quite in that shape: the secret is derived
+rather than minted, and it travels on the report rather than at join, so
+a node already enrolled gets one without joining again. See below.
+
 ## Phase 10: the direction that had no path
 
 Collection asks a node's **authorities**. That was the whole delivery
@@ -1374,3 +1384,289 @@ through `ToSocketAddrs` and it "resolves here" by definition.
 `wanted_names` drops any name that parses as an address now. The name is
 still served, on the node's own certificate, where an address becomes an
 IP SAN.
+
+## Phase 11: the network managed from where it is administered
+
+Everything above this makes a node's *resources* usable from somewhere
+else — place a replica, serve a name, keep a copy. None of it makes the
+**machine** manageable from somewhere else, and the gap was not subtle:
+until this phase a node's own version did not travel at all. A console
+looking at its network could not say which of its machines was behind,
+let alone ask one to catch up.
+
+### What it is for
+
+One or more nodes from which the whole network is administered. Not
+"control" in the sense the first sketch of this reached for — no remote
+console, no proxied session, no delegated account. That design was
+written down and rejected, and the reason is worth keeping: a capability
+meaning *be the operator here* cannot be revoked in any useful sense,
+because an operator can write itself another way in. Everything actually
+wanted turned out to be smaller and to fit the roads that already exist.
+
+### `manage`, and why it is one capability and not three
+
+| | What holding it lets the other node do |
+|---|---|
+| `manage` | Install a release here, restart the service, take a backup |
+
+An update already restarts the node, so splitting the restart out would
+grant separately something the other one brings. And the bound is what
+makes it grantable at all: it installs a release *this project
+publishes*, reads no data, creates nothing, and touches no account. Not
+backfilled onto existing joins, for the reason `store` was not — a node
+that agreed to run containers last month did not agree to this.
+
+### "Be on this release" is desired state, and that is the whole trick
+
+An update travels as an ordinary errand, on the pull path that has
+worked since phase 3, in both directions. Nothing new was needed for it:
+no credential, no channel, no push. Because the instruction is
+*convergent* —
+
+- a node already on that release settles it as **satisfied**, at the cost
+  of one string comparison and no network;
+- a node that was off when it was asked converges when it comes back;
+- and a node that restarts before it could settle collects the errand
+  again, at which point it either is on that release or is not, and both
+  answers are right.
+
+That last point is what makes the ordering safe rather than lucky. The
+install ends by replacing the process that would have settled the
+errand, so the settlement can always be lost — **the guard is the
+version, not the order.**
+
+What cannot travel that way is how the install *went*: the errand is
+settled before the binary is touched. So the report carries a line —
+`node.update_note` — written from the run row on the machine that tried
+it. Without it a failed download reads on the asking node as "asked for
+v0.7.1, still on v0.6.6", which is true and no use to anybody.
+
+Everything that can be refused **now** is refused now, while there is
+still an errand to answer with: an unknown tag, a release with no build
+for that machine, nothing to restart the service with, an update already
+running. Those reach the asker on its own errand row. The same rule the
+console's install button already followed.
+
+### Restarting and backing up are events, and the ledger decides
+
+`Kind::Command` is the other half and deliberately a different kind.
+Nothing about restarting is convergent: asked twice it happens twice, and
+the process it kills is the one that would have reported it done — so
+being collected again is the ordinary path, not a corner case. The
+errand's **id** is the idempotency key, written to `setting` before the
+thing is done.
+
+This is the one place in this codebase where the ledger decides rather
+than records, and it is written in the code as an exception rather than
+left to be discovered as one.
+
+### A learned fact and a decision, on one row
+
+Two columns, and they are not the same kind of thing. `node.version`
+arrives on the report and follows the rule every learned column follows:
+an absent field leaves it alone. `node.wanted_version` is written here,
+persists after it is reached — "this network is on v0.7.1" is a sentence
+somebody wants to be able to read — and is deliberately **not** written
+by `save`, because `ensure_self` rebuilds this node's row from the config
+at every start and would otherwise clear it on every restart.
+
+The errand is derived from the column by `dispatch_versions`, which runs
+when the button is pressed **and at every boot**, beside `honour_offers`
+and the standby errands. Phase 7's lesson for the third time: derived
+state that nothing recomputes reaches nobody the first time something
+goes wrong.
+
+### The chicken and the egg
+
+A node older than this phase answers `Kind::Unknown` — "this node is
+older than that instruction and does not know it". Which is exactly the
+node somebody wants to update. **The first hop is manual**, with
+`scripts/cross.sh` or that node's own console; after that the network can
+keep itself current. The page says so rather than leaving somebody to
+work it out from a refusal.
+
+### Reading a copy's log on the machine running it
+
+The logs page has said "open the console of the node holding it" since
+phase 4, because there was no way to ask. Phase 9 built the road and this
+is what it was for.
+
+It needed the one thing phase 9 wrote down as still open: **a credential
+for the inbound direction.** A member dials its authority holding the
+secret its join token carried; nothing existed for an authority dialling
+a member, and the doorbell is unauthenticated precisely because it
+carries nothing.
+
+- The secret each authority must present is **derived, not stored**:
+  `sha256(key : authority_id)` from one key of the node's own. So the
+  verifier keeps no copy to be read out of its database, can recompute it
+  to hand out again on any report, and withdraws every one of them at
+  once by rotating the key. A column of hashes would do the first and
+  neither of the others.
+- It travels on the report, which is already authenticated and already
+  repeated — so a node enrolled before this learns it on its next poll
+  rather than needing to join again.
+- `api::caller` accepts **either** credential, because either node may be
+  the one holding the copy. One endpoint, one road: the overlay.
+- What guards the log itself is one local read — the service's
+  `origin_node_id`. Not a capability of its own: reading what your own
+  container wrote comes with having been allowed to run it, the way the
+  registry pull comes with `host`.
+
+The reading travels and the *sweep* does not: searching a log on another
+machine means that machine scanning it, which is a decision about
+somebody else's one core. Searching stays local, and the page says so.
+
+### And the doorbell, which phase 9 owed
+
+`POST /api/network/wake` shipped unauthenticated and said so, because no
+credential existed for a call *into* a node. One does now, so it asks the
+caller who it is instead of believing the id in the path. A node too old
+to present one is refused and its rings stop shortening the wait — the
+whole cost, because the pull loop delivers everything within fifteen
+seconds and always did.
+
+It also fixes something the old check got wrong. It asked "is the caller
+one of my authorities", and a **member** is not — so phase 10's handed-up
+errands rang, were declined, and waited out the loop every time.
+
+### Owning things is a decision, and it is not a capability
+
+`capability::owns` is the switch that makes a node purely somewhere
+resources live: no projects of its own, no services, no names —
+everything it runs arrived on an errand and is administered from the node
+that sent it.
+
+It lives beside the capabilities and is deliberately **outside** the
+`Capability` enum. Every variant of that enum is a thing another node
+asks of this one, which is what makes a grant, a token term and a consent
+check mean anything. This is a decision nobody asks for, so it has no
+grant, appears in no token, and would be a sentence with no second party
+in it on a terms screen.
+
+Turning it off is **refused while the node still owns a project**. Those
+projects would otherwise be in a state nothing can act on: not editable,
+because the node no longer originates work; not evictable, because they
+are its own and no other node placed them. Like a foreign key, and the
+message names the count.
+
+Accounts and the people page stay exactly as they are. A node with no way
+to sign in is a node whose switch can never be turned back on and whose
+`doctor` nobody can read — and the console is what somebody opens when
+the network is the thing that is broken.
+
+### What this phase fixed on the way past
+
+**The capabilities form drew two checkboxes and the handler wrote three
+settings.** So saving it turned `store` off in silence: the node stopped
+being offered as somewhere a standby could go, and refused the errands
+for the copies it already held. Nobody would have looked there. The card
+is generated from `Capability::ALL` now and its words come out of
+exhaustive `match`es, which makes the next one a compile error rather
+than a discovery.
+
+That fixes what will be written and not what was, so migration `0050`
+deletes it. The reason it can: `store` has never had a control, so every
+stored `off` for it is the handler's doing rather than an answer — and
+unset means yes, which is what the node was doing before somebody pressed
+Save. Only that key and only that value; a decision somebody could
+actually have made is left alone, which is what the test asserts.
+
+**Grants could only be written by a join.** Adding a capability to an
+existing network meant re-joining every node — which is what `store`
+needed, and would have been needed again here, and again for the one
+after that. There is a form per node now. The withdrawal it writes is a
+**row of its own**: `honour_offers` runs at every boot and re-adds
+whatever the enrolment offered, so a withdrawal expressed by deleting a
+grant would last until the next restart. Its own doc comment predicted
+exactly that.
+
+### What no test can reach
+
+The same sentence as phases 4 to 7 and 10, and it is still true: in a
+test both ends are one database and the rows are the ones I wrote.
+Nothing here exercises a version arriving from another machine, an
+install running on it, or a log crossing the overlay. It is verified on
+the nodes or it is not verified.
+
+## And what the nodes said about phase 11
+
+Both on the pair, both Alpine, both on the identical artifact — verified
+by `sha256` on each, and the private one installed through the public one
+as a jump host, because a node behind NAT with nothing forwarded is
+exactly what this network is for.
+
+| | |
+|---|---|
+| The version travelling | `doctor` on the public node: `version   0.16.0` for the private one |
+| The inbound credential | the derived secret presented over the overlay: a reasoned **404**, where nothing and a wrong secret both get **401** |
+| A real remote log | the standby's PostgreSQL log on the private node, read from the public one — 3941 bytes, 200 |
+
+The log is the one that had been written off. That page has said "open
+the console of the node holding it" since phase 4.
+
+### A node that stopped being public had no way to say so
+
+Found by a line added to *ask* the question, and it had been true for as
+long as the pair has existed.
+
+The public node logged `the overlay's peers changed` at **every** start
+while the private one logged `already matches`. What made it findable was
+making the comparison name the field it decided on — `difference` returns
+which one rather than a `bool`, and the caller logs it. The answer was
+`endpoint`, and the row behind it said this:
+
+```
+nd-SOjVWGkRNGsb | 192.168.1.55 | public | 192.168.1.55:443
+```
+
+A **private** node, held by its authority as public, at the LAN address it
+used to be named after — before the console answered on this machine's own
+addresses and the workaround stopped being needed. Four consequences, and
+the first three were invisible:
+
+- `tunnel::peers` gave that peer an endpoint and a keepalive, so the
+  public node aimed handshakes at `192.168.1.55:51820` — an address that,
+  from a VPS, is somebody else's network entirely.
+- The kernel relearned the real one from the next handshake, so every
+  start wrote it and every handshake corrected it, for ever.
+- `may_be_edge()` was true for a machine that can never answer: it was
+  offerable as an edge for a hostname, with everything that follows from
+  an ACME order for a name pointing nowhere.
+- And a restart never left the overlay alone, which is the one thing that
+  section of this document promises.
+
+**The protocol always had the fix and nothing ever used it.**
+`note_reachability` reads an *absent* endpoint as "an older node cannot
+say" and keeps what it has, and an *empty* one as "I have none" — the
+distinction is commented in the code. Nothing ever sent the empty one:
+`report_for` built `endpoint` straight from `me.endpoint`, so a node with
+none omitted the field and was heard as an old node. It sends the empty
+string now.
+
+And `note_reachability` refuses a private address outright, which is what
+heals a row that already holds one rather than waiting for the other side
+to be upgraded. It is the same judgement `ensure_self` makes about this
+node's own domain — the two answering differently is how the pair got
+here.
+
+Measured after both: `keepalive off`, no endpoint, `10.42.0.2/32`, and
+`the overlay interface already matches` on the public node for the first
+time.
+
+### And one thing that was almost the wrong fix
+
+The first reading of that log line blamed the keepalive: the kernel held
+25 s on a peer no version of the code could still ask for. The repair
+looked like teaching `difference` to ignore it. It was written, and it was
+wrong — the public node *did* want a keepalive, because it thought the
+peer was dialable, and a comparison taught to ignore that would have
+buried the endpoint fault under it for good.
+
+What kept it honest was measuring again after the real cause was fixed:
+the write of nought clears the keepalive perfectly well. What stays from
+that detour is worth keeping — a peer this node does not dial now says
+**nought rather than nothing**, because `configure_peer` writes the
+attributes the peer carries and a field left unset asks the kernel to keep
+what it has.

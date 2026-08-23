@@ -86,6 +86,12 @@ pub async fn run(config: Config) -> anyhow::Result<i32> {
     // need.
     wabot::async_jobs::register_async_runtime(&container);
     register_transients!(&container, crate::deploy::jobs::DeployHandler);
+    // The install job resolves the config, and nothing else put it in
+    // the container: without this the worker panics building the handler
+    // while the errand that queued it settles happily — the same trap
+    // `deploy::jobs` documents about the database.
+    container.register_instance::<Config>(Arc::new(config.clone()));
+    register_transients!(&container, crate::update::jobs::InstallHandler);
 
     crate::api::register(&container, database.clone());
     // Where a joining node announces itself. On the control plane
@@ -397,9 +403,14 @@ pub async fn run(config: Config) -> anyhow::Result<i32> {
             "jobs",
             wabot::async_jobs::run_async_workers(
                 container.clone(),
-                vec![crate::deploy::jobs::DeployHandler::__handler_entry(
-                    &container,
-                )],
+                vec![
+                    crate::deploy::jobs::DeployHandler::__handler_entry(&container),
+                    // Registered here as well as with the container:
+                    // `JobExecutor` keeps its own set of command names,
+                    // and a command missing from this list is stored and
+                    // never run.
+                    crate::update::jobs::InstallHandler::__handler_entry(&container),
+                ],
                 vec![],
             ),
         )

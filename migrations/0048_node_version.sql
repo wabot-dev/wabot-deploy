@@ -1,0 +1,36 @@
+-- What each node is running, and what it has been asked to run.
+--
+-- Neither existed. A node's own version was known only to itself: not on
+-- the report, not on the row, so a console looking at the network could
+-- not say which machine was behind — let alone ask it to catch up.
+--
+-- ## Two columns, because they answer different questions
+--
+-- `version` is a **learned fact**, like `endpoint`, `allows` and
+-- `ca_pem` beside it: it arrives on the report the node already sends,
+-- and an absent field leaves it alone rather than clearing it. A node
+-- that has not reported since this existed reads as unknown, which is
+-- the truth.
+--
+-- `wanted_version` is a **decision**, made here, about that node. It
+-- persists: a node that was off when somebody asked converges when it
+-- comes back, which is the whole reason the instruction travels as
+-- desired state rather than as a command. It is not cleared when it is
+-- reached — "this network is on v0.7.1" is a statement somebody wants to
+-- be able to read, and a column that emptied itself on success could not
+-- make it.
+-- And one more learned fact, because the version alone cannot say why.
+--
+-- An update errand is settled the moment the node has *started* one —
+-- it has to be, since the install ends by replacing this process — so
+-- what the install then did never travels back on that road. Without
+-- this, a download that failed or a checksum that did not match reads on
+-- the asking node as "asked for v0.7.1, still on v0.6.6": true, and no
+-- use to anybody. The reporting node holds the run row, so it is the one
+-- that can say it in a line.
+--
+-- `NULL` is "nothing said" — a node older than the column. An empty
+-- string is a node saying nothing is wrong, which clears what was there.
+ALTER TABLE node ADD COLUMN version TEXT;
+ALTER TABLE node ADD COLUMN wanted_version TEXT;
+ALTER TABLE node ADD COLUMN update_note TEXT;

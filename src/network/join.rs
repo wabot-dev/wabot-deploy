@@ -121,6 +121,9 @@ pub async fn join(
     }
 
     let authority = Node {
+        update_note: None,
+        version: None,
+        wanted_version: None,
         usage: None,
         id: token.authority.clone(),
         name: token.name.clone(),

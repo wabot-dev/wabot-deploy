@@ -491,6 +491,23 @@ pub async fn run(config: Config, config_path: &Path) -> anyhow::Result<i32> {
                 if let Some(endpoint) = &peer.endpoint {
                     println!("              at {endpoint}");
                 }
+                // **The two fields the comparison turns on.** A peer that
+                // reads as different at every start is reconfigured at
+                // every start, and until these were printed there was no
+                // way to say which field it was — `holds` has been taught
+                // twice already, once about a clamped key and once about a
+                // keepalive of nought.
+                println!(
+                    "              keepalive {} · allowed {}",
+                    match peer.keepalive {
+                        0 => "off".to_string(),
+                        seconds => format!("{seconds}s"),
+                    },
+                    match peer.allowed_ips.is_empty() {
+                        true => "nothing".to_string(),
+                        false => peer.allowed_ips.join(", "),
+                    }
+                );
             }
             if interface.peers.iter().any(|peer| !peer.live()) {
                 problems += 1;
@@ -535,6 +552,27 @@ pub async fn run(config: Config, config_path: &Path) -> anyhow::Result<i32> {
                 // the state of that channel belongs where somebody looking
                 // for a reason will find it.
                 println!("              channel   {}", channel_to(node).await);
+
+                // What it is running, and what it was asked to run. A
+                // node behind the rest of the network is not a fault —
+                // it may have been asked a minute ago — so this is
+                // printed and never counted. What it answers is the
+                // question somebody pastes into an issue: which of these
+                // machines is on which binary.
+                let running = node.version.as_deref().unwrap_or("not reported");
+                match node.wanted_version.as_deref() {
+                    Some(wanted) if !crate::update::is_release(wanted, running) => {
+                        println!("              version   {running}, asked for {wanted}")
+                    }
+                    _ => println!("              version   {running}"),
+                }
+                // And why the last update did not take, in the words of
+                // the machine that tried it — the one thing the errand
+                // path cannot carry back, because it is settled before
+                // the install begins.
+                if let Some(note) = node.update_note.as_deref().filter(|note| !note.is_empty()) {
+                    println!("              update    {note}");
+                }
             }
         }
         Err(error) => {

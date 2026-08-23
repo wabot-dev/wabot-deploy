@@ -25,6 +25,7 @@
 
 pub mod github;
 pub mod http;
+pub mod jobs;
 pub mod notes;
 pub mod runs;
 
@@ -111,6 +112,46 @@ impl Catalogue {
     pub async fn refresh(&self) {
         *self.cached.lock().await = None;
     }
+}
+
+/// The one catalogue this process reads through.
+///
+/// A second `Catalogue` is a second cache and a second call to GitHub,
+/// which allows sixty an hour per address — and the collector asks on a
+/// fifteen-second timer for as long as a node is behind the release it
+/// was asked for. So the console's page and the errand that installs
+/// something share this, which is what the field on `ConsoleState`
+/// always claimed.
+///
+/// Held for the process rather than passed through, like `collect`'s CPU
+/// sample: two callers that want the same answer should not each be
+/// given a way to hold a different one.
+pub fn shared() -> Arc<Catalogue> {
+    static SHARED: std::sync::OnceLock<Arc<Catalogue>> = std::sync::OnceLock::new();
+    SHARED
+        .get_or_init(|| Arc::new(Catalogue::default()))
+        .clone()
+}
+
+/// Whether this node is already running `tag`.
+///
+/// The comparison that makes a `manage` errand convergent, and it is a
+/// string one on purpose: no catalogue, no network, no parse that can
+/// fail — a node with no route to GitHub still has to be able to settle
+/// an instruction it already satisfies. GitHub's tags carry a `v` and
+/// `CARGO_PKG_VERSION` does not.
+pub fn at_release(tag: &str) -> bool {
+    is_release(tag, crate::api::VERSION)
+}
+
+/// Whether `tag` names the release `version` is.
+///
+/// The same comparison for a node that is not this one, whose version
+/// arrived on a report. Two spellings of one thing: GitHub's tags carry a
+/// `v` and `CARGO_PKG_VERSION` does not, so the `v` is the only thing
+/// this knows how to forgive.
+pub fn is_release(tag: &str, version: &str) -> bool {
+    tag.trim().trim_start_matches('v') == version.trim()
 }
 
 /// What the console shows: what is running, what is available, what
@@ -387,7 +428,7 @@ async fn back_up(
 ///
 /// The mechanics differ per service manager and live with the rest of
 /// them — see [`crate::bootstrap::init::Init::restart_from_within`].
-fn restart() -> UpdateResult<()> {
+pub(crate) fn restart() -> UpdateResult<()> {
     crate::bootstrap::init::Init::detect()
         .restart_from_within(crate::bootstrap::service::SERVICE_NAME)
         .map_err(|error| UpdateError::Io(error.to_string()))

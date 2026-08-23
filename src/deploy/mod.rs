@@ -1745,6 +1745,18 @@ impl Deployer {
             Err(error) => tracing::warn!(%error, "could not record what this node offered"),
         }
 
+        // And what every node was asked to be *running*. Same lesson as
+        // `tell_edges` above and the standby errands below: the
+        // instruction is derived from a column, and until something
+        // recomputes it a node that was unreachable when somebody pressed
+        // the button is a node nobody ever asked again. Free when every
+        // node is already where it should be.
+        match crate::network::dispatch_versions(&self.database).await {
+            Ok(0) => {}
+            Ok(queued) => tracing::info!(queued, "asked nodes to catch up"),
+            Err(error) => tracing::warn!(%error, "could not ask a node to catch up"),
+        }
+
         // Names held for a node this one no longer serves, before the
         // routes are built rather than after: the point is that the
         // table the listener reads comes up without them.
@@ -3603,6 +3615,9 @@ mod tests {
         // A standby on another node: its overlay address, and still the
         // gateway.
         let nodes = vec![crate::network::Node {
+            update_note: None,
+            version: None,
+            wanted_version: None,
             id: "nd-other".into(),
             name: "other".into(),
             kind: crate::network::Kind::Private,
@@ -3714,6 +3729,9 @@ mod tests {
         crate::network::save(
             &database,
             &crate::network::Node {
+                update_note: None,
+                version: None,
+                wanted_version: None,
                 usage: None,
                 id: "nd-far".into(),
                 name: "far.example".into(),
@@ -3860,6 +3878,9 @@ mod tests {
         crate::network::save(
             &database,
             &crate::network::Node {
+                update_note: None,
+                version: None,
+                wanted_version: None,
                 usage: None,
                 id: "nd-far".into(),
                 name: "far.example".into(),

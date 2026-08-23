@@ -66,6 +66,11 @@ impl ProjectPages {
             false => Vec::new(),
         };
 
+        // Whether this node originates work of its own. A node that does
+        // not is somewhere resources live: it runs what it was asked to
+        // run and makes nothing.
+        let owns = crate::network::capability::owns(&self.state.database).await;
+
         layout::head("Projects");
         let frame = Frame::new(&account, Area::Projects, &projects, None, "/");
         // The account's language, around the render and no wider:
@@ -75,7 +80,12 @@ impl ProjectPages {
                     (layout::style_tag())
                     <div class="split">
                         <h1>(t("Projects"))</h1>
-                        <a class="btn" href="/projects/new">(t("Create project"))</a>
+                        // Hidden rather than disabled, and the POST
+                        // refuses either way: a button that cannot work
+                        // is a question somebody has to answer twice.
+                        @if owns {
+                            <a class="btn" href="/projects/new">(t("Create project"))</a>
+                        }
                     </div>
                     @if let Some(message) = &query.error {
                         (layout::error_note(message))
@@ -92,7 +102,13 @@ impl ProjectPages {
                         // empty, and two buttons a hand's width apart that
                         // do the same thing read as two different things.
                         <section class="empty">
-                            <p>(t("No projects yet."))</p>
+                            @if owns {
+                                <p>(t("No projects yet."))</p>
+                            } @else {
+                                <p>(t("This node owns nothing, by its own setting. It runs what other \
+                                     nodes ask it to run; anything that arrives that way is \
+                                     administered from the node that sent it."))</p>
+                            }
                         </section>
                     } @else {
                         <div class="grid">
@@ -118,6 +134,12 @@ impl ProjectPages {
         let Some(account) = signed_in(&self.auth) else {
             return Ok(Redirect::found("/sign-in").into());
         };
+        // A hand-typed URL, or a link kept from before the switch was
+        // turned off. The list says why; a form that cannot submit does
+        // not.
+        if !crate::network::capability::owns(&self.state.database).await {
+            return Ok(Redirect::found("/projects").into());
+        }
 
         let projects = access::projects_for(&self.state.database, &account).await?;
 
@@ -1414,6 +1436,19 @@ impl ProjectApi {
             return Ok(see_other("/sign-in"));
         };
 
+        // The check that counts, and it is here rather than in
+        // `projects::create` on purpose: the collector calls that too,
+        // for a project arriving on an errand, and a node that runs
+        // other people's work is exactly the node this setting is for.
+        // Refusing there would refuse the thing it exists to allow.
+        if !crate::network::capability::owns(&self.state.database).await {
+            return Ok(back_with_error(
+                "/projects",
+                "this node does not own projects of its own — turn that back on \
+                 from its capabilities if it should",
+            ));
+        }
+
         match projects::create(&self.state.database, name).await {
             Ok(project) => {
                 // Whoever made it owns it. Without this a member would
@@ -1922,6 +1957,62 @@ mod tests {
             !again.contains("docker login"),
             "and a refresh does not show it again: {again}"
         );
+    }
+
+    /// A node that originates nothing makes no projects.
+    ///
+    /// The button goes and the POST refuses, and the second is the one
+    /// that counts: a form can be submitted by anything, and hiding a
+    /// control is a courtesy. The list says why in its own words rather
+    /// than showing an empty page — "no projects yet" would read as a
+    /// node waiting for its first one.
+    #[tokio::test]
+    async fn a_node_that_owns_nothing_makes_no_projects() {
+        let console = Console::new().await;
+        let admin = console.signed_in().await;
+        crate::network::capability::set_owns(&console.database, false)
+            .await
+            .expect("set");
+
+        let list = console
+            .harness
+            .get("/")
+            .header("cookie", &admin)
+            .send()
+            .await
+            .body;
+        assert!(
+            !list.contains("href=\"/projects/new\""),
+            "the button is gone: {list}"
+        );
+        assert!(list.contains("owns nothing"), "and it says why: {list}");
+
+        let refused = console
+            .harness
+            .post("/projects")
+            .header("cookie", &admin)
+            .form(&[("name", "shipping")])
+            .send()
+            .await;
+        let location = refused.header("location").unwrap_or_default().to_string();
+        assert!(location.contains("error="), "{location}");
+        assert!(
+            projects::all(&console.database)
+                .await
+                .expect("projects")
+                .is_empty(),
+            "and nothing was written"
+        );
+
+        // The form itself, hand-typed, goes back to the list rather than
+        // rendering a field nothing will accept.
+        let typed = console
+            .harness
+            .get("/projects/new")
+            .header("cookie", &admin)
+            .send()
+            .await;
+        assert_eq!(typed.header("location"), Some("/projects"));
     }
 
     /// create one and immediately not be able to see it.

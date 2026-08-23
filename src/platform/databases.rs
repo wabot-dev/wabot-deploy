@@ -902,6 +902,9 @@ mod tests {
         crate::network::save(
             &database,
             &crate::network::Node {
+                update_note: None,
+                version: None,
+                wanted_version: None,
                 usage: None,
                 id: "nd-far".into(),
                 name: "far.example".into(),

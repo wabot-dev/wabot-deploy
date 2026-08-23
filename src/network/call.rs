@@ -372,6 +372,113 @@ pub async fn to_node(
     Ok(response.status())
 }
 
+/// Ask a node something and read the answer.
+///
+/// [`to_node`] answers with a status and nothing else, which is all an
+/// instruction needs — it is the *asking* that matters, and how it went
+/// comes back another way. A question is the other shape: a log, a
+/// reading, a list. The body is bounded, because what is on the other end
+/// is a file somebody else's machine decides the size of.
+///
+/// The status comes back with it rather than being turned into an error:
+/// a 403 from a node that has stopped consenting and a 404 for a replica
+/// it no longer holds are both answers a page should print, and neither
+/// is a failure of the call.
+pub async fn ask_node(
+    node: &super::Node,
+    path: &str,
+    body: Option<String>,
+    bearer: Option<&str>,
+) -> Result<(StatusCode, String), CallError> {
+    let (Some(address), Some(ca)) = (&node.overlay_ip, &node.ca_pem) else {
+        return Err(CallError::Address(
+            node.id.clone(),
+            "that node has no overlay address, or never sent its authority".into(),
+        ));
+    };
+    let name = super::internal_name(&node.id);
+    let url = format!("https://{name}{path}");
+    let socket: std::net::SocketAddr = format!("{address}:443")
+        .parse()
+        .map_err(|_| CallError::Address(node.id.clone(), format!("{address} is not an address")))?;
+
+    let client = client_for(&node.id, ca, &name, socket)?;
+    let builder = match body {
+        Some(_) => Request::post(&url),
+        None => Request::get(&url),
+    };
+    let mut builder = builder
+        .header(USER_AGENT, HeaderValue::from_static(AGENT))
+        .header(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+    if let Some(secret) = bearer {
+        let value = HeaderValue::from_str(&format!("Bearer {secret}"))
+            .map_err(|_| CallError::Address(url.clone(), "that secret is not a header".into()))?;
+        builder = builder.header(AUTHORIZATION, value);
+    }
+    let request = builder
+        .body(body.unwrap_or_default())
+        .map_err(|error| CallError::Address(url.clone(), error.to_string()))?;
+
+    let response = tokio::time::timeout(OVERLAY_TIMEOUT, client.request(request))
+        .await
+        .map_err(|_| CallError::Unreachable(url.clone(), "it did not answer in time".into()))?
+        .map_err(|error| CallError::Unreachable(url.clone(), chain(&error)))?;
+    let status = response.status();
+    let bytes = wabot::rest::axum::body::to_bytes(
+        wabot::rest::axum::body::Body::new(response.into_body()),
+        MAX_ANSWER,
+    )
+    .await
+    .map_err(|error| CallError::Unreachable(url.clone(), error.to_string()))?;
+    Ok((status, String::from_utf8_lossy(&bytes).into_owned()))
+}
+
+/// How much of an answer this node will hold in memory for a caller.
+///
+/// A log on a one-core node with 972 MB is not something to read whole
+/// into a page, and the far side pages it anyway — this is the ceiling
+/// that stops a wrong query being a memory problem here.
+const MAX_ANSWER: usize = 1024 * 1024;
+
+/// The client both of the above build: one root, one name, one address.
+fn client_for(
+    node_id: &str,
+    ca: &str,
+    name: &str,
+    socket: std::net::SocketAddr,
+) -> Result<
+    Client<
+        hyper_rustls::HttpsConnector<hyper_util::client::legacy::connect::HttpConnector<OneName>>,
+        String,
+    >,
+    CallError,
+> {
+    let anchors = crate::edge::certs::pem_certificates(ca)
+        .map_err(|error| CallError::Address(node_id.to_string(), error.to_string()))?;
+    let mut roots = wabot::rest::rustls::RootCertStore::empty();
+    for certificate in anchors {
+        roots
+            .add(certificate)
+            .map_err(|error| CallError::Address(node_id.to_string(), error.to_string()))?;
+    }
+    if roots.is_empty() {
+        return Err(CallError::Address(
+            node_id.to_string(),
+            "what that node sent as its authority holds no certificate".into(),
+        ));
+    }
+
+    let tls = wabot::rest::rustls::ClientConfig::builder()
+        .with_root_certificates(roots)
+        .with_no_client_auth();
+    let https = hyper_rustls::HttpsConnectorBuilder::new()
+        .with_tls_config(tls)
+        .https_only()
+        .enable_http1()
+        .wrap_connector(fixed_connector(name, socket));
+    Ok(Client::builder(TokioExecutor::new()).build(https))
+}
+
 /// Every reason, not just the outermost one.
 ///
 /// hyper says `client error (Connect)` and keeps what actually happened —

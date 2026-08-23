@@ -349,6 +349,9 @@ mod tests {
             super::super::save(
                 &database,
                 &super::super::Node {
+                    update_note: None,
+                    version: None,
+                    wanted_version: None,
                     usage: None,
                     id: id.into(),
                     name: name.into(),
@@ -536,6 +539,9 @@ mod tests {
         super::super::save(
             &database,
             &super::super::Node {
+                update_note: None,
+                version: None,
+                wanted_version: None,
                 usage: None,
                 id: "nd-hub00001".into(),
                 name: "hub".into(),

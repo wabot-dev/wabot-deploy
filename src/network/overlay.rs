@@ -139,6 +139,9 @@ mod tests {
         save(
             database,
             &Node {
+                update_note: None,
+                version: None,
+                wanted_version: None,
                 usage: None,
                 id: id.into(),
                 name: id.into(),

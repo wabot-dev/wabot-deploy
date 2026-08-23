@@ -477,16 +477,18 @@ impl NodePages {
             .iter()
             .any(|node| node.is_self && node.endpoint.is_some())
             || domain.is_some();
-        let hosts = network::capability::provides(
-            &self.state.database,
-            network::capability::Capability::Host,
-        )
-        .await;
-        let edges = network::capability::provides(
-            &self.state.database,
-            network::capability::Capability::Edge,
-        )
-        .await;
+        // Every capability there is, so the form cannot be missing one.
+        let mut provides = Vec::new();
+        for capability in network::capability::Capability::ALL {
+            let on = network::capability::provides(&self.state.database, capability).await;
+            provides.push((capability, on));
+        }
+        let owns = network::capability::owns(&self.state.database).await;
+        // What it would have to let go of to stop being an owner. Said on
+        // the form rather than only in the refusal: a constraint somebody
+        // reads before clicking is worth more than the same sentence
+        // after.
+        let owned = projects.iter().filter(|project| project.is_ours()).count();
         let archiving = crate::node::settings::archiving(&self.state.database).await;
         // Only on the tab that shows them. Reading the plan is two rows,
         // but the list beside it is a `read_dir` and a `manifest.json` per
@@ -604,7 +606,7 @@ impl NodePages {
                     ))
                 }
                 @if tab == NodeTab::Allows {
-                    (capabilities_card(hosts, edges, reachable))
+                    (capabilities_card(&provides, reachable, owns, owned))
                 }
                 @if tab == NodeTab::Resources {
                     (reserves_card(&snapshot, reserves, cores))
@@ -650,6 +652,49 @@ impl NodePages {
                 .into_iter()
                 .filter(|record| record.node_id == node.id)
                 .collect();
+            // What this node has agreed to do for that one. Every
+            // capability, so the form cannot be missing one — the same
+            // rule the capabilities card follows, for the same reason.
+            let held = network::capability::granted_to(&self.state.database, &node.id).await;
+            let granted: Vec<(network::capability::Capability, bool)> =
+                network::capability::Capability::ALL
+                    .into_iter()
+                    .map(|capability| (capability, held.contains(&capability)))
+                    .collect();
+            // The releases somebody can ask that node for.
+            //
+            // **Only when it has agreed to be kept up to date.** Reading
+            // the list is a call to GitHub — cached for fifteen minutes,
+            // and still a call — and a page that cannot offer the form
+            // has no use for it. A failure is a card with an empty list
+            // and a sentence saying so, never a page that does not
+            // render: this console is opened when a node is unwell, and
+            // GitHub being unreachable is one of the ways that happens.
+            let may_manage = node
+                .allows
+                .contains(&network::capability::Capability::Manage);
+            let (releases, catalogue_failed) = match may_manage {
+                false => (Vec::new(), false),
+                true => match self.state.catalogue.releases().await {
+                    Ok(releases) => (
+                        releases
+                            .into_iter()
+                            // Not filtered by what *this* machine can
+                            // install: the answer belongs to the node
+                            // being asked, which resolves the tag itself.
+                            // One artifact per release today makes the
+                            // two the same; the principle is what keeps
+                            // it honest when they stop being.
+                            .map(|release| release.tag)
+                            .collect(),
+                        false,
+                    ),
+                    Err(error) => {
+                        tracing::warn!(%error, "could not read the release list");
+                        (Vec::new(), true)
+                    }
+                },
+            };
             layout::head(&node.name);
             let frame = Frame::new(&account, Area::Network, &projects, None, path);
             // The account's language, around the render and no wider:
@@ -674,6 +719,8 @@ impl NodePages {
                     // instruction, including the ones the service page
                     // now sends.
                     (usage_card(&node, node.last_seen_at.map(layout::when)))
+                    (manage_card(&node, &releases, catalogue_failed))
+                    (grants_card(&node, &granted))
                     (errands_card(&node.id, &orders))
 
                     <section class="card stack">
@@ -817,12 +864,176 @@ fn review_card<'a>(token: &'a str, terms: &'a network::token::JoinToken) -> impl
     }
 }
 
+/// What this node has agreed that node may ask of it.
+///
+/// **The local decision, and the only one this page can change.** The
+/// other direction — what that node lets *this* one ask of it — is on its
+/// row as `allows`, learned from its reports, and reading one for the
+/// other is the trap phase 8 walked into: they answer opposite questions.
+/// So both are here, and only one of them is a form.
+fn grants_card<'a>(
+    node: &'a network::Node,
+    granted: &'a [(network::capability::Capability, bool)],
+) -> impl Renderable + 'a {
+    rsx! {
+        <section class="stack">
+            <p class="card-label">(t("What this node does for it"))</p>
+            <form method="post" action=(format!("/network/{}/grants", node.id)) class="card stack">
+                @for (capability, on) in granted {
+                    <label class="capability">
+                        @if *on {
+                            <input type="checkbox" name=(capability.name()) value="1" checked>
+                        } @else {
+                            <input type="checkbox" name=(capability.name()) value="1">
+                        }
+                        <span>
+                            <strong>(t(asking(*capability)))</strong>
+                            <span class="tile-detail">(t(why(*capability)))</span>
+                        </span>
+                    </label>
+                }
+                <p class="field-hint">(t("A grant is this node's own decision and lives on this \
+                     machine. Withdrawing one asks nobody's permission — consent \
+                     is for taking work on, not for putting it down."))</p>
+                <div class="actions">
+                    <button type="submit">(t("Save"))</button>
+                </div>
+            </form>
+
+            <div class="card stack">
+                <p class="card-label">(t("What it lets this node ask of it"))</p>
+                @if node.allows.is_empty() {
+                    <p class="tile-detail">(t("Nothing. Anything asked of it would be refused, so this \
+                         node does not offer it as somewhere to place a replica, \
+                         serve a name or keep a copy."))</p>
+                } @else {
+                    <ul class="notes">
+                        @for capability in &node.allows {
+                            <li>(t(offering(*capability)))</li>
+                        }
+                    </ul>
+                }
+                <p class="field-hint">(t("Learned from what that node reports, because the decision is \
+                     a row on that machine. Changing it is done from its own \
+                     console."))</p>
+            </div>
+        </section>
+    }
+}
+
+/// What that node is running, and what it has been asked to run.
+///
+/// The version is a **learned** fact and the wanted one is a decision, so
+/// the card says both and never conflates them: "asked for v0.7.1, still
+/// on 0.6.6" is the honest reading of a node that has not collected yet,
+/// of one that is off, and of one that refused — and the reason for the
+/// third is on the errand row below.
+fn manage_card<'a>(
+    node: &'a network::Node,
+    releases: &'a [String],
+    catalogue_failed: bool,
+) -> impl Renderable + 'a {
+    let may_manage = node
+        .allows
+        .contains(&network::capability::Capability::Manage);
+    let behind = node.wanted_version.as_deref().is_some_and(|wanted| {
+        node.version
+            .as_deref()
+            .is_none_or(|running| !crate::update::is_release(wanted, running))
+    });
+    rsx! {
+        <section class="stack">
+            <p class="card-label">(t("Keeping it up to date"))</p>
+            <div class="card stack">
+                <dl class="kv">
+                    <dt>(t("Running"))</dt>
+                    <dd class="mono">(node.version.as_deref().unwrap_or("—"))</dd>
+                    @if let Some(wanted) = &node.wanted_version {
+                        <dt>(t("Asked for"))</dt>
+                        <dd class="mono">(wanted)</dd>
+                    }
+                </dl>
+                @if node.version.is_none() {
+                    <p class="note">(t("It has not said. A node that has never reported a version is \
+                         either older than this or has not been heard from — asking \
+                         it to catch up is what finds out which."))</p>
+                }
+                // The failure that cannot travel on the errand: it is
+                // settled before the install starts, because the install
+                // ends by replacing the process that would settle it.
+                @if let Some(note) = node.update_note.as_deref().filter(|note| !note.is_empty()) {
+                    (layout::error_note(note))
+                }
+                @if behind {
+                    <p class="note">(t("It is not there yet. The instruction is collected on that \
+                         node's own schedule, and a node that is off collects it \
+                         when it comes back."))</p>
+                }
+            </div>
+
+            @if !may_manage {
+                <div class="card stack">
+                    <p class="tile-detail">(t("That node has not agreed to be kept up to date from \
+                         here. It is granted on the node itself, from its own \
+                         console — a grant belongs to the machine it binds."))</p>
+                </div>
+            } @else {
+                <form method="post" action=(format!("/network/{}/version", node.id))
+                      class="card stack">
+                    <label class="field">
+                        <span class="field-label">(t("Release"))</span>
+                        <select name="version">
+                            <option value="">(t("— no version asked for —"))</option>
+                            @for tag in releases {
+                                @if node.wanted_version.as_deref() == Some(tag.as_str()) {
+                                    <option value=(tag) selected>(tag)</option>
+                                } @else {
+                                    <option value=(tag)>(tag)</option>
+                                }
+                            }
+                        </select>
+                    </label>
+                    @if catalogue_failed {
+                        <p class="field-hint">(t("The release list could not be read just now, so this \
+                             is empty. Nothing about that node has changed."))</p>
+                    } @else {
+                        <p class="field-hint">(t("It resolves the tag itself, against the same list its \
+                             own console reads — so a release with no build for that \
+                             machine is refused there, with the reason on the \
+                             instruction below."))</p>
+                    }
+                    <div class="actions">
+                        <button type="submit">(t("Ask for this release"))</button>
+                    </div>
+                </form>
+
+                <form method="post" action=(format!("/network/{}/command", node.id))
+                      class="card stack">
+                    <p class="card-label">(t("Once, now"))</p>
+                    <p class="field-hint">(t("Neither of these is a state it converges on: asked \
+                         twice, it happens twice. Restarting replaces the process \
+                         and leaves the containers running."))</p>
+                    <div class="actions">
+                        <button class="btn btn-ghost" type="submit" name="action" value="restart">
+                            (t("Restart it"))
+                        </button>
+                        <button class="btn btn-ghost" type="submit" name="action" value="back-up">
+                            (t("Back it up now"))
+                        </button>
+                    </div>
+                </form>
+            }
+        </section>
+    }
+}
+
 /// What holding this capability lets the other node do here.
 pub(crate) fn asking(capability: network::capability::Capability) -> &'static str {
     match capability {
         network::capability::Capability::Host => "Run its containers on this node",
         network::capability::Capability::Edge => "Have this node answer for its hostnames",
         network::capability::Capability::Store => "Keep a copy of its data on this node",
+        network::capability::Capability::Manage => "Keep this node up to date, and restart it",
     }
 }
 
@@ -842,6 +1053,11 @@ pub(crate) fn why(capability: network::capability::Capability) -> &'static str {
              node's space. Running somebody's container is not the same \
              favour, which is why this is asked for separately."
         }
+        network::capability::Capability::Manage => {
+            "It can install a release of this project here, restart the service \
+             and ask for a backup. It creates nothing, reads no data and touches \
+             no account — but it decides which binary this node runs."
+        }
     }
 }
 
@@ -850,6 +1066,7 @@ pub(crate) fn offering(capability: network::capability::Capability) -> &'static 
         network::capability::Capability::Host => "Run this node's containers over there",
         network::capability::Capability::Edge => "Answer for this node's hostnames",
         network::capability::Capability::Store => "Keep a copy of this node's data over there",
+        network::capability::Capability::Manage => "Update and restart that node from here",
     }
 }
 
@@ -968,43 +1185,112 @@ fn reserves_card<'a>(
     }
 }
 
-fn capabilities_card(hosts: bool, edges: bool, reachable: bool) -> impl Renderable {
+/// What the switch for one capability says on this node's own page.
+///
+/// Separate from [`asking`], which is the same capability seen from the
+/// other side of a join: there it is "what that node may do here", and
+/// here it is "what this node does at all". Exhaustive, so a capability
+/// added later cannot reach the form without words — which is how `store`
+/// came to have no checkbox on a form that wrote its setting anyway.
+pub(crate) fn doing(capability: network::capability::Capability) -> &'static str {
+    match capability {
+        network::capability::Capability::Host => "Run containers",
+        network::capability::Capability::Edge => "Answer for hostnames",
+        network::capability::Capability::Store => "Keep copies of other nodes' data",
+        network::capability::Capability::Manage => "Be kept up to date from elsewhere",
+    }
+}
+
+/// And what turning it off costs. `reachable` is only read by `Edge`,
+/// which is the one capability an address decides.
+pub(crate) fn doing_why(
+    capability: network::capability::Capability,
+    reachable: bool,
+) -> &'static str {
+    match capability {
+        network::capability::Capability::Host => {
+            "Replicas can be placed here — its own services included. A \
+             small node can own projects and run none of them."
+        }
+        network::capability::Capability::Edge if reachable => {
+            "It terminates TLS for names, its own and other nodes'. Turning \
+             this off makes it a private node — that is all private has ever \
+             meant."
+        }
+        network::capability::Capability::Edge => {
+            "Needs a domain that resolves here. Without an address the world \
+             can dial, this node is private whatever it would prefer."
+        }
+        network::capability::Capability::Store => {
+            "A standby of somebody's database lives on this node's disk and \
+             grows with it. Running a container is not the same favour."
+        }
+        network::capability::Capability::Manage => {
+            "A node that has been granted this can install a release here, \
+             restart the service and ask for a backup. Turning it off \
+             withdraws that from every node at once."
+        }
+    }
+}
+
+/// What this node does at all, and whether it originates any of it.
+///
+/// **Generated from `Capability::ALL`, not written out.** The first
+/// version drew two checkboxes while the handler wrote a setting for
+/// every capability in the enum, so saving this form turned `store` off
+/// in silence: the node stopped being offered as somewhere a standby
+/// could go, and refused the errands for the ones it already held. A
+/// capability with no checkbox has to be impossible rather than
+/// noticed, which is what a loop and an exhaustive `match` make it.
+fn capabilities_card(
+    provides: &[(network::capability::Capability, bool)],
+    reachable: bool,
+    owns: bool,
+    owned: usize,
+) -> impl Renderable + '_ {
     rsx! {
         <section class="stack">
             <p class="card-label">(t("What this node does"))</p>
             <form method="post" action="/node/capabilities" class="card stack">
-                <label class="capability">
-                    @if hosts {
-                        <input type="checkbox" name="host" value="1" checked>
-                    } @else {
-                        <input type="checkbox" name="host" value="1">
-                    }
-                    <span>
-                        <strong>(t("Run containers"))</strong>
-                        <span class="tile-detail">(t("Replicas can be placed here — its own services \
-                             included. A small node can own projects and run \
-                             none of them."))</span>
-                    </span>
-                </label>
-
-                <label class="capability">
-                    @if !reachable {
-                        <input type="checkbox" name="edge" value="1" disabled>
-                    } @else if edges {
-                        <input type="checkbox" name="edge" value="1" checked>
-                    } @else {
-                        <input type="checkbox" name="edge" value="1">
-                    }
-                    <span>
-                        <strong>(t("Answer for hostnames"))</strong>
-                        @if reachable {
-                            <span class="tile-detail">(t("It terminates TLS for names, its own and other \
-                                 nodes'. Turning this off makes it a private \
-                                 node — that is all private has ever meant."))</span>
+                @for (capability, on) in provides {
+                    <label class="capability">
+                        // A capability that needs an address, on a node
+                        // that has none, is a switch that could be turned
+                        // on to no effect.
+                        @if capability.needs_endpoint() && !reachable {
+                            <input type="checkbox" name=(capability.name()) value="1" disabled>
+                        } @else if *on {
+                            <input type="checkbox" name=(capability.name()) value="1" checked>
                         } @else {
-                            <span class="tile-detail">(t("Needs a domain that resolves here. Without an \
-                                 address the world can dial, this node is \
-                                 private whatever it would prefer."))</span>
+                            <input type="checkbox" name=(capability.name()) value="1">
+                        }
+                        <span>
+                            <strong>(t(doing(*capability)))</strong>
+                            <span class="tile-detail">(t(doing_why(*capability, reachable)))</span>
+                        </span>
+                    </label>
+                }
+
+                // Not one of them, and deliberately below them with its
+                // own words: every capability above is something another
+                // node asks of this one, and this is what this node is
+                // for. It has no grant and appears in no token.
+                <label class="capability">
+                    @if owns {
+                        <input type="checkbox" name="own" value="1" checked>
+                    } @else {
+                        <input type="checkbox" name="own" value="1">
+                    }
+                    <span>
+                        <strong>(t("Own projects and services"))</strong>
+                        <span class="tile-detail">(t("Off, this node originates nothing: no projects \
+                             of its own, no services, no names. What arrived \
+                             on an errand goes on running — it was never this \
+                             node's."))</span>
+                        @if owns && owned > 0 {
+                            <span class="tile-detail">(t("This node owns "))(owned.to_string())
+                                (t(" of its own projects, and has to let go of them before this \
+                                     can be turned off."))</span>
                         }
                     </span>
                 </label>
@@ -3032,6 +3318,43 @@ impl NodeApi {
             }
         }
 
+        // And whether this node originates anything, which is not one of
+        // them — see `capability::owns`.
+        //
+        // **Refused while it still owns something.** A node that stopped
+        // being an owner with projects still in it would leave every one
+        // of them in a state nothing can act on: not editable, because
+        // this node no longer originates; not evictable, because they are
+        // its own. Like a foreign key, and the message names the count so
+        // it is a thing somebody can go and do.
+        let owns = form.contains_key("own");
+        let mine = match crate::platform::projects::all(&self.state.database).await {
+            Ok(projects) => projects
+                .into_iter()
+                .filter(|project| project.is_ours())
+                .count(),
+            Err(error) => {
+                tracing::warn!(%error, "could not count this node's own projects");
+                return Ok(super::auth::back_with_error(
+                    here,
+                    "that could not be saved",
+                ));
+            }
+        };
+        if !owns && mine > 0 {
+            return Ok(super::auth::back_with_error(
+                here,
+                &format!("this node owns {mine} project(s) of its own — move or delete them first"),
+            ));
+        }
+        if let Err(error) = crate::network::capability::set_owns(&self.state.database, owns).await {
+            tracing::warn!(%error, "could not save whether this node owns anything");
+            return Ok(super::auth::back_with_error(
+                here,
+                "that could not be saved",
+            ));
+        }
+
         // The write-ahead log used to be read here, from this form. It
         // is on the Backup tab now — `set_backups` writes it, and the
         // redeployment with it.
@@ -3678,6 +4001,139 @@ impl NodeApi {
         Ok(super::auth::see_other("/network"))
     }
 
+    /// What this node agrees to do for one other node.
+    ///
+    /// The whole set each time, ticked and unticked together: a form that
+    /// could only add would make "I have changed my mind about that one"
+    /// impossible to say. Withdrawing needs a row of its own —
+    /// `capability::set_granted` writes it — because the boot pass that
+    /// re-reads what an enrolment offered would otherwise put it back.
+    #[post("/network/:node/grants")]
+    #[raw]
+    #[middleware(SessionMiddleware)]
+    async fn set_grants(&self, request: Request) -> RestResult<Response> {
+        let Some(account) = signed_in(&self.auth) else {
+            return Ok(super::auth::see_other("/sign-in"));
+        };
+        if !account.is_admin() {
+            return Ok(super::auth::see_other("/"));
+        }
+        let path = request.uri().path().to_string();
+        let Some(id) = super::auth::segments(&path).get(1).map(|id| id.to_string()) else {
+            return Ok(super::auth::see_other("/network"));
+        };
+        let form = match super::auth::read_form(request).await {
+            Ok(form) => form,
+            Err(response) => return Ok(response),
+        };
+
+        let agreed: Vec<network::capability::Capability> = network::capability::Capability::ALL
+            .into_iter()
+            // A checkbox arrives only when ticked, so its absence is the
+            // answer.
+            .filter(|capability| form.contains_key(capability.name()))
+            .collect();
+        let here = format!("/network/{id}");
+        if let Err(error) =
+            network::capability::set_granted(&self.state.database, &id, &agreed).await
+        {
+            tracing::warn!(%error, node = %id, "could not save what this node does for it");
+            return Ok(super::auth::back_with_error(
+                &here,
+                "that could not be saved",
+            ));
+        }
+        Ok(super::auth::see_other(&here))
+    }
+
+    /// Ask a node to be running a release.
+    ///
+    /// Two writes and neither is the instruction: the decision goes on
+    /// that node's row, and `dispatch_versions` turns it into an errand —
+    /// here and at every boot. A form that queued directly would be an
+    /// instruction that exists only if the button was pressed while both
+    /// machines were up.
+    #[post("/network/:node/version")]
+    #[raw]
+    #[middleware(SessionMiddleware)]
+    async fn set_wanted_version(&self, request: Request) -> RestResult<Response> {
+        let Some(account) = signed_in(&self.auth) else {
+            return Ok(super::auth::see_other("/sign-in"));
+        };
+        if !account.is_admin() {
+            return Ok(super::auth::see_other("/"));
+        }
+        let path = request.uri().path().to_string();
+        let Some(id) = super::auth::segments(&path).get(1).map(|id| id.to_string()) else {
+            return Ok(super::auth::see_other("/network"));
+        };
+        let form = match super::auth::read_form(request).await {
+            Ok(form) => form,
+            Err(response) => return Ok(response),
+        };
+        let here = format!("/network/{id}");
+        let wanted = super::auth::field(&form, "version").trim().to_string();
+        let wanted = (!wanted.is_empty()).then_some(wanted);
+
+        if let Err(error) =
+            network::want_version(&self.state.database, &id, wanted.as_deref()).await
+        {
+            tracing::warn!(%error, node = %id, "could not record the release to ask for");
+            return Ok(super::auth::back_with_error(&here, &error.to_string()));
+        }
+        // Now rather than at the next boot, so the button does something
+        // somebody can see. The errand is the same one either way.
+        if let Err(error) = network::dispatch_versions(&self.state.database).await {
+            tracing::warn!(%error, node = %id, "could not queue the instruction");
+            return Ok(super::auth::back_with_error(&here, &error.to_string()));
+        }
+        Ok(super::auth::see_other(&here))
+    }
+
+    /// Ask a node to do something once.
+    ///
+    /// No deduplication and no desired state: pressing it twice asks
+    /// twice, and each asking is its own errand with its own id. What that
+    /// id buys is that the *same* asking cannot be obeyed twice, which
+    /// matters because the thing it asks for kills the process that would
+    /// have reported it done.
+    #[post("/network/:node/command")]
+    #[raw]
+    #[middleware(SessionMiddleware)]
+    async fn ask_node_once(&self, request: Request) -> RestResult<Response> {
+        let Some(account) = signed_in(&self.auth) else {
+            return Ok(super::auth::see_other("/sign-in"));
+        };
+        if !account.is_admin() {
+            return Ok(super::auth::see_other("/"));
+        }
+        let path = request.uri().path().to_string();
+        let Some(id) = super::auth::segments(&path).get(1).map(|id| id.to_string()) else {
+            return Ok(super::auth::see_other("/network"));
+        };
+        let form = match super::auth::read_form(request).await {
+            Ok(form) => form,
+            Err(response) => return Ok(response),
+        };
+        let here = format!("/network/{id}");
+        let action = match super::auth::field(&form, "action") {
+            "restart" => network::errand::Action::Restart,
+            "back-up" => network::errand::Action::BackUp,
+            // Not `Action::Unknown`: that is what a *newer node's* word
+            // parses to on the way in, and sending it would be this
+            // console asking for something it has no name for.
+            other => {
+                tracing::warn!(action = %other, "no such thing to ask a node for");
+                return Ok(super::auth::back_with_error(&here, "no such action"));
+            }
+        };
+        if let Err(error) = network::ask_once(&self.state.database, &id, action).await {
+            tracing::warn!(%error, node = %id, "could not ask it");
+            return Ok(super::auth::back_with_error(&here, &error.to_string()));
+        }
+        Ok(super::auth::see_other(&here))
+    }
+
     /// Choose where this name's certificate comes from.
     ///
     /// The file pair is read and checked *here*, before the choice is
@@ -4228,6 +4684,91 @@ pub(crate) mod tests {
         // And a size the parser refuses never reaches the row.
         let refused = save!("lots");
         assert!(refused.contains("error="), "{refused}");
+    }
+
+    /// Every capability has a checkbox, because the handler writes a
+    /// setting for every one of them.
+    ///
+    /// **The form used to draw two of three.** So saving it turned
+    /// `store` off in silence: the node stopped being offered as
+    /// somewhere a standby could go, and refused the errands for the ones
+    /// it already held. The card is generated from `Capability::ALL` now
+    /// and the words come out of an exhaustive `match`, which makes the
+    /// mistake a compile error — this is the belt.
+    #[tokio::test]
+    async fn every_capability_has_a_checkbox_on_the_form() {
+        let console = Console::new().await;
+        let cookie = console.signed_in().await;
+        let body = console
+            .harness
+            .get(&NodeTab::Allows.path())
+            .header("cookie", &cookie)
+            .send()
+            .await
+            .body;
+
+        for capability in network::capability::Capability::ALL {
+            assert!(
+                body.contains(&format!("name=\"{}\"", capability.name())),
+                "{} has no checkbox, and saving this form would turn it off: {body}",
+                capability.name()
+            );
+        }
+        assert!(
+            body.contains("name=\"own\""),
+            "and the switch that is not a capability: {body}"
+        );
+    }
+
+    /// A node cannot stop being an owner while it still owns something.
+    ///
+    /// Its projects would be in a state nothing can act on: not editable,
+    /// because the node no longer originates work; not evictable, because
+    /// they are its own and no other node placed them. Like a foreign
+    /// key, and the message names the count so it is a thing somebody can
+    /// go and do.
+    #[tokio::test]
+    async fn a_node_that_owns_projects_cannot_stop_being_an_owner() {
+        let console = Console::new().await;
+        let cookie = console.signed_in().await;
+        macro_rules! save {
+            () => {
+                console
+                    .harness
+                    .post("/node/capabilities")
+                    .header("cookie", &cookie)
+                    .form(&[("host", "1"), ("edge", "1")])
+                    .send()
+                    .await
+                    .header("location")
+                    .unwrap_or_default()
+                    .to_string()
+            };
+        }
+
+        crate::platform::projects::create(&console.database, "mine")
+            .await
+            .expect("a project of its own");
+
+        let refused = save!();
+        assert!(refused.contains("error="), "{refused}");
+        assert!(
+            crate::network::capability::owns(&console.database).await,
+            "and nothing was written"
+        );
+
+        // With nothing of its own left, the same click is accepted.
+        let projects = crate::platform::projects::all(&console.database)
+            .await
+            .expect("projects");
+        for project in projects {
+            crate::platform::projects::delete(&console.database, &project.id)
+                .await
+                .expect("removed");
+        }
+        let saved = save!();
+        assert!(!saved.contains("error="), "{saved}");
+        assert!(!crate::network::capability::owns(&console.database).await);
     }
 
     /// This node's settings are tabs, like a service's.
@@ -5747,6 +6288,9 @@ pub(crate) mod tests {
         crate::network::save(
             &console.database,
             &crate::network::Node {
+                update_note: None,
+                version: None,
+                wanted_version: None,
                 usage: None,
                 id: id.into(),
                 name: "alpine.example".into(),

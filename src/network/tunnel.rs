@@ -159,6 +159,19 @@ async fn peers(database: &SqliteDatabase, config: &Config, me: &Node) -> Network
         // be any node on the overlay, and the kernel would accept it.
         peer.allowed_ips = vec![allowed];
 
+        // **Nought, said out loud, rather than nothing.** `None` here is
+        // the same *intent* as zero — `holds` was taught that once — but
+        // it is not the same *instruction*: `configure_peer` writes the
+        // attributes the peer carries, so a field left unset asks the
+        // kernel to keep whatever it already holds. A peer configured
+        // with a keepalive by an older version therefore kept it for
+        // ever, read as different at every start, and was reconfigured at
+        // every start — measured on the public test node, which had
+        // `keepalive 25s` on a private peer no version of this code can
+        // still ask for, and logged "the overlay's peers changed" on every
+        // restart it ever did.
+        peer.persistent_keepalive_interval = Some(0);
+
         // Only towards a node this one can dial. See the module docs:
         // the other direction is learned from the handshake.
         if let Some(endpoint) = overlay_endpoint(&node, config).await {
@@ -333,11 +346,22 @@ fn needed(host: Option<&Host>, private: &str, port: u16, wanted: &[Peer]) -> Cha
 
     let set: Vec<Peer> = wanted
         .iter()
-        .filter(|peer| {
-            !host
-                .peers
-                .get(&peer.public_key)
-                .is_some_and(|k| holds(k, peer))
+        .filter(|peer| match host.peers.get(&peer.public_key) {
+            // A peer the kernel does not have at all, which is the
+            // ordinary case on a first start and the one worth saying:
+            // "changed" for a peer that was never there reads as drift
+            // when it is arrival.
+            None => {
+                tracing::info!(peer = %peer.public_key, "this peer is not on the interface");
+                true
+            }
+            Some(held) => match difference(held, peer) {
+                None => false,
+                Some(field) => {
+                    tracing::info!(peer = %peer.public_key, field, "this peer differs");
+                    true
+                }
+            },
         })
         .cloned()
         .collect();
@@ -354,7 +378,12 @@ fn needed(host: Option<&Host>, private: &str, port: u16, wanted: &[Peer]) -> Cha
     }
 }
 
-/// Whether the kernel's peer already says what this node wants it to.
+/// Which field of the kernel's peer does not say what this node wants,
+/// if any.
+///
+/// A name rather than a `bool`, because every time this was wrong the
+/// only evidence was a restart claiming the overlay had moved. The caller
+/// logs what comes back.
 ///
 /// Only the fields this node writes. The handshake and the counters are
 /// the kernel's answer to a different question, and an endpoint this node
@@ -365,7 +394,7 @@ fn needed(host: Option<&Host>, private: &str, port: u16, wanted: &[Peer]) -> Cha
 // and still runs the tests for it — and on that machine `apply` is not
 // there to call it.
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
-fn holds(existing: &Peer, wanted: &Peer) -> bool {
+fn difference(existing: &Peer, wanted: &Peer) -> Option<&'static str> {
     let allowed = |peer: &Peer| {
         let mut ips: Vec<String> = peer.allowed_ips.iter().map(ToString::to_string).collect();
         ips.sort();
@@ -379,12 +408,25 @@ fn holds(existing: &Peer, wanted: &Peer) -> bool {
     // a line that never printed.
     let keepalive = |peer: &Peer| peer.persistent_keepalive_interval.unwrap_or(0);
 
-    allowed(existing) == allowed(wanted)
-        && keepalive(existing) == keepalive(wanted)
-        && match wanted.endpoint {
-            Some(endpoint) => existing.endpoint == Some(endpoint),
-            None => true,
+    let keepalive_moved = keepalive(existing) != keepalive(wanted);
+
+    // **Which field, said out loud.** This function has been taught three
+    // times — a clamped private key, a keepalive of nought, and a
+    // keepalive the kernel will not let go of — and every one of them cost
+    // a node run to find, because all a restart said was that something
+    // had moved. A `bool` cannot name the thing it decided.
+    if allowed(existing) != allowed(wanted) {
+        return Some("allowed addresses");
+    }
+    if keepalive_moved {
+        return Some("keepalive");
+    }
+    if let Some(endpoint) = wanted.endpoint {
+        if existing.endpoint != Some(endpoint) {
+            return Some("endpoint");
         }
+    }
+    None
 }
 
 /// The part that talks to the kernel.
@@ -510,6 +552,13 @@ pub fn observed() -> Result<Interface, String> {
                 .filter(|seconds| *seconds > 0),
             tx_bytes: peer.tx_bytes,
             rx_bytes: peer.rx_bytes,
+            keepalive: peer.persistent_keepalive_interval.unwrap_or(0),
+            allowed_ips: {
+                let mut ips: Vec<String> =
+                    peer.allowed_ips.iter().map(ToString::to_string).collect();
+                ips.sort();
+                ips
+            },
         })
         .collect();
     seen.sort_by(|a, b| a.public_key.cmp(&b.public_key));
@@ -543,6 +592,19 @@ pub struct Handshake {
     pub last_handshake: Option<u64>,
     pub tx_bytes: u64,
     pub rx_bytes: u64,
+    /// What the kernel holds, with nought meaning off — the two spellings
+    /// `holds` had to be taught are the same thing.
+    ///
+    /// Printed because it is **the field that decides whether a
+    /// deployment costs the overlay anything**, and it has already cost
+    /// two node runs: a peer that reads as different at every start is
+    /// reconfigured at every start, and nothing said which field it was.
+    /// `doctor` exists to be pasted into an issue.
+    pub keepalive: u16,
+    /// What this peer is authorised to claim. One `/32` per node, and a
+    /// peer holding more than that is the one thing here that is a
+    /// security answer rather than a routing one.
+    pub allowed_ips: Vec<String>,
 }
 
 impl Handshake {
@@ -747,6 +809,62 @@ mod tests {
     }
 
     /// The kernel hands back `0` for a peer configured without a
+    /// A peer this node does not dial says nought, not nothing.
+    ///
+    /// `difference` treats the two as one *intent*, and they are — but
+    /// they are not one *instruction*: `configure_peer` writes the
+    /// attributes the peer carries, so a field left unset asks the kernel
+    /// to keep whatever it already holds. A keepalive that should have
+    /// gone would then stay for ever.
+    #[tokio::test]
+    async fn a_peer_this_node_does_not_dial_says_nought_out_loud() {
+        let database = crate::db::open_in_memory().await.expect("open");
+        let config = crate::config::Config::default();
+        let me = crate::network::ensure_self(&database, &config)
+            .await
+            .expect("self");
+        // A private node: no endpoint to dial, so no keepalive is wanted.
+        crate::network::save(
+            &database,
+            &Node {
+                id: "nd-private00001".into(),
+                name: "private".into(),
+                kind: crate::network::Kind::Private,
+                endpoint: None,
+                public_key: Some("tsrC7XtGKfhAE6bkgIPTGZwwPH3RwzSLwokRpc4JCRA=".into()),
+                overlay_ip: Some("10.42.0.9".into()),
+                is_self: false,
+                last_seen_at: None,
+                allows: Vec::new(),
+                usage: None,
+                ca_pem: None,
+                version: None,
+                wanted_version: None,
+                update_note: None,
+            },
+        )
+        .await
+        .expect("row");
+
+        let wanted = peers(&database, &config, &me).await.expect("peers");
+        let peer = wanted.first().expect("one peer");
+        assert_eq!(peer.persistent_keepalive_interval, Some(0));
+
+        // A keepalive the kernel is still holding is a difference, and
+        // the write is what ends it.
+        let mut held = peer.clone();
+        held.persistent_keepalive_interval = Some(25);
+        assert_eq!(difference(&held, peer), Some("keepalive"));
+
+        // And the other direction, which is the one that keeps a NAT
+        // open: a peer that should have one and does not.
+        let mut wants_one = peer.clone();
+        wants_one.persistent_keepalive_interval = Some(KEEPALIVE);
+        let mut has_none = peer.clone();
+        has_none.persistent_keepalive_interval = Some(0);
+        assert_eq!(difference(&has_none, &wants_one), Some("keepalive"));
+    }
+
     /// keepalive, which is what "off" is spelled as down there. Reading
     /// that as a difference from `None` made a public node rewrite every
     /// peer at every start — harmless, and it meant this file's own
@@ -973,6 +1091,9 @@ mod tests {
             super::super::save(
                 &database,
                 &Node {
+                    update_note: None,
+                    version: None,
+                    wanted_version: None,
                     usage: None,
                     id: id.into(),
                     name: id.into(),
@@ -1004,8 +1125,10 @@ mod tests {
             peers
                 .iter()
                 .filter(|p| p.endpoint.is_none())
-                .all(|p| p.persistent_keepalive_interval.is_none()),
-            "a keepalive towards a peer with no address is packets into nowhere"
+                .all(|p| p.persistent_keepalive_interval == Some(0)),
+            "a keepalive towards a peer with no address is packets into nowhere — and \
+             nought is said out loud, because a field left unset asks the kernel to keep \
+             whatever it already has"
         );
     }
 
@@ -1018,6 +1141,9 @@ mod tests {
     #[test]
     fn what_is_happening_with_each_node_is_four_different_things() {
         let node = |id: &str, key: Option<&str>| Node {
+            update_note: None,
+            version: None,
+            wanted_version: None,
             usage: None,
             id: id.into(),
             name: id.into(),
@@ -1068,6 +1194,8 @@ mod tests {
         let stranger = Interface {
             port: 51820,
             peers: vec![Handshake {
+                keepalive: 0,
+                allowed_ips: Vec::new(),
                 public_key: "somebody".into(),
                 endpoint: None,
                 last_handshake: None,
@@ -1086,6 +1214,8 @@ mod tests {
         let talking = Interface {
             port: 51820,
             peers: vec![Handshake {
+                keepalive: 0,
+                allowed_ips: Vec::new(),
                 public_key: "theirs".into(),
                 endpoint: Some("203.0.113.9:51820".into()),
                 last_handshake: Some(now_seconds() - 30),
@@ -1122,6 +1252,9 @@ mod tests {
         super::super::save(
             &database,
             &Node {
+                update_note: None,
+                version: None,
+                wanted_version: None,
                 usage: None,
                 id: "nd-sibling".into(),
                 name: "sibling".into(),
@@ -1174,8 +1307,10 @@ mod tests {
                     "a sibling on this machine's own network is reachable"
                 );
                 assert_eq!(
-                    sibling.persistent_keepalive_interval, None,
-                    "the keepalive follows the NAT, and a LAN has none"
+                    sibling.persistent_keepalive_interval,
+                    Some(0),
+                    "the keepalive follows the NAT, and a LAN has none — nought rather \
+                     than nothing, so the kernel is told rather than left as it was"
                 );
                 assert_eq!(
                     sibling.endpoint.expect("an endpoint").port(),
@@ -1203,6 +1338,9 @@ mod tests {
         super::super::save(
             &database,
             &Node {
+                update_note: None,
+                version: None,
+                wanted_version: None,
                 usage: None,
                 id: "nd-sibling".into(),
                 name: "sibling".into(),
@@ -1245,6 +1383,9 @@ mod tests {
         super::super::save(
             &database,
             &Node {
+                update_note: None,
+                version: None,
+                wanted_version: None,
                 usage: None,
                 id: "nd-hub".into(),
                 name: "hub".into(),
@@ -1289,6 +1430,9 @@ mod tests {
             super::super::save(
                 &database,
                 &Node {
+                    update_note: None,
+                    version: None,
+                    wanted_version: None,
                     usage: None,
                     id: id.into(),
                     name: id.into(),

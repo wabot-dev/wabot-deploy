@@ -596,7 +596,11 @@ pub(crate) fn sha256_hex(value: &str) -> String {
 }
 
 /// Compare without letting the time taken say how much matched.
-fn constant_time_eq(a: &str, b: &str) -> bool {
+///
+/// `pub(crate)` because the network's door needs it too: a node dialling
+/// in over the overlay presents a secret, and comparing it with `==`
+/// would answer how much of it was right.
+pub(crate) fn constant_time_eq(a: &str, b: &str) -> bool {
     if a.len() != b.len() {
         return false;
     }

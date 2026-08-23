@@ -163,6 +163,22 @@ fn migrations() -> Vec<Migration> {
             "0046_node_lan",
             include_str!("../migrations/0046_node_lan.sql"),
         ),
+        Migration::new(
+            "0047_grant_withdrawn",
+            include_str!("../migrations/0047_grant_withdrawn.sql"),
+        ),
+        Migration::new(
+            "0048_node_version",
+            include_str!("../migrations/0048_node_version.sql"),
+        ),
+        Migration::new(
+            "0049_dial_secret",
+            include_str!("../migrations/0049_dial_secret.sql"),
+        ),
+        Migration::new(
+            "0050_undo_store_off",
+            include_str!("../migrations/0050_undo_store_off.sql"),
+        ),
     ]
 }
 

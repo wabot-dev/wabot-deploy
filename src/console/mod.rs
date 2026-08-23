@@ -147,7 +147,11 @@ impl ConsoleState {
             database,
             config,
             deployer,
-            catalogue: Arc::new(crate::update::Catalogue::default()),
+            // The process's one catalogue, not a second of its own: the
+            // collector installs releases too, and two caches are two
+            // answers to "what is v0.7.1" and twice the calls to a host
+            // that allows sixty an hour.
+            catalogue: crate::update::shared(),
             reveals: Reveals::default(),
             certificates,
             container,

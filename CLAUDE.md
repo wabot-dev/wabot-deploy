@@ -602,6 +602,97 @@ things obeying cannot guess — the capability check is about *them*, and
 the rows belong to them. How it went does not travel back: the asker is
 the one that dials.
 
+**Phase 11 is what makes a node manageable from another one, and almost
+all of it fits roads that already worked.** A node's own version did not
+travel at all, so a console could not say which of its machines was
+behind. Now it does, and `manage` — one capability, not backfilled — lets
+another node install a release here, restart the service and take a
+backup. Five things about it:
+
+- **"Be on this release" is desired state**, so it is an ordinary errand
+  on the pull path, in both directions, with no credential and no channel
+  behind it. A node already there settles it as satisfied; one that was
+  off converges when it comes back. The install ends by replacing the
+  process that would have settled the errand, so the settlement can always
+  be lost — **the guard is the version, not the order**.
+- **How the install went cannot travel that way**, because the errand is
+  settled before the binary is touched. `node.update_note` carries one
+  line from the run row on the machine that tried it; without it a failed
+  download reads as "asked for v0.7.1, still on v0.6.6".
+- **Restart and back-up are events, and there the ledger decides.** Asked
+  twice they happen twice, and a restart kills the process that would have
+  reported it done — so the errand's id is written to `setting` *before*
+  the thing is done. It is the one exception in this codebase and it says
+  so where it is.
+- **Reading a copy's log on another machine** needed the credential phase
+  9 left open. It is **derived, not stored** — `sha256(key :
+  authority_id)` — so the verifier keeps nothing to be read, can hand it
+  out again on any report, and withdraws every one at once by rotating the
+  key. It travels on the report; `api::caller` takes either credential,
+  because either node may be the one holding the copy. The guard on the
+  log is the service's `origin_node_id` and nothing else: reading what
+  your own container wrote comes with `host`, like the registry pull.
+- **Owning things is a switch and not a capability.** `capability::owns`
+  off makes a node purely somewhere resources live. It is outside the
+  `Capability` enum on purpose — every variant of that is something
+  *another* node asks for, and this is a decision nobody asks for, so it
+  has no grant and belongs on no terms screen. Refused while the node
+  still owns a project, because those would be neither editable nor
+  evictable. Accounts stay: a node nobody can sign in to cannot have the
+  switch turned back on.
+
+**And the doorbell is authenticated**, which phase 9 wrote down as owed:
+it asks the caller who it is rather than believing the id in the path. A
+node too old to present a credential is refused and its rings stop
+shortening the wait, which is the whole cost. It also fixes a check that
+asked "is the caller one of my authorities" — a *member* is not, so phase
+10's handed-up errands rang, were declined, and waited out the loop.
+
+Two things it fixed on the way past. **The capabilities form drew two
+checkboxes while the handler wrote a setting for all three**, so saving it
+turned `store` off in silence — the node stopped being a standby target
+and refused the errands for the copies it held. It is generated from
+`Capability::ALL` now, so the next one is a compile error. And migration
+`0050` deletes the value it wrote, because **`store` never had a control**:
+every stored `off` for it is the bug's handwriting rather than a decision,
+which is what makes undoing it a repair and not an overreach. And **grants
+could only be written by a join**: there is a form per node, and the
+withdrawal it writes is a row of its own, because `honour_offers` re-adds
+what the enrolment offered at every boot.
+
+A node older than this refuses the instruction with a sentence about
+versions — which is exactly the node somebody wants to update. **The first
+hop is manual**, with `cross.sh`.
+
+**Verified on both nodes** (2026-08-23, identical artifact by sha256, the
+private one installed through the public one as a jump host): the version
+travelling, the inbound credential answering a reasoned 404 where nothing
+and a wrong secret get 401, and a standby's PostgreSQL log read across the
+overlay from the node that placed it.
+
+**And it found a fault as old as the pair: a node that stopped being
+public had no way to say so.** The public node held the private one as
+`public` at `192.168.1.55:443` — the LAN address it used to be named
+after — so it aimed handshakes at somebody else's network, rewrote that
+peer at every start while the kernel relearned the real address, and
+would have offered a machine that can never answer as an edge for a
+hostname. The protocol always had the fix and nothing used it:
+`note_reachability` reads an **absent** endpoint as "an older node cannot
+say" and an **empty** one as "I have none", and `report_for` never sent
+the empty one. It does now, and a private address is refused on receipt —
+the same judgement `ensure_self` makes about this node's own domain, which
+is what heals a row that already holds one.
+
+Two things about how it was found, both worth repeating. **A comparison
+that returns a `bool` cannot say what it decided**: `tunnel::difference`
+names the field and the caller logs it, and that one line turned "the
+overlay changed again" into `field="endpoint"`. And **the first fix was
+the wrong one** — the keepalive looked like the culprit, and teaching the
+comparison to ignore it would have buried the real cause for good. What
+survived that detour: a peer this node does not dial says **nought rather
+than nothing**, because `configure_peer` writes what the peer carries and
+an unset field asks the kernel to keep what it has.
+
 Next: groups — health and failover across the upstreams of one name.
 Today a dead replica keeps its share of the traffic until the owner
 notices.
