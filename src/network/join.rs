@@ -138,7 +138,12 @@ pub async fn join(
         // a wrong one shows up as an errand that node refuses rather
         // than as anything silent.
         allows: token.offers(),
-        ca_pem: None,
+        // What it answered with. Without this the relationship is
+        // one-way: the authority holds this node's CA — it arrived on the
+        // callback above — and this node could not verify a call in the
+        // other direction, so `call::to_node` refused the one node it
+        // should always be able to reach.
+        ca_pem: accepted.ca.clone().filter(|pem| !pem.trim().is_empty()),
     };
     super::save(database, &authority).await?;
 

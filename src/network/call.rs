@@ -108,6 +108,24 @@ pub async fn errands(
     }
 }
 
+/// Ask an authority who else is on its network.
+///
+/// Beside `errands` and on the same credential: the roster is a fact this
+/// node is allowed to know because that node enrolled it. A failure here
+/// costs nothing — the pass goes on to the errands, and the census is
+/// asked for again in fifteen seconds.
+pub async fn roster(endpoint: &str, secret: &str) -> Result<super::roster::Roster, CallError> {
+    let url = format!("https://{endpoint}/api/network/roster");
+    match tokio::time::timeout(TIMEOUT, send(&url, secret, None)).await {
+        Ok(bytes) => {
+            let bytes = bytes?;
+            serde_json::from_slice(&bytes)
+                .map_err(|error| CallError::Unreadable(url, error.to_string()))
+        }
+        Err(_) => Err(CallError::TimedOut { url }),
+    }
+}
+
 /// Say what this node's copies of somebody else's services are doing.
 ///
 /// Sent before collecting, so an authority queueing work has just heard

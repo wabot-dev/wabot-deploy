@@ -43,6 +43,7 @@ pub mod join;
 pub mod keys;
 pub mod lan;
 pub mod overlay;
+pub mod roster;
 pub mod token;
 pub mod tunnel;
 
@@ -333,6 +334,34 @@ pub async fn forget_self(database: &SqliteDatabase) -> NetworkResult<()> {
     Ok(())
 }
 
+/// Is this name an address only this network can reach?
+///
+/// Only a literal counts: a *name* that resolves to a private address is
+/// somebody's split-horizon DNS and their business. What this refuses is
+/// the address itself standing in for a name, which is what makes it an
+/// endpoint no other node can use.
+fn is_private_address(domain: &str) -> bool {
+    match domain.trim().parse::<std::net::IpAddr>() {
+        Ok(std::net::IpAddr::V4(address)) => {
+            address.is_private()
+                || address.is_loopback()
+                || address.is_link_local()
+                || address.is_unspecified()
+                // 100.64.0.0/10, which is what a carrier hands out and
+                // nothing outside it can reach.
+                || (address.octets()[0] == 100 && (64..128).contains(&address.octets()[1]))
+        }
+        Ok(std::net::IpAddr::V6(address)) => {
+            address.is_loopback()
+                || address.is_unspecified()
+                // fc00::/7 and fe80::/10 — unique-local and link-local.
+                || (address.segments()[0] & 0xfe00) == 0xfc00
+                || (address.segments()[0] & 0xffc0) == 0xfe80
+        }
+        Err(_) => false,
+    }
+}
+
 pub async fn ensure_self(database: &SqliteDatabase, config: &Config) -> NetworkResult<Node> {
     let existing = me(database).await?;
     let domain = crate::node::settings::domain(database, config).await;
@@ -340,8 +369,21 @@ pub async fn ensure_self(database: &SqliteDatabase, config: &Config) -> NetworkR
     // Derived, not stored: a node answers to a name or it does not, and
     // an operator who cleared the domain has made this node private
     // whatever it used to be.
+    //
+    // **Except a name that is a private address**, which is not an
+    // endpoint at all. Found on Jorge's own network: before the console
+    // answered on this machine's addresses, the way in from another PC on
+    // the LAN was to name the node `192.168.1.55` — and that made it
+    // *public*, with a `192.168.1.55:443` endpoint its authority then held
+    // as somewhere the world could dial. It offered the node as an edge,
+    // it sent WireGuard handshakes into its own network, and with a census
+    // it would hand that address to every other member as reachable.
+    //
+    // A public address typed as a domain is a different thing and stays
+    // allowed: it really is dialable.
     let endpoint = domain
         .as_ref()
+        .filter(|domain| !is_private_address(domain))
         .map(|domain| format!("{domain}:{}", config.edge.https_port));
     // Public means *offering* to answer for names, which takes both an
     // address the world can dial and a node willing to use it. An
@@ -912,6 +954,52 @@ fn sha256_hex(value: &str) -> String {
 
 #[cfg(test)]
 pub(crate) mod tests {
+
+    /// A name that is a private address is not an endpoint.
+    ///
+    /// **Found on Jorge's own network.** Before the console answered on
+    /// this machine's addresses, the way in from another PC on the LAN was
+    /// to name the node `192.168.1.55` — which made it *public*, with an
+    /// endpoint its authority held as somewhere the world could dial. It
+    /// offered the node as an edge for hostnames, it sent WireGuard
+    /// handshakes into its own network, and a census would have handed
+    /// that address to every other member as reachable.
+    #[tokio::test]
+    async fn a_private_address_is_not_an_endpoint() {
+        let database = crate::db::open_in_memory().await.expect("open");
+        let config = crate::config::Config::default();
+
+        for name in [
+            "192.168.1.55",
+            "10.0.0.4",
+            "172.16.9.9",
+            "100.100.1.1",
+            "127.0.0.1",
+        ] {
+            crate::node::settings::set_domain(&database, Some(name))
+                .await
+                .expect("domain");
+            let me = ensure_self(&database, &config).await.expect("self");
+            assert_eq!(me.endpoint, None, "{name} became an endpoint");
+            assert_eq!(me.kind, Kind::Private, "{name} made this node public");
+        }
+
+        // A public address really is dialable, and a name is a name.
+        for name in ["203.0.113.9", "node.example"] {
+            crate::node::settings::set_domain(&database, Some(name))
+                .await
+                .expect("domain");
+            capability::set_provides(&database, capability::Capability::Edge, true)
+                .await
+                .expect("edge");
+            let me = ensure_self(&database, &config).await.expect("self");
+            assert_eq!(
+                me.endpoint.as_deref(),
+                Some(&*format!("{name}:443")),
+                "{name} should be reachable"
+            );
+        }
+    }
     use super::*;
 
     async fn database() -> SqliteDatabase {

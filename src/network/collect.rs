@@ -295,6 +295,15 @@ async fn from_one(
     // here stops being asked for in the same round trip.
     report_to(database, config, container, node_id, &endpoint, &secret).await;
 
+    // Who else is on that network, before anything is carried out.
+    //
+    // **After the report** so the answer reflects the endpoint this node
+    // has just sent, and **before the errands** so an errand naming a
+    // sibling's overlay address is obeyed with a session already in place.
+    // A failure costs nothing: the pass goes on, and the census is asked
+    // for again in fifteen seconds.
+    learn_the_network(database, config, node_id, &endpoint, &secret).await;
+
     // And what this node has asked *that* one to do. Before collecting
     // for the same reason the report is: what comes back should be
     // computed after this node has said everything it has to say.
@@ -338,6 +347,62 @@ async fn from_one(
         report_to(database, config, container, node_id, &endpoint, &secret).await;
     }
     settled
+}
+
+/// Learn the other members of an authority's network.
+///
+/// The overlay follows the rows — `tunnel::peers` builds a peer for every
+/// one that has a key and an address — so this is the whole of the mesh:
+/// what was a star is a star of *knowledge*, and a census ends it.
+///
+/// `tunnel::ensure` only when something moved. Calling it every pass would
+/// be a netlink read every fifteen seconds and, on a node whose kernel
+/// refuses the interface, a warning line at the same rate.
+async fn learn_the_network(
+    database: &SqliteDatabase,
+    config: &Config,
+    node_id: &str,
+    endpoint: &str,
+    secret: &str,
+) {
+    let roster = match super::call::roster(endpoint, secret).await {
+        Ok(roster) => roster,
+        Err(error) => {
+            // Expected often enough not to be a warning, like the errand
+            // fetch beside it: an authority is a machine somewhere else
+            // and this runs on a timer. An authority too old to have the
+            // endpoint answers 404 here, and the node goes on exactly as
+            // it did before there was one.
+            tracing::debug!(%error, authority = %node_id, "could not ask who else is here");
+            return;
+        }
+    };
+
+    let applied = match super::roster::apply(database, &roster).await {
+        Ok(applied) => applied,
+        Err(error) => {
+            tracing::warn!(%error, authority = %node_id, "could not record the network");
+            return;
+        }
+    };
+
+    // A conflict is stored rather than logged: two nodes claiming one
+    // overlay address is a peer that can never work, and a warning in a
+    // journal is not where somebody will find out why.
+    if let Err(error) = super::roster::record_conflicts(database, &applied.conflicts).await {
+        tracing::warn!(%error, "could not record an address two nodes claim");
+    }
+
+    if applied.changed > 0 {
+        tracing::info!(
+            authority = %node_id,
+            learned = applied.changed,
+            "the network's other members"
+        );
+        if let Err(error) = super::tunnel::ensure(database, config).await {
+            tracing::warn!(%error, "could not put the new members on the overlay");
+        }
+    }
 }
 
 /// Tell every authority what this node is holding, right now.

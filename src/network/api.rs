@@ -74,6 +74,22 @@ pub struct Accepted {
     pub authority: String,
     pub name: String,
     pub overlay_ip: String,
+    /// **The authority's certificate authority**, without which the
+    /// joining node cannot dial it back.
+    ///
+    /// The relationship was one-way in a way nobody had noticed: the
+    /// arriving node sends its own CA and the authority stores it, so the
+    /// authority can reach it over the overlay — and the joiner wrote
+    /// `None` for the authority's, so `call::to_node` refuses the one node
+    /// it should always be able to reach. `doctor` said "it has not
+    /// reported since this version" about the machine that had just
+    /// enrolled it.
+    ///
+    /// `serde(default)` so a new node against an older authority still
+    /// parses this answer; it then learns the anchor from the roster
+    /// instead.
+    #[serde(default)]
+    pub ca: Option<String>,
 }
 
 /// How an errand went, as the node that carried it out reports it.
@@ -443,6 +459,46 @@ impl NetworkApi {
 
         match errand::waiting(&self.database, &node).await {
             Ok(waiting) => Ok(json(StatusCode::OK, &waiting)),
+            Err(error) => Ok(unreadable(error)),
+        }
+    }
+
+    /// Who else is on this network.
+    ///
+    /// **The one thing the star was missing.** `tunnel::peers` already
+    /// builds a peer for every row this node has; a member only ever had a
+    /// row for its authority, so two nodes enrolled by the same one had
+    /// never heard of each other and had no session. Three features have
+    /// worked around that by hand — a standby's primary, a hostname's
+    /// co-edges, an errand handed upwards — and this is the answer they
+    /// were each distributing a slice of.
+    ///
+    /// Its own endpoint rather than a field on the errands answer:
+    /// `call::errands` deserialises a bare list, so wrapping it would
+    /// break the wire in both directions during a mixed-version window —
+    /// and an errand is *consumed and settled* where a roster is state
+    /// that is read again every pass. A node that cannot read this still
+    /// collects its errands.
+    ///
+    /// Same credential and same guard as those, so there is no new trust:
+    /// what it discloses is who else this node enrolled, to a node it
+    /// enrolled.
+    #[get("/roster")]
+    #[raw]
+    async fn roster(&self, request: Request) -> RestResult<Response> {
+        // Copied before anything is awaited: see `asking`.
+        let Some(secret) = bearer(&request).map(str::to_string) else {
+            return Ok(refuse(
+                StatusCode::UNAUTHORIZED,
+                "this endpoint needs the secret from the token this node was enrolled with",
+            ));
+        };
+        if let Err(response) = asking(&self.database, &secret).await {
+            return Ok(response);
+        }
+
+        match super::roster::of_this_node(&self.database).await {
+            Ok(roster) => Ok(json(StatusCode::OK, &roster)),
             Err(error) => Ok(unreadable(error)),
         }
     }
@@ -876,6 +932,13 @@ impl NetworkApi {
                 overlay_ip: known
                     .and_then(|node| node.overlay_ip)
                     .unwrap_or(enrolment.overlay_ip),
+                // The same source `join` and every report use for their
+                // own: the local authority's public half, which is what
+                // makes a call to this node verified rather than merely
+                // encrypted.
+                ca: crate::edge::certs::ca_certificate_pem(&self.database)
+                    .await
+                    .ok(),
             },
         ))
     }
@@ -1326,6 +1389,100 @@ mod tests {
             "name": "alpine.example",
             "public_key": "0hEr0DzTvMDTRfPPmYFCVCQ1cA0nnUnP+2fFqZBBBGQ=",
         })
+    }
+
+    /// The census needs the credential the caller enrolled with.
+    ///
+    /// It says who else this node enrolled — to a node it enrolled. Same
+    /// guard as the errand fetch, so there is no new trust to reason
+    /// about, and a stranger gets the same refusal.
+    #[tokio::test]
+    async fn a_roster_needs_the_secret_the_caller_enrolled_with() {
+        let authority = authority().await;
+
+        let bare = authority.harness.get("/api/network/roster").send().await;
+        assert_eq!(bare.status, StatusCode::UNAUTHORIZED);
+
+        let stranger = authority
+            .harness
+            .get("/api/network/roster")
+            .header("authorization", "Bearer not-a-secret-anybody-gave-out")
+            .send()
+            .await;
+        assert_eq!(stranger.status, StatusCode::UNAUTHORIZED);
+
+        // A real authority has a key and an address of its own — that is
+        // what `install` leaves behind — and without both it is not a peer
+        // anybody could configure, so the census leaves it out. The
+        // harness stops one step short of that.
+        super::super::ensure_hub(&authority.database, &Config::default())
+            .await
+            .expect("a hub");
+
+        // A node that joined, asking with what it joined with.
+        authority
+            .harness
+            .post("/api/network/join")
+            .header("authorization", format!("Bearer {}", authority.secret))
+            .json(&arriving())
+            .send()
+            .await
+            .assert_ok();
+        let response = authority
+            .harness
+            .get("/api/network/roster")
+            .header("authorization", format!("Bearer {}", authority.secret))
+            .send()
+            .await;
+        response.assert_ok();
+
+        // And what came back describes the authority itself, which is the
+        // member a joiner most needs: its anchor is what makes a call back
+        // verified rather than merely encrypted.
+        let members = response.value()["members"]
+            .as_array()
+            .expect("members")
+            .clone();
+        assert!(
+            members
+                .iter()
+                .any(|member| member["node"] == authority.me && member["ca_pem"].is_string()),
+            "{members:#?}"
+        );
+    }
+
+    /// The join answer carries the authority's own anchor.
+    ///
+    /// **The relationship was one-way and nobody had noticed.** The
+    /// arriving node sends its CA and the authority stores it, so the
+    /// authority can dial it over the overlay; the joiner wrote `None`
+    /// for the authority's, so `call::to_node` — which verifies rather
+    /// than merely encrypting — refused the one node it should always be
+    /// able to reach. `doctor` reported it as "it has not reported since
+    /// this version" about the machine that had just enrolled it.
+    #[tokio::test]
+    async fn a_join_answer_carries_the_authoritys_anchor() {
+        let authority = authority().await;
+
+        let response = authority
+            .harness
+            .post("/api/network/join")
+            .header("authorization", format!("Bearer {}", authority.secret))
+            .json(&arriving())
+            .send()
+            .await;
+        response.assert_ok();
+
+        let answer = response.value();
+        let ca = answer["ca"].as_str().expect("an anchor in the answer");
+        // Not any string: what `call::to_node` will hand to a root store,
+        // so it has to parse as a certificate.
+        assert!(
+            !crate::edge::certs::pem_certificates(ca)
+                .expect("it parses")
+                .is_empty(),
+            "the anchor holds no certificate"
+        );
     }
 
     /// A co-edge's challenge is served, and only with the secret for

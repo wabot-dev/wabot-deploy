@@ -261,6 +261,14 @@ pub async fn run(config: Config, config_path: &Path) -> anyhow::Result<i32> {
     // nobody reads, and this report is what somebody pastes into an
     // issue. The failure counts as a problem, because a node whose
     // backups are not happening is a node one disk away from nothing.
+    // Two nodes claiming one overlay address, which the census refuses to
+    // write rather than letting the unique index fail in a warning nobody
+    // reads. A peer that can never work, so it counts.
+    if let Some(said) = crate::network::roster::conflicts(&database).await {
+        problems += 1;
+        println!("  ADDRESS CLASH {said}");
+    }
+
     println!();
     println!("backups");
     let plan = crate::node::backups::plan(&database).await;

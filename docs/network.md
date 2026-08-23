@@ -1116,3 +1116,76 @@ Five things it needed, and each is a decision:
 endpoint's refusals and the guard are covered by tests; what has not run
 is two real nodes answering for one name and Let's Encrypt asking the one
 that did not order.
+
+## The census: the star was never in the tunnel
+
+`tunnel::peers` builds a WireGuard peer for **every** row in the `node`
+table that has a key and an address. It does not filter to authorities, and
+it never did. The overlay is a star because of what the rows *are*: a join
+writes exactly one on each side, so a member knows its authority and
+nothing else.
+
+That has now been paid for three times in the same shape — the primary's
+address travelling in a standby's errand, a hostname's co-edges travelling
+in an edge errand, an errand handed upwards because collection only asked
+authorities — and the authority had the answer all along: every report
+carries the reporting node's endpoint, its capabilities, its usage and its
+own certificate authority. Nothing ever asked it for the list.
+
+`GET /api/network/roster`, collected in the same pass as the errands, on
+the same credential. What it carries is **reachability**: an address, a
+key, an anchor, and where to dial. Six decisions worth keeping:
+
+- **Its own endpoint, not a field on the errands answer.** `call::errands`
+  deserialises a bare list, so wrapping it breaks the wire in both
+  directions during a mixed-version window — and an errand is *consumed
+  and settled* where a census is state that is read again every pass. A
+  node that cannot read the census still collects its errands, and an
+  authority too old to have the endpoint answers 404 to it and is
+  otherwise unaffected.
+- **Members are the nodes this one enrolled, plus itself.** Not every row:
+  an authority may have joined somebody else, or learned a co-edge, and
+  handing those out leaks a third network into this one. A node the
+  operator forgot drops out on its own.
+- **Never `allows`.** That column is what a node permits *the reader*, so
+  the authority's copy says nothing about what a member permits a sibling.
+  A census that carried it would make `edge_candidates` offer nodes that
+  never collect the errand — the fault the Alpine node had for an hour,
+  silently. A member learned from a census has an empty grant set, and that
+  is what keeps the control plane directed while the data plane meshes.
+  Nor `usage`, a measurement that would make every census look changed;
+  nor `kind`, which every writer derives from whether there is an endpoint.
+- **An authority is healed, never described.** Only a missing anchor is
+  filled in. Its endpoint is what `collect` dials on every pass, and on a
+  node with two authorities the census of one would otherwise move the
+  address of the other — each allocates from its own accounting.
+- **An address another row holds is refused before it is attempted**, and
+  the clash is written where a person will see it: `doctor` counts it as a
+  problem. The unique index would have made the write fail, and catching
+  that and warning is what the co-edge path did — a peer that never works
+  with nothing saying why.
+- **Nothing is deleted.** A member withdrawn elsewhere stays a peer here
+  until somebody forgets it, and `AllowedIPs` is authorisation, so a stale
+  key keeps the right to claim its own `/32`. Said out loud rather than
+  tidied silently: pruning safely needs "every authority answered this
+  pass", or a partition deletes peers.
+
+And two things that came with it:
+
+**The join answer carries the authority's anchor.** The relationship was
+one-way and nobody had noticed: the arriving node sends its CA and the
+authority stores it, so the authority can dial back — while the joiner
+wrote `None`, so `call::to_node` refused the one node it should always be
+able to reach. `doctor` reported it as "it has not reported since this
+version" about the machine that had just enrolled it. Nodes that joined
+earlier are healed by the census rule above, with no re-join.
+
+**A name that is a private address is not an endpoint.** Found on the
+network this is verified on. Before the console answered on this machine's
+own addresses, the way in from another PC on the LAN was to name the node
+`192.168.1.55` — and that made it *public*, with a `192.168.1.55:443`
+endpoint its authority held as somewhere the world could dial: offered as
+an edge for hostnames, sent WireGuard handshakes inside its own network,
+and with a census it would have been handed to every other member as
+reachable. A *public* address typed as a domain stays allowed, because it
+really is dialable.
