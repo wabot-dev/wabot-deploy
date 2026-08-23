@@ -589,6 +589,56 @@ Next: groups — health and failover across the upstreams of one name.
 Today a dead replica keeps its share of the traffic until the owner
 notices.
 
+**The overlay is a mesh now, and the census is what made it one.** The
+star was in the *rows*, not in the tunnel: `tunnel::peers` always built a
+peer for every row with a key and an address, and a member only ever had a
+row for its authority. `GET /api/network/roster`, collected in the same
+pass as the errands, ends that — and the authority had the answer all
+along, because every report already carried the reporting node's endpoint,
+key, anchor and usage. Four rules hold it together, and each is a fault
+avoided:
+
+- **Reachability, never consent.** No `allows` on the wire: that column is
+  what a node permits *the reader*, so the authority's copy says nothing
+  about what a member permits a sibling — and a census carrying it would
+  make `edge_candidates` offer nodes that never collect the errand. A
+  learned member has an empty grant set, which is what keeps the control
+  plane directed while the data plane meshes. No `usage` either (a
+  measurement makes every census look changed) and no `kind` (derived from
+  the endpoint, because a kind on the wire can arrive wrong).
+- **An authority is healed, never described** — only a missing anchor.
+  `collect` dials that endpoint every pass, and on a node with two
+  authorities the census of one would otherwise move the address of the
+  other.
+- **An address two nodes claim is refused before the write**, and said out
+  loud: `doctor` counts it, the attention card shows it. The unique index
+  would have failed the write, and catching that into a warning is a peer
+  that never works with nothing saying why.
+- **Nothing is deleted**, and `AllowedIPs` is authorisation, so a stale key
+  keeps the right to claim its `/32`. Pruning safely needs "every authority
+  answered this pass" or a partition deletes peers.
+
+**Two private nodes on the internet still have no path, and that is
+accepted.** On one LAN they do: each node reports the addresses it holds
+(`network::lan`, `getifaddrs` through `libc`, which compiles on the node
+and on a laptop) and the peer is dialled at one — with **no keepalive**,
+because the keepalive follows the NAT and its absence is what makes a wrong
+guess silent. The refusals matter more than the rule: nothing inside
+`10.42.0.0/16` is ever a candidate, because `wabot0` and every project
+bridge live there and the naive version points each peer's tunnel at its
+own address inside the tunnel.
+
+**A name that is a private address is not an endpoint.** Naming a node
+`192.168.1.55` — which used to be the only way into its console from
+another machine on the LAN — made it *public*, with an endpoint its
+authority held as dialable: offered as an edge for hostnames, sending
+handshakes into its own network, and about to be handed to every member by
+the census. The console answers on this machine's own addresses now, so the
+workaround is not needed; `certs::own_names` carries them and
+`wanted_names` deliberately does not, because a private address "resolves
+here" through `ToSocketAddrs` and the DNS guard would not have stopped the
+order.
+
 ## Databases
 
 [`docs/databases.md`](docs/databases.md) is the plan and the record.
@@ -624,12 +674,16 @@ pure and holds the table.
   `docker.io/library/postgres` elsewhere would have handed a wabot push
   token to Docker Hub. The credential is optional now and is minted
   only when the registry is this node's own.
-- **The overlay is a star, not a mesh.** A join writes one row on each
-  side, so two nodes enrolled by the same authority have never heard of
-  each other and have no WireGuard session. Phase 7 did not notice
-  because the verified topology always had the authority at one end. A
-  standby dialling a primary on a third node is the case with no path,
-  and the fix — the peer travelling in the errand — is phase 4 there.
+- ~~**The overlay is a star, not a mesh.**~~ It was, and the reason is
+  worth keeping: a join writes one row on each side, so two nodes enrolled
+  by the same authority had never heard of each other and had no WireGuard
+  session. Phase 7 did not notice because the verified topology always had
+  the authority at one end; the standby dialling a primary on a third node
+  was the case with no path, and the fix there was the peer travelling in
+  the errand. **The star was never in the tunnel** — `tunnel::peers` builds
+  a peer for every row that has a key and an address — so the answer was
+  the census below, and the errand payloads stay as the thing that works
+  before a node has collected one.
 
 **Phases 0 to 2 are verified on the Ubuntu node** (2026-08-12, a 256 MB
 PostgreSQL 17 created from the console): `memory.max` and
