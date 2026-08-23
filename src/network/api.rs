@@ -174,6 +174,18 @@ pub struct Report {
     /// `endpoint` follows, and for the same reason.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub allows: Option<String>,
+    /// The addresses this node holds on its own networks.
+    ///
+    /// For two private nodes on one LAN: neither has an `endpoint` — that
+    /// is set only for a public node — so on the internet they have no
+    /// path to each other, and on a LAN they are one hop apart and the
+    /// only thing missing was knowing it.
+    ///
+    /// `None` from a node older than the field, which changes nothing. An
+    /// **empty** list is a node saying it has no address worth naming, and
+    /// clears what was stored — the same rule `allows` follows.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lan: Option<Vec<String>>,
     /// The reporting node's own certificate authority, in PEM.
     ///
     /// So the reader can dial it back over the overlay and verify what
@@ -688,6 +700,14 @@ impl NetworkApi {
 
         // Before the replicas, because it is about the node itself and
         // a failure to read one replica must not lose it.
+        // Its own addresses, before the reachability write and beside it:
+        // the column is outside `Node` on purpose, so it has a statement
+        // of its own — see migration `0046`.
+        if let Some(addresses) = &report.lan {
+            if let Err(error) = super::lan::remember(&self.database, &node, addresses).await {
+                tracing::warn!(%error, node = %node, "could not record a node's own addresses");
+            }
+        }
         if let Err(error) = note_reachability(
             &self.database,
             &node,

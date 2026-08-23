@@ -106,6 +106,7 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
         "A node answers for a name by claiming it, getting a certificate for it, and proxying to wherever the copies run. Only nodes with an address the world can dial are here, and only those that agreed to be asked.",
         "Un nodo responde por un nombre reclamándolo, consiguiendo un certificado para él y haciendo de proxy hacia donde corran las copias. Aquí solo están los nodos con una dirección a la que el mundo pueda llamar, y solo los que aceptaron que se les pida.",
     ),
+    ("A node this one cannot reach", "Un nodo que este no alcanza"),
     ("A note, if you want one", "Una nota, si quieres"),
     (
         "A public authority signs it, so any client verifies it with the trust store it already has — the connection string needs no certificate of its own.",
@@ -459,6 +460,7 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
         "No values — restoring this clears the environment.",
         "Sin valores — restaurar esto deja el entorno vacío.",
     ),
+    ("No way to reach a node", "Sin camino hacia un nodo"),
     (
         "No wildcard record answers for this node, so ",
         "Ningún registro comodín responde por este nodo, así que ",
@@ -923,6 +925,7 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
     ("Tokens this node minted", "Tokens que acuñó este nodo"),
     ("Try again", "Reintentar"),
     ("Tuesday", "Martes"),
+    ("Two nodes claim one address", "Dos nodos reclaman una dirección"),
     ("Type", "Tipo"),
     ("Type the name to confirm: ", "Escribe el nombre para confirmar: "),
     ("UTC, as the window above reads it: 2026-08-16 14:32. Empty means as far as the archived log goes, which is the most recent moment there is.", "UTC, como lo dice la ventana de arriba: 2026-08-16 14:32. Vacío significa hasta donde llegue el log archivado, que es el momento más reciente que hay."),

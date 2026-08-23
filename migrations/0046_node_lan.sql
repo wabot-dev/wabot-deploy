@@ -1,0 +1,22 @@
+-- The addresses a node holds on its own networks.
+--
+-- **For two private nodes on one LAN.** Neither has an `endpoint` — that
+-- column is set only for a public node, by an invariant every writer keeps
+-- — so on the internet they have no path to each other and that is
+-- accepted. On a LAN they are one hop apart, and the only thing missing
+-- was knowing it: with the addresses, `tunnel::peers` can dial a peer that
+-- is otherwise undialable, and `network::lan::candidate` decides when that
+-- is more than a guess.
+--
+-- Comma-separated, like `allows`. **Deliberately invisible to `COLUMNS`,
+-- `read` and `save`** in `network::mod`: `save` writes the whole row and
+-- `ensure_self` calls it, and this node must have no opinion about another
+-- machine's addresses. It is written by the report that carried it and by
+-- the census that relayed it, each with its own statement — the same shape
+-- `usage` would have had if it were not read live.
+--
+-- An **empty** list is news, not silence: a node that has no address worth
+-- naming has said so, and the column is cleared. An absent field is an
+-- older node and changes nothing, which is the rule `endpoint`, `allows`
+-- and `ca_pem` already follow.
+ALTER TABLE node ADD COLUMN "lan" TEXT;

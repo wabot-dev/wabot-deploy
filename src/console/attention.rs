@@ -97,6 +97,7 @@ pub async fn gather(state: &super::ConsoleState) -> PlatformResult<Vec<Concern>>
     errands_that_were_refused(state, &mut concerns).await;
     what_nothing_claims(state, &mut concerns).await;
     a_backup_that_did_not_work(state, &mut concerns).await;
+    nodes_this_one_cannot_reach(state, &mut concerns).await;
 
     concerns.sort_by_key(|concern| std::cmp::Reverse(concern.weight));
     Ok(concerns)
@@ -329,6 +330,70 @@ async fn a_backup_that_did_not_work(state: &super::ConsoleState, concerns: &mut 
     });
 }
 
+/// Nodes this one is trying to reach and cannot, and nodes it has no way
+/// to reach at all.
+///
+/// **Two different things, and only one is a fault.** A peer this node
+/// configured an endpoint for and has never been answered by is broken: we
+/// believe we can reach it. A pair of private nodes with nowhere to dial is
+/// *geometry* — neither has an address the other can use, and on the
+/// internet that has no answer — so it is a notice, and it is named because
+/// unnamed it looks exactly like the first one.
+///
+/// One netlink read, like the disk walk beside it, and silence when there
+/// is no interface: a node whose kernel refuses WireGuard has a console to
+/// find out why, and this must not be what breaks it.
+async fn nodes_this_one_cannot_reach(state: &super::ConsoleState, concerns: &mut Vec<Concern>) {
+    let (Ok(interface), Ok(Some(me))) = (
+        crate::network::tunnel::observed(),
+        crate::network::me(&state.database).await,
+    ) else {
+        return;
+    };
+    let Ok(nodes) = crate::network::all(&state.database).await else {
+        return;
+    };
+
+    for paired in crate::network::tunnel::pair(&me, &nodes, &interface) {
+        use crate::network::tunnel::Path;
+        let go = format!("/network/{}", paired.node_id);
+        // Written out rather than through a variable: the guard below
+        // checks that each of these words appears in this file as a
+        // literal, which is what stops a wording drifting away from its
+        // Spanish.
+        match paired.path {
+            Path::Dialling { at } => concerns.push(Concern {
+                weight: Weight::Wrong,
+                what: "A node this one cannot reach".into(),
+                which: paired.name,
+                why: format!("configured at {at}, and it has never answered"),
+                go,
+            }),
+            Path::Nowhere => concerns.push(Concern {
+                weight: Weight::Notice,
+                what: "No way to reach a node".into(),
+                which: paired.name,
+                why: "both are behind a router and not on one network".into(),
+                go,
+            }),
+            _ => continue,
+        }
+    }
+
+    // And an address two nodes claim, which the census refuses to write
+    // rather than letting the unique index fail into a log. A peer that
+    // can never work.
+    if let Some(said) = crate::network::roster::conflicts(&state.database).await {
+        concerns.push(Concern {
+            weight: Weight::Wrong,
+            what: "Two nodes claim one address".into(),
+            which: String::new(),
+            why: said,
+            go: "/network".into(),
+        });
+    }
+}
+
 /// The card, or nothing at all.
 ///
 /// **Nothing when there is nothing**, which is the property that makes
@@ -409,6 +474,9 @@ mod tests {
             "An instruction was refused",
             "Storage nothing claims",
             "A backup did not work",
+            "A node this one cannot reach",
+            "No way to reach a node",
+            "Two nodes claim one address",
         ] {
             assert!(
                 crate::console::es::lookup(what).is_some(),

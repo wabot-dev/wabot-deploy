@@ -597,6 +597,11 @@ async fn report_for(
         // be asked. The authority's page for this node showed nothing at
         // all before — it has no meters for a machine it cannot reach.
         usage: Some(usage(config)),
+        // The addresses this machine holds, read live like the usage
+        // beside it. It is what lets a private sibling on the same LAN
+        // dial this one at all — on the internet neither has an endpoint,
+        // and that has no answer.
+        lan: Some(crate::network::lan::addresses()),
     })
 }
 

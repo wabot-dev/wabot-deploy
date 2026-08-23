@@ -1189,3 +1189,87 @@ an edge for hostnames, sent WireGuard handshakes inside its own network,
 and with a census it would have been handed to every other member as
 reachable. A *public* address typed as a domain stays allowed, because it
 really is dialable.
+
+## Two private nodes on one LAN
+
+The internet case has no answer and is accepted: `overlay_endpoint` sets an
+endpoint only for a node that has one, and every writer keeps "endpoint
+present ⇔ public", so if neither side has one nobody sends the first
+packet. A relay through the authority would work and was refused — the hub
+would decrypt the traffic and become a bottleneck — and hole punching is a
+larger machine than this needs.
+
+But on a LAN they are one hop apart, and the only thing missing was
+knowing it. Each node reports the addresses it holds (`network::lan`, which
+walks `getifaddrs` through `libc` — already a dependency, declared for
+`linux_like` and `bsd`, so the same walker serves the musl node and a
+developer's Mac and its filters can be tested off a node). The census
+relays them, and `tunnel::peers` dials an otherwise-undialable peer at one.
+
+Five things about it, and four are refusals:
+
+- **A local address never becomes `node.endpoint`.** `may_be_edge` is
+  "public and has an endpoint", so a LAN address there would make a
+  private node an edge candidate and publish a hostname pointing at
+  `192.168.1.10`. Its own column, invisible to `COLUMNS` and `save` —
+  migration `0046` says why.
+- **Nothing inside `10.42.0.0/16` is a candidate.** `wabot0` carries
+  `10.42.0.x` and every project bridge carves a `/24` out of the same
+  `/16`, so *every* peer's overlay address is "on a subnet this machine
+  has": the naive rule points each peer's tunnel at that peer's address
+  inside the tunnel. There is a test named after exactly that.
+- **Nothing this machine holds itself**, or two sites both numbering from
+  `.10` make a node dial itself.
+- **A mask of nought is not a mask.** Nothing produces one today; the
+  guard is for the day a second source arrives and a default route walks
+  in as `0.0.0.0/0`.
+- **And no keepalive.** The keepalive follows the NAT, not the dialling:
+  there is no translation to hold open on a LAN, and its absence is what
+  makes a wrong guess *silent*. Two sites that both use `192.168.1.0/24`
+  will point at each other's addresses; with no keepalive and no traffic
+  nothing is sent at all, and what shows up is a peer that has never
+  shaken hands — which phase D now names rather than leaving to be
+  guessed at.
+
+**Churn is the other way round from what it looks like.** An address that
+*moves* costs one `configure_peer` for that peer and nothing else — changing
+an endpoint does not reset a session, that is roaming. One that
+*disappears* costs nothing and leaves the old endpoint in the kernel,
+because `holds` treats a wanted `None` as a match. That is deliberate, and
+undoing it is the 45-second bug: an endpoint the kernel learned is not a
+difference.
+
+## What is happening with each node, said once
+
+`doctor` printed the kernel's peers by public key and the rows by id and
+address and never joined the two, so a row with no peer and a peer with no
+row both read as silence. `tunnel::pair` is that join, above the Linux line
+so it is pure and testable anywhere, and it is read by `doctor` and by the
+console's attention card.
+
+**An endpoint with no handshake is one this node configured.** The kernel
+sets a peer's endpoint from configuration or from an authenticated packet,
+and an authenticated packet means a handshake — so nothing has to be asked
+about what this node *intended*, and the derivation costs one netlink read,
+which is what makes it cheap enough for a page render.
+
+Six states, and the distinction that needed `me`:
+
+| state | meaning |
+| --- | --- |
+| `Session` | packets move; how long ago, and at which address |
+| `Dialling` | configured here and never answered — **a fault** |
+| `Waiting` | nothing configured, and that node can dial this one — healthy |
+| `Nowhere` | neither can dial the other: two private nodes, not on one LAN |
+| `Unexplained` | a key on the interface no row accounts for |
+| `NotOnTheOverlay` | a row with no key or address, which `peers` skips |
+
+A **public** node holding a private peer with no endpoint and no handshake
+is healthy — that peer dials in, and that asymmetry is the design. A
+**private** node in the same position has no path at all. Without `me` the
+two are the same reading, and one of them is fine.
+
+`doctor` counts `Dialling` and the address clash, and deliberately does not
+count `Nowhere` or `Waiting` — the same rule it already follows for a node
+with no overlay at all: geometry is not a fault, but it has to be named or
+it looks like one.

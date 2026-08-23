@@ -261,14 +261,6 @@ pub async fn run(config: Config, config_path: &Path) -> anyhow::Result<i32> {
     // nobody reads, and this report is what somebody pastes into an
     // issue. The failure counts as a problem, because a node whose
     // backups are not happening is a node one disk away from nothing.
-    // Two nodes claiming one overlay address, which the census refuses to
-    // write rather than letting the unique index fail in a warning nobody
-    // reads. A peer that can never work, so it counts.
-    if let Some(said) = crate::network::roster::conflicts(&database).await {
-        problems += 1;
-        println!("  ADDRESS CLASH {said}");
-    }
-
     println!();
     println!("backups");
     let plan = crate::node::backups::plan(&database).await;
@@ -548,6 +540,53 @@ pub async fn run(config: Config, config_path: &Path) -> anyhow::Result<i32> {
         Err(error) => {
             println!("  nodes unreadable: {error}");
             problems += 1;
+        }
+    }
+    // Two nodes claiming one overlay address, which the census refuses to
+    // write rather than letting the unique index fail in a warning nobody
+    // reads. A peer that can never work, so it counts.
+    if let Some(said) = crate::network::roster::conflicts(&database).await {
+        problems += 1;
+        println!("  ADDRESS CLASH {said}");
+    }
+
+    // What is actually happening with each node, which is the kernel's
+    // peers and the rows crossed — and until now they were printed as two
+    // lists nothing joined, so a row with no peer and a peer with no row
+    // both read as silence.
+    if let (Ok(interface), Ok(Some(me))) = (
+        crate::network::tunnel::observed(),
+        crate::network::me(&database).await,
+    ) {
+        let nodes = crate::network::all(&database).await.unwrap_or_default();
+        for paired in crate::network::tunnel::pair(&me, &nodes, &interface) {
+            use crate::network::tunnel::Path;
+            let said = match &paired.path {
+                Path::Session { ago, at } => match at {
+                    Some(at) => format!("session {ago}s ago, via {at}"),
+                    None => format!("session {ago}s ago"),
+                },
+                // The one that is a fault: this node thinks it can
+                // reach that one, and never has.
+                Path::Dialling { at } => {
+                    problems += 1;
+                    format!("DIALLING {at} — never answered")
+                }
+                // Healthy: that node dials this one. The asymmetry is
+                // the design, not a shortfall.
+                Path::Waiting => "waiting for it to dial in".into(),
+                // Geometry, not a failure — and unnamed it looks
+                // exactly like something broken.
+                Path::Nowhere => "no path — both private, and not on one network".into(),
+                Path::Unexplained { public_key } => {
+                    format!("a peer no row explains: {public_key}")
+                }
+                Path::NotOnTheOverlay => "not on the overlay yet".into(),
+            };
+            match paired.name.is_empty() {
+                true => println!("  path        {said}"),
+                false => println!("  path        {} — {said}", paired.name),
+            }
         }
     }
 

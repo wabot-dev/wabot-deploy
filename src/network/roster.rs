@@ -63,6 +63,12 @@ pub struct Member {
     /// kind, rather than being told.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub endpoint: Option<String>,
+    /// The addresses that member holds on its own networks, as it reported
+    /// them. What they are for is the pair of members that have no
+    /// endpoint at all: on a LAN they are one hop apart, and this is the
+    /// only way either learns it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub lan: Vec<String>,
 }
 
 /// The members of the network this node is the authority of.
@@ -78,6 +84,26 @@ pub async fn of_this_node(database: &SqliteDatabase) -> NetworkResult<Roster> {
         .filter_map(|enrolment| enrolment.used_by)
         .collect();
     let mine = crate::edge::certs::ca_certificate_pem(database).await.ok();
+    // What each of them said its own addresses are, read once. This node's
+    // own are read live rather than from the column: it is the one machine
+    // that can look.
+    let mut held: std::collections::BTreeMap<String, Vec<String>> =
+        super::lan::of_every_node(database)
+            .await?
+            .into_iter()
+            .map(|(id, addresses)| {
+                (
+                    id,
+                    addresses
+                        .into_iter()
+                        .map(|address| address.to_string())
+                        .collect(),
+                )
+            })
+            .collect();
+    if let Some(me) = super::me(database).await? {
+        held.insert(me.id, super::lan::addresses());
+    }
 
     let members = super::all(database)
         .await?
@@ -106,6 +132,7 @@ pub async fn of_this_node(database: &SqliteDatabase) -> NetworkResult<Roster> {
                     false => node.ca_pem.clone(),
                 },
                 endpoint: node.endpoint.clone(),
+                lan: held.get(&node.id).cloned().unwrap_or_default(),
             })
         })
         .collect();
@@ -176,6 +203,10 @@ pub async fn apply(database: &SqliteDatabase, roster: &Roster) -> NetworkResult<
         if remember(database, member).await? {
             applied.changed += 1;
         }
+        // Its addresses, in their own column and with their own rule: an
+        // empty list is a member that has none worth naming, which is news
+        // and clears what was stored.
+        super::lan::remember(database, &member.node, &member.lan).await?;
     }
     Ok(applied)
 }
@@ -426,6 +457,7 @@ mod tests {
                     public_key: "zzzz".into(),
                     ca_pem: None,
                     endpoint: Some("elsewhere.example:443".into()),
+                    lan: Vec::new(),
                 }],
             },
         )
@@ -463,6 +495,7 @@ mod tests {
                     public_key: "cccc".into(),
                     ca_pem: None,
                     endpoint: None,
+                    lan: Vec::new(),
                 }],
             },
         )
@@ -532,6 +565,7 @@ mod tests {
                     public_key: "another".into(),
                     ca_pem: Some("the anchor".into()),
                     endpoint: Some("moved.example:443".into()),
+                    lan: Vec::new(),
                 }],
             },
         )
@@ -566,6 +600,7 @@ mod tests {
                     public_key: "hubkey".into(),
                     ca_pem: Some("the anchor".into()),
                     endpoint: Some("hub.example:443".into()),
+                    lan: Vec::new(),
                 }],
             },
         )
@@ -590,6 +625,7 @@ mod tests {
                 public_key: "dddd".into(),
                 ca_pem: Some("anchor".into()),
                 endpoint: None,
+                lan: Vec::new(),
             }],
         };
 

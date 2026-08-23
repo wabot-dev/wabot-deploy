@@ -131,6 +131,11 @@ pub struct Overlay {
 /// it is simply not something WireGuard can be told about yet.
 async fn peers(database: &SqliteDatabase, config: &Config, me: &Node) -> NetworkResult<Vec<Peer>> {
     let mut peers = Vec::new();
+    // Read once for the whole list rather than per peer: this runs at
+    // every change, and one of the two is a walk of the kernel's
+    // interfaces.
+    let lan = super::lan::of_every_node(database).await?;
+    let mine = super::lan::held();
 
     for node in super::all(database).await? {
         if node.id == me.id {
@@ -159,11 +164,41 @@ async fn peers(database: &SqliteDatabase, config: &Config, me: &Node) -> Network
         if let Some(endpoint) = overlay_endpoint(&node, config).await {
             peer.endpoint = Some(endpoint);
             peer.persistent_keepalive_interval = Some(KEEPALIVE);
+        } else if let Some(address) = lan_endpoint(&node, &lan, &mine) {
+            // **A private peer on this machine's own network.** Neither
+            // side has an endpoint — that is set only for a public node —
+            // so on the internet this pair has no path and never will.
+            // On a LAN they are one hop apart and the only thing missing
+            // was knowing it.
+            //
+            // **And no keepalive.** The keepalive follows the NAT, not the
+            // dialling: there is no translation to hold open here, and its
+            // absence is what makes a wrong guess *silent*. Two sites that
+            // both number from `192.168.1.0/24` will point at each other's
+            // addresses; with no keepalive and no traffic, nothing is sent
+            // at all, and what somebody sees is a peer that has never
+            // shaken hands.
+            peer.endpoint = Some(SocketAddr::new(address.into(), config.overlay.port));
         }
         peers.push(peer);
     }
 
     Ok(peers)
+}
+
+/// A peer's address on a network this machine is also on.
+///
+/// Only when that peer has no endpoint: a public one is dialled at the
+/// name it advertises, and preferring the LAN would break a path that
+/// works for a guess nothing local can check. `lan::candidate` is where
+/// the judgement lives, and it refuses the three cases that would make
+/// this worse than doing nothing.
+fn lan_endpoint(
+    node: &Node,
+    lan: &std::collections::BTreeMap<String, Vec<std::net::Ipv4Addr>>,
+    mine: &[super::lan::Held],
+) -> Option<std::net::Ipv4Addr> {
+    super::lan::candidate(lan.get(&node.id)?, mine)
 }
 
 /// Where to send this peer's packets, if anywhere.
@@ -517,6 +552,122 @@ impl Handshake {
     }
 }
 
+/// A node's row and the kernel's peer for it, put together.
+///
+/// **Nothing joined these two before.** `doctor` printed the kernel's
+/// peers by public key and the database's rows by id and address, and
+/// never said which was which — so a row with no peer, or a peer no row
+/// explains, read as silence. This is the derivation all three readers
+/// want, written once because three copies of a rule is how one goes
+/// stale.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Paired {
+    pub node_id: String,
+    pub name: String,
+    pub path: Path,
+}
+
+/// What is actually happening between this node and another.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Path {
+    /// Packets move: a handshake completed this long ago, at this address.
+    Session { ago: u64, at: Option<String> },
+    /// This node set an endpoint and has never been answered. A fault: we
+    /// think we can reach it, and cannot.
+    Dialling { at: String },
+    /// No endpoint here, and nothing yet — but that node can dial this
+    /// one, which is the asymmetry the whole design rests on. Not a fault.
+    Waiting,
+    /// Neither side can dial the other and nothing has ever arrived: two
+    /// private nodes, not on one network. **Named rather than counted**,
+    /// because it is geometry and not a failure — and because unnamed it
+    /// looks exactly like something broken.
+    Nowhere,
+    /// A key on the interface that no row explains.
+    Unexplained { public_key: String },
+    /// A row with no key or no address: a node part-way through joining,
+    /// which `peers` skips.
+    NotOnTheOverlay,
+}
+
+/// Cross what the kernel has with what the rows say.
+///
+/// Pure, and above the Linux line on purpose: `doctor`, the attention card
+/// and the node's page all want this answer, and a test wants it on any
+/// machine.
+///
+/// `me` decides the one distinction that matters. A **public** node
+/// holding a private peer with no endpoint and no handshake is healthy —
+/// that peer dials in, and this side is right to wait. A **private** node
+/// in the same position has no path at all, which is the state the
+/// operator has agreed to live with and the one that must not look like a
+/// fault.
+pub fn pair(me: &Node, nodes: &[Node], interface: &Interface) -> Vec<Paired> {
+    let mut paired = Vec::new();
+    let mut explained: Vec<String> = Vec::new();
+
+    for node in nodes.iter().filter(|node| !node.is_self) {
+        let (Some(key), Some(_)) = (&node.public_key, &node.overlay_ip) else {
+            paired.push(Paired {
+                node_id: node.id.clone(),
+                name: node.name.clone(),
+                path: Path::NotOnTheOverlay,
+            });
+            continue;
+        };
+        explained.push(key.clone());
+
+        let seen = interface.peers.iter().find(|peer| &peer.public_key == key);
+
+        // **An endpoint with no handshake is one this node configured.**
+        // The kernel sets a peer's endpoint from configuration or from an
+        // authenticated packet, and an authenticated packet means a
+        // handshake — so the two cases cannot be confused, and nothing has
+        // to be asked about what this node *intended*. That is what keeps
+        // this cheap enough for a page render: one netlink read.
+        let path = match seen {
+            Some(peer) if peer.live() => Path::Session {
+                ago: now_seconds().saturating_sub(peer.last_handshake.unwrap_or_default()),
+                at: peer.endpoint.clone(),
+            },
+            Some(peer) if peer.endpoint.is_some() => Path::Dialling {
+                at: peer.endpoint.clone().unwrap_or_default(),
+            },
+            // Nothing to dial. Whether that is healthy depends on which
+            // of the two can dial at all.
+            _ => match me.endpoint.is_some() {
+                true => Path::Waiting,
+                false => Path::Nowhere,
+            },
+        };
+        paired.push(Paired {
+            node_id: node.id.clone(),
+            name: node.name.clone(),
+            path,
+        });
+    }
+
+    for peer in &interface.peers {
+        if !explained.contains(&peer.public_key) {
+            paired.push(Paired {
+                node_id: String::new(),
+                name: String::new(),
+                path: Path::Unexplained {
+                    public_key: peer.public_key.clone(),
+                },
+            });
+        }
+    }
+    paired
+}
+
+fn now_seconds() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|since| since.as_secs())
+        .unwrap_or_default()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -855,6 +1006,229 @@ mod tests {
                 .filter(|p| p.endpoint.is_none())
                 .all(|p| p.persistent_keepalive_interval.is_none()),
             "a keepalive towards a peer with no address is packets into nowhere"
+        );
+    }
+
+    /// The four states a person has to be able to tell apart.
+    ///
+    /// The two that matter most look identical in the kernel: a peer with
+    /// no endpoint and no handshake is *healthy* on a public node — that
+    /// peer dials in — and is the end of the road on a private one. Naming
+    /// them apart is the whole reason this function takes `me`.
+    #[test]
+    fn what_is_happening_with_each_node_is_four_different_things() {
+        let node = |id: &str, key: Option<&str>| Node {
+            usage: None,
+            id: id.into(),
+            name: id.into(),
+            kind: super::super::Kind::Private,
+            endpoint: None,
+            public_key: key.map(str::to_string),
+            overlay_ip: key.map(|_| "10.42.0.9".into()),
+            is_self: false,
+            last_seen_at: None,
+            allows: Vec::new(),
+            ca_pem: None,
+        };
+        let public = Node {
+            endpoint: Some("hub.example:443".into()),
+            kind: super::super::Kind::Public,
+            is_self: true,
+            ..node("nd-me", Some("mine"))
+        };
+        let private = Node {
+            is_self: true,
+            ..node("nd-me", Some("mine"))
+        };
+
+        // Nothing configured, nothing heard: it depends who is asking.
+        let quiet = Interface {
+            port: 51820,
+            peers: Vec::new(),
+        };
+        let them = vec![node("nd-them", Some("theirs"))];
+        assert_eq!(
+            pair(&public, &them, &quiet)[0].path,
+            Path::Waiting,
+            "a public node holding a private peer is right to wait"
+        );
+        assert_eq!(
+            pair(&private, &them, &quiet)[0].path,
+            Path::Nowhere,
+            "two private nodes with nowhere to dial have no path, and it has to be said"
+        );
+
+        // A row that has not finished joining is neither.
+        assert_eq!(
+            pair(&private, &[node("nd-half", None)], &quiet)[0].path,
+            Path::NotOnTheOverlay
+        );
+
+        // A key on the interface that no row explains.
+        let stranger = Interface {
+            port: 51820,
+            peers: vec![Handshake {
+                public_key: "somebody".into(),
+                endpoint: None,
+                last_handshake: None,
+                tx_bytes: 0,
+                rx_bytes: 0,
+            }],
+        };
+        assert_eq!(
+            pair(&private, &[], &stranger)[0].path,
+            Path::Unexplained {
+                public_key: "somebody".into()
+            }
+        );
+
+        // And a handshake is a session, whatever else is configured.
+        let talking = Interface {
+            port: 51820,
+            peers: vec![Handshake {
+                public_key: "theirs".into(),
+                endpoint: Some("203.0.113.9:51820".into()),
+                last_handshake: Some(now_seconds() - 30),
+                tx_bytes: 1,
+                rx_bytes: 1,
+            }],
+        };
+        match &pair(&private, &them, &talking)[0].path {
+            Path::Session { ago, at } => {
+                assert!(*ago <= 31, "{ago}");
+                assert_eq!(at.as_deref(), Some("203.0.113.9:51820"));
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    /// A private peer on this machine's own network is dialled at its LAN
+    /// address, and **without a keepalive**.
+    ///
+    /// Neither side of a private pair has an endpoint, so on the internet
+    /// there is no path and that is accepted. On a LAN they are one hop
+    /// apart. The keepalive follows the NAT, not the dialling: there is no
+    /// translation to hold open here, and its absence is what makes a
+    /// wrong guess silent — two sites that both number from
+    /// `192.168.1.0/24` will point at each other's addresses, and with no
+    /// keepalive and no traffic nothing is sent at all.
+    #[tokio::test]
+    async fn a_private_peer_on_this_lan_is_dialled_without_a_keepalive() {
+        let database = crate::db::open_in_memory().await.expect("open");
+        let config = Config::default();
+        let me = super::super::ensure_self(&database, &config)
+            .await
+            .expect("seeded");
+        super::super::save(
+            &database,
+            &Node {
+                usage: None,
+                id: "nd-sibling".into(),
+                name: "sibling".into(),
+                kind: super::super::Kind::Private,
+                endpoint: None,
+                public_key: Some(Key::generate().public_key().to_string()),
+                overlay_ip: Some("10.42.0.5".into()),
+                is_self: false,
+                last_seen_at: None,
+                allows: Vec::new(),
+                ca_pem: None,
+            },
+        )
+        .await
+        .expect("save");
+
+        // What it said its own addresses are. Whether *this* machine is on
+        // that network decides the rest, and that is `lan::candidate`'s
+        // judgement — asked here through the real path.
+        let mine = super::super::lan::held();
+        let on_my_network: Vec<String> = mine
+            .iter()
+            .map(|held| {
+                let octets = held.address.octets();
+                // The address next door, which is on the same network
+                // whatever the mask says, and is not this machine's own.
+                format!(
+                    "{}.{}.{}.{}",
+                    octets[0],
+                    octets[1],
+                    octets[2],
+                    octets[3].wrapping_add(1).max(1)
+                )
+            })
+            .collect();
+        super::super::lan::remember(&database, "nd-sibling", &on_my_network)
+            .await
+            .expect("its addresses");
+
+        let peers = peers(&database, &config, &me).await.expect("peers");
+        let sibling = peers.first().expect("one peer");
+
+        match on_my_network.is_empty() {
+            // A machine with no network of its own — a container in CI —
+            // cannot reach anybody, and says so rather than guessing.
+            true => assert!(sibling.endpoint.is_none()),
+            false => {
+                assert!(
+                    sibling.endpoint.is_some(),
+                    "a sibling on this machine's own network is reachable"
+                );
+                assert_eq!(
+                    sibling.persistent_keepalive_interval, None,
+                    "the keepalive follows the NAT, and a LAN has none"
+                );
+                assert_eq!(
+                    sibling.endpoint.expect("an endpoint").port(),
+                    config.overlay.port,
+                    "dialled on the overlay's port, not the console's"
+                );
+            }
+        }
+    }
+
+    /// A peer is never dialled at its own overlay address.
+    ///
+    /// Every peer's overlay address is inside `10.42.0.0/16`, and so is
+    /// `wabot0` and the gateway of every project bridge — so "on a subnet
+    /// this machine has" is true of all of them. Without the refusal, each
+    /// peer's tunnel would be pointed at that peer's address *inside* the
+    /// tunnel.
+    #[tokio::test]
+    async fn a_peer_is_never_dialled_at_its_own_overlay_address() {
+        let database = crate::db::open_in_memory().await.expect("open");
+        let config = Config::default();
+        let me = super::super::ensure_self(&database, &config)
+            .await
+            .expect("seeded");
+        super::super::save(
+            &database,
+            &Node {
+                usage: None,
+                id: "nd-sibling".into(),
+                name: "sibling".into(),
+                kind: super::super::Kind::Private,
+                endpoint: None,
+                public_key: Some(Key::generate().public_key().to_string()),
+                overlay_ip: Some("10.42.0.5".into()),
+                is_self: false,
+                last_seen_at: None,
+                allows: Vec::new(),
+                ca_pem: None,
+            },
+        )
+        .await
+        .expect("save");
+        // A node reporting its overlay address as a local one, which is
+        // what a node with `wabot0` up would do if `lan::held` did not
+        // drop the platform's own space.
+        super::super::lan::remember(&database, "nd-sibling", &["10.42.0.5".to_string()])
+            .await
+            .expect("its addresses");
+
+        let peers = peers(&database, &config, &me).await.expect("peers");
+        assert!(
+            peers.first().expect("one peer").endpoint.is_none(),
+            "the tunnel was pointed at an address inside itself"
         );
     }
 
