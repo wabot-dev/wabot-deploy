@@ -387,6 +387,23 @@ writes its own service row and its own local deploy from it.
 A node that joined before v0.4.0 has no credential to ask with and must
 **re-join**: the direction inverted, and a hash cannot be presented.
 
+**"Delivered" is not "done", and consent is checkable at the door.** Two
+rules that came out of one chain of five faults — a service on a private
+node served by a public one, which did nothing at all. `hand_over` settles
+an errand the moment the call returns 200, which only means it arrived:
+what the far side did with it never travels back, so `queue_if_changed`
+must not read a settled hand-over as carried out, or fixing the cause of a
+refusal changes nothing and the identical instruction is never sent again.
+And a refusal *for lack of permission* needs one local read, so it belongs
+in the answer rather than in a row nobody on the other side will ever see —
+`errand::consent_for` is that map, in one place because the door and the
+obeying must not disagree. The other three: an edge instruction nothing
+recomputed (it hangs off `tell_holders` and off boot reconciliation now,
+like a placement), a grant a token *offered* and nothing ever wrote
+(`honour_offers`), and a domain that was a private address, which had the
+renewal loop asking a public authority for an IP identifier every minute.
+`docs/network.md` has all five.
+
 **Read `docs/network.md`'s "What it is for" before the phases.** A
 service is administered from the node where it was created, and what
 lands on a receiving node is derived: not editable there, evictable
