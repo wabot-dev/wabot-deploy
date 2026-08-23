@@ -213,14 +213,37 @@ pub async fn sync(
         .ok()
         .flatten()
         .map(|me| crate::network::internal_name(&me.id));
-    for name in node_domain
+    // And the addresses of this machine's own interfaces.
+    //
+    // **This is what makes a fresh private node reachable at all.** The
+    // edge falls back to the control plane only while *no* route exists,
+    // and that answer is worked out once at startup — so the three rows
+    // above are enough to take the fallback away, and the next restart
+    // answers 404 to the bare address the operator was using. It looked
+    // like it worked and then stopped. Naming the node after its own
+    // address was the workaround, and it costs more than it fixes:
+    // `ensure_self` would publish a private address as this node's
+    // endpoint and the node would pass for public.
+    //
+    // Only the console answers there — a service is reached by its
+    // hostname or its published port — and `network::lan` leaves out the
+    // platform's own `10.42.0.0/16`, which is what stops a container
+    // opening the console at its bridge's gateway.
+    let own: Vec<String> = node_domain
         .map(str::to_string)
         .into_iter()
         .chain(internal)
         .chain(Some(crate::edge::certs::FALLBACK_NAME.to_string()))
-    {
-        routes::upsert(database, &name, &Upstream::ControlPlane, None).await?;
+        .chain(crate::network::lan::addresses())
+        .collect();
+    for name in &own {
+        routes::upsert(database, name, &Upstream::ControlPlane, None).await?;
     }
+    // A laptop that changed network keeps its old address as a row for
+    // ever otherwise. Harmless in itself — the row points at this node's
+    // own console — but it is a name this node claims and no longer
+    // answers on, and `doctor` would list it for ever.
+    routes::retain_control_plane(database, &own).await?;
 
     if let Some(table) = table {
         table.replace(routes::load_all(database).await?);
@@ -274,6 +297,85 @@ mod tests {
         .await
         .expect("service");
         (database, project.id, service.id)
+    }
+
+    /// The console answers on this machine's own addresses.
+    ///
+    /// **The bug this fixes looked like it worked and then stopped.** The
+    /// edge falls back to the control plane only while *no* route exists,
+    /// and that answer is worked out once at startup — so the three
+    /// control-plane rows this function writes were themselves enough to
+    /// take the fallback away, and the next restart answered 404 to the
+    /// bare address the operator had been using from another machine on
+    /// the same network. Found by Jorge, who worked around it by naming
+    /// the node after its own address — which also makes `ensure_self`
+    /// publish a private address as this node's endpoint.
+    #[tokio::test]
+    async fn the_console_answers_on_this_machines_own_addresses() {
+        let (database, _, _) = node().await;
+        let table = Arc::new(RouteTable::new());
+        sync(&database, Some("node.example"), Some(&table))
+            .await
+            .expect("sync");
+
+        for address in crate::network::lan::addresses() {
+            assert_eq!(
+                table.resolve(&address),
+                Some(crate::edge::routes::Upstream::ControlPlane),
+                "no route for this machine's own {address}"
+            );
+        }
+        // And the two that were always there.
+        assert_eq!(
+            table.resolve("localhost"),
+            Some(crate::edge::routes::Upstream::ControlPlane)
+        );
+        assert_eq!(
+            table.resolve("node.example"),
+            Some(crate::edge::routes::Upstream::ControlPlane)
+        );
+
+        // Nothing from the platform's own space: `10.42.0.0/16` holds
+        // `wabot0` and the gateway of every project bridge, so a row for
+        // one of those would be a container opening the node's console.
+        assert!(
+            table.hosts().iter().all(|host| !host.starts_with("10.42.")),
+            "a platform address became a name: {:?}",
+            table.hosts()
+        );
+    }
+
+    /// An address this machine no longer holds stops being a name it
+    /// claims.
+    ///
+    /// A laptop that changes network would otherwise keep the old one for
+    /// ever — harmless in itself, since the row points at this node's own
+    /// console, but it is a name it answers for and cannot be reached at,
+    /// and `doctor` would list it as long as the node lived.
+    #[tokio::test]
+    async fn an_address_this_machine_gave_up_is_not_a_name_any_more() {
+        let (database, _, _) = node().await;
+        crate::edge::routes::upsert(
+            &database,
+            "192.0.2.77",
+            &crate::edge::routes::Upstream::ControlPlane,
+            None,
+        )
+        .await
+        .expect("a name from a network this machine has left");
+
+        let table = Arc::new(RouteTable::new());
+        sync(&database, Some("node.example"), Some(&table))
+            .await
+            .expect("sync");
+
+        assert_eq!(table.resolve("192.0.2.77"), None, "{:?}", table.hosts());
+        // And the one that is never dropped, whatever else goes.
+        assert_eq!(
+            table.resolve("localhost"),
+            Some(crate::edge::routes::Upstream::ControlPlane),
+            "localhost is how somebody reaches the console when everything else is wrong"
+        );
     }
 
     /// A node can own a service and not be the one exposing it — the

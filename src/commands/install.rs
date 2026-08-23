@@ -26,6 +26,9 @@ pub async fn run(mut config: Config, config_path: &Path, args: InstallArgs) -> a
     if args.acme_staging {
         config.acme.directory = "staging".into();
     }
+    if args.self_signed {
+        config.acme.disabled = true;
+    }
 
     // Preflight before anything is written. A machine that cannot run
     // the node should be told so while nothing has changed on it.
@@ -38,6 +41,15 @@ pub async fn run(mut config: Config, config_path: &Path, args: InstallArgs) -> a
     // ledger is *in* the database — so this step records itself last.
     let layout = layout(&config)?;
     let wrote_config = config.write_if_absent(config_path)?;
+    // **And on a node that already has a file.** `write_if_absent` refuses
+    // to clobber one, which is right — it holds the operator's edits — so
+    // a flag that only reached `config` would apply to this process and be
+    // forgotten at the next start. Written with the same section surgery
+    // the bucket credential uses: everything else in the file, comments
+    // and all, is left exactly as it was.
+    if args.self_signed && !wrote_config {
+        crate::config::store_acme_disabled(config_path, true)?;
+    }
 
     let database = crate::db::open(&config.database_path()).await?;
 
@@ -283,7 +295,14 @@ pub async fn run(mut config: Config, config_path: &Path, args: InstallArgs) -> a
                 crate::node::settings::set_acme_error(&database, None).await?;
             }
             Verdict::WillTryLater => {}
-            Verdict::Failed if !args.allow_self_signed => {
+            // **Still an exit code, and there is no flag to silence it.**
+            // `--allow-self-signed` used to mean "finish anyway", which
+            // left the node asking a public authority twice a day for a
+            // name it could not have — the account locks after five
+            // failures an hour. The two real answers are named below, and
+            // they are different: wait, or say the node will never have
+            // one.
+            Verdict::Failed => {
                 let reason = crate::node::settings::acme_error(&database)
                     .await
                     .unwrap_or_else(|| "no certificate arrived".into());
@@ -297,16 +316,16 @@ pub async fn run(mut config: Config, config_path: &Path, args: InstallArgs) -> a
                 println!("  Fix that and run install again — or change the domain from the");
                 println!("  node page, which checks DNS before it asks.");
                 println!();
-                println!("  To accept this node's own certificate instead:");
-                println!("    wabot-deploy install --allow-self-signed");
+                println!("  If this node will never have a public certificate — a machine on");
+                println!("  a private network — stop asking for one:");
+                println!("    wabot-deploy install --self-signed");
+                println!();
+                println!("  The console still serves HTTPS, on this node's own authority,");
+                println!("  which covers its addresses as well as its names.");
 
                 setup_token(&database, &config).await;
                 database.close().await?;
                 return Ok(1);
-            }
-            Verdict::Failed => {
-                println!("  --allow-self-signed: serving this node's own certificate, and");
-                println!("  retrying in the background. `wabot-deploy doctor` shows why.");
             }
         }
     }
@@ -721,7 +740,7 @@ mod tests {
         config.acme.directory = "http://127.0.0.1:1/directory".into();
 
         let mut args = InstallArgs::with_domain("node.example.com");
-        args.allow_self_signed = false;
+        args.self_signed = false;
 
         let code = run(config, &config_path, args).await.expect("install ran");
         assert_eq!(code, 0, "there was nothing that could have answered");
@@ -832,6 +851,32 @@ mod tests {
         .expect("store");
     }
 
+    /// A private node installs without asking anybody for a certificate,
+    /// and says so in the file.
+    ///
+    /// `--allow-self-signed` used to mean "finish anyway", which left the
+    /// node asking a public authority twice a day for a name it could
+    /// never have — five failures an hour lock the account for every name
+    /// on the machine. `--self-signed` says the thing that is true.
+    #[tokio::test]
+    async fn a_private_node_installs_without_asking_for_a_certificate() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let config_path = dir.path().join("config.toml");
+        let mut config = config_in(dir.path());
+        config.acme.disabled = false;
+
+        let mut args = InstallArgs::with_domain("node.example.com");
+        args.self_signed = true;
+
+        let code = run(config, &config_path, args).await.expect("install ran");
+        assert_eq!(code, 0, "nothing was asked, so nothing failed");
+
+        // And it survives the next start, which is the half the old flag
+        // did not do at all: it changed an exit code and stored nothing.
+        let stored = crate::config::Config::load(&config_path).expect("load");
+        assert!(stored.acme.disabled, "the file has to carry it");
+    }
+
     /// ACME switched off is somebody saying up front that this node
     /// serves its own certificate. Failing that install would be
     /// refusing to do what was asked.
@@ -841,7 +886,7 @@ mod tests {
         let config_path = dir.path().join("config.toml");
 
         let mut args = InstallArgs::with_domain("node.example.com");
-        args.allow_self_signed = false;
+        args.self_signed = false;
 
         let code = run(config_in(dir.path()), &config_path, args)
             .await

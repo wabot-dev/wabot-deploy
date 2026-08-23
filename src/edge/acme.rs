@@ -1171,6 +1171,40 @@ mod tests {
             .is_some());
     }
 
+    /// An address is never asked of a public authority.
+    ///
+    /// **The guard that protects the account.** The node's own addresses
+    /// are on its self-signed certificate — a browser needs them to open
+    /// the console on a LAN — and an order for one would fail at the
+    /// authority, because it goes out as a DNS identifier. Worse, the DNS
+    /// check would not have stopped it: `dns::lookup` parses an address
+    /// literal through `ToSocketAddrs`, so `192.168.1.10` "resolves here"
+    /// and passes. Five such failures an hour lock the account for every
+    /// name on the node.
+    #[tokio::test]
+    async fn an_address_is_never_asked_of_an_authority() {
+        let database = database().await;
+        let mut config = Config::default();
+        config.node.domain = Some("node.example.com".into());
+        crate::node::settings::set_domain(&database, Some("node.example.com"))
+            .await
+            .expect("domain");
+
+        let wanted = wanted_names(&database, &config).await;
+        for address in crate::network::lan::addresses() {
+            assert!(
+                !wanted.contains(&address),
+                "{address} would be ordered from a public authority: {wanted:?}"
+            );
+        }
+        // And the local half does carry them, which is the pair that has
+        // to hold: served here, never ordered there.
+        let served = crate::edge::certs::own_names(&database, wanted.clone()).await;
+        for address in crate::network::lan::addresses() {
+            assert!(served.contains(&address), "{served:?}");
+        }
+    }
+
     /// A name two nodes answer for is ordered for **only if this node
     /// knows who the others are**.
     ///

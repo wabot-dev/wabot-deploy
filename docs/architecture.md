@@ -133,9 +133,14 @@ gestor de servicios— no falla: dice que el certificado se pedirá en el
 primer arranque. Nada podía haber contestado el reto, así que culpar al
 operador del orden de los pasos sería el error de antes al revés.
 
-La salida sigue existiendo y hay que pedirla: `--allow-self-signed`. Una
-máquina en red privada, o una cuyo DNS aún se propaga, es una forma real
-de correr esto; lo que no puede ser es caer ahí por omisión.
+La salida sigue existiendo y hay que pedirla, pero dice otra cosa:
+`--self-signed`. `--allow-self-signed` significaba «termina aunque el
+certificado no llegara», y dejaba al nodo pidiéndoselo a una autoridad
+pública dos veces al día para un nombre que no puede tener — cinco fallos
+por hora bloquean la cuenta para todos los nombres de la máquina. Así que
+la bandera apaga ACME y lo escribe en el fichero. Un DNS que solo está
+propagándose no necesita bandera: el install dice qué falta y el nodo
+sigue pidiéndolo.
 
 ### 3.2 crun, no runc
 

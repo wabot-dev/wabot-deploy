@@ -48,15 +48,20 @@ failure discovered later, in a browser, by somebody who was not there.
 The node keeps running and retrying either way, so the console is
 reachable to fix the domain from.
 
-Pass `--allow-self-signed` when that is what you mean: a machine on a
-private network, or one whose DNS is still propagating.
+Pass `--self-signed` when this node will never have a public certificate
+— a machine on a private network. That turns the asking off rather than
+letting it fail twice a day, and the console still serves HTTPS on the
+node's own authority, which covers **its addresses** as well as its names:
+`https://192.168.1.10` opens it from another machine on the same network.
+A name whose DNS is merely still propagating needs no flag; the install
+says what is missing and the node keeps asking.
 
 | flag | |
 | --- | --- |
 | `--domain` | the hostname this node answers to |
 | `--email` | contact for the certificate authority — it warns you before expiry |
 | `--acme-staging` | Let's Encrypt staging while testing; production refuses more than five failed orders an hour |
-| `--allow-self-signed` | finish even if no public certificate arrived |
+| `--self-signed` | never ask a public authority; serve this node's own certificate |
 | `--no-runtime` | leave containerd alone; something else manages it |
 | `--no-system` | change nothing outside the data directory |
 | `--no-start` | install everything, start on the next boot |

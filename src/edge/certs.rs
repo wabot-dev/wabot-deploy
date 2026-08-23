@@ -63,6 +63,19 @@ pub async fn own_names(database: &SqliteDatabase, mut caller: Vec<String>) -> Ve
     if let Some(me) = crate::network::me(database).await.ok().flatten() {
         caller.push(crate::network::internal_name(&me.id));
     }
+    // And the addresses this machine holds, which is how somebody on the
+    // same network opens the console of a node that has no name at all.
+    //
+    // **These reach the self-signed certificate and never an authority.**
+    // `rcgen` turns a name that parses as an address into an IP SAN, which
+    // is what a browser wants for `https://192.168.1.10` and what a DNS
+    // SAN spelled the same way is not. A public authority, meanwhile, is
+    // never asked for one: `wanted_names` does not carry them, and the DNS
+    // check that guards it would not have stopped an order — `dns::lookup`
+    // parses an address literal through `ToSocketAddrs`, so a private
+    // address "resolves here" and the order would go out as a DNS
+    // identifier to fail.
+    caller.extend(crate::network::lan::addresses());
     caller.sort();
     caller.dedup();
     caller
@@ -595,6 +608,14 @@ pub fn not_after(cert_pem: &str) -> Option<i64> {
 /// Read out of the leaf, unlike `StoredCert::names` for the ones this
 /// node issues — there we know what we asked for. A certificate that
 /// arrived from somewhere else has to be asked.
+///
+/// **DNS names only, and that is a real limit now.** `own_names` puts this
+/// node's own addresses on its certificate, and `rcgen` writes those as IP
+/// SANs — which this cannot see, so `covers` reads a certificate that does
+/// cover an address as if it did not. Nothing is wrong on the self-signed
+/// path, where `StoredCert.names` is what was *asked for* rather than what
+/// was read back; it would bite a certificate read from files that covered
+/// an address, which nothing does yet.
 pub fn names_in(cert_pem: &str) -> Vec<String> {
     let Some(der) = pem_blocks(cert_pem, "CERTIFICATE").into_iter().next() else {
         return Vec::new();
@@ -751,6 +772,33 @@ mod tests {
     /// node: the edge put it in at startup and the certificate loop's first
     /// local refresh rebuilt the same certificate from its own list. Both
     /// call sites read correctly on their own.
+    /// The node's own certificate covers the addresses it answers on.
+    ///
+    /// A browser asked for `https://192.168.1.10` wants an **IP** SAN, and
+    /// `rcgen` produces one for any name that parses as an address — so
+    /// putting them in this list is the whole of it. What matters is the
+    /// other half: they must never reach a public authority, and
+    /// `wanted_names` is where that is guarded.
+    #[tokio::test]
+    async fn the_nodes_own_certificate_covers_the_addresses_it_answers_on() {
+        let database = crate::db::open_in_memory().await.expect("open");
+        let names = own_names(&database, vec!["node.example".into()]).await;
+
+        for address in crate::network::lan::addresses() {
+            assert!(
+                names.contains(&address),
+                "{address} is not on this node's own certificate: {names:?}"
+            );
+        }
+        assert!(names.contains(&FALLBACK_NAME.to_string()));
+        // And nothing from the platform's own space, which is where the
+        // overlay and every project bridge live.
+        assert!(
+            names.iter().all(|name| !name.starts_with("10.42.")),
+            "{names:?}"
+        );
+    }
+
     #[tokio::test]
     async fn a_nodes_own_certificate_covers_the_name_another_node_dials() {
         let database = crate::db::open_in_memory().await.expect("open");

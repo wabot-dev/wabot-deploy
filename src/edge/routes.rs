@@ -238,6 +238,45 @@ fn normalize(host: &str) -> String {
 /// console reachable, and a sync that removed them because no service
 /// claimed the node's own domain would lock the operator out of the
 /// thing they would fix it from.
+/// Drop the control-plane rows this node no longer answers on.
+///
+/// The sibling of [`retain_proxies`], for the other kind of row. It exists
+/// because one of those names is now **an address**: a laptop that changed
+/// network would otherwise keep claiming the one it used to have, for
+/// ever, and `doctor` would list a name nothing reaches.
+///
+/// `localhost` is never dropped, whatever the caller passes — the same
+/// rule [`forget`] keeps, and for the same reason: it is how somebody
+/// reaches the console from the node itself when everything else is
+/// wrong.
+pub async fn retain_control_plane(
+    database: &SqliteDatabase,
+    keep: &[String],
+) -> SqliteResult<usize> {
+    let keep: Vec<String> = keep
+        .iter()
+        .map(|host| normalize(host))
+        .chain(Some(normalize(crate::edge::certs::FALLBACK_NAME)))
+        .collect();
+    database
+        .write(move |connection| {
+            let mut removed = 0;
+            let hosts: Vec<String> = connection
+                .prepare("SELECT \"host\" FROM route WHERE \"upstream_kind\" = 'control_plane'")?
+                .query_map([], |row| row.get(0))?
+                .collect::<Result<_, _>>()?;
+
+            for host in hosts {
+                if !keep.contains(&host) {
+                    connection.execute("DELETE FROM route WHERE \"host\" = ?1", [&host])?;
+                    removed += 1;
+                }
+            }
+            Ok(removed)
+        })
+        .await
+}
+
 pub async fn retain_proxies(database: &SqliteDatabase, keep: &[String]) -> SqliteResult<usize> {
     let keep: Vec<String> = keep.iter().map(|host| normalize(host)).collect();
     database

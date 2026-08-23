@@ -480,7 +480,22 @@ pub fn store_s3(
         }
     };
 
-    let updated = replace_section(&existing, "[backup.s3]", credentials.map(section_for));
+    write_section(path, &existing, "[backup.s3]", credentials.map(section_for))
+}
+
+/// Splice one section into the file and put it back, atomically.
+///
+/// Shared by the two callers that write a section — the bucket credential
+/// and the ACME switch — because everything careful about it is the same:
+/// parse before writing, rename rather than truncate, and 0600 because one
+/// of the two holds a secret.
+fn write_section(
+    path: &Path,
+    existing: &str,
+    header: &str,
+    body: Option<String>,
+) -> ConfigResult<()> {
+    let updated = replace_section(existing, header, body);
     // Parsed before it is written. A section this built and the file
     // could not read back is a node that does not come up after the next
     // restart, discovered by somebody who only clicked Save.
@@ -509,6 +524,59 @@ pub fn store_s3(
         path: path.to_path_buf(),
         source,
     })
+}
+
+/// Turn ACME off — or on — in the file, leaving everything else alone.
+///
+/// `install --self-signed` on a node that already has a config file: it
+/// cannot be written by `write_if_absent`, which refuses to clobber the
+/// operator's edits, so a flag that only reached the struct would apply to
+/// one process and be forgotten at the next start.
+///
+/// The same section surgery as the bucket credential, for the same reason:
+/// the file says "edit freely", and re-serializing it would throw away
+/// every comment in it.
+pub fn store_acme_disabled(path: &Path, disabled: bool) -> ConfigResult<()> {
+    let existing = match std::fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(source) => {
+            return Err(ConfigError::Read {
+                path: path.to_path_buf(),
+                source,
+            })
+        }
+    };
+
+    // The whole section is replaced, so anything else under `[acme]` — the
+    // contact address, the directory — has to be carried over. Read from
+    // the file rather than from a `Config`, which may hold values that came
+    // from the environment and do not belong in it.
+    let held: JustAcme = toml::from_str(&existing).unwrap_or_default();
+    let mut section = String::from(
+        "[acme]\n\
+         # `disabled` is written by `install --self-signed`. On means this\n\
+         # node never asks a public authority and serves its own\n\
+         # certificate, which is the honest setting for a machine on a\n\
+         # private network.\n",
+    );
+    section.push_str(&format!("disabled = {disabled}\n"));
+    section.push_str(&format!(
+        "directory = {}\n",
+        toml_string(&held.acme.directory)
+    ));
+    if let Some(email) = &held.acme.email {
+        section.push_str(&format!("email = {}\n", toml_string(email)));
+    }
+
+    write_section(path, &existing, "[acme]", Some(section))
+}
+
+/// Just enough of the file to carry a section over unchanged.
+#[derive(Deserialize, Default)]
+struct JustAcme {
+    #[serde(default)]
+    acme: AcmeConfig,
 }
 
 /// The section as it goes into the file.
@@ -748,6 +816,38 @@ mod tests {
         assert_eq!(config.node.domain.as_deref(), Some("a.example"));
         assert_eq!(config.log.filter, "warn");
         assert!(config.s3().is_none());
+    }
+
+    /// Turning ACME off works on a node that already has a config file.
+    ///
+    /// `write_if_absent` refuses to clobber one — it holds the operator's
+    /// edits — so `install --self-signed` on an existing node would
+    /// otherwise apply to one process and be forgotten at the next start.
+    #[test]
+    fn acme_can_be_turned_off_on_a_node_that_is_already_installed() {
+        let (_dir, path) = write(
+            "# my own notes\n\
+             [node]\n\
+             domain = \"node.example\"\n\n\
+             [acme]\n\
+             email = \"me@example.com\"\n\
+             directory = \"staging\"\n",
+        );
+
+        store_acme_disabled(&path, true).expect("store");
+        let text = std::fs::read_to_string(&path).expect("read");
+
+        let config = Config::load(&path).expect("load what was written");
+        assert!(config.acme.disabled);
+        // The rest of that section is carried over, not dropped: an
+        // operator who set a contact address and a staging directory has
+        // not asked for either to be forgotten.
+        assert_eq!(config.acme.email.as_deref(), Some("me@example.com"));
+        assert_eq!(config.acme.directory, "staging");
+        // And the rest of the file, comments included.
+        assert!(text.contains("# my own notes"), "{text}");
+        assert_eq!(config.node.domain.as_deref(), Some("node.example"));
+        assert_eq!(text.matches("[acme]").count(), 1, "{text}");
     }
 
     /// The file is read at the moment of use, not once at startup.

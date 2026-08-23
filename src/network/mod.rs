@@ -41,6 +41,7 @@ pub mod enrolment;
 pub mod errand;
 pub mod join;
 pub mod keys;
+pub mod lan;
 pub mod overlay;
 pub mod token;
 pub mod tunnel;

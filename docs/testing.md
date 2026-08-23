@@ -144,8 +144,9 @@ CA path, starts the node, and prints a setup token.
 
 **1.6 Install with a domain.** `wabot-deploy install --domain node.example --email you@example`
 on a machine whose DNS already points here.
-→ Gets a real certificate. Fails rather than finishing if it cannot,
-unless `--allow-self-signed`.
+→ Gets a real certificate. Fails rather than finishing if it cannot —
+there is no flag that makes that succeed, because the two real answers are
+different: wait, or say the node will never have one (`--self-signed`).
 
 **1.7 A domain that does not point here.** The same, with a name pointing
 elsewhere.

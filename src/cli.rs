@@ -256,20 +256,26 @@ pub struct InstallArgs {
     #[arg(long)]
     pub acme_staging: bool,
 
-    /// Finish the install even if no public certificate was obtained.
+    /// Never ask a public authority: serve this node's own certificate.
     ///
-    /// Without this, `install --domain` fails when the certificate
-    /// does not arrive — because the alternative is an install that
-    /// reports success and serves a certificate no browser trusts,
-    /// which is discovered later by somebody who was not there.
+    /// **This replaced `--allow-self-signed`, which said the wrong
+    /// thing.** That flag meant "finish even though the certificate did
+    /// not arrive", and the node went on asking Let's Encrypt twice a day
+    /// for a name no public authority can validate — which on a private
+    /// network is a request that cannot ever succeed, against an account
+    /// that locks after five failures an hour.
     ///
-    /// With it, the node serves its own authority's certificate and
-    /// keeps asking in the background. That is a real way to run — a
-    /// machine on a private network, or one whose DNS is still
-    /// propagating — and it should be said out loud rather than fallen
-    /// into.
+    /// So this one turns ACME off and writes it down: `[acme] disabled`,
+    /// in the config file, where the console and the renewal loop both
+    /// read it. It is the honest setting for a machine on a private
+    /// network, and the console still serves HTTPS — on the node's own
+    /// authority, which covers its addresses as well as its names.
+    ///
+    /// A *transient* failure is a different thing and needs no flag: the
+    /// install says what went wrong and exits 1, and the node keeps
+    /// asking on its own.
     #[arg(long)]
-    pub allow_self_signed: bool,
+    pub self_signed: bool,
 
     /// Install the node but leave containerd alone.
     ///
@@ -316,7 +322,7 @@ impl InstallArgs {
             // Tests that are not about the certificate must not fail
             // on one; the tests that *are* about it set this to false
             // and say so.
-            allow_self_signed: true,
+            self_signed: true,
             no_runtime: false,
             // Tests must not touch containerd, systemd, or
             // /usr/local on whoever's machine is running them.
