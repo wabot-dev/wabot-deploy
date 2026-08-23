@@ -39,7 +39,7 @@ use crate::platform::now_ms;
 /// node reading it is running a different version than the node that
 /// wrote it as often as not — an unrecognised kind has to be a value
 /// the code can hold and refuse, not a parse failure.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Kind {
     /// Run this service here.
@@ -332,6 +332,42 @@ impl Record {
     }
 }
 
+/// What this instruction asks permission for, if anything.
+///
+/// One definition, because it is now asked twice: by `carry_out` before
+/// obeying, and at the door in `api::asked` — a refusal for lack of
+/// permission needs nothing but a local read, and putting it in the answer
+/// is what makes it reach the node that asked. Two copies of this map
+/// would let the door and the obeying disagree, and the disagreement would
+/// be an errand accepted and then refused, which is exactly the state this
+/// came out of.
+///
+/// **A withdrawal needs no permission.** An edge errand with no upstreams
+/// is "stop answering for this name", and consent is for taking work on,
+/// not for putting it down — a node that revoked a grant is often revoking
+/// it *because* something changed, and refusing the message that cleans up
+/// leaves a claim, a route and a certificate order behind.
+pub fn consent_for(
+    kind: Kind,
+    payload: &serde_json::Value,
+) -> Option<super::capability::Capability> {
+    match kind {
+        Kind::Host => Some(super::capability::Capability::Host),
+        // `Store`, not `Host`: keeping somebody's data is a different
+        // favour from running somebody's container.
+        Kind::Database => Some(super::capability::Capability::Store),
+        Kind::Edge => {
+            let withdrawing = serde_json::from_value::<Edge>(payload.clone())
+                .map(|edge| edge.upstreams.is_empty())
+                // Unreadable is not a withdrawal: something that cannot be
+                // parsed must not slip past the check by being broken.
+                .unwrap_or(false);
+            (!withdrawing).then_some(super::capability::Capability::Edge)
+        }
+        Kind::Unknown => None,
+    }
+}
+
 /// Ask a node to do something.
 ///
 /// Nothing queues one yet: the console form that does is what removes
@@ -518,25 +554,65 @@ pub async fn queue_if_changed(
     payload: &serde_json::Value,
 ) -> NetworkResult<Option<Errand>> {
     let (node, about) = (node_id.to_string(), subject.to_string());
-    let last: Option<String> = database
+    let last: Option<(String, Option<String>)> = database
         .read(move |connection| {
             connection
                 .query_row(
-                    "SELECT \"payload\" FROM errand \
+                    "SELECT \"payload\", \"error\" FROM errand \
                      WHERE \"node_id\" = ?1 AND \"subject\" = ?2 \
-                     ORDER BY \"created_at\" DESC LIMIT 1",
+                     ORDER BY \"created_at\" DESC, \"rowid\" DESC LIMIT 1",
                     (node, about),
-                    |row| row.get(0),
+                    |row| Ok((row.get(0)?, row.get(1)?)),
                 )
                 .optional()
         })
         .await?;
 
-    if let Some(last) = last {
-        if serde_json::from_str::<serde_json::Value>(&last)
-            .ok()
-            .as_ref()
-            == Some(payload)
+    // The tie-break is not decoration: two errands for one subject can
+    // land in the same millisecond — a retry right after a refusal does,
+    // and so does a test — and `created_at` alone then makes "the last
+    // one" whichever row the reader happened to see first. `rowid` is the
+    // order they were inserted in.
+    //
+    // **A refused instruction was not carried out, so saying it again is
+    // not repetition.** Only a *successful* or still-pending one silences
+    // this. Without that, fixing the reason for a refusal changed nothing:
+    // the payload was identical, so nothing was ever sent again, and the
+    // operator had to alter something irrelevant to force it. Found on the
+    // real network — an edge errand refused for a grant that was missing,
+    // and then nothing, because the instruction had not changed.
+    //
+    // It cannot loop: this is called when something happens — a
+    // deployment, a placement, a boot — and not on a timer, so a refusal
+    // that stays refused costs one errand per event and each one carries
+    // its reason.
+    // **And "delivered" is not "done" when the reader is an authority.**
+    // An errand for a node that *collects* is settled by that node, over
+    // the wire, with what happened — so a finished one really was carried
+    // out and saying it again is repetition. An errand *handed up* to an
+    // authority is settled the moment the call returns 200: all that means
+    // is that it arrived. What the far side then did with it never travels
+    // back, so a finished row on this side is not evidence of anything.
+    //
+    // Measured on the real network, and it was a silent dead end: the
+    // instruction was accepted, refused there for a grant that had never
+    // been written, and marked delivered here. Fixing the grant changed
+    // nothing — same payload, same "done" — so it was never sent again,
+    // through a restart and two deployments.
+    //
+    // This is bounded by events and not by a timer: `tell_edges` runs on a
+    // deployment, a placement, a boot. One duplicate per event on the far
+    // side, where carrying it out is idempotent, against an instruction
+    // that otherwise never arrives.
+    let handed_up = super::is_authorised(database, node_id).await;
+    if let Some((last, failed)) = last {
+        let refused = failed.is_some();
+        if !refused
+            && !handed_up
+            && serde_json::from_str::<serde_json::Value>(&last)
+                .ok()
+                .as_ref()
+                == Some(payload)
         {
             return Ok(None);
         }
@@ -716,6 +792,107 @@ fn decode(row: &Row<'_>) -> wabot::sqlite::rusqlite::Result<Record> {
 
 #[cfg(test)]
 mod tests {
+
+    /// An instruction handed up to an authority is said again, because
+    /// "delivered" is all this side ever learns.
+    ///
+    /// **The silent dead end this came out of.** A node that *collects*
+    /// settles its errands over the wire with what happened, so a finished
+    /// one really was carried out. An errand handed *up* is settled the
+    /// moment the call returns 200 — the far side may then refuse it, and
+    /// that never travels back. On the real network it did: refused for a
+    /// grant that had never been written, marked delivered here, and never
+    /// sent again through a restart and two deployments, because the
+    /// instruction had not changed.
+    #[tokio::test]
+    async fn an_instruction_handed_to_an_authority_is_said_again() {
+        let database = crate::db::open_in_memory().await.expect("open");
+        crate::network::grant(&database, "nd-hub", "a-secret")
+            .await
+            .expect("this node takes orders from it");
+        let payload = serde_json::json!({ "hostname": "shop.example", "upstreams": [] });
+
+        let first = queue_if_changed(&database, "nd-hub", Kind::Edge, "edge:svc:shop", &payload)
+            .await
+            .expect("queued")
+            .expect("the first time");
+        // Handed over: the call returned 200 and that is all it means.
+        settle(&database, "nd-hub", &first.id, None)
+            .await
+            .expect("delivered");
+
+        assert!(
+            queue_if_changed(&database, "nd-hub", Kind::Edge, "edge:svc:shop", &payload)
+                .await
+                .expect("again")
+                .is_some(),
+            "delivered is not done, and what the far side did never came back"
+        );
+
+        // A node that is *not* an authority settles with what happened, so
+        // there a finished instruction is finished.
+        let theirs = queue_if_changed(&database, "nd-leaf", Kind::Edge, "edge:svc:shop", &payload)
+            .await
+            .expect("queued")
+            .expect("the first time");
+        settle(&database, "nd-leaf", &theirs.id, None)
+            .await
+            .expect("carried out");
+        assert!(
+            queue_if_changed(&database, "nd-leaf", Kind::Edge, "edge:svc:shop", &payload)
+                .await
+                .expect("again")
+                .is_none()
+        );
+    }
+
+    /// An instruction that was refused is said again; one that worked is
+    /// not.
+    ///
+    /// **Found on the real network.** An edge errand was refused because
+    /// the grant it needed had never been written; the grant was fixed,
+    /// and nothing was ever sent again — the payload was identical, so the
+    /// comparison said "already told them". The operator would have had to
+    /// change something irrelevant to force it.
+    #[tokio::test]
+    async fn a_refused_instruction_is_said_again_and_a_finished_one_is_not() {
+        let database = crate::db::open_in_memory().await.expect("open");
+        let payload = serde_json::json!({ "hostname": "shop.example", "upstreams": [] });
+
+        let first = queue_if_changed(&database, "nd-far", Kind::Edge, "edge:svc:shop", &payload)
+            .await
+            .expect("queued")
+            .expect("the first time is news");
+        // Said twice while it is still pending: nothing, because it has
+        // not been answered yet.
+        assert!(
+            queue_if_changed(&database, "nd-far", Kind::Edge, "edge:svc:shop", &payload)
+                .await
+                .expect("again")
+                .is_none()
+        );
+
+        // Answered badly: the instruction did not happen, so saying it
+        // again is not repetition.
+        settle(&database, "nd-far", &first.id, Some("that node said no"))
+            .await
+            .expect("settled");
+        let retried = queue_if_changed(&database, "nd-far", Kind::Edge, "edge:svc:shop", &payload)
+            .await
+            .expect("after a refusal")
+            .expect("a refused instruction is sent again");
+
+        // And answered well: quiet, whatever else happens.
+        settle(&database, "nd-far", &retried.id, None)
+            .await
+            .expect("settled");
+        assert!(
+            queue_if_changed(&database, "nd-far", Kind::Edge, "edge:svc:shop", &payload)
+                .await
+                .expect("after it worked")
+                .is_none()
+        );
+    }
     use super::*;
 
     async fn database() -> SqliteDatabase {

@@ -589,6 +589,27 @@ impl NetworkApi {
             Err(error) => return Ok(unreadable(error)),
         };
 
+        // **Consent is checkable at the door, so it is checked here.**
+        // Obeying stays deferred — a request can time out and be retried,
+        // and obeying writes rows and starts deployments — but *refusing
+        // for lack of permission* needs nothing but a local read, and
+        // putting it in the answer is what makes it reach the node that
+        // asked.
+        //
+        // Measured on the real network: an edge errand was accepted, then
+        // refused by `carry_out` for a grant that had never been written,
+        // and the refusal stayed in a row on this side. The asker's own
+        // copy said "delivered" — `hand_over` settles on a 200 — so
+        // fixing the grant changed nothing and nothing was ever sent
+        // again. A refusal in the answer leaves the errand pending there,
+        // and the next pass tries it.
+        if let Some(needed) = errand::consent_for(kind, &asked.payload) {
+            if let Err(reason) = super::collect::allowed(&self.database, &from, needed).await {
+                tracing::info!(from = %from, kind = %asked.kind, %reason, "refused an errand at the door");
+                return Ok(refuse(StatusCode::FORBIDDEN, &reason));
+            }
+        }
+
         match errand::accept(&self.database, &me, &from, kind, &asked.payload).await {
             Ok(errand) => {
                 tracing::info!(from = %from, kind = %asked.kind, errand = %errand.id,
@@ -933,6 +954,24 @@ impl NetworkApi {
         // Same reason as the other side: the peer set changed. The
         // join has already succeeded, so a kernel that refuses the
         // interface is reported and not answered with a refusal.
+        // **What this node offered, written where it is enforced.** The
+        // token said what it would do for whoever spent it, and the
+        // joining node recorded that as `allows` — but nothing wrote the
+        // matching grant here, and `carry_out` reads *this* table. So an
+        // authority that offered `edge` refused the first edge errand it
+        // was handed, with "this node has not agreed to `edge` for that
+        // node", days after the agreement it was refusing.
+        //
+        // A grant is still read through what this node provides *now*, so
+        // turning the capability off withdraws it: the switch is the more
+        // recent decision, and this is only the older one being recorded
+        // at all.
+        if let Err(error) =
+            super::capability::grant(&self.database, &arriving.node, &enrolment.offers).await
+        {
+            tracing::warn!(%error, node = %arriving.node, "could not record what this node offered");
+        }
+
         if let Err(error) = super::tunnel::ensure(&self.database, &self.config).await {
             tracing::warn!(%error, "a node joined, but the overlay did not come up");
         }
@@ -1409,6 +1448,73 @@ mod tests {
             "name": "alpine.example",
             "public_key": "0hEr0DzTvMDTRfPPmYFCVCQ1cA0nnUnP+2fFqZBBBGQ=",
         })
+    }
+
+    /// An errand this node has not agreed to is refused **in the answer**.
+    ///
+    /// **Found on the real network, and it is why the fix mattered.** The
+    /// errand was accepted here and then refused by `carry_out` for a
+    /// grant that had never been written — and the refusal stayed in a row
+    /// on this side. The asker's own copy said "delivered", because
+    /// `hand_over` settles on a 200, so fixing the grant changed nothing:
+    /// the instruction was identical, so it was never sent again.
+    ///
+    /// Consent is checkable at the door with one local read, so it is
+    /// checked there. Obeying stays deferred.
+    #[tokio::test]
+    async fn an_errand_this_node_has_not_agreed_to_is_refused_in_the_answer() {
+        let authority = authority().await;
+        authority
+            .harness
+            .post("/api/network/join")
+            .header("authorization", format!("Bearer {}", authority.secret))
+            .json(&arriving())
+            .send()
+            .await
+            .assert_ok();
+        // Whatever the enrolment offered, take it away: this is about the
+        // answer, not about what was agreed.
+        super::super::capability::grant(&authority.database, "nd-joining001", &[])
+            .await
+            .expect("nothing granted");
+
+        let serving = serde_json::json!({
+            "kind": "edge",
+            "payload": { "hostname": "shop.example", "upstreams": ["10.42.0.2:30000"] },
+        });
+        let refused = authority
+            .harness
+            .post("/api/network/asked")
+            .header("authorization", format!("Bearer {}", authority.secret))
+            .json(&serving)
+            .send()
+            .await;
+        assert_eq!(refused.status, StatusCode::FORBIDDEN);
+        assert!(
+            errand::all(&authority.database)
+                .await
+                .expect("query")
+                .iter()
+                .all(|record| record.kind != errand::Kind::Edge),
+            "a refused errand is not stored to be refused again later"
+        );
+
+        // **A withdrawal needs no permission.** Consent is for taking work
+        // on, not for putting it down: a node that revoked a grant is
+        // often revoking it because something changed, and refusing the
+        // message that cleans up leaves a claim and a route behind.
+        let stopping = serde_json::json!({
+            "kind": "edge",
+            "payload": { "hostname": "shop.example", "upstreams": [] },
+        });
+        let taken = authority
+            .harness
+            .post("/api/network/asked")
+            .header("authorization", format!("Bearer {}", authority.secret))
+            .json(&stopping)
+            .send()
+            .await;
+        assert_eq!(taken.status, StatusCode::ACCEPTED, "{:?}", taken.status);
     }
 
     /// The census needs the credential the caller enrolled with.

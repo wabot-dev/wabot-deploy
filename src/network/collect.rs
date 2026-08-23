@@ -638,9 +638,17 @@ async fn carry_out(
     authority: &str,
     order: Errand,
 ) -> Result<(), String> {
+    // The same map the door uses, so the two cannot disagree — an errand
+    // accepted and then refused is the state this came out of. `carry_out`
+    // still asks: an errand can be queued locally, arrive before a grant
+    // was withdrawn, or be handed over by a node running an older version
+    // whose door did not check.
+    if let Some(needed) = errand::consent_for(order.kind, &order.payload) {
+        allowed(database, authority, needed).await?;
+    }
+
     match order.kind {
         Kind::Host => {
-            allowed(database, authority, super::capability::Capability::Host).await?;
             let host: errand::Host = serde_json::from_value(order.payload)
                 .map_err(|error| format!("that is not a host errand: {error}"))?;
             host_service(database, config, container, authority, host).await
@@ -695,7 +703,7 @@ async fn carry_out(
 /// their own choice quoted back rather than a silence they have to guess
 /// at. It is also how a node says "I revoked that", without needing a
 /// message of its own.
-async fn allowed(
+pub(crate) async fn allowed(
     database: &SqliteDatabase,
     authority: &str,
     capability: super::capability::Capability,

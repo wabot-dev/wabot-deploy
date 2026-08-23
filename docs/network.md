@@ -1273,3 +1273,104 @@ two are the same reading, and one of them is fine.
 count `Nowhere` or `Waiting` — the same rule it already follows for a node
 with no overlay at all: geometry is not a fault, but it has to be named or
 it looks like one.
+
+## A service on a private node, served by a public one: five faults in a row
+
+Asked for on the real network, and it did not work: a service created on
+the private node, `nginx.node-1.tobaw.shop` pointing at the public one,
+nothing serving it. It works now —
+
+```
+https://nginx.node-1.tobaw.shop  →  200, Let's Encrypt, verified
+claim   nginx.node-1.tobaw.shop  ←  nd-SOjVWGkRNGsb
+route   nginx.node-1.tobaw.shop  →  10.42.0.2:30001
+```
+
+— and getting there meant five separate faults, each of which hid the next.
+**No test would have found any of them**, for the reason this file keeps
+recording: in a test both ends are one database and the rows are the ones
+the test wrote.
+
+### 1. The instruction was never dispatched
+
+The `service_edge` row was written by `ports::create` — which since the
+DNS check names *the nodes a hostname actually resolves to*, and that can
+be a machine which is not this one — and nothing told it. The port row and
+the edge row were one millisecond apart, and the public node had never
+heard of the name: stored, shown as served, served by nobody, which is the
+fault that row exists to prevent, in the one direction it did not cover.
+
+### 2. And nothing recomputed it
+
+Edge instructions were queued by two console handlers and by nothing else.
+A placement instruction has been recomputed on every deployment for
+phases, with `queue_if_changed` keeping it quiet — an edge instruction went
+stale the moment a replica's `overlay_port` changed and stayed stale until
+somebody re-saved a form. `Deployer::tell_edges` sits beside
+`tell_holders` now and is called by it, and **reconciliation dispatches at
+boot whether or not anything needed restoring** — a boot where every
+container is already running deploys nothing, which is exactly the state a
+restart leaves.
+
+One author for the payload, deliberately: both callers have to produce the
+same bytes, because `queue_if_changed` compares them and two spellings of
+one instruction would queue an errand on every event.
+
+### 3. The grant the token offered was never written
+
+A join token says what the minting node *offers*. The joining node writes
+that down as `allows` and its console duly offers the authority as a place
+to send a name — and **nothing ever wrote the matching grant on the side
+that enforces it**. `node_grant` is what this node agreed to do, for whom,
+and it is what `carry_out` reads. So an authority that offered `edge`
+refused the first edge errand it was ever handed, about an agreement it
+had made days earlier: `this node has not agreed to `edge` for that node`.
+
+The join path records it now, and `network::honour_offers` restores it at
+boot for the nodes that joined before it did — the enrolment row *is* the
+agreement, so this asks about the thing rather than about the history. It
+only ever adds: what withdraws a grant is the capability switch, read at
+the point of use.
+
+### 4. The refusal never travelled
+
+The errand was accepted and *then* refused, and the reason stayed in a row
+on the far side. "How it went does not travel back" is the phase 10 rule
+and it stands for obeying — but **consent is checkable at the door with one
+local read**, so `api::asked` checks it and answers 403 with the reason.
+The errand stays pending on the asker, and the next pass tries it.
+
+`errand::consent_for` is that map, in one place because it is now asked
+twice and a door that disagreed with the obeying would produce exactly the
+state this came out of. It keeps the rule that was already there: **a
+withdrawal needs no permission** — an edge errand with no upstreams is
+"stop answering for this name", and refusing the message that cleans up
+leaves a claim, a route and a certificate order behind.
+
+### 5. "Delivered" was read as "done"
+
+The one that made the rest silent. `hand_over` settles the local errand the
+moment the call returns 200 — all that means is that it arrived — and
+`queue_if_changed` treated a settled row as carried out. So fixing the
+grant changed nothing: the instruction was identical and finished, so it
+was never sent again, through a restart and two deployments.
+
+A node that **collects** its errands settles them over the wire with what
+happened, so there a finished one really was carried out. An errand handed
+**up** to an authority is only delivered, so it is said again at the next
+event — a deployment, a placement, a boot, never a timer. One duplicate per
+event on a far side where carrying it out is idempotent, against an
+instruction that otherwise never arrives.
+
+### And one that was burning ACME orders
+
+The private node's *domain* was `192.168.1.55` — which was the only way
+into its console from another machine on the LAN before the proxy answered
+on this machine's own addresses — so the renewal loop asked Let's Encrypt
+for it every sixty seconds, then every two minutes: `Cannot issue for
+"192.168.1.55": Identifier type is DNS but value is an IP address`. The
+DNS guard could not catch it, because `dns::lookup` parses a literal
+through `ToSocketAddrs` and it "resolves here" by definition.
+`wanted_names` drops any name that parses as an address now. The name is
+still served, on the node's own certificate, where an address becomes an
+IP SAN.

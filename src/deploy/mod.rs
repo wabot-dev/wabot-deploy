@@ -1716,6 +1716,35 @@ impl Deployer {
         // decision, and nothing else will come and act on it.
         self.evict_ungranted().await;
 
+        // **What every node was told to answer for, recomputed here.**
+        // `tell_edges` hangs off a deployment, and a boot where nothing
+        // needed restoring deploys nothing — so a node whose containers
+        // were all already running told nobody anything, which is exactly
+        // the state a restart leaves. Measured on a node: the instruction
+        // was refused for a missing grant, the grant was fixed, the node
+        // was restarted, and nothing was sent because nothing was
+        // deployed.
+        //
+        // `queue_if_changed` makes this quiet on the many boots where
+        // there is nothing new to say. It is the same lesson the standby
+        // errands learned: reconciliation asks about the thing, not about
+        // whether it happened to do some work first.
+        if let Ok(services) = services::all(&self.database, None).await {
+            for service in services.iter().filter(|service| service.is_ours()) {
+                self.tell_edges(service).await;
+            }
+        }
+
+        // And what this node agreed to do for the nodes it enrolled. The
+        // other direction of the same rule: `evict_ungranted` above drops
+        // what this node no longer consents to run, and this restores what
+        // it consented to and never wrote down — see `honour_offers`.
+        match crate::network::honour_offers(&self.database).await {
+            Ok(0) => {}
+            Ok(written) => tracing::info!(nodes = written, "recorded grants this node had offered"),
+            Err(error) => tracing::warn!(%error, "could not record what this node offered"),
+        }
+
         // Names held for a node this one no longer serves, before the
         // routes are built rather than after: the point is that the
         // table the listener reads comes up without them.
@@ -1933,9 +1962,114 @@ impl Deployer {
             .await;
     }
 
+    /// Tell every node that answers for one of this service's names where
+    /// its copies are now.
+    ///
+    /// **Beside `tell_holders`, and for the same reason.** A placement
+    /// instruction is recomputed on every deployment and sent only when it
+    /// changed; an edge instruction was queued by two console handlers and
+    /// by nothing else, so it went stale the moment anything moved and was
+    /// never sent at all when the row came from somewhere those two
+    /// handlers do not run — which is what `ports::create` now does when a
+    /// hostname points at another node.
+    ///
+    /// Found on Jorge's own network: a service on the private node with
+    /// `nginx.node-1.tobaw.shop` pointing at the public one, the
+    /// `service_edge` row written by the port form one millisecond after
+    /// the port, and the public node never told. The name was stored,
+    /// shown as served, and served by nobody — which is the fault that
+    /// row exists to prevent, in the one direction it did not cover.
+    ///
+    /// `queue_if_changed` on `edge:{service}:{hostname}`, so a pass that
+    /// says the same thing says nothing: the same rule the placement
+    /// instruction follows, and the reason the console can call this for
+    /// latency while every deployment calls it for convergence.
+    pub async fn tell_edges(&self, service: &Service) {
+        if !service.is_ours() {
+            return;
+        }
+        let (Ok(chosen), Ok(nodes), Ok(placements)) = (
+            crate::platform::edges::of_service(&self.database, &service.id).await,
+            crate::network::all(&self.database).await,
+            replicas::of_service(&self.database, &service.id).await,
+        ) else {
+            tracing::warn!(service = %service.slug, "could not work out who answers for its names");
+            return;
+        };
+        let upstreams = crate::platform::edges::upstreams(&placements, &nodes);
+        let me = nodes.iter().find(|node| node.is_self).map(|node| &*node.id);
+        let mine = crate::edge::certs::ca_certificate_pem(&self.database)
+            .await
+            .ok();
+        let edge = crate::network::capability::Capability::Edge;
+
+        for (hostname, node_id) in &chosen {
+            // This node's own choice needs no errand: it does not poll
+            // itself, and its route comes from the local sync off the same
+            // rows.
+            if Some(&**node_id) == me {
+                continue;
+            }
+            // And a node that no longer lets this one ask gets none. The
+            // row outlives the permission, and queueing against it
+            // produces errands that node refuses for ever while this side
+            // says the name is served.
+            if !nodes
+                .iter()
+                .any(|node| &node.id == node_id && node.allows.contains(&edge))
+            {
+                tracing::debug!(
+                    node = %node_id, %hostname,
+                    "skipped: that node has not agreed to serve names for this one"
+                );
+                continue;
+            }
+
+            let payload = match serde_json::to_value(crate::network::errand::Edge {
+                hostname: hostname.clone(),
+                upstreams: upstreams.clone(),
+                peers: co_edges(&chosen, &nodes, hostname, node_id, mine.as_deref()),
+                secret: crate::platform::edges::secret_for(&self.database, hostname)
+                    .await
+                    .ok()
+                    .flatten(),
+            }) {
+                Ok(payload) => payload,
+                Err(error) => {
+                    tracing::warn!(%error, "could not build an edge instruction");
+                    continue;
+                }
+            };
+
+            match crate::network::errand::queue_if_changed(
+                &self.database,
+                node_id,
+                crate::network::errand::Kind::Edge,
+                &format!("edge:{}:{hostname}", service.id),
+                &payload,
+            )
+            .await
+            {
+                Ok(Some(_)) => tracing::info!(
+                    service = %service.slug, node = %node_id, %hostname,
+                    upstreams = upstreams.len(),
+                    "told a node what to answer for"
+                ),
+                Ok(None) => {}
+                Err(error) => {
+                    tracing::warn!(%error, node = %node_id, "could not queue an edge instruction")
+                }
+            }
+        }
+    }
+
     async fn tell_holders(&self, project: &Project, service: &Service, holding: Holding) {
         self.holders(project, service, holding, &Default::default())
             .await;
+        // The names, at the same moments and for the same reason: a
+        // deployment is what assigns a copy's overlay port, so it is
+        // exactly when the upstream list a far node was given goes stale.
+        self.tell_edges(service).await;
     }
 
     async fn holders(
@@ -3299,6 +3433,57 @@ fn usable_nameservers(contents: &str) -> Vec<String> {
             (parsed.is_ipv4() && !parsed.is_loopback()).then(|| address.to_string())
         })
         .collect()
+}
+
+/// Everyone else who answers for this name, as the node being told will
+/// need them.
+///
+/// Address, key and *that node's* authority, because `call::to_node`
+/// verifies rather than merely encrypting and a private node's certificate
+/// has no public root. This node's own anchor comes from the local CA:
+/// `ca_pem` on the self row is what other nodes sent, and is always
+/// `None`.
+///
+/// One author for the payload, because both callers of `tell_edges` have
+/// to build the same bytes — `queue_if_changed` compares them, and two
+/// spellings of the same instruction would queue an errand on every pass.
+fn co_edges(
+    chosen: &[(String, String)],
+    nodes: &[crate::network::Node],
+    hostname: &str,
+    telling: &str,
+    mine: Option<&str>,
+) -> Vec<crate::network::errand::Peer> {
+    let mut peers = Vec::new();
+    for (name, node_id) in chosen {
+        if name != hostname || node_id == telling {
+            continue;
+        }
+        let Some(node) = nodes.iter().find(|node| &node.id == node_id) else {
+            continue;
+        };
+        let ca = match node.is_self {
+            true => mine.map(str::to_string),
+            false => node.ca_pem.clone(),
+        };
+        let (Some(overlay_ip), Some(public_key), Some(ca_pem)) =
+            (node.overlay_ip.clone(), node.public_key.clone(), ca)
+        else {
+            tracing::debug!(
+                node = %node.id, %hostname,
+                "not carried as a co-edge: no address, key or authority for it"
+            );
+            continue;
+        };
+        peers.push(crate::network::errand::Peer {
+            node_id: node.id.clone(),
+            name: node.name.clone(),
+            overlay_ip,
+            public_key,
+            ca_pem,
+        });
+    }
+    peers
 }
 
 /// Everywhere a replication connection to this database may come from.

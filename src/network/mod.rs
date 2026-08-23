@@ -909,6 +909,56 @@ pub async fn release(database: &SqliteDatabase, name: &str) -> NetworkResult<()>
 /// Returns what it let go of, because a node quietly dropping a name it
 /// was answering for is the kind of thing somebody should be able to
 /// read in the log.
+/// Write down what this node agreed to when it enrolled somebody.
+///
+/// **The agreement and its record had drifted apart.** A join token says
+/// what the minting node *offers*; the joining node writes that down as
+/// `allows` and its console offers the authority as a place to send a
+/// name — and nothing ever wrote the matching grant here, which is the
+/// table `carry_out` reads. So an authority that offered `edge` refused
+/// the first edge errand it was handed, with "this node has not agreed to
+/// `edge` for that node", about an agreement made days earlier. Found on
+/// the real network: the errand travelled the whole way and died on the
+/// last line.
+///
+/// The join path records it now; this is for the nodes that joined before
+/// it did, and it asks about the thing rather than about the history —
+/// the enrolment row *is* the agreement.
+///
+/// **Only ever adds.** A grant is read through what this node provides
+/// now, so a capability switched off already withdraws everything granted
+/// of it; and if a per-node withdrawal is ever added, it has to be able to
+/// win against this — a row of its own, not the absence of a grant, or
+/// this pass would undo it at the next boot.
+pub async fn honour_offers(database: &SqliteDatabase) -> NetworkResult<usize> {
+    let mut written = 0;
+    for enrolment in enrolment::all(database).await? {
+        let (Some(node_id), offers) = (enrolment.used_by, enrolment.offers) else {
+            continue;
+        };
+        if offers.is_empty() {
+            continue;
+        }
+        let mut granted = capability::granted_to(database, &node_id).await;
+        let missing: Vec<capability::Capability> = offers
+            .into_iter()
+            .filter(|offered| !granted.contains(offered))
+            .collect();
+        if missing.is_empty() {
+            continue;
+        }
+        granted.extend(missing);
+        capability::grant(database, &node_id, &granted).await?;
+        tracing::info!(
+            node = %node_id,
+            granted = granted.iter().map(|one| one.name()).collect::<Vec<_>>().join(", "),
+            "recorded what this node offered when it enrolled that one"
+        );
+        written += 1;
+    }
+    Ok(written)
+}
+
 pub async fn release_ungranted(database: &SqliteDatabase) -> NetworkResult<Vec<String>> {
     let held: Vec<(String, String)> = database
         .read(|connection| {
@@ -954,6 +1004,49 @@ fn sha256_hex(value: &str) -> String {
 
 #[cfg(test)]
 pub(crate) mod tests {
+
+    /// What a node offered when it enrolled somebody is what it agreed to.
+    ///
+    /// **The bug this closes travelled the whole way and died on the last
+    /// line.** A token said `offers: edge`; the joining node recorded
+    /// `allows: edge` and its console duly sent an edge errand; and the
+    /// authority refused it with "this node has not agreed to `edge` for
+    /// that node" — because nothing had ever written the grant on the side
+    /// that enforces it. Found on the real network, as an errand with a
+    /// reason, days after the agreement it was refusing.
+    #[tokio::test]
+    async fn what_a_node_offered_is_what_it_agreed_to() {
+        let database = crate::db::open_in_memory().await.expect("open");
+        let admin = admin(&database).await;
+        let (enrolment, _) = enrolment::create(
+            &database,
+            "somebody",
+            "10.42.0.7",
+            &admin,
+            &[capability::Capability::Host],
+            &[capability::Capability::Edge],
+        )
+        .await
+        .expect("minted");
+
+        // Unspent: nothing to record, because nobody has agreed with
+        // anybody yet.
+        assert_eq!(honour_offers(&database).await.expect("pass"), 0);
+
+        enrolment::spend(&database, &enrolment.id, "nd-joined001")
+            .await
+            .expect("spent");
+        assert_eq!(honour_offers(&database).await.expect("pass"), 1);
+        assert_eq!(
+            capability::granted_to(&database, "nd-joined001").await,
+            vec![capability::Capability::Edge]
+        );
+
+        // Convergent: the same pass again writes nothing, and it never
+        // takes a grant away — a capability switched off is what withdraws
+        // one, and that is read at the point of use.
+        assert_eq!(honour_offers(&database).await.expect("again"), 0);
+    }
 
     /// A name that is a private address is not an endpoint.
     ///

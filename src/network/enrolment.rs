@@ -37,6 +37,20 @@ pub struct Enrolment {
     pub used_at: Option<i64>,
     /// The node that spent it, once one has.
     pub used_by: Option<String>,
+    /// What the minting node **offered to do** for whoever spent this.
+    ///
+    /// Read back because it is the record of an agreement, and the
+    /// agreement is what `carry_out` enforces: the joiner learned "it
+    /// allows me `edge`" from the token, and this side has to have written
+    /// the matching grant or the two disagree — which shows up much later
+    /// as an errand refused with "this node has not agreed to `edge` for
+    /// that node", and did.
+    ///
+    /// Not serialised: the page shows what a token *promises* from the
+    /// token itself, and a second spelling of a capability list on the
+    /// wire is a second thing to keep in step.
+    #[serde(skip)]
+    pub offers: Vec<super::capability::Capability>,
 }
 
 impl Enrolment {
@@ -71,6 +85,7 @@ pub async fn create(
         id: format!("en-{}", wabot::prelude::password::generate(12)),
         name: name.trim().to_string(),
         overlay_ip: overlay_ip.to_string(),
+        offers: offers.to_vec(),
         created_at: now_ms(),
         expires_at: now_ms() + ENROLMENT_HOURS * 3_600_000,
         used_at: None,
@@ -207,7 +222,7 @@ pub async fn withdraw(database: &SqliteDatabase, id: &str) -> NetworkResult<()> 
 }
 
 const COLUMNS: &str = "\"id\", \"name\", \"overlay_ip\", \"created_at\", \"expires_at\", \
-                       \"used_at\", \"used_by\"";
+                       \"used_at\", \"used_by\", \"offers\"";
 
 fn decode(row: &Row<'_>) -> wabot::sqlite::rusqlite::Result<Enrolment> {
     Ok(Enrolment {
@@ -218,6 +233,9 @@ fn decode(row: &Row<'_>) -> wabot::sqlite::rusqlite::Result<Enrolment> {
         expires_at: row.get(4)?,
         used_at: row.get(5)?,
         used_by: row.get(6)?,
+        offers: super::capability::parse_list(
+            &row.get::<_, Option<String>>(7)?.unwrap_or_default(),
+        ),
     })
 }
 

@@ -390,6 +390,18 @@ pub async fn wanted_names(database: &SqliteDatabase, config: &Config) -> Vec<Str
     // otherwise order two certificates for one name.
     names.sort();
     names.dedup();
+    // **Never an address.** A public authority refuses an IP identifier
+    // outright — `Cannot issue for "192.168.1.55": Identifier type is DNS
+    // but value is an IP address` — and the DNS guard cannot catch it,
+    // because `dns::lookup` parses a literal through `ToSocketAddrs` and
+    // it "resolves here" by definition. Measured on a node whose domain
+    // *was* an address, retrying every sixty seconds and then every two
+    // minutes for as long as it was up.
+    //
+    // The name is still served: `certs::own_names` puts this machine's
+    // addresses on its own certificate, as IP SANs, which is the only kind
+    // a browser accepts for one.
+    names.retain(|name| name.parse::<std::net::IpAddr>().is_err());
     names
 }
 
@@ -1169,6 +1181,45 @@ mod tests {
             .await
             .expect("read")
             .is_some());
+    }
+
+    /// A node whose *domain* is an address does not ask either.
+    ///
+    /// **Measured on a real node.** Its domain was `192.168.1.55` — which
+    /// was the only way into its console from another machine on the LAN
+    /// before the proxy answered on this machine's own addresses — and the
+    /// renewal loop asked Let's Encrypt for it every sixty seconds, then
+    /// every two minutes, for as long as the node was up. The DNS guard
+    /// let it through: a literal parses through `ToSocketAddrs`, so it
+    /// "resolves here" by definition.
+    #[tokio::test]
+    async fn a_domain_that_is_an_address_is_never_asked_for() {
+        let database = database().await;
+        let mut config = Config::default();
+        config.node.domain = Some("192.168.1.55".into());
+        crate::node::settings::set_domain(&database, Some("192.168.1.55"))
+            .await
+            .expect("domain");
+
+        assert!(
+            wanted_names(&database, &config).await.is_empty(),
+            "an authority refuses an IP identifier, and asking spends the attempt anyway"
+        );
+        // Where the coverage comes from instead: `own_names` puts the
+        // addresses this machine *holds* on its own certificate, as IP
+        // SANs — which is the set a browser needs and the one this node
+        // can actually answer on. An address it no longer has is one a
+        // self-signed certificate would name for nothing.
+        //
+        // And a real name still goes: the filter is about literals.
+        crate::node::settings::set_domain(&database, Some("node.example"))
+            .await
+            .expect("domain");
+        config.node.domain = Some("node.example".into());
+        assert_eq!(
+            wanted_names(&database, &config).await,
+            vec!["node.example".to_string()]
+        );
     }
 
     /// An address is never asked of a public authority.
