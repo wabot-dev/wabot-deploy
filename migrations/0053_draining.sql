@@ -1,0 +1,32 @@
+-- A node being taken out of service, and when somebody said so.
+--
+-- **Draining before cleverness.** `docs/roadmap.md` §6 put this ahead of
+-- any bin-packing heuristic and it was right about why: "take this node
+-- out of service, move what it holds" is the operation every upgrade and
+-- every hardware failure needs, and no amount of placing well once
+-- substitutes for it.
+--
+-- ## Why a column and not a command
+--
+-- Because it is a *state*, not an event. A drain is not finished when
+-- the button returns: the copies move, the errands go out, and the node
+-- holding them stops only when it next collects — which for a machine
+-- that is down is whenever it comes back. Between those two moments the
+-- node must not be chosen for anything new, and a command that had
+-- already returned has nowhere to remember that.
+--
+-- It is also what makes the drain **convergent**: every pass asks
+-- whether the node is draining rather than whether a drain has run, so a
+-- copy placed by something that had not heard yet is moved on the next
+-- reconciliation instead of sitting there.
+--
+-- ## The timestamp rather than a flag
+--
+-- Same shape as `evicted_at` and `revoked_at`, and for the same reason:
+-- "this has been draining for six days" is a thing somebody needs to
+-- read off the page, and a boolean cannot say it. A node that never
+-- comes back to collect its instruction is exactly the case where the
+-- duration is the whole story.
+--
+-- NULL is in service, which is every node today.
+ALTER TABLE node ADD COLUMN draining_at INTEGER;

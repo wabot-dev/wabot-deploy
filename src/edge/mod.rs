@@ -50,6 +50,14 @@ pub struct EdgeState {
     proxy: Proxy,
     /// The node's own API and console, invoked in-process.
     control_plane: Router,
+    /// An organisation's console, which is a **different router** rather
+    /// than the same one with the scope stamped on the request.
+    ///
+    /// The pages the machine's operator has are not registered on it at
+    /// all, so `/node`, `/updates` and `/organisations` answer 404 in
+    /// this frontier by construction — no handler exists to forget the
+    /// check in. See `console::tenant`.
+    tenant_plane: Router,
     /// Whether an unmatched hostname reaches the control plane. See
     /// [`build`].
     default_to_control_plane: bool,
@@ -59,6 +67,7 @@ pub struct EdgeState {
 pub async fn build(
     database: &SqliteDatabase,
     control_plane: Router,
+    tenant_plane: Router,
     config: &crate::config::Config,
     table: Arc<RouteTable>,
 ) -> anyhow::Result<(EdgeState, Arc<CertResolver>)> {
@@ -96,6 +105,7 @@ pub async fn build(
 
     Ok((
         EdgeState {
+            tenant_plane,
             routes: table,
             proxy: Proxy::new(),
             control_plane,
@@ -253,6 +263,23 @@ async fn dispatch(State(state): State<EdgeState>, request: Request) -> Response 
     };
 
     match upstream {
+        // The same in-process router, with the scope stamped on the
+        // request before it reaches it.
+        //
+        // **Decided here and nowhere else.** The extension is read by
+        // the session middleware, which runs before every handler, so a
+        // page cannot be reached in one scope and rendered in another —
+        // and no handler has to remember to narrow, which is the failure
+        // mode a query parameter or a path prefix would have had.
+        Upstream::Tenant(ref id) => {
+            use tower::ServiceExt;
+            let mut request = trim_trailing_slash(request);
+            request.extensions_mut().insert(Tenancy(id.clone()));
+            match state.tenant_plane.clone().oneshot(request).await {
+                Ok(response) => response,
+                Err(never) => match never {},
+            }
+        }
         // `oneshot` rather than a request to ourselves over loopback:
         // the router is a `tower::Service`, so this is a function
         // call. No socket, no second serialization, no port.
@@ -291,6 +318,15 @@ async fn dispatch(State(state): State<EdgeState>, request: Request) -> Response 
         }
     }
 }
+
+/// Which tenant's console a request arrived at.
+///
+/// An extension rather than a header, because a header can be sent by
+/// whoever is dialling: this is set from the route the `Host` resolved
+/// to, on the way in, and there is no path by which a request can carry
+/// one of its own. Absent is the node's own console.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Tenancy(pub String);
 
 /// The `Host` a request is for.
 ///
@@ -396,6 +432,9 @@ mod tests {
             routes: Arc::new(RouteTable::new()),
             proxy: Proxy::new(),
             control_plane: control_plane(),
+            // A second router that answers differently, so a test can
+            // tell which one served — that is the whole property.
+            tenant_plane: Router::new().route("/whoami", get(|| async { "tenant-plane" })),
             default_to_control_plane,
         }
     }
@@ -406,6 +445,51 @@ mod tests {
 
     /// A fresh node has to answer on whatever address the operator can
     /// reach it on, or the first request after `install` is a 404.
+    /// An organisation's console is a **different router**, not the
+    /// same one told to behave differently.
+    ///
+    /// That is what makes `/node`, `/updates` and `/organisations`
+    /// answer 404 in that frontier by construction: they are not
+    /// registered on it, so there is no handler to forget the check in.
+    /// A branch inside each of them would have been thirty places to
+    /// keep in agreement, and the words gave that away long before the
+    /// authorisation would have.
+    #[tokio::test]
+    async fn a_tenants_hostname_reaches_a_different_router() {
+        let state = state(false);
+        state.routes.replace(vec![
+            ("node.example".into(), Upstream::ControlPlane),
+            ("acme.example".into(), Upstream::Tenant("tnt-acme".into())),
+        ]);
+
+        let app = Router::new().fallback(dispatch).with_state(state);
+        for (host, expected) in [
+            ("node.example", "control-plane"),
+            ("acme.example", "tenant-plane"),
+        ] {
+            use tower::ServiceExt;
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .uri("/whoami")
+                        .header("host", host)
+                        .body(wabot::rest::axum::body::Body::empty())
+                        .expect("request"),
+                )
+                .await
+                .expect("answered");
+            let body = wabot::rest::axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .expect("body");
+            assert_eq!(
+                String::from_utf8_lossy(&body),
+                expected,
+                "{host} reached the wrong router"
+            );
+        }
+    }
+
     #[tokio::test]
     async fn with_no_routes_everything_reaches_the_control_plane() {
         let response = harness(state(true))

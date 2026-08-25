@@ -23,6 +23,7 @@ pub mod dns;
 pub mod hosts;
 pub mod jobs;
 pub mod logs;
+pub mod planner;
 pub mod routing;
 
 use std::net::Ipv4Addr;
@@ -168,7 +169,19 @@ pub struct Room {
 /// by its own current value — a form that lets somebody set a number
 /// once and never change their mind, which is worse than no check
 /// because it looks like a rule.
-pub fn fits(room: Room, wanted: u64, copies: u64, say: impl Fn(u64) -> String) -> Option<String> {
+///
+/// `who` names the machine the numbers belong to. It used to say "this
+/// node" and mean it, because there was nowhere else to ask; the moment
+/// a row can answer for another machine that sentence is a lie, and the
+/// wrong one — somebody reads a refusal naming their own console and
+/// goes looking at the wrong meters.
+pub fn fits(
+    room: Room,
+    wanted: u64,
+    copies: u64,
+    who: &str,
+    say: impl Fn(u64) -> String,
+) -> Option<String> {
     if !room.known {
         return None;
     }
@@ -180,11 +193,98 @@ pub fn fits(room: Room, wanted: u64, copies: u64, say: impl Fn(u64) -> String) -
         return None;
     }
     Some(format!(
-        "this node has {} to promise and {} is already promised; {} × {copies} does not fit",
+        "{who} has {} to promise and {} is already promised; {} × {copies} does not fit",
         say(room.allocatable),
         say(others),
         say(wanted),
     ))
+}
+
+/// What a machine has of both resources, ready for [`fits`].
+///
+/// The pair rather than one at a time, because a placement asks about
+/// both and the answer that matters is the first refusal.
+#[derive(Debug, Clone, Copy)]
+pub struct Rooms {
+    pub memory: Room,
+    pub cpu: Room,
+}
+
+impl Rooms {
+    /// The two ceilings of **another** machine, from what it reported.
+    ///
+    /// `None` when that node has not said — which is not the same as a
+    /// node with nothing left, and the difference is the whole point.
+    /// [`fits`] declines to enforce a rule made of a missing number; a
+    /// selector declines to *choose* a machine it knows nothing about.
+    /// Two different answers to one absence, and collapsing them would
+    /// either refuse everything or place blind.
+    ///
+    /// Pure, like `fits` and for the same reason: the arithmetic
+    /// somebody would argue with should be testable without a machine of
+    /// a particular size, and now without a second machine at all.
+    ///
+    /// `copies` is how many copies of this service that node already
+    /// holds — its `committed` includes them, so they come back out
+    /// before the comparison, exactly as they do locally.
+    pub fn reported(capacity: &crate::network::Capacity, service: &Service) -> Self {
+        Self {
+            memory: Room {
+                allocatable: capacity.memory_allocatable,
+                // Reporting it at all is the knowing. A node that could
+                // not read its own meters sends nothing rather than
+                // zeroes — see `collect::capacity`.
+                known: true,
+                committed: capacity.memory_committed,
+                already: service.memory_limit.unwrap_or(0),
+            },
+            cpu: Room {
+                allocatable: u64::from(capacity.cpu_allocatable),
+                known: true,
+                committed: u64::from(capacity.cpu_committed),
+                already: u64::from(service.cpu_millicores.unwrap_or(0)),
+            },
+        }
+    }
+
+    /// Whether one more copy this size fits, and why not.
+    ///
+    /// Memory first, because it is the one that gets a container killed
+    /// rather than throttled.
+    pub fn admits(
+        &self,
+        memory: Option<u64>,
+        cpu: Option<u32>,
+        copies: u64,
+        who: &str,
+    ) -> Option<String> {
+        if let Some(bytes) = memory {
+            let refusal = fits(self.memory, bytes, copies, who, crate::node::memory::human);
+            if refusal.is_some() {
+                return refusal;
+            }
+        }
+        let millicores = cpu?;
+        fits(self.cpu, u64::from(millicores), copies, who, |millicores| {
+            crate::platform::presets::cpu_label(u32::try_from(millicores).unwrap_or(u32::MAX))
+        })
+    }
+}
+
+/// What a drain moved, and what it could not.
+///
+/// **Both halves, always.** A drain that reported only its successes
+/// would read as finished while a database primary and two services with
+/// nowhere to go sat exactly where they were — and the operator would
+/// find out by shutting the machine down. Each refusal is a sentence
+/// naming the copy and why, because that is what somebody acts on.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Drained {
+    /// Rows pointed somewhere else here. **Not containers stopped
+    /// there**: the far node stops when it next collects, which for a
+    /// machine that is down is whenever it comes back.
+    pub moved: usize,
+    pub refused: Vec<String>,
 }
 
 /// What this node has promised to the copies it runs.
@@ -201,6 +301,17 @@ pub struct Committed {
     /// that silently omitted them would be a figure an operator trusts
     /// for a decision it cannot support.
     pub unbounded: usize,
+}
+
+/// The lock that makes two deployments of one service take turns.
+///
+/// A process-wide singleton rather than a field, because two `Deployer`
+/// values in one process must share it — a lock each would be no lock at
+/// all, and `Deployer::new` is called in more than one place.
+fn deploy_lock() -> &'static wabot::async_jobs::InProcessLocker {
+    static LOCK: std::sync::OnceLock<wabot::async_jobs::InProcessLocker> =
+        std::sync::OnceLock::new();
+    LOCK.get_or_init(wabot::async_jobs::InProcessLocker::new)
 }
 
 /// Where a container's published ports are written, so that something
@@ -250,7 +361,7 @@ impl Deployer {
 
     /// Recompute the routes. Called after anything that can change
     /// where a hostname points.
-    pub(crate) async fn sync_routes(&self) {
+    pub async fn sync_routes(&self) {
         if let Err(error) = routing::sync(
             &self.database,
             crate::node::settings::domain(&self.database, &self.config)
@@ -299,6 +410,14 @@ impl Deployer {
 
         for project in projects::all(&self.database).await? {
             let services = services::all(&self.database, Some(&project.id)).await?;
+            // **Per project, not once for the node.** An organisation's
+            // names hang off its own domain, so the suffix is a property
+            // of whose project this is rather than of the machine — and
+            // the copy on another node has to resolve the same name this
+            // one does.
+            let domain =
+                crate::platform::projects::domain_for(&self.database, &project, domain.as_deref())
+                    .await;
 
             // What each copy answers on. The reserved address when there
             // is one — a database's, which does not move — and otherwise
@@ -396,6 +515,36 @@ impl Deployer {
         project: &Project,
         service: &Service,
     ) -> DeployResult<Option<Ipv4Addr>> {
+        // **One deployment of a service at a time.**
+        //
+        // `containers::run` removes the container and its snapshot before
+        // it creates them, which is right against *one* deployment and
+        // says nothing about two: the second reaches
+        // `Snapshots.Prepare` between the first's remove and its create,
+        // and containerd answers `snapshot "…": already exists`.
+        //
+        // **Measured on the nodes**, 2026-08-25, and the log tells the
+        // whole story in three lines — one deploy succeeded, the next
+        // failed on the snapshot, a third succeeded. The copy ran the
+        // whole time; what it cost was a red error on the page for the
+        // loser of a race, cleared by the next report. Two deployments
+        // were in flight because a release that added fields to
+        // `errand::Host` made every payload differ once, so an errand
+        // arrived while somebody was pressing the button.
+        //
+        // The lock is here rather than at the three call sites for the
+        // reason this codebase keeps rediscovering: a rule spelled out
+        // per caller is one the next caller forgets. In-process is
+        // enough — a node is one binary, and two nodes deploying "the
+        // same" service are deploying two different containers.
+        //
+        // Keyed by service and not by node: two services deploying at
+        // once is the ordinary case and must stay concurrent.
+        let _held = {
+            use wabot::async_jobs::Locker;
+            deploy_lock().acquire(&service.id).await
+        };
+
         // **Nothing to run yet.** A service created without an image is
         // waiting for the first push to its own repository, and there is
         // no reference to pull. Said on the row rather than attempted:
@@ -1133,13 +1282,46 @@ impl Deployer {
         memory: Option<u64>,
         cpu: Option<u32>,
     ) -> Option<String> {
-        let mine = replicas::here(&self.database).await.ok()?;
-        let copies = mine
-            .iter()
-            .filter(|replica| replica.service_id == service.id && !replica.evicted())
-            .count()
-            .max(1) as u64;
+        self.room_for_on(None, service, memory, cpu).await
+    }
 
+    /// The same question about **any** node, this one or another.
+    ///
+    /// `None` is here. A row is another machine, answered from what it
+    /// last reported — and `is_self` is answered from the meters anyway,
+    /// because this node's own row deliberately carries no reading: it
+    /// can look, so a stored copy would be a second answer able to go
+    /// stale.
+    ///
+    /// `None` back from a node that has not reported its room. What
+    /// cannot be measured is not enforced, which is the same rule the
+    /// unreadable local meter follows — and the reason a *selector* has
+    /// to ask a different question, because not refusing is not the same
+    /// as being worth choosing.
+    pub async fn room_for_on(
+        &self,
+        node: Option<&crate::network::Node>,
+        service: &Service,
+        memory: Option<u64>,
+        cpu: Option<u32>,
+    ) -> Option<String> {
+        match node.filter(|node| !node.is_self) {
+            None => {
+                let copies = self.copies_here(service).await?;
+                self.rooms_here(service)
+                    .await
+                    .admits(memory, cpu, copies, "this node")
+            }
+            Some(node) => {
+                let capacity = node.capacity.as_ref()?;
+                let copies = self.copies_on(&node.id, service).await?;
+                Rooms::reported(capacity, service).admits(memory, cpu, copies, &node.name)
+            }
+        }
+    }
+
+    /// This node's own two ceilings, from its meters rather than a row.
+    pub async fn rooms_here(&self, service: &Service) -> Rooms {
         let committed = self.committed().await;
         let total = self.memory().await.total;
         // What the operator said this machine keeps for itself, read here
@@ -1147,46 +1329,141 @@ impl Deployer {
         // that way.
         let reserved_memory = crate::node::settings::memory_reserve(&self.database).await;
         let reserved_cpu = crate::node::settings::cpu_reserve(&self.database).await;
-
-        if let Some(bytes) = memory {
-            let refusal = fits(
-                Room {
-                    allocatable: crate::platform::presets::allocatable_memory(
-                        total,
-                        reserved_memory,
-                    ),
-                    known: total > 0,
-                    committed: committed.memory,
-                    already: service.memory_limit.unwrap_or(0),
-                },
-                bytes,
-                copies,
-                crate::node::memory::human,
-            );
-            if refusal.is_some() {
-                return refusal;
-            }
+        let cores = crate::node::cpu::allocatable_millicores(reserved_cpu);
+        Rooms {
+            memory: Room {
+                allocatable: crate::platform::presets::allocatable_memory(total, reserved_memory),
+                known: total > 0,
+                committed: committed.memory,
+                already: service.memory_limit.unwrap_or(0),
+            },
+            cpu: Room {
+                allocatable: u64::from(cores),
+                known: cores > 0,
+                committed: u64::from(committed.cpu),
+                already: u64::from(service.cpu_millicores.unwrap_or(0)),
+            },
         }
+    }
 
-        if let Some(millicores) = cpu {
-            let cores = crate::node::cpu::allocatable_millicores(reserved_cpu);
-            return fits(
-                Room {
-                    allocatable: u64::from(cores),
-                    known: cores > 0,
-                    committed: u64::from(committed.cpu),
-                    already: u64::from(service.cpu_millicores.unwrap_or(0)),
+    /// Every machine a copy of this service could go on.
+    ///
+    /// The gathering half of the scheduler; [`planner::choose`] is the
+    /// deciding half and is pure, so the arithmetic somebody would argue
+    /// with can be tested without a network.
+    ///
+    /// Three things it is careful about:
+    ///
+    /// - **Consent before capacity.** `candidates_for` first, so a node
+    ///   with plenty of room that never agreed to run this is not
+    ///   offered — which is what produced an errand nobody would collect
+    ///   while the page said the copy was placed.
+    /// - **This node's own room is read live**, because its row
+    ///   deliberately carries no reading: it can look, so a stored copy
+    ///   would be a second answer able to go stale. A planner reading
+    ///   the row would never choose the machine it is running on.
+    /// - **A node that has not said what it has is left out.** Not
+    ///   refused — somebody may still name it by hand — but not chosen,
+    ///   because sending work to a machine you know nothing about is
+    ///   guessing. Same for one nothing has been heard from lately: the
+    ///   answer is stale rather than wrong, and stale is fine for a page
+    ///   and not for a decision.
+    pub async fn candidates(&self, service: &Service) -> Vec<planner::Candidate> {
+        let Ok(nodes) =
+            crate::network::candidates_for(&self.database, service.kind.placement_capability())
+                .await
+        else {
+            return Vec::new();
+        };
+        let (Ok(here), Ok(elsewhere), Ok(of_service)) = (
+            replicas::here(&self.database).await,
+            replicas::elsewhere(&self.database).await,
+            // Every copy of *this* service including the thrown-out
+            // ones, which the two above filter away — and an eviction is
+            // exactly what has to be remembered here.
+            replicas::of_service(&self.database, &service.id).await,
+        ) else {
+            return Vec::new();
+        };
+        let mine = self.rooms_here(service).await;
+        let unbounded_here = self.committed().await.unbounded;
+
+        let mut candidates = Vec::new();
+        for node in nodes {
+            let held: Vec<&replicas::Replica> = match node.is_self {
+                true => here.iter().collect(),
+                false => elsewhere
+                    .iter()
+                    .filter(|replica| replica.node_id.as_deref() == Some(&*node.id))
+                    .collect(),
+            };
+            let rooms = match node.is_self {
+                true => mine,
+                false => match &node.capacity {
+                    Some(capacity) => Rooms::reported(capacity, service),
+                    None => continue,
                 },
-                u64::from(millicores),
-                copies,
-                |millicores| {
-                    crate::platform::presets::cpu_label(
-                        u32::try_from(millicores).unwrap_or(u32::MAX),
-                    )
+            };
+            // A copy thrown off there is a decision by whoever holds
+            // that machine, and it outlives the row's usefulness — which
+            // is why this asks the whole service rather than the
+            // survivors, since `here` and `elsewhere` drop the evicted.
+            let evicted_here = of_service.iter().any(|replica| {
+                replica.evicted()
+                    && replica.node_id.as_deref() == (!node.is_self).then_some(&*node.id)
+            });
+            candidates.push(planner::Candidate {
+                node: (!node.is_self).then(|| node.id.clone()),
+                name: node.name.clone(),
+                rooms,
+                of_this_service: held
+                    .iter()
+                    .filter(|replica| replica.service_id == service.id)
+                    .count() as u32,
+                replicas: held.len() as u32,
+                // How much of that machine's arithmetic is a floor
+                // rather than a total. Its own answer when it is this
+                // node, and what it reported when it is not.
+                unbounded: match node.is_self {
+                    true => u32::try_from(unbounded_here).unwrap_or(u32::MAX),
+                    false => node.capacity.map_or(0, |room| room.unbounded),
                 },
-            );
+                evicted_here,
+                draining: node.draining_at.is_some(),
+            });
         }
-        None
+        candidates
+    }
+
+    /// How many copies of this service run here, at least one.
+    ///
+    /// **At least one**, because the question is always "and one more
+    /// like it": a service with no copy here that is about to get one
+    /// costs one ceiling, not none."""
+    async fn copies_here(&self, service: &Service) -> Option<u64> {
+        Some(
+            replicas::here(&self.database)
+                .await
+                .ok()?
+                .iter()
+                .filter(|replica| replica.service_id == service.id && !replica.evicted())
+                .count()
+                .max(1) as u64,
+        )
+    }
+
+    /// And how many that node holds, by the same rule.
+    async fn copies_on(&self, node_id: &str, service: &Service) -> Option<u64> {
+        Some(
+            replicas::elsewhere(&self.database)
+                .await
+                .ok()?
+                .iter()
+                .filter(|replica| replica.service_id == service.id && !replica.evicted())
+                .filter(|replica| replica.node_id.as_deref() == Some(node_id))
+                .count()
+                .max(1) as u64,
+        )
     }
 
     /// The copies of this service that are not answering, by replica id.
@@ -1961,6 +2238,132 @@ impl Deployer {
     /// intent for the same reason.
     /// The same, telling a node that holds nothing of this service.
     ///
+    /// Take a node out of service and move what this one put there.
+    ///
+    /// **The operation every upgrade and every hardware failure needs**,
+    /// and worth more than any placement heuristic — `docs/roadmap.md`
+    /// §6 put it ahead of cleverness for that reason.
+    ///
+    /// Four things about how it behaves, and each is a decision:
+    ///
+    /// - **Only this node's own services.** A copy there that arrived on
+    ///   somebody else's errand is not this node's to move; its owner
+    ///   decides. What the operator of a machine can always do about
+    ///   work they did not ask for is throw it off, and that is
+    ///   `evict_ungranted` and the eviction button, not this.
+    /// - **Convergent, not atomic.** The mark goes down first, so a
+    ///   placement racing this lands somewhere else; and the far node
+    ///   stops only when it next collects, which for a machine that is
+    ///   down is whenever it comes back. The count that comes back is
+    ///   rows moved here, never containers stopped there.
+    /// - **A primary is refused, and the drain still runs.** Promotion
+    ///   is deliberately manual — a node that decides on its own that a
+    ///   machine it cannot reach is dead decides it during a partition
+    ///   too — so slot 1 of a database is named rather than moved, and
+    ///   the rest of the machine empties around it.
+    /// - **Nowhere to go is refused per copy, not for the drain.** One
+    ///   service with no room anywhere must not strand the twelve that
+    ///   had somewhere to be.
+    pub async fn drain(&self, node_id: &str) -> Drained {
+        let mut drained = Drained::default();
+        // Marked before anything moves, so the planner cannot hand a
+        // copy back to the machine being emptied — which is how a drain
+        // ends up chasing itself.
+        if let Err(error) = crate::network::set_draining(&self.database, node_id, true).await {
+            drained.refused.push(format!("could not mark it: {error}"));
+            return drained;
+        }
+
+        let (Ok(services), Ok(projects), Ok(elsewhere)) = (
+            services::all(&self.database, None).await,
+            projects::all(&self.database).await,
+            replicas::elsewhere(&self.database).await,
+        ) else {
+            drained
+                .refused
+                .push("could not read what it is holding".into());
+            return drained;
+        };
+
+        for service in services.iter().filter(|service| service.is_ours()) {
+            let held: Vec<&replicas::Replica> = elsewhere
+                .iter()
+                .filter(|replica| replica.service_id == service.id)
+                .filter(|replica| replica.node_id.as_deref() == Some(node_id))
+                .collect();
+            if held.is_empty() {
+                continue;
+            }
+            let Some(project) = projects.iter().find(|p| p.id == service.project_id) else {
+                continue;
+            };
+
+            // What the engine says accepts writes, when this is one.
+            let primary = crate::platform::databases::of_service(&self.database, &service.id)
+                .await
+                .ok()
+                .flatten()
+                .map(|row| row.primary_slot);
+
+            let mut moved_any = false;
+            for replica in held {
+                if primary == Some(replica.slot) {
+                    drained.refused.push(format!(
+                        "{}: slot {} accepts writes — promote another copy first",
+                        service.slug, replica.slot
+                    ));
+                    continue;
+                }
+                let candidates = self.candidates(service).await;
+                let want = planner::Want {
+                    memory: service.memory_limit,
+                    cpu: service.cpu_millicores,
+                    // A database's copies exist to be on different
+                    // machines; a web service's exist to be more of it.
+                    spread_required: service.kind.is_managed(),
+                };
+                match planner::choose(&candidates, want) {
+                    planner::Choice::Chosen { node, why } => {
+                        let note = format!("moved off {node_id}: {why}");
+                        if replicas::move_to_by(
+                            &self.database,
+                            &replica.id,
+                            node.as_deref(),
+                            replicas::Placed::Planner,
+                            Some(&note),
+                        )
+                        .await
+                        .is_err()
+                        {
+                            drained.refused.push(format!(
+                                "{}: slot {} could not be moved",
+                                service.slug, replica.slot
+                            ));
+                            continue;
+                        }
+                        drained.moved += 1;
+                        moved_any = true;
+                    }
+                    planner::Choice::Nowhere(reason) => drained.refused.push(format!(
+                        "{}: slot {} — {reason}",
+                        service.slug, replica.slot
+                    )),
+                }
+            }
+
+            if moved_any {
+                // Including the node being emptied, which now holds
+                // nothing for this service and is therefore not in the
+                // set built from the rows — the one that most needs
+                // telling.
+                let also = std::collections::BTreeSet::from([node_id.to_string()]);
+                self.tell_holders_including(project, service, &also).await;
+                self.dispatch_standbys_including(service, &also).await;
+            }
+        }
+        drained
+    }
+
     /// The set exists for one reason: `by_node` is built from the rows, so
     /// a node with no copy left is not in it — and it is the one that has
     /// to be told it runs none of this now.
@@ -2013,7 +2416,15 @@ impl Deployer {
         let mine = crate::edge::certs::ca_certificate_pem(&self.database)
             .await
             .ok();
-        let edge = crate::network::capability::Capability::Edge;
+        // Who still lets this node ask, worked out once rather than per
+        // row: the same rule the form that chose them applies, so the
+        // picker and the dispatch cannot drift apart.
+        let allowed: Vec<String> = crate::network::edge_candidates(&self.database)
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .map(|node| node.id)
+            .collect();
 
         for (hostname, node_id) in &chosen {
             // This node's own choice needs no errand: it does not poll
@@ -2026,10 +2437,7 @@ impl Deployer {
             // row outlives the permission, and queueing against it
             // produces errands that node refuses for ever while this side
             // says the name is served.
-            if !nodes
-                .iter()
-                .any(|node| &node.id == node_id && node.allows.contains(&edge))
-            {
+            if !allowed.contains(node_id) {
                 tracing::debug!(
                     node = %node_id, %hostname,
                     "skipped: that node has not agreed to serve names for this one"
@@ -2097,12 +2505,11 @@ impl Deployer {
         let Some(registry) = crate::platform::registry_credentials::host_of(&service.image) else {
             return;
         };
-        let (placements, ports, nodes) = match (
+        let (placements, ports) = match (
             replicas::of_service(&self.database, &service.id).await,
             crate::platform::ports::of_service(&self.database, &service.id).await,
-            crate::network::all(&self.database).await,
         ) {
-            (Ok(placements), Ok(ports), Ok(nodes)) => (placements, ports, nodes),
+            (Ok(placements), Ok(ports)) => (placements, ports),
             _ => {
                 tracing::warn!(service = %service.slug, "could not read who holds a copy");
                 return;
@@ -2135,14 +2542,31 @@ impl Deployer {
         // as no change at all. The test below had quietly arranged the
         // fresh struct the code should have read for itself, which is how
         // it passed while the path was broken.
-        let running = services::find(&self.database, &service.id)
+        //
+        // The ceilings below come out of the same read and for the same
+        // reason: the form that raises one writes the row and then asks
+        // for this, so a struct captured before the write would send the
+        // number the operator had just changed away from.
+        let fresh = services::find(&self.database, &service.id)
             .await
             .ok()
-            .flatten()
+            .flatten();
+        let running = fresh
+            .as_ref()
             .map_or(service.desired_state, |row| row.desired_state)
             == DesiredState::Running;
+        let ceilings = fresh.as_ref().unwrap_or(service);
 
-        let host = crate::network::capability::Capability::Host;
+        // Worked out once rather than per row, through the same function
+        // the placement form offers nodes with — so what was offerable and
+        // what is dispatchable cannot drift apart.
+        let allowed: Vec<String> =
+            crate::network::candidates_for(&self.database, service.kind.placement_capability())
+                .await
+                .unwrap_or_default()
+                .into_iter()
+                .map(|node| node.id)
+                .collect();
         for (node_id, mut slots) in by_node {
             slots.sort_unstable();
             let (slots, running) = match holding {
@@ -2157,10 +2581,7 @@ impl Deployer {
             // it either way — and what a node no longer consents to run is
             // for that node to throw off, which it does at its own boot
             // without asking anybody. See `evict_ungranted`.
-            if !nodes
-                .iter()
-                .any(|node| node.id == node_id && node.allows.contains(&host))
-            {
+            if !allowed.contains(&node_id) {
                 tracing::debug!(node = %node_id, "skipped: it no longer runs containers for us");
                 continue;
             }
@@ -2184,6 +2605,9 @@ impl Deployer {
                     .map(|port| port.container_port),
                 slots,
                 running,
+                memory_limit: ceilings.memory_limit,
+                cpu_millicores: ceilings.cpu_millicores,
+                disk_limit: ceilings.disk_limit,
             }) {
                 Ok(payload) => payload,
                 Err(error) => {
@@ -3267,7 +3691,15 @@ pub async fn certificate_names(
     // neither is what it is called.
     let domain = match databases::of_service(database, &service.id).await {
         Ok(Some(row)) if row.owner_domain.is_some() => row.owner_domain,
-        _ => crate::node::settings::domain(database, config).await,
+        // And an organisation's own domain when the project is one's.
+        // The same function `write_hosts` asks, so what a certificate
+        // covers is exactly what `/etc/hosts` resolves — the two drifted
+        // once already and the failure was a client dialling a name no
+        // certificate held.
+        _ => {
+            let node_domain = crate::node::settings::domain(database, config).await;
+            crate::platform::projects::domain_for(database, project, node_domain.as_deref()).await
+        }
     };
     // The name the operator chose, or the one every database had before
     // they could — one function, so the certificate covers exactly what
@@ -3602,6 +4034,8 @@ mod tests {
             cpu_millicores: None,
             following: None,
             wal_held: None,
+            placed_by: None,
+            placed_note: None,
         };
 
         // One copy, here, and nothing following it.
@@ -3628,6 +4062,8 @@ mod tests {
             last_seen_at: None,
             allows: Vec::new(),
             usage: None,
+            draining_at: None,
+            capacity: None,
             ca_pem: None,
         }];
         let remote = replication_sources(
@@ -3733,6 +4169,8 @@ mod tests {
                 version: None,
                 wanted_version: None,
                 usage: None,
+                draining_at: None,
+                capacity: None,
                 id: "nd-far".into(),
                 name: "far.example".into(),
                 kind: crate::network::Kind::Private,
@@ -3882,6 +4320,8 @@ mod tests {
                 version: None,
                 wanted_version: None,
                 usage: None,
+                draining_at: None,
+                capacity: None,
                 id: "nd-far".into(),
                 name: "far.example".into(),
                 kind: crate::network::Kind::Private,
@@ -3990,15 +4430,23 @@ mod tests {
             already: 0,
         };
 
-        assert_eq!(fits(empty, gb, 1, say), None, "nothing promised yet");
+        assert_eq!(
+            fits(empty, gb, 1, "this node", say),
+            None,
+            "nothing promised yet"
+        );
         assert!(
-            fits(empty, 5 * gb, 1, say).is_some(),
+            fits(empty, 5 * gb, 1, "this node", say).is_some(),
             "more than the machine has"
         );
 
         // Three copies of 2 GB is 6, which does not fit in 4.
-        assert!(fits(empty, 2 * gb, 3, say).is_some());
-        assert_eq!(fits(empty, gb, 3, say), None, "and three of 1 GB does");
+        assert!(fits(empty, 2 * gb, 3, "this node", say).is_some());
+        assert_eq!(
+            fits(empty, gb, 3, "this node", say),
+            None,
+            "and three of 1 GB does"
+        );
 
         // Holding 1 GB and asking for the same again: its own ceiling
         // must not count against it.
@@ -4007,9 +4455,16 @@ mod tests {
             already: gb,
             ..empty
         };
-        assert_eq!(fits(holding, gb, 1, say), None);
-        assert_eq!(fits(holding, 4 * gb, 1, say), None, "and it may grow");
-        assert!(fits(holding, 5 * gb, 1, say).is_some(), "up to the machine");
+        assert_eq!(fits(holding, gb, 1, "this node", say), None);
+        assert_eq!(
+            fits(holding, 4 * gb, 1, "this node", say),
+            None,
+            "and it may grow"
+        );
+        assert!(
+            fits(holding, 5 * gb, 1, "this node", say).is_some(),
+            "up to the machine"
+        );
 
         // Somebody else's 3 GB is not this service's to spend.
         let crowded = Room {
@@ -4017,8 +4472,8 @@ mod tests {
             already: gb,
             ..empty
         };
-        assert_eq!(fits(crowded, gb, 1, say), None);
-        let refusal = fits(crowded, 2 * gb, 1, say).expect("refused");
+        assert_eq!(fits(crowded, gb, 1, "this node", say), None);
+        let refusal = fits(crowded, 2 * gb, 1, "this node", say).expect("refused");
         // With the numbers in it: "refused" alone is a form somebody
         // fights with by trying smaller values.
         assert!(refusal.contains("4.0 GB to promise"), "{refusal}");
@@ -4047,6 +4502,7 @@ mod tests {
                 unknown,
                 1024 * 1024 * 1024 * 1024,
                 99,
+                "this node",
                 crate::node::memory::human
             ),
             None,
@@ -4059,7 +4515,188 @@ mod tests {
             known: true,
             ..unknown
         };
-        assert!(fits(full, 1, 1, crate::node::memory::human).is_some());
+        assert!(fits(full, 1, 1, "this node", crate::node::memory::human).is_some());
+    }
+
+    /// Two deployments of one service take turns; two services do not.
+    ///
+    /// **Found on the nodes**, 2026-08-25. `containers::run` removes the
+    /// container and its snapshot before creating them, which is right
+    /// against one deployment and says nothing about two — the second
+    /// reached `Snapshots.Prepare` between the first's remove and its
+    /// create, and containerd answered `snapshot "wabot.nginx-2.2":
+    /// already exists`. The copy ran the whole time; what it cost was a
+    /// red error on the page for the loser of the race.
+    ///
+    /// No test could have found it: a test deploys once, and there is no
+    /// containerd in the harness for the two to collide inside. So this
+    /// pins the **lock**, which is the part that is a function of code —
+    /// that a deployment holds one and that different services do not
+    /// wait on each other.
+    #[tokio::test]
+    async fn two_deployments_of_one_service_take_turns() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+        use wabot::async_jobs::Locker;
+
+        let inside = Arc::new(AtomicUsize::new(0));
+        let most = Arc::new(AtomicUsize::new(0));
+
+        // Ten at once on one key, ten on another. If the lock held per
+        // key, no key ever sees two inside; if it held globally, the two
+        // services would take turns as well, which would be the other
+        // way of being wrong.
+        let mut handles = Vec::new();
+        for index in 0..20 {
+            let (inside, most) = (inside.clone(), most.clone());
+            let key = match index % 2 {
+                0 => "svc-one",
+                _ => "svc-two",
+            };
+            handles.push(tokio::spawn(async move {
+                let _held = deploy_lock().acquire(key).await;
+                let now = inside.fetch_add(1, Ordering::SeqCst) + 1;
+                most.fetch_max(now, Ordering::SeqCst);
+                tokio::task::yield_now().await;
+                inside.fetch_sub(1, Ordering::SeqCst);
+            }));
+        }
+        for handle in handles {
+            handle.await.expect("joined");
+        }
+
+        // Two at most, and never three: one per service, both at once.
+        let seen = most.load(Ordering::SeqCst);
+        assert!(
+            seen <= 2,
+            "{seen} deployments were inside at once — the lock is not per service"
+        );
+        assert_eq!(
+            inside.load(Ordering::SeqCst),
+            0,
+            "a guard outlived its deployment"
+        );
+    }
+
+    /// The same arithmetic answers for a machine this one cannot look at.
+    ///
+    /// **The reason it could not before** was not the sum but where the
+    /// numbers came from: `room_for` read this node's meters, so it was
+    /// structurally unable to say anything about anywhere else, and no
+    /// placement path asked anything at all. A row that reports what it
+    /// has left is the missing half, and `fits` needed nothing but a
+    /// subject — the sentence used to say "this node has" and mean it.
+    #[tokio::test]
+    async fn the_room_on_another_machine_is_read_from_what_it_reported() {
+        let mb = 1024 * 1024;
+        let database = crate::db::open_in_memory().await.expect("open");
+        let project = projects::create(&database, "shared")
+            .await
+            .expect("project");
+        let service = services::create(&database, &project.id, "web", "img@sha256:a", &[])
+            .await
+            .expect("service");
+        services::set_memory_limit(&database, &service.id, Some(128 * mb))
+            .await
+            .expect("ceiling");
+        let service = services::find(&database, &service.id)
+            .await
+            .expect("query")
+            .expect("row");
+
+        let room = |committed: u64| crate::network::Capacity {
+            memory_allocatable: 716 * mb,
+            memory_committed: committed,
+            cpu_allocatable: 750,
+            cpu_committed: 0,
+            unbounded: 0,
+        };
+
+        // Nothing promised there yet, so a 128 MB copy fits.
+        assert_eq!(
+            Rooms::reported(&room(0), &service).admits(Some(128 * mb), None, 1, "alpine"),
+            None
+        );
+
+        // With 640 MB already undertaken there — 128 of it this very
+        // copy — a 640 MB one does not, and the refusal names **that**
+        // machine. A sentence saying "this node" would send somebody to
+        // the wrong meters.
+        let refusal = Rooms::reported(&room(640 * mb), &service)
+            .admits(Some(640 * mb), None, 1, "alpine")
+            .expect("refused");
+        assert!(refusal.starts_with("alpine has"), "{refusal}");
+        assert!(refusal.contains("716 MB to promise"), "{refusal}");
+        assert!(refusal.contains("512 MB is already promised"), "{refusal}");
+
+        // And its own current ceiling does not count against it: that
+        // node holding this very copy at 128 MB may still be asked for
+        // 128 MB.
+        let holding = crate::network::Capacity {
+            memory_committed: 716 * mb,
+            ..room(0)
+        };
+        assert_eq!(
+            Rooms::reported(&holding, &service).admits(Some(128 * mb), None, 1, "alpine"),
+            None,
+            "a ceiling refused by its own current value is not a rule"
+        );
+    }
+
+    /// A node that has said nothing about its room does not get refused.
+    ///
+    /// The local half of this rule has a test of its own — a machine
+    /// whose meters cannot be read must not stop somebody setting a
+    /// limit. This is the same rule one hop away, and the reason it has
+    /// to be spelled twice: a node running a version older than the
+    /// report that carries this reports no room at all, and refusing
+    /// every placement onto it would make an upgrade look like a network
+    /// that had broken.
+    ///
+    /// **Not the same question as whether it is worth choosing.** A
+    /// planner that picked a machine it knows nothing about would be
+    /// guessing; refusing one somebody named by hand is enforcing a rule
+    /// made of a missing number. The two answers differ and both are
+    /// right.
+    #[tokio::test]
+    async fn a_node_that_has_not_said_what_it_has_is_not_refused() {
+        let database = crate::db::open_in_memory().await.expect("open");
+        let project = projects::create(&database, "shared")
+            .await
+            .expect("project");
+        let service = services::create(&database, &project.id, "web", "img@sha256:a", &[])
+            .await
+            .expect("service");
+        let deployer = Deployer::new(
+            std::sync::Arc::new(crate::db::open_in_memory().await.expect("open")),
+            &crate::config::Config::default(),
+        );
+
+        let silent = crate::network::Node {
+            update_note: None,
+            version: None,
+            wanted_version: None,
+            usage: None,
+            draining_at: None,
+            capacity: None,
+            id: "nd-old".into(),
+            name: "alpine".into(),
+            kind: crate::network::Kind::Private,
+            endpoint: None,
+            public_key: None,
+            overlay_ip: None,
+            is_self: false,
+            last_seen_at: None,
+            allows: Vec::new(),
+            ca_pem: None,
+        };
+        assert_eq!(
+            deployer
+                .room_for_on(Some(&silent), &service, Some(u64::MAX), None)
+                .await,
+            None,
+            "a rule made of a missing number is not a rule"
+        );
     }
 
     /// A slot that comes back has to come back empty.

@@ -144,6 +144,14 @@ pub struct Frame {
     pub username: String,
     /// Whether to offer the node's own pages at all.
     pub admin: bool,
+    /// Whether they administer whatever scope they are in.
+    ///
+    /// **Not the same as `admin`**, and the nav is where the difference
+    /// shows: an organisation's administrator manages their own people
+    /// and nothing about the machine, so Settings has to appear for them
+    /// with one link under it. Driving both off `admin` gave them a page
+    /// that worked and no way to reach it.
+    pub scope_admin: bool,
     pub area: Area,
     /// Every project, as (slug, name), for the selector.
     pub projects: Vec<(String, String)>,
@@ -206,6 +214,7 @@ impl Frame {
         Self {
             username: account.username.clone(),
             admin: account.is_admin(),
+            scope_admin: account.administers_scope(),
             area,
             projects: projects
                 .iter()
@@ -428,7 +437,7 @@ impl Frame {
                     // The people and what this runs on belong to whoever
                     // runs the node. A member has projects and nothing
                     // else to see here.
-                    @if self.admin {
+                    @if self.scope_admin {
                         <a href="/settings" class=(current(self.area == Area::Settings))
                            title=(t("Settings"))>
                             (hypertext::Raw::dangerously_create(GEAR))
@@ -574,12 +583,32 @@ impl Frame {
                             // luck rather than design, so it is written
                             // down here before somebody adds `/nodes`
                             // back.
-                            <a href="/node"
-                               class=(current(self.path.starts_with("/node")))>(t("Node"))</a>
+                            @if self.admin {
+                                <a href="/node"
+                                   class=(current(self.path.starts_with("/node")))>(t("Node"))</a>
+                            }
+                            // The one link both frontiers have. An
+                            // organisation's administrator manages its
+                            // people; the machine's manages the
+                            // machine's — one page, narrowed by the
+                            // scope the request arrived in.
                             <a href="/people"
                                class=(current(self.path == "/people"))>(t("People"))</a>
-                            <a href="/updates"
-                               class=(current(self.path == "/updates"))>(t("Updates"))</a>
+                            // **The shell is the one shared thing that
+                            // has to name both halves**, because a
+                            // navigation is a list of pages that exist.
+                            // It is two lines, and removing tenancy is
+                            // removing one of them — which is why the
+                            // separability guard in `console` covers the
+                            // controllers and deliberately not this.
+                            @if self.admin {
+                                <a href="/organisations"
+                                   class=(current(self.path == "/organisations"))>(
+                                       t("Organisations")
+                                   )</a>
+                                <a href="/updates"
+                                   class=(current(self.path == "/updates"))>(t("Updates"))</a>
+                            }
                         </nav>
                     }
                 </div>
@@ -840,6 +869,7 @@ mod tests {
             theme: Theme::System,
             id: "a".into(),
             username: "someone".into(),
+            tenant_id: None,
             role: crate::accounts::roles::NodeRole::Admin,
             language: crate::console::language::Language::En,
         };
@@ -870,6 +900,7 @@ mod tests {
             theme: Theme::System,
             id: "a".into(),
             username: "someone".into(),
+            tenant_id: None,
             role: crate::accounts::roles::NodeRole::Admin,
             language: crate::console::language::Language::En,
         };
@@ -879,6 +910,7 @@ mod tests {
             slug: "db-test".into(),
             created_at: 0,
             origin_node_id: None,
+            tenant_id: None,
         };
 
         let trail_for = |area, path: &str| {
@@ -981,6 +1013,7 @@ mod tests {
             theme: Theme::System,
             id: "a".into(),
             username: "someone".into(),
+            tenant_id: None,
             role: crate::accounts::roles::NodeRole::Admin,
             language: crate::console::language::Language::En,
         };
@@ -1009,6 +1042,7 @@ mod tests {
             theme: Theme::System,
             id: "a".into(),
             username: "someone".into(),
+            tenant_id: None,
             role: crate::accounts::roles::NodeRole::Admin,
             language: crate::console::language::Language::En,
         };

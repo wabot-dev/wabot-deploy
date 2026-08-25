@@ -15,6 +15,10 @@ pub struct Project {
     /// The node that asked for this, when it was not this one. `None`
     /// is ours — see migration `0021`.
     pub origin_node_id: Option<String>,
+    /// The tenant it belongs to. `None` is the node's own — the same
+    /// spelling the two above use, so a row written before tenants
+    /// existed still means what it meant. See migration `0054`.
+    pub tenant_id: Option<String>,
 }
 
 impl Project {
@@ -33,9 +37,31 @@ impl Project {
     pub fn is_ours(&self) -> bool {
         self.origin_node_id.is_none()
     }
+
+    /// Whether this is the machine's own rather than an organisation's.
+    ///
+    /// A question rather than a field read, so a controller that has no
+    /// business knowing what an organisation is does not have to name
+    /// one — and so deleting tenancy leaves this answering `true` for
+    /// everything, which is what it meant before organisations existed.
+    pub fn is_the_nodes_own(&self) -> bool {
+        self.tenant_id.is_none()
+    }
 }
 
 pub async fn create(database: &SqliteDatabase, name: &str) -> PlatformResult<Project> {
+    create_for(database, name, None).await
+}
+
+/// The same, inside a tenant.
+///
+/// `None` is the node's own, which is what `create` means and what every
+/// project made before tenants existed is.
+pub async fn create_for(
+    database: &SqliteDatabase,
+    name: &str,
+    tenant_id: Option<&str>,
+) -> PlatformResult<Project> {
     let name = name.trim();
     if name.is_empty() || name.chars().count() > 60 {
         return Err(PlatformError::Refused(
@@ -56,17 +82,18 @@ pub async fn create(database: &SqliteDatabase, name: &str) -> PlatformResult<Pro
         slug,
         created_at: now_ms(),
         // Made here. A project that came from an errand is written by
-        // `create_for`, which is the only way one gets an origin.
+        // `adopt`, which is the only way one gets an origin.
         origin_node_id: None,
+        tenant_id: tenant_id.map(str::to_string),
     };
 
     let row = project.clone();
     database
         .write(move |connection| {
             connection.execute(
-                "INSERT INTO project (\"id\", \"name\", \"slug\", \"created_at\") \
-                 VALUES (?1, ?2, ?3, ?4)",
-                (row.id, row.name, row.slug, row.created_at),
+                "INSERT INTO project (\"id\", \"name\", \"slug\", \"created_at\", \"tenant_id\") \
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                (row.id, row.name, row.slug, row.created_at, row.tenant_id),
             )?;
             Ok(())
         })
@@ -106,12 +133,51 @@ pub async fn set_origin(database: &SqliteDatabase, id: &str, node_id: &str) -> P
     Ok(())
 }
 
+/// The domain this project's names hang off.
+///
+/// Its organisation's when it has one, and this node's otherwise —
+/// which is every project the node owns itself, and every project that
+/// existed before organisations did.
+///
+/// **Here rather than in `tenants`, and that is the point.** Its three
+/// callers ask about a *project*, which is a thing this node has with
+/// or without organisations — so none of them has to name one, and
+/// deleting tenancy simplifies this function instead of touching them.
+///
+/// **One function because there are three callers and they must not
+/// disagree**: the name a page proposes, the name a certificate is
+/// ordered for, and the name written into a container's `/etc/hosts`.
+/// Two of those drifting once already produced a client dialling a name
+/// no certificate held — see `certificate_names`.
+///
+/// It does **not** override `database.owner_domain`. That column answers
+/// a different question — whose name is this copy known by, when the
+/// copy is held for somebody else — and it wins wherever it is set: a
+/// database placed on another node keeps the name its owner gave it, and
+/// that owner may be an organisation on a third machine entirely.
+pub async fn domain_for(
+    database: &SqliteDatabase,
+    project: &Project,
+    node_domain: Option<&str>,
+) -> Option<String> {
+    let theirs = match &project.tenant_id {
+        Some(tenant_id) => super::tenants::find(database, tenant_id)
+            .await
+            .ok()
+            .flatten()
+            .and_then(|tenant| tenant.domain),
+        None => None,
+    };
+    theirs.or_else(|| node_domain.map(str::to_string))
+}
+
 pub async fn all(database: &SqliteDatabase) -> PlatformResult<Vec<Project>> {
     Ok(database
         .read(|connection| {
             connection
                 .prepare(
-                    "SELECT \"id\", \"name\", \"slug\", \"created_at\", \"origin_node_id\" FROM project \
+                    "SELECT \"id\", \"name\", \"slug\", \"created_at\", \"origin_node_id\", \"tenant_id\" \
+                     FROM project \
                      ORDER BY \"created_at\" ASC",
                 )?
                 .query_map([], |row| {
@@ -121,6 +187,7 @@ pub async fn all(database: &SqliteDatabase) -> PlatformResult<Vec<Project>> {
                         slug: row.get(2)?,
                         created_at: row.get(3)?,
                         origin_node_id: row.get(4)?,
+                        tenant_id: row.get(5)?,
                     })
                 })?
                 .collect()
@@ -134,7 +201,8 @@ pub async fn find(database: &SqliteDatabase, id: &str) -> PlatformResult<Option<
         .read(move |connection| {
             connection
                 .query_row(
-                    "SELECT \"id\", \"name\", \"slug\", \"created_at\", \"origin_node_id\" FROM project \
+                    "SELECT \"id\", \"name\", \"slug\", \"created_at\", \"origin_node_id\", \"tenant_id\" \
+                     FROM project \
                      WHERE \"id\" = ?1 OR \"slug\" = ?1",
                     [id],
                     |row| {
@@ -144,6 +212,7 @@ pub async fn find(database: &SqliteDatabase, id: &str) -> PlatformResult<Option<
                             slug: row.get(2)?,
                             created_at: row.get(3)?,
                             origin_node_id: row.get(4)?,
+                            tenant_id: row.get(5)?,
                         })
                     },
                 )

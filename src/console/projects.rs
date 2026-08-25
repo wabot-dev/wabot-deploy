@@ -2067,6 +2067,8 @@ mod tests {
                 cpu_millicores: None,
                 following: None,
                 wal_held: None,
+                placed_by: None,
+                placed_note: None,
             };
 
         // The ordinary case: one copy, here, with an address the page
@@ -2275,6 +2277,8 @@ mod tests {
             cpu_millicores: None,
             following: None,
             wal_held: None,
+            placed_by: None,
+            placed_note: None,
         };
         let failed = crate::platform::replicas::Replica {
             last_error: Some("it exited 1".into()),

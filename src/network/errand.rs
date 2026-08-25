@@ -192,6 +192,42 @@ pub struct Host {
     /// existed: every errand ever queued asked for a deployment.
     #[serde(default = "running")]
     pub running: bool,
+
+    /// The ceilings the copy runs under, in bytes and in millicores.
+    ///
+    /// **These did not travel, and that was a hole rather than an
+    /// omission.** `Standby` has carried `memory_limit` since databases
+    /// existed, and this — the errand every ordinary service goes out
+    /// on — carried neither. So a copy placed on another node ran there
+    /// with no `memory.max` and no `cpu.max` at all, free to take that
+    /// machine; and because `Deployer::committed` sums the ceilings on
+    /// the rows it holds, the copy did not even count against what that
+    /// node had left to promise. The node had no idea it had promised
+    /// anything.
+    ///
+    /// `None` is no ceiling, and it means that for both readings that
+    /// can produce it: a payload written before this field existed
+    /// carried none, and an owner who cleared the ceiling means none.
+    /// The two collapse to the same correct action, which is what makes
+    /// "absent" safe to write straight through.
+    ///
+    /// A node too old to know the fields ignores them and runs the copy
+    /// the way it does today. That is a degradation somebody can see on
+    /// the placement table beside the node's version, not a silent
+    /// disagreement.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub memory_limit: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cpu_millicores: Option<u32>,
+    /// And the disk the copy reserves there.
+    ///
+    /// **A reservation the far node writes down against itself**, not a
+    /// bound it can enforce — there is nothing in a container's spec to
+    /// write it into. It travels so that node's arithmetic counts the
+    /// copy it is holding, and so the copy is charged to the same
+    /// organisation's budget wherever it runs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub disk_limit: Option<u64>,
 }
 
 fn one_slot() -> Vec<u32> {

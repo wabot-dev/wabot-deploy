@@ -53,7 +53,8 @@ pub async fn lookup(database: &SqliteDatabase, token: &str) -> AccountResult<Opt
         .read(move |connection| {
             connection
                 .query_row(
-                    "SELECT a.\"id\", a.\"username\", a.\"role\", a.\"theme\", a.\"language\" \
+                    "SELECT a.\"id\", a.\"username\", a.\"role\", a.\"theme\", a.\"language\", \
+                     a.\"tenant_id\" \
                      FROM session s \
                      JOIN account a ON a.\"id\" = s.\"account_id\" \
                      WHERE s.\"token_hash\" = ?1 AND s.\"expires_at\" > ?2",
@@ -77,6 +78,11 @@ pub async fn lookup(database: &SqliteDatabase, token: &str) -> AccountResult<Opt
                             language: crate::console::language::Language::parse(
                                 &row.get::<_, String>(4)?,
                             ),
+                            // And the scope, for the fourth: it is what
+                            // the `Host` is checked against, so it has to
+                            // be the row's answer now rather than the
+                            // one it gave when they signed in.
+                            tenant_id: row.get(5)?,
                         })
                     },
                 )

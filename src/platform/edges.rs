@@ -356,6 +356,8 @@ mod tests {
             version: None,
             wanted_version: None,
             usage: None,
+            draining_at: None,
+            capacity: None,
             id: id.into(),
             name: id.into(),
             kind: crate::network::Kind::Public,
@@ -385,6 +387,8 @@ mod tests {
             cpu_millicores: None,
             following: None,
             wal_held: None,
+            placed_by: None,
+            placed_note: None,
         }
     }
 

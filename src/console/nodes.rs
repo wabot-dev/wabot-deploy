@@ -166,6 +166,12 @@ impl NodePages {
     /// — and the sidebar says what else is here.
     #[view("/settings")]
     #[middleware(SessionMiddleware)]
+    ///
+    /// **This is the machine's gear, and it only ever opens the
+    /// machine's settings.** Another frontier's console is a different
+    /// router with its own landing — see `console::tenant` — so this
+    /// controller has no second case to carry, which is what keeps the
+    /// two halves separable.
     async fn settings(&self) -> UiResult<ViewOutcome> {
         match signed_in(&self.auth).is_some_and(|account| account.is_admin()) {
             true => Ok(Redirect::found("/node").into()),
@@ -722,6 +728,36 @@ impl NodePages {
                     (manage_card(&node, &releases, catalogue_failed))
                     (grants_card(&node, &granted))
                     (errands_card(&node.id, &orders))
+
+                    <section class="card stack">
+                        <p class="card-label">(t("Take it out of service"))</p>
+                        @if let Some(since) = node.draining_at {
+                            <p class="field-hint">(t("Draining since "))(layout::when(since))(t(". \
+                                 New copies go elsewhere. The ones already moved stop on \
+                                 that machine when it next collects its instructions — \
+                                 which for a node that is down is whenever it comes \
+                                 back."))</p>
+                            <form method="post" action=(format!("/network/{}/drain", node.id))>
+                                <input type="hidden" name="draining" value="off">
+                                <button class="btn btn-ghost" type="submit">
+                                    (t("Put it back in service"))
+                                </button>
+                            </form>
+                        } @else {
+                            <p class="field-hint">(t("Moves the copies this node put there to \
+                                 somewhere with room, and stops choosing it for new ones. \
+                                 Copies that arrived from another node are not this one's \
+                                 to move; a database copy that accepts writes is named \
+                                 rather than moved, because promoting is a decision \
+                                 somebody makes."))</p>
+                            <form method="post" action=(format!("/network/{}/drain", node.id))>
+                                <input type="hidden" name="draining" value="on">
+                                <button class="btn btn-ghost" type="submit">
+                                    (t("Drain"))
+                                </button>
+                            </form>
+                        }
+                    </section>
 
                     <section class="card stack">
                         <p class="card-label">(t("Forget this node"))</p>
@@ -3294,8 +3330,21 @@ impl NodeApi {
     #[middleware(SessionMiddleware)]
     async fn set_capabilities(&self, request: Request) -> RestResult<Response> {
         let here = &NodeTab::Allows.path();
-        if signed_in(&self.auth).is_none() {
+        let Some(account) = signed_in(&self.auth) else {
             return Ok(super::auth::see_other("/sign-in"));
+        };
+        // The one POST under `/node` that had no admin check, and the
+        // omission was not small. `evict_ungranted` and
+        // `release_ungranted` run at boot and act on exactly these
+        // values, so turning `host` off here throws off every replica
+        // this node holds for anybody, and turning `edge` off releases
+        // every name it claims — from any account with a session.
+        //
+        // The page that draws the form is behind `is_admin` already, so
+        // this was hidden and not enforced, which is the distinction
+        // every island in this console is written around.
+        if !account.is_admin() {
+            return Ok(super::auth::see_other("/"));
         }
         let form = match super::auth::read_form(request).await {
             Ok(form) => form,
@@ -3958,6 +4007,67 @@ impl NodeApi {
             network::enrolment::withdraw(&self.state.database, id).await?;
         }
         Ok(super::auth::see_other("/network/invite"))
+    }
+
+    /// Take a node out of service, or put it back.
+    ///
+    /// **The mark and the moving are one press**, because a mark without
+    /// the moving is a node quietly holding work nobody will ever choose
+    /// it for again, and moving without the mark is a drain the planner
+    /// undoes on its next decision.
+    ///
+    /// What comes back is a count of rows moved *here* and a sentence
+    /// per copy that could not be — never "drained", because the far
+    /// node stops when it next collects and this console cannot know
+    /// that it did.
+    #[post("/network/:node/drain")]
+    #[raw]
+    #[middleware(SessionMiddleware)]
+    async fn drain_node(&self, request: Request) -> RestResult<Response> {
+        let Some(account) = signed_in(&self.auth) else {
+            return Ok(super::auth::see_other("/sign-in"));
+        };
+        if !account.is_admin() {
+            return Ok(super::auth::see_other("/"));
+        }
+
+        let path = request.uri().path().to_string();
+        let Some(id) = super::auth::segments(&path).get(1).cloned() else {
+            return Ok(super::auth::see_other("/network"));
+        };
+        let form = match super::auth::read_form(request).await {
+            Ok(form) => form,
+            Err(response) => return Ok(response),
+        };
+        let here = format!("/network/{id}");
+
+        if super::auth::field(&form, "draining") != "on" {
+            if let Err(error) = network::set_draining(&self.state.database, id, false).await {
+                tracing::warn!(%error, "could not put it back in service");
+                return Ok(super::auth::back_with_error(
+                    &here,
+                    "that could not be saved",
+                ));
+            }
+            return Ok(super::auth::see_other(&here));
+        }
+
+        let drained = self.state.deployer.drain(id).await;
+        // The refusals are the half somebody has to act on, so they go
+        // where they are looking rather than into the journal — a copy
+        // that stayed put on a machine about to be switched off is the
+        // whole reason this reports at all.
+        if !drained.refused.is_empty() {
+            return Ok(super::auth::back_with_error(
+                &here,
+                &format!(
+                    "{} copies moved; {}",
+                    drained.moved,
+                    drained.refused.join("; ")
+                ),
+            ));
+        }
+        Ok(super::auth::see_other(&here))
     }
 
     #[post("/network/forget/:node")]
@@ -4717,6 +4827,49 @@ pub(crate) mod tests {
         assert!(
             body.contains("name=\"own\""),
             "and the switch that is not a capability: {body}"
+        );
+    }
+
+    /// What this node agrees to do for the whole network is not a
+    /// member's decision.
+    ///
+    /// **This guard was missing**, and it was the only POST under `/node`
+    /// without one — every other form in this controller asks. What it
+    /// cost is not a setting written wrongly: `evict_ungranted` and
+    /// `release_ungranted` run at boot and act on these values, so a
+    /// member turning `host` off threw off every replica this node holds
+    /// for anybody, and turning `edge` off released every name it claims.
+    /// The form was hidden behind `is_admin` and the handler was not,
+    /// which is the difference this console is written around, and the
+    /// tests around it all signed in as the administrator.
+    #[tokio::test]
+    async fn only_an_admin_may_change_what_this_node_provides() {
+        let console = Console::new().await;
+        let admin = console.signed_in().await;
+        let member = console.joined_as(&admin, "member").await;
+
+        let response = console
+            .harness
+            .post("/node/capabilities")
+            .header("cookie", &member)
+            // Every box unticked, which is how this form says "off".
+            .form::<&str, &str>(&[])
+            .send()
+            .await;
+
+        response.assert_status(StatusCode::SEE_OTHER);
+        assert_eq!(response.header("location"), Some("/"));
+
+        for capability in network::capability::Capability::ALL {
+            assert!(
+                network::capability::provides(&console.database, capability).await,
+                "a member turned {} off for the whole node",
+                capability.name()
+            );
+        }
+        assert!(
+            crate::network::capability::owns(&console.database).await,
+            "and stopped it owning anything"
         );
     }
 
@@ -6292,6 +6445,8 @@ pub(crate) mod tests {
                 version: None,
                 wanted_version: None,
                 usage: None,
+                draining_at: None,
+                capacity: None,
                 id: id.into(),
                 name: "alpine.example".into(),
                 kind: Kind::Private,

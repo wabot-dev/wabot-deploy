@@ -359,21 +359,44 @@ pub async fn dispatch(
             .push(replica.slot);
     }
 
-    let store = crate::network::capability::Capability::Store;
-    let nodes = crate::network::all(database)
-        .await
-        .map_err(|error| PlatformError::Refused(error.to_string()))?;
+    // The same function the placement form offers nodes with, so what
+    // was offerable and what is dispatchable cannot drift apart — they
+    // did, and this loop is where it showed.
+    let allowed: Vec<String> =
+        crate::network::candidates_for(database, service.kind.placement_capability())
+            .await
+            .map_err(|error| PlatformError::Refused(error.to_string()))?
+            .into_iter()
+            .map(|node| node.id)
+            .collect();
     let mut sent = 0;
 
     for (node_id, slots) in by_node {
         // A node that never agreed to keep data is not somewhere a copy
         // can go, and queueing against it produces an errand it refuses
         // for ever while this side says the copy is placed.
-        if !nodes
-            .iter()
-            .any(|node| node.id == node_id && node.allows.contains(&store))
-        {
+        //
+        // **Said out loud on the row, not only in the journal.** This
+        // skipped in silence, so a copy placed on a node without `store`
+        // read as placed on the page that placed it and was never sent
+        // anywhere — a failure that only reached the journal is a failure
+        // nobody sees. The picker refuses the node now, and this is the
+        // belt for a grant withdrawn after the row was written.
+        if !allowed.contains(&node_id) {
             tracing::debug!(node = %node_id, "skipped: it has not agreed to keep data here");
+            for slot in &slots {
+                let Some(replica) = placements.iter().find(|replica| {
+                    replica.slot == *slot && replica.node_id.as_deref() == Some(&*node_id)
+                }) else {
+                    continue;
+                };
+                let _ = super::replicas::set_last_error(
+                    database,
+                    &replica.id,
+                    Some("that node has not agreed to keep data for this one"),
+                )
+                .await;
+            }
             continue;
         }
 
@@ -906,6 +929,8 @@ mod tests {
                 version: None,
                 wanted_version: None,
                 usage: None,
+                draining_at: None,
+                capacity: None,
                 id: "nd-far".into(),
                 name: "far.example".into(),
                 kind: crate::network::Kind::Private,

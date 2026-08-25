@@ -179,6 +179,31 @@ fn migrations() -> Vec<Migration> {
             "0050_undo_store_off",
             include_str!("../migrations/0050_undo_store_off.sql"),
         ),
+        Migration::new(
+            "0051_node_capacity",
+            include_str!("../migrations/0051_node_capacity.sql"),
+        ),
+        Migration::new(
+            "0052_placed_by",
+            include_str!("../migrations/0052_placed_by.sql"),
+        ),
+        Migration::new(
+            "0053_draining",
+            include_str!("../migrations/0053_draining.sql"),
+        ),
+        Migration::new("0054_tenant", include_str!("../migrations/0054_tenant.sql")),
+        Migration::new(
+            "0055_disk_limit",
+            include_str!("../migrations/0055_disk_limit.sql"),
+        ),
+        Migration::new(
+            "0056_invitation_scope",
+            include_str!("../migrations/0056_invitation_scope.sql"),
+        ),
+        Migration::new(
+            "0057_username_per_scope",
+            include_str!("../migrations/0057_username_per_scope.sql"),
+        ),
     ]
 }
 

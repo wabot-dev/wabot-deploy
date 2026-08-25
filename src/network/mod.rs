@@ -131,6 +131,40 @@ pub struct Usage {
     pub disk_free: u64,
 }
 
+/// What a node has left to promise, as it last reported.
+///
+/// **Beside [`Usage`] and answering a different question.** Used memory
+/// is what containers are touching this second; a machine with 200 MB in
+/// use may have promised every byte it has to services that happen to be
+/// idle. Placing against a reading is placing against how busy something
+/// is, which is not what a placement is deciding.
+///
+/// `allocatable` is computed on the machine it describes — total minus
+/// the reserve that operator set — so what travels is the answer rather
+/// than the ingredients. A reader recomputing `total - default` would
+/// contradict the operator of a machine it does not administer.
+///
+/// It rides `note_reachability` like `Usage` and is never part of
+/// "something changed". A commitment *is* a decision, unlike a reading,
+/// but `memory_allocatable` hangs off `memory_total` — and one number
+/// flickering is enough to re-earn the storm `record` was fixed for. See
+/// migration `0051`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct Capacity {
+    pub memory_allocatable: u64,
+    pub memory_committed: u64,
+    pub cpu_allocatable: u32,
+    pub cpu_committed: u32,
+    /// Copies held here with no ceiling at all.
+    ///
+    /// **Not folded into the sums**, and it cannot be: a container with
+    /// no limit may take the machine, so a guess would make the
+    /// arithmetic look complete while being wrong by an unknown amount.
+    /// Carried so a reader can say the sum is a floor rather than a
+    /// total.
+    pub unbounded: u32,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Node {
     pub id: String,
@@ -163,6 +197,25 @@ pub struct Node {
     /// which megabyte is that machine's internals and its own console
     /// shows them; what another node needs is "is it running out".
     pub usage: Option<Usage>,
+    /// When somebody here said this node is being taken out of service.
+    ///
+    /// **A decision made here about that machine**, like
+    /// `wanted_version` and unlike everything around it — so it does not
+    /// travel on a report and is not carried by `save`, which rebuilds
+    /// rows from other things. See migration `0053`.
+    ///
+    /// `None` is in service. A duration rather than a flag because a
+    /// node that never comes back to collect its instruction is exactly
+    /// where "draining since Tuesday" is the whole story.
+    pub draining_at: Option<i64>,
+    /// What it has left to promise, as it last reported.
+    ///
+    /// `None` for a node that has not reported since the columns existed
+    /// — and for this node, which reads its own meters live. **Different
+    /// from a node with nothing left**, and the difference is the whole
+    /// point: what cannot be measured is not enforced, but it is not
+    /// chosen either. See [`Capacity`].
+    pub capacity: Option<Capacity>,
     /// The certificate authority it presented, so a call *to* it over the
     /// overlay can be verified rather than merely encrypted.
     ///
@@ -212,27 +265,50 @@ impl Node {
     }
 }
 
-/// The nodes that could answer for a hostname.
+/// The nodes this one may ask for `capability`.
 ///
 /// **Two conditions, and the second is learned rather than decided
-/// here.** A node has to be able to be an edge — public, with an address
-/// the world can dial — *and* to let this one ask it: `allows` is what
-/// that machine reported about its own grants, and reading the local
-/// grant table instead answers the opposite question. This node needs no
-/// grant to instruct itself.
+/// here.** A node has to be able to do the thing at all, and it has to
+/// let this one ask: `allows` is what that machine reported about its
+/// own grants, and reading the local `node_grant` table instead answers
+/// the opposite question — which is the trap the first version of the
+/// edge picker walked into. This node asks itself through the setting,
+/// because it needs no grant to instruct itself.
 ///
-/// One function because the answer is asked in three places now — the
-/// form that chooses edges, the POST that saves them, and the DNS check
-/// that decides whether a name may be used at all — and three copies of
-/// a rule about consent is how one of them ends up out of date.
-pub async fn edge_candidates(database: &SqliteDatabase) -> NetworkResult<Vec<Node>> {
-    let edge = capability::Capability::Edge;
+/// **Whether an address is required is [`capability::Capability::needs_endpoint`]
+/// rather than a branch here**, so a capability added later cannot
+/// arrive without an answer — which is exactly what that method was
+/// written for.
+///
+/// One function because the answer was asked in six places: the form
+/// that chooses edges, the POST that saves them, the DNS check, the
+/// placement picker, and the three dispatch loops that skip a node which
+/// no longer consents. Six copies of a rule about consent is how one of
+/// them ends up out of date, and one of them already had — the placement
+/// picker offered nodes for a database copy on `host` while the errand
+/// asked for `store`, so the console showed a copy placed that was never
+/// sent anywhere.
+pub async fn candidates_for(
+    database: &SqliteDatabase,
+    capability: capability::Capability,
+) -> NetworkResult<Vec<Node>> {
+    // Read once rather than per row: it is one settings row and the
+    // answer cannot differ between two nodes in the same list.
+    let here = capability::provides(database, capability).await;
     Ok(all(database)
         .await?
         .into_iter()
-        .filter(|node| node.may_be_edge())
-        .filter(|node| node.is_self || node.allows.contains(&edge))
+        .filter(|node| !capability.needs_endpoint() || node.may_be_edge())
+        .filter(|node| match node.is_self {
+            true => here,
+            false => node.allows.contains(&capability),
+        })
         .collect())
+}
+
+/// The nodes that could answer for a hostname.
+pub async fn edge_candidates(database: &SqliteDatabase) -> NetworkResult<Vec<Node>> {
+    candidates_for(database, capability::Capability::Edge).await
 }
 
 fn read(row: &Row<'_>) -> wabot::sqlite::rusqlite::Result<Node> {
@@ -270,13 +346,42 @@ fn read(row: &Row<'_>) -> wabot::sqlite::rusqlite::Result<Node> {
         version: row.get(14)?,
         wanted_version: row.get(15)?,
         update_note: row.get(16)?,
+        // All five or none, the same rule as the reading above: a node
+        // that reported before these existed cannot have some of them,
+        // and a `Some` holding zeroes would read as a machine with
+        // nothing left to give.
+        capacity: match (
+            row.get::<_, Option<i64>>(17)?,
+            row.get::<_, Option<i64>>(18)?,
+            row.get::<_, Option<i64>>(19)?,
+            row.get::<_, Option<i64>>(20)?,
+            row.get::<_, Option<i64>>(21)?,
+        ) {
+            (
+                Some(memory_allocatable),
+                Some(memory_committed),
+                Some(cpu_allocatable),
+                Some(cpu_committed),
+                Some(unbounded),
+            ) => Some(Capacity {
+                memory_allocatable: memory_allocatable as u64,
+                memory_committed: memory_committed as u64,
+                cpu_allocatable: cpu_allocatable as u32,
+                cpu_committed: cpu_committed as u32,
+                unbounded: unbounded as u32,
+            }),
+            _ => None,
+        },
+        draining_at: row.get(22)?,
     })
 }
 
 const COLUMNS: &str = "\"id\", \"name\", \"kind\", \"endpoint\", \"public_key\", \
                        \"overlay_ip\", \"is_self\", \"last_seen_at\", \"allows\", \
                        \"ca_pem\", \"memory_total\", \"memory_used\", \"disk_total\", \
-                       \"disk_free\", \"version\", \"wanted_version\", \"update_note\"";
+                       \"disk_free\", \"version\", \"wanted_version\", \"update_note\", \
+                       \"memory_allocatable\", \"memory_committed\", \"cpu_allocatable\", \
+                       \"cpu_committed\", \"unbounded\", \"draining_at\"";
 
 /// Write, or bring up to date, the row for the node this process is.
 ///
@@ -442,6 +547,8 @@ pub async fn ensure_self(database: &SqliteDatabase, config: &Config) -> NetworkR
             .as_ref()
             .and_then(|node| node.wanted_version.clone()),
         usage: None,
+        draining_at: None,
+        capacity: None,
         id: match &existing {
             Some(node) => node.id.clone(),
             None => format!("nd-{}", wabot::prelude::password::generate(12)),
@@ -601,9 +708,11 @@ pub async fn save(database: &SqliteDatabase, node: &Node) -> NetworkResult<()> {
                    (\"id\", \"name\", \"kind\", \"endpoint\", \"public_key\", \"overlay_ip\", \
                     \"is_self\", \"joined_at\", \"last_seen_at\", \"allows\", \"ca_pem\", \
                     \"memory_total\", \"memory_used\", \"disk_total\", \"disk_free\", \
-                    \"version\", \"update_note\") \
+                    \"version\", \"update_note\", \"memory_allocatable\", \
+                    \"memory_committed\", \"cpu_allocatable\", \"cpu_committed\", \
+                    \"unbounded\") \
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, \
-                         ?16, ?17) \
+                         ?16, ?17, ?18, ?19, ?20, ?21, ?22) \
                  ON CONFLICT (\"id\") DO UPDATE SET \
                    \"name\" = excluded.\"name\", \
                    \"kind\" = excluded.\"kind\", \
@@ -618,7 +727,12 @@ pub async fn save(database: &SqliteDatabase, node: &Node) -> NetworkResult<()> {
                    \"disk_total\" = excluded.\"disk_total\", \
                    \"disk_free\" = excluded.\"disk_free\", \
                    \"version\" = excluded.\"version\", \
-                   \"update_note\" = excluded.\"update_note\"",
+                   \"update_note\" = excluded.\"update_note\", \
+                   \"memory_allocatable\" = excluded.\"memory_allocatable\", \
+                   \"memory_committed\" = excluded.\"memory_committed\", \
+                   \"cpu_allocatable\" = excluded.\"cpu_allocatable\", \
+                   \"cpu_committed\" = excluded.\"cpu_committed\", \
+                   \"unbounded\" = excluded.\"unbounded\"",
                 // **`wanted_version` is deliberately not here.** Every
                 // other column on this row is a fact about that machine,
                 // arriving on its report and carried forward by `..node`;
@@ -654,6 +768,15 @@ pub async fn save(database: &SqliteDatabase, node: &Node) -> NetworkResult<()> {
                     node.usage.map(|usage| usage.disk_free as i64),
                     node.version,
                     node.update_note,
+                    // And the same again for what it has left to promise.
+                    // Five values, five columns above — the rule that
+                    // `adopt` broke is worth restating where it would
+                    // break the same way.
+                    node.capacity.map(|room| room.memory_allocatable as i64),
+                    node.capacity.map(|room| room.memory_committed as i64),
+                    node.capacity.map(|room| i64::from(room.cpu_allocatable)),
+                    node.capacity.map(|room| i64::from(room.cpu_committed)),
+                    node.capacity.map(|room| i64::from(room.unbounded)),
                 ],
             )?;
             Ok(())
@@ -840,6 +963,32 @@ pub async fn want_version(
             connection.execute(
                 "UPDATE node SET \"wanted_version\" = ?2 WHERE \"id\" = ?1",
                 (node_id, tag),
+            )?;
+            Ok(())
+        })
+        .await?)
+}
+
+/// Say that a node is being taken out of service, or is back in it.
+///
+/// **Its own statement**, like `want_version` and for the same reason:
+/// every other column on that row is a fact the machine reported and is
+/// carried forward by `save`, and this is a decision made here. Written
+/// through `save` it would be at the mercy of every caller that rebuilds
+/// a row from something else — and `note_reachability` rebuilds one on
+/// every report, which would have undrained a node every fifteen
+/// seconds.
+pub async fn set_draining(
+    database: &SqliteDatabase,
+    node_id: &str,
+    draining: bool,
+) -> NetworkResult<()> {
+    let (node_id, at) = (node_id.to_string(), draining.then(now_ms));
+    Ok(database
+        .write(move |connection| {
+            connection.execute(
+                "UPDATE node SET \"draining_at\" = ?2 WHERE \"id\" = ?1",
+                (node_id, at),
             )?;
             Ok(())
         })
@@ -1444,6 +1593,8 @@ pub(crate) mod tests {
             version: None,
             wanted_version: None,
             usage: None,
+            draining_at: None,
+            capacity: None,
             id: id.into(),
             name: id.into(),
             kind,
@@ -1455,6 +1606,131 @@ pub(crate) mod tests {
             allows: Vec::new(),
             ca_pem: None,
         }
+    }
+
+    /// One capability is not another, and the picker has to ask about the
+    /// one the errand will carry.
+    ///
+    /// **This is the fault the six copies hid.** The placement form asked
+    /// for `host` while a managed database's copy travels as
+    /// `Kind::Database` and is consented to as `store`, so a node with one
+    /// and not the other was offered, chosen, written as a replica row —
+    /// and then skipped in silence at dispatch. The console said the copy
+    /// was placed and nothing was ever sent anywhere.
+    #[tokio::test]
+    async fn a_node_is_only_a_candidate_for_what_it_agreed_to() {
+        let database = database().await;
+
+        let mut runs = node("nd-runs", Kind::Private, None);
+        runs.allows = vec![capability::Capability::Host];
+        save(&database, &runs).await.expect("row");
+
+        let mut keeps = node("nd-keeps", Kind::Private, None);
+        keeps.allows = vec![capability::Capability::Store];
+        save(&database, &keeps).await.expect("row");
+
+        let ids =
+            |nodes: Vec<Node>| -> Vec<String> { nodes.into_iter().map(|node| node.id).collect() };
+
+        assert_eq!(
+            ids(candidates_for(&database, capability::Capability::Host)
+                .await
+                .expect("host")),
+            vec!["nd-runs".to_string()],
+        );
+        assert_eq!(
+            ids(candidates_for(&database, capability::Capability::Store)
+                .await
+                .expect("store")),
+            vec!["nd-keeps".to_string()],
+            "a node that runs containers has not agreed to keep data",
+        );
+        assert!(
+            candidates_for(&database, capability::Capability::Manage)
+                .await
+                .expect("manage")
+                .is_empty(),
+            "and neither agreed to this one at all",
+        );
+    }
+
+    /// Whether an address is required comes from the capability, not from
+    /// a branch at each call site.
+    ///
+    /// A private node is a perfectly good place to run a container and can
+    /// never answer for a name, so `edge` is the one that also needs
+    /// `may_be_edge`. Asking `needs_endpoint` rather than spelling it out
+    /// is what stops a capability added later from arriving without an
+    /// answer.
+    #[tokio::test]
+    async fn only_a_capability_that_needs_an_address_asks_for_one() {
+        let database = database().await;
+
+        let mut private = node("nd-private", Kind::Private, None);
+        private.allows = capability::Capability::ALL.to_vec();
+        save(&database, &private).await.expect("row");
+
+        assert!(
+            candidates_for(&database, capability::Capability::Edge)
+                .await
+                .expect("edge")
+                .is_empty(),
+            "nothing the world can dial",
+        );
+        for capability in capability::Capability::ALL
+            .into_iter()
+            .filter(|capability| !capability.needs_endpoint())
+        {
+            assert_eq!(
+                candidates_for(&database, capability)
+                    .await
+                    .expect("candidates")
+                    .len(),
+                1,
+                "{} does not need an address",
+                capability.name()
+            );
+        }
+    }
+
+    /// This node asks itself through the setting, never through `allows`.
+    ///
+    /// `allows` is what *another* machine reported about its own grants,
+    /// and this node's row has none — so a picker reading it would leave
+    /// the node that is running the console out of its own list. The
+    /// opposite mistake is reading the local `node_grant` table, which
+    /// answers who may ask *us*.
+    #[tokio::test]
+    async fn this_node_is_a_candidate_by_its_own_switch() {
+        let database = database().await;
+
+        let mut me = node("nd-self", Kind::Private, None);
+        me.is_self = true;
+        save(&database, &me).await.expect("row");
+        assert!(
+            me.allows.is_empty(),
+            "and its own row says nothing about what it allows"
+        );
+
+        assert_eq!(
+            candidates_for(&database, capability::Capability::Host)
+                .await
+                .expect("host")
+                .len(),
+            1,
+            "unset means yes, so this node hosts for itself",
+        );
+
+        capability::set_provides(&database, capability::Capability::Host, false)
+            .await
+            .expect("switched off");
+        assert!(
+            candidates_for(&database, capability::Capability::Host)
+                .await
+                .expect("host")
+                .is_empty(),
+            "and turning the switch off takes it out of its own list",
+        );
     }
 
     /// The instruction is convergent, so the pass is free when there is
@@ -1715,6 +1991,8 @@ pub(crate) mod tests {
                 version: None,
                 wanted_version: None,
                 usage: None,
+                draining_at: None,
+                capacity: None,
                 id: "nd-other".into(),
                 name: "other.example".into(),
                 kind: Kind::Public,

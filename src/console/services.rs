@@ -20,6 +20,24 @@ use super::auth::{back_with_error, field, read_form, see_other, signed_in, Sessi
 use super::shell::{Area, Frame};
 use super::{layout, ConsoleState};
 
+/// The value the placement form sends for "let the node decide".
+///
+/// A word rather than an empty field, because an empty field already
+/// means *here* and has since the per-slot selectors were written. Two
+/// intentions that differ have to be two values, or changing one of them
+/// silently changes what every existing form does.
+const ANYWHERE: &str = "anywhere";
+
+/// Where copies added by the count control go.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Placement {
+    /// A machine somebody named. `None` is this one.
+    Named(Option<String>),
+    /// Wherever there is room, decided per copy — see
+    /// `deploy::planner`.
+    Anywhere,
+}
+
 #[derive(Debug, Deserialize, Validate)]
 pub struct ServiceForm {
     pub project: String,
@@ -1468,14 +1486,7 @@ impl ServicePages {
         // queue for ever while this page said it was served, which is what
         // the Alpine node did for an hour before anybody noticed. This
         // node needs no grant to instruct itself.
-        let nodes_for_edges = crate::network::all(&self.state.database).await?;
-        let edge = crate::network::capability::Capability::Edge;
-        let public_nodes: Vec<crate::network::Node> = nodes_for_edges
-            .iter()
-            .filter(|node| node.may_be_edge())
-            .filter(|node| node.is_self || node.allows.contains(&edge))
-            .cloned()
-            .collect();
+        let public_nodes = crate::network::edge_candidates(&self.state.database).await?;
         let serving = crate::platform::edges::of_service(&self.state.database, &service.id).await?;
         // Read once for the page rather than per hostname: the card asks
         // the same question for every name, and this is how it answers it
@@ -1489,20 +1500,18 @@ impl ServicePages {
         // table that shows what they are doing stays on the service's own.
         let placements =
             crate::platform::replicas::of_service(&self.state.database, &service.id).await?;
-        let nodes = crate::network::all(&self.state.database).await?;
         // Which copies the edge stopped sending to, for the placement
         // table below.
         let silent = self.state.deployer.not_answering(&service).await;
-        let host = crate::network::capability::Capability::Host;
-        let hosts_here = crate::network::capability::provides(&self.state.database, host).await;
-        let placement_nodes: Vec<crate::network::Node> = nodes
-            .iter()
-            .filter(|node| match node.is_self {
-                true => hosts_here,
-                false => node.allows.contains(&host),
-            })
-            .cloned()
-            .collect();
+        // **Which favour this copy is asking for**, not `host` flatly: a
+        // managed database travels as `Kind::Database` and needs `store`,
+        // so filtering on `host` offered nodes whose errand would be
+        // skipped in silence at dispatch. See `Kind::placement_capability`.
+        let placement_nodes = crate::network::candidates_for(
+            &self.state.database,
+            service.kind.placement_capability(),
+        )
+        .await?;
         let queued: Vec<String> = crate::network::errand::all(&self.state.database)
             .await?
             .into_iter()
@@ -1606,10 +1615,19 @@ impl ServicePages {
         // Where a push token is made, which is the prerequisite the card
         // names. A link rather than a sentence saying where to look.
         let project_settings = format!("/projects/{}/settings", project.slug);
-        let suggestion = match &domain {
-            Some(domain) => {
-                let name = dns::suggested_hostname(&service.slug, &project.slug, domain);
-                let wildcard = dns::wildcard_works(domain).await;
+        // The organisation's domain when this project is one's — the
+        // same function the certificate and the hosts file ask, so the
+        // name proposed here is the name that ends up being served.
+        let suffix = crate::platform::projects::domain_for(
+            &self.state.database,
+            &project,
+            domain.as_deref(),
+        )
+        .await;
+        let suggestion = match &suffix {
+            Some(suffix) => {
+                let name = dns::suggested_hostname(&service.slug, &project.slug, suffix);
+                let wildcard = dns::wildcard_works(suffix).await;
                 Some((name, wildcard))
             }
             None => None,
@@ -2007,6 +2025,26 @@ impl ServicePages {
                              runs slowly rather than stopping. A ceiling is also what is reserved \
                              for it — the node counts what it has promised, and refuses to \
                              promise more than it has."))</p>
+
+                        <label for="disk-size">(t("Disk"))</label>
+                        <input id="disk-size" name="disk" type="text"
+                               autocomplete="off"
+                               placeholder=(t("no ceiling"))
+                               value=(service.disk_limit
+                                   .map(crate::platform::presets::label)
+                                   .unwrap_or_default())>
+                        // **The one number on this page that reserves and
+                        // does not enforce**, and saying so is the whole
+                        // point of the sentence: a field that looks like
+                        // the two above and quietly does less is the
+                        // `archiving` label again, where a switch said
+                        // "on" over a database that was not archiving.
+                        <p class="field-hint">(t("This one reserves space; it does not enforce it. \
+                             There is nothing to write it into — volumes share a filesystem, \
+                             and dividing one properly needs XFS project quotas or a file per \
+                             volume. What the node does with this number is refuse to place \
+                             more than it can hold, and say on this page when a copy has gone \
+                             past what it was promised."))</p>
                         <div class="actions">
                             <button type="submit">(t("Save"))</button>
                         </div>
@@ -3133,6 +3171,7 @@ fn placement_card<'a>(
                     <div>
                         <label for="new-on">(t("New ones on"))</label>
                         <select id="new-on" name="new-on">
+                            <option value=(ANYWHERE)>(t("Wherever there is room"))</option>
                             @for node in nodes {
                                 @if node.is_self {
                                     <option value="" selected>(&node.name)</option>
@@ -3148,6 +3187,10 @@ fn placement_card<'a>(
                      stop it again for nothing. Removing takes the ones already thrown \
                      out first, then the highest-numbered; the node running one is told \
                      to stop it."))</p>
+                <p class="field-hint">(t("Wherever there is room spreads new copies across nodes that have \
+                     agreed to run this and have the memory for it, emptiest first. It \
+                     writes an ordinary row saying why, and never moves one you placed \
+                     yourself."))</p>
                 <div class="actions">
                     <button type="submit">(t("Save placement"))</button>
                 </div>
@@ -4027,6 +4070,40 @@ impl ServiceApi {
             Ok(cpu) => cpu,
             Err(reason) => return Ok(back_with_error(&here, &reason)),
         };
+        // And the third, free-form for both kinds: a disk ceiling is not
+        // an engine setting, so there is no ladder for it to be a rung
+        // of.
+        let wanted_disk = match crate::platform::presets::parse_size(field(&form, "disk")) {
+            Ok(disk) => disk,
+            Err(reason) => return Ok(back_with_error(&here, &reason)),
+        };
+
+        // **The organisation's budget first, then the machine's.** Three
+        // reasons and the third decides: this sum is a local read and
+        // always answerable where a node's may be missing or stale; it is
+        // the more general refusal, since an organisation out of budget
+        // is out of budget on every machine; and a refusal should lead to
+        // the smallest correction — "ask for more quota" before "put it
+        // somewhere else", which would be advice that cannot work.
+        let copies = crate::platform::replicas::of_service(&self.state.database, &service.id)
+            .await?
+            .into_iter()
+            .filter(|replica| !replica.evicted())
+            .count()
+            .max(1) as u64;
+        if let Some(reason) = crate::platform::quotas::admits(
+            &self.state.database,
+            &project,
+            &service,
+            wanted,
+            cpu,
+            wanted_disk,
+            copies,
+        )
+        .await?
+        {
+            return Ok(back_with_error(&here, &reason));
+        }
 
         // **What is left, after what is already promised.** A ceiling is
         // also a reservation here, so accepting one the node cannot keep
@@ -4039,6 +4116,23 @@ impl ServiceApi {
 
         services::set_memory_limit(&self.state.database, &service.id, wanted).await?;
         services::set_cpu_limit(&self.state.database, &service.id, cpu).await?;
+        services::set_disk_limit(&self.state.database, &service.id, wanted_disk).await?;
+
+        // **The copies on other machines are told here**, not left to the
+        // deployment below to tell them on its way past. `deploy` does end
+        // by calling this, so the number would usually arrive — but the
+        // job is queued with its failure tolerated, one line above, so a
+        // queue that will not take it is a ceiling saved on this page and
+        // never applied anywhere else, with nothing saying so. Convergent
+        // and free when nothing moved: `queue_if_changed` compares the
+        // payload, and one that says the same thing says nothing.
+        let fresh = services::find(&self.state.database, &service.id)
+            .await?
+            .unwrap_or_else(|| service.clone());
+        self.state
+            .deployer
+            .tell_holders_including(&project, &fresh, &Default::default())
+            .await;
 
         let command = crate::deploy::jobs::DeployService {
             service_id: service.id.clone(),
@@ -4430,11 +4524,33 @@ impl ServiceApi {
                 continue;
             }
             if let Some(node) = wanted {
-                if crate::network::find(&self.state.database, node)
-                    .await?
-                    .is_none()
-                {
+                let Some(node_row) = crate::network::find(&self.state.database, node).await? else {
                     return Ok(back_with_error(&here, "no such node"));
+                };
+                // **And whether it has room**, against what that machine
+                // last reported. A courtesy rather than the boundary: the
+                // answer was true when the report was sent, and the node
+                // asks its own meters when the errand arrives. What it
+                // buys is the refusal landing on the form somebody is
+                // looking at instead of on a row they would have to go
+                // and find ten seconds later.
+                //
+                // A node that has not reported its room is not refused —
+                // what cannot be measured is not enforced — which is a
+                // different question from whether it is worth *choosing*,
+                // and that one belongs to the planner.
+                if let Some(reason) = self
+                    .state
+                    .deployer
+                    .room_for_on(
+                        Some(&node_row),
+                        &service,
+                        service.memory_limit,
+                        service.cpu_millicores,
+                    )
+                    .await
+                {
+                    return Ok(back_with_error(&here, &reason));
                 }
                 touched.insert(node.to_string());
             }
@@ -4482,21 +4598,71 @@ impl ServiceApi {
         //
         // An empty field is this node, the same value the per-slot
         // selectors use, so the two controls speak one language.
+        //
+        // And one value that is neither: `anywhere` asks the node to
+        // decide, per copy. It is a third answer rather than a default
+        // because "somewhere" and "here" are different intentions, and
+        // making the empty field mean "decide" would change what every
+        // existing form does.
         let on = field(&form, "new-on");
-        let on = (!on.trim().is_empty()).then(|| on.trim().to_string());
-        if let Some(node) = &on {
-            if crate::network::find(&self.state.database, node)
-                .await?
-                .is_none()
-            {
-                return Ok(back_with_error(&here, "no such node"));
+        let on = on.trim();
+        let placement = match on {
+            ANYWHERE => Placement::Anywhere,
+            "" => Placement::Named(None),
+            node => {
+                let Some(row) = crate::network::find(&self.state.database, node).await? else {
+                    return Ok(back_with_error(&here, "no such node"));
+                };
+                if let Some(reason) = self
+                    .state
+                    .deployer
+                    .room_for_on(
+                        Some(&row),
+                        &service,
+                        service.memory_limit,
+                        service.cpu_millicores,
+                    )
+                    .await
+                {
+                    return Ok(back_with_error(&here, &reason));
+                }
+                touched.insert(node.to_string());
+                Placement::Named(Some(node.to_string()))
             }
-            touched.insert(node.clone());
+        };
+
+        // **A copy costs what a ceiling costs, so the budget is asked
+        // here too.** The resources form asks about raising a ceiling;
+        // this asks about adding another copy at the ceiling it already
+        // has, and an organisation whose quota only bound one of the two
+        // would be one somebody could exceed by pressing the other
+        // button.
+        //
+        // Asked for the count being *asked for*, not the count now: the
+        // question is whether the organisation can afford what the form
+        // says, and refusing after placing half of them is worse than
+        // refusing.
+        if let Some(reason) = crate::platform::quotas::admits(
+            &self.state.database,
+            &project,
+            &service,
+            service.memory_limit,
+            service.cpu_millicores,
+            service.disk_limit,
+            u64::from(wanted),
+        )
+        .await?
+        {
+            return Ok(back_with_error(&here, &reason));
         }
 
-        if let Err(error) = self.resize(&project, &service, wanted, on.as_deref()).await {
-            return Ok(back_with_error(&here, &error));
-        }
+        let added = match self.resize(&project, &service, wanted, &placement).await {
+            Ok(added) => added,
+            Err(error) => return Ok(back_with_error(&here, &error)),
+        };
+        // A copy the node chose lands on a machine nothing had pointed
+        // at yet, and that machine has to be told like any other.
+        touched.extend(added);
 
         self.dispatch(&project, &service, &account.id, touched)
             .await?;
@@ -4537,12 +4703,9 @@ impl ServiceApi {
         // from the node table rather than from the form, so a field
         // naming something that is not a public node cannot put a row
         // in.
-        let edge = crate::network::capability::Capability::Edge;
-        let public: Vec<String> = crate::network::all(&self.state.database)
+        let public: Vec<String> = crate::network::edge_candidates(&self.state.database)
             .await?
             .into_iter()
-            .filter(|node| node.may_be_edge())
-            .filter(|node| node.is_self || node.allows.contains(&edge))
             .map(|node| node.id)
             .collect();
         let chosen: Vec<String> = public
@@ -4709,8 +4872,8 @@ impl ServiceApi {
         project: &crate::platform::projects::Project,
         service: &services::Service,
         wanted: u32,
-        on: Option<&str>,
-    ) -> Result<(), String> {
+        on: &Placement,
+    ) -> Result<std::collections::BTreeSet<String>, String> {
         let service_id = &service.id;
         let placements = crate::platform::replicas::of_service(&self.state.database, service_id)
             .await
@@ -4763,10 +4926,85 @@ impl ServiceApi {
         // slots 1 and 3, which is already two copies. Filling
         // `1..=wanted` would put slot 2 back and undo the removal that
         // just happened — which is exactly what it did.
-        crate::platform::replicas::ensure_count(&self.state.database, service_id, wanted, on)
-            .await
-            .map_err(|error| error.to_string())?;
-        Ok(())
+        let before: std::collections::BTreeSet<String> =
+            crate::platform::replicas::of_service(&self.state.database, service_id)
+                .await
+                .map_err(|error| error.to_string())?
+                .into_iter()
+                .filter_map(|replica| replica.node_id)
+                .collect();
+
+        match on {
+            Placement::Named(node) => {
+                crate::platform::replicas::ensure_count(
+                    &self.state.database,
+                    service_id,
+                    wanted,
+                    node.as_deref(),
+                )
+                .await
+                .map_err(|error| error.to_string())?;
+            }
+            Placement::Anywhere => {
+                // Gathered once, and the copies added inside the loop are
+                // counted back in by the closure — otherwise every new
+                // copy lands on whichever machine was emptiest when the
+                // form was submitted, which is the opposite of spreading
+                // them.
+                let candidates = self.state.deployer.candidates(service).await;
+                let want = crate::deploy::planner::Want {
+                    memory: service.memory_limit,
+                    cpu: service.cpu_millicores,
+                    // A database's copies exist to be on different
+                    // machines; a web service's exist to be more of it.
+                    spread_required: service.kind.is_managed(),
+                };
+                let service_id_owned = service_id.clone();
+                crate::platform::replicas::ensure_count_where(
+                    &self.state.database,
+                    service_id,
+                    wanted,
+                    |existing| {
+                        let taken: Vec<&crate::platform::replicas::Replica> = existing
+                            .iter()
+                            .filter(|replica| replica.service_id == service_id_owned)
+                            .filter(|replica| !replica.evicted())
+                            .collect();
+                        let updated: Vec<crate::deploy::planner::Candidate> = candidates
+                            .iter()
+                            .cloned()
+                            .map(|mut candidate| {
+                                candidate.of_this_service = taken
+                                    .iter()
+                                    .filter(|replica| replica.node_id == candidate.node)
+                                    .count()
+                                    as u32;
+                                candidate
+                            })
+                            .collect();
+                        match crate::deploy::planner::choose(&updated, want) {
+                            crate::deploy::planner::Choice::Chosen { node, why } => {
+                                Ok((node, crate::platform::replicas::Placed::Planner, Some(why)))
+                            }
+                            crate::deploy::planner::Choice::Nowhere(reason) => Err(reason),
+                        }
+                    },
+                )
+                .await
+                .map_err(|error| error.to_string())?;
+            }
+        }
+
+        // Which machines are newly holding one, so the caller tells them.
+        Ok(
+            crate::platform::replicas::of_service(&self.state.database, service_id)
+                .await
+                .map_err(|error| error.to_string())?
+                .into_iter()
+                .filter_map(|replica| replica.node_id)
+                .filter(|node| !before.contains(node))
+                .collect(),
+        )
     }
 
     /// Ask every node holding a replica of this service to run it, and
@@ -4968,6 +5206,12 @@ impl ServiceApi {
             // stays running afterwards travels on its own, derived from
             // the row — see `Deployer::tell_holders`.
             running: true,
+            // The ceilings it runs under. Sent from the first
+            // instruction rather than left for the derived pass to
+            // correct, so the copy is never started once without them.
+            memory_limit: service.memory_limit,
+            cpu_millicores: service.cpu_millicores,
+            disk_limit: service.disk_limit,
         })
         .map_err(|error| error.to_string())?;
 
@@ -5207,6 +5451,8 @@ mod tests {
             cpu_millicores: None,
             following: None,
             wal_held: None,
+            placed_by: None,
+            placed_note: None,
         };
 
         // Through the renderer, which reads the one decision the stream
@@ -5427,6 +5673,8 @@ mod tests {
             cpu_millicores: None,
             following: None,
             wal_held: None,
+            placed_by: None,
+            placed_note: None,
         };
 
         // Every combination, including the input added last — a state
@@ -5950,6 +6198,8 @@ mod tests {
                 version: None,
                 wanted_version: None,
                 usage: None,
+                draining_at: None,
+                capacity: None,
                 id: "nd-elsewhere1".into(),
                 name: "alpine.example".into(),
                 kind: crate::network::Kind::Private,
@@ -6018,6 +6268,412 @@ mod tests {
         );
     }
 
+    /// "Wherever there is room" spreads the copies and says why on the
+    /// row.
+    ///
+    /// The end of the path the planner's own tests cannot reach: they
+    /// are pure and take candidates as given, and what this pins is that
+    /// the gathering half hands them the right ones and that what comes
+    /// back becomes an ordinary `replica`.
+    ///
+    /// **Two copies on two machines**, not two on the emptiest — the
+    /// spread is what a second copy is for. And each carries a sentence,
+    /// because a decision nobody can read is one nobody will run in
+    /// production.
+    #[tokio::test]
+    async fn copies_placed_anywhere_are_spread_and_say_why() {
+        let console = Console::new().await;
+        let cookie = console.signed_in().await;
+        let service = placed_service(&console, &cookie).await;
+
+        for (id, name, memory) in [
+            ("nd-roomy0001", "ubuntu", 900u64),
+            ("nd-tight0001", "alpine", 400u64),
+        ] {
+            crate::network::save(
+                &console.database,
+                &crate::network::Node {
+                    update_note: None,
+                    version: None,
+                    wanted_version: None,
+                    usage: None,
+                    draining_at: None,
+                    capacity: Some(crate::network::Capacity {
+                        memory_allocatable: memory * 1024 * 1024,
+                        memory_committed: 0,
+                        cpu_allocatable: 4_000,
+                        cpu_committed: 0,
+                        unbounded: 0,
+                    }),
+                    id: id.into(),
+                    name: name.into(),
+                    kind: crate::network::Kind::Private,
+                    endpoint: None,
+                    public_key: Some("k".into()),
+                    overlay_ip: Some(format!("10.42.0.{}", memory % 200)),
+                    is_self: false,
+                    last_seen_at: None,
+                    allows: vec![crate::network::capability::Capability::Host],
+                    ca_pem: None,
+                },
+            )
+            .await
+            .expect("node");
+        }
+
+        console
+            .harness
+            .post("/projects/shared/services/web/placement")
+            .header("cookie", &cookie)
+            .form(&[("replicas", "3"), ("new-on", ANYWHERE)])
+            .send()
+            .await
+            .assert_status(StatusCode::SEE_OTHER);
+
+        let placements = crate::platform::replicas::of_service(&console.database, &service.id)
+            .await
+            .expect("replicas");
+        assert_eq!(placements.len(), 3);
+
+        // Slot 1 was already here and placed by a person; the two the
+        // node added are the planner's, on the two other machines.
+        let added: Vec<&crate::platform::replicas::Replica> = placements
+            .iter()
+            .filter(|replica| replica.placed_by == Some(crate::platform::replicas::Placed::Planner))
+            .collect();
+        assert_eq!(added.len(), 2, "{placements:?}");
+
+        let mut on: Vec<&str> = added
+            .iter()
+            .filter_map(|replica| replica.node_id.as_deref())
+            .collect();
+        on.sort_unstable();
+        assert_eq!(
+            on,
+            vec!["nd-roomy0001", "nd-tight0001"],
+            "two copies landed on one machine"
+        );
+
+        for replica in &added {
+            let why = replica.placed_note.as_deref().unwrap_or_default();
+            assert!(!why.is_empty(), "a placement nobody can read: {replica:?}");
+            assert!(why.contains("free"), "{why}");
+        }
+
+        // And both machines were told, which is the half a placement
+        // written straight into the table would have skipped.
+        for node in ["nd-roomy0001", "nd-tight0001"] {
+            assert!(
+                !crate::network::errand::waiting(&console.database, node)
+                    .await
+                    .expect("waiting")
+                    .is_empty(),
+                "{node} was never told to run its copy"
+            );
+        }
+    }
+
+    /// Draining a node moves what this one put there, and says what it
+    /// could not move.
+    ///
+    /// **The operation every upgrade and every hardware failure needs.**
+    /// What it reports is rows moved *here*, never containers stopped
+    /// there: the far node stops when it next collects, which for a
+    /// machine that is down is whenever it comes back — so a console
+    /// claiming "drained" would be claiming something it cannot know.
+    #[tokio::test]
+    async fn draining_a_node_moves_what_this_one_put_there() {
+        let console = Console::new().await;
+        let cookie = console.signed_in().await;
+        let service = placed_service(&console, &cookie).await;
+
+        for (id, name) in [("nd-going0001", "leaving"), ("nd-staying001", "staying")] {
+            crate::network::save(
+                &console.database,
+                &crate::network::Node {
+                    update_note: None,
+                    version: None,
+                    wanted_version: None,
+                    usage: None,
+                    draining_at: None,
+                    capacity: Some(crate::network::Capacity {
+                        memory_allocatable: 900 * 1024 * 1024,
+                        memory_committed: 0,
+                        cpu_allocatable: 4_000,
+                        cpu_committed: 0,
+                        unbounded: 0,
+                    }),
+                    id: id.into(),
+                    name: name.into(),
+                    kind: crate::network::Kind::Private,
+                    endpoint: None,
+                    public_key: Some("k".into()),
+                    overlay_ip: Some(format!("10.42.0.{}", id.len())),
+                    is_self: false,
+                    last_seen_at: None,
+                    allows: vec![crate::network::capability::Capability::Host],
+                    ca_pem: None,
+                },
+            )
+            .await
+            .expect("node");
+        }
+
+        // One copy on the machine that is about to leave.
+        console
+            .harness
+            .post("/projects/shared/services/web/placement")
+            .header("cookie", &cookie)
+            .form(&[
+                ("replicas", "1"),
+                ("slot-1", "nd-going0001"),
+                ("new-on", ""),
+            ])
+            .send()
+            .await
+            .assert_status(StatusCode::SEE_OTHER);
+
+        console
+            .harness
+            .post("/network/nd-going0001/drain")
+            .header("cookie", &cookie)
+            .form(&[("draining", "on")])
+            .send()
+            .await
+            .assert_status(StatusCode::SEE_OTHER);
+
+        let placements = crate::platform::replicas::of_service(&console.database, &service.id)
+            .await
+            .expect("replicas");
+        assert_eq!(
+            placements[0].node_id.as_deref(),
+            Some("nd-staying001"),
+            "the copy stayed on the machine being emptied"
+        );
+        let why = placements[0].placed_note.as_deref().unwrap_or_default();
+        assert!(why.contains("moved off nd-going0001"), "{why}");
+
+        // The mark is a state, not an event: it outlives the press, so
+        // nothing chooses that machine again until somebody says so.
+        assert!(
+            crate::network::find(&console.database, "nd-going0001")
+                .await
+                .expect("query")
+                .expect("row")
+                .draining_at
+                .is_some(),
+            "the drain did not outlive the button"
+        );
+
+        // And the machine being emptied was told it now runs none of
+        // this — the instruction that is only ever built from the rows,
+        // where it no longer appears.
+        let told = crate::network::errand::waiting(&console.database, "nd-going0001")
+            .await
+            .expect("waiting");
+        let last: crate::network::errand::Host =
+            serde_json::from_value(told.last().expect("told").payload.clone())
+                .expect("a host errand");
+        assert!(
+            last.slots.is_empty(),
+            "the emptied node was not told it holds none of it: {last:?}"
+        );
+    }
+
+    /// Putting it back in service moves nothing, and stops the mark.
+    ///
+    /// Draining and undraining are not symmetrical on purpose: what came
+    /// off does not go back. A copy that moved is running somewhere now,
+    /// and moving it a second time to undo a decision would be an outage
+    /// nobody asked for — the mark is what changes, and the planner will
+    /// choose the machine again when it next has something to place.
+    #[tokio::test]
+    async fn putting_a_node_back_in_service_moves_nothing() {
+        let console = Console::new().await;
+        let cookie = console.signed_in().await;
+        crate::network::save(
+            &console.database,
+            &crate::network::Node {
+                update_note: None,
+                version: None,
+                wanted_version: None,
+                usage: None,
+                draining_at: Some(1),
+                capacity: None,
+                id: "nd-back000001".into(),
+                name: "back".into(),
+                kind: crate::network::Kind::Private,
+                endpoint: None,
+                public_key: Some("k".into()),
+                overlay_ip: Some("10.42.0.12".into()),
+                is_self: false,
+                last_seen_at: None,
+                allows: Vec::new(),
+                ca_pem: None,
+            },
+        )
+        .await
+        .expect("node");
+
+        console
+            .harness
+            .post("/network/nd-back000001/drain")
+            .header("cookie", &cookie)
+            .form(&[("draining", "off")])
+            .send()
+            .await
+            .assert_status(StatusCode::SEE_OTHER);
+
+        assert_eq!(
+            crate::network::find(&console.database, "nd-back000001")
+                .await
+                .expect("query")
+                .expect("row")
+                .draining_at,
+            None
+        );
+    }
+
+    /// Nowhere is a refusal on the form, never a quiet copy here.
+    ///
+    /// The failure this guards is the one `ensure_count(.., None)` still
+    /// has: no node named, so the copy lands on this machine whatever it
+    /// has left. Under the planner that would be a node quietly
+    /// over-committing itself with nothing having said so.
+    #[tokio::test]
+    async fn nowhere_to_put_a_copy_is_said_rather_than_placed_here() {
+        let console = Console::new().await;
+        let cookie = console.signed_in().await;
+        let service = placed_service(&console, &cookie).await;
+
+        // A ceiling no node could hold, and no other node on the
+        // network at all — so the only candidate is this one, whose
+        // meters read nothing on the machine the suite runs on.
+        crate::platform::services::set_memory_limit(
+            &console.database,
+            &service.id,
+            Some(64 * 1024 * 1024),
+        )
+        .await
+        .expect("ceiling");
+        crate::network::capability::set_provides(
+            &console.database,
+            crate::network::capability::Capability::Host,
+            false,
+        )
+        .await
+        .expect("this node runs nothing for anybody");
+
+        let response = console
+            .harness
+            .post("/projects/shared/services/web/placement")
+            .header("cookie", &cookie)
+            .form(&[("replicas", "2"), ("new-on", ANYWHERE)])
+            .send()
+            .await;
+        response.assert_status(StatusCode::SEE_OTHER);
+        let location = response.header("location").unwrap_or_default().to_string();
+        assert!(location.contains("error="), "{location}");
+        assert!(location.contains("nowhere"), "{location}");
+
+        assert_eq!(
+            crate::platform::replicas::of_service(&console.database, &service.id)
+                .await
+                .expect("replicas")
+                .len(),
+            1,
+            "a copy was placed here anyway"
+        );
+    }
+
+    /// Raising a ceiling reaches the machines running the copies.
+    ///
+    /// The derived instruction is built from a **fresh** read of the
+    /// row, not from the struct the caller was holding — the trap
+    /// `running` fell into and was fixed for, in the same place and for
+    /// the same reason: the resources form writes the number and then
+    /// asks for the dispatch, so a captured struct still carries the
+    /// value the operator had just changed away from. That reads as a
+    /// form that saved and did nothing.
+    #[tokio::test]
+    async fn a_ceiling_travels_to_the_node_running_the_copy() {
+        let console = Console::new().await;
+        let cookie = console.signed_in().await;
+        let service = placed_service(&console, &cookie).await;
+        crate::network::save(
+            &console.database,
+            &crate::network::Node {
+                update_note: None,
+                version: None,
+                wanted_version: None,
+                usage: None,
+                draining_at: None,
+                capacity: None,
+                id: "nd-elsewhere1".into(),
+                name: "alpine.example".into(),
+                kind: crate::network::Kind::Private,
+                endpoint: None,
+                public_key: Some("k".into()),
+                overlay_ip: Some("10.42.0.9".into()),
+                is_self: false,
+                last_seen_at: None,
+                allows: vec![crate::network::capability::Capability::Host],
+                ca_pem: None,
+            },
+        )
+        .await
+        .expect("node");
+
+        console
+            .harness
+            .post("/projects/shared/services/web/placement")
+            .header("cookie", &cookie)
+            .form(&[("replicas", "1"), ("slot-1", "nd-elsewhere1")])
+            .send()
+            .await
+            .assert_status(StatusCode::SEE_OTHER);
+
+        let ceiling = |payload: &serde_json::Value| {
+            serde_json::from_value::<crate::network::errand::Host>(payload.clone())
+                .expect("a host errand")
+                .memory_limit
+        };
+        // Placed with none, because the service has none.
+        let placed = crate::network::errand::waiting(&console.database, "nd-elsewhere1")
+            .await
+            .expect("waiting");
+        assert_eq!(ceiling(&placed[0].payload), None);
+
+        console
+            .harness
+            .post("/projects/shared/services/web/memory")
+            .header("cookie", &cookie)
+            .form(&[("memory", "256 MB"), ("cpu", "")])
+            .send()
+            .await
+            .assert_status(StatusCode::SEE_OTHER);
+
+        assert_eq!(
+            crate::platform::services::find(&console.database, &service.id)
+                .await
+                .expect("service")
+                .expect("row")
+                .memory_limit,
+            Some(256 * 1024 * 1024),
+            "the form did not write it, so the rest of this proves nothing"
+        );
+
+        let after = crate::network::errand::waiting(&console.database, "nd-elsewhere1")
+            .await
+            .expect("waiting");
+        let latest = after.last().expect("an instruction after the change");
+        assert_eq!(
+            ceiling(&latest.payload),
+            Some(256 * 1024 * 1024),
+            "the node running the copy was told the old number"
+        );
+    }
+
     /// The other half of the rule: an image in **this node's own**
     /// registry does travel with something to pull it, or the far node
     /// gets a 401 instead of a container.
@@ -6048,6 +6704,8 @@ mod tests {
                 version: None,
                 wanted_version: None,
                 usage: None,
+                draining_at: None,
+                capacity: None,
                 id: "nd-elsewhere2".into(),
                 name: "alpine.example".into(),
                 kind: crate::network::Kind::Private,
@@ -6100,6 +6758,8 @@ mod tests {
                 version: None,
                 wanted_version: None,
                 usage: None,
+                draining_at: None,
+                capacity: None,
                 id: "nd-elsewhere1".into(),
                 name: "alpine.example".into(),
                 kind: crate::network::Kind::Private,
@@ -7671,6 +8331,8 @@ mod tests {
                 version: None,
                 wanted_version: None,
                 usage: None,
+                draining_at: None,
+                capacity: None,
                 id: "nd-theedge".into(),
                 name: "edge.example".into(),
                 kind: crate::network::Kind::Public,
@@ -7764,6 +8426,8 @@ mod tests {
                     version: None,
                     wanted_version: None,
                     usage: None,
+                    draining_at: None,
+                    capacity: None,
                     id: id.into(),
                     name: name.into(),
                     kind: crate::network::Kind::Public,
@@ -7880,6 +8544,8 @@ mod tests {
                 version: None,
                 wanted_version: None,
                 usage: None,
+                draining_at: None,
+                capacity: None,
                 id: "nd-theedge".into(),
                 name: "edge.example".into(),
                 // Public with an endpoint, and it allows this node to ask

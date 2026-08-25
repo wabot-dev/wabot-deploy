@@ -33,6 +33,8 @@ pub mod people;
 pub mod projects;
 pub mod services;
 pub mod shell;
+pub mod tenant;
+pub mod tenants;
 pub mod updates;
 
 use std::sync::Arc;
@@ -121,10 +123,37 @@ impl ConsoleState {
     /// Where this console answers, for a link somebody has to paste
     /// somewhere else. Built from the node's own domain, because a
     /// link to `localhost` is one only the node can open.
-    pub(crate) async fn base_url(&self) -> String {
-        let host = crate::node::settings::domain(&self.database, &self.config)
-            .await
-            .unwrap_or_else(|| "localhost".into());
+    /// Where a link should send somebody, for the frontier they belong
+    /// to.
+    ///
+    /// **An invitation into an organisation has to land on that
+    /// organisation's own name.** Sent to the node's, the person signs
+    /// up and is bounced on their first click: their account is scoped
+    /// to the organisation, the `Host` says the node, and the session
+    /// middleware refuses a session whose scope does not match the door
+    /// it was presented at. A working link that leads nowhere is worse
+    /// than a broken one, because it looks like their fault.
+    ///
+    /// Falls back to the node's own name for an organisation with no
+    /// domain yet. That link works — the account is made — and the
+    /// console they belong to does not exist until somebody gives them
+    /// one, which is a thing the page says rather than something this
+    /// can fix.
+    pub(crate) async fn base_url_for(&self, tenant_id: Option<&str>) -> String {
+        let theirs = match tenant_id {
+            Some(id) => crate::platform::tenants::find(&self.database, id)
+                .await
+                .ok()
+                .flatten()
+                .and_then(|tenant| tenant.domain),
+            None => None,
+        };
+        let host = match theirs {
+            Some(domain) => domain,
+            None => crate::node::settings::domain(&self.database, &self.config)
+                .await
+                .unwrap_or_else(|| "localhost".into()),
+        };
         match self.config.edge.https_port {
             443 => format!("https://{host}"),
             port => format!("https://{host}:{port}"),
@@ -290,29 +319,96 @@ pub fn register(
         databases::DatabasePages,
         services::ServicePages,
         services::ServiceApi,
+        tenants::TenantPages,
+        tenants::TenantApi,
+        tenant::TenantPeoplePages,
+        tenant::TenantPeopleApi,
         updates::UpdatePages,
         updates::UpdateApi
     );
 }
 
-pub fn routes(container: &Container) -> Router {
-    let pages = wabot::ui::ui_router();
+/// The pages both frontiers share, and the reason the split is not
+/// total.
+///
+/// **A project and a service read the same either way.** "Deploy",
+/// "Replicas", "Logs" mean one thing whoever is looking, and the pages
+/// that say them are the largest in this console — one of them is nine
+/// thousand lines. Duplicating those to change nothing would be two
+/// copies to keep in agreement about everything except the frontier.
+///
+/// What is *not* shared is anything whose words are about **who runs
+/// this**: the people page, the settings, the shell's navigation. Those
+/// said "on this node" to somebody administering an organisation, and
+/// that is the mismatch this split exists for.
+fn shared(container: &Container, pages: Router, forms: Router) -> (Router, Router) {
     let pages = auth::AuthPages::register_ui_routes(container, pages);
     let pages = databases::DatabasePages::register_ui_routes(container, pages);
-    let pages = nodes::NodePages::register_ui_routes(container, pages);
-    let pages = people::PeoplePages::register_ui_routes(container, pages);
     let pages = projects::ProjectPages::register_ui_routes(container, pages);
     let pages = services::ServicePages::register_ui_routes(container, pages);
-    let pages = updates::UpdatePages::register_ui_routes(container, pages);
 
-    let forms = Router::new();
     let forms = auth::AuthApi::register_routes(container, forms);
     let forms = databases::DatabaseApi::register_routes(container, forms);
-    let forms = nodes::NodeApi::register_routes(container, forms);
-    let forms = people::PeopleApi::register_routes(container, forms);
     let forms = projects::ProjectApi::register_routes(container, forms);
     let forms = services::ServiceApi::register_routes(container, forms);
+    (pages, forms)
+}
+
+/// The console of the machine: everything above, plus what belongs to
+/// whoever runs the node.
+pub fn routes(container: &Container) -> Router {
+    let (pages, forms) = shared(container, wabot::ui::ui_router(), Router::new());
+
+    let pages = nodes::NodePages::register_ui_routes(container, pages);
+    let pages = people::PeoplePages::register_ui_routes(container, pages);
+    let pages = tenants::TenantPages::register_ui_routes(container, pages);
+    let pages = updates::UpdatePages::register_ui_routes(container, pages);
+
+    let forms = nodes::NodeApi::register_routes(container, forms);
+    let forms = people::PeopleApi::register_routes(container, forms);
+    let forms = tenants::TenantApi::register_routes(container, forms);
     let forms = updates::UpdateApi::register_routes(container, forms);
+
+    pages
+        .merge(forms)
+        .merge(embedded_assets(assets::MOUNT, assets::ASSETS))
+}
+
+/// The console of one organisation.
+///
+/// ## Removing this half
+///
+/// Rehearsed rather than asserted, 2026-08-25: the two controllers were
+/// deleted and the compiler was asked what it missed. **Three files, all
+/// of them wiring, and no controller of the machine's own console:**
+///
+/// - here — two module declarations, four registrations, this function;
+/// - `commands::serve` — one argument to `edge::build`;
+/// - `edge` — the `Upstream::Tenant` variant, the router beside the
+///   control plane, and the arm that dispatches to it. The variant is a
+///   compile error at every `match`, which is the right way for that one
+///   to be found.
+///
+/// `platform::tenants`, `platform::quotas` and the columns go with them
+/// and are read by nothing else. What stays behind is `tenant_id` on
+/// three rows, always NULL, which is what it meant before any of this.
+///
+/// **A second router rather than a second branch inside every
+/// handler.** The pages the machine's operator has are not registered
+/// here at all, so `/node`, `/updates` and `/organisations` do not
+/// exist in this frontier — a 404 by construction, which is a stronger
+/// thing than a redirect somebody has to remember to write.
+///
+/// What it does **not** get is a second answer to "may they": that
+/// stays in `platform::access`, one function, asked by both. Two page
+/// trees is what Jorge asked for and is right; two authorisations is
+/// the thing that would drift, and the one that shows somebody a
+/// project they were removed from.
+pub fn tenant_routes(container: &Container) -> Router {
+    let (pages, forms) = shared(container, wabot::ui::ui_router(), Router::new());
+
+    let pages = tenant::TenantPeoplePages::register_ui_routes(container, pages);
+    let forms = tenant::TenantPeopleApi::register_routes(container, forms);
 
     pages
         .merge(forms)
@@ -516,6 +612,140 @@ pub(crate) mod tests {
             1,
             "one <title>"
         );
+    }
+
+    /// The two halves are separable: no node-scope controller knows what
+    /// an organisation is.
+    ///
+    /// **Asked for by Jorge, and worth having as a test rather than an
+    /// intention**: if tenancy is ever removed, `console::tenant` and
+    /// `console::tenants` are deleted, their four registrations go, and
+    /// nothing else in this console has to be read. That is only true
+    /// while the controllers that serve the machine stay ignorant of the
+    /// other half — and it stopped being true within a day the first
+    /// time, when the people page grew `administers_scope`, a scope
+    /// selector and a cross-frontier check.
+    ///
+    /// A source scan rather than a type: the coupling this catches is a
+    /// *name* being reachable, and nothing in the type system objects to
+    /// a controller mentioning one.
+    ///
+    /// Two names are allowed through and both are deliberate. `Project`
+    /// carries a `tenant_id` column, so the word appears in whatever a
+    /// controller does with a project — which is why `is_the_nodes_own`
+    /// exists, and why the check is on `platform::tenants` and
+    /// `console::tenant` rather than on the substring.
+    #[test]
+    fn the_node_console_does_not_know_what_an_organisation_is() {
+        // Everything the machine's operator has that is not about
+        // sharing the machine out.
+        const NODE_SCOPE: &[(&str, &str)] = &[
+            ("people.rs", include_str!("people.rs")),
+            ("nodes.rs", include_str!("nodes.rs")),
+            ("updates.rs", include_str!("updates.rs")),
+            // Shared by both routers, and therefore held to the same
+            // rule: a page about a project or a service reads the same
+            // in either frontier.
+            ("projects.rs", include_str!("projects.rs")),
+            ("services.rs", include_str!("services.rs")),
+            ("databases.rs", include_str!("databases.rs")),
+        ];
+
+        let mut leaks = Vec::new();
+        for (name, source) in NODE_SCOPE {
+            for reach in [
+                "platform::tenants",
+                "console::tenant::",
+                "tenant_routes",
+                "TenantPeople",
+                "administers_scope",
+                "edge::Tenancy",
+            ] {
+                // Comments may name the other half — that is how the
+                // split is explained. Code may not reach into it.
+                for line in source.lines() {
+                    let code = line.split("//").next().unwrap_or("");
+                    if code.contains(reach) {
+                        leaks.push(format!("{name}: {}", line.trim()));
+                    }
+                }
+            }
+        }
+        leaks.sort();
+        leaks.dedup();
+        assert!(
+            leaks.is_empty(),
+            "the node's console reaches into tenancy in {} place(s), so the two \
+             halves are no longer separable:\n{}",
+            leaks.len(),
+            leaks.join("\n")
+        );
+    }
+
+    /// Every page an operator can open carries a stylesheet.
+    ///
+    /// **The two tests around this one ask `/setup` and stop there**, so
+    /// a page written afterwards was never looked at: `/organisations`
+    /// shipped with no `layout::head`, rendered its nav and its content
+    /// in the browser's default serif, and the suite stayed green. Jorge
+    /// found it by opening it.
+    ///
+    /// **Two halves, and the first version of this guard only caught
+    /// one.** `wabot.css` is the design system's tokens and arrives on a
+    /// `<link>`; the shell, the cards and every layout this console
+    /// invented are two `<style>` elements each view emits into its own
+    /// body through `layout::style_tag`. Adding the `<link>` and not the
+    /// `<style>` fixed the fonts and left the page in one column with an
+    /// unstyled topbar — which is how Jorge saw it the *second* time,
+    /// after this test had already been written and passed.
+    ///
+    /// A list rather than a crawl, because the routes are declared by a
+    /// macro and there is nothing to enumerate them from — so it is the
+    /// same shape as the source list in `es.rs` and carries the same
+    /// warning: **a guard that names its inputs is right until somebody
+    /// adds an input.** What it buys anyway is that the failure is one
+    /// forgotten line here instead of one forgotten line per page.
+    #[tokio::test]
+    async fn every_page_carries_the_stylesheet() {
+        let console = Console::new().await;
+        let cookie = console.signed_in().await;
+
+        const PAGES: &[&str] = &[
+            "/",
+            "/people",
+            "/organisations",
+            "/network",
+            "/node/domain",
+            "/updates",
+        ];
+        for path in PAGES {
+            let body = console
+                .harness
+                .get(path)
+                .header("cookie", &cookie)
+                .send()
+                .await
+                .body;
+            // A redirect has no head and needs none.
+            if body.trim().is_empty() {
+                continue;
+            }
+            assert!(
+                body.contains(&format!(
+                    r#"<link rel="stylesheet" href="{}/wabot.css">"#,
+                    assets::MOUNT
+                )),
+                "{path} renders without a stylesheet — its view is missing `layout::head`"
+            );
+            assert!(body.contains("<title>"), "{path} has no title");
+            // And the console's own CSS, which is the other half and the
+            // one that actually lays the page out.
+            assert!(
+                body.contains("<style>"),
+                "{path} renders without the console's own CSS — its view is missing \
+                 `layout::style_tag`"
+            );
+        }
     }
 
     /// The head is assembled from what the view declared through the

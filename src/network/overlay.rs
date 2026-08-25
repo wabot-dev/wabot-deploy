@@ -143,6 +143,8 @@ mod tests {
                 version: None,
                 wanted_version: None,
                 usage: None,
+                draining_at: None,
+                capacity: None,
                 id: id.into(),
                 name: id.into(),
                 kind: Kind::Private,

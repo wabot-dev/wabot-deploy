@@ -1,0 +1,31 @@
+-- Who put this copy here, and on what grounds.
+--
+-- **A placement is still a row.** Whatever a scheduler decides, the
+-- result is the same `replica` a person could have written by hand, and
+-- a person can still overrule it — that is the rule `docs/roadmap.md`
+-- §6 set before there was any scheduler to apply it to, and these two
+-- columns are what make it true rather than merely intended.
+--
+-- Without them the two are indistinguishable, and the consequence is
+-- not cosmetic: a scheduler that cannot tell its own decisions from
+-- somebody's would either move what a person deliberately pinned, or
+-- refuse to move anything and be no scheduler at all.
+--
+-- ## The note, and why it is a sentence
+--
+-- `placed_note` is one line saying why this node and not another —
+-- "most free memory of 3 candidates", "the only node that had agreed to
+-- run it". A decision nobody can read is a decision nobody will run in
+-- production, and the alternative to a sentence is an operator
+-- reconstructing the arithmetic from four pages.
+--
+-- ## NULL is "before this existed"
+--
+-- Every copy placed until now was placed by a person, through the form,
+-- so NULL could have been backfilled as `person`. It is not, and the
+-- distinction is worth the column being tri-state: `person` means
+-- somebody chose *this node*, which is a claim about intent, and a
+-- migration is not in a position to make it. What NULL and `person`
+-- share is that the scheduler leaves both alone.
+ALTER TABLE replica ADD COLUMN placed_by TEXT;
+ALTER TABLE replica ADD COLUMN placed_note TEXT;

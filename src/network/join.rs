@@ -125,6 +125,8 @@ pub async fn join(
         version: None,
         wanted_version: None,
         usage: None,
+        draining_at: None,
+        capacity: None,
         id: token.authority.clone(),
         name: token.name.clone(),
         // It has an address this node just reached, which is the whole

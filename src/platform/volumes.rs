@@ -324,6 +324,8 @@ mod tests {
             cpu_millicores: None,
             following: None,
             wal_held: None,
+            placed_by: None,
+            placed_note: None,
         };
 
         assert_eq!(

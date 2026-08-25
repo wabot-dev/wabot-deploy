@@ -613,6 +613,11 @@ async fn report_for(
         // be asked. The authority's page for this node showed nothing at
         // all before — it has no meters for a machine it cannot reach.
         usage: Some(usage(config)),
+        // And what it has left to promise, which the meter beside it
+        // cannot answer: a machine with little in use may have undertaken
+        // all of it. This is what a node placing a copy needs, and it
+        // could not be worked out from anywhere but here.
+        capacity: capacity(database, container).await,
         // The addresses this machine holds, read live like the usage
         // beside it. It is what lets a private sibling on the same LAN
         // dial this one at all — on the internet neither has an endpoint,
@@ -681,6 +686,38 @@ fn usage(config: &Config) -> super::Usage {
         disk_total: disk.filesystem.total,
         disk_free: disk.filesystem.available,
     }
+}
+
+/// What this node has left to promise, for the report.
+///
+/// The sibling of [`usage`] and a different question: used memory is
+/// what containers are touching right now, and this is what the node
+/// will *accept*. A machine with 200 MB in use may have undertaken every
+/// byte it has to services that happen to be idle, so a placement that
+/// read the meter would place onto a full machine.
+///
+/// **Allocatable is computed here, not there.** The reserve is this
+/// operator's setting, so what travels is the answer rather than the
+/// ingredients — a reader recomputing `total - default` would contradict
+/// the operator of a machine it does not administer.
+///
+/// `None` when there is no deployer, which is a node without containerd:
+/// it cannot say what it has promised, and saying zero would read as a
+/// machine with everything free. What cannot be measured is not
+/// enforced, and is not chosen either.
+async fn capacity(database: &SqliteDatabase, container: &Container) -> Option<super::Capacity> {
+    let deployer = container.try_resolve::<crate::deploy::Deployer>().ok()?;
+    let committed = deployer.committed().await;
+    let memory_reserve = crate::node::settings::memory_reserve(database).await;
+    let cpu_reserve = crate::node::settings::cpu_reserve(database).await;
+    let total = deployer.memory().await.total;
+    Some(super::Capacity {
+        memory_allocatable: crate::platform::presets::allocatable_memory(total, memory_reserve),
+        memory_committed: committed.memory,
+        cpu_allocatable: crate::node::cpu::allocatable_millicores(cpu_reserve),
+        cpu_committed: committed.cpu,
+        unbounded: u32::try_from(committed.unbounded).unwrap_or(u32::MAX),
+    })
 }
 
 /// Do what one errand says, or say why not.
@@ -1022,6 +1059,55 @@ async fn host_service(
             made
         }
     };
+
+    // **Whether this machine can keep the promise**, asked before the
+    // ceilings are written so `already` is still what this node had
+    // undertaken for this service a moment ago — the same arithmetic the
+    // local form does, from the same function.
+    //
+    // This is the admission that cannot be fooled. The console that
+    // placed the copy asks too, against what this node last reported,
+    // and that answer is an estimate by construction: it was true when
+    // the report was sent. Here the meters are the machine's own.
+    //
+    // **It refuses taking work on, never putting it down.** An errand
+    // with no slots, or one that says stop, is obeyed whatever the
+    // numbers say — a full node that could not be emptied is a node with
+    // no way out, and this is the shape the edge revocation already
+    // taught: consent is for taking work on. `slots` is what to run, so
+    // an empty one is a withdrawal.
+    if host.running && !host.slots.is_empty() {
+        if let Ok(deployer) = container.try_resolve::<crate::deploy::Deployer>() {
+            let wanted = host.slots.len() as u64;
+            if let Some(refusal) = deployer.rooms_here(&service).await.admits(
+                host.memory_limit,
+                host.cpu_millicores,
+                wanted,
+                "this node",
+            ) {
+                return Err(refusal);
+            }
+        }
+    }
+
+    // The ceilings the copy runs under, written straight through
+    // whatever they say — including `None`, which is the owner clearing
+    // one and has to travel like any other change.
+    //
+    // Before this they did not travel at all: a copy placed here ran
+    // with no `memory.max` and no `cpu.max`, able to take this machine,
+    // and `committed` could not count what it had never been told about.
+    // Written before the replicas, so the copy cannot be reconciled into
+    // existence for even a moment without its ceiling.
+    services::set_memory_limit(database, &service.id, host.memory_limit)
+        .await
+        .map_err(|error| error.to_string())?;
+    services::set_cpu_limit(database, &service.id, host.cpu_millicores)
+        .await
+        .map_err(|error| error.to_string())?;
+    services::set_disk_limit(database, &service.id, host.disk_limit)
+        .await
+        .map_err(|error| error.to_string())?;
 
     // What the container listens on, so this node has something to
     // bind on its overlay address for the edge that will proxy to it.
@@ -1460,6 +1546,17 @@ async fn ensure_project(
     // adopted: quietly marking somebody's own project as foreign would
     // take their own work away from them, and it is exactly the kind of
     // thing nobody would look for afterwards.
+    //
+    // **And two organisations cannot both land one here**, which is a
+    // limit rather than a bug and is worth knowing where somebody will
+    // look for it. The name is matched across the whole node, so the
+    // second is refused with a sentence naming who holds the first — it
+    // is never merged, which is the outcome that would actually lose
+    // work. Lifting it means the project *slug* becoming unique per
+    // organisation instead of per node, and the slug is what every URL
+    // in this console addresses a project by: `/projects/orders` would
+    // stop naming one thing. That is a change to how the console is
+    // addressed, not a change here.
     if let Some(project) = existing {
         return match project.origin_node_id.as_deref() {
             Some(origin) if origin == authority => Ok(project),
@@ -1519,6 +1616,8 @@ mod tests {
                 version: None,
                 wanted_version: None,
                 usage: None,
+                draining_at: None,
+                capacity: None,
                 id: "nd-up".into(),
                 name: "up.example".into(),
                 kind: crate::network::Kind::Public,
@@ -2343,6 +2442,230 @@ mod tests {
         assert!(error.contains("not a host errand"), "{error}");
     }
 
+    /// Two organisations sending one project name are refused, never
+    /// merged.
+    ///
+    /// **Merging is the outcome that loses work**: two unrelated
+    /// customers' services under one project, each able to see and stop
+    /// the other's, with nothing on any page saying it had happened. A
+    /// refusal naming who holds the name is a thing somebody acts on.
+    ///
+    /// The limit it leaves is real and written down where the code is:
+    /// the second organisation cannot land a project called `orders`
+    /// here at all. Lifting that means the slug becoming unique per
+    /// organisation rather than per node, and the slug is what every URL
+    /// addresses a project by.
+    #[tokio::test]
+    async fn two_authorities_cannot_land_one_project_name() {
+        let database = crate::db::open_in_memory().await.expect("open");
+
+        let first = ensure_project(&database, "orders", "nd-acme000001")
+            .await
+            .expect("the first lands");
+        assert_eq!(first.origin_node_id.as_deref(), Some("nd-acme000001"));
+
+        let refused = ensure_project(&database, "orders", "nd-globex0001")
+            .await
+            .expect_err("the second is refused");
+        assert!(refused.contains("nd-acme000001"), "{refused}");
+
+        // And nothing was taken from the first.
+        assert_eq!(
+            projects::all(&database).await.expect("projects").len(),
+            1,
+            "a second project appeared, or the first was rewritten"
+        );
+        assert_eq!(
+            projects::find(&database, &first.id)
+                .await
+                .expect("query")
+                .expect("row")
+                .origin_node_id
+                .as_deref(),
+            Some("nd-acme000001"),
+        );
+    }
+
+    /// And this node's own project is never adopted by an errand.
+    #[tokio::test]
+    async fn an_errand_does_not_take_over_this_nodes_own_project() {
+        let database = crate::db::open_in_memory().await.expect("open");
+        let mine = projects::create(&database, "orders")
+            .await
+            .expect("this node's own");
+
+        let refused = ensure_project(&database, "orders", "nd-somebody01")
+            .await
+            .expect_err("refused");
+        assert!(refused.contains("of its own"), "{refused}");
+        assert!(
+            projects::find(&database, &mine.id)
+                .await
+                .expect("query")
+                .expect("row")
+                .is_ours(),
+            "somebody else's errand took this node's project"
+        );
+    }
+
+    /// A withdrawal is never refused for want of room.
+    ///
+    /// **The check at the door refuses taking work on, never putting it
+    /// down.** An errand with no slots means "take this off that
+    /// machine" and one that says stop means stop; both have to be
+    /// obeyed whatever the numbers say, or a node that filled up has no
+    /// way out and the owner doing the right thing is the one refused.
+    ///
+    /// It is the shape the edge revocation already taught, one resource
+    /// along: the grant was asked for before the errand was read, so
+    /// revoking it blocked the empty-upstream errand that exists to clean
+    /// up. Consent is for taking work on; so is room.
+    ///
+    /// **The refusing half cannot be asserted here**, and the reason is
+    /// worth knowing before somebody tries: the door asks this machine's
+    /// own meters, `node::memory::read` reads `/proc/meminfo`, and on the
+    /// laptop the suite runs on there is none — so `known` is false and
+    /// nothing is enforced, which is the documented behaviour and not a
+    /// gap. The arithmetic is pinned by `Rooms::admits` where it is pure,
+    /// and that it refuses at all is a node run.
+    #[tokio::test]
+    async fn a_withdrawal_is_never_refused_for_want_of_room() {
+        let database = std::sync::Arc::new(crate::db::open_in_memory().await.expect("open"));
+        let config = Config::default();
+        let container = Container::new();
+        // With a deployer, or the check is skipped for want of meters and
+        // this test would pass against no check at all.
+        container.register_instance::<crate::deploy::Deployer>(std::sync::Arc::new(
+            crate::deploy::Deployer::new(database.clone(), &config),
+        ));
+        let database = &*database;
+
+        // Nothing this node can promise, so anything that asks for room
+        // is refused. A reserve larger than the machine is the smallest
+        // way to say "full" without needing a machine of a particular
+        // size.
+        crate::node::settings::set_memory_reserve(database, Some(u64::MAX))
+            .await
+            .expect("reserve");
+
+        let errand = |slots: Vec<u32>, running: bool| errand::Host {
+            project: "shared".into(),
+            service: "web".into(),
+            image: "hub.example.com/proj/app@sha256:aaa".into(),
+            registry: "hub.example.com".into(),
+            username: None,
+            secret: None,
+            env: Default::default(),
+            port: None,
+            slots,
+            running,
+            memory_limit: Some(512 * 1024 * 1024),
+            cpu_millicores: None,
+            disk_limit: None,
+        };
+
+        // Both spellings of putting it down: hold none of it, and stop
+        // what you hold.
+        //
+        // Asserted on the *reason* rather than on success, because there
+        // is no containerd here and stopping a container reaches for one.
+        // What this pins is that room is never why — a withdrawal that
+        // failed for want of space is the hole this guards.
+        for instruction in [errand(Vec::new(), true), errand(vec![1], false)] {
+            if let Err(error) =
+                host_service(database, &config, &container, "nd-authority", instruction).await
+            {
+                assert!(
+                    !error.contains("does not fit"),
+                    "a full node refused to be emptied: {error}"
+                );
+            }
+        }
+    }
+
+    /// A copy placed here runs under the ceilings it was placed with.
+    ///
+    /// **They did not travel at all.** `errand::Host` carried the image,
+    /// the environment, the port and the slots, and neither ceiling — so
+    /// a copy on somebody else's machine ran with no `memory.max` and no
+    /// `cpu.max`, free to take that machine. Worse quietly: that node's
+    /// `committed` sums the ceilings on the rows it holds, so the copy
+    /// did not count against what it had left to promise, and the node
+    /// had no idea it had promised anything.
+    ///
+    /// The second half is the one that would have been left out. An
+    /// absent ceiling is a real instruction — the owner cleared it — and
+    /// a receiver that only ever wrote `Some` would hold the old number
+    /// for ever, refusing work on the strength of a reservation nobody
+    /// still wanted.
+    #[tokio::test]
+    async fn a_copy_runs_under_the_ceilings_it_was_placed_with() {
+        let database = crate::db::open_in_memory().await.expect("open");
+        let config = Config::default();
+        let container = Container::new();
+
+        // `running: false` so this ends at the intent rather than at a
+        // deployment: there is no containerd here, and what is being
+        // pinned is the rows the instruction writes on the way past.
+        let errand = |memory, cpu| errand::Host {
+            project: "shared".into(),
+            service: "web".into(),
+            image: "hub.example.com/proj/app@sha256:aaa".into(),
+            registry: "hub.example.com".into(),
+            username: None,
+            secret: None,
+            env: Default::default(),
+            port: None,
+            slots: vec![1],
+            running: false,
+            memory_limit: memory,
+            cpu_millicores: cpu,
+            disk_limit: None,
+        };
+
+        let ceilings = || async {
+            let project = crate::platform::projects::all(&database)
+                .await
+                .expect("projects")
+                .into_iter()
+                .find(|project| project.slug == "shared")
+                .expect("the project the errand made");
+            let service = services::in_project(&database, &project.id, "web")
+                .await
+                .expect("services")
+                .expect("the service the errand made");
+            (service.memory_limit, service.cpu_millicores)
+        };
+
+        host_service(
+            &database,
+            &config,
+            &container,
+            "nd-authority",
+            errand(Some(256 * 1024 * 1024), Some(500)),
+        )
+        .await
+        .expect("carried out");
+        assert_eq!(ceilings().await, (Some(256 * 1024 * 1024), Some(500)));
+
+        // And the owner clearing them reaches here too, rather than the
+        // copy keeping a reservation nobody asked for any more.
+        host_service(
+            &database,
+            &config,
+            &container,
+            "nd-authority",
+            errand(None, None),
+        )
+        .await
+        .expect("carried out again");
+        assert_eq!(
+            ceilings().await,
+            (None, None),
+            "an absent ceiling is an instruction, not a gap"
+        );
+    }
+
     /// The same errand twice points one service at the image rather
     /// than making a second beside it — which is what a re-handed
     /// errand has to mean, since the far end hands one over again
@@ -2366,6 +2689,9 @@ mod tests {
                 port: None,
                 slots: vec![1],
                 running: true,
+                memory_limit: None,
+                cpu_millicores: None,
+                disk_limit: None,
             };
             // The rows, without the queue — `run_command` wants a
             // container this test has no reason to build, and what is

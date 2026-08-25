@@ -11,10 +11,11 @@
 //! else is the phase that comes next. The `allow`s below name the
 //! handful of operations that page is what calls.
 
+use serde::Serialize;
 use wabot::sqlite::rusqlite::{OptionalExtension, Row};
 use wabot::sqlite::SqliteDatabase;
 
-use super::{now_ms, PlatformResult};
+use super::{now_ms, PlatformError, PlatformResult};
 
 /// One placement of a service.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -75,6 +76,43 @@ pub struct Replica {
     /// Write-ahead log the primary is holding for this copy's slot, in
     /// bytes. The consequence of not following, rather than the symptom.
     pub wal_held: Option<u64>,
+    /// Who put this copy on this node, and on what grounds.
+    ///
+    /// `Some(Placed::Planner)` with a sentence beside it is the
+    /// scheduler's; anything else is a person's, and **a person's is
+    /// never moved by the scheduler**. See migration `0052`.
+    pub placed_by: Option<Placed>,
+    pub placed_note: Option<String>,
+}
+
+/// Who decided where a copy runs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Placed {
+    /// Somebody named this node. Never moved automatically.
+    Person,
+    /// The scheduler chose it, and `placed_note` says why.
+    Planner,
+}
+
+impl Placed {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Placed::Person => "person",
+            Placed::Planner => "planner",
+        }
+    }
+
+    /// Unknown reads as a person's, which is the safer of the two: the
+    /// scheduler leaves it alone. A row written by a newer node naming a
+    /// decider this one has never heard of must not become something
+    /// this version feels free to move.
+    pub fn parse(text: &str) -> Self {
+        match text {
+            "planner" => Placed::Planner,
+            _ => Placed::Person,
+        }
+    }
 }
 
 impl Replica {
@@ -152,6 +190,31 @@ pub async fn ensure_count(
     wanted: u32,
     node: Option<&str>,
 ) -> PlatformResult<Vec<Replica>> {
+    ensure_count_where(database, service_id, wanted, |_| {
+        Ok((node.map(str::to_string), Placed::Person, None))
+    })
+    .await
+}
+
+/// The same, with somewhere to ask about each new slot.
+///
+/// **Per slot rather than once.** The parameter above is one node for
+/// every copy the form adds, which is the right shape for a person who
+/// picked a machine and the wrong one for anything deciding: two copies
+/// belong on two machines, and a decision made once cannot say that.
+///
+/// `decide` is handed the copies as they stand — including the ones this
+/// loop has just added, which is what stops it choosing the same machine
+/// twice.
+pub async fn ensure_count_where<F>(
+    database: &SqliteDatabase,
+    service_id: &str,
+    wanted: u32,
+    decide: F,
+) -> PlatformResult<Vec<Replica>>
+where
+    F: Fn(&[Replica]) -> Result<(Option<String>, Placed, Option<String>), String>,
+{
     loop {
         let existing = of_service(database, service_id).await?;
         if existing.len() as u32 >= wanted {
@@ -160,7 +223,16 @@ pub async fn ensure_count(
         let free = (1u32..)
             .find(|slot| !existing.iter().any(|replica| replica.slot == *slot))
             .expect("the naturals do not run out");
-        place(database, service_id, node, free).await?;
+        let (node, by, note) = decide(&existing).map_err(PlatformError::Refused)?;
+        place_by(
+            database,
+            service_id,
+            node.as_deref(),
+            free,
+            by,
+            note.as_deref(),
+        )
+        .await?;
     }
 }
 
@@ -193,12 +265,28 @@ pub async fn ensure_slots(
 }
 
 /// Put one replica in a slot, on a node or here.
+///
+/// A person's decision, which is what the plain call means: `place_by`
+/// is where the scheduler goes, and the difference is a column because
+/// **the scheduler must never move what a person pinned**.
 #[allow(dead_code)]
 pub async fn place(
     database: &SqliteDatabase,
     service_id: &str,
     node_id: Option<&str>,
     slot: u32,
+) -> PlatformResult<Replica> {
+    place_by(database, service_id, node_id, slot, Placed::Person, None).await
+}
+
+/// The same, saying who decided and why.
+pub async fn place_by(
+    database: &SqliteDatabase,
+    service_id: &str,
+    node_id: Option<&str>,
+    slot: u32,
+    by: Placed,
+    note: Option<&str>,
 ) -> PlatformResult<Replica> {
     let replica = Replica {
         id: format!("rp-{}", wabot::prelude::password::generate(12)),
@@ -215,6 +303,8 @@ pub async fn place(
         cpu_millicores: None,
         following: None,
         wal_held: None,
+        placed_by: Some(by),
+        placed_note: note.map(str::to_string),
     };
 
     let row = replica.clone();
@@ -222,9 +312,18 @@ pub async fn place(
         .write(move |connection| {
             connection.execute(
                 "INSERT INTO replica \
-                   (\"id\", \"service_id\", \"node_id\", \"slot\", \"created_at\") \
-                 VALUES (?1, ?2, ?3, ?4, ?5)",
-                (row.id, row.service_id, row.node_id, row.slot, now_ms()),
+                   (\"id\", \"service_id\", \"node_id\", \"slot\", \"created_at\", \
+                    \"placed_by\", \"placed_note\") \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                (
+                    row.id,
+                    row.service_id,
+                    row.node_id,
+                    row.slot,
+                    now_ms(),
+                    row.placed_by.map(|by| by.as_str()),
+                    row.placed_note,
+                ),
             )?;
             Ok(())
         })
@@ -244,7 +343,31 @@ pub async fn move_to(
     id: &str,
     node_id: Option<&str>,
 ) -> PlatformResult<()> {
-    let (id, node_id) = (id.to_string(), node_id.map(str::to_string));
+    move_to_by(database, id, node_id, Placed::Person, None).await
+}
+
+/// The same, recording who moved it and why.
+///
+/// A drain moves copies a person placed, which is the one case where the
+/// node overrules `placed_by` — and it says so on the row rather than
+/// quietly taking ownership of the decision. **Draining is a person's
+/// instruction about a machine**, so what it does to the copies on that
+/// machine is still theirs; what changes is that the note now says where
+/// it came from and why, instead of leaving somebody to work out why
+/// their pinned copy moved.
+pub async fn move_to_by(
+    database: &SqliteDatabase,
+    id: &str,
+    node_id: Option<&str>,
+    by: Placed,
+    note: Option<&str>,
+) -> PlatformResult<()> {
+    let (id, node_id, by, note) = (
+        id.to_string(),
+        node_id.map(str::to_string),
+        by.as_str(),
+        note.map(str::to_string),
+    );
     database
         .write(move |connection| {
             // Moving clears where it was: the address belonged to the
@@ -252,8 +375,9 @@ pub async fn move_to(
             // a fact about where it is going.
             connection.execute(
                 "UPDATE replica SET \"node_id\" = ?2, \"address\" = NULL, \
-                 \"last_error\" = NULL, \"evicted_at\" = NULL WHERE \"id\" = ?1",
-                (id, node_id),
+                 \"last_error\" = NULL, \"evicted_at\" = NULL, \
+                 \"placed_by\" = ?3, \"placed_note\" = ?4 WHERE \"id\" = ?1",
+                (id, node_id, by, note),
             )?;
             Ok(())
         })
@@ -649,7 +773,7 @@ pub async fn remove(database: &SqliteDatabase, id: &str) -> PlatformResult<()> {
 const COLUMNS: &str = "\"id\", \"service_id\", \"node_id\", \"slot\", \"address\", \
                        \"last_error\", \"evicted_at\", \"overlay_port\", \"reserved_host\", \
                        \"memory_bytes\", \"disk_bytes\", \"cpu_millicores\", \"following\", \
-                       \"wal_held\"";
+                       \"wal_held\", \"placed_by\", \"placed_note\"";
 
 fn decode(row: &Row<'_>) -> wabot::sqlite::rusqlite::Result<Replica> {
     Ok(Replica {
@@ -669,6 +793,10 @@ fn decode(row: &Row<'_>) -> wabot::sqlite::rusqlite::Result<Replica> {
             .get::<_, Option<i64>>(12)?
             .map(|following| following != 0),
         wal_held: row.get::<_, Option<i64>>(13)?.map(|bytes| bytes as u64),
+        placed_by: row
+            .get::<_, Option<String>>(14)?
+            .map(|who| Placed::parse(&who)),
+        placed_note: row.get(15)?,
     })
 }
 
@@ -731,6 +859,8 @@ mod tests {
             cpu_millicores: None,
             following: None,
             wal_held: None,
+            placed_by: None,
+            placed_note: None,
         };
 
         assert_eq!(replica(1).container_id("demo", "web"), "demo.web");

@@ -46,6 +46,7 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
         " proyectos propios, y tiene que soltarlos antes de poder apagar esto.",
     ),
     (" on this disk.", " en este disco."),
+    (" project(s)", " proyecto(s)"),
     (" values", " valores"),
     (" values · ", " valores · "),
     (" volume(s)", " volumen(es)"),
@@ -71,6 +72,7 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
         ", y todavía ningún log posterior. Un minuto de escrituras es lo que produce el primer segmento.",
     ),
     (", never in this node's database: a key that can read every backup in the network must not be inside the thing being backed up. A backup holds the database, the volumes and the images — it does not hold that file.", ", nunca en la base de datos de este nodo: una clave que puede leer todos los backups de la red no debe estar dentro de lo que se respalda. Un backup contiene la base de datos, los volúmenes y las imágenes — no contiene ese fichero."),
+    (". New copies go elsewhere. The ones already moved stop on that machine when it next collects its instructions — which for a node that is down is whenever it comes back.", ". Las copias nuevas van a otro sitio. Las que ya se movieron paran en esa máquina cuando recoja sus instrucciones — que para un nodo caído es cuando vuelva."),
     ("1 value", "1 valor"),
     ("A backup did not work", "Un backup no funcionó"),
     ("A backup from ", "Un backup de "),
@@ -105,6 +107,7 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
         "A key and an address appear the first time this node enrols another one or joins one itself. The overlay is what carries traffic between nodes — an edge here reaching a container that runs somewhere else.",
         "La clave y la dirección aparecen la primera vez que este nodo enrola a otro o se une a uno. La overlay es lo que lleva el tráfico entre nodos — un edge de aquí llegando a un contenedor que corre en otro sitio.",
     ),
+    ("A link that works once and expires in seven days. They choose their own username and password.", "Un enlace que funciona una vez y caduca en siete días. Eligen su propio usuario y su contraseña."),
     (
         "A new copy is created on the node you pick, rather than here and moved after — which would start a container on this machine and stop it again for nothing. Removing takes the ones already thrown out first, then the highest-numbered; the node running one is told to stop it.",
         "Una copia nueva se crea en el nodo que elijas, en vez de aquí y moverla después — lo que arrancaría un contenedor en esta máquina para pararlo acto seguido sin motivo. Al quitar se van primero las ya expulsadas, luego las de número más alto; al nodo que corre una se le dice que la pare.",
@@ -150,6 +153,8 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
     ("Add", "Añadir"),
     ("Add port", "Añadir puerto"),
     ("Address", "Dirección"),
+    ("Administrator", "Administrador"),
+    ("Administrator — every project of this organisation", "Administrador — todos los proyectos de esta organización"),
     ("Administrator — everything", "Administrador — todo"),
     ("Allowed", "Permitido"),
     (
@@ -161,6 +166,7 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
         "Ejemplo de cómo hacer push a este servicio. Como prerrequisito debes hacer login con un token, que puedes generar en",
     ),
     ("An instruction was refused", "Una instrucción fue rechazada"),
+    ("An organisation's own people reach its projects and nothing else. This is the only way into one — an organisation with nobody in it cannot invite anybody either.", "La gente propia de una organización alcanza sus proyectos y nada más. Ésta es la única forma de entrar en una — una organización sin nadie dentro tampoco puede invitar a nadie."),
     ("And offer it, in return:", "Y ofrecerle, a cambio:"),
     ("Answer for hostnames", "Responder por nombres"),
     ("Answer for its hostnames from this node", "Responder por sus nombres desde este nodo"),
@@ -256,6 +262,7 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
         "Núcleos, como 0.5, o milicores con una m. Vacío es el valor por defecto, un cuarto de núcleo.",
     ),
     ("Could not read the release list: ", "No se pudo leer la lista de versiones: "),
+    ("Create", "Crear"),
     ("Create account", "Crear cuenta"),
     ("Create administrator", "Crear administrador"),
     ("Create database", "Crear base de datos"),
@@ -271,6 +278,7 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
     ("Day", "Día"),
     ("Days. Everything inside the window costs disk and everything outside it is gone — an hourly pass drops the backups that have expired, and the log no surviving backup needs. The oldest one is kept until a newer one can anchor the window, so it is never shorter than it says.", "Días. Todo lo que cae dentro de la ventana cuesta disco y todo lo que queda fuera se ha ido — una pasada cada hora quita los backups caducados y el log que ningún backup superviviente necesita. El más antiguo se guarda hasta que otro más nuevo pueda anclar la ventana, así que nunca es más corta de lo que dice."),
     ("Delete database and its data", "Eliminar la base de datos y sus datos"),
+    ("Delete organisation", "Eliminar organización"),
     ("Delete project", "Borrar proyecto"),
     ("Delete service", "Borrar servicio"),
     (
@@ -297,8 +305,11 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
     ("Done", "Hecho"),
     ("Download", "Descarga"),
     ("Download the authority", "Descargar la autoridad"),
+    ("Drain", "Drenar"),
+    ("Draining since ", "Drenando desde "),
     ("Earlier attempts", "Intentos anteriores"),
     ("Empty for Amazon's own S3. For anything else, the URL the provider gives you — and with one set, buckets are addressed as a path rather than a subdomain, which is what MinIO and most of the others want.", "Vacío para el S3 de Amazon. Para cualquier otro, la URL que da el proveedor — y con una puesta, los buckets se direccionan como ruta y no como subdominio, que es lo que quieren MinIO y casi todos los demás."),
+    ("Empty is no ceiling. Memory like 512 MB or 2 GB; CPU in cores like 0.5 or 2, or millicores with an m, like 500m. What a service may take is what counts against this, summed over every copy wherever it runs — the limit is the reservation, here as everywhere else.", "Vacío es sin techo. Memoria como 512 MB o 2 GB; CPU en núcleos como 0.5 o 2, o en millicores con una m, como 500m. Lo que un servicio puede tomar es lo que cuenta contra esto, sumado sobre cada copia dondequiera que corra — el límite es la reserva, aquí como en todo lo demás."),
     (
         "Empty keeps two rotations behind the live file. No log file passes 8 MB, so that is 24 MB for a copy that has restarted twice.",
         "Vacío guarda dos rotaciones detrás del archivo en vivo. Ningún archivo de log pasa de 8 MB, así que son 24 MB para una copia que haya reiniciado dos veces.",
@@ -314,8 +325,10 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
         "Every container in this project resolves that name, on any node holding a copy — whether or not anything is exposed.",
         "Cada contenedor de este proyecto resuelve ese nombre, en cualquier nodo que sostenga una copia — se exponga algo o no.",
     ),
+    ("Every copy of a database on one machine", "Todas las copias de una base en una máquina"),
     ("Every day", "Cada día"),
     ("Every week", "Cada semana"),
+    ("Everybody in this organisation. What they can reach is its projects and nothing else on this machine.", "Todo el mundo en esta organización. Lo que alcanzan son sus proyectos y nada más de esta máquina."),
     ("Everything kept", "Todo lo guardado"),
     ("Evicted there", "Expulsada allí"),
     ("Expired", "Caducada"),
@@ -374,16 +387,21 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
     ("Id", "Id"),
     ("Image", "Imagen"),
     ("Image, if you have one", "Imagen, si ya tienes una"),
+    ("In it", "En ella"),
+    ("In this organisation", "En esta organización"),
     ("Inside the container", "Dentro del contenedor"),
     ("Inside the project", "Dentro del proyecto"),
     ("Install", "Instalar"),
     ("Install this release", "Instalar esta versión"),
     ("Installed", "Instalada"),
     ("Installing", "Instalando"),
+    ("Into", "En"),
     ("Into a project", "En un proyecto"),
     ("Invitations", "Invitaciones"),
+    ("Invitations waiting", "Invitaciones pendientes"),
     ("Invite a node", "Invitar un nodo"),
     ("Invite somebody", "Invitar a alguien"),
+    ("Invite somebody to this organisation", "Invitar a alguien a esta organización"),
     ("Issuer", "Emisor"),
     (
         "It can ask this node to terminate TLS for one of its names and proxy to wherever that service runs.",
@@ -405,6 +423,8 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
         "It has no address yet. A connection string appears once it has been deployed.",
         "Todavía no tiene dirección. La cadena de conexión aparece cuando se haya desplegado.",
     ),
+    ("It has no domain yet, so the link will be on this node's name — the account is made, and the console it belongs to exists once you give the organisation one.", "Todavía no tiene dominio, así que el enlace irá con el nombre de este nodo — la cuenta se crea, y la consola a la que pertenece existe en cuanto le des uno a la organización."),
+    ("It has no projects yet. Whoever you invite as an administrator can make the first one.", "Todavía no tiene proyectos. Quien invites como administrador puede crear el primero."),
     (
         "It has not said. A node that has never reported a version is either older than this or has not been heard from — asking it to catch up is what finds out which.",
         "No lo ha dicho. Un nodo que nunca reportó una versión es más viejo que esto o no se ha sabido de él: pedirle que se ponga al día es lo que averigua cuál de las dos.",
@@ -437,6 +457,7 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
         "Funciona una vez y caduca en siete días. El nodo no volverá a mostrarla — no se guarda de una forma que nadie pueda leer.",
     ),
     ("Its domain", "Su dominio"),
+    ("Its projects and its people are its own: an administrator of one reaches nothing outside it, and this node's operator still sees everything the machine is running. Give it a domain to bring up its console.", "Sus proyectos y su gente son suyos: un administrador de una no alcanza nada fuera de ella, y el operador de este nodo sigue viendo todo lo que corre la máquina. Dale un dominio para levantar su consola."),
     ("Join", "Unirse"),
     ("Join a network", "Unirse a una red"),
     ("Join token", "Token de unión"),
@@ -489,6 +510,8 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
     ("Make a member", "Hacer miembro"),
     ("Make an administrator", "Hacer administrador"),
     ("May", "Puede"),
+    ("Member", "Miembro"),
+    ("Member — the projects they are added to", "Miembro — los proyectos a los que se le añada"),
     ("Member — their own projects", "Miembro — sus propios proyectos"),
     ("Memory", "Memoria"),
     (
@@ -496,6 +519,7 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
         "Memoria: unos 0,3 MB de memoria privada por copia. `top` mostrará más bien 8 MB, y casi todo eso es el código de este mismo binario compartido con todos los demás procesos de wabot-deploy de la máquina — incluido el nodo. Medido aquí, en un servicio real.",
     ),
     ("Monday", "Lunes"),
+    ("Moves the copies this node put there to somewhere with room, and stops choosing it for new ones. Copies that arrived from another node are not this one's to move; a database copy that accepts writes is named rather than moved, because promoting is a decision somebody makes.", "Mueve las copias que este nodo puso allí a algún sitio con espacio, y deja de elegirlo para las nuevas. Las copias que llegaron de otro nodo no son de este para moverlas; una copia de base de datos que acepta escrituras se nombra en vez de moverse, porque promover es una decisión que toma alguien."),
     ("Name", "Nombre"),
     ("Names", "Nombres"),
     (
@@ -511,6 +535,7 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
     ("Never — I take them myself", "Nunca — los hago yo"),
     ("New", "Nuevo"),
     ("New ones on", "Las nuevas en"),
+    ("New organisation", "Nueva organización"),
     ("Newer matches", "Coincidencias más nuevas"),
     ("Next", "Siguiente"),
     ("No build here", "Sin binario aquí"),
@@ -643,6 +668,7 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
         "Solo lo que se le concedió, que está listado a su lado abajo. Revocar cualquier parte surte efecto aquí y de inmediato.",
     ),
     ("Open", "Abrir"),
+    ("Organisations", "Organizaciones"),
     ("Outcome", "Resultado"),
     ("Output", "Salida"),
     ("Overlay address", "Dirección overlay"),
@@ -682,6 +708,7 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
         "Pushing to this tag deploys the image immediately. You can use * to deploy automatically whatever you push.",
         "Al hacer push a esta etiqueta, la imagen se despliega inmediatamente, puedes usar * para desplegar automáticamente cualquier imagen pusheada.",
     ),
+    ("Put it back in service", "Volver a ponerlo en servicio"),
     ("Queued for that node", "En cola para ese nodo"),
     ("Reachable at", "Se expone en"),
     (
@@ -755,6 +782,7 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
     ("Save image", "Guardar imagen"),
     ("Save name", "Guardar nombre"),
     ("Save placement", "Guardar colocación"),
+    ("Save quota", "Guardar cuota"),
     ("Save source", "Guardar origen"),
     ("Saving asks the bucket to list what it holds, when the destination above is one — the same call a backup starts with, so a key that saves is a key that works.", "Al guardar se le pide al bucket que liste lo que tiene, si el destino de arriba es uno — la misma llamada con la que empieza un backup, así que una clave que se guarda es una clave que funciona."),
     (
@@ -806,6 +834,7 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
     ("Swap", "Swap"),
     ("TCP", "TCP"),
     ("Tag to watch", "Etiqueta a vigilar"),
+    ("Take it out of service", "Sacarlo de servicio"),
     ("Taken", "Tomado"),
     (
         "Takes effect at the next deployment: containerd cannot change a running container's output.",
@@ -949,6 +978,7 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
         "This mints a token carrying this node's address, its overlay key and an address on the overlay for the new node. Joining with it there records this node as an authority — which that node can revoke at any time — and tells this one it arrived.",
         "Esto acuña un token que lleva la dirección de este nodo, su clave overlay y una dirección en la overlay para el nodo nuevo. Unirse con él allí anota este nodo como autoridad — que ese nodo puede revocar cuando quiera — y le dice a este que llegó.",
     ),
+    ("This node", "Este nodo"),
     ("This node dials it at", "Este nodo lo marca en"),
     (
         "This node has no address another one could call back on, so it cannot enrol anybody yet.",
@@ -995,6 +1025,10 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
     (
         "This node, and the ones that have agreed to take instructions from it.",
         "Este nodo, y los que han aceptado tomar instrucciones de él.",
+    ),
+    (
+        "This one reserves space; it does not enforce it. There is nothing to write it into — volumes share a filesystem, and dividing one properly needs XFS project quotas or a file per volume. What the node does with this number is refuse to place more than it can hold, and say on this page when a copy has gone past what it was promised.",
+        "Este reserva espacio; no lo impone. No hay dónde escribirlo — los volúmenes comparten un sistema de ficheros, y repartir uno de verdad necesita cuotas de proyecto XFS o un fichero por volumen. Lo que el nodo hace con este número es negarse a colocar más de lo que puede sostener, y decir en esta página cuándo una copia se ha pasado de lo que se le prometió.",
     ),
     ("This release came with no notes.", "Esta versión vino sin notas."),
     ("This replaces the image above.", "Esto reemplaza la imagen de arriba."),
@@ -1097,9 +1131,16 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
     ),
     ("Whatever the provider generated. It is written to the file above and never rendered back.", "Lo que haya generado el proveedor. Se escribe en el fichero de arriba y no se vuelve a mostrar."),
     ("When", "Cuándo"),
+    ("Where its console answers, and the suffix its service names hang off. It has to point at this node, and it cannot be one of this node's own names — the console an operator fixes things from must not be reachable only through somebody else's.", "Dónde responde su consola, y el sufijo del que cuelgan los nombres de sus servicios. Tiene que apuntar a este nodo, y no puede ser uno de los nombres propios de este nodo — la consola desde la que un operador arregla las cosas no puede alcanzarse solo a través de la de otro."),
     ("Where the certificate comes from", "De dónde viene el certificado"),
     ("Where the copy goes", "Dónde va la copia"),
     ("Where this runs", "Dónde corre"),
+    ("Wherever there is room", "Donde haya sitio"),
+    (
+        "Wherever there is room spreads new copies across nodes that have agreed to run this and have the memory for it, emptiest first. It writes an ordinary row saying why, and never moves one you placed yourself.",
+        "Donde haya sitio reparte las copias nuevas entre los nodos que han aceptado correr esto y tienen memoria para ello, primero los más vacíos. Escribe una fila corriente diciendo por qué, y nunca mueve una que hayas colocado tú.",
+    ),
+    ("Who this node is shared out to", "Entre quiénes se reparte este nodo"),
     ("Withdraw", "Retirar"),
     (
         "Without this, a push is recorded as a release and waits for somebody to deploy it from the service page.",
@@ -1238,6 +1279,8 @@ mod tests {
             include_str!("assets.rs"),
             include_str!("attention.rs"),
             include_str!("shell.rs"),
+            include_str!("tenant.rs"),
+            include_str!("tenants.rs"),
             include_str!("layout.rs"),
             include_str!("auth.rs"),
             include_str!("people.rs"),
@@ -1261,6 +1304,42 @@ mod tests {
         assert!(
             missing.is_empty(),
             "no Spanish for {} string(s): {missing:#?}",
+            missing.len()
+        );
+    }
+
+    /// The words a concern is labelled with are translated too.
+    ///
+    /// **The scan above cannot see them.** It looks for `t("…")`, and a
+    /// `Concern`'s `what` is a bare string moved into a field and put
+    /// through `language::word` where the card is drawn — deliberately,
+    /// because it is chosen in one place and rendered in another. So
+    /// every one of those was invisible to the guard that exists to
+    /// catch exactly this, and the existing ones are in the table only
+    /// because somebody remembered.
+    ///
+    /// Found by adding one: "Every copy of a database on one machine"
+    /// went onto the attention card, the suite stayed green, and a
+    /// Spanish console would have shown an English line. A guard that
+    /// matches one call shape is right until somebody writes the other
+    /// one — the same lesson as the source list below, one level in.
+    #[test]
+    fn the_words_a_concern_is_labelled_with_are_translated() {
+        let source = include_str!("attention.rs");
+        let mut missing = Vec::new();
+        for (index, _) in source.match_indices("what: \"") {
+            let rest = &source[index + 7..];
+            let Some(end) = rest.find('"') else { continue };
+            let word = &rest[..end];
+            if lookup(word).is_none() {
+                missing.push(word.to_string());
+            }
+        }
+        missing.sort();
+        missing.dedup();
+        assert!(
+            missing.is_empty(),
+            "no Spanish for {} concern label(s): {missing:#?}",
             missing.len()
         );
     }
@@ -1314,6 +1393,8 @@ mod tests {
         include_str!("assets.rs"),
         include_str!("attention.rs"),
         include_str!("shell.rs"),
+        include_str!("tenant.rs"),
+        include_str!("tenants.rs"),
         include_str!("layout.rs"),
         include_str!("auth.rs"),
         include_str!("people.rs"),

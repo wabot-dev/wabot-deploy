@@ -353,6 +353,8 @@ mod tests {
                     version: None,
                     wanted_version: None,
                     usage: None,
+                    draining_at: None,
+                    capacity: None,
                     id: id.into(),
                     name: name.into(),
                     kind: Kind::Private,
@@ -435,6 +437,17 @@ mod tests {
             !wire.contains("usage"),
             "a measurement is not reachability: {wire}"
         );
+        // Nor what a node has left to promise. Two reasons and either is
+        // enough: the authority's copy of a member's room is a fact that
+        // member told *it*, so relaying it makes a sibling place against
+        // a number nobody asked it for; and it moves, so a census
+        // carrying it would look changed on every pass.
+        for field in ["capacity", "allocatable", "committed", "unbounded"] {
+            assert!(
+                !wire.contains(field),
+                "`{field}` is not reachability: {wire}"
+            );
+        }
         assert!(
             !wire.contains("\"kind\""),
             "a kind on the wire can arrive wrong: {wire}"
@@ -543,6 +556,8 @@ mod tests {
                 version: None,
                 wanted_version: None,
                 usage: None,
+                draining_at: None,
+                capacity: None,
                 id: "nd-hub00001".into(),
                 name: "hub".into(),
                 kind: Kind::Public,

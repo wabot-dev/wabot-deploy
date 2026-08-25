@@ -57,7 +57,13 @@ impl PeoplePages {
             return Ok(Redirect::found("/").into());
         }
 
-        let people = accounts::all(&self.state.database).await?;
+        // **This machine's own operators**, and nobody else's people.
+        // An organisation's are managed from its own console, by a
+        // different controller — see `console::tenant`. This page knows
+        // nothing about organisations, which is what lets that whole
+        // half be deleted without touching it.
+        let people = accounts::of_scope(&self.state.database, None).await?;
+
         let invitations = invitations::all(&self.state.database).await?;
         let projects = access::projects_for(&self.state.database, &account).await?;
         let now = crate::console::now_ms();
@@ -300,22 +306,44 @@ impl PeopleApi {
         // select always sends something, and reading it without a
         // project would put somebody nowhere as a viewer.
         let slug = field(&form, "project");
-        let project = if slug.is_empty() {
-            None
-        } else {
-            match access::find_project(&self.state.database, &account, slug).await? {
-                Some((project, _)) => {
-                    Some((project.id, ProjectRole::parse(field(&form, "project_role"))))
+        let project =
+            if slug.is_empty() {
+                None
+            } else {
+                match access::find_project(&self.state.database, &account, slug).await? {
+                    // **The machine's own projects.** An operator can see
+                    // every project the node holds, organisations' included,
+                    // and an invitation minted here is into the machine — so
+                    // one carrying membership of an organisation's project
+                    // would make somebody who reaches exactly one project
+                    // and no console that admits they exist.
+                    Some((project, _)) if project.is_the_nodes_own() => {
+                        Some((project.id, ProjectRole::parse(field(&form, "project_role"))))
+                    }
+                    Some(_) => return Ok(back_with_error(
+                        "/people",
+                        "that project belongs to an organisation — invite them from its own page",
+                    )),
+                    None => return Ok(back_with_error("/people", "no such project")),
                 }
-                None => return Ok(back_with_error("/people", "no such project")),
-            }
-        };
+            };
 
-        let token = match invitations::create(
+        // Which frontier they land in. Only the machine's operator gets
+        // a say — the form draws no selector for anybody else, and
+        // `create_into` refuses one anyway, because a rule the page
+        // enforces is a courtesy and this is the boundary.
+        //
+        // This is the only way into an organisation: one that has nobody
+        // in it cannot invite anybody either, so the first person has to
+        // come from the operator who made it.
+        let token = match invitations::create_into(
             &self.state.database,
             &account,
             node_role,
             project.as_ref().map(|(id, role)| (id.as_str(), *role)),
+            // Into the machine, always. This controller has no other
+            // answer to give.
+            None,
         )
         .await
         {
@@ -326,7 +354,7 @@ impl PeopleApi {
         // Back through the query string, because this is the only time
         // the token exists in clear and the page has to show it once.
         // Stored hashed, so no page can ever show it again.
-        let link = format!("{}/join/{token}", self.state.base_url().await);
+        let link = format!("{}/join/{token}", self.state.base_url_for(None).await);
         Ok(see_other(&format!(
             "/people?{}",
             form_urlencoded::Serializer::new(String::new())

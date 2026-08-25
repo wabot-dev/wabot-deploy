@@ -39,6 +39,16 @@ pub enum Upstream {
     /// the edge is a truthful answer and a proxy attempt to a dead
     /// address is a hung request.
     Proxy(Vec<SocketAddr>),
+    /// The console of one tenant, served in-process like the node's own
+    /// and narrowed to that tenant before any handler runs.
+    ///
+    /// **The `Host` is the frontier**, which is why this is a route and
+    /// not a query parameter or a path prefix: the scope is decided
+    /// before a session is read, so a cookie minted for one tenant fails
+    /// the signature on another's hostname and the browser will not even
+    /// send it. A boundary nothing has to remember to apply beats thirty
+    /// queries that each narrow correctly.
+    Tenant(String),
 }
 
 impl Upstream {
@@ -54,7 +64,7 @@ impl Upstream {
     /// [`pick_live`](Self::pick_live), which is what the edge calls.
     pub fn pick(&self, turn: usize) -> Option<SocketAddr> {
         match self {
-            Self::ControlPlane => None,
+            Self::ControlPlane | Self::Tenant(_) => None,
             Self::Proxy(addresses) if addresses.is_empty() => None,
             Self::Proxy(addresses) => Some(addresses[turn % addresses.len()]),
         }
@@ -157,7 +167,7 @@ impl RouteTable {
             .values()
             .filter_map(|upstream| match upstream {
                 Upstream::Proxy(addresses) => Some(addresses.clone()),
-                Upstream::ControlPlane => None,
+                Upstream::ControlPlane | Upstream::Tenant(_) => None,
             })
             .flatten()
             .collect();
@@ -332,6 +342,39 @@ pub async fn forget_for_other(database: &SqliteDatabase, host: &str) -> SqliteRe
         .await
 }
 
+/// Drop the tenant rows this node no longer answers for.
+///
+/// The third sibling of [`retain_proxies`] and `retain_control_plane`,
+/// and it exists because a tenant row is in neither of their sets:
+/// `retain_proxies` skips a route with no `service_id` on purpose, and
+/// the control-plane pass touches only its own kind. That is exactly the
+/// gap an errand-written proxy row sat in for ever before
+/// [`forget_for_other`] was written, and a tenant renamed or deleted
+/// would sit in it the same way — still answering on the name it used to
+/// have, still holding a certificate for it.
+pub async fn retain_tenants(database: &SqliteDatabase, keep: &[String]) -> SqliteResult<usize> {
+    let keep: Vec<String> = keep.iter().map(|host| normalize(host)).collect();
+    database
+        .write(move |connection| {
+            let mut removed = 0;
+            let hosts: Vec<String> = connection
+                .prepare("SELECT \"host\" FROM route WHERE \"upstream_kind\" = 'tenant'")?
+                .query_map([], |row| row.get(0))?
+                .collect::<Result<_, _>>()?;
+            for host in hosts {
+                if !keep.contains(&host) {
+                    connection.execute(
+                        "DELETE FROM route WHERE \"host\" = ?1 AND \"upstream_kind\" = 'tenant'",
+                        [&host],
+                    )?;
+                    removed += 1;
+                }
+            }
+            Ok(removed)
+        })
+        .await
+}
+
 /// Forget one control-plane name.
 ///
 /// For the node that was renamed: the old name keeps answering the
@@ -380,6 +423,11 @@ pub async fn load_all(database: &SqliteDatabase) -> SqliteResult<Vec<(String, Up
         .into_iter()
         .filter_map(|(host, kind, addr)| match kind.as_str() {
             "control_plane" => Some((host, Upstream::ControlPlane)),
+            // A row whose tenant went is dropped rather than served: the
+            // scope is the whole of what the page would be narrowed by,
+            // so serving it unnarrowed is the one outcome that must not
+            // happen. `retain_tenants` is what removes them on purpose.
+            "tenant" => addr.map(|id| (host, Upstream::Tenant(id))),
             // Comma-separated, because a route is now *n* replicas.
             // One that will not parse is dropped and the rest kept: a
             // service with three copies and one bad row should serve
@@ -429,6 +477,7 @@ pub async fn upsert(
     let host = normalize(host);
     let (kind, addr) = match upstream {
         Upstream::ControlPlane => ("control_plane".to_string(), None),
+        Upstream::Tenant(id) => ("tenant".to_string(), Some(id.clone())),
         Upstream::Proxy(addresses) => (
             "proxy".to_string(),
             Some(

@@ -58,8 +58,34 @@ impl Middleware for SessionMiddleware {
         let Some(token) = sessions::from_headers(&parts.headers) else {
             return Ok(());
         };
+        // Which frontier this request arrived at, decided by the `Host`
+        // before anything read a cookie — see `edge::Tenancy`.
+        let scope = parts
+            .extensions
+            .get::<crate::edge::Tenancy>()
+            .map(|tenancy| tenancy.0.clone());
+
         match sessions::lookup(&self.state.database, &token).await {
             Ok(Some(account)) => {
+                // **The identity and the frontier have to agree.** A
+                // session is a valid session whichever hostname it is
+                // presented at, so without this a tenant's cookie would
+                // sign somebody in on the node's own console — narrowed
+                // to nothing they could reach, but with the `Host` no
+                // longer being the boundary. It is *also* stopped by the
+                // cookie being host-only, and that is the browser's
+                // courtesy rather than this node's rule.
+                //
+                // Nothing is assigned when they disagree, so the request
+                // proceeds as a stranger and every page sends it to sign
+                // in — the same place a wrong cookie leads.
+                if !account.belongs_to(scope.as_deref()) {
+                    tracing::debug!(
+                        account = %account.id,
+                        "a session for one scope was presented at another"
+                    );
+                    return Ok(());
+                }
                 let auth = Auth::of(container);
                 let _ = auth.assign(account);
             }
@@ -361,6 +387,16 @@ impl AuthApi {
     #[post("/sign-in")]
     #[raw]
     async fn sign_in(&self, request: Request) -> RestResult<Response> {
+        // **Which frontier they are signing in to**, decided by the
+        // `Host` before this ran and read here rather than asked for: a
+        // username belongs to a scope, so three people called `jorge`
+        // is the ordinary case and a search over the whole table would
+        // find whichever came first. See migration `0057`.
+        let scope = request
+            .extensions()
+            .get::<crate::edge::Tenancy>()
+            .map(|tenancy| tenancy.0.clone());
+
         let form = match read_form(request).await {
             Ok(form) => form,
             Err(response) => return Ok(response),
@@ -370,6 +406,7 @@ impl AuthApi {
             &self.state.database,
             field(&form, "username"),
             form.get("password").map(String::as_str).unwrap_or_default(),
+            scope.as_deref(),
         )
         .await?;
 

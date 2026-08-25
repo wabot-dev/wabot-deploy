@@ -93,6 +93,7 @@ pub async fn gather(state: &super::ConsoleState) -> PlatformResult<Vec<Concern>>
 
     copies_that_failed(state, &mut concerns).await?;
     copies_that_stopped_answering(state, &mut concerns).await;
+    a_database_with_every_copy_on_one_machine(state, &mut concerns).await;
     certificates_that_would_not_issue(state, &mut concerns).await?;
     errands_that_were_refused(state, &mut concerns).await;
     what_nothing_claims(state, &mut concerns).await;
@@ -164,6 +165,64 @@ async fn copies_that_stopped_answering(state: &super::ConsoleState, concerns: &m
             which: format!("{} · {}", service.slug, silent.len()),
             why: String::new(),
             go: format!("/projects/{}/services/{}", project.slug, service.slug),
+        });
+    }
+}
+
+/// A database whose copies all sit on one machine.
+///
+/// **A standby beside its own primary is capacity, not redundancy.** It
+/// keeps its own CPU allocation and its own engine process, so it goes
+/// on serving reads and is worth having — that is why the planner places
+/// it rather than refusing. What it does not do is survive the machine,
+/// and a page that shows two copies without saying so is a page somebody
+/// plans around.
+///
+/// **Found on the nodes**, 2026-08-25: draining the only other node
+/// moved the only remote standby home, wrote the reason on the row, and
+/// nothing anywhere treated it as worth reading. `Notice` and not
+/// `Wrong` — nothing failed, and this may be exactly what the operator
+/// meant on a one-machine network.
+async fn a_database_with_every_copy_on_one_machine(
+    state: &super::ConsoleState,
+    concerns: &mut Vec<Concern>,
+) {
+    let (Ok(services), Ok(projects)) = (
+        crate::platform::services::all(&state.database, None).await,
+        crate::platform::projects::all(&state.database).await,
+    ) else {
+        return;
+    };
+
+    for service in services.iter().filter(|s| s.kind.is_managed()) {
+        let Ok(copies) = crate::platform::replicas::of_service(&state.database, &service.id).await
+        else {
+            continue;
+        };
+        let live: Vec<_> = copies.iter().filter(|copy| !copy.evicted()).collect();
+        // One copy is not a redundancy claim, so it is not this
+        // concern — a database with no standby is a decision, and a
+        // different sentence if it is ever worth one.
+        if live.len() < 2 {
+            continue;
+        }
+        let machines: std::collections::BTreeSet<Option<&str>> =
+            live.iter().map(|copy| copy.node_id.as_deref()).collect();
+        if machines.len() > 1 {
+            continue;
+        }
+        let Some(project) = projects.iter().find(|p| p.id == service.project_id) else {
+            continue;
+        };
+        concerns.push(Concern {
+            weight: Weight::Notice,
+            what: "Every copy of a database on one machine".into(),
+            which: format!("{} · {}", service.slug, live.len()),
+            why: String::new(),
+            go: format!(
+                "/projects/{}/services/{}/settings/replicas",
+                project.slug, service.slug
+            ),
         });
     }
 }

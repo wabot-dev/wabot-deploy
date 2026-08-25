@@ -182,6 +182,16 @@ pub struct Report {
     /// than remembered.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub usage: Option<super::Usage>,
+    /// What it has left to promise: allocatable and committed, memory
+    /// and CPU, and how many copies it holds with no ceiling.
+    ///
+    /// Beside `usage` and answering the other question — a machine with
+    /// little in use may have promised every byte it has. `None` from an
+    /// older node leaves the columns alone, and travels the same road for
+    /// the same reason: `note_reachability` returns `()`, so this cannot
+    /// feed the count either. See migration `0051`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capacity: Option<super::Capacity>,
     /// What the reporting node has agreed the *reader* may ask of it.
     ///
     /// Comma-separated, stored on that node's row — see migration
@@ -1053,6 +1063,8 @@ impl NetworkApi {
                 version: None,
                 wanted_version: None,
                 usage: None,
+                draining_at: None,
+                capacity: None,
                 id: arriving.node.clone(),
                 // Whatever it calls itself. Cosmetic, and the enrolment
                 // already carries what the operator called it — but a
@@ -1302,11 +1314,12 @@ async fn note_reachability(
     node_id: &str,
     report: &Report,
 ) -> NetworkResult<()> {
-    let (endpoint, allows, ca, usage) = (
+    let (endpoint, allows, ca, usage, capacity) = (
         report.endpoint.as_deref(),
         report.allows.as_deref(),
         report.ca.as_deref(),
         report.usage,
+        report.capacity,
     );
     let Some(node) = super::find(database, node_id).await? else {
         return Ok(());
@@ -1367,6 +1380,12 @@ async fn note_reachability(
             // stale rather than wrong, and the page says when it was
             // heard from.
             usage: usage.or(node.usage),
+            // And the same for what it has left to promise. Stale is the
+            // right failure here too: a selector reads `last_seen_at`
+            // beside this and declines to *choose* a machine it has not
+            // heard from, which is a different question from refusing
+            // one.
+            capacity: capacity.or(node.capacity),
             // Derived from the endpoint rather than reported, the same
             // way this node decides its own: a kind somebody can send
             // is a kind somebody can send wrongly, and an unrecognised
@@ -2561,10 +2580,12 @@ mod tests {
             .nth(1)
             .expect("the function whose answer is the count");
         let counted = counted.split("\nasync fn ").next().expect("its body");
-        assert!(
-            !counted.contains("usage"),
-            "the reading is written where the count is decided: {counted}"
-        );
+        for field in ["usage", "capacity"] {
+            assert!(
+                !counted.contains(field),
+                "`{field}` is written where the count is decided: {counted}"
+            );
+        }
     }
 
     /// How full a node is travels, and a new reading is not a change.
@@ -2655,6 +2676,97 @@ mod tests {
             after.usage.expect("kept").memory_used,
             501 * 1024 * 1024,
             "an older node's report cleared the reading"
+        );
+    }
+
+    /// What a node has left to promise travels, and is not a change
+    /// either.
+    ///
+    /// **The other half of the reading, and the half a placement needs.**
+    /// `usage` says how busy a machine is right now; a node with 200 MB
+    /// in use may have undertaken every byte it has to services that
+    /// happen to be idle, so choosing by the meter chooses a full
+    /// machine. Nothing carried what had been *promised* until now, which
+    /// is why nothing on either side of a placement could ask whether it
+    /// would fit.
+    ///
+    /// That it is **not** movement is asserted by
+    /// `a_reading_cannot_be_mistaken_for_movement`, which names it beside
+    /// `usage`: it is a property of the shape rather than of a response
+    /// body, and the sibling of this test learned that the hard way by
+    /// looking for a count the handler does not send. A commitment moves
+    /// rarely, being a decision — but `memory_allocatable` hangs off
+    /// `memory_total`, and one number flickering re-earns the storm
+    /// `record` was fixed for.
+    #[tokio::test]
+    async fn what_a_node_has_left_travels() {
+        let authority = authority().await;
+        authority
+            .harness
+            .post("/api/network/join")
+            .header("authorization", format!("Bearer {}", authority.secret))
+            .json(&arriving())
+            .send()
+            .await
+            .assert_ok();
+
+        macro_rules! send {
+            ($body:expr) => {
+                authority
+                    .harness
+                    .post("/api/network/report")
+                    .header("authorization", format!("Bearer {}", authority.secret))
+                    .json(&$body)
+                    .send()
+                    .await
+            };
+        }
+        macro_rules! room {
+            () => {
+                super::super::find(&authority.database, "nd-joining001")
+                    .await
+                    .expect("query")
+                    .expect("joined")
+                    .capacity
+            };
+        }
+
+        assert_eq!(
+            room!(),
+            None,
+            "a node that has not said cannot be read as one with nothing left"
+        );
+
+        send!(serde_json::json!({
+            "replicas": [],
+            "capacity": {
+                "memory_allocatable": 716u64 * 1024 * 1024,
+                "memory_committed": 512u64 * 1024 * 1024,
+                "cpu_allocatable": 750,
+                "cpu_committed": 500,
+                "unbounded": 1,
+            },
+        }))
+        .assert_ok();
+
+        let room = room!().expect("it arrived");
+        assert_eq!(room.memory_allocatable, 716 * 1024 * 1024);
+        assert_eq!(room.memory_committed, 512 * 1024 * 1024);
+        assert_eq!(room.cpu_allocatable, 750);
+        assert_eq!(room.cpu_committed, 500);
+        assert_eq!(
+            room.unbounded, 1,
+            "and the count that says the sum is a floor rather than a total"
+        );
+
+        // A report that omits it leaves the last answer alone, the way
+        // every other learned field is left: an older node must not blank
+        // a column by not knowing about it.
+        send!(serde_json::json!({ "replicas": [] })).assert_ok();
+        assert_eq!(
+            room!().expect("kept").memory_committed,
+            512 * 1024 * 1024,
+            "an older node's report cleared what it had promised"
         );
     }
 

@@ -42,6 +42,12 @@ pub struct Invitation {
     pub created_by: String,
     pub expires_at: i64,
     pub used_at: Option<i64>,
+    /// Which frontier it lets somebody into. `None` is the node's own.
+    ///
+    /// **Settled when the link is minted, never by whoever opens it.**
+    /// An invitation that let the invitee choose their own scope would
+    /// be an invitation to be anybody — see migration `0056`.
+    pub tenant_id: Option<String>,
 }
 
 impl Invitation {
@@ -63,16 +69,53 @@ impl Invitation {
 ///
 /// The only time it exists in clear, on its way into a link the
 /// inviter copies. What is stored is its hash.
-pub async fn create(
+/// Mint a link, naming the frontier the invitee lands in.
+///
+/// `None` is the node's own. Only the machine's operator may name one
+/// that is not their own — that is how the first person of an
+/// organisation gets in, and it is the only way in, since an
+/// organisation with nobody in it cannot invite anybody either.
+pub async fn create_into(
     database: &SqliteDatabase,
     created_by: &Account,
     node_role: NodeRole,
     project: Option<(&str, ProjectRole)>,
+    tenant_id: Option<&str>,
 ) -> AccountResult<String> {
-    // Only an administrator can make another one. Otherwise the
-    // weakest role on the node is one invitation away from the
-    // strongest, and nothing about the page would say so.
-    if node_role == NodeRole::Admin && !created_by.is_admin() {
+    // **Nobody invites into somebody else's frontier.** The machine's
+    // operator may name any of them, because sharing the machine out is
+    // what they do; anybody else gets their own and only their own. A
+    // tenant's administrator minting a link into a rival organisation
+    // would be the whole boundary undone by one form field.
+    let scope = match created_by.is_admin() {
+        true => tenant_id.map(str::to_string),
+        false => created_by.tenant_id.clone(),
+    };
+    if !created_by.is_admin() && tenant_id != created_by.tenant_id.as_deref() {
+        return Err(AccountError::Refused(
+            "an invitation can only be into your own organisation".into(),
+        ));
+    }
+    if let Some(id) = &scope {
+        if crate::platform::tenants::find(database, id)
+            .await
+            .map_err(|error| AccountError::Refused(error.to_string()))?
+            .is_none()
+        {
+            return Err(AccountError::Refused("no such organisation".into()));
+        }
+    }
+
+    // Only an administrator can make another one — **of that same
+    // frontier**. Otherwise the weakest role is one invitation away from
+    // the strongest, and nothing about the page would say so.
+    //
+    // Asked with `administers_scope` and not `is_admin`, because an
+    // organisation's administrator has to be able to make a second one
+    // of their own: `is_admin` is false for them by design, and using it
+    // here would leave every organisation with exactly one
+    // administrator for ever.
+    if node_role == NodeRole::Admin && !created_by.administers_scope() {
         return Err(AccountError::Refused(
             "only an administrator can invite another administrator".into(),
         ));
@@ -94,8 +137,8 @@ pub async fn create(
             connection.execute(
                 "INSERT INTO invitation \
                    (\"id\", \"token_hash\", \"node_role\", \"project_id\", \"project_role\", \
-                    \"created_by\", \"created_at\", \"expires_at\") \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                    \"created_by\", \"created_at\", \"expires_at\", \"tenant_id\") \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
                 (
                     id,
                     hash,
@@ -105,6 +148,7 @@ pub async fn create(
                     creator,
                     now_ms(),
                     expires_at,
+                    scope,
                 ),
             )?;
             Ok(())
@@ -126,7 +170,7 @@ pub async fn look_up(database: &SqliteDatabase, token: &str) -> AccountResult<Op
             connection
                 .query_row(
                     "SELECT \"id\", \"node_role\", \"project_id\", \"project_role\", \
-                     \"created_by\", \"expires_at\", \"used_at\" \
+                     \"created_by\", \"expires_at\", \"used_at\", \"tenant_id\" \
                      FROM invitation WHERE \"token_hash\" = ?1",
                     [hash],
                     decode,
@@ -161,7 +205,18 @@ pub async fn accept(
     // something the invitee can fix — a name taken, a password too
     // short — and spending the invitation on those would cost them the
     // link.
-    let account = super::create(database, username, password, invitation.node_role).await?;
+    // **In the frontier the invitation named**, which is the whole of
+    // what this column exists for: before it, every account made here
+    // was the node's own, so a tenant's console answered and nobody
+    // could ever sign in to it.
+    let account = super::create_in(
+        database,
+        username,
+        password,
+        invitation.node_role,
+        invitation.tenant_id.as_deref(),
+    )
+    .await?;
 
     let (id, account_id) = (invitation.id.clone(), account.id.clone());
     let spent = database
@@ -205,7 +260,7 @@ pub async fn all(database: &SqliteDatabase) -> AccountResult<Vec<Invitation>> {
             connection
                 .prepare(
                     "SELECT \"id\", \"node_role\", \"project_id\", \"project_role\", \
-                     \"created_by\", \"expires_at\", \"used_at\" \
+                     \"created_by\", \"expires_at\", \"used_at\", \"tenant_id\" \
                      FROM invitation ORDER BY \"created_at\" DESC",
                 )?
                 .query_map([], decode)?
@@ -237,6 +292,7 @@ fn decode(row: &wabot::sqlite::rusqlite::Row<'_>) -> wabot::sqlite::rusqlite::Re
         created_by: row.get(4)?,
         expires_at: row.get(5)?,
         used_at: row.get(6)?,
+        tenant_id: row.get(7)?,
     })
 }
 
@@ -260,7 +316,7 @@ mod tests {
     #[tokio::test]
     async fn an_invitation_creates_an_account_with_the_role_it_named() {
         let (database, admin) = node().await;
-        let token = create(&database, &admin, NodeRole::Member, None)
+        let token = create_into(&database, &admin, NodeRole::Member, None, None)
             .await
             .expect("invited");
 
@@ -271,11 +327,121 @@ mod tests {
         assert_eq!(account.username, "jorge");
     }
 
+    /// A link into an organisation makes somebody of that organisation.
+    ///
+    /// **The door the frontier was missing.** Before this, a tenant's
+    /// console answered on its own name, held its own certificate and
+    /// refused a session from the wrong scope — and nobody could sign in
+    /// to it, because every invitation made an account of the node's
+    /// own. Verified on the node, and the way it showed was a sign-in
+    /// page with nobody to sign in as.
+    #[tokio::test]
+    async fn a_link_into_an_organisation_makes_somebody_of_it() {
+        let (database, admin) = node().await;
+        let tenant = crate::platform::tenants::create(&database, "Acme")
+            .await
+            .expect("tenant");
+
+        let token = create_into(&database, &admin, NodeRole::Admin, None, Some(&tenant.id))
+            .await
+            .expect("invited");
+
+        let account = accept(&database, &token, "jorge", "another long passphrase")
+            .await
+            .expect("accepted");
+
+        assert_eq!(account.tenant_id.as_deref(), Some(&*tenant.id));
+        // An administrator **of that organisation**, which is what the
+        // link said — and not of the machine, which is the distinction
+        // one clause in `is_admin` carries.
+        assert!(account.administers_scope());
+        assert!(
+            !account.is_admin(),
+            "an organisation's administrator was made an administrator of the machine"
+        );
+        assert!(account.belongs_to(Some(&tenant.id)));
+        assert!(!account.belongs_to(None));
+    }
+
+    /// Nobody mints a link into somebody else's organisation.
+    ///
+    /// The machine's operator shares the machine out, so they may name
+    /// any frontier. Anybody else gets their own and only their own —
+    /// otherwise one form field undoes the whole boundary, and it would
+    /// be a field the page draws for them.
+    #[tokio::test]
+    async fn nobody_invites_into_somebody_elses_organisation() {
+        let (database, admin) = node().await;
+        let theirs = crate::platform::tenants::create(&database, "Acme")
+            .await
+            .expect("tenant");
+        let rivals = crate::platform::tenants::create(&database, "Globex")
+            .await
+            .expect("tenant");
+
+        let token = create_into(&database, &admin, NodeRole::Admin, None, Some(&theirs.id))
+            .await
+            .expect("invited");
+        let theirs_admin = accept(&database, &token, "acme", "another long passphrase")
+            .await
+            .expect("accepted");
+
+        let refused = create_into(
+            &database,
+            &theirs_admin,
+            NodeRole::Member,
+            None,
+            Some(&rivals.id),
+        )
+        .await
+        .expect_err("refused");
+        assert!(refused.to_string().contains("your own"), "{refused}");
+
+        // Nor back out into the machine's own scope, which would be the
+        // same hole in the other direction.
+        let refused = create_into(&database, &theirs_admin, NodeRole::Member, None, None)
+            .await
+            .expect_err("refused");
+        assert!(refused.to_string().contains("your own"), "{refused}");
+
+        // Their own is fine, and administrators too: an organisation
+        // that could never make a second administrator would have
+        // exactly one for ever.
+        assert!(create_into(
+            &database,
+            &theirs_admin,
+            NodeRole::Admin,
+            None,
+            Some(&theirs.id)
+        )
+        .await
+        .is_ok());
+    }
+
+    /// A link into an organisation that is not there is refused.
+    #[tokio::test]
+    async fn a_link_into_no_such_organisation_is_refused() {
+        let (database, admin) = node().await;
+        let refused = create_into(
+            &database,
+            &admin,
+            NodeRole::Member,
+            None,
+            Some("tnt-nothing0001"),
+        )
+        .await
+        .expect_err("refused");
+        assert!(
+            refused.to_string().contains("no such organisation"),
+            "{refused}"
+        );
+    }
+
     /// The property this exists for: the token is worth one account.
     #[tokio::test]
     async fn an_invitation_works_once() {
         let (database, admin) = node().await;
-        let token = create(&database, &admin, NodeRole::Member, None)
+        let token = create_into(&database, &admin, NodeRole::Member, None, None)
             .await
             .expect("invited");
 
@@ -291,7 +457,7 @@ mod tests {
     #[tokio::test]
     async fn an_expired_invitation_is_not_valid() {
         let (database, admin) = node().await;
-        let token = create(&database, &admin, NodeRole::Member, None)
+        let token = create_into(&database, &admin, NodeRole::Member, None, None)
             .await
             .expect("invited");
 
@@ -320,11 +486,12 @@ mod tests {
             .await
             .expect("project");
 
-        let token = create(
+        let token = create_into(
             &database,
             &admin,
             NodeRole::Member,
             Some((&project.id, ProjectRole::Deployer)),
+            None,
         )
         .await
         .expect("invited");
@@ -345,23 +512,25 @@ mod tests {
     #[tokio::test]
     async fn a_member_cannot_invite_an_administrator() {
         let (database, admin) = node().await;
-        let token = create(&database, &admin, NodeRole::Member, None)
+        let token = create_into(&database, &admin, NodeRole::Member, None, None)
             .await
             .expect("invited");
         let member = accept(&database, &token, "member", "a long passphrase here")
             .await
             .expect("accepted");
 
-        let error = create(&database, &member, NodeRole::Admin, None)
+        let error = create_into(&database, &member, NodeRole::Admin, None, None)
             .await
             .expect_err("refused");
         assert!(error.to_string().contains("administrator"), "{error}");
 
         // A member inviting a member is fine — that is how a project
         // owner brings somebody in.
-        assert!(create(&database, &member, NodeRole::Member, None)
-            .await
-            .is_ok());
+        assert!(
+            create_into(&database, &member, NodeRole::Member, None, None)
+                .await
+                .is_ok()
+        );
     }
 
     /// A refusal the invitee can fix — a name already taken — must not
@@ -369,7 +538,7 @@ mod tests {
     #[tokio::test]
     async fn a_refused_signup_does_not_spend_the_invitation() {
         let (database, admin) = node().await;
-        let token = create(&database, &admin, NodeRole::Member, None)
+        let token = create_into(&database, &admin, NodeRole::Member, None, None)
             .await
             .expect("invited");
 
@@ -386,7 +555,7 @@ mod tests {
     #[tokio::test]
     async fn a_revoked_invitation_stops_working() {
         let (database, admin) = node().await;
-        let token = create(&database, &admin, NodeRole::Member, None)
+        let token = create_into(&database, &admin, NodeRole::Member, None, None)
             .await
             .expect("invited");
         let invitation = all(&database).await.expect("list").pop().expect("one");
@@ -400,7 +569,7 @@ mod tests {
     #[tokio::test]
     async fn the_token_is_not_stored() {
         let (database, admin) = node().await;
-        let token = create(&database, &admin, NodeRole::Member, None)
+        let token = create_into(&database, &admin, NodeRole::Member, None, None)
             .await
             .expect("invited");
 
@@ -419,10 +588,10 @@ mod tests {
     #[tokio::test]
     async fn the_list_says_which_ones_are_spent() {
         let (database, admin) = node().await;
-        let token = create(&database, &admin, NodeRole::Member, None)
+        let token = create_into(&database, &admin, NodeRole::Member, None, None)
             .await
             .expect("invited");
-        create(&database, &admin, NodeRole::Member, None)
+        create_into(&database, &admin, NodeRole::Member, None, None)
             .await
             .expect("invited");
 

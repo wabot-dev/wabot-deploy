@@ -92,11 +92,54 @@ pub struct Account {
     /// reason: a preference that does not follow somebody between
     /// machines is one they set again on each.
     pub language: crate::console::language::Language,
+    /// Which tenant they belong to. `None` is this node's own operator.
+    ///
+    /// **A scope, not a role.** `role` says how much somebody may do and
+    /// this says over what, and keeping them apart is what lets
+    /// `is_admin` gain one clause instead of forty-three call sites
+    /// gaining a third case to remember. See migration `0054`.
+    ///
+    /// It travels in the session claims like the role, so the frontier
+    /// is known before any handler runs, and a person moved between
+    /// scopes is moved on their next click.
+    pub tenant_id: Option<String>,
 }
 
 impl Account {
+    /// Whether they administer **this machine** — the network page, the
+    /// node's settings, updates, and every project on it.
+    ///
+    /// **A tenant's administrator is not one of these**, and the clause
+    /// saying so lives here rather than at the checks, because there are
+    /// forty-three of those and the one that forgot would be a customer
+    /// with the node's own settings page. `role` means "administrator of
+    /// my own scope"; this asks whether that scope is the machine.
     pub fn is_admin(&self) -> bool {
+        self.role == roles::NodeRole::Admin && self.tenant_id.is_none()
+    }
+
+    /// Whether they administer whatever scope they are in.
+    ///
+    /// What a tenant's people page and quota card ask. Distinct from
+    /// [`is_admin`](Self::is_admin) by exactly one thing, and the two
+    /// must never be spelled the same way at a call site.
+    pub fn administers_scope(&self) -> bool {
         self.role == roles::NodeRole::Admin
+    }
+
+    /// Whether this account belongs to the scope a request arrived in.
+    ///
+    /// **The `Host` decides the scope before anything reads a session**,
+    /// so this is the check that keeps the two in agreement: a tenant's
+    /// cookie presented on the node's own hostname is a valid session
+    /// for the wrong frontier. Nothing else it could reach would be
+    /// theirs — `access::of` narrows by membership either way — but the
+    /// `Host` stops being the boundary the moment one identity can be
+    /// used across two, and a boundary that holds only because every
+    /// query remembered to narrow is the thirty-comparisons problem
+    /// `roles.rs` exists to avoid.
+    pub fn belongs_to(&self, scope: Option<&str>) -> bool {
+        self.tenant_id.as_deref() == scope
     }
 }
 
@@ -193,7 +236,9 @@ pub async fn create_admin(
     // it spent.
     spend_setup_token(database, setup_token).await?;
 
-    let account = insert(database, username, password, roles::NodeRole::Admin).await?;
+    // The machine's own operator, always: setup is how a node gets its
+    // first person, and a node is not an organisation.
+    let account = insert(database, username, password, roles::NodeRole::Admin, None).await?;
     tracing::info!(username = %account.username, "administrator created");
     Ok(account)
 }
@@ -203,17 +248,23 @@ pub async fn create_admin(
 /// No setup token: this is the invitation path, and the invitation is
 /// what was checked. Refuses a name already taken, which the unique
 /// index enforces and this turns into something readable.
-pub async fn create(
+/// Create somebody, in an organisation or in the node's own scope.
+///
+/// `None` is the machine's own operator, which is what every account
+/// made before organisations existed is — and what `setup` always
+/// makes, since a node is not an organisation.
+pub async fn create_in(
     database: &SqliteDatabase,
     username: &str,
     password: &str,
     role: roles::NodeRole,
+    tenant_id: Option<&str>,
 ) -> AccountResult<Account> {
     let username = username.trim();
     validate_username(username)?;
     validate_password(password)?;
 
-    let account = insert(database, username, password, role).await?;
+    let account = insert(database, username, password, role, tenant_id).await?;
     tracing::info!(username = %account.username, role = role.as_str(), "account created");
     Ok(account)
 }
@@ -223,26 +274,32 @@ async fn insert(
     username: &str,
     password: &str,
     role: roles::NodeRole,
+    tenant_id: Option<&str>,
 ) -> AccountResult<Account> {
     let account = Account {
         theme: crate::console::shell::Theme::System,
         language: crate::console::language::Language::En,
         id: format!("acc-{}", wabot::prelude::password::generate(16)),
         username: username.to_string(),
+        // Whose frontier they are in. It arrives on the invitation and
+        // is settled when the link was minted, never by whoever opens
+        // it — see migration `0056`.
+        tenant_id: tenant_id.map(str::to_string),
         role,
     };
     let hash = wabot::prelude::password::hash(password)
         .map_err(|error| AccountError::Hash(error.to_string()))?;
 
     let (id, name) = (account.id.clone(), account.username.clone());
+    let scope = account.tenant_id.clone();
     let taken = account.username.clone();
     database
         .write(move |connection| {
             connection.execute(
                 "INSERT INTO account (\"id\", \"username\", \"password_hash\", \"role\", \
-                                    \"created_at\") \
-                 VALUES (?1, ?2, ?3, ?4, ?5)",
-                (id, name, hash, role.as_str(), now_ms()),
+                                    \"created_at\", \"tenant_id\") \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                (id, name, hash, role.as_str(), now_ms(), scope),
             )?;
             Ok(())
         })
@@ -264,11 +321,45 @@ pub async fn all(database: &SqliteDatabase) -> AccountResult<Vec<Account>> {
         .read(|connection| {
             connection
                 .prepare(
-                    "SELECT \"id\", \"username\", \"role\", \"theme\", \"language\" \
+                    "SELECT \"id\", \"username\", \"role\", \"theme\", \"language\", \"tenant_id\" \
                      FROM account ORDER BY \"username\"",
                 )?
                 .query_map([], decode)?
                 .collect()
+        })
+        .await?)
+}
+
+/// The people of one scope: a tenant's, or the node's own.
+///
+/// **Narrowed in the query**, the same rule `access::projects_for`
+/// follows and for the same reason — a list built from everybody and
+/// filtered by the page leaks the day somebody adds a page that forgets.
+/// `None` is the node's own operators, which is every account that
+/// existed before tenants did.
+pub async fn of_scope(
+    database: &SqliteDatabase,
+    tenant_id: Option<&str>,
+) -> AccountResult<Vec<Account>> {
+    let tenant_id = tenant_id.map(str::to_string);
+    Ok(database
+        .read(move |connection| match tenant_id {
+            Some(tenant) => connection
+                .prepare(
+                    "SELECT \"id\", \"username\", \"role\", \"theme\", \"language\", \
+                         \"tenant_id\" FROM account WHERE \"tenant_id\" = ?1 \
+                         ORDER BY \"username\"",
+                )?
+                .query_map([tenant], decode)?
+                .collect(),
+            None => connection
+                .prepare(
+                    "SELECT \"id\", \"username\", \"role\", \"theme\", \"language\", \
+                         \"tenant_id\" FROM account WHERE \"tenant_id\" IS NULL \
+                         ORDER BY \"username\"",
+                )?
+                .query_map([], decode)?
+                .collect(),
         })
         .await?)
 }
@@ -347,6 +438,7 @@ fn decode(row: &wabot::sqlite::rusqlite::Row<'_>) -> wabot::sqlite::rusqlite::Re
         role: roles::NodeRole::parse(&row.get::<_, String>(2)?),
         theme: crate::console::shell::Theme::parse(&row.get::<_, String>(3)?),
         language: crate::console::language::Language::parse(&row.get::<_, String>(4)?),
+        tenant_id: row.get(5)?,
     })
 }
 
@@ -446,15 +538,33 @@ pub async fn authenticate(
     database: &SqliteDatabase,
     username: &str,
     password: &str,
+    tenant_id: Option<&str>,
 ) -> AccountResult<Option<Account>> {
     let lookup = username.trim().to_lowercase();
-    let row: Option<(String, String, String, String, String, String)> = database
+    // Empty is the machine's own scope, the way the index spells it.
+    let scope = tenant_id.unwrap_or_default().to_string();
+    #[allow(clippy::type_complexity)]
+    let row: Option<(
+        String,
+        String,
+        String,
+        String,
+        String,
+        String,
+        Option<String>,
+    )> = database
         .read(move |connection| {
             connection
                 .query_row(
+                    // **Within the frontier**, which the `Host` decided
+                    // before this ran. A search over the whole table
+                    // would find whichever of three people called
+                    // `jorge` came first, and that is somebody else's
+                    // account — see migration `0057`.
                     "SELECT \"id\", \"username\", \"password_hash\", \"role\", \"theme\", \
-                     \"language\" FROM account WHERE lower(\"username\") = ?1",
-                    [lookup],
+                     \"language\", \"tenant_id\" FROM account \
+                     WHERE lower(\"username\") = ?1 AND COALESCE(\"tenant_id\", '') = ?2",
+                    (lookup, scope),
                     |row| {
                         Ok((
                             row.get(0)?,
@@ -463,6 +573,7 @@ pub async fn authenticate(
                             row.get(3)?,
                             row.get(4)?,
                             row.get(5)?,
+                            row.get(6)?,
                         ))
                     },
                 )
@@ -470,7 +581,7 @@ pub async fn authenticate(
         })
         .await?;
 
-    let Some((id, username, hash, role, theme, language)) = row else {
+    let Some((id, username, hash, role, theme, language, tenant_id)) = row else {
         // Hash anyway. Returning early on an unknown username makes
         // the response measurably faster, and that difference is a
         // list of which usernames exist.
@@ -498,6 +609,7 @@ pub async fn authenticate(
         language: crate::console::language::Language::parse(&language),
         id,
         username,
+        tenant_id,
         role: roles::NodeRole::parse(&role),
     }))
 }
@@ -625,6 +737,126 @@ mod tests {
         crate::db::open_in_memory().await.expect("open")
     }
 
+    /// A username belongs to a frontier, not to the machine.
+    ///
+    /// **Three people called `jorge` is the ordinary case**: one who
+    /// runs the machine and one in each organisation. Before this the
+    /// index was global, so an organisation's first person could be
+    /// refused a name because somebody they cannot see had taken it —
+    /// and two organisations could not both have an `admin`.
+    ///
+    /// The trap is in the index rather than the idea: `UNIQUE
+    /// (lower(username), tenant_id)` reads correctly and is wrong,
+    /// because SQL treats NULLs as **distinct** — so two operators of
+    /// the machine would collide with nothing at all and the uniqueness
+    /// the node always had would be silently gone. `COALESCE(tenant_id,
+    /// '')` makes the machine's own scope a scope like any other.
+    #[tokio::test]
+    async fn a_username_is_taken_once_per_frontier() {
+        let database = crate::db::open_in_memory().await.expect("open");
+        let acme = crate::platform::tenants::create(&database, "Acme")
+            .await
+            .expect("tenant");
+        let globex = crate::platform::tenants::create(&database, "Globex")
+            .await
+            .expect("tenant");
+
+        // The same name in three frontiers, all fine.
+        for scope in [None, Some(&*acme.id), Some(&*globex.id)] {
+            create_in(
+                &database,
+                "jorge",
+                "a long passphrase here",
+                roles::NodeRole::Member,
+                scope,
+            )
+            .await
+            .unwrap_or_else(|error| panic!("{scope:?} refused a free name: {error}"));
+        }
+
+        // And twice in one is not.
+        let refused = create_in(
+            &database,
+            "jorge",
+            "another long passphrase",
+            roles::NodeRole::Member,
+            Some(&acme.id),
+        )
+        .await
+        .expect_err("the same name twice in one organisation");
+        assert!(refused.to_string().contains("taken"), "{refused}");
+
+        // **The machine's own scope keeps its uniqueness**, which the
+        // obvious index would have thrown away without a word.
+        let refused = create_in(
+            &database,
+            "jorge",
+            "another long passphrase",
+            roles::NodeRole::Member,
+            None,
+        )
+        .await
+        .expect_err("two operators of one machine");
+        assert!(refused.to_string().contains("taken"), "{refused}");
+    }
+
+    /// And signing in finds the one in the frontier that was asked.
+    ///
+    /// A search over the whole table would return whichever of the three
+    /// came first, which is somebody else's account — with somebody
+    /// else's password, so it would mostly fail, and mostly is not a
+    /// property.
+    #[tokio::test]
+    async fn signing_in_finds_the_one_in_that_frontier() {
+        let database = crate::db::open_in_memory().await.expect("open");
+        let acme = crate::platform::tenants::create(&database, "Acme")
+            .await
+            .expect("tenant");
+
+        let node_side = create_in(
+            &database,
+            "jorge",
+            "the node one here",
+            roles::NodeRole::Admin,
+            None,
+        )
+        .await
+        .expect("the machine's operator");
+        let tenant_side = create_in(
+            &database,
+            "jorge",
+            "the organisation one",
+            roles::NodeRole::Admin,
+            Some(&acme.id),
+        )
+        .await
+        .expect("theirs");
+        assert_ne!(node_side.id, tenant_side.id);
+
+        let found = authenticate(&database, "jorge", "the node one here", None)
+            .await
+            .expect("query")
+            .expect("signed in");
+        assert_eq!(found.id, node_side.id);
+        assert_eq!(found.tenant_id, None);
+
+        let found = authenticate(&database, "jorge", "the organisation one", Some(&acme.id))
+            .await
+            .expect("query")
+            .expect("signed in");
+        assert_eq!(found.id, tenant_side.id);
+        assert_eq!(found.tenant_id.as_deref(), Some(&*acme.id));
+
+        // And one frontier's password is not the other's way in.
+        assert!(
+            authenticate(&database, "jorge", "the organisation one", None)
+                .await
+                .expect("query")
+                .is_none(),
+            "an organisation's password signed somebody in to the machine"
+        );
+    }
+
     #[tokio::test]
     async fn a_fresh_node_has_nobody() {
         assert!(!any_account(&database().await).await.expect("query"));
@@ -662,12 +894,12 @@ mod tests {
         let (name, password) = reset_password(&database, "jorge").await.expect("reset");
         assert_eq!(name, "Jorge", "and the answer says whose it was");
 
-        assert!(authenticate(&database, "jorge", &password)
+        assert!(authenticate(&database, "jorge", &password, None)
             .await
             .expect("query")
             .is_some());
         assert!(
-            authenticate(&database, "jorge", "correct horse battery")
+            authenticate(&database, "jorge", "correct horse battery", None)
                 .await
                 .expect("query")
                 .is_none(),
@@ -782,23 +1014,29 @@ mod tests {
             .await
             .expect("created");
 
-        assert!(authenticate(&database, "Jorge", "correct horse battery")
-            .await
-            .expect("query")
-            .is_some());
+        assert!(
+            authenticate(&database, "Jorge", "correct horse battery", None)
+                .await
+                .expect("query")
+                .is_some()
+        );
         // Case-insensitive: somebody typing at 3am should get in.
-        assert!(authenticate(&database, "jorge", "correct horse battery")
-            .await
-            .expect("query")
-            .is_some());
-        assert!(authenticate(&database, "jorge", "wrong")
+        assert!(
+            authenticate(&database, "jorge", "correct horse battery", None)
+                .await
+                .expect("query")
+                .is_some()
+        );
+        assert!(authenticate(&database, "jorge", "wrong", None)
             .await
             .expect("query")
             .is_none());
-        assert!(authenticate(&database, "nobody", "correct horse battery")
-            .await
-            .expect("query")
-            .is_none());
+        assert!(
+            authenticate(&database, "nobody", "correct horse battery", None)
+                .await
+                .expect("query")
+                .is_none()
+        );
     }
 
     /// The password is never stored, and the hash is argon2id rather

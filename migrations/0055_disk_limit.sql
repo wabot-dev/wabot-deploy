@@ -1,0 +1,37 @@
+-- The most disk a service's volumes may have, per copy.
+--
+-- ## The third ceiling, and the one that is not like the other two
+--
+-- `memory_limit` reaches the OCI spec as `memory.max` and
+-- `cpu_millicores` as `cpu.max`. **There is no `disk.max` to write.**
+-- Volumes share a filesystem and nothing on this node enforces a share
+-- of it: doing that properly is XFS project quotas — which needs the
+-- data directory on XFS with `pquota`, and no node can be assumed to
+-- have it — or a loopback filesystem per volume, which buys a hard bound
+-- and costs a mount, an fsck risk and a resize story per volume.
+-- `docs/roadmap.md` §4 called that a different order of work and it was
+-- right.
+--
+-- ## So what is this number for
+--
+-- **Admission, not containment.** It is what the node writes down
+-- against itself when deciding whether another copy fits, and what an
+-- organisation's budget is charged. It stops the *next* placement; it
+-- does not stop a container already running from filling the disk.
+--
+-- That distinction has to reach the form, or this is the `archiving`
+-- label again: a switch that said "on" over a database that was not
+-- archiving. A number that looks like the memory field and quietly does
+-- less is worse than no field, because somebody plans around it.
+--
+-- What the node does instead, and it is not nothing: it refuses to place
+-- more than it can hold, and `replica.disk_bytes` is already measured
+-- and reported — so a copy over what it was promised is a thing a page
+-- can say out loud.
+--
+-- ## Nullable, like the other two
+--
+-- NULL is no ceiling, which is what every service has today. A default
+-- would be this migration deciding somebody's service is now refused at
+-- a number nobody chose.
+ALTER TABLE service ADD COLUMN disk_limit INTEGER;

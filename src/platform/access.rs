@@ -34,7 +34,37 @@ pub async fn of(
     project_id: &str,
 ) -> PlatformResult<Access> {
     if account.role == NodeRole::Admin {
-        return Ok(Access::ADMIN);
+        // **An administrator of a scope, not of the machine.** Without
+        // the second half this hands a tenant's administrator every
+        // project on the node — its own and every other tenant's — and
+        // it does it through the one function every page trusts, which
+        // is exactly the blast radius that makes a single door worth
+        // having and worth getting right.
+        //
+        // Asked of the project rather than of a list, because this is
+        // the function a page hands one id to; `projects_for` narrows
+        // the same way in SQL, for the same reason it always did.
+        let scope = super::projects::find(database, project_id)
+            .await?
+            .and_then(|project| project.tenant_id);
+        return Ok(match (scope.as_deref(), account.tenant_id.as_deref()) {
+            // Their own scope, whole.
+            (theirs, mine) if theirs == mine => Access::ADMIN,
+            // **The machine's operator may look into a tenant, and only
+            // look.** Somebody has to be able to say what this node is
+            // running, and `projects_for` lists a tenant's projects for
+            // them — a door that showed them the list and refused the
+            // page would be two answers to one question.
+            //
+            // Read and nothing else, because a tenant's project is
+            // administered from inside the tenant. It is the same shape a
+            // service that arrived on an errand already has: visible,
+            // provenanced, and not this node's to edit.
+            (Some(_), None) => Access::member(ProjectRole::Viewer),
+            // And never the other way. A tenant reaching the node's own
+            // projects, or another tenant's, is the frontier failing.
+            _ => Access::NONE,
+        });
     }
 
     let (account_id, project_id) = (account.id.clone(), project_id.to_string());
@@ -67,7 +97,19 @@ pub async fn projects_for(
     account: &Account,
 ) -> PlatformResult<Vec<Project>> {
     if account.role == NodeRole::Admin {
-        return super::projects::all(database).await;
+        // Every project **of their own scope**. For the node's operator
+        // that is still everything, tenants included — somebody has to
+        // be able to see what the machine is running — and for a
+        // tenant's administrator it is theirs and nothing else.
+        //
+        // Narrowed in the query rather than after it, which is the rule
+        // this module was written around: a list built from everything
+        // and filtered later leaks the day somebody adds a page that
+        // forgets to filter.
+        return match &account.tenant_id {
+            None => super::projects::all(database).await,
+            Some(tenant) => of_tenant(database, tenant).await,
+        };
     }
 
     let account_id = account.id.clone();
@@ -76,7 +118,7 @@ pub async fn projects_for(
             connection
                 .prepare(
                     "SELECT p.\"id\", p.\"name\", p.\"slug\", p.\"created_at\", \
-                     p.\"origin_node_id\" \
+                     p.\"origin_node_id\", p.\"tenant_id\" \
                      FROM project p JOIN membership m ON m.\"project_id\" = p.\"id\" \
                      WHERE m.\"account_id\" = ?1 ORDER BY p.\"created_at\" ASC",
                 )?
@@ -87,6 +129,33 @@ pub async fn projects_for(
                         slug: row.get(2)?,
                         created_at: row.get(3)?,
                         origin_node_id: row.get(4)?,
+                        tenant_id: row.get(5)?,
+                    })
+                })?
+                .collect()
+        })
+        .await?)
+}
+
+/// Every project of one tenant.
+pub async fn of_tenant(database: &SqliteDatabase, tenant_id: &str) -> PlatformResult<Vec<Project>> {
+    let tenant_id = tenant_id.to_string();
+    Ok(database
+        .read(move |connection| {
+            connection
+                .prepare(
+                    "SELECT \"id\", \"name\", \"slug\", \"created_at\", \"origin_node_id\", \
+                     \"tenant_id\" FROM project WHERE \"tenant_id\" = ?1 \
+                     ORDER BY \"created_at\" ASC",
+                )?
+                .query_map([tenant_id], |row| {
+                    Ok(Project {
+                        id: row.get(0)?,
+                        name: row.get(1)?,
+                        slug: row.get(2)?,
+                        created_at: row.get(3)?,
+                        origin_node_id: row.get(4)?,
+                        tenant_id: row.get(5)?,
                     })
                 })?
                 .collect()
@@ -213,15 +282,150 @@ mod tests {
         let admin = accounts::create_admin(&database, &token, "admin", "a long enough passphrase")
             .await
             .expect("admin");
-        let member = accounts::create(
+        let member = accounts::create_in(
             &database,
             "member",
             "another long passphrase",
             NodeRole::Member,
+            None,
         )
         .await
         .expect("member");
         (database, admin, member)
+    }
+
+    /// A tenant's administrator reaches their own projects and nothing
+    /// else.
+    ///
+    /// **The one door, and the biggest thing behind it.** `of` short-
+    /// circuits on the role, so without the scope beside it a tenant's
+    /// administrator would be handed `Access::ADMIN` for every project on
+    /// the machine — the node's own and every other tenant's — through
+    /// the function every page in this console trusts to be the only
+    /// answer. One clause, and the blast radius of getting it wrong is
+    /// the reason a single door is worth having.
+    #[tokio::test]
+    async fn a_tenants_administrator_reaches_only_that_tenants_projects() {
+        let (database, node_admin, _) = node().await;
+        let tenant = crate::platform::tenants::create(&database, "Acme")
+            .await
+            .expect("tenant");
+        let other = crate::platform::tenants::create(&database, "Globex")
+            .await
+            .expect("tenant");
+
+        let theirs = super::super::projects::create_for(&database, "theirs", Some(&tenant.id))
+            .await
+            .expect("project");
+        let rivals = super::super::projects::create_for(&database, "rivals", Some(&other.id))
+            .await
+            .expect("project");
+        let nodes_own = super::super::projects::create(&database, "the nodes own")
+            .await
+            .expect("project");
+
+        let admin = Account {
+            tenant_id: Some(tenant.id.clone()),
+            ..node_admin.clone()
+        };
+
+        assert!(
+            of(&database, &admin, &theirs.id)
+                .await
+                .expect("access")
+                .may_administer(),
+            "an administrator of a tenant administers its projects"
+        );
+        for elsewhere in [&rivals.id, &nodes_own.id] {
+            assert_eq!(
+                of(&database, &admin, elsewhere).await.expect("access"),
+                Access::NONE,
+                "a tenant reached past its own frontier"
+            );
+        }
+
+        // And the list is narrowed in the query, not by the page.
+        let seen: Vec<String> = projects_for(&database, &admin)
+            .await
+            .expect("projects")
+            .into_iter()
+            .map(|project| project.slug)
+            .collect();
+        assert_eq!(seen, vec!["theirs".to_string()]);
+
+        // The node's own operator still sees the machine whole —
+        // somebody has to be able to say what it is running.
+        let all: Vec<String> = projects_for(&database, &node_admin)
+            .await
+            .expect("projects")
+            .into_iter()
+            .map(|project| project.slug)
+            .collect();
+        assert_eq!(all.len(), 3, "{all:?}");
+    }
+
+    /// Being the node's administrator and being a tenant's are different
+    /// things, and one function tells them apart.
+    ///
+    /// **Forty-three checks ask `is_admin`**, and the one that forgot a
+    /// third case would be a customer holding the machine's own settings
+    /// page. So the distinction lives inside the method rather than at
+    /// the call sites, which is the same argument `roles.rs` makes about
+    /// spelling a comparison out thirty times.
+    #[tokio::test]
+    async fn administering_a_tenant_is_not_administering_the_machine() {
+        let (database, node_admin, _) = node().await;
+        let tenant = crate::platform::tenants::create(&database, "Acme")
+            .await
+            .expect("tenant");
+        let admin = Account {
+            tenant_id: Some(tenant.id),
+            ..node_admin.clone()
+        };
+
+        assert!(node_admin.is_admin() && node_admin.administers_scope());
+        assert!(
+            !admin.is_admin(),
+            "a tenant's administrator reached the node's own pages"
+        );
+        assert!(
+            admin.administers_scope(),
+            "and cannot manage their own organisation"
+        );
+    }
+
+    /// A session belongs to the frontier it was minted in.
+    ///
+    /// The `Host` decides the scope before anything reads a cookie, so
+    /// this is what keeps the two in agreement. Nothing a stray session
+    /// reached would be theirs — `of` narrows either way — but a
+    /// boundary that holds only because every query remembered to narrow
+    /// is not a boundary.
+    #[tokio::test]
+    async fn a_session_does_not_cross_between_scopes() {
+        let (database, node_admin, _) = node().await;
+        let tenant = crate::platform::tenants::create(&database, "Acme")
+            .await
+            .expect("tenant");
+        let theirs = Account {
+            tenant_id: Some(tenant.id.clone()),
+            ..node_admin.clone()
+        };
+
+        assert!(node_admin.belongs_to(None));
+        assert!(theirs.belongs_to(Some(&tenant.id)));
+        assert!(
+            !theirs.belongs_to(None),
+            "a tenant's session was accepted on the node's own console"
+        );
+        assert!(
+            !node_admin.belongs_to(Some(&tenant.id)),
+            "the operator's session was accepted on a tenant's console"
+        );
+        assert!(
+            !theirs.belongs_to(Some("tnt-somebodyelse")),
+            "a session crossed between tenants"
+        );
     }
 
     #[tokio::test]

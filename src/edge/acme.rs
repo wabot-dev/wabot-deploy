@@ -377,6 +377,21 @@ pub async fn wanted_names(database: &SqliteDatabase, config: &Config) -> Vec<Str
         Ok(serving) => names.extend(serving),
         Err(error) => tracing::warn!(%error, "could not read which names this node serves"),
     }
+    // And every organisation's own console name.
+    //
+    // **A control-plane name, like this node's own domain**, and that is
+    // why nothing above finds it: `edges::of_node` reads the names of
+    // *services*, and an organisation's console is not one — it is this
+    // node answering for a second frontier. Without this the route
+    // exists, the node answers, and it answers with the local
+    // authority's certificate for a name that is not on it, which is a
+    // browser warning about impersonation rather than one about trust.
+    //
+    // Found on the node the first time one was given a domain.
+    match crate::platform::tenants::all(database).await {
+        Ok(tenants) => names.extend(tenants.into_iter().filter_map(|tenant| tenant.domain)),
+        Err(error) => tracing::warn!(%error, "could not read the organisations' names"),
+    }
     // And the names this node serves for somebody else. They have no
     // port row here — the route arrived on an errand — so reading the
     // `port` table alone would leave the one thing this node was asked
@@ -1350,6 +1365,49 @@ mod tests {
                 "app.example.com".to_string(),
                 "node.example.com".to_string()
             ]
+        );
+    }
+
+    /// An organisation's console name is asked for like the node's own.
+    ///
+    /// **Found on the node**, the first time one was given a domain:
+    /// `routing::sync` wrote the route, the edge answered on it, and it
+    /// answered with the local authority's certificate — which does not
+    /// carry that name. The browser calls that impersonation, not
+    /// untrusted, and it is right to.
+    ///
+    /// Nothing above finds it because every other source reads the names
+    /// of *services*: `edges::of_node` is the set this node was chosen
+    /// to serve, and an organisation's console is not a service. It is
+    /// this node answering for a second frontier, which makes it a
+    /// control-plane name like the node's own domain — the one thing
+    /// this function already knew how to want.
+    #[tokio::test]
+    async fn an_organisations_console_name_is_wanted_like_the_nodes_own() {
+        let database = database().await;
+        let mut config = Config::default();
+        config.node.domain = Some("node.example.com".into());
+
+        let tenant = crate::platform::tenants::create(&database, "Acme")
+            .await
+            .expect("tenant");
+        // Until it has a domain there is nothing to want, and a tenant
+        // with none is the ordinary case.
+        assert_eq!(
+            wanted_names(&database, &config).await,
+            vec!["node.example.com".to_string()]
+        );
+
+        crate::platform::tenants::set_domain(&database, &tenant.id, Some("acme.example.com"))
+            .await
+            .expect("domain");
+        assert_eq!(
+            wanted_names(&database, &config).await,
+            vec![
+                "acme.example.com".to_string(),
+                "node.example.com".to_string()
+            ],
+            "the name the route already answers on was never asked for"
         );
     }
 

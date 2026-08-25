@@ -134,8 +134,18 @@ pub async fn run(config: Config) -> anyhow::Result<i32> {
         .merge(crate::console::routes(&container))
         .merge(crate::registry::routes(&container));
 
-    let (edge, resolver) =
-        crate::edge::build(&database, control_plane, &config, routes.clone()).await?;
+    // Two routers, not one with a branch in every handler. See
+    // `console::tenant`.
+    let tenant_plane =
+        crate::console::tenant_routes(&container).merge(crate::api::routes(&container));
+    let (edge, resolver) = crate::edge::build(
+        &database,
+        control_plane,
+        tenant_plane,
+        &config,
+        routes.clone(),
+    )
+    .await?;
 
     // After the edge is built, so the deployer holds the same route
     // table the listener reads and a deployment takes effect without a

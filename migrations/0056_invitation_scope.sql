@@ -1,0 +1,33 @@
+-- Which frontier an invitation lets somebody into.
+--
+-- ## The gap this closes
+--
+-- A tenant's console answered, held a certificate, refused a session
+-- from the wrong scope — and nobody could sign in to it, because every
+-- invitation made an account of the node's own. The frontier was built
+-- and had no door.
+--
+-- ## Why it is on the invitation and not chosen at the end
+--
+-- Because the invitation is the decision. Whoever mints it is saying
+-- who this person will be, and that has to be settled before the link
+-- is sent rather than by whoever opens it — an invitation that let the
+-- invitee pick their own scope would be an invitation to be anybody.
+--
+-- It also makes the one-time token mean what it says. The token is
+-- already spent once and only once (`used_at IS NULL` in the UPDATE,
+-- and the account is removed if the race is lost); with the scope on
+-- the row, spending it grants exactly one identity in exactly one
+-- frontier.
+--
+-- NULL is the node's own, which is every invitation ever made until
+-- now — the same spelling `account.tenant_id` and `project.tenant_id`
+-- use, so nothing existing has to be rewritten to keep meaning what it
+-- meant.
+--
+-- **Not a cascade.** An organisation cannot be deleted while it still
+-- holds projects, and a live invitation into it is a smaller thing than
+-- that — but a `DELETE` that silently took invitations with it would
+-- make "the link stopped working" a mystery with no row left to explain
+-- it. The reference is enough.
+ALTER TABLE invitation ADD COLUMN tenant_id TEXT REFERENCES tenant (id);

@@ -245,6 +245,36 @@ pub async fn sync(
     // answers on, and `doctor` would list it for ever.
     routes::retain_control_plane(database, &own).await?;
 
+    // And one row per tenant that has a domain, so its console answers
+    // there and is narrowed to it before any handler runs.
+    //
+    // **Its own convergent pass**, and that is not tidiness. A tenant
+    // row falls in the gap between `retain_proxies`, which skips a route
+    // with no `service_id` on purpose, and `retain_control_plane`, which
+    // touches only rows of its own kind — the same gap that left an
+    // errand-written proxy row behind for ever until `forget_for_other`
+    // was written. A tenant renamed, given a different domain or deleted
+    // would otherwise keep answering on the name it used to have, with a
+    // certificate for it, for as long as the node ran.
+    let tenants = crate::platform::tenants::all(database).await?;
+    let mut tenanted: Vec<String> = Vec::new();
+    for tenant in tenants {
+        let Some(domain) = tenant.domain else {
+            continue;
+        };
+        // Never over one of this node's own names. The console an
+        // operator fixes things from is the one thing that must not be
+        // reachable only through somebody else's frontier, and a tenant
+        // given the node's domain would take it.
+        if own.iter().any(|name| name.eq_ignore_ascii_case(&domain)) {
+            tracing::warn!(%domain, tenant = %tenant.id, "a tenant claims one of this node's names");
+            continue;
+        }
+        routes::upsert(database, &domain, &Upstream::Tenant(tenant.id), None).await?;
+        tenanted.push(domain);
+    }
+    routes::retain_tenants(database, &tenanted).await?;
+
     if let Some(table) = table {
         table.replace(routes::load_all(database).await?);
         tracing::info!(hosts = table.hosts().join(", "), "routes reloaded");

@@ -88,6 +88,30 @@ impl Kind {
     pub fn is_managed(self) -> bool {
         !matches!(self, Kind::Container)
     }
+
+    /// What a node has to have agreed to before a copy of this can be
+    /// placed on it.
+    ///
+    /// **Holding somebody's data and running somebody's container are
+    /// different favours**, each granted and withdrawn on its own, so
+    /// this is one capability rather than two — the same answer
+    /// `errand::consent_for` gives for the errand that carries the copy,
+    /// and the same one `evict_ungranted` asks at boot before throwing
+    /// one off.
+    ///
+    /// It is here because the picker that offers nodes and the dispatch
+    /// that sends the errand must not disagree, and they did: the
+    /// placement form filtered on `host` while a database copy travels as
+    /// `Kind::Database` and needs `store`, so a node with one and not the
+    /// other was offered, chosen, written as a row, and then skipped in
+    /// silence — a copy the console showed as placed that was never sent
+    /// anywhere.
+    pub fn placement_capability(self) -> crate::network::capability::Capability {
+        match self.is_managed() {
+            true => crate::network::capability::Capability::Store,
+            false => crate::network::capability::Capability::Host,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -125,6 +149,14 @@ pub struct Service {
     /// `migrations/0038_cpu_limit.sql` for why there is no second number
     /// for a request.
     pub cpu_millicores: Option<u32>,
+    /// The most disk this service's volumes may have, per copy.
+    ///
+    /// **Admission, not containment**, and the difference is the whole
+    /// of what this field is: there is no `disk.max` to write into a
+    /// container's spec, so this stops the *next* placement and does not
+    /// stop a container already running from filling the machine. The
+    /// form has to say so — see migration `0055`.
+    pub disk_limit: Option<u64>,
     /// Whether this service's output is timestamped as it is written.
     ///
     /// Off by default, and the default matters more than usual here:
@@ -226,6 +258,7 @@ pub async fn create(
         // database picks one at creation.
         memory_limit: None,
         cpu_millicores: None,
+        disk_limit: None,
         log_timestamps: false,
         log_budget: None,
         // A plain container. `databases::create` calls `set_kind`
@@ -350,7 +383,7 @@ pub async fn in_project(
 const COLUMNS: &str = "\"id\", \"project_id\", \"name\", \"slug\", \"image\", \"env\", \
      \"desired_state\", \"last_error\", \"address\", \"track_tag\", \"auto_deploy\", \
      \"origin_node_id\", \"memory_limit\", \"kind\", \"cpu_millicores\", \
-     \"log_timestamps\", \"log_budget\"";
+     \"log_timestamps\", \"log_budget\", \"disk_limit\"";
 
 pub async fn all(
     database: &SqliteDatabase,
@@ -398,6 +431,7 @@ fn decode(row: &wabot::sqlite::rusqlite::Row<'_>) -> wabot::sqlite::rusqlite::Re
         cpu_millicores: row.get::<_, Option<i64>>(14)?.map(|milli| milli as u32),
         log_timestamps: row.get::<_, i64>(15)? != 0,
         log_budget: row.get::<_, Option<i64>>(16)?.map(|bytes| bytes as u64),
+        disk_limit: row.get::<_, Option<i64>>(17)?.map(|bytes| bytes as u64),
     })
 }
 
@@ -654,6 +688,45 @@ pub async fn set_cpu_limit(
     Ok(())
 }
 
+/// The most disk this service's volumes may have, per copy.
+///
+/// **Admission, not containment.** Nothing writes this into a
+/// container's spec, because there is nothing to write it into: volumes
+/// share a filesystem and enforcing a share of one is XFS project quotas
+/// or a loopback per volume, which is a different order of work. What
+/// this number does is stop the *next* placement and charge an
+/// organisation's budget.
+///
+/// The floor is the same as memory's, and for a plainer reason: a
+/// database's own files are already megabytes before it has stored
+/// anything, so a ceiling under that is a service that can never start.
+pub async fn set_disk_limit(
+    database: &SqliteDatabase,
+    service_id: &str,
+    bytes: Option<u64>,
+) -> PlatformResult<()> {
+    if let Some(bytes) = bytes {
+        if bytes < super::presets::MIN_MEMORY {
+            return Err(PlatformError::Refused(format!(
+                "a disk ceiling under {} is one nothing could start in",
+                super::presets::label(super::presets::MIN_MEMORY)
+            )));
+        }
+    }
+    let (id, bytes) = (service_id.to_string(), bytes.map(|bytes| bytes as i64));
+    database
+        .write(move |connection| {
+            connection.execute(
+                "UPDATE service SET \"disk_limit\" = ?2, \"updated_at\" = ?3 \
+                 WHERE \"id\" = ?1",
+                (id, bytes, now_ms()),
+            )?;
+            Ok(())
+        })
+        .await?;
+    Ok(())
+}
+
 /// Turn timestamped logging on or off for one service.
 ///
 /// Takes effect at the next deployment, not now: the logging URI is
@@ -753,6 +826,39 @@ pub async fn delete(database: &SqliteDatabase, service_id: &str) -> PlatformResu
 #[cfg(test)]
 mod tests {
 
+    /// The picker and the door have to name the same capability.
+    ///
+    /// **They did not, and the copy vanished between them.** The
+    /// placement form offered nodes on `host`; a managed database's copy
+    /// travels as `errand::Kind::Database`, which
+    /// [`errand::consent_for`] answers `store` for. So a node with `host`
+    /// and not `store` was offered, chosen, written as a replica row —
+    /// and then skipped in silence at dispatch, leaving a copy the
+    /// console showed as placed that was never sent anywhere.
+    ///
+    /// Asked against `consent_for` rather than against a literal, because
+    /// a test that restated the mapping would agree with a wrong mapping
+    /// just as happily.
+    #[test]
+    fn what_is_offered_is_what_the_far_side_will_consent_to() {
+        use crate::network::errand;
+
+        // Which errand carries a copy of each kind, which is the pairing
+        // `holders` and `databases::dispatch` make between them.
+        for (kind, carried_by) in [
+            (Kind::Container, errand::Kind::Host),
+            (Kind::Postgres, errand::Kind::Database),
+            (Kind::Unknown, errand::Kind::Database),
+        ] {
+            assert_eq!(
+                Some(kind.placement_capability()),
+                errand::consent_for(carried_by, &serde_json::Value::Null),
+                "a {} copy is offered on one capability and consented to as another",
+                kind.as_str()
+            );
+        }
+    }
+
     /// containerd's own rule, copied from the error it answers with.
     /// A container id it refuses is a deployment that fails after the
     /// network is already built.
@@ -774,6 +880,7 @@ mod tests {
             auto_deploy: true,
             memory_limit: None,
             cpu_millicores: None,
+            disk_limit: None,
             log_timestamps: false,
             kind: Kind::Container,
         };
