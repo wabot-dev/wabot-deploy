@@ -668,6 +668,7 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
         "Solo lo que se le concedió, que está listado a su lado abajo. Revocar cualquier parte surte efecto aquí y de inmediato.",
     ),
     ("Open", "Abrir"),
+    ("Organisation", "Organización"),
     ("Organisations", "Organizaciones"),
     ("Outcome", "Resultado"),
     ("Output", "Salida"),

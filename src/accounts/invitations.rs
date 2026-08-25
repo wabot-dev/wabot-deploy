@@ -48,6 +48,14 @@ pub struct Invitation {
     /// An invitation that let the invitee choose their own scope would
     /// be an invitation to be anybody — see migration `0056`.
     pub tenant_id: Option<String>,
+    /// The organisation's name, carried on the row rather than looked
+    /// up by the page.
+    ///
+    /// The node's console lists these and must stay separable from
+    /// tenancy — `the_node_console_does_not_know_what_an_organisation_is`
+    /// fails the build if `people.rs` reaches for `platform::tenants`.
+    /// A join here costs one column and keeps that true.
+    pub scope_name: Option<String>,
 }
 
 impl Invitation {
@@ -261,11 +269,19 @@ pub async fn all(database: &SqliteDatabase) -> AccountResult<Vec<Invitation>> {
         .read(|connection| {
             connection
                 .prepare(
-                    "SELECT \"id\", \"node_role\", \"project_id\", \"project_role\", \
-                     \"created_by\", \"expires_at\", \"used_at\", \"tenant_id\" \
-                     FROM invitation ORDER BY \"created_at\" DESC",
+                    "SELECT i.\"id\", i.\"node_role\", i.\"project_id\", i.\"project_role\", \
+                     i.\"created_by\", i.\"expires_at\", i.\"used_at\", i.\"tenant_id\", \
+                     t.\"name\" \
+                     FROM invitation i \
+                     LEFT JOIN tenant t ON t.\"id\" = i.\"tenant_id\" \
+                     ORDER BY i.\"created_at\" DESC",
                 )?
-                .query_map([], decode)?
+                .query_map([], |row| {
+                    Ok(Invitation {
+                        scope_name: row.get(8)?,
+                        ..decode(row)?
+                    })
+                })?
                 .collect()
         })
         .await?)
@@ -295,6 +311,7 @@ fn decode(row: &wabot::sqlite::rusqlite::Row<'_>) -> wabot::sqlite::rusqlite::Re
         expires_at: row.get(5)?,
         used_at: row.get(6)?,
         tenant_id: row.get(7)?,
+        scope_name: None,
     })
 }
 

@@ -178,7 +178,14 @@ impl PeoplePages {
                         <tbody>
                             @for invitation in &invitations {
                                 <tr>
-                                    <td>(invitation.node_role.label())</td>
+                                    <td>
+                                        (invitation.node_role.label())
+                                        @if let Some(name) = &invitation.scope_name {
+                                            <div class="tile-detail">
+                                                (t("Organisation")) " " (name)
+                                            </div>
+                                        }
+                                    </td>
                                     <td>
                                         @if invitation.spent() {
                                             <span class="badge">(t("Used"))</span>
@@ -343,10 +350,16 @@ impl PeopleApi {
         }
 
         let path = request.uri().path().to_string();
-        if let Some(id) = super::auth::segments(&path).get(2) {
-            invitations::revoke(&self.state.database, id).await?;
+        let Some(id) = super::auth::segments(&path).get(2).cloned() else {
+            return Ok(see_other("/people"));
+        };
+
+        match crate::usecases::node_user_revoke_invitation::run(&self.state.database, &account, id)
+            .await
+        {
+            Ok(()) => Ok(see_other("/people")),
+            Err(reason) => Ok(back_with_error("/people", &reason)),
         }
-        Ok(see_other("/people"))
     }
 
     #[post("/people/:account/role")]
