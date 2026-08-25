@@ -75,6 +75,8 @@ impl Invitation {
 /// that is not their own — that is how the first person of an
 /// organisation gets in, and it is the only way in, since an
 /// organisation with nobody in it cannot invite anybody either.
+/// Only the hash is stored: a database somebody reads is not a list of
+/// live links.
 pub async fn create_into(
     database: &SqliteDatabase,
     created_by: &Account,
@@ -82,6 +84,7 @@ pub async fn create_into(
     project: Option<(&str, ProjectRole)>,
     tenant_id: Option<&str>,
 ) -> AccountResult<String> {
+    let token = wabot::prelude::password::generate(32);
     // **Nobody invites into somebody else's frontier.** The machine's
     // operator may name any of them, because sharing the machine out is
     // what they do; anybody else gets their own and only their own. A
@@ -121,7 +124,6 @@ pub async fn create_into(
         ));
     }
 
-    let token = wabot::prelude::password::generate(32);
     let hash = sha256_hex(&token);
     let id = format!("inv-{}", wabot::prelude::password::generate(12));
     let expires_at = now_ms() + INVITATION_DAYS * 86_400_000;

@@ -64,7 +64,7 @@ impl UpdatePages {
         };
         // Updating the node is the node's business, which belongs to
         // whoever runs it.
-        if !account.is_admin() {
+        if !crate::authz::node_user::manages_the_machine(&account) {
             return Ok(Redirect::found("/").into());
         }
 
@@ -153,7 +153,7 @@ impl UpdatePages {
         let Some(account) = signed_in(&self.auth) else {
             return Ok(Redirect::found("/sign-in").into());
         };
-        if !account.is_admin() {
+        if !crate::authz::node_user::manages_the_machine(&account) {
             return Ok(Redirect::found("/").into());
         }
 
@@ -238,7 +238,9 @@ impl UpdateApi {
         use wabot::rest::axum::body::{Body, Bytes};
         use wabot::rest::axum::http::{header, StatusCode};
 
-        if !signed_in(&self.auth).is_some_and(|account| account.is_admin()) {
+        if !signed_in(&self.auth)
+            .is_some_and(|account| crate::authz::node_user::manages_the_machine(&account))
+        {
             // A status rather than a redirect: an `EventSource` cannot
             // follow one usefully.
             return Ok(Response::builder()
@@ -281,7 +283,7 @@ impl UpdateApi {
         let Some(account) = signed_in(&self.auth) else {
             return Ok(super::auth::see_other("/sign-in"));
         };
-        if !account.is_admin() {
+        if !crate::authz::node_user::manages_the_machine(&account) {
             return Ok(super::auth::see_other("/"));
         }
 
@@ -298,7 +300,7 @@ impl UpdateApi {
         let Some(account) = signed_in(&self.auth) else {
             return Ok(super::auth::see_other("/sign-in"));
         };
-        if !account.is_admin() {
+        if !crate::authz::node_user::manages_the_machine(&account) {
             return Ok(super::auth::see_other("/"));
         }
 

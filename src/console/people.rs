@@ -53,7 +53,7 @@ impl PeoplePages {
         let Some(account) = signed_in(&self.auth) else {
             return Ok(Redirect::found("/sign-in").into());
         };
-        if !account.is_admin() {
+        if !crate::authz::node_user::manages_the_machine(&account) {
             return Ok(Redirect::found("/").into());
         }
 
@@ -288,7 +288,7 @@ impl PeopleApi {
         let Some(account) = signed_in(&self.auth) else {
             return Ok(see_other("/sign-in"));
         };
-        if !account.is_admin() {
+        if !crate::authz::node_user::manages_the_machine(&account) {
             return Ok(see_other("/"));
         }
 
@@ -370,7 +370,7 @@ impl PeopleApi {
         let Some(account) = signed_in(&self.auth) else {
             return Ok(see_other("/sign-in"));
         };
-        if !account.is_admin() {
+        if !crate::authz::node_user::manages_the_machine(&account) {
             return Ok(see_other("/"));
         }
 
@@ -388,7 +388,7 @@ impl PeopleApi {
         let Some(account) = signed_in(&self.auth) else {
             return Ok(see_other("/sign-in"));
         };
-        if !account.is_admin() {
+        if !crate::authz::node_user::manages_the_machine(&account) {
             return Ok(see_other("/"));
         }
 
@@ -419,7 +419,7 @@ impl PeopleApi {
         let Some(account) = signed_in(&self.auth) else {
             return Ok(see_other("/sign-in"));
         };
-        if !account.is_admin() {
+        if !crate::authz::node_user::manages_the_machine(&account) {
             return Ok(see_other("/"));
         }
 

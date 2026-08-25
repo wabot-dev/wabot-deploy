@@ -173,7 +173,9 @@ impl NodePages {
     /// controller has no second case to carry, which is what keeps the
     /// two halves separable.
     async fn settings(&self) -> UiResult<ViewOutcome> {
-        match signed_in(&self.auth).is_some_and(|account| account.is_admin()) {
+        match signed_in(&self.auth)
+            .is_some_and(|account| crate::authz::node_user::manages_the_machine(&account))
+        {
             true => Ok(Redirect::found("/node").into()),
             false => Ok(Redirect::found("/").into()),
         }
@@ -206,7 +208,7 @@ impl NodePages {
         };
         // The node belongs to whoever runs it. Hiding the link is
         // courtesy; this is the boundary.
-        if !account.is_admin() {
+        if !crate::authz::node_user::manages_the_machine(&account) {
             return Ok(Redirect::found("/").into());
         }
 
@@ -341,7 +343,7 @@ impl NodePages {
         let Some(account) = signed_in(&self.auth) else {
             return Ok(Redirect::found("/sign-in").into());
         };
-        if !account.is_admin() {
+        if !crate::authz::node_user::manages_the_machine(&account) {
             return Ok(Redirect::found("/").into());
         }
 
@@ -399,7 +401,7 @@ impl NodePages {
         let Some(account) = signed_in(&self.auth) else {
             return Ok(Redirect::found("/sign-in").into());
         };
-        if !account.is_admin() {
+        if !crate::authz::node_user::manages_the_machine(&account) {
             return Ok(Redirect::found("/").into());
         }
 
@@ -463,7 +465,7 @@ impl NodePages {
         let Some(account) = signed_in(&self.auth) else {
             return Ok(Redirect::found("/sign-in").into());
         };
-        if !account.is_admin() {
+        if !crate::authz::node_user::manages_the_machine(&account) {
             return Ok(Redirect::found("/").into());
         }
 
@@ -636,7 +638,7 @@ impl NodePages {
         let Some(account) = signed_in(&self.auth) else {
             return Ok(Redirect::found("/sign-in").into());
         };
-        if !account.is_admin() {
+        if !crate::authz::node_user::manages_the_machine(&account) {
             return Ok(Redirect::found("/").into());
         }
         let Some(node) = network::find(&self.state.database, &query.node).await? else {
@@ -3137,7 +3139,7 @@ impl NodeApi {
         let Some(account) = signed_in(&self.auth) else {
             return Ok(super::auth::see_other("/sign-in"));
         };
-        if !account.is_admin() {
+        if !crate::authz::node_user::manages_the_machine(&account) {
             return Ok(super::auth::see_other("/"));
         }
         let here = &self_path(&self.state.database).await;
@@ -3250,7 +3252,7 @@ impl NodeApi {
         let Some(account) = signed_in(&self.auth) else {
             return Ok(super::auth::see_other("/sign-in"));
         };
-        if !account.is_admin() {
+        if !crate::authz::node_user::manages_the_machine(&account) {
             return Ok(super::auth::see_other("/"));
         }
         let form = match super::auth::read_form(request).await {
@@ -3343,7 +3345,7 @@ impl NodeApi {
         // The page that draws the form is behind `is_admin` already, so
         // this was hidden and not enforced, which is the distinction
         // every island in this console is written around.
-        if !account.is_admin() {
+        if !crate::authz::node_user::manages_the_machine(&account) {
             return Ok(super::auth::see_other("/"));
         }
         let form = match super::auth::read_form(request).await {
@@ -3464,7 +3466,7 @@ impl NodeApi {
         let Some(account) = signed_in(&self.auth) else {
             return Ok(super::auth::see_other("/sign-in"));
         };
-        if !account.is_admin() {
+        if !crate::authz::node_user::manages_the_machine(&account) {
             return Ok(super::auth::see_other("/"));
         }
         let form = match super::auth::read_form(request).await {
@@ -3611,7 +3613,7 @@ impl NodeApi {
         let Some(account) = signed_in(&self.auth) else {
             return Ok(super::auth::see_other("/sign-in"));
         };
-        if !account.is_admin() {
+        if !crate::authz::node_user::manages_the_machine(&account) {
             return Ok(super::auth::see_other("/"));
         }
         let form = match super::auth::read_form(request).await {
@@ -3700,7 +3702,7 @@ impl NodeApi {
         let Some(account) = signed_in(&self.auth) else {
             return Ok(super::auth::see_other("/sign-in"));
         };
-        if !account.is_admin() {
+        if !crate::authz::node_user::manages_the_machine(&account) {
             return Ok(super::auth::see_other("/"));
         }
         let Some(path) = self.state.config.source.clone() else {
@@ -3756,7 +3758,7 @@ impl NodeApi {
         let Some(account) = signed_in(&self.auth) else {
             return Ok(super::auth::see_other("/sign-in"));
         };
-        if !account.is_admin() {
+        if !crate::authz::node_user::manages_the_machine(&account) {
             return Ok(super::auth::see_other("/"));
         }
         // Refused rather than queued. Two of these is two copies of every
@@ -3792,7 +3794,7 @@ impl NodeApi {
         };
         // Enrolling a node is not a project-level decision: it grants
         // whoever holds the token a place on this node's network.
-        if !account.is_admin() {
+        if !crate::authz::node_user::manages_the_machine(&account) {
             return Ok(super::auth::see_other("/"));
         }
         let here = "/network/invite";
@@ -3926,7 +3928,7 @@ impl NodeApi {
         };
         // Granting another node authority over this one is the largest
         // thing anybody can do from this console.
-        if !account.is_admin() {
+        if !crate::authz::node_user::manages_the_machine(&account) {
             return Ok(super::auth::see_other("/"));
         }
         let here = "/network/join";
@@ -3998,7 +4000,7 @@ impl NodeApi {
         let Some(account) = signed_in(&self.auth) else {
             return Ok(super::auth::see_other("/sign-in"));
         };
-        if !account.is_admin() {
+        if !crate::authz::node_user::manages_the_machine(&account) {
             return Ok(super::auth::see_other("/"));
         }
 
@@ -4027,7 +4029,7 @@ impl NodeApi {
         let Some(account) = signed_in(&self.auth) else {
             return Ok(super::auth::see_other("/sign-in"));
         };
-        if !account.is_admin() {
+        if !crate::authz::node_user::manages_the_machine(&account) {
             return Ok(super::auth::see_other("/"));
         }
 
@@ -4077,7 +4079,7 @@ impl NodeApi {
         let Some(account) = signed_in(&self.auth) else {
             return Ok(super::auth::see_other("/sign-in"));
         };
-        if !account.is_admin() {
+        if !crate::authz::node_user::manages_the_machine(&account) {
             return Ok(super::auth::see_other("/"));
         }
 
@@ -4100,7 +4102,7 @@ impl NodeApi {
         let Some(account) = signed_in(&self.auth) else {
             return Ok(super::auth::see_other("/sign-in"));
         };
-        if !account.is_admin() {
+        if !crate::authz::node_user::manages_the_machine(&account) {
             return Ok(super::auth::see_other("/"));
         }
 
@@ -4125,7 +4127,7 @@ impl NodeApi {
         let Some(account) = signed_in(&self.auth) else {
             return Ok(super::auth::see_other("/sign-in"));
         };
-        if !account.is_admin() {
+        if !crate::authz::node_user::manages_the_machine(&account) {
             return Ok(super::auth::see_other("/"));
         }
         let path = request.uri().path().to_string();
@@ -4170,7 +4172,7 @@ impl NodeApi {
         let Some(account) = signed_in(&self.auth) else {
             return Ok(super::auth::see_other("/sign-in"));
         };
-        if !account.is_admin() {
+        if !crate::authz::node_user::manages_the_machine(&account) {
             return Ok(super::auth::see_other("/"));
         }
         let path = request.uri().path().to_string();
@@ -4214,7 +4216,7 @@ impl NodeApi {
         let Some(account) = signed_in(&self.auth) else {
             return Ok(super::auth::see_other("/sign-in"));
         };
-        if !account.is_admin() {
+        if !crate::authz::node_user::manages_the_machine(&account) {
             return Ok(super::auth::see_other("/"));
         }
         let path = request.uri().path().to_string();
@@ -4260,7 +4262,7 @@ impl NodeApi {
         let Some(account) = signed_in(&self.auth) else {
             return Ok(super::auth::see_other("/sign-in"));
         };
-        if !account.is_admin() {
+        if !crate::authz::node_user::manages_the_machine(&account) {
             return Ok(super::auth::see_other("/"));
         }
         let here = &self_path(&self.state.database).await;
@@ -4322,7 +4324,9 @@ impl NodeApi {
     #[raw]
     #[middleware(SessionMiddleware)]
     async fn live_stream(&self, request: Request) -> RestResult<Response> {
-        if !signed_in(&self.auth).is_some_and(|account| account.is_admin()) {
+        if !signed_in(&self.auth)
+            .is_some_and(|account| crate::authz::node_user::manages_the_machine(&account))
+        {
             // A stream is not a page, so this is a status rather than a
             // redirect: an EventSource cannot follow one usefully.
             return Ok(Response::builder()

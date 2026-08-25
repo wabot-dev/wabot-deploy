@@ -50,7 +50,7 @@ impl TenantPages {
         let Some(account) = signed_in(&self.auth) else {
             return Ok(Redirect::found("/sign-in").into());
         };
-        if !account.is_admin() {
+        if !crate::authz::node_user::shares_the_machine_out(&account) {
             return Ok(Redirect::found("/").into());
         }
 
@@ -265,7 +265,7 @@ impl TenantApi {
         let Some(account) = signed_in(&self.auth) else {
             return Ok(see_other("/sign-in"));
         };
-        if !account.is_admin() {
+        if !crate::authz::node_user::shares_the_machine_out(&account) {
             return Ok(see_other("/"));
         }
         let form = match read_form(request).await {
@@ -291,7 +291,7 @@ impl TenantApi {
         let Some(account) = signed_in(&self.auth) else {
             return Ok(see_other("/sign-in"));
         };
-        if !account.is_admin() {
+        if !crate::authz::node_user::shares_the_machine_out(&account) {
             return Ok(see_other("/"));
         }
         let path = request.uri().path().to_string();
@@ -352,7 +352,7 @@ impl TenantApi {
         let Some(account) = signed_in(&self.auth) else {
             return Ok(see_other("/sign-in"));
         };
-        if !account.is_admin() {
+        if !crate::authz::node_user::shares_the_machine_out(&account) {
             return Ok(see_other("/"));
         }
         let path = request.uri().path().to_string();
@@ -399,7 +399,7 @@ impl TenantApi {
         let Some(account) = signed_in(&self.auth) else {
             return Ok(see_other("/sign-in"));
         };
-        if !account.is_admin() {
+        if !crate::authz::node_user::shares_the_machine_out(&account) {
             return Ok(see_other("/"));
         }
         let path = request.uri().path().to_string();
@@ -479,7 +479,7 @@ impl TenantApi {
         let Some(account) = signed_in(&self.auth) else {
             return Ok(see_other("/sign-in"));
         };
-        if !account.is_admin() {
+        if !crate::authz::node_user::shares_the_machine_out(&account) {
             return Ok(see_other("/"));
         }
         let path = request.uri().path().to_string();

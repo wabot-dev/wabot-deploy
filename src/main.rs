@@ -12,6 +12,7 @@ use clap::Parser;
 
 mod accounts;
 mod api;
+mod authz;
 mod bootstrap;
 mod cli;
 mod commands;
@@ -23,10 +24,12 @@ mod edge;
 mod ledger;
 mod network;
 mod node;
+mod pages;
 mod platform;
 mod registry;
 mod runtime;
 mod update;
+mod usecases;
 
 use cli::{Cli, Command};
 
