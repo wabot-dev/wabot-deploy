@@ -460,6 +460,7 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
     ("Its projects and its people are its own: an administrator of one reaches nothing outside it, and this node's operator still sees everything the machine is running. Give it a domain to bring up its console.", "Sus proyectos y su gente son suyos: un administrador de una no alcanza nada fuera de ella, y el operador de este nodo sigue viendo todo lo que corre la máquina. Dale un dominio para levantar su consola."),
     ("Join", "Unirse"),
     ("Join a network", "Unirse a una red"),
+    ("Join this organisation", "Únete a esta organización"),
     ("Join token", "Token de unión"),
     ("Joined", "Unido"),
     ("Keep a copy of its data on this node", "Guardar una copia de sus datos en este nodo"),

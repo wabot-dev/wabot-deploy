@@ -8,6 +8,9 @@
 #[cfg(test)]
 pub mod fixtures;
 
+pub mod guest_join_as_node_user;
+pub mod guest_join_as_tenant_user;
+
 pub mod node_user_invite_person;
 pub mod node_user_remove_person;
 pub mod node_user_revoke_invitation;

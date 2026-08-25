@@ -10,7 +10,6 @@
 use std::sync::Arc;
 
 use hypertext::prelude::*;
-use serde::Deserialize;
 use wabot::prelude::*;
 use wabot::rest::axum::extract::Request;
 use wabot::rest::axum::response::Response;
@@ -23,17 +22,11 @@ use crate::accounts::{self, invitations, sessions};
 use crate::platform::access;
 
 use super::auth::{
-    back_with_error, field, read_form, see_other, see_other_with_cookie, signed_in, PageQuery,
-    SessionMiddleware,
+    back_with_error, field, read_form, see_other, see_other_with_cookie, signed_in, JoinPage,
+    PageQuery, SessionMiddleware,
 };
 use super::shell::{Area, Frame};
 use super::{layout, ConsoleState};
-
-#[derive(Debug, Deserialize, Validate)]
-pub struct JoinPage {
-    pub token: String,
-    pub error: Option<String>,
-}
 
 #[injectable]
 pub struct PeoplePages {
@@ -239,43 +232,15 @@ impl PeoplePages {
         let invitation = invitations::look_up(&self.state.database, &query.token).await?;
 
         layout::head("Join");
-        Ok(rsx! {
-            (layout::style_tag())
-            <main class="shell narrow">
-                (super::auth::mark("Join this node"))
-                @if let Some(message) = &query.error {
-                    (layout::error_note(message))
-                }
-                @if let Some(invitation) = &invitation {
-                    <p class="tagline">
-                        (t("You were invited as "))(invitation.node_role.label().to_lowercase())(".")
-                    </p>
-                    <form method="post" action=(format!("/join/{}", query.token))
-                          class="card stack">
-                        <label for="username">(t("Username"))</label>
-                        <input id="username" name="username" type="text"
-                               autocomplete="username" required autofocus>
-
-                        <label for="password">(t("Password"))</label>
-                        <input id="password" name="password" type="password"
-                               autocomplete="new-password" required>
-                        <p class="field-hint">(t("At least 12 characters. Nobody here will ever see it."))</p>
-
-                        <div class="actions">
-                            <button type="submit">(t("Create account"))</button>
-                        </div>
-                    </form>
-                } @else {
-                    <section class="card stack">
-                        <p>(t("This invitation is not valid. It may have been used already, \
-                             withdrawn, or expired — they last seven days."))</p>
-                        <p class="field-hint">(t("Ask whoever invited you for another."))</p>
-                    </section>
-                }
-            </main>
-        }
-        .into_view()
-        .into())
+        let page = crate::pages::guest_join_page::Join {
+            heading: "Join this node",
+            token: &query.token,
+            invitation: invitation.as_ref(),
+            error: query.error.as_deref(),
+        };
+        Ok(crate::pages::guest_join_page::render(&page)
+            .into_view()
+            .into())
     }
 }
 
@@ -436,18 +401,20 @@ impl PeopleApi {
             Err(response) => return Ok(response),
         };
 
-        let account = match invitations::accept(
+        let account = match crate::usecases::guest_join_as_node_user::run(
             &self.state.database,
-            &token,
-            field(&form, "username"),
-            // Not trimmed: the spaces are part of it, and removing
-            // them silently produces a password nobody can type back.
-            form.get("password").map(String::as_str).unwrap_or_default(),
+            crate::usecases::guest_join_as_node_user::Asked {
+                token: &token,
+                username: field(&form, "username"),
+                // Not trimmed: the spaces are part of it, and removing
+                // them silently produces a password nobody can type back.
+                password: form.get("password").map(String::as_str).unwrap_or_default(),
+            },
         )
         .await
         {
             Ok(account) => account,
-            Err(error) => return Ok(back_with_error(&here, &error.to_string())),
+            Err(reason) => return Ok(back_with_error(&here, &reason)),
         };
 
         // Signed in straight away: they just proved they hold the

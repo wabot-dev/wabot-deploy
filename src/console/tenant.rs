@@ -14,8 +14,9 @@ use wabot::rest::RestResult;
 use wabot::ui::hypertext::IntoView;
 
 use super::auth::{
-    back_with_error, field, read_form, see_other, signed_in, PageQuery, SessionMiddleware,
+    back_with_error, field, read_form, see_other, signed_in, JoinPage, PageQuery, SessionMiddleware,
 };
+use super::language::t;
 use super::shell::{Area, Frame};
 use super::{layout, ConsoleState};
 use crate::accounts::roles::{NodeRole, ProjectRole};
@@ -78,6 +79,37 @@ impl TenantPeoplePages {
         });
 
         Ok(frame.render(body).into_view().into())
+    }
+
+    /// The one page a stranger may open, on the organisation's own
+    /// address — which is the address every invitation into it carries.
+    #[view("/join/:token")]
+    #[middleware(SessionMiddleware)]
+    async fn join(&self, query: JoinPage) -> UiResult<ViewOutcome> {
+        if signed_in(&self.auth).is_some() {
+            return Ok(Redirect::found("/?error=sign+out+first+to+accept+an+invitation").into());
+        }
+
+        let token = query.token.clone();
+        let invitation = invitations::look_up(&self.state.database, &token).await?;
+
+        layout::head("Join");
+        let heading = match invitation
+            .as_ref()
+            .and_then(|found| found.scope_name.as_deref())
+        {
+            Some(name) => name.to_string(),
+            None => t("Join this organisation").to_string(),
+        };
+        let page = crate::pages::guest_join_page::Join {
+            heading: &heading,
+            token: &token,
+            invitation: invitation.as_ref(),
+            error: query.error.as_deref(),
+        };
+        Ok(crate::pages::guest_join_page::render(&page)
+            .into_view()
+            .into())
     }
 }
 
@@ -210,6 +242,57 @@ impl TenantPeopleApi {
         {
             Ok(()) => Ok(see_other("/people")),
             Err(reason) => Ok(back_with_error("/people", &reason)),
+        }
+    }
+
+    #[post("/join/:token")]
+    #[raw]
+    async fn join(&self, request: Request) -> RestResult<Response> {
+        let path = request.uri().path().to_string();
+        let Some(token) = super::auth::segments(&path).get(1).map(|id| id.to_string()) else {
+            return Ok(see_other("/sign-in"));
+        };
+        // Which organisation this address answers for, decided by the
+        // `Host` before anything was read. An invitation minted in
+        // another one is not a door into this.
+        let Some(scope) = request
+            .extensions()
+            .get::<crate::edge::Tenancy>()
+            .map(|tenancy| tenancy.0.clone())
+        else {
+            return Ok(see_other("/sign-in"));
+        };
+        let here = format!("/join/{token}");
+
+        let form = match read_form(request).await {
+            Ok(form) => form,
+            Err(response) => return Ok(response),
+        };
+
+        let account = match crate::usecases::guest_join_as_tenant_user::run(
+            &self.state.database,
+            &scope,
+            crate::usecases::guest_join_as_tenant_user::Asked {
+                token: &token,
+                username: field(&form, "username"),
+                password: form.get("password").map(String::as_str).unwrap_or_default(),
+            },
+        )
+        .await
+        {
+            Ok(account) => account,
+            Err(reason) => return Ok(back_with_error(&here, &reason)),
+        };
+
+        match crate::accounts::sessions::create(&self.state.database, &account).await {
+            Ok(token) => Ok(super::auth::see_other_with_cookie(
+                "/",
+                crate::accounts::sessions::set_cookie(&token),
+            )),
+            Err(error) => {
+                tracing::error!(%error, "could not start a session after joining");
+                Ok(see_other("/sign-in"))
+            }
         }
     }
 }

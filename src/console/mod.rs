@@ -443,6 +443,12 @@ pub(crate) mod tests {
         /// what the file now says — the bucket credential lives there
         /// rather than in the database.
         pub config: Config,
+        /// The organisation's console, which is a different router with
+        /// a different set of controllers on it. Held so a test can ask
+        /// whether a door exists there — a route registered on one
+        /// router and not the other is invisible to every test that
+        /// only ever knocks on `harness`.
+        pub tenant: RestHarness,
         /// Held so the directory outlives the harness rather than being
         /// swept away under it while a page is reading.
         _scratch: tempfile::TempDir,
@@ -520,6 +526,7 @@ pub(crate) mod tests {
 
             let router = routes(&container);
             Self {
+                tenant: RestHarness::new(tenant_routes(&container)),
                 harness: RestHarness::new(router.clone()),
                 ui: wabot::testing::UiHarness::new(router),
                 database,
@@ -635,6 +642,27 @@ pub(crate) mod tests {
     /// controller does with a project — which is why `is_the_nodes_own`
     /// exists, and why the check is on `platform::tenants` and
     /// `console::tenant` rather than on the substring.
+    /// The two consoles are two routers. A door registered on one and
+    /// not the other answers 404 to everybody holding a link to it, and
+    /// no test that only knocks on the node's router can see that —
+    /// which is how an organisation's invitation link shipped pointing
+    /// at a `/join` that was not there.
+    #[tokio::test]
+    async fn an_invitation_link_finds_a_door_in_either_console() {
+        let console = Console::new().await;
+        // A token nothing minted, so the answer is a redirect carrying a
+        // refusal. What matters is that it is not the router saying the
+        // address does not exist.
+        for harness in [&console.harness, &console.tenant] {
+            harness
+                .post("/join/whatever-token")
+                .form(&[("username", "somebody"), ("password", "a long passphrase")])
+                .send()
+                .await
+                .assert_status(wabot::rest::axum::http::StatusCode::SEE_OTHER);
+        }
+    }
+
     #[test]
     fn the_node_console_does_not_know_what_an_organisation_is() {
         // Everything the machine's operator has that is not about

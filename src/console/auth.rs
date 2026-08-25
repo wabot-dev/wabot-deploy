@@ -191,6 +191,15 @@ pub fn segments(path: &str) -> Vec<&str> {
 
 /// A query string carrying nothing but a refused form's message.
 ///
+/// The invitation link's own shape, shared by both consoles: the guest
+/// door exists in each, because the invitation decides which frontier
+/// somebody is born into and the address it carries is that frontier's.
+#[derive(Debug, Deserialize, Validate)]
+pub struct JoinPage {
+    pub token: String,
+    pub error: Option<String>,
+}
+
 /// Every page that can be redirected back to with an error takes one
 /// of these.
 #[derive(Debug, Deserialize, Validate)]

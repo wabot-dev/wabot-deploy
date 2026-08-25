@@ -21,7 +21,7 @@ Shared work lives in **commands** — `UpdateServiceReplica` takes its
 parameters and does the job — and a command may be run synchronously or
 queued, whichever suits the caller.
 
-### The four actors
+### The actors
 
 Everything this node does is done *by somebody*, and there are four:
 
@@ -42,6 +42,25 @@ The fourth is the one that is easy to forget and the one this codebase
 has paid for most: a remote node asking for something is not a special
 case of a person asking, and every fault in `docs/network.md`'s phase 4-7
 list came from code that had not decided which of the two it was serving.
+
+
+**A fifth: the guest.** Somebody holding an invitation and nothing else —
+not yet a user of anything. They are their own actor because what they
+may do is *hold a valid token*, and because passing that test is how the
+other actors are born: `guest_join_as_node_user` and
+`guest_join_as_tenant_user` are two use cases, not one with a parameter,
+because the invitation decides which frontier somebody enters and each
+door refuses the other kind.
+
+The split is not decoration. The link an invitation carries is built on
+its own frontier's address — an organisation's on the organisation's
+domain, the machine's on the machine's — and the two consoles are two
+routers. `/join` was registered on the node's router only, so every
+invitation into an organisation pointed at a door that answered 404, and
+1055 tests could not see it because the harness only ever knocked on one
+router. It holds both now, and
+`an_invitation_link_finds_a_door_in_either_console` is the test that
+fails when one of them loses a door.
 
 ### Flat, with the actor in the filename
 

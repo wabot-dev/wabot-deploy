@@ -179,11 +179,19 @@ pub async fn look_up(database: &SqliteDatabase, token: &str) -> AccountResult<Op
         .read(move |connection| {
             connection
                 .query_row(
-                    "SELECT \"id\", \"node_role\", \"project_id\", \"project_role\", \
-                     \"created_by\", \"expires_at\", \"used_at\", \"tenant_id\" \
-                     FROM invitation WHERE \"token_hash\" = ?1",
+                    "SELECT i.\"id\", i.\"node_role\", i.\"project_id\", i.\"project_role\", \
+                     i.\"created_by\", i.\"expires_at\", i.\"used_at\", i.\"tenant_id\", \
+                     t.\"name\" \
+                     FROM invitation i \
+                     LEFT JOIN tenant t ON t.\"id\" = i.\"tenant_id\" \
+                     WHERE i.\"token_hash\" = ?1",
                     [hash],
-                    decode,
+                    |row| {
+                        Ok(Invitation {
+                            scope_name: row.get(8)?,
+                            ..decode(row)?
+                        })
+                    },
                 )
                 .optional()
         })
