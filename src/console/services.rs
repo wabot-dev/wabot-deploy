@@ -3681,63 +3681,38 @@ impl ServiceApi {
             Ok(None) => return Ok(back_with_error(&here, "a container port is required")),
             Err(message) => return Ok(back_with_error(&here, message)),
         };
-        let publish = checked(&form, "publish");
-
-        // The hostname is only read when the box is ticked. A name left
-        // in the field from a previous attempt must not quietly become
-        // a route nobody asked for.
-        let (hostname, edges) = if checked(&form, "https") {
-            let typed = field(&form, "hostname");
-            if typed.is_empty() {
-                return Ok(back_with_error(
-                    &here,
-                    "serving over HTTPS needs a hostname",
-                ));
-            }
-            let hostname = ports::normalize_hostname(typed);
-
-            // **Every node that could answer for it, not only this one.**
-            // A service can be served from another node on the network —
-            // that is what `service_edge` has meant since phase 7 — and
-            // asking "does it point *here*" refused every such name at
-            // the door. Reported by Jorge, who could not expose a service
-            // through the node that was supposed to expose it.
-            let references = match dns::references(&self.state.database, &self.state.config).await {
-                Ok(references) => references,
-                Err(reason) => return Ok(back_with_error(&here, &reason)),
-            };
-            if references.is_empty() {
-                return Ok(back_with_error(
-                    &here,
-                    "no node on this network has a domain of its own, so there is nothing to \
-                     check that name against — give this node one on its settings page, or \
-                     join a node that has one",
-                ));
-            }
-
-            let outcome = dns::resolves_to(&hostname, &references).await;
-            if !outcome.ok() {
-                return Ok(back_with_error(&here, &outcome.explain(&hostname)));
-            }
-            // The nodes it actually reaches, which are the only ones that
-            // can serve it. Written as the edge rows for the name — the
-            // default of "this node" would store a hostname this node
-            // does not answer for, shown as served and served by nobody.
-            (Some(hostname), outcome.nodes())
-        } else {
-            (None, Vec::new())
+        let Some(account) = signed_in(&self.auth) else {
+            return Ok(see_other("/sign-in"));
         };
-
-        match ports::create(
-            &self.state.database,
-            &service.id,
+        let asked = crate::commands::add_service_port::Asked {
             container_port,
-            publish,
-            hostname.as_deref(),
-            &edges,
-        )
-        .await
-        {
+            publish: checked(&form, "publish"),
+            hostname: field(&form, "hostname"),
+            https: checked(&form, "https"),
+        };
+        let opened = match crate::authz::node_user::belongs_here(&account) {
+            true => {
+                crate::usecases::node_user_add_service_port::run(
+                    &self.state.database,
+                    &self.state.config,
+                    &account,
+                    &service,
+                    asked,
+                )
+                .await
+            }
+            false => {
+                crate::usecases::tenant_user_add_service_port::run(
+                    &self.state.database,
+                    &self.state.config,
+                    &account,
+                    &service,
+                    asked,
+                )
+                .await
+            }
+        };
+        match opened {
             Ok(port) => {
                 // **And tell whoever answers for the name.** The row
                 // `ports::create` writes can now name *another* node —

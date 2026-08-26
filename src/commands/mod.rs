@@ -5,6 +5,7 @@
 //! the commands stay testable without one.
 
 pub mod add_project_member;
+pub mod add_service_port;
 pub mod backup;
 pub mod blobs;
 pub mod check_database_certificate;
