@@ -4129,78 +4129,42 @@ impl ServiceApi {
         // node can keep. The check that counts is here either way: the
         // select is a courtesy the browser offers and a POST can be made
         // by hand.
-        let memory = field(&form, "memory");
-        let wanted = match service.kind.is_managed() {
-            true => crate::platform::presets::parse(memory),
-            false => crate::platform::presets::parse_size(memory),
+        let Some(account) = signed_in(&self.auth) else {
+            return Ok(see_other("/sign-in"));
         };
-        let wanted = match wanted {
-            Ok(wanted) => wanted,
+        let asked = crate::commands::set_service_resources::Asked {
+            memory: field(&form, "memory"),
+            cpu: field(&form, "cpu"),
+            disk: field(&form, "disk"),
+        };
+        let changed = match crate::authz::node_user::belongs_here(&account) {
+            true => {
+                crate::usecases::node_user_set_service_resources::run(
+                    &self.state.database,
+                    &self.state.deployer,
+                    &account,
+                    &project,
+                    &service,
+                    asked,
+                )
+                .await
+            }
+            false => {
+                crate::usecases::tenant_user_set_service_resources::run(
+                    &self.state.database,
+                    &self.state.deployer,
+                    &account,
+                    &project,
+                    &service,
+                    asked,
+                )
+                .await
+            }
+        };
+        let fresh = match changed {
+            Ok(fresh) => fresh,
             Err(reason) => return Ok(back_with_error(&here, &reason)),
         };
-        let cpu = match crate::platform::presets::parse_cores(field(&form, "cpu")) {
-            Ok(cpu) => cpu,
-            Err(reason) => return Ok(back_with_error(&here, &reason)),
-        };
-        // And the third, free-form for both kinds: a disk ceiling is not
-        // an engine setting, so there is no ladder for it to be a rung
-        // of.
-        let wanted_disk = match crate::platform::presets::parse_size(field(&form, "disk")) {
-            Ok(disk) => disk,
-            Err(reason) => return Ok(back_with_error(&here, &reason)),
-        };
-
-        // **The organisation's budget first, then the machine's.** Three
-        // reasons and the third decides: this sum is a local read and
-        // always answerable where a node's may be missing or stale; it is
-        // the more general refusal, since an organisation out of budget
-        // is out of budget on every machine; and a refusal should lead to
-        // the smallest correction — "ask for more quota" before "put it
-        // somewhere else", which would be advice that cannot work.
-        let copies = crate::platform::replicas::of_service(&self.state.database, &service.id)
-            .await?
-            .into_iter()
-            .filter(|replica| !replica.evicted())
-            .count()
-            .max(1) as u64;
-        if let Some(reason) = crate::platform::quotas::admits(
-            &self.state.database,
-            &project,
-            &service,
-            wanted,
-            cpu,
-            wanted_disk,
-            copies,
-        )
-        .await?
-        {
-            return Ok(back_with_error(&here, &reason));
-        }
-
-        // **What is left, after what is already promised.** A ceiling is
-        // also a reservation here, so accepting one the node cannot keep
-        // would make every other number on the page a guess. Counted
-        // against what this service already holds, or raising a ceiling
-        // would be refused by its own current value.
-        if let Some(reason) = self.state.deployer.room_for(&service, wanted, cpu).await {
-            return Ok(back_with_error(&here, &reason));
-        }
-
-        services::set_memory_limit(&self.state.database, &service.id, wanted).await?;
-        services::set_cpu_limit(&self.state.database, &service.id, cpu).await?;
-        services::set_disk_limit(&self.state.database, &service.id, wanted_disk).await?;
-
-        // **The copies on other machines are told here**, not left to the
-        // deployment below to tell them on its way past. `deploy` does end
-        // by calling this, so the number would usually arrive — but the
-        // job is queued with its failure tolerated, one line above, so a
-        // queue that will not take it is a ceiling saved on this page and
-        // never applied anywhere else, with nothing saying so. Convergent
-        // and free when nothing moved: `queue_if_changed` compares the
-        // payload, and one that says the same thing says nothing.
-        let fresh = services::find(&self.state.database, &service.id)
-            .await?
-            .unwrap_or_else(|| service.clone());
         self.state
             .deployer
             .tell_holders_including(&project, &fresh, &Default::default())
@@ -4351,29 +4315,37 @@ impl ServiceApi {
             Ok(form) => form,
             Err(response) => return Ok(response),
         };
-        if field(&form, "confirm").trim() != service.slug {
-            return Ok(back_with_error(
-                &here,
-                "type the service's name to confirm the deletion",
-            ));
+        let Some(account) = signed_in(&self.auth) else {
+            return Ok(see_other("/sign-in"));
+        };
+        let removed = match crate::authz::node_user::belongs_here(&account) {
+            true => {
+                crate::usecases::node_user_delete_service::run(
+                    &self.state.database,
+                    &self.state.deployer,
+                    &account,
+                    &project,
+                    &service,
+                    field(&form, "confirm"),
+                )
+                .await
+            }
+            false => {
+                crate::usecases::tenant_user_delete_service::run(
+                    &self.state.database,
+                    &self.state.deployer,
+                    &account,
+                    &project,
+                    &service,
+                    field(&form, "confirm"),
+                )
+                .await
+            }
+        };
+        match removed {
+            Ok(()) => Ok(see_other(&back)),
+            Err(reason) => Ok(back_with_error(&here, &reason)),
         }
-
-        // The container first. A row deleted while its container runs
-        // is a container nothing will ever clean up: the id is derived
-        // from the row, so losing the row loses the handle.
-        self.state.deployer.tear_down(&project, &service).await;
-        // And the storage, before the rows: the directory is derived
-        // from the container id, which is derived from the rows, so
-        // deleting them first would leave data on the disk that nothing
-        // can name. This is the one caller of `volumes::discard`, and
-        // the typed name above is the confirmation it needs — the
-        // heading it used to rely on was not one.
-        self.state
-            .deployer
-            .discard_storage(&project, &service)
-            .await;
-        services::delete(&self.state.database, &service.id).await?;
-        Ok(see_other(&back))
     }
     /// Throw a service somebody else placed here off this machine.
     ///
@@ -4427,28 +4399,32 @@ impl ServiceApi {
 
         // The inverse guard. A service of this node's own is deleted,
         // not evicted, and the two are not the same button.
-        let Some(origin) = service.origin_node_id.clone() else {
-            return Ok(back_with_error(
-                &here,
-                "this service was created here — deleting it is the button for that",
-            ));
+        let evicted = match crate::authz::node_user::belongs_here(&account) {
+            true => {
+                crate::usecases::node_user_evict_service::run(
+                    &self.state.database,
+                    &self.state.deployer,
+                    &account,
+                    &project,
+                    &service,
+                )
+                .await
+            }
+            false => {
+                crate::usecases::tenant_user_evict_service::run(
+                    &self.state.database,
+                    &self.state.deployer,
+                    &account,
+                    &project,
+                    &service,
+                )
+                .await
+            }
         };
-
-        // The containers first: a row marked evicted while its
-        // container kept running would be the page lying about the
-        // machine it is describing.
-        self.state.deployer.tear_down(&project, &service).await;
-
-        for replica in crate::platform::replicas::of_service(&self.state.database, &service.id)
-            .await?
-            .into_iter()
-            .filter(|replica| replica.is_here())
-        {
-            crate::platform::replicas::evict(&self.state.database, &replica.id).await?;
+        match evicted {
+            Ok(()) => Ok(see_other(&here)),
+            Err(reason) => Ok(back_with_error(&here, &reason)),
         }
-
-        tracing::info!(service = %service.slug, %origin, "evicted a service placed from elsewhere");
-        Ok(see_other(&here))
     }
 
     /// Restore this database into a copy beside it.
