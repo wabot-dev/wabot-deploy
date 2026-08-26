@@ -33,6 +33,7 @@ pub mod restore_database;
 pub mod revoke_project_token;
 pub mod s3;
 pub mod serve;
+pub mod set_service_edges;
 pub mod set_service_env;
 pub mod set_service_image;
 pub mod set_service_logs;

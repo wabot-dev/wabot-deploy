@@ -312,6 +312,45 @@ pub fn suggested_hostname(service_slug: &str, project_slug: &str, node_domain: &
     format!("{service_slug}.{project_slug}.{node_domain}")
 }
 
+/// Every node that could answer for a hostname, and the name that
+/// says where each one is.
+///
+/// A node's endpoint is `{domain}:{port}` — a **name**, decided that
+/// way so a node behind NAT still advertises something true — so the
+/// host part of it is what a lookup can compare. This node uses its
+/// own domain, which is the same string by a different route.
+pub async fn references(
+    database: &wabot::sqlite::SqliteDatabase,
+    config: &crate::config::Config,
+) -> Result<Vec<Reference>, String> {
+    let mut references = Vec::new();
+    for node in crate::network::edge_candidates(database)
+        .await
+        .map_err(|error| error.to_string())?
+    {
+        let at = match node.is_self {
+            true => crate::node::settings::domain(database, config).await,
+            // The port is not part of a lookup, and an endpoint
+            // without one would be a name that never resolves.
+            false => node
+                .endpoint
+                .as_deref()
+                .map(|endpoint| endpoint.rsplit_once(':').map_or(endpoint, |(host, _)| host))
+                .map(str::to_string),
+        };
+        let Some(at) = at.filter(|at| !at.trim().is_empty()) else {
+            continue;
+        };
+        references.push(Reference {
+            node_id: node.id.clone(),
+            node_name: node.name.clone(),
+            at,
+            is_self: node.is_self,
+        });
+    }
+    Ok(references)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

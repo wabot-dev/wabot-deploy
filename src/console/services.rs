@@ -3702,7 +3702,10 @@ impl ServiceApi {
             // asking "does it point *here*" refused every such name at
             // the door. Reported by Jorge, who could not expose a service
             // through the node that was supposed to expose it.
-            let references = self.edge_references().await?;
+            let references = match dns::references(&self.state.database, &self.state.config).await {
+                Ok(references) => references,
+                Err(reason) => return Ok(back_with_error(&here, &reason)),
+            };
             if references.is_empty() {
                 return Ok(back_with_error(
                     &here,
@@ -4850,36 +4853,37 @@ impl ServiceApi {
         // console shows as served and nothing reaches. The same check the
         // port form makes, in the other place a name is bound to a node —
         // it was only ever asked in one of the two.
-        let references: Vec<dns::Reference> = self
-            .edge_references()
-            .await?
-            .into_iter()
-            .filter(|reference| chosen.contains(&reference.node_id))
-            .collect();
-        if !chosen.is_empty() && !references.is_empty() {
-            let outcome = dns::resolves_to(&hostname, &references).await;
-            let reached = outcome.nodes();
-            let missing: Vec<String> = references
-                .iter()
-                .filter(|reference| !reached.contains(&reference.node_id))
-                .map(|reference| reference.node_name.clone())
-                .collect();
-            if !missing.is_empty() {
-                return Ok(back_with_error(
-                    &here,
-                    &format!(
-                        "{hostname} does not resolve to {} — a node that the name does not \
-                         reach would answer for traffic that never arrives. Point the record \
-                         at it and try again.",
-                        missing.join(", ")
-                    ),
-                ));
+        let Some(account) = signed_in(&self.auth) else {
+            return Ok(see_other("/sign-in"));
+        };
+        let routed = match crate::authz::node_user::belongs_here(&account) {
+            true => {
+                crate::usecases::node_user_set_service_edges::run(
+                    &self.state.database,
+                    &self.state.config,
+                    &account,
+                    &service,
+                    &hostname,
+                    &chosen,
+                )
+                .await
             }
-        }
-
-        let dropped =
-            crate::platform::edges::set(&self.state.database, &service.id, &hostname, &chosen)
-                .await?;
+            false => {
+                crate::usecases::tenant_user_set_service_edges::run(
+                    &self.state.database,
+                    &self.state.config,
+                    &account,
+                    &service,
+                    &hostname,
+                    &chosen,
+                )
+                .await
+            }
+        };
+        let dropped = match routed {
+            Ok(dropped) => dropped,
+            Err(reason) => return Ok(back_with_error(&here, &reason)),
+        };
 
         let placements =
             crate::platform::replicas::of_service(&self.state.database, &service.id).await?;
@@ -5305,41 +5309,6 @@ impl ServiceApi {
         .await
         .map(|_| ())
         .map_err(|error| error.to_string())
-    }
-
-    /// Every node that could answer for a hostname, and the name that
-    /// says where each one is.
-    ///
-    /// A node's endpoint is `{domain}:{port}` — a **name**, decided that
-    /// way so a node behind NAT still advertises something true — so the
-    /// host part of it is what a lookup can compare. This node uses its
-    /// own domain, which is the same string by a different route.
-    async fn edge_references(&self) -> RestResult<Vec<dns::Reference>> {
-        let mut references = Vec::new();
-        for node in crate::network::edge_candidates(&self.state.database).await? {
-            let at = match node.is_self {
-                true => {
-                    crate::node::settings::domain(&self.state.database, &self.state.config).await
-                }
-                // The port is not part of a lookup, and an endpoint
-                // without one would be a name that never resolves.
-                false => node
-                    .endpoint
-                    .as_deref()
-                    .map(|endpoint| endpoint.rsplit_once(':').map_or(endpoint, |(host, _)| host))
-                    .map(str::to_string),
-            };
-            let Some(at) = at.filter(|at| !at.trim().is_empty()) else {
-                continue;
-            };
-            references.push(dns::Reference {
-                node_id: node.id.clone(),
-                node_name: node.name.clone(),
-                at,
-                is_self: node.is_self,
-            });
-        }
-        Ok(references)
     }
 
     async fn locate(
