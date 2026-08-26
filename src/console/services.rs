@@ -4353,9 +4353,32 @@ impl ServiceApi {
         };
         let back = returning_to(request, &back).await;
 
-        match self.state.deployer.stop(&project, &service).await {
+        let Some(account) = signed_in(&self.auth) else {
+            return Ok(see_other("/sign-in"));
+        };
+        let stopped = match crate::authz::node_user::belongs_here(&account) {
+            true => {
+                crate::usecases::node_user_stop_service::run(
+                    &self.state.deployer,
+                    &account,
+                    &project,
+                    &service,
+                )
+                .await
+            }
+            false => {
+                crate::usecases::tenant_user_stop_service::run(
+                    &self.state.deployer,
+                    &account,
+                    &project,
+                    &service,
+                )
+                .await
+            }
+        };
+        match stopped {
             Ok(()) => Ok(see_other(&back)),
-            Err(error) => Ok(back_with_error(&back, &error.to_string())),
+            Err(reason) => Ok(back_with_error(&back, &reason)),
         }
     }
 
@@ -4516,40 +4539,36 @@ impl ServiceApi {
             Ok(form) => form,
             Err(response) => return Ok(response),
         };
-        if !service.kind.is_managed() {
-            return Ok(back_with_error(
-                &back,
-                "that service is not a managed database",
-            ));
-        }
-
-        // Empty is "as far as the log goes", which is what the field's
-        // hint says and what `restore_one` means by `None`. A blank field
-        // must not become the string `""` and be refused as not a moment.
-        let at = match field(&form, "at") {
-            "" => None,
-            text => Some(text.to_string()),
+        let Some(account) = signed_in(&self.auth) else {
+            return Ok(see_other("/sign-in"));
         };
-        let into = match field(&form, "into") {
-            "" => None,
-            text => Some(text.to_string()),
+        let restored = match crate::authz::node_user::belongs_here(&account) {
+            true => {
+                crate::usecases::node_user_restore_database::run(
+                    &self.state.database,
+                    &self.state.config,
+                    &account,
+                    &service,
+                    field(&form, "at"),
+                    field(&form, "into"),
+                )
+                .await
+            }
+            false => {
+                crate::usecases::tenant_user_restore_database::run(
+                    &self.state.database,
+                    &self.state.config,
+                    &account,
+                    &service,
+                    field(&form, "at"),
+                    field(&form, "into"),
+                )
+                .await
+            }
         };
-
-        let made = match crate::commands::backup::restore_one(
-            &self.state.config,
-            &self.state.database,
-            &service.slug,
-            at.as_deref(),
-            into.as_deref(),
-            None,
-        )
-        .await
-        {
+        let made = match restored {
             Ok(made) => made,
-            // The refusal as it is: which backup, or why the moment
-            // cannot be reached. It goes in the strip above the form the
-            // operator just used, which is where they can correct it.
-            Err(refusal) => return Ok(back_with_error(&back, &refusal.to_string())),
+            Err(reason) => return Ok(back_with_error(&back, &reason)),
         };
 
         self.enqueue(&made.service_id, None).await;
