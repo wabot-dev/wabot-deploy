@@ -3745,7 +3745,15 @@ impl NodeApi {
 
         let path = request.uri().path().to_string();
         if let Some(id) = super::auth::segments(&path).get(2) {
-            network::enrolment::withdraw(&self.state.database, id).await?;
+            if let Err(reason) = crate::usecases::node_user_withdraw_enrolment::run(
+                &self.state.database,
+                &account,
+                id,
+            )
+            .await
+            {
+                return Ok(super::auth::back_with_error("/network/invite", &reason));
+            }
         }
         Ok(super::auth::see_other("/network/invite"))
     }
@@ -3782,33 +3790,26 @@ impl NodeApi {
         };
         let here = format!("/network/{id}");
 
-        if super::auth::field(&form, "draining") != "on" {
-            if let Err(error) = network::set_draining(&self.state.database, id, false).await {
-                tracing::warn!(%error, "could not put it back in service");
-                return Ok(super::auth::back_with_error(
+        use crate::usecases::node_user_drain_node::Drained;
+        match crate::usecases::node_user_drain_node::run(
+            &self.state.database,
+            &self.state.deployer,
+            &account,
+            id,
+            super::auth::field(&form, "draining") == "on",
+        )
+        .await
+        {
+            Ok(Drained::BackInService) => Ok(super::auth::see_other(&here)),
+            Ok(Drained::Moved { moved, refused }) if !refused.is_empty() => {
+                Ok(super::auth::back_with_error(
                     &here,
-                    "that could not be saved",
-                ));
+                    &format!("{moved} copies moved; {}", refused.join("; ")),
+                ))
             }
-            return Ok(super::auth::see_other(&here));
+            Ok(Drained::Moved { .. }) => Ok(super::auth::see_other(&here)),
+            Err(reason) => Ok(super::auth::back_with_error(&here, &reason)),
         }
-
-        let drained = self.state.deployer.drain(id).await;
-        // The refusals are the half somebody has to act on, so they go
-        // where they are looking rather than into the journal — a copy
-        // that stayed put on a machine about to be switched off is the
-        // whole reason this reports at all.
-        if !drained.refused.is_empty() {
-            return Ok(super::auth::back_with_error(
-                &here,
-                &format!(
-                    "{} copies moved; {}",
-                    drained.moved,
-                    drained.refused.join("; ")
-                ),
-            ));
-        }
-        Ok(super::auth::see_other(&here))
     }
 
     #[post("/network/forget/:node")]
@@ -3824,7 +3825,12 @@ impl NodeApi {
 
         let path = request.uri().path().to_string();
         if let Some(id) = super::auth::segments(&path).get(2) {
-            network::forget(&self.state.database, id).await?;
+            if let Err(reason) =
+                crate::usecases::node_user_forget_node::run(&self.state.database, &account, id)
+                    .await
+            {
+                return Ok(super::auth::back_with_error("/network", &reason));
+            }
         }
         Ok(super::auth::see_other("/network"))
     }
@@ -3847,7 +3853,12 @@ impl NodeApi {
 
         let path = request.uri().path().to_string();
         if let Some(id) = super::auth::segments(&path).get(2) {
-            network::revoke(&self.state.database, id).await?;
+            if let Err(reason) =
+                crate::usecases::node_user_revoke_authority::run(&self.state.database, &account, id)
+                    .await
+            {
+                return Ok(super::auth::back_with_error("/network", &reason));
+            }
         }
         Ok(super::auth::see_other("/network"))
     }
@@ -3878,23 +3889,13 @@ impl NodeApi {
             Err(response) => return Ok(response),
         };
 
-        let agreed: Vec<network::capability::Capability> = network::capability::Capability::ALL
-            .into_iter()
-            // A checkbox arrives only when ticked, so its absence is the
-            // answer.
-            .filter(|capability| form.contains_key(capability.name()))
-            .collect();
         let here = format!("/network/{id}");
-        if let Err(error) =
-            network::capability::set_granted(&self.state.database, &id, &agreed).await
+        match crate::usecases::node_user_set_grants::run(&self.state.database, &account, &id, &form)
+            .await
         {
-            tracing::warn!(%error, node = %id, "could not save what this node does for it");
-            return Ok(super::auth::back_with_error(
-                &here,
-                "that could not be saved",
-            ));
+            Ok(()) => Ok(super::auth::see_other(&here)),
+            Err(reason) => Ok(super::auth::back_with_error(&here, &reason)),
         }
-        Ok(super::auth::see_other(&here))
     }
 
     /// Ask a node to be running a release.
@@ -3923,22 +3924,17 @@ impl NodeApi {
             Err(response) => return Ok(response),
         };
         let here = format!("/network/{id}");
-        let wanted = super::auth::field(&form, "version").trim().to_string();
-        let wanted = (!wanted.is_empty()).then_some(wanted);
-
-        if let Err(error) =
-            network::want_version(&self.state.database, &id, wanted.as_deref()).await
+        match crate::usecases::node_user_set_wanted_version::run(
+            &self.state.database,
+            &account,
+            &id,
+            super::auth::field(&form, "version"),
+        )
+        .await
         {
-            tracing::warn!(%error, node = %id, "could not record the release to ask for");
-            return Ok(super::auth::back_with_error(&here, &error.to_string()));
+            Ok(()) => Ok(super::auth::see_other(&here)),
+            Err(reason) => Ok(super::auth::back_with_error(&here, &reason)),
         }
-        // Now rather than at the next boot, so the button does something
-        // somebody can see. The errand is the same one either way.
-        if let Err(error) = network::dispatch_versions(&self.state.database).await {
-            tracing::warn!(%error, node = %id, "could not queue the instruction");
-            return Ok(super::auth::back_with_error(&here, &error.to_string()));
-        }
-        Ok(super::auth::see_other(&here))
     }
 
     /// Ask a node to do something once.
@@ -3978,11 +3974,17 @@ impl NodeApi {
                 return Ok(super::auth::back_with_error(&here, "no such action"));
             }
         };
-        if let Err(error) = network::ask_once(&self.state.database, &id, action).await {
-            tracing::warn!(%error, node = %id, "could not ask it");
-            return Ok(super::auth::back_with_error(&here, &error.to_string()));
+        match crate::usecases::node_user_ask_node_once::run(
+            &self.state.database,
+            &account,
+            &id,
+            action,
+        )
+        .await
+        {
+            Ok(()) => Ok(super::auth::see_other(&here)),
+            Err(reason) => Ok(super::auth::back_with_error(&here, &reason)),
         }
-        Ok(super::auth::see_other(&here))
     }
 
     /// Choose where this name's certificate comes from.
