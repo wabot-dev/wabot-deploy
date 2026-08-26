@@ -38,6 +38,7 @@ pub mod set_service_edges;
 pub mod set_service_env;
 pub mod set_service_image;
 pub mod set_service_logs;
+pub mod set_service_placement;
 pub mod set_service_resources;
 pub mod set_service_tracking;
 pub mod setup_token;

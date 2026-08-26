@@ -28,16 +28,6 @@ use super::{layout, ConsoleState};
 /// silently changes what every existing form does.
 const ANYWHERE: &str = "anywhere";
 
-/// Where copies added by the count control go.
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum Placement {
-    /// A machine somebody named. `None` is this one.
-    Named(Option<String>),
-    /// Wherever there is room, decided per copy — see
-    /// `deploy::planner`.
-    Anywhere,
-}
-
 #[derive(Debug, Deserialize, Validate)]
 pub struct ServiceForm {
     pub project: String,
@@ -4608,173 +4598,31 @@ impl ServiceApi {
             Err(response) => return Ok(response),
         };
 
-        let placements =
-            crate::platform::replicas::of_service(&self.state.database, &service.id).await?;
-        // Every node this service is on *before* anything moves. A node
-        // losing its last replica has to be told, and after the move
-        // there is nothing left pointing at it — so the set is taken
-        // now. Without this a replica brought home kept running there
-        // for ever, invisible from both sides.
-        let mut touched: std::collections::BTreeSet<String> = placements
-            .iter()
-            .filter_map(|replica| replica.node_id.clone())
-            .collect();
-
-        // Where each existing replica should be. An unnamed slot keeps
-        // what it had: a form that arrived without a field is a form
-        // that said nothing about it, not one asking for "here".
-        for replica in &placements {
-            let Some(chosen) = form.get(&format!("slot-{}", replica.slot)) else {
-                continue;
-            };
-            let chosen = chosen.trim();
-            let wanted = (!chosen.is_empty()).then_some(chosen);
-            if wanted == replica.node_id.as_deref() {
-                continue;
+        let on = crate::commands::set_service_placement::On {
+            database: &self.state.database,
+            config: &self.state.config,
+            deployer: &self.state.deployer,
+            container: &self.state.container,
+        };
+        let command = crate::commands::set_service_placement::SetServicePlacement {
+            project: &project,
+            service: &service,
+            fields: &form,
+            replicas: field(&form, "replicas"),
+            on: field(&form, "new-on"),
+            by: &account.id,
+        };
+        let placed = match crate::authz::node_user::belongs_here(&account) {
+            true => {
+                crate::usecases::node_user_set_service_placement::run(on, &account, command).await
             }
-            if let Some(node) = wanted {
-                let Some(node_row) = crate::network::find(&self.state.database, node).await? else {
-                    return Ok(back_with_error(&here, "no such node"));
-                };
-                // **And whether it has room**, against what that machine
-                // last reported. A courtesy rather than the boundary: the
-                // answer was true when the report was sent, and the node
-                // asks its own meters when the errand arrives. What it
-                // buys is the refusal landing on the form somebody is
-                // looking at instead of on a row they would have to go
-                // and find ten seconds later.
-                //
-                // A node that has not reported its room is not refused —
-                // what cannot be measured is not enforced — which is a
-                // different question from whether it is worth *choosing*,
-                // and that one belongs to the planner.
-                if let Some(reason) = self
-                    .state
-                    .deployer
-                    .room_for_on(
-                        Some(&node_row),
-                        &service,
-                        service.memory_limit,
-                        service.cpu_millicores,
-                    )
-                    .await
-                {
-                    return Ok(back_with_error(&here, &reason));
-                }
-                touched.insert(node.to_string());
-            }
-            // Sent away, so its container here has to go. Nothing else
-            // would: reconciliation only ever *starts* things, on
-            // purpose — a container no row claims is left alone rather
-            // than destroyed. So a replica that moved used to leave a
-            // copy running here for ever, serving traffic from a node
-            // the page said it had left.
-            if replica.is_here() && wanted.is_some() {
-                if let Err(error) = self
-                    .state
-                    .deployer
-                    .stop_replica(&project, &service, replica)
-                    .await
-                {
-                    // Reported and carried on from: the row moves
-                    // either way, and a container this node could not
-                    // reach must not stop the placement it was told to
-                    // make.
-                    tracing::warn!(
-                        slot = replica.slot,
-                        %error,
-                        "stopping a copy that was sent to another node"
-                    );
-                }
-            }
-            crate::platform::replicas::move_to(&self.state.database, &replica.id, wanted).await?;
-        }
-
-        // Then the count. After the moves, so that a form which both
-        // moves slot 2 away and drops it removes the one it moved
-        // rather than a different one.
-        let wanted: u32 = field(&form, "replicas").parse().unwrap_or(1);
-        if !(1..=16).contains(&wanted) {
-            return Ok(back_with_error(
-                &here,
-                "a service runs between 1 and 16 replicas",
-            ));
-        }
-        // Where the new ones go. Asked for rather than assumed: adding a
-        // copy here and moving it afterwards starts a container on this
-        // machine and stops it again for nothing, and the operator
-        // already knows where they want it.
-        //
-        // An empty field is this node, the same value the per-slot
-        // selectors use, so the two controls speak one language.
-        //
-        // And one value that is neither: `anywhere` asks the node to
-        // decide, per copy. It is a third answer rather than a default
-        // because "somewhere" and "here" are different intentions, and
-        // making the empty field mean "decide" would change what every
-        // existing form does.
-        let on = field(&form, "new-on");
-        let on = on.trim();
-        let placement = match on {
-            ANYWHERE => Placement::Anywhere,
-            "" => Placement::Named(None),
-            node => {
-                let Some(row) = crate::network::find(&self.state.database, node).await? else {
-                    return Ok(back_with_error(&here, "no such node"));
-                };
-                if let Some(reason) = self
-                    .state
-                    .deployer
-                    .room_for_on(
-                        Some(&row),
-                        &service,
-                        service.memory_limit,
-                        service.cpu_millicores,
-                    )
-                    .await
-                {
-                    return Ok(back_with_error(&here, &reason));
-                }
-                touched.insert(node.to_string());
-                Placement::Named(Some(node.to_string()))
+            false => {
+                crate::usecases::tenant_user_set_service_placement::run(on, &account, command).await
             }
         };
-
-        // **A copy costs what a ceiling costs, so the budget is asked
-        // here too.** The resources form asks about raising a ceiling;
-        // this asks about adding another copy at the ceiling it already
-        // has, and an organisation whose quota only bound one of the two
-        // would be one somebody could exceed by pressing the other
-        // button.
-        //
-        // Asked for the count being *asked for*, not the count now: the
-        // question is whether the organisation can afford what the form
-        // says, and refusing after placing half of them is worse than
-        // refusing.
-        if let Some(reason) = crate::platform::quotas::admits(
-            &self.state.database,
-            &project,
-            &service,
-            service.memory_limit,
-            service.cpu_millicores,
-            service.disk_limit,
-            u64::from(wanted),
-        )
-        .await?
-        {
+        if let Err(reason) = placed {
             return Ok(back_with_error(&here, &reason));
         }
-
-        let added = match self.resize(&project, &service, wanted, &placement).await {
-            Ok(added) => added,
-            Err(error) => return Ok(back_with_error(&here, &error)),
-        };
-        // A copy the node chose lands on a machine nothing had pointed
-        // at yet, and that machine has to be told like any other.
-        touched.extend(added);
-
-        self.dispatch(&project, &service, &account.id, touched)
-            .await?;
         Ok(see_other(&format!("{here}#placement")))
     }
 
@@ -4862,7 +4710,15 @@ impl ServiceApi {
 
         let placements =
             crate::platform::replicas::of_service(&self.state.database, &service.id).await?;
-        self.dispatch_edges(&service, &placements).await?;
+        if let Err(reason) = crate::commands::set_service_placement::dispatch_edges(
+            &self.state.deployer,
+            &service,
+            &placements,
+        )
+        .await
+        {
+            return Ok(back_with_error(&here, &reason));
+        }
 
         // The ones no longer chosen, told to stop: an empty list
         // releases the name there rather than leaving it answering for
@@ -4914,378 +4770,13 @@ impl ServiceApi {
     /// The project and service this request is about, and where to send
     /// the browser afterwards.
     ///
-    /// `None` when the session is missing or either slug names nothing
-    /// — the caller turns that into a redirect, because at this point
-    /// there is no page to render an error onto.
+    /// `None` when the session is missing or either slug names nothing —
+    /// the caller turns that into a redirect, because at this point there
+    /// is no page to render an error onto.
     ///
     /// Takes the path rather than the request: holding a `&Request`
     /// across an `await` would need `Body: Sync`, which it is not, and
     /// the handler quietly stops being one axum will accept.
-    /// Add slots here, or take the highest-numbered ones away.
-    ///
-    /// A replica on another node is refused rather than removed:
-    /// nothing can tell that node to stop yet, so dropping the row
-    /// would leave its container running with nothing naming it — the
-    /// worst of both, and invisible from either end.
-    async fn resize(
-        &self,
-        project: &crate::platform::projects::Project,
-        service: &services::Service,
-        wanted: u32,
-        on: &Placement,
-    ) -> Result<std::collections::BTreeSet<String>, String> {
-        let service_id = &service.id;
-        let placements = crate::platform::replicas::of_service(&self.state.database, service_id)
-            .await
-            .map_err(|error| error.to_string())?;
-
-        if placements.len() as u32 > wanted {
-            // Which ones go, and the order is the point. By slot number
-            // alone, lowering a service with a dead #2 and a healthy #3
-            // removes the healthy one and keeps the corpse — so the
-            // ones already thrown out where they ran go first, and only
-            // then the highest-numbered.
-            let mut going: Vec<_> = placements.iter().collect();
-            going.sort_by_key(|replica| (replica.evicted(), replica.slot));
-            going.reverse();
-            going.truncate(placements.len() - wanted as usize);
-
-            for replica in going {
-                // A copy here is this node's to stop, and nothing else
-                // would: reconciliation only ever *starts* things, so
-                // dropping the row alone left a container running that
-                // nothing named — the count said two and the machine
-                // ran three.
-                //
-                // One elsewhere is stopped by the node running it, when
-                // the `host` errand that follows this names the slots
-                // that are left. That is why the set of nodes to tell
-                // is taken *before* any of this: after it there is
-                // nothing left pointing at the one that lost its last
-                // copy. An evicted one is already stopped — that is
-                // what evicting means.
-                match replica.is_here() {
-                    // Stopped, its row dropped, and — for a standby —
-                    // the directory it held, which is what makes the
-                    // same slot come back as a fresh copy of the
-                    // primary rather than as this one's leftovers.
-                    true => self
-                        .state
-                        .deployer
-                        .forget_replica(project, service, replica)
-                        .await
-                        .map_err(|error| error.to_string())?,
-                    false => crate::platform::replicas::remove(&self.state.database, &replica.id)
-                        .await
-                        .map_err(|error| error.to_string())?,
-                }
-            }
-        }
-
-        // By count, not by range: after a removal the service may hold
-        // slots 1 and 3, which is already two copies. Filling
-        // `1..=wanted` would put slot 2 back and undo the removal that
-        // just happened — which is exactly what it did.
-        let before: std::collections::BTreeSet<String> =
-            crate::platform::replicas::of_service(&self.state.database, service_id)
-                .await
-                .map_err(|error| error.to_string())?
-                .into_iter()
-                .filter_map(|replica| replica.node_id)
-                .collect();
-
-        match on {
-            Placement::Named(node) => {
-                crate::platform::replicas::ensure_count(
-                    &self.state.database,
-                    service_id,
-                    wanted,
-                    node.as_deref(),
-                )
-                .await
-                .map_err(|error| error.to_string())?;
-            }
-            Placement::Anywhere => {
-                // Gathered once, and the copies added inside the loop are
-                // counted back in by the closure — otherwise every new
-                // copy lands on whichever machine was emptiest when the
-                // form was submitted, which is the opposite of spreading
-                // them.
-                let candidates = self.state.deployer.candidates(service).await;
-                let want = crate::deploy::planner::Want {
-                    memory: service.memory_limit,
-                    cpu: service.cpu_millicores,
-                    // A database's copies exist to be on different
-                    // machines; a web service's exist to be more of it.
-                    spread_required: service.kind.is_managed(),
-                };
-                let service_id_owned = service_id.clone();
-                crate::platform::replicas::ensure_count_where(
-                    &self.state.database,
-                    service_id,
-                    wanted,
-                    |existing| {
-                        let taken: Vec<&crate::platform::replicas::Replica> = existing
-                            .iter()
-                            .filter(|replica| replica.service_id == service_id_owned)
-                            .filter(|replica| !replica.evicted())
-                            .collect();
-                        let updated: Vec<crate::deploy::planner::Candidate> = candidates
-                            .iter()
-                            .cloned()
-                            .map(|mut candidate| {
-                                candidate.of_this_service = taken
-                                    .iter()
-                                    .filter(|replica| replica.node_id == candidate.node)
-                                    .count()
-                                    as u32;
-                                candidate
-                            })
-                            .collect();
-                        match crate::deploy::planner::choose(&updated, want) {
-                            crate::deploy::planner::Choice::Chosen { node, why } => {
-                                Ok((node, crate::platform::replicas::Placed::Planner, Some(why)))
-                            }
-                            crate::deploy::planner::Choice::Nowhere(reason) => Err(reason),
-                        }
-                    },
-                )
-                .await
-                .map_err(|error| error.to_string())?;
-            }
-        }
-
-        // Which machines are newly holding one, so the caller tells them.
-        Ok(
-            crate::platform::replicas::of_service(&self.state.database, service_id)
-                .await
-                .map_err(|error| error.to_string())?
-                .into_iter()
-                .filter_map(|replica| replica.node_id)
-                .filter(|node| !before.contains(node))
-                .collect(),
-        )
-    }
-
-    /// Ask every node holding a replica of this service to run it, and
-    /// deploy the ones that are here.
-    ///
-    /// Convergent on both sides: a `host` errand sent twice points one
-    /// service at one image there, and a local deploy is the deploy the
-    /// button already queues.
-    async fn dispatch(
-        &self,
-        project: &crate::platform::projects::Project,
-        service: &services::Service,
-        by: &str,
-        touched: std::collections::BTreeSet<String>,
-    ) -> RestResult<()> {
-        let placements =
-            crate::platform::replicas::of_service(&self.state.database, &service.id).await?;
-
-        // Every node that holds a replica *or has just stopped holding
-        // one*. The second half is why the set is passed in: a node
-        // losing its last copy is exactly the one nothing points at any
-        // more, and it is the one that most needs telling.
-        let mut continue_managed = false;
-        let touched_all = touched.clone();
-        for node_id in touched {
-            // Every slot that node holds, in the service's numbering:
-            // a node running two copies is told about both in one
-            // errand rather than being sent the same instruction twice
-            // with no way to tell the copies apart.
-            //
-            // An **empty** list is a real instruction, not a reason to
-            // skip: it says "you run none of this now", which is how a
-            // node finds out that its last replica went home.
-            let slots: Vec<u32> = placements
-                .iter()
-                .filter(|replica| replica.node_id.as_deref() == Some(node_id.as_str()))
-                .filter(|replica| !replica.evicted())
-                .map(|replica| replica.slot)
-                .collect();
-
-            // A managed database is **not** sent this way. A `host`
-            // errand says "run this image here", and a receiving node
-            // obeying it starts a Postgres with no volume, no engine
-            // row and no TLS — initialising into a layer thrown away at
-            // the next deployment, and looking like it worked. Its own
-            // errand carries the rest, and `databases::dispatch` queues
-            // it after the primary deploys, which is when the address it
-            // has to carry exists.
-            //
-            // Found on a node: the placement page sent both, and the
-            // database errand only won because it happened to arrive
-            // second and is convergent.
-            if service.kind.is_managed() {
-                continue_managed = true;
-                continue;
-            }
-            if let Err(error) = self.send_there(project, service, &node_id, by, slots).await {
-                // Reported and not fatal: the other placements are
-                // still worth making, and the page shows a replica
-                // nobody has answered for.
-                tracing::warn!(node = %node_id, %error, "could not queue a host errand");
-            }
-        }
-
-        // A database's own errand, including to the nodes that just lost
-        // their last copy — the `host` path above uses `touched` for
-        // exactly that and this one had no equivalent, so a database
-        // reduced from three copies to one left a Postgres running on the
-        // other machine with nothing pointing at it.
-        if continue_managed {
-            self.state
-                .deployer
-                .dispatch_standbys_including(service, &touched_all)
-                .await;
-        }
-
-        if placements.iter().any(|replica| replica.is_here()) {
-            self.enqueue(&service.id, None).await;
-        } else {
-            // Nothing here to deploy, and the routes are wrong anyway:
-            // a service whose last copy just left this node has a name
-            // pointing at a container that is gone. The deployment is
-            // what usually recomputes them, so with no deployment to
-            // queue this has to say so itself — otherwise the name
-            // proxies to an address nothing answers on, silently.
-            self.state.deployer.sync_routes().await;
-        }
-
-        self.dispatch_edges(service, &placements).await?;
-        Ok(())
-    }
-
-    /// Tell every node serving a name where its replicas are now.
-    ///
-    /// Sent whenever the placement changes, because that is when the
-    /// answer changes: a replica moved, added or gone is a different
-    /// upstream list, and an edge holding the old one would send
-    /// requests to a container that is not there.
-    /// Everyone else who answers for this name, as the node being told
-    /// will need them.
-    ///
-    /// Skipping the recipient itself, and skipping any node this one
-    /// cannot describe: an entry with no overlay address, no key or no
-    /// authority is one the far node could not dial anyway, and a peer it
-    /// cannot verify is one `call::to_node` refuses by design.
-    ///
-    /// **This node's own authority comes from the local CA**, not from its
-    /// row: `ca_pem` is what *other* nodes sent about themselves, so the
-    /// self row has none.
-    /// Tell every node serving a name where its replicas are now, and
-    /// bring this node's own routes up to date.
-    ///
-    /// Thin over `Deployer::tell_edges`, which is also called by every
-    /// deployment — the console's reason for calling it is latency: an
-    /// operator who just ticked a box should not wait for the next
-    /// deployment to have it happen. Both build the same payload, so
-    /// `queue_if_changed` keeps the second one quiet.
-    async fn dispatch_edges(
-        &self,
-        service: &services::Service,
-        _placements: &[crate::platform::replicas::Replica],
-    ) -> RestResult<()> {
-        self.state.deployer.tell_edges(service).await;
-        // And this node's own, whether or not it was chosen: the choice
-        // that just changed may have been to stop answering, and a route
-        // left behind is a name still being served by a node nobody asked.
-        self.state.deployer.sync_routes().await;
-        Ok(())
-    }
-
-    /// One `host` errand, with a credential for this node's registry.
-    async fn send_there(
-        &self,
-        project: &crate::platform::projects::Project,
-        service: &services::Service,
-        node_id: &str,
-        by: &str,
-        slots: Vec<u32>,
-    ) -> Result<(), String> {
-        let Some(registry) = crate::platform::registry_credentials::host_of(&service.image) else {
-            return Err(
-                "that image does not name a registry, so there is nothing to pull it from".into(),
-            );
-        };
-
-        // A token for **this node's** registry, and only when the image
-        // is in it.
-        //
-        // The registry in the reference used to be sent a credential
-        // whatever it was, which for `docker.io/library/postgres` means
-        // handing a wabot push token to Docker Hub. It never happened
-        // because nobody had placed a public image on another node —
-        // and that is the ordinary case for a database, so it would
-        // have.
-        //
-        // No credential is the honest payload for a registry that
-        // serves anybody: the far node pulls anonymously, which is what
-        // it would do with a credential Docker Hub does not know.
-        let mine = crate::node::settings::domain(&self.state.database, &self.state.config).await;
-        let secret = match mine.as_deref() == Some(registry.as_str()) {
-            true => Some(
-                crate::platform::tokens::create(
-                    &self.state.database,
-                    &project.id,
-                    &format!("errand to {node_id}"),
-                    by,
-                )
-                .await
-                .map_err(|error| error.to_string())?
-                .1,
-            ),
-            false => None,
-        };
-
-        let payload = serde_json::to_value(crate::network::errand::Host {
-            project: project.name.clone(),
-            service: service.name.clone(),
-            image: service.image.clone(),
-            registry,
-            // Both or neither: a username with no secret is a
-            // credential that cannot authenticate, and the collector
-            // reads the pair.
-            username: secret.as_ref().map(|_| "errand".to_string()),
-            secret,
-            env: service.env.clone(),
-            // The port a name is served on, so the node running the
-            // copy has something to bind on its overlay address. Left
-            // empty when no port has a hostname: nothing would proxy to
-            // that service anyway, so a port there would be one nobody
-            // asked for.
-            port: crate::platform::ports::of_service(&self.state.database, &service.id)
-                .await
-                .map_err(|error| error.to_string())?
-                .into_iter()
-                .find(|port| port.hostname.is_some())
-                .map(|port| port.container_port),
-            slots,
-            // Placing a copy is asking for it to run. Whether the service
-            // stays running afterwards travels on its own, derived from
-            // the row — see `Deployer::tell_holders`.
-            running: true,
-            // The ceilings it runs under. Sent from the first
-            // instruction rather than left for the derived pass to
-            // correct, so the copy is never started once without them.
-            memory_limit: service.memory_limit,
-            cpu_millicores: service.cpu_millicores,
-            disk_limit: service.disk_limit,
-        })
-        .map_err(|error| error.to_string())?;
-
-        crate::network::errand::queue(
-            &self.state.database,
-            node_id,
-            crate::network::errand::Kind::Host,
-            &payload,
-        )
-        .await
-        .map(|_| ())
-        .map_err(|error| error.to_string())
-    }
-
     async fn locate(
         &self,
         path: &str,
