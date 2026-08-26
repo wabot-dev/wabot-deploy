@@ -23,7 +23,7 @@ use super::language::t;
 use super::shell::{Area, Frame};
 use super::{layout, ConsoleState};
 use crate::platform::databases::Database;
-use crate::platform::{access, databases, postgres, presets, replicas};
+use crate::platform::{access, postgres, presets, replicas};
 
 #[derive(Debug, Deserialize, Validate)]
 pub struct DatabaseForm {
@@ -204,6 +204,9 @@ impl DatabaseApi {
     #[raw]
     #[middleware(SessionMiddleware)]
     async fn name(&self, request: Request) -> RestResult<Response> {
+        let Some(account) = signed_in(&self.auth) else {
+            return Ok(see_other("/sign-in"));
+        };
         let path = request.uri().path().to_string();
         let Some((project, service, _)) =
             super::services::locate_for(&self.state, &self.auth, &path).await?
@@ -216,47 +219,45 @@ impl DatabaseApi {
             Err(response) => return Ok(response),
         };
 
-        let typed = crate::platform::ports::normalize_hostname(field(&form, "name"));
-        if typed.is_empty() {
-            return Ok(back_with_error(
-                &here,
-                "a database is reached by name, so it has to have one",
-            ));
-        }
-
-        let was = crate::deploy::certificate_names(
-            &self.state.database,
-            &self.state.config,
-            &project,
-            &service,
-        )
-        .await
-        .into_iter()
-        .next();
-
-        let Some(port) = crate::platform::ports::of_service(&self.state.database, &service.id)
-            .await?
-            .into_iter()
-            .next()
-        else {
-            return Ok(back_with_error(&here, "this database has no port row"));
+        let renamed = match crate::authz::node_user::belongs_here(&account) {
+            true => {
+                crate::usecases::node_user_name_database::run(
+                    &self.state.database,
+                    &self.state.config,
+                    &account,
+                    &project,
+                    &service,
+                    field(&form, "name"),
+                )
+                .await
+            }
+            false => {
+                crate::usecases::tenant_user_name_database::run(
+                    &self.state.database,
+                    &self.state.config,
+                    &account,
+                    &project,
+                    &service,
+                    field(&form, "name"),
+                )
+                .await
+            }
         };
-        if let Err(error) =
-            crate::platform::ports::set_hostname(&self.state.database, &port.id, Some(&typed)).await
-        {
-            return Ok(back_with_error(&here, &error.to_string()));
-        }
+        let named = match renamed {
+            Ok(named) => named,
+            Err(reason) => return Ok(back_with_error(&here, &reason)),
+        };
 
         // The choice of certificate follows the name it was made about. A
         // policy left on the old one would be an answer nothing reads and a
         // new name quietly back on the default.
-        if let Some(was) = was.filter(|was| was != &typed) {
+        if let Some(was) = named.was {
             let policy =
                 crate::edge::policy::for_name(&self.state.database, &self.state.config, &was).await;
             if let Err(error) = super::nodes::store_source(
                 &self.state.database,
                 &self.state.config,
-                &typed,
+                &named.now,
                 &policy.renew_with,
             )
             .await
@@ -268,14 +269,9 @@ impl DatabaseApi {
             }
         }
 
-        // Issued under the new name and handed to whatever is running,
-        // which is what `refresh_certificates` does on its own timer — the
-        // rename only makes it worth doing now.
         if let Err(error) = self.state.deployer.refresh_certificates().await {
             tracing::warn!(%error, "could not reissue after the rename");
         }
-        // And the names inside the containers, which is where this name is
-        // resolved from.
         self.state.deployer.sync_routes().await;
         self.state.certificates.now();
 
@@ -289,15 +285,13 @@ impl DatabaseApi {
     /// database answer. The two are separate because they fail separately
     /// — a name with a good certificate and no port resolves to a machine
     /// that says nothing.
-    ///
-    /// The primary only. A pool that answered from outside would need a
-    /// port per replica and something choosing between them, which is a
-    /// load balancer and has its own justification rather than being a
-    /// detail of this.
     #[post("/projects/:project/services/:service/database/publish")]
     #[raw]
     #[middleware(SessionMiddleware)]
     async fn publish(&self, request: Request) -> RestResult<Response> {
+        let Some(account) = signed_in(&self.auth) else {
+            return Ok(see_other("/sign-in"));
+        };
         let path = request.uri().path().to_string();
         let Some((project, service, _)) =
             super::services::locate_for(&self.state, &self.auth, &path).await?
@@ -310,19 +304,29 @@ impl DatabaseApi {
             Err(response) => return Ok(response),
         };
 
-        let Some(port) = crate::platform::ports::of_service(&self.state.database, &service.id)
-            .await?
-            .into_iter()
-            .next()
-        else {
-            return Ok(back_with_error(&here, "this database has no port row"));
+        let published = field(&form, "publish") == "on";
+        let done = match crate::authz::node_user::belongs_here(&account) {
+            true => {
+                crate::usecases::node_user_publish_database::run(
+                    &self.state.database,
+                    &account,
+                    &service,
+                    published,
+                )
+                .await
+            }
+            false => {
+                crate::usecases::tenant_user_publish_database::run(
+                    &self.state.database,
+                    &account,
+                    &service,
+                    published,
+                )
+                .await
+            }
         };
-
-        let publish = field(&form, "publish") == "on";
-        if let Err(error) =
-            crate::platform::ports::set_published(&self.state.database, &port.id, publish).await
-        {
-            return Ok(back_with_error(&here, &error.to_string()));
+        if let Err(reason) = done {
+            return Ok(back_with_error(&here, &reason));
         }
 
         // Redeployed, because a published port is an iptables rule made
@@ -340,24 +344,13 @@ impl DatabaseApi {
     }
 
     /// Where this database's certificate comes from.
-    ///
-    /// **ACME is refused unless both names resolve to this node**, and both
-    /// is the point: the read pool's name is derived from the primary's, so
-    /// an operator who added one DNS record and not the other would have a
-    /// certificate order that cannot pass — twice a day, against an
-    /// authority that locks the account at five failures an hour.
-    ///
-    /// The renewal loop makes the same check before it spends anything, so
-    /// this is not what protects the account. It is what gives an answer
-    /// *now*, in the form, instead of a silence somebody has to go and read
-    /// the certificate page to understand.
     #[post("/projects/:project/services/:service/database/certificate")]
     #[raw]
     #[middleware(SessionMiddleware)]
     async fn certificate(&self, request: Request) -> RestResult<Response> {
-        // The service page's locator, because this is one of its forms: it
-        // is the same permission question, the same refusal for a service
-        // that arrived on an errand, and the same "back to here".
+        let Some(account) = signed_in(&self.auth) else {
+            return Ok(see_other("/sign-in"));
+        };
         let path = request.uri().path().to_string();
         let Some((project, service, _)) =
             super::services::locate_for(&self.state, &self.auth, &path).await?
@@ -377,34 +370,42 @@ impl DatabaseApi {
             &service,
         )
         .await;
-        let Some(name) = names.first().cloned() else {
+        let Some(first) = names.first().cloned() else {
             return Ok(back_with_error(&here, "this database has no name yet"));
         };
-
-        let renew_with = match super::nodes::source_from(&form, &name) {
+        let renew_with = match super::nodes::source_from(&form, &first) {
             Ok(renew_with) => renew_with,
             Err(reason) => return Ok(back_with_error(&here, &reason)),
         };
 
-        if renew_with == crate::edge::policy::RenewWith::Acme {
-            let Some(node_domain) =
-                crate::node::settings::domain(&self.state.database, &self.state.config).await
-            else {
-                return Ok(back_with_error(
-                    &here,
-                    "this node has no domain of its own, so it cannot check whether those                      names point here — set one on the node page first",
-                ));
-            };
-            // Both, and named individually when one fails: "it does not
-            // resolve" about a name the operator never typed is a message
-            // they cannot act on.
-            for name in [name.clone(), crate::deploy::hosts::pool_name(&name)] {
-                let outcome = crate::deploy::dns::resolves_here(&name, &node_domain).await;
-                if !outcome.ok() {
-                    return Ok(back_with_error(&here, &outcome.explain(&name)));
-                }
+        let checked = match crate::authz::node_user::belongs_here(&account) {
+            true => {
+                crate::usecases::node_user_set_database_certificate::run(
+                    &self.state.database,
+                    &self.state.config,
+                    &account,
+                    &project,
+                    &service,
+                    &renew_with,
+                )
+                .await
             }
-        }
+            false => {
+                crate::usecases::tenant_user_set_database_certificate::run(
+                    &self.state.database,
+                    &self.state.config,
+                    &account,
+                    &project,
+                    &service,
+                    &renew_with,
+                )
+                .await
+            }
+        };
+        let name = match checked {
+            Ok(name) => name,
+            Err(reason) => return Ok(back_with_error(&here, &reason)),
+        };
 
         if let Err(error) =
             super::nodes::store_source(&self.state.database, &self.state.config, &name, &renew_with)
@@ -431,38 +432,44 @@ impl DatabaseApi {
         let Some(project_slug) = super::services::project_slug(&path) else {
             return Ok(see_other("/"));
         };
-        let Some((project, allowed)) =
-            access::find_project(&self.state.database, &account, project_slug).await?
-        else {
-            return Ok(see_other("/?error=no+such+project"));
-        };
-        let here = format!("/projects/{}/databases/new", project.slug);
-        if !allowed.may_deploy() {
-            return Ok(see_other(&format!("/projects/{}", project.slug)));
-        }
-
+        let here = format!("/projects/{project_slug}/databases/new");
         let form = match read_form(request).await {
             Ok(form) => form,
             Err(response) => return Ok(response),
         };
-        let name = field(&form, "name").to_string();
-        let version = field(&form, "version").to_string();
-        let memory = match presets::parse(field(&form, "memory")) {
-            Ok(Some(bytes)) => bytes,
-            // Blank is not "no ceiling" here. An unbounded Postgres on
-            // a node with one core is the node, so the form's empty
-            // answer is the form's default answer.
-            Ok(None) => DEFAULT_PRESET,
+
+        // Which console this arrived at decides whose use case runs.
+        // The two are the same today and will not stay that way: an
+        // organisation has a quota and the machine's own frontier does
+        // not.
+        let asked = crate::commands::create_database::Asked {
+            project: project_slug,
+            name: field(&form, "name"),
+            version: field(&form, "version"),
+            memory: field(&form, "memory"),
+        };
+        let made = match crate::authz::node_user::belongs_here(&account) {
+            true => {
+                crate::usecases::node_user_create_database::run(
+                    &self.state.database,
+                    &account,
+                    asked,
+                )
+                .await
+            }
+            false => {
+                crate::usecases::tenant_user_create_database::run(
+                    &self.state.database,
+                    &account,
+                    asked,
+                )
+                .await
+            }
+        };
+        let (project, service) = match made {
+            Ok(made) => made,
             Err(reason) => return Ok(back_with_error(&here, &reason)),
         };
-
-        let (service, _) =
-            match databases::create(&self.state.database, &project.id, &name, &version, memory)
-                .await
-            {
-                Ok(made) => made,
-                Err(error) => return Ok(back_with_error(&here, &error.to_string())),
-            };
 
         // Its own job on this node's own queue, which is the same
         // deployment the service page's button queues.
@@ -1143,6 +1150,7 @@ fn connection_block(strings: &Strings, published: Option<u16>) -> impl Renderabl
 mod tests {
     use super::*;
     use crate::console::tests::Console;
+    use crate::platform::databases;
     use crate::platform::services;
     use wabot::rest::axum::http::StatusCode;
 

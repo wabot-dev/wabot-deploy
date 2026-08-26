@@ -1,5 +1,14 @@
 use crate::accounts::Account;
 
+/// Of the machine's own frontier rather than an organisation's.
+///
+/// Not a role: the shared pages (projects, services, databases) answer on
+/// both consoles, and this is what picks which actor's use case a request
+/// belongs to. What they may do inside a project is `platform::access`.
+pub fn belongs_here(account: &Account) -> bool {
+    account.tenant_id.is_none()
+}
+
 pub fn manages_the_machine(account: &Account) -> bool {
     account.is_admin()
 }
