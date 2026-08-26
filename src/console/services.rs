@@ -4199,14 +4199,9 @@ impl ServiceApi {
         // form for a managed database, and a rule the browser enforces
         // is a courtesy — what the node writes from the engine's row
         // must not be settable from a request somebody constructed.
-        if service.kind.is_managed() {
-            return Ok(back_with_error(
-                &here,
-                "the node writes this for a managed database",
-            ));
-        }
-        let account = signed_in(&self.auth);
-
+        let Some(account) = signed_in(&self.auth) else {
+            return Ok(see_other("/sign-in"));
+        };
         let form = match read_form(request).await {
             Ok(form) => form,
             Err(response) => return Ok(response),
@@ -4215,9 +4210,34 @@ impl ServiceApi {
             Ok(env) => env,
             Err(message) => return Ok(back_with_error(&here, &message)),
         };
-
-        self.apply_env(&project, &service, env, account.map(|a| a.id), "edit")
-            .await?;
+        let applied = match crate::authz::node_user::belongs_here(&account) {
+            true => {
+                crate::usecases::node_user_set_service_env::run(
+                    &self.state.database,
+                    &account,
+                    &service,
+                    env,
+                    "edit",
+                )
+                .await
+            }
+            false => {
+                crate::usecases::tenant_user_set_service_env::run(
+                    &self.state.database,
+                    &account,
+                    &service,
+                    env,
+                    "edit",
+                )
+                .await
+            }
+        };
+        let applied = match applied {
+            Ok(applied) => applied,
+            Err(reason) => return Ok(back_with_error(&here, &reason)),
+        };
+        self.enqueue(&applied.service.id, applied.release_id.as_deref())
+            .await;
         Ok(see_other(&format!("{here}#environment")))
     }
 
@@ -4241,21 +4261,65 @@ impl ServiceApi {
             "/projects/{}/services/{}/settings/environment",
             project.slug, service.slug
         );
-        let account = signed_in(&self.auth);
-
+        let Some(account) = signed_in(&self.auth) else {
+            return Ok(see_other("/sign-in"));
+        };
         let Some(id) = segments.get(5) else {
             return Ok(see_other(&here));
         };
-        let Some(revision) = config_history::find(&self.state.database, id).await? else {
-            return Ok(see_other(&here));
-        };
-        if revision.service_id != service.id {
-            return Ok(see_other(&here));
-        }
 
-        let env: Vec<(String, String)> = revision.env.into_iter().collect();
-        self.apply_env(&project, &service, env, account.map(|a| a.id), "revert")
-            .await?;
+        let chosen = match crate::authz::node_user::belongs_here(&account) {
+            true => {
+                crate::usecases::node_user_revert_service_env::run(
+                    &self.state.database,
+                    &account,
+                    &service,
+                    id,
+                )
+                .await
+            }
+            false => {
+                crate::usecases::tenant_user_revert_service_env::run(
+                    &self.state.database,
+                    &account,
+                    &service,
+                    id,
+                )
+                .await
+            }
+        };
+        let env = match chosen {
+            Ok(env) => env,
+            Err(reason) => return Ok(back_with_error(&here, &reason)),
+        };
+        let applied = match crate::authz::node_user::belongs_here(&account) {
+            true => {
+                crate::usecases::node_user_set_service_env::run(
+                    &self.state.database,
+                    &account,
+                    &service,
+                    env,
+                    "revert",
+                )
+                .await
+            }
+            false => {
+                crate::usecases::tenant_user_set_service_env::run(
+                    &self.state.database,
+                    &account,
+                    &service,
+                    env,
+                    "revert",
+                )
+                .await
+            }
+        };
+        let applied = match applied {
+            Ok(applied) => applied,
+            Err(reason) => return Ok(back_with_error(&here, &reason)),
+        };
+        self.enqueue(&applied.service.id, applied.release_id.as_deref())
+            .await;
         Ok(see_other(&format!("{here}#environment")))
     }
 
@@ -4831,56 +4895,6 @@ impl ServiceApi {
 }
 
 impl ServiceApi {
-    /// Store an environment, record the revision, and redeploy.
-    ///
-    /// One place, because the three have to happen together: values
-    /// stored without a revision are values nobody can undo, and
-    /// values stored without a redeploy are values the container does
-    /// not have.
-    async fn apply_env(
-        &self,
-        project: &crate::platform::projects::Project,
-        service: &services::Service,
-        env: Vec<(String, String)>,
-        by: Option<String>,
-        reason: &str,
-    ) -> RestResult<()> {
-        let map: std::collections::BTreeMap<String, String> = env.into_iter().collect();
-        services::set_env(&self.state.database, &service.id, &map).await?;
-        config_history::record(
-            &self.state.database,
-            &service.id,
-            &map,
-            by.as_deref(),
-            reason,
-        )
-        .await?;
-
-        let updated = services::Service {
-            env: map,
-            ..service.clone()
-        };
-
-        // Redeployed with the release it is *already running*, not with
-        // its image reference. Those differ the moment a tag moves —
-        // and then changing a variable would quietly bring in whatever
-        // was pushed since, which is precisely what releases exist to
-        // prevent. Found by changing an environment variable and
-        // watching the service jump to a different image.
-        let current = releases::of_service(&self.state.database, &service.id)
-            .await?
-            .into_iter()
-            .find(|release| release.deployed_at.is_some());
-
-        let _ = project;
-        self.enqueue(
-            &updated.id,
-            current.as_ref().map(|release| release.id.as_str()),
-        )
-        .await;
-        Ok(())
-    }
-
     /// Ask for a deployment and answer the browser.
     ///
     /// The reason a failure is not returned here: by the time one
