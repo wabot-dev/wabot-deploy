@@ -1108,55 +1108,6 @@ pub(crate) fn offering(capability: network::capability::Capability) -> &'static 
     }
 }
 
-/// What this node is willing to do, for anybody — itself included.
-///
-/// Two switches rather than a "private node" one, because private is not
-/// a mode: it is what a node *is* when it does not offer to answer for
-/// names, whether it cannot or would rather not. Naming the second
-/// switch "private" would make the first one look like something else.
-///
-/// The edge switch is disabled without a domain, with the reason
-/// showing. Offering to answer for names needs an address the world can
-/// dial, and a switch that could be turned on to no effect is a promise
-/// the node cannot keep.
-/// Whether a reserve is one this machine can keep, and why not.
-///
-/// Pure, and separate from the handler for the reason `deploy::fits` is:
-/// the interesting half is the refusal, and a test cannot produce a real
-/// reading — there is no containerd in the harness, so every measurement
-/// is nought and the check it exercises is the one that never fires.
-///
-/// `in_use` is everything outside any container's cgroup: this binary,
-/// containerd and the shims. That is what a reserve is *for*, which is why
-/// it is also the floor — the old constant of 256 MB was a guess standing
-/// in for this number, chosen because 15 % of a 1 GB node is under what
-/// the node was measured using.
-fn reserve_refusal(
-    total: u64,
-    in_use: u64,
-    committed: u64,
-    wanted: u64,
-    say: impl Fn(u64) -> String,
-) -> Option<String> {
-    if wanted < in_use {
-        return Some(format!(
-            "this node is using {} for itself right now — reserving {} would promise memory it is \
-             already spending",
-            say(in_use),
-            say(wanted)
-        ));
-    }
-    let left = total.saturating_sub(wanted);
-    match left < committed {
-        true => Some(format!(
-            "{} is already promised to services, and that would leave {}",
-            say(committed),
-            say(left)
-        )),
-        false => None,
-    }
-}
-
 /// What this machine keeps for itself, and what is left for services.
 ///
 /// It was two constants: 15 % of memory with a floor of 256 MB, and a
@@ -2332,17 +2283,6 @@ async fn self_path(database: &wabot::sqlite::SqliteDatabase) -> String {
     }
 }
 
-/// Write the domain, treating a storage failure as a storage failure.
-///
-/// Separated only so the two call sites read as one line each; the
-/// error is logged rather than returned because the redirect that
-/// follows is the same either way.
-async fn set_domain(database: &wabot::sqlite::SqliteDatabase, domain: Option<&str>) {
-    if let Err(error) = crate::node::settings::set_domain(database, domain).await {
-        tracing::error!(%error, "could not store the node's domain");
-    }
-}
-
 /// What the node's TLS is, as one answer.
 ///
 /// Assembled rather than read off a single column, because the honest
@@ -3094,44 +3034,6 @@ impl NodeApi {
             .expect("a constant response is well-formed"))
     }
 
-    /// Set the node's domain and ask for a certificate now.
-    ///
-    /// The name is checked against DNS first, exactly as a service
-    /// hostname is: asking a certificate authority to validate a name
-    /// that does not point here spends one of five hourly attempts to
-    /// be told what a lookup would have said for free.
-    /// Recompute what this node's own row says about itself.
-    ///
-    /// **The domain is the input to three derived things**, and changing
-    /// it used to update none of them: the node's `name`, whether it is
-    /// `Public` or `Private`, and the `endpoint` other nodes dial. All
-    /// three are computed by `network::ensure_self` from the domain, and
-    /// `ensure_self` ran at install and at boot — so setting a domain
-    /// from this page left the row describing the machine as it was
-    /// before, until the next restart.
-    ///
-    /// Jorge saw the visible half: a node serving `node-1.tobaw.shop`
-    /// with a real certificate, titled `localhost` — the machine's own
-    /// hostname, taken at install because there was no domain then. The
-    /// invisible half is worse, because a row that says private with no
-    /// endpoint is what another node would be told.
-    ///
-    /// The same shape this project keeps meeting: derived state that
-    /// nothing recomputes when its input changes. Phase 7 learned it for
-    /// input arriving over the network; this one arrives from a form, and
-    /// nobody was listening there either.
-    async fn refresh_self(&self) {
-        if let Err(error) =
-            crate::network::ensure_self(&self.state.database, &self.state.config).await
-        {
-            // Reported and not fatal: the domain *is* saved, the
-            // certificate work is queued, and refusing the whole request
-            // over this would leave the operator retyping a name that
-            // was accepted.
-            tracing::warn!(%error, "could not refresh this node's own row after a domain change");
-        }
-    }
-
     #[post("/node/certificate")]
     #[raw]
     #[middleware(SessionMiddleware)]
@@ -3148,72 +3050,46 @@ impl NodeApi {
             Ok(form) => form,
             Err(response) => return Ok(response),
         };
-        let typed = super::auth::field(&form, "domain");
-
-        let previous =
-            crate::node::settings::domain(&self.state.database, &self.state.config).await;
-
         // "Try again" is the same form with nothing changed. It exists
         // because the usual fix for a refusal is somewhere else — a DNS
-        // record, a firewall — and making somebody re-type the domain
-        // to retry reads as though the domain were what was wrong.
+        // record, a firewall — and making somebody re-type the domain to
+        // retry reads as though the domain were what was wrong.
         if form.contains_key("retry") {
             self.state.certificates.now();
             return Ok(super::auth::see_other(here));
         }
 
-        if typed.is_empty() {
-            set_domain(&self.state.database, None).await;
-            self.refresh_self().await;
-            self.forget(previous.as_deref(), None).await;
-            return Ok(super::auth::back_with_error(
-                here,
-                "the domain was cleared — this node serves its own certificate",
-            ));
-        }
-        let domain = crate::platform::ports::normalize_hostname(typed);
+        let settled = crate::usecases::node_user_set_node_domain::run(
+            &self.state.database,
+            &self.state.config,
+            &self.state.deployer,
+            &account,
+            super::auth::field(&form, "domain"),
+        )
+        .await;
 
-        // Resolved against itself: the node has no other way to know
-        // where it is reachable, and "does this name arrive here" is
-        // the question. See `deploy::dns`.
-        let outcome = crate::deploy::dns::resolves_here(&domain, &domain).await;
-        if !outcome.ok() {
-            return Ok(super::auth::back_with_error(
-                here,
-                &outcome.explain(&domain),
-            ));
-        }
-
-        set_domain(&self.state.database, Some(&domain)).await;
-        self.refresh_self().await;
-        // A name change invalidates whatever is being served: the old
-        // certificate does not carry the new name. Clearing the last
-        // failure is part of that — it was about the old name, and
-        // leaving it would make the page report the new domain as
-        // already refused before anything had been asked.
-        if let Err(error) = crate::node::settings::set_acme_error(&self.state.database, None).await
-        {
-            tracing::warn!(%error, "could not clear the last certificate failure");
-        }
-        // The new name has to reach the console, the old one has to
-        // stop: the edge answers from the route table, and a rename
-        // that only changed the setting would leave the console on a
-        // name nobody asked for and off the one they did.
-        self.forget(previous.as_deref(), Some(&domain)).await;
         // The loop owns issuance — both the local certificate carrying
         // the new name and the public one. Asking it here is what makes
         // saving a domain reissue rather than merely record.
-        self.state.certificates.now();
-
-        // No "reload in a few seconds": the page watches. What it says
-        // here is the one thing the stream cannot — that the name was
-        // checked before anything was asked for.
-        Ok(super::auth::see_other(&format!(
-            "{here}?{}",
-            form_urlencoded::Serializer::new(String::new())
-                .append_pair("checked", &format!("{domain} resolves here."))
-                .finish()
-        )))
+        match settled {
+            Ok(crate::usecases::node_user_set_node_domain::Settled::Named(domain)) => {
+                self.state.certificates.now();
+                Ok(super::auth::see_other(&format!(
+                    "{here}?{}",
+                    form_urlencoded::Serializer::new(String::new())
+                        .append_pair("checked", &format!("{domain} resolves here."))
+                        .finish()
+                )))
+            }
+            Ok(crate::usecases::node_user_set_node_domain::Settled::Cleared) => {
+                self.state.certificates.now();
+                Ok(super::auth::back_with_error(
+                    here,
+                    "the domain was cleared — this node serves its own certificate",
+                ))
+            }
+            Err(reason) => Ok(super::auth::back_with_error(here, &reason)),
+        }
     }
 
     /// Say what this node is willing to do, for anybody at all.
@@ -3260,70 +3136,18 @@ impl NodeApi {
             Err(response) => return Ok(response),
         };
 
-        let memory = match crate::platform::presets::parse_size(super::auth::field(&form, "memory"))
+        if let Err(reason) = crate::usecases::node_user_set_reserves::run(
+            &self.state.database,
+            &self.state.deployer,
+            &account,
+            super::auth::field(&form, "memory"),
+            super::auth::field(&form, "cpu"),
+        )
+        .await
         {
-            Ok(bytes) => bytes,
-            Err(reason) => return Ok(super::auth::back_with_error(here, &reason)),
-        };
-        let cpu = match crate::platform::presets::parse_cores(super::auth::field(&form, "cpu")) {
-            Ok(millicores) => millicores,
-            Err(reason) => return Ok(super::auth::back_with_error(here, &reason)),
-        };
-
-        let snapshot = self.state.deployer.memory().await;
-        let committed = self.state.deployer.committed().await;
-
-        if let Some(bytes) = memory {
-            // Everything outside anybody's cgroup, which is what a
-            // reserve is for.
-            let in_use = snapshot.node + snapshot.containerd + snapshot.shims;
-            if let Some(reason) = reserve_refusal(
-                snapshot.total,
-                in_use,
-                committed.memory,
-                bytes,
-                crate::node::memory::human,
-            ) {
-                return Ok(super::auth::back_with_error(here, &reason));
-            }
+            return Ok(super::auth::back_with_error(here, &reason));
         }
 
-        if let Some(millicores) = cpu {
-            // No floor from a reading here: the node's own CPU use is a
-            // rate the stream computes from two samples, and a form has
-            // one. `parse_cores` already refuses below a tenth of a core.
-            if let Some(reason) = reserve_refusal(
-                u64::from(crate::node::cpu::cores() * 1_000),
-                0,
-                u64::from(committed.cpu),
-                u64::from(millicores),
-                |millicores| {
-                    crate::platform::presets::cpu_label(
-                        u32::try_from(millicores).unwrap_or(u32::MAX),
-                    )
-                },
-            ) {
-                return Ok(super::auth::back_with_error(here, &reason));
-            }
-        }
-
-        // Logged rather than propagated, the way `set_domain` does it
-        // here: a write that fails leaves the previous number in place,
-        // and the page redraws it — which is a truthful page rather than
-        // a 500.
-        if let Err(error) =
-            crate::node::settings::set_memory_reserve(&self.state.database, memory).await
-        {
-            tracing::error!(%error, "could not store the memory reserve");
-        }
-        if let Err(error) = crate::node::settings::set_cpu_reserve(&self.state.database, cpu).await
-        {
-            tracing::error!(%error, "could not store the CPU reserve");
-        }
-        // Nothing is redeployed. A reserve decides what the node will
-        // *accept* next; it does not reach into a container's cgroup, and
-        // restarting every service because a number moved would be a
-        // setting that costs an outage.
         Ok(super::auth::see_other(&format!("{here}#reserves")))
     }
 
@@ -4295,20 +4119,6 @@ impl NodeApi {
         Ok(super::auth::see_other(here))
     }
 
-    /// Drop the name the node used to answer to, then rebuild the
-    /// routes — which is also what asks for the certificate, since the
-    /// two answer for the same names.
-    async fn forget(&self, previous: Option<&str>, now: Option<&str>) {
-        if let Some(previous) = previous.filter(|old| Some(*old) != now) {
-            if let Err(error) =
-                crate::edge::routes::forget_control_plane(&self.state.database, previous).await
-            {
-                tracing::warn!(%error, "could not drop the old console route");
-            }
-        }
-        self.state.deployer.sync_routes().await;
-    }
-
     /// The node's live state, as server-sent events.
     ///
     /// One stream for both halves of this page rather than two. Memory
@@ -4712,50 +4522,6 @@ pub(crate) mod tests {
                 "the page does not show {value}"
             );
         }
-    }
-
-    /// A reserve the machine cannot keep is refused, with the reading.
-    ///
-    /// The floor used to be a constant — 256 MB — chosen because 15 % of a
-    /// 1 GB node is 154 MB, which is under what this process plus
-    /// containerd were measured using. That was a guess standing in for a
-    /// measurement, and once the number is the operator's the node can
-    /// answer the question about itself.
-    ///
-    /// Asked of the pure function and not through the page, because there
-    /// is no containerd in the harness: every reading is nought there, so
-    /// a POST would exercise the one branch that never fires.
-    #[test]
-    fn a_reserve_the_node_cannot_keep_is_refused() {
-        let mb = 1024 * 1024;
-        let say = |bytes: u64| format!("{} MB", bytes / mb);
-
-        // Under what the node itself is using: refused, and it says the
-        // number it measured rather than a rule.
-        let refusal = reserve_refusal(1024 * mb, 161 * mb, 0, 6 * mb, say)
-            .expect("6 MB is under 161 MB of measured use");
-        assert!(refusal.contains("161 MB"), "{refusal}");
-        assert!(
-            refusal.contains("6 MB"),
-            "and what was asked for: {refusal}"
-        );
-
-        // Room for what is already promised: refused, naming the promise.
-        let refusal = reserve_refusal(1024 * mb, 161 * mb, 700 * mb, 512 * mb, say)
-            .expect("512 MB reserved leaves 512 MB against 700 MB promised");
-        assert!(refusal.contains("700 MB"), "{refusal}");
-        assert!(
-            refusal.contains("512 MB"),
-            "and what would be left: {refusal}"
-        );
-
-        // And a number that fits both is accepted.
-        assert_eq!(
-            reserve_refusal(1024 * mb, 161 * mb, 300 * mb, 256 * mb, say),
-            None
-        );
-        // Exactly what is in use is enough: the floor is "not less than".
-        assert_eq!(reserve_refusal(1024 * mb, 161 * mb, 0, 161 * mb, say), None);
     }
 
     /// Empty means the default, and a number survives the round trip.
