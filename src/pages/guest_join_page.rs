@@ -23,7 +23,8 @@ pub fn render<'a>(page: &'a Join<'a>) -> impl Renderable + 'a {
                 <p class="tagline">
                     (t("You were invited as "))(invitation.node_role.label().to_lowercase())(".")
                 </p>
-                <form method="post" action=(format!("/join/{}", page.token)) class="card stack">
+                <form method="post" action=(format!("/join/{}", page.token)) class="card stack"
+                      data-wabot-reload>
                     <label for="username">(t("Username"))</label>
                     <input id="username" name="username" type="text"
                            autocomplete="username" required autofocus>

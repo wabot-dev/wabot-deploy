@@ -164,6 +164,39 @@ wabot-outlet {
   display: contents;
 }
 
+/* What a boosted form does to the button that was pressed. The runtime
+   sets `data-wabot-state` and disables it; what the three states look
+   like is ours.
+
+   `min-width` is held while busy so the label swap does not resize the
+   button under the cursor, and the glyph is a check rather than an icon
+   because status here is a word or a mark, never a picture. */
+button[data-wabot-state] {
+  min-width: max-content;
+  transition: opacity 120ms ease, color 120ms ease;
+}
+
+button[data-wabot-state="busy"] {
+  opacity: 0.55;
+  cursor: progress;
+}
+
+button[data-wabot-state="done"]::after,
+button[data-wabot-state="failed"]::after {
+  margin-left: 0.4rem;
+  font-weight: 600;
+}
+
+button[data-wabot-state="done"]::after {
+  content: "\2713";
+  color: rgb(var(--c-success-fg));
+}
+
+button[data-wabot-state="failed"]::after {
+  content: "\00D7";
+  color: rgb(var(--c-danger-fg));
+}
+
 .narrow { max-width: 30rem; }
 
 .topbar {

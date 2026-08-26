@@ -372,3 +372,54 @@ the signature. When it is genuinely ambiguous, put it beside the write:
 a rule enforced too often is a page that refuses something it could have
 allowed, and a rule enforced too rarely is a row that should not exist.
 
+## 8. A button says it is working, and the page does not move
+
+Pressing a button runs its action over `fetch`. The button disables
+itself for the round trip, says so, and shows what happened when it
+knows — a check, a cross — and none of it costs a page load, a scroll or
+a lost place in a list.
+
+### Where it lives, and why not here
+
+In the framework. Boosted navigation already covered links, with
+`apply`, `swapContent`, `ensureStyles` and the scroll decision all
+written; a second copy of that in `assets/console.js` would have been
+the worse of two. `submit` is intercepted beside `click`, in the same
+file, and every wabot app inherits it.
+
+### Four things that are invisible when wrong
+
+- **It is enhancement, not a requirement.** With scripting off the form
+  posts exactly as before and the server sees the same request. This is
+  the console somebody opens when the node is unhealthy — see
+  `CLAUDE.md`, "The console works without JavaScript".
+- **Urlencoded, not multipart.** `FormData` over `fetch` sends
+  multipart, and a server that parses one does not parse the other.
+  Getting this wrong breaks every POST at once, silently. A multipart
+  form is left to the browser, where upload progress belongs.
+- **No scroll on the result.** `apply(data, false)`. Jumping to the top
+  after every action is the whole complaint this answers.
+- **A refusal arrives as a redirect, not as a status.** This console
+  answers 303 whichever way an action went and says which by putting a
+  message in the query. Reading the status alone puts a green check on
+  every rejection, so the runtime reads the landing URL's `error`
+  parameter instead.
+
+### The opt-out, and the three that use it
+
+`data-wabot-reload` on the form, the same spelling a link already uses.
+`/setup`, `/sign-in` and `/join` carry it: entering the console replaces
+the whole document — the shell, the navigation and everything that
+depends on a session appear for the first time — and swapping a fragment
+into the page you are leaving is not that.
+`the_forms_that_let_somebody_in_are_not_boosted` fails when one loses it.
+
+### What it costs
+
+Nothing in either workspace executes `client.js`, so the behaviour is
+not covered by any suite. What the tests reach is the server contract it
+rests on — a redirect followed with the nav header has to answer with a
+fragment — and four assertions read off the runtime's source. **The rest
+is verified in a browser by somebody**, which is this project's standing
+rule for anything visual.
+

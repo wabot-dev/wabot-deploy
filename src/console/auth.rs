@@ -254,7 +254,7 @@ impl AuthPages {
                 @if has_token {
                     <p class="tagline">(t("The setup token was printed by `wabot-deploy install`. \
                          It works once, and it expires."))</p>
-                    <form method="post" action="/setup" class="card stack">
+                    <form method="post" action="/setup" class="card stack" data-wabot-reload>
                         <label for="setup_token">(t("Setup token"))</label>
                         <input id="setup_token" name="setup_token" type="text"
                                autocomplete="off" required>
@@ -307,7 +307,7 @@ impl AuthPages {
                 @if let Some(message) = &query.error {
                     (layout::error_note(message))
                 }
-                <form method="post" action="/sign-in" class="card stack">
+                <form method="post" action="/sign-in" class="card stack" data-wabot-reload>
                     <label for="username">(t("Username"))</label>
                     <input id="username" name="username" type="text"
                            autocomplete="username" required>

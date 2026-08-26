@@ -638,6 +638,26 @@ mod tests {
         assert_eq!(projects.len(), 1, "they landed in the project");
     }
 
+    /// Entering the console replaces the whole document: the shell, the
+    /// navigation and everything that depends on a session appear for
+    /// the first time. A boosted submit swaps a fragment into the page
+    /// that is already there, which for these forms is the page nobody
+    /// should still be looking at.
+    #[tokio::test]
+    async fn the_forms_that_let_somebody_in_are_not_boosted() {
+        let console = Console::new().await;
+        let cookie = console.signed_in().await;
+        let token = invite(&console, &cookie, &[("node_role", "member")]).await;
+
+        for path in ["/sign-in".to_string(), format!("/join/{token}")] {
+            let body = console.harness.get(&path).send().await.body;
+            assert!(
+                body.contains("<form") && body.contains("data-wabot-reload"),
+                "{path} has a form a boosted submit would swap under"
+            );
+        }
+    }
+
     /// Somebody already signed in is the wrong person at the right
     /// machine.
     #[tokio::test]
