@@ -1,0 +1,130 @@
+use std::collections::HashMap;
+
+use wabot::sqlite::SqliteDatabase;
+
+use crate::accounts::Account;
+use crate::authz::node_user;
+use crate::commands::destination::Destination;
+use crate::config::Config;
+use crate::node::backups::{self, Cadence, Plan};
+
+pub struct Saved {
+    /// Whether the timestamped-log setting moved. The caller redeploys
+    /// the managed engines when it did, because it is something they read
+    /// at startup.
+    pub archiving_changed: bool,
+}
+
+pub async fn run(
+    database: &SqliteDatabase,
+    config: &Config,
+    account: &Account,
+    fields: &HashMap<String, String>,
+    field: impl Fn(&str) -> String,
+) -> Result<Saved, String> {
+    if !node_user::manages_the_machine(account) {
+        return Err("only an administrator of this node can do that".into());
+    }
+
+    let typed = field("destination");
+    let destination = match typed.is_empty() {
+        true => None,
+        false => {
+            let destination = Destination::parse(&typed)?;
+            destination.preflight()?;
+            if matches!(destination, Destination::S3 { .. }) {
+                let Some(credentials) = config.s3() else {
+                    return Err(
+                        "that bucket has no credentials on this node — the card below \
+                                stores them, in the config file rather than the database"
+                            .into(),
+                    );
+                };
+                if let Some(reason) = bucket_refusal(Some(&typed), &credentials).await {
+                    return Err(reason);
+                }
+            }
+            Some(typed)
+        }
+    };
+
+    let keep_days = match field("keep_days").as_str() {
+        "" => crate::commands::backup::KEEP_DAYS,
+        text => match text.parse::<i64>() {
+            Ok(days) if days >= backups::MIN_KEEP_DAYS => days,
+            Ok(_) => {
+                return Err(
+                    "a window of no days would delete each backup as soon as it was taken".into(),
+                )
+            }
+            Err(_) => return Err(format!("{text:?} is not a number of days")),
+        },
+    };
+
+    let plan = Plan {
+        destination,
+        cadence: Cadence::parse(&field("cadence")),
+        hour: field("hour")
+            .parse()
+            .unwrap_or(Plan::default().hour)
+            .min(23),
+        weekday: field("weekday")
+            .parse()
+            .unwrap_or(Plan::default().weekday)
+            .min(backups::SUNDAY),
+        keep_days,
+    };
+    backups::store(database, &plan).await.map_err(|error| {
+        tracing::error!(%error, "could not store the backup plan");
+        "that could not be saved".to_string()
+    })?;
+
+    let was = crate::node::settings::archiving(database).await;
+    let wanted = fields.contains_key("archiving");
+    let archiving_changed = match crate::node::settings::set_archiving(database, wanted).await {
+        Ok(()) => was != wanted,
+        Err(error) => {
+            tracing::warn!(%error, "could not save whether to keep the log");
+            false
+        }
+    };
+
+    Ok(Saved { archiving_changed })
+}
+
+/// Ask the bucket, and say what it said — or `None` if there is nothing
+/// to ask.
+///
+/// **A listing.** It needs the same signature, the same host and the same
+/// permission a backup needs, and `send_to_s3` opens with one anyway — so
+/// this is not a weaker check than the real thing, and it writes nothing
+/// into somebody's bucket to find out.
+///
+/// Bounded, because a form that waits on a provider is a page that hangs:
+/// a wrong endpoint is a connection nobody answers, and fifteen seconds is
+/// long enough to be a slow bucket and short enough to be an answer.
+pub(crate) async fn bucket_refusal(
+    destination: Option<&str>,
+    credentials: &crate::commands::s3::Credentials,
+) -> Option<String> {
+    let Some(crate::commands::destination::Destination::S3 { bucket, prefix }) =
+        destination.and_then(|text| crate::commands::destination::Destination::parse(text).ok())
+    else {
+        return None;
+    };
+    match tokio::time::timeout(
+        std::time::Duration::from_secs(15),
+        crate::commands::s3::list(credentials, &bucket, &prefix),
+    )
+    .await
+    {
+        Ok(Ok(_)) => None,
+        // The provider's own words. Never translated and never
+        // paraphrased: "SignatureDoesNotMatch" is what an operator will
+        // search for.
+        Ok(Err(error)) => Some(format!("{bucket} refused it: {error}")),
+        Err(_) => Some(format!(
+            "{bucket} did not answer within fifteen seconds — check the endpoint"
+        )),
+    }
+}

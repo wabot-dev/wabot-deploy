@@ -1447,43 +1447,6 @@ fn backup_card<'a>(
     )
 }
 
-/// Ask the bucket, and say what it said — or `None` if there is nothing
-/// to ask.
-///
-/// **A listing.** It needs the same signature, the same host and the same
-/// permission a backup needs, and `send_to_s3` opens with one anyway — so
-/// this is not a weaker check than the real thing, and it writes nothing
-/// into somebody's bucket to find out.
-///
-/// Bounded, because a form that waits on a provider is a page that hangs:
-/// a wrong endpoint is a connection nobody answers, and fifteen seconds is
-/// long enough to be a slow bucket and short enough to be an answer.
-async fn bucket_refusal(
-    destination: Option<&str>,
-    credentials: &crate::commands::s3::Credentials,
-) -> Option<String> {
-    let Some(crate::commands::destination::Destination::S3 { bucket, prefix }) =
-        destination.and_then(|text| crate::commands::destination::Destination::parse(text).ok())
-    else {
-        return None;
-    };
-    match tokio::time::timeout(
-        std::time::Duration::from_secs(15),
-        crate::commands::s3::list(credentials, &bucket, &prefix),
-    )
-    .await
-    {
-        Ok(Ok(_)) => None,
-        // The provider's own words. Never translated and never
-        // paraphrased: "SignatureDoesNotMatch" is what an operator will
-        // search for.
-        Ok(Err(error)) => Some(format!("{bucket} refused it: {error}")),
-        Err(_) => Some(format!(
-            "{bucket} did not answer within fifteen seconds — check the endpoint"
-        )),
-    }
-}
-
 /// The bucket's credential, and where it is kept.
 ///
 /// **Jorge asked for this**: configuring a bucket was an SSH session and
@@ -3240,121 +3203,26 @@ impl NodeApi {
             Err(response) => return Ok(response),
         };
 
-        let typed = super::auth::field(&form, "destination");
-        let destination =
-            match typed.is_empty() {
-                // Empty is "keep it here", which is where `backup` with no
-                // `--out` has always written. Stored as nothing rather than
-                // as the path, so a node whose `data_dir` moves does not go
-                // on writing to the old one.
-                true => None,
-                false => match crate::commands::destination::Destination::parse(typed) {
-                    Ok(destination) => {
-                        // What the send will need, asked now. `rsync` missing
-                        // is true today and still true at three in the
-                        // morning, and the message names what to install.
-                        if let Err(reason) = destination.preflight() {
-                            return Ok(super::auth::back_with_error(here, &reason));
-                        }
-                        // And the one thing preflight cannot see: a bucket
-                        // with no credentials on this node. `send` says this
-                        // in five lines with the TOML to paste; a form gets
-                        // the sentence.
-                        // A bucket needs a credential, and the credential
-                        // needs to work. Both asked here: the card below is
-                        // where one is stored, and the listing below is the
-                        // call a backup opens with — so a destination that
-                        // saves is one the next slot can actually write to.
-                        if matches!(
-                            destination,
-                            crate::commands::destination::Destination::S3 { .. }
-                        ) {
-                            match self.state.config.s3() {
-                                None => return Ok(super::auth::back_with_error(
-                                    here,
-                                    "that bucket has no credentials on this node — the card below \
-                                     stores them, in the config file rather than the database",
-                                )),
-                                Some(credentials) => {
-                                    if let Some(reason) =
-                                        bucket_refusal(Some(typed), &credentials).await
-                                    {
-                                        return Ok(super::auth::back_with_error(here, &reason));
-                                    }
-                                }
-                            }
-                        }
-                        Some(typed.to_string())
-                    }
-                    Err(reason) => return Ok(super::auth::back_with_error(here, &reason)),
-                },
-            };
+        let saved = crate::usecases::node_user_set_backup_plan::run(
+            &self.state.database,
+            &self.state.config,
+            &account,
+            &form,
+            |name| super::auth::field(&form, name).to_string(),
+        )
+        .await;
 
-        let keep_days = match super::auth::field(&form, "keep_days") {
-            // The default, which is what the placeholder says.
-            "" => crate::commands::backup::KEEP_DAYS,
-            text => match text.parse::<i64>() {
-                Ok(days) if days >= crate::node::backups::MIN_KEEP_DAYS => days,
-                // Nought is not a shorter window: it is the sweep
-                // deleting the backup it has just taken, and an archive
-                // with nothing to replay onto.
-                Ok(_) => {
-                    return Ok(super::auth::back_with_error(
-                        here,
-                        "a window of no days would delete each backup as soon as it was taken",
-                    ))
+        match saved {
+            Ok(saved) => {
+                // Something the managed engines read at startup moved, so
+                // they have to come back with it.
+                if saved.archiving_changed {
+                    self.redeploy_databases().await;
                 }
-                Err(_) => {
-                    return Ok(super::auth::back_with_error(
-                        here,
-                        &format!("{text:?} is not a number of days"),
-                    ))
-                }
-            },
-        };
-
-        let plan = crate::node::backups::Plan {
-            destination,
-            cadence: crate::node::backups::Cadence::parse(super::auth::field(&form, "cadence")),
-            // Out of range is the default rather than a refusal: these
-            // arrive from two selects, so a value outside them is a
-            // hand-made request and not somebody who mistyped.
-            hour: super::auth::field(&form, "hour")
-                .parse()
-                .unwrap_or(crate::node::backups::Plan::default().hour)
-                .min(23),
-            weekday: super::auth::field(&form, "weekday")
-                .parse()
-                .unwrap_or(crate::node::backups::Plan::default().weekday)
-                .min(crate::node::backups::SUNDAY),
-            keep_days,
-        };
-        if let Err(error) = crate::node::backups::store(&self.state.database, &plan).await {
-            tracing::error!(%error, "could not store the backup plan");
-            return Ok(super::auth::back_with_error(
-                here,
-                "that could not be saved",
-            ));
+                Ok(super::auth::see_other(here))
+            }
+            Err(reason) => Ok(super::auth::back_with_error(here, &reason)),
         }
-
-        // **And the databases have to be told.** `archive_mode` is a
-        // postmaster setting written into the container's arguments, so
-        // it changes at the next deployment and reconciliation will not
-        // cause one: it restores what is absent and what has the wrong
-        // ports, and this is neither. Without the redeployment below the
-        // switch reads on, the page says on, and nothing archives —
-        // which is worse than a switch that does nothing, because it is a
-        // page that lies.
-        let was = crate::node::settings::archiving(&self.state.database).await;
-        let wanted = form.contains_key("archiving");
-        if let Err(error) = crate::node::settings::set_archiving(&self.state.database, wanted).await
-        {
-            tracing::warn!(%error, "could not save whether to keep the log");
-        } else if was != wanted {
-            self.redeploy_databases().await;
-        }
-
-        Ok(super::auth::see_other(here))
     }
 
     /// Store the bucket's credential — in the file, never in the
@@ -3386,77 +3254,23 @@ impl NodeApi {
             Ok(form) => form,
             Err(response) => return Ok(response),
         };
-        let Some(path) = self.state.config.source.clone() else {
-            // A node running without a config file has nowhere to put
-            // this. Said rather than written to a guessed path, which
-            // would be a secret stored where nothing reads it.
-            return Ok(super::auth::back_with_error(
-                here,
-                "this node was started without a configuration file, so there is nowhere to keep \
-                 a credential that must not go in the database",
-            ));
+        let asked = crate::usecases::node_user_set_bucket_credentials::Asked {
+            access_key_id: super::auth::field(&form, "access_key_id"),
+            secret_access_key: super::auth::field(&form, "secret_access_key"),
+            region: super::auth::field(&form, "region"),
+            endpoint: super::auth::field(&form, "endpoint"),
         };
-
-        let stored = self.state.config.s3();
-        let key = super::auth::field(&form, "access_key_id").to_string();
-        let region = super::auth::field(&form, "region").to_string();
-        let endpoint = super::auth::field(&form, "endpoint").to_string();
-        // Empty means "keep the one you have". The field renders empty
-        // whatever is stored — a secret is not shown again — so treating
-        // empty as "clear it" would wipe the credential of anybody who
-        // came to change a region.
-        let secret = match super::auth::field(&form, "secret_access_key") {
-            "" => match stored.as_ref().map(|held| held.secret_access_key.clone()) {
-                Some(held) => held,
-                None => {
-                    return Ok(super::auth::back_with_error(
-                        here,
-                        "the secret access key is needed: there is none stored to keep",
-                    ))
-                }
-            },
-            typed => typed.to_string(),
-        };
-        if key.is_empty() {
-            return Ok(super::auth::back_with_error(
-                here,
-                "the access key id is needed",
-            ));
+        match crate::usecases::node_user_set_bucket_credentials::run(
+            &self.state.database,
+            &self.state.config,
+            &account,
+            asked,
+        )
+        .await
+        {
+            Ok(()) => Ok(super::auth::see_other(here)),
+            Err(reason) => Ok(super::auth::back_with_error(here, &reason)),
         }
-        if region.is_empty() {
-            return Ok(super::auth::back_with_error(
-                here,
-                "a region is needed — providers that have no regions still document one, often \
-                 us-east-1",
-            ));
-        }
-
-        let credentials = crate::commands::s3::Credentials {
-            access_key_id: key,
-            secret_access_key: secret,
-            region,
-            endpoint: match endpoint.is_empty() {
-                true => None,
-                false => Some(endpoint),
-            },
-        };
-
-        // The bucket it is for, if one is already named. Asked before the
-        // write, so a credential that does not work cannot replace one
-        // that does.
-        let plan = crate::node::backups::plan(&self.state.database).await;
-        if let Some(reason) = bucket_refusal(plan.destination.as_deref(), &credentials).await {
-            return Ok(super::auth::back_with_error(here, &reason));
-        }
-
-        if let Err(error) = crate::config::store_s3(&path, Some(&credentials)) {
-            // The reason as the filesystem or the parser put it. Never
-            // the credential — an error message is a place a secret ends
-            // up in a log.
-            tracing::error!(%error, "could not store the bucket credential");
-            return Ok(super::auth::back_with_error(here, &error.to_string()));
-        }
-        Ok(super::auth::see_other(here))
     }
 
     /// Take the credential out of the file.
@@ -3547,96 +3361,23 @@ impl NodeApi {
         // nodes shows. This is a note on a token that has not been spent
         // yet, for the operator who minted three of them this afternoon
         // — so it is bounded, and it is not required.
-        let name = super::auth::field(&form, "name");
-        if name.chars().count() > 60 {
-            return Ok(super::auth::back_with_error(
-                here,
-                "that note is too long for the column it goes in",
-            ));
-        }
-
-        // A key, a row and an address for this node, in that order, and
-        // only now: a node that never enrols anybody needs none of them.
-        let me = network::ensure_hub(&self.state.database, &self.state.config).await?;
-        // Refused rather than minted into a token nothing can use: the
-        // endpoint is what the other node calls back on, and a token
-        // carrying no address is one that fails on the far machine
-        // where nobody is watching.
-        let Some(endpoint) = me.endpoint.clone().filter(|_| me.may_be_edge()) else {
-            return Ok(super::auth::back_with_error(
-                here,
-                "this node has no address another one could call back on — set a domain first",
-            ));
-        };
-        let Some(public_key) = network::keys::public_key(&self.state.database).await else {
-            return Ok(super::auth::back_with_error(
-                here,
-                "this node has no overlay key yet",
-            ));
-        };
-        let Some(overlay_ip) = me.overlay_ip.clone() else {
-            return Ok(super::auth::back_with_error(
-                here,
-                "this node has no address on its own overlay yet",
-            ));
-        };
-
-        // The terms, from the same checkboxes on both halves of the
-        // form. What this node will *ask* of the joiner, and what it
-        // will *let* the joiner ask of it — bounded, on the second
-        // half, by what this node provides at all: offering a
-        // capability it has turned off is a promise already declined.
-        let requires: Vec<network::capability::Capability> = network::capability::Capability::ALL
-            .into_iter()
-            .filter(|capability| form.contains_key(&format!("require-{}", capability.name())))
-            .collect();
-        let mut offers = Vec::new();
-        for capability in network::capability::Capability::ALL {
-            if form.contains_key(&format!("offer-{}", capability.name()))
-                && network::capability::provides(&self.state.database, capability).await
-            {
-                offers.push(capability);
-            }
-        }
-
-        let assigned_ip = network::overlay::allocate(&self.state.database).await?;
-        let (_, secret) = network::enrolment::create(
+        let token = match crate::usecases::node_user_mint_join_token::run(
             &self.state.database,
-            name,
-            &assigned_ip,
-            &account.id,
-            &requires,
-            &offers,
+            &self.state.config,
+            &account,
+            super::auth::field(&form, "name"),
+            &form,
         )
-        .await?;
-
-        let token = network::token::JoinToken {
-            authority: me.id,
-            name: me.name,
-            endpoint,
-            public_key,
-            overlay_ip,
-            assigned_ip,
-            secret,
-            requires: Some(
-                requires
-                    .iter()
-                    .map(|capability| capability.name().to_string())
-                    .collect(),
-            ),
-            offers: Some(
-                offers
-                    .iter()
-                    .map(|capability| capability.name().to_string())
-                    .collect(),
-            ),
+        .await
+        {
+            Ok(token) => token,
+            Err(reason) => return Ok(super::auth::back_with_error(here, &reason)),
         };
 
-        // The nonce travels, not the token. This is the only moment it
-        // exists in clear, and a query string is read by the address
-        // bar, the history and every refresh — the same reason a push
-        // token stopped travelling that way. See `ConsoleState::reveals`.
-        let nonce = self.state.reveals.stash(token.encode());
+        // Through the reveal store, not the query string: the token is
+        // the secret, and a query string is read by the address bar, the
+        // history and every refresh.
+        let nonce = self.state.reveals.stash(token);
         Ok(super::auth::see_other(&format!(
             "{here}?{}",
             form_urlencoded::Serializer::new(String::new())
@@ -3676,58 +3417,32 @@ impl NodeApi {
             Ok(form) => form,
             Err(response) => return Ok(response),
         };
-        let token = super::auth::field(&form, "token");
-        if token.is_empty() {
-            return Ok(super::auth::back_with_error(here, "paste the join token"));
-        }
-
-        // Read before it is spent. The terms travel inside the token,
-        // so this costs nothing but a decode — and asking afterwards
-        // would be a consent screen for a decision already made.
-        //
-        // Decoded here only to refuse a bad paste before showing terms
-        // about it. Then the nonce travels and the token does not: the
-        // rule the minted one already follows, because a query string
-        // is read by the address bar, the history and every refresh.
-        if !form.contains_key("agreed") {
-            if let Err(error) = network::token::JoinToken::decode(token) {
-                return Ok(super::auth::back_with_error(here, &error.to_string()));
-            }
-            let nonce = self.state.reveals.stash(token.to_string());
-            return Ok(super::auth::see_other(&format!(
-                "{here}?{}",
-                form_urlencoded::Serializer::new(String::new())
-                    .append_pair("review", &nonce)
-                    .finish()
-            )));
-        }
-
-        // What was ticked, which can be less than was asked for and can
-        // be nothing at all — a node may join to *use* another without
-        // agreeing to do anything for it.
-        let accepted: Vec<network::capability::Capability> = network::capability::Capability::ALL
-            .into_iter()
-            .filter(|capability| form.contains_key(&format!("accept-{}", capability.name())))
-            .collect();
-
-        // The token is never carried back — not into the query string,
-        // not into the form's value. A refusal says what was wrong with
-        // it, which is all somebody needs to paste it again.
-        match network::join::join(
+        use crate::usecases::node_user_spend_join_token::Spent;
+        match crate::usecases::node_user_spend_join_token::run(
             &self.state.database,
             &self.state.config,
-            token,
-            Some(&accepted),
+            &account,
+            super::auth::field(&form, "token"),
+            &form,
         )
         .await
         {
-            Ok(joined) => Ok(super::auth::see_other(&format!(
+            Ok(Spent::Review(token)) => {
+                let nonce = self.state.reveals.stash(token);
+                Ok(super::auth::see_other(&format!(
+                    "{here}?{}",
+                    form_urlencoded::Serializer::new(String::new())
+                        .append_pair("review", &nonce)
+                        .finish()
+                )))
+            }
+            Ok(Spent::Joined(authority)) => Ok(super::auth::see_other(&format!(
                 "{here}?{}",
                 form_urlencoded::Serializer::new(String::new())
-                    .append_pair("joined", &joined.authority.name)
+                    .append_pair("joined", &authority)
                     .finish()
             ))),
-            Err(error) => Ok(super::auth::back_with_error(here, &error.to_string())),
+            Err(reason) => Ok(super::auth::back_with_error(here, &reason)),
         }
     }
 
@@ -4015,9 +3730,16 @@ impl NodeApi {
 
         // The node's own name, or the fallback while it has none — the
         // same key the renewal loop will look this up under.
-        let name = crate::node::settings::domain(&self.state.database, &self.state.config)
-            .await
-            .unwrap_or_else(|| crate::edge::certs::FALLBACK_NAME.to_string());
+        let name = match crate::usecases::node_user_set_certificate_source::run(
+            &self.state.database,
+            &self.state.config,
+            &account,
+        )
+        .await
+        {
+            Ok(name) => name,
+            Err(reason) => return Ok(super::auth::back_with_error(here, &reason)),
+        };
 
         let renew_with = match source_from(&form, &name) {
             Ok(renew_with) => renew_with,
