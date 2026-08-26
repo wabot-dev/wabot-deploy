@@ -5,4 +5,6 @@
 
 pub mod guest_join_page;
 pub mod node_user_organisations_page;
+pub mod node_user_release_page;
+pub mod node_user_updates_page;
 pub mod tenant_user_people_page;
