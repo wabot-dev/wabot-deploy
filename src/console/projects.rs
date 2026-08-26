@@ -15,7 +15,7 @@ use wabot::ui::hypertext::IntoView;
 use super::language::t;
 use crate::accounts::roles::ProjectRole;
 use crate::deploy::Observed;
-use crate::platform::{access, projects, services};
+use crate::platform::{access, services};
 
 use super::auth::{
     back_with_error, field, read_form, see_other, signed_in, PageQuery, SessionMiddleware,
@@ -1436,34 +1436,23 @@ impl ProjectApi {
             return Ok(see_other("/sign-in"));
         };
 
-        // The check that counts, and it is here rather than in
-        // `projects::create` on purpose: the collector calls that too,
-        // for a project arriving on an errand, and a node that runs
-        // other people's work is exactly the node this setting is for.
-        // Refusing there would refuse the thing it exists to allow.
-        if !crate::network::capability::owns(&self.state.database).await {
-            return Ok(back_with_error(
-                "/projects",
-                "this node does not own projects of its own — turn that back on \
-                 from its capabilities if it should",
-            ));
-        }
-
-        match projects::create(&self.state.database, name).await {
-            Ok(project) => {
-                // Whoever made it owns it. Without this a member would
-                // create a project and immediately not be able to see
-                // it, since the list is filtered by membership.
-                access::grant(
-                    &self.state.database,
-                    &account.id,
-                    &project.id,
-                    ProjectRole::Owner,
-                )
-                .await?;
-                Ok(see_other(&format!("/projects/{}", project.slug)))
+        let made = match crate::authz::node_user::belongs_here(&account) {
+            true => {
+                crate::usecases::node_user_create_project::run(&self.state.database, &account, name)
+                    .await
             }
-            Err(error) => Ok(back_with_error("/projects/new", &error.to_string())),
+            false => {
+                crate::usecases::tenant_user_create_project::run(
+                    &self.state.database,
+                    &account,
+                    name,
+                )
+                .await
+            }
+        };
+        match made {
+            Ok(project) => Ok(see_other(&format!("/projects/{}", project.slug))),
+            Err(reason) => Ok(back_with_error("/projects/new", &reason)),
         }
     }
 
@@ -1594,13 +1583,9 @@ impl ProjectApi {
         // Back to the page the form is on. It used to be the project
         // overview, which is where these forms lived.
         let here = format!("/projects/{}/people", project.slug);
-        if !allowed.may_administer() {
-            return Ok(back_with_error(
-                &here,
-                "only an owner can change who is here",
-            ));
-        }
-
+        let Some(account) = signed_in(&self.auth) else {
+            return Ok(see_other("/sign-in"));
+        };
         let form = match read_form(request).await {
             Ok(form) => form,
             Err(response) => return Ok(response),
@@ -1608,19 +1593,34 @@ impl ProjectApi {
         let username = field(&form, "member");
         let role = ProjectRole::parse(field(&form, "role"));
 
-        let Some(found) = crate::accounts::all(&self.state.database)
-            .await?
-            .into_iter()
-            .find(|candidate| candidate.username.eq_ignore_ascii_case(username))
-        else {
-            return Ok(back_with_error(
-                &here,
-                &format!("nobody on this node is called {username:?} — invite them first"),
-            ));
+        let added = match crate::authz::node_user::belongs_here(&account) {
+            true => {
+                crate::usecases::node_user_add_project_member::run(
+                    &self.state.database,
+                    &account,
+                    &project,
+                    &allowed,
+                    username,
+                    role,
+                )
+                .await
+            }
+            false => {
+                crate::usecases::tenant_user_add_project_member::run(
+                    &self.state.database,
+                    &account,
+                    &project,
+                    &allowed,
+                    username,
+                    role,
+                )
+                .await
+            }
         };
-
-        access::grant(&self.state.database, &found.id, &project.id, role).await?;
-        Ok(see_other(&here))
+        match added {
+            Ok(()) => Ok(see_other(&here)),
+            Err(reason) => Ok(back_with_error(&here, &reason)),
+        }
     }
 
     /// Take somebody out of this project.
@@ -1635,19 +1635,38 @@ impl ProjectApi {
         // Back to the page the form is on. It used to be the project
         // overview, which is where these forms lived.
         let here = format!("/projects/{}/people", project.slug);
-        if !allowed.may_administer() {
-            return Ok(back_with_error(
-                &here,
-                "only an owner can change who is here",
-            ));
-        }
-
-        let Some(account_id) = segments.get(3) else {
+        let Some(account) = signed_in(&self.auth) else {
+            return Ok(see_other("/sign-in"));
+        };
+        let Some(person) = segments.get(3) else {
             return Ok(see_other(&here));
         };
-        match access::revoke(&self.state.database, account_id, &project.id).await {
+
+        let removed = match crate::authz::node_user::belongs_here(&account) {
+            true => {
+                crate::usecases::node_user_remove_project_member::run(
+                    &self.state.database,
+                    &account,
+                    &project,
+                    &allowed,
+                    person,
+                )
+                .await
+            }
+            false => {
+                crate::usecases::tenant_user_remove_project_member::run(
+                    &self.state.database,
+                    &account,
+                    &project,
+                    &allowed,
+                    person,
+                )
+                .await
+            }
+        };
+        match removed {
             Ok(()) => Ok(see_other(&here)),
-            Err(error) => Ok(back_with_error(&here, &error.to_string())),
+            Err(reason) => Ok(back_with_error(&here, &reason)),
         }
     }
 
@@ -1692,35 +1711,43 @@ impl ProjectApi {
         // Back to the page the form is on. It used to be the project
         // overview, which is where these forms lived.
         let here = format!("/projects/{}/settings", project.slug);
-        if !allowed.may_deploy() {
-            return Ok(back_with_error(
-                &here,
-                "you may look at this project, not push to it",
-            ));
-        }
         let Some(account) = signed_in(&self.auth) else {
             return Ok(see_other("/sign-in"));
         };
-
         let form = match read_form(request).await {
             Ok(form) => form,
             Err(response) => return Ok(response),
         };
 
-        match crate::platform::tokens::create(
-            &self.state.database,
-            &project.id,
-            field(&form, "name"),
-            &account.id,
-        )
-        .await
-        {
+        let minted = match crate::authz::node_user::belongs_here(&account) {
+            true => {
+                crate::usecases::node_user_create_project_token::run(
+                    &self.state.database,
+                    &account,
+                    &project,
+                    &allowed,
+                    field(&form, "name"),
+                )
+                .await
+            }
+            false => {
+                crate::usecases::tenant_user_create_project_token::run(
+                    &self.state.database,
+                    &account,
+                    &project,
+                    &allowed,
+                    field(&form, "name"),
+                )
+                .await
+            }
+        };
+        match minted {
             // The nonce travels, not the secret. This is the only
             // moment the token exists in clear — it is stored hashed,
             // so no page can ever show it again — and a query string is
             // read by the address bar, the history and every refresh.
             // See `ConsoleState::reveals`.
-            Ok((_, secret)) => {
+            Ok(secret) => {
                 let nonce = self.state.reveals.stash(secret);
                 Ok(see_other(&format!(
                     "{here}?{}",
@@ -1729,7 +1756,7 @@ impl ProjectApi {
                         .finish()
                 )))
             }
-            Err(error) => Ok(back_with_error(&here, &error.to_string())),
+            Err(reason) => Ok(back_with_error(&here, &reason)),
         }
     }
 
@@ -1744,22 +1771,39 @@ impl ProjectApi {
         // Back to the page the form is on. It used to be the project
         // overview, which is where these forms lived.
         let here = format!("/projects/{}/settings", project.slug);
-        if !allowed.may_deploy() {
+        let Some(account) = signed_in(&self.auth) else {
+            return Ok(see_other("/sign-in"));
+        };
+        let Some(id) = segments.get(3) else {
             return Ok(see_other(&here));
-        }
+        };
 
-        // Only this project's tokens: an id from another page must not
-        // revoke somebody else's.
-        if let Some(id) = segments.get(3) {
-            let owned = crate::platform::tokens::of_project(&self.state.database, &project.id)
-                .await?
-                .into_iter()
-                .any(|token| token.id == *id);
-            if owned {
-                crate::platform::tokens::revoke(&self.state.database, id).await?;
+        let revoked = match crate::authz::node_user::belongs_here(&account) {
+            true => {
+                crate::usecases::node_user_revoke_project_token::run(
+                    &self.state.database,
+                    &account,
+                    &project,
+                    &allowed,
+                    id,
+                )
+                .await
             }
+            false => {
+                crate::usecases::tenant_user_revoke_project_token::run(
+                    &self.state.database,
+                    &account,
+                    &project,
+                    &allowed,
+                    id,
+                )
+                .await
+            }
+        };
+        match revoked {
+            Ok(()) => Ok(see_other(&here)),
+            Err(reason) => Ok(back_with_error(&here, &reason)),
         }
-        Ok(see_other(&here))
     }
 
     /// Delete a project and, by cascade, its services.
@@ -1782,64 +1826,48 @@ impl ProjectApi {
     #[raw]
     #[middleware(SessionMiddleware)]
     async fn delete(&self, request: Request) -> RestResult<Response> {
-        if signed_in(&self.auth).is_none() {
+        let Some(account) = signed_in(&self.auth) else {
             return Ok(see_other("/sign-in"));
-        }
-
+        };
         let path = request.uri().path().to_string();
         let Some((project, allowed, _)) = self.locate(&path).await? else {
             // Already gone, or never theirs. Both answer the same.
             return Ok(see_other("/"));
         };
         let settings = format!("/projects/{}/settings", project.slug);
-        if !allowed.may_administer() {
-            return Ok(back_with_error(
-                &format!("/projects/{}", project.slug),
-                "only an owner can delete this project",
-            ));
-        }
-
         let form = match read_form(request).await {
             Ok(form) => form,
             Err(response) => return Ok(response),
         };
-        if field(&form, "confirm").trim() != project.slug {
-            return Ok(back_with_error(
-                &settings,
-                "type the project's name to confirm the deletion",
-            ));
-        }
 
-        // **Every service is taken down first, one at a time.**
-        //
-        // This used to be the row deletion alone, and `ON DELETE CASCADE`
-        // took the service rows with it — which is not the same as taking
-        // the *services*. Nothing stopped a container and nothing removed
-        // a volume, so deleting a project left its containers running and
-        // its data on the disk, and the handler for deleting a *service*
-        // has said why that is unrecoverable since it was written: the
-        // container id is derived from the rows, so losing the rows loses
-        // the handle. Nothing could ever clean them up again.
-        //
-        // Jorge found both halves and reported them as two things: a
-        // project deleted without a word about what happened to what was
-        // inside it, and an alert counting three storage directories
-        // nothing claimed. One bug.
-        //
-        // In order per service, and the same order the service page uses:
-        // the container, then the storage, then the rows. The cascade
-        // still removes the service rows — this is what has to happen
-        // before it does.
-        let services = services::all(&self.state.database, Some(&project.id))
-            .await
-            .unwrap_or_default();
-        for service in &services {
-            self.state.deployer.tear_down(&project, service).await;
-            self.state.deployer.discard_storage(&project, service).await;
+        let deleted = match crate::authz::node_user::belongs_here(&account) {
+            true => {
+                crate::usecases::node_user_delete_project::run(
+                    &self.state.database,
+                    &self.state.deployer,
+                    &account,
+                    &project,
+                    &allowed,
+                    field(&form, "confirm"),
+                )
+                .await
+            }
+            false => {
+                crate::usecases::tenant_user_delete_project::run(
+                    &self.state.database,
+                    &self.state.deployer,
+                    &account,
+                    &project,
+                    &allowed,
+                    field(&form, "confirm"),
+                )
+                .await
+            }
+        };
+        match deleted {
+            Ok(()) => Ok(see_other("/")),
+            Err(reason) => Ok(back_with_error(&settings, &reason)),
         }
-
-        projects::delete(&self.state.database, &project.id).await?;
-        Ok(see_other("/"))
     }
 }
 
@@ -1847,6 +1875,7 @@ impl ProjectApi {
 mod tests {
     use super::*;
     use crate::console::tests::Console;
+    use crate::platform::projects;
     use wabot::rest::axum::http::StatusCode;
 
     /// The property the whole model rests on: a project you are not in
