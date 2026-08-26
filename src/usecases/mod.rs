@@ -8,8 +8,10 @@
 #[cfg(test)]
 pub mod fixtures;
 
+pub mod guest_claim_the_node;
 pub mod guest_join_as_node_user;
 pub mod guest_join_as_tenant_user;
+pub mod guest_sign_in;
 pub mod node_user_add_project_member;
 pub mod node_user_add_service_port;
 pub mod node_user_ask_node_once;

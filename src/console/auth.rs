@@ -365,31 +365,16 @@ impl AuthApi {
             Err(response) => return Ok(response),
         };
 
-        let account = match accounts::create_admin(
+        match crate::usecases::guest_claim_the_node::run(
             &self.state.database,
             field(&form, "setup_token"),
             field(&form, "username"),
-            // Not trimmed: leading and trailing spaces are part of a
-            // password, and silently removing them here would mean a
-            // password that cannot be typed back.
             form.get("password").map(String::as_str).unwrap_or_default(),
         )
         .await
         {
-            Ok(account) => account,
-            Err(error) => return Ok(back_with_error("/setup", &error.to_string())),
-        };
-
-        // Signed in immediately. Creating the account and then being
-        // asked to prove it is the same secret twice in a row.
-        match sessions::create(&self.state.database, &account).await {
             Ok(token) => Ok(see_other_with_cookie("/", sessions::set_cookie(&token))),
-            // The account exists; only the session failed. Sending them
-            // to sign in is honest and recoverable.
-            Err(error) => {
-                tracing::error!(%error, "could not start a session after setup");
-                Ok(see_other("/sign-in"))
-            }
+            Err(reason) => Ok(back_with_error("/setup", &reason)),
         }
     }
 
@@ -411,27 +396,17 @@ impl AuthApi {
             Err(response) => return Ok(response),
         };
 
-        let account = accounts::authenticate(
+        match crate::usecases::guest_sign_in::run(
             &self.state.database,
             field(&form, "username"),
             form.get("password").map(String::as_str).unwrap_or_default(),
             scope.as_deref(),
         )
-        .await?;
-
-        let Some(account) = account else {
-            // One message for a wrong username and a wrong password.
-            // Telling them apart tells an attacker which usernames
-            // exist, which is the whole point of the dummy hash in
-            // `authenticate`.
-            return Ok(back_with_error(
-                "/sign-in",
-                "that username and password do not match",
-            ));
-        };
-
-        let token = sessions::create(&self.state.database, &account).await?;
-        Ok(see_other_with_cookie("/", sessions::set_cookie(&token)))
+        .await
+        {
+            Ok(token) => Ok(see_other_with_cookie("/", sessions::set_cookie(&token))),
+            Err(reason) => Ok(back_with_error("/sign-in", &reason)),
+        }
     }
 
     /// End this session.
