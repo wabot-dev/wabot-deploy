@@ -12,6 +12,9 @@ platform has never had:
 - **A volume.** `containers::remove` deletes the snapshot, and `run`
   calls it first. Every deployment today starts from the image, which
   is right for a stateless service and total data loss for a database.
+  `platform::volumes` holds it: the row is the service's, the directory
+  is the *replica's*, and the directory is derived from the container id
+  rather than stored.
 - **A memory ceiling.** Nothing writes `linux.resources` into the OCI
   spec, so every container may take the whole machine. On a one-core
   box with no swap, one Postgres with default settings is the node.
@@ -43,6 +46,8 @@ above — nothing can ever round-robin a write to a standby, because no
 route ever names one.
 
 ## The presets
+
+`platform::postgres` is pure and holds this table.
 
 The operator picks how much RAM the database may have. That one choice
 sets the cgroup limit **and** the engine's own arithmetic, because

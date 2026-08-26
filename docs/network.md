@@ -790,6 +790,21 @@ leaves its neighbours' sessions alone.
 
 **Getting that comparison right took the node twice.**
 
+And what made both findable was making the decision speak. **A
+comparison that returns a `bool` cannot say what it decided**:
+`tunnel::difference` names the field it disagreed on and the caller logs
+it, which turned "the overlay changed again" into `field="endpoint"` —
+one line, and the cause stopped being a guess. The quiet case says so
+too (`the overlay interface already matches`), because a rebuild that
+did not happen leaves no other trace.
+
+**And the first fix was the wrong one.** The keepalive looked like the
+culprit, and teaching the comparison to ignore it would have buried the
+real cause for good. What survived that detour: a peer this node does
+not dial says **nought rather than nothing**, because `configure_peer`
+writes what the peer carries and an unset field asks the kernel to keep
+what it has.
+
 - **A private key read back from the kernel is not the one in the
   database.** WireGuard clamps a secret when it takes it — `[0] &= 248`,
   and the top two bits of `[31]` — and `Key::generate` does not. So
