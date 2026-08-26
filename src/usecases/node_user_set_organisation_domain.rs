@@ -1,0 +1,64 @@
+use wabot::sqlite::SqliteDatabase;
+
+use crate::accounts::Account;
+use crate::authz::node_user;
+use crate::config::Config;
+use crate::deploy::Deployer;
+use crate::platform::tenants;
+
+pub async fn run(
+    database: &SqliteDatabase,
+    config: &Config,
+    deployer: &Deployer,
+    account: &Account,
+    organisation: &str,
+    wanted: &str,
+) -> Result<(), String> {
+    if !node_user::shares_the_machine_out(account) {
+        return Err("only an administrator of this node can do that".into());
+    }
+
+    let wanted = wanted.trim().to_lowercase();
+    let Some(tenant) = tenants::find(database, organisation)
+        .await
+        .map_err(|error| error.to_string())?
+    else {
+        return Err("no such organisation".into());
+    };
+
+    if !wanted.is_empty() {
+        // Refused here as well as in `routing::sync`: the sync skipping
+        // it would leave a row saved on a page that shows it and a
+        // console that never answers there, which is a setting that lies.
+        if crate::node::settings::domain(database, config)
+            .await
+            .as_deref()
+            == Some(wanted.as_str())
+        {
+            return Err(
+                "that is this node's own name — the console an operator fixes things \
+                        from cannot be somebody else's frontier"
+                    .into(),
+            );
+        }
+        // Two rows claiming one `Host` is not something a request can
+        // resolve, and choosing silently would make the wrong one look
+        // right.
+        if let Ok(Some(held)) = tenants::by_domain(database, &wanted).await {
+            if held.id != tenant.id {
+                return Err(format!("{} already answers on that name", held.name));
+            }
+        }
+    }
+
+    let domain = (!wanted.is_empty()).then_some(wanted);
+    tenants::set_domain(database, &tenant.id, domain.as_deref())
+        .await
+        .map_err(|error| error.to_string())?;
+
+    // The route follows the row, here rather than at the next
+    // deployment: a domain saved and not routed is a console that
+    // answers 404 on the name the page says it is at.
+    deployer.sync_routes().await;
+    Ok(())
+}

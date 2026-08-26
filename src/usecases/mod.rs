@@ -11,9 +11,14 @@ pub mod fixtures;
 pub mod guest_join_as_node_user;
 pub mod guest_join_as_tenant_user;
 
+pub mod node_user_create_organisation;
+pub mod node_user_delete_organisation;
 pub mod node_user_invite_person;
+pub mod node_user_invite_person_into_organisation;
 pub mod node_user_remove_person;
 pub mod node_user_revoke_invitation;
+pub mod node_user_set_organisation_domain;
+pub mod node_user_set_organisation_quota;
 pub mod node_user_set_person_role;
 
 pub mod tenant_user_invite_person;

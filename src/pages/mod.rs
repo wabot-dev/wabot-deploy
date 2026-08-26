@@ -4,4 +4,5 @@
 //! it does not decide.
 
 pub mod guest_join_page;
+pub mod node_user_organisations_page;
 pub mod tenant_user_people_page;
