@@ -3592,49 +3592,47 @@ impl ServiceApi {
         let Some(slug) = project_slug(&path) else {
             return Ok(see_other("/?error=no+such+project"));
         };
-        let Some((project, allowed)) =
-            access::find_project(&self.state.database, &account, slug).await?
+        let Some((project, _)) = access::find_project(&self.state.database, &account, slug).await?
         else {
             return Ok(see_other("/?error=no+such+project"));
         };
-        if !allowed.may_deploy() {
-            return Ok(back_with_error(
-                &format!("/projects/{}", project.slug),
-                "you may look at this project, not change it",
-            ));
-        }
-        // A node that originates nothing makes no services either. Belt
-        // as well as braces: the switch refuses to go off while this node
-        // owns a project, so there should be nothing here to add one to —
-        // and "should be" is not a check.
-        if !crate::network::capability::owns(&self.state.database).await {
-            return Ok(back_with_error(
-                &format!("/projects/{}", project.slug),
-                "this node does not own services of its own",
-            ));
-        }
         let form_url = format!("/projects/{}/services/new", project.slug);
-
         let form = match read_form(request).await {
             Ok(form) => form,
             Err(response) => return Ok(response),
         };
-
         let env = match parse_env(field(&form, "env")) {
             Ok(env) => env,
             Err(message) => return Ok(back_with_error(&form_url, &message)),
         };
 
-        match services::create(
-            &self.state.database,
-            &project.id,
-            field(&form, "name"),
-            field(&form, "image"),
-            &env,
-        )
-        .await
-        {
-            Ok(service) => {
+        let asked = crate::commands::create_service::Asked {
+            project: slug,
+            name: field(&form, "name"),
+            image: field(&form, "image"),
+        };
+        let made = match crate::authz::node_user::belongs_here(&account) {
+            true => {
+                crate::usecases::node_user_create_service::run(
+                    &self.state.database,
+                    &account,
+                    asked,
+                    &env,
+                )
+                .await
+            }
+            false => {
+                crate::usecases::tenant_user_create_service::run(
+                    &self.state.database,
+                    &account,
+                    asked,
+                    &env,
+                )
+                .await
+            }
+        };
+        match made {
+            Ok((project, service)) => {
                 // Deployed on creation. The alternative — create, then
                 // press Deploy — makes the common case two steps and
                 // leaves a row that describes nothing.
@@ -3648,7 +3646,7 @@ impl ServiceApi {
                     project.slug, service.slug
                 )))
             }
-            Err(error) => Ok(back_with_error(&form_url, &error.to_string())),
+            Err(reason) => Ok(back_with_error(&form_url, &reason)),
         }
     }
 
@@ -3839,16 +3837,36 @@ impl ServiceApi {
 
         // Only this service's ports, or an id from another page would
         // delete somebody else's route.
-        let owned = ports::of_service(&self.state.database, &service.id)
-            .await?
-            .into_iter()
-            .any(|port| port.id == *port_id);
-
-        if owned {
-            ports::delete(&self.state.database, port_id).await?;
-            self.enqueue(&service.id, None).await;
+        let Some(account) = signed_in(&self.auth) else {
+            return Ok(see_other("/sign-in"));
+        };
+        let removed = match crate::authz::node_user::belongs_here(&account) {
+            true => {
+                crate::usecases::node_user_delete_service_port::run(
+                    &self.state.database,
+                    &account,
+                    &service,
+                    port_id,
+                )
+                .await
+            }
+            false => {
+                crate::usecases::tenant_user_delete_service_port::run(
+                    &self.state.database,
+                    &account,
+                    &service,
+                    port_id,
+                )
+                .await
+            }
+        };
+        match removed {
+            Ok(()) => {
+                self.enqueue(&service.id, None).await;
+                Ok(see_other(&format!("{here}#ports")))
+            }
+            Err(reason) => Ok(back_with_error(&here, &reason)),
         }
-        Ok(see_other(&format!("{here}#ports")))
     }
 
     /// Deploy one release — the newest, or an older one, which is
@@ -3865,23 +3883,40 @@ impl ServiceApi {
         let here = format!("/projects/{}/services/{}", project.slug, service.slug);
         let _ = back;
 
+        let Some(account) = signed_in(&self.auth) else {
+            return Ok(see_other("/sign-in"));
+        };
         let Some(id) = segments.get(5) else {
             return Ok(see_other(&here));
         };
-        let Some(release) = releases::find(&self.state.database, id).await? else {
-            return Ok(see_other(&here));
-        };
-        // Only this service's releases: an id from another page must
-        // not deploy somebody else's image here.
-        if release.service_id != service.id {
-            return Ok(see_other(&here));
-        }
 
-        // Enqueued, not run. Pulling an image inside this POST is what
-        // held the request open long enough for somebody to reload and
-        // be offered "confirm form resubmission".
-        self.enqueue(&service.id, Some(&release.id)).await;
-        Ok(see_other(&here))
+        let chosen = match crate::authz::node_user::belongs_here(&account) {
+            true => {
+                crate::usecases::node_user_deploy_release::run(
+                    &self.state.database,
+                    &account,
+                    &service,
+                    id,
+                )
+                .await
+            }
+            false => {
+                crate::usecases::tenant_user_deploy_release::run(
+                    &self.state.database,
+                    &account,
+                    &service,
+                    id,
+                )
+                .await
+            }
+        };
+        match chosen {
+            Ok(release) => {
+                self.enqueue(&service.id, Some(&release.id)).await;
+                Ok(see_other(&here))
+            }
+            Err(reason) => Ok(back_with_error(&here, &reason)),
+        }
     }
 
     /// Point the service at a different image, and redeploy with it.
@@ -3910,25 +3945,37 @@ impl ServiceApi {
         // The check that counts. This page does not show the form for a
         // managed database — the node writes that row from the engine's —
         // and a rule the browser enforces is a courtesy.
-        if service.kind.is_managed() {
-            return Ok(back_with_error(
-                &here,
-                "the node writes this for a managed database",
-            ));
-        }
-
+        let Some(account) = signed_in(&self.auth) else {
+            return Ok(see_other("/sign-in"));
+        };
         let form = match read_form(request).await {
             Ok(form) => form,
             Err(response) => return Ok(response),
         };
-        let image = field(&form, "image");
-        if let Err(reason) = services::set_image(&self.state.database, &service.id, image).await {
-            return Ok(back_with_error(&here, &reason.to_string()));
+        let outcome = match crate::authz::node_user::belongs_here(&account) {
+            true => {
+                crate::usecases::node_user_set_service_image::run(
+                    &self.state.database,
+                    &account,
+                    &service,
+                    field(&form, "image"),
+                )
+                .await
+            }
+            false => {
+                crate::usecases::tenant_user_set_service_image::run(
+                    &self.state.database,
+                    &account,
+                    &service,
+                    field(&form, "image"),
+                )
+                .await
+            }
+        };
+        if let Err(reason) = outcome {
+            return Ok(back_with_error(&here, &reason));
         }
 
-        // Queued rather than run here, the same as every other settings
-        // form: pulling an image inside a POST is what held a request
-        // open long enough to be offered "confirm form resubmission".
         let command = crate::deploy::jobs::DeployService {
             service_id: service.id.clone(),
             release_id: None,
@@ -3959,26 +4006,38 @@ impl ServiceApi {
         // form for a managed database, and a rule the browser enforces
         // is a courtesy — what the node writes from the engine's row
         // must not be settable from a request somebody constructed.
-        if service.kind.is_managed() {
-            return Ok(back_with_error(
-                &here,
-                "the node writes this for a managed database",
-            ));
-        }
-
+        let Some(account) = signed_in(&self.auth) else {
+            return Ok(see_other("/sign-in"));
+        };
         let form = match read_form(request).await {
             Ok(form) => form,
             Err(response) => return Ok(response),
         };
-        let tag = field(&form, "track_tag");
-
-        services::set_tracking(
-            &self.state.database,
-            &service.id,
-            (!tag.is_empty()).then_some(tag),
-            checked(&form, "auto_deploy"),
-        )
-        .await?;
+        let outcome = match crate::authz::node_user::belongs_here(&account) {
+            true => {
+                crate::usecases::node_user_set_service_tracking::run(
+                    &self.state.database,
+                    &account,
+                    &service,
+                    field(&form, "track_tag"),
+                    checked(&form, "auto_deploy"),
+                )
+                .await
+            }
+            false => {
+                crate::usecases::tenant_user_set_service_tracking::run(
+                    &self.state.database,
+                    &account,
+                    &service,
+                    field(&form, "track_tag"),
+                    checked(&form, "auto_deploy"),
+                )
+                .await
+            }
+        };
+        if let Err(reason) = outcome {
+            return Ok(back_with_error(&here, &reason));
+        }
         Ok(see_other(&format!("{here}#releases")))
     }
 
@@ -4005,25 +4064,38 @@ impl ServiceApi {
             project.slug, service.slug
         );
 
+        let Some(account) = signed_in(&self.auth) else {
+            return Ok(see_other("/sign-in"));
+        };
         let form = match read_form(request).await {
             Ok(form) => form,
             Err(response) => return Ok(response),
         };
-        let budget = match crate::platform::presets::parse_bytes(field(&form, "log_budget")) {
-            Ok(budget) => budget,
-            Err(reason) => return Ok(back_with_error(&here, &reason)),
+        let outcome = match crate::authz::node_user::belongs_here(&account) {
+            true => {
+                crate::usecases::node_user_set_service_logs::run(
+                    &self.state.database,
+                    &account,
+                    &service,
+                    field(&form, "log_budget"),
+                    checked(&form, "log_timestamps"),
+                )
+                .await
+            }
+            false => {
+                crate::usecases::tenant_user_set_service_logs::run(
+                    &self.state.database,
+                    &account,
+                    &service,
+                    field(&form, "log_budget"),
+                    checked(&form, "log_timestamps"),
+                )
+                .await
+            }
         };
-        if let Err(error) =
-            services::set_log_budget(&self.state.database, &service.id, budget).await
-        {
-            tracing::error!(%error, "could not store the log budget");
+        if let Err(reason) = outcome {
+            return Ok(back_with_error(&here, &reason));
         }
-        services::set_log_timestamps(
-            &self.state.database,
-            &service.id,
-            checked(&form, "log_timestamps"),
-        )
-        .await?;
         Ok(see_other(&format!("{here}#logs")))
     }
 
