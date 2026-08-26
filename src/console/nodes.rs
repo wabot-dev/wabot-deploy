@@ -3177,75 +3177,17 @@ impl NodeApi {
             Err(response) => return Ok(response),
         };
 
-        for capability in crate::network::capability::Capability::ALL {
-            // A checkbox arrives only when ticked, so its absence is the
-            // answer rather than a missing field.
-            let wanted = form.contains_key(capability.name());
-            if let Err(error) =
-                crate::network::capability::set_provides(&self.state.database, capability, wanted)
-                    .await
-            {
-                tracing::warn!(%error, capability = capability.name(), "could not save it");
-                return Ok(super::auth::back_with_error(
-                    here,
-                    "that could not be saved",
-                ));
-            }
-        }
-
-        // And whether this node originates anything, which is not one of
-        // them — see `capability::owns`.
-        //
-        // **Refused while it still owns something.** A node that stopped
-        // being an owner with projects still in it would leave every one
-        // of them in a state nothing can act on: not editable, because
-        // this node no longer originates; not evictable, because they are
-        // its own. Like a foreign key, and the message names the count so
-        // it is a thing somebody can go and do.
-        let owns = form.contains_key("own");
-        let mine = match crate::platform::projects::all(&self.state.database).await {
-            Ok(projects) => projects
-                .into_iter()
-                .filter(|project| project.is_ours())
-                .count(),
-            Err(error) => {
-                tracing::warn!(%error, "could not count this node's own projects");
-                return Ok(super::auth::back_with_error(
-                    here,
-                    "that could not be saved",
-                ));
-            }
-        };
-        if !owns && mine > 0 {
-            return Ok(super::auth::back_with_error(
-                here,
-                &format!("this node owns {mine} project(s) of its own — move or delete them first"),
-            ));
-        }
-        if let Err(error) = crate::network::capability::set_owns(&self.state.database, owns).await {
-            tracing::warn!(%error, "could not save whether this node owns anything");
-            return Ok(super::auth::back_with_error(
-                here,
-                "that could not be saved",
-            ));
-        }
-
-        // The write-ahead log used to be read here, from this form. It
-        // is on the Backup tab now — `set_backups` writes it, and the
-        // redeployment with it.
-
-        // The self row carries the answer: `kind` is derived from the
-        // edge capability, and every other node learns this one's kind
-        // from the endpoint it reports. Rewriting it now is what makes
-        // the change travel rather than wait for a restart.
-        if let Err(error) =
-            crate::network::ensure_self(&self.state.database, &self.state.config).await
+        if let Err(reason) = crate::usecases::node_user_set_capabilities::run(
+            &self.state.database,
+            &self.state.config,
+            &self.state.deployer,
+            &account,
+            &form,
+        )
+        .await
         {
-            tracing::warn!(%error, "could not bring this node's own row up to date");
+            return Ok(super::auth::back_with_error(here, &reason));
         }
-        // And the routes: a node that has just stopped being an edge is
-        // still answering for every name it held a moment ago.
-        self.state.deployer.sync_routes().await;
 
         Ok(super::auth::see_other(here))
     }
@@ -3529,40 +3471,14 @@ impl NodeApi {
         if !crate::authz::node_user::manages_the_machine(&account) {
             return Ok(super::auth::see_other("/"));
         }
-        let Some(path) = self.state.config.source.clone() else {
-            return Ok(super::auth::back_with_error(
-                here,
-                "this node was started without a configuration file",
-            ));
-        };
-
-        // Refused while the backups go to a bucket. The button is
-        // disabled for the same reason, and this is the check that counts
-        // — a plan that cannot work is worse than a credential somebody
-        // wanted gone, because the failure arrives at the next slot and
-        // not now.
-        let plan = crate::node::backups::plan(&self.state.database).await;
-        if plan
-            .destination
-            .as_deref()
-            .and_then(|text| crate::commands::destination::Destination::parse(text).ok())
-            .is_some_and(|destination| {
-                matches!(
-                    destination,
-                    crate::commands::destination::Destination::S3 { .. }
-                )
-            })
+        if let Err(reason) = crate::usecases::node_user_forget_bucket_credentials::run(
+            &self.state.database,
+            &self.state.config,
+            &account,
+        )
+        .await
         {
-            return Ok(super::auth::back_with_error(
-                here,
-                "the backups go to a bucket — change the destination first, or this node would \
-                 keep a schedule it cannot carry out",
-            ));
-        }
-
-        if let Err(error) = crate::config::store_s3(&path, None) {
-            tracing::error!(%error, "could not remove the bucket credential");
-            return Ok(super::auth::back_with_error(here, &error.to_string()));
+            return Ok(super::auth::back_with_error(here, &reason));
         }
         Ok(super::auth::see_other(here))
     }
@@ -3589,17 +3505,16 @@ impl NodeApi {
         // database at once on a machine with one core, and a second click
         // on a button that has not answered yet is the ordinary way to
         // ask for that.
-        if crate::node::backups::in_progress() {
-            return Ok(super::auth::back_with_error(
-                here,
-                "a backup is already running on this node",
-            ));
+        match crate::usecases::node_user_back_up_now::run(
+            &self.state.database,
+            &self.state.config,
+            &account,
+        )
+        .await
+        {
+            Ok(()) => Ok(super::auth::see_other(here)),
+            Err(reason) => Ok(super::auth::back_with_error(here, &reason)),
         }
-        crate::node::backups::start_in_background(
-            self.state.config.clone(),
-            self.state.database.clone(),
-        );
-        Ok(super::auth::see_other(here))
     }
 
     /// Mint a join token for a node that does not exist here yet.
