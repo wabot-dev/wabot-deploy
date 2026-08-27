@@ -9,7 +9,7 @@ use serde::Serialize;
 use wabot::sqlite::rusqlite::{OptionalExtension, Row};
 use wabot::sqlite::{SqliteDatabase, SqliteResult};
 
-use crate::platform::now_ms;
+use crate::clock::now_ms;
 
 /// Where an update got to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]

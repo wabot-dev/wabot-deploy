@@ -5,8 +5,9 @@ use std::collections::BTreeMap;
 
 use wabot::sqlite::SqliteDatabase;
 
+use crate::clock::now_ms;
 use crate::entities::config_revision::Revision;
-use crate::platform::{now_ms, PlatformResult};
+use crate::platform::PlatformResult;
 
 /// How many revisions a service keeps.
 const KEEP: usize = 20;

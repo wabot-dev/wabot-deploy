@@ -34,7 +34,7 @@ use wabot::rest::RestResult;
 use wabot::sqlite::SqliteDatabase;
 
 use super::{enrolment, errand, Kind, NetworkResult, Node};
-use crate::platform::now_ms;
+use crate::clock::now_ms;
 
 /// What a node says about itself when it arrives.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1439,7 +1439,7 @@ async fn record(
     let found = crate::repositories::services::in_project(
         database,
         &project.id,
-        &crate::platform::slugify(&state.service),
+        crate::values::slug::Slug::of(&state.service).as_str(),
     )
     .await
     .map_err(|error| super::NetworkError::Refused(error.to_string()))?;
@@ -1566,7 +1566,7 @@ async fn unclaimed(
         let found = crate::repositories::services::in_project(
             database,
             &project.id,
-            &crate::platform::slugify(&state.service),
+            crate::values::slug::Slug::of(&state.service).as_str(),
         )
         .await
         .ok()

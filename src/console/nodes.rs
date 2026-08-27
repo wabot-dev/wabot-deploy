@@ -4852,7 +4852,7 @@ pub(crate) mod tests {
         let cookie = console.signed_in().await;
         crate::node::backups::record(
             &console.database,
-            crate::platform::now_ms(),
+            crate::clock::now_ms(),
             &Err("ssh: connect to host backups.example port 22: no route to host".into()),
         )
         .await

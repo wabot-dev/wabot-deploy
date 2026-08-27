@@ -8,3 +8,4 @@
 pub mod hostname;
 pub mod image_reference;
 pub mod mount_point;
+pub mod slug;

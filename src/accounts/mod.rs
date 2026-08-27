@@ -26,6 +26,7 @@ pub mod invitations;
 pub mod roles;
 pub mod sessions;
 
+use crate::clock::now_ms;
 use serde::{Deserialize, Serialize};
 use wabot::sqlite::rusqlite::OptionalExtension;
 use wabot::sqlite::SqliteDatabase;
@@ -720,13 +721,6 @@ pub(crate) fn constant_time_eq(a: &str, b: &str) -> bool {
         .zip(b.bytes())
         .fold(0u8, |differences, (a, b)| differences | (a ^ b))
         == 0
-}
-
-pub(crate) fn now_ms() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or_default()
 }
 
 #[cfg(test)]

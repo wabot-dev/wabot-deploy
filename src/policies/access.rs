@@ -12,8 +12,9 @@ use wabot::sqlite::SqliteDatabase;
 use crate::accounts::roles::{Access, NodeRole, ProjectRole};
 use crate::accounts::Account;
 
+use crate::clock::now_ms;
 use crate::entities::project::Project;
-use crate::platform::{now_ms, PlatformError, PlatformResult};
+use crate::platform::{PlatformError, PlatformResult};
 
 /// Somebody's place in a project, as the members page shows it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]

@@ -23,7 +23,7 @@ use wabot::sqlite::SqliteDatabase;
 
 use super::errand::{self, Errand, Kind};
 use crate::config::Config;
-use crate::platform::{registry_credentials, slugify};
+use crate::platform::registry_credentials;
 use crate::repositories::databases;
 use crate::repositories::ports;
 use crate::repositories::replicas;
@@ -1031,9 +1031,13 @@ async fn host_service(
     // Looked up by slug, which is what the row is keyed on — two names
     // that differ only in punctuation are one service, and creating a
     // second would be this errand's retry making a mess.
-    let existing = services::in_project(database, &project.id, &slugify(&host.service))
-        .await
-        .map_err(|error| error.to_string())?;
+    let existing = services::in_project(
+        database,
+        &project.id,
+        crate::values::slug::Slug::of(&host.service).as_str(),
+    )
+    .await
+    .map_err(|error| error.to_string())?;
 
     let service = match existing {
         // Convergent: the same errand twice points one service at the
@@ -1241,8 +1245,9 @@ async fn hold_standby(
     }
 
     let project = ensure_project(database, &standby.project, authority).await?;
-    let slug = slugify(&standby.service);
-    let existing = services::in_project(database, &project.id, &slug)
+    let slug = crate::values::slug::Slug::of(&standby.service);
+    let slug = slug.as_str();
+    let existing = services::in_project(database, &project.id, slug)
         .await
         .map_err(|error| error.to_string())?;
 
@@ -2722,9 +2727,13 @@ mod tests {
             let project = ensure_project(&database, &host.project, "nd-authority")
                 .await
                 .expect("project");
-            let existing = services::in_project(&database, &project.id, &slugify(&host.service))
-                .await
-                .expect("services");
+            let existing = services::in_project(
+                &database,
+                &project.id,
+                crate::values::slug::Slug::of(&host.service).as_str(),
+            )
+            .await
+            .expect("services");
             match existing {
                 Some(service) => services::set_image(&database, &service.id, &host.image)
                     .await

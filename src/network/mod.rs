@@ -51,8 +51,8 @@ use serde::{Deserialize, Serialize};
 use wabot::sqlite::rusqlite::{OptionalExtension, Row};
 use wabot::sqlite::{SqliteDatabase, SqliteResult};
 
+use crate::clock::now_ms;
 use crate::config::Config;
-use crate::platform::now_ms;
 
 #[derive(Debug, thiserror::Error)]
 pub enum NetworkError {

@@ -19,8 +19,9 @@ pub const EVERY_TAG: &str = "*";
 
 use serde::Serialize;
 
-use crate::platform::{slugify, PlatformError, PlatformResult};
+use crate::platform::{PlatformError, PlatformResult};
 use crate::values::image_reference::ImageReference;
+use crate::values::slug::Slug;
 /// Where the node allocates host ports from.
 ///
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -201,7 +202,7 @@ impl Service {
                 "a service name is between 1 and 60 characters".into(),
             ));
         }
-        let slug = slugify(name);
+        let slug = Slug::of(name);
         if slug.is_empty() {
             return Err(PlatformError::Refused(
                 "that name has nothing a hostname can be built from".into(),
@@ -213,7 +214,7 @@ impl Service {
             id: format!("svc-{}", wabot::prelude::password::generate(12)),
             project_id: project_id.to_string(),
             name: name.to_string(),
-            slug,
+            slug: slug.as_str().to_string(),
             image: image.to_string(),
             env: env.iter().cloned().collect(),
             desired_state: DesiredState::Running,

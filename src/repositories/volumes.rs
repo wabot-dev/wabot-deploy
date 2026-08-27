@@ -5,8 +5,9 @@ use std::path::{Path, PathBuf};
 
 use wabot::sqlite::SqliteDatabase;
 
+use crate::clock::now_ms;
 use crate::entities::volume::Volume;
-use crate::platform::{now_ms, slugify, PlatformError, PlatformResult};
+use crate::platform::{PlatformError, PlatformResult};
 use crate::values::mount_point::MountPoint;
 
 /// Where every volume on this node lives, under the data directory.
@@ -100,7 +101,7 @@ pub async fn create(
     name: &str,
     path: &str,
 ) -> PlatformResult<Volume> {
-    let name = slugify(name);
+    let name = crate::values::slug::Slug::of(name).as_str().to_string();
     if name.is_empty() || name.len() > 32 {
         return Err(PlatformError::Refused(
             "a volume name is 1 to 32 characters a directory can hold".into(),

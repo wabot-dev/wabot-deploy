@@ -3,8 +3,9 @@
 use wabot::sqlite::rusqlite::OptionalExtension;
 use wabot::sqlite::SqliteDatabase;
 
+use crate::clock::now_ms;
 use crate::entities::push_token::PushToken;
-use crate::platform::{now_ms, PlatformError, PlatformResult};
+use crate::platform::{PlatformError, PlatformResult};
 
 /// Mint one, returning the secret in clear.
 ///

@@ -9,7 +9,8 @@ use wabot::rest::axum::http::header::{HeaderMap, COOKIE};
 use wabot::sqlite::rusqlite::OptionalExtension;
 use wabot::sqlite::SqliteDatabase;
 
-use super::{now_ms, sha256_hex, Account, AccountResult};
+use super::{sha256_hex, Account, AccountResult};
+use crate::clock::now_ms;
 
 pub const COOKIE_NAME: &str = "wabot_session";
 

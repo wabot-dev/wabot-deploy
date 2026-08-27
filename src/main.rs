@@ -15,6 +15,7 @@ mod api;
 mod authz;
 mod bootstrap;
 mod cli;
+mod clock;
 mod commands;
 mod config;
 mod console;

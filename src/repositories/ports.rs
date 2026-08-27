@@ -2,8 +2,9 @@
 
 use wabot::sqlite::SqliteDatabase;
 
+use crate::clock::now_ms;
 use crate::entities::port::Port;
-use crate::platform::{now_ms, PlatformError, PlatformResult};
+use crate::platform::{PlatformError, PlatformResult};
 use crate::values::hostname::Hostname;
 
 /// Where published ports are allocated from.

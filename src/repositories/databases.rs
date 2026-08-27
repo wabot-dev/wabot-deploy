@@ -3,8 +3,9 @@
 use wabot::sqlite::rusqlite::{OptionalExtension, Row};
 use wabot::sqlite::SqliteDatabase;
 
+use crate::clock::now_ms;
 use crate::entities::database::{Database, Engine};
-use crate::platform::{now_ms, PlatformResult};
+use crate::platform::PlatformResult;
 
 pub const REPLICATION_USER: &str = "wabot_replication";
 

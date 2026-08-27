@@ -59,7 +59,7 @@ impl TenantPeoplePages {
         let live: Vec<&crate::accounts::invitations::Invitation> = all
             .iter()
             .filter(|invitation| invitation.tenant_id == account.tenant_id)
-            .filter(|invitation| invitation.live(crate::platform::now_ms()))
+            .filter(|invitation| invitation.live(crate::clock::now_ms()))
             .collect();
 
         layout::head("People");

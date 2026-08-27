@@ -282,11 +282,7 @@ pub async fn run(config: Config) -> anyhow::Result<i32> {
                     // it — for as long as the process lived.
                     let keep_days = crate::node::backups::plan(&database).await.keep_days;
                     let (removed, freed) = tokio::task::spawn_blocking(move || {
-                        crate::commands::backup::sweep(
-                            &data_dir,
-                            crate::platform::now_ms(),
-                            keep_days,
-                        )
+                        crate::commands::backup::sweep(&data_dir, crate::clock::now_ms(), keep_days)
                     })
                     .await
                     .unwrap_or((0, 0));
@@ -332,7 +328,7 @@ pub async fn run(config: Config) -> anyhow::Result<i32> {
 
                     let plan = crate::node::backups::plan(&database).await;
                     let last = crate::node::backups::last(&database).await.at;
-                    if !crate::node::backups::due(&plan, last, crate::platform::now_ms()) {
+                    if !crate::node::backups::due(&plan, last, crate::clock::now_ms()) {
                         continue;
                     }
                     tracing::info!(cadence = plan.cadence.as_str(), "a scheduled backup is due");

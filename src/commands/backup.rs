@@ -171,7 +171,7 @@ pub const FORMAT: u32 = 1;
 /// backup is" would drift the day one of them learned something.
 pub async fn run(config: Config, into: Option<String>) -> anyhow::Result<i32> {
     let database = crate::db::open(&config.database_path()).await?;
-    let at = crate::platform::now_ms();
+    let at = crate::clock::now_ms();
     let outcome = once(&config, &database, into).await;
     // Recorded here as well as in `node::backups::take_now`, because a
     // backup somebody typed is a backup of this node: without this the
@@ -242,7 +242,7 @@ pub async fn once(
             .node
             .data_dir
             .join("backups")
-            .join(format!(".sending-{}", crate::platform::now_ms())),
+            .join(format!(".sending-{}", crate::clock::now_ms())),
     };
     let into = root
         .join("nodes")
@@ -251,7 +251,7 @@ pub async fn once(
                 .map(|node| node.id.clone())
                 .unwrap_or_else(|| "this-node".into()),
         )
-        .join(crate::platform::now_ms().to_string());
+        .join(crate::clock::now_ms().to_string());
 
     // Refused rather than merged. A backup written over another one is
     // two half-backups that look like one, and the shapes that produces
@@ -294,7 +294,7 @@ pub async fn once(
     let manifest = Manifest {
         format: FORMAT,
         taken_by: format!("wabot-deploy {}", crate::api::VERSION),
-        taken_at: crate::platform::now_ms(),
+        taken_at: crate::clock::now_ms(),
         node_id: me.as_ref().map(|node| node.id.clone()),
         node_name: me.as_ref().map(|node| node.name.clone()),
         volumes,
@@ -795,7 +795,7 @@ pub async fn restore_node(
         .node
         .data_dir
         .join("backups")
-        .join(format!(".fetched-{}", crate::platform::now_ms()));
+        .join(format!(".fetched-{}", crate::clock::now_ms()));
     if source.is_remote() {
         println!("fetching {}", source.display());
     }
@@ -918,7 +918,7 @@ pub async fn restore_node(
         .node
         .data_dir
         .join("backups")
-        .join(format!("replaced-{}.db", crate::platform::now_ms()));
+        .join(format!("replaced-{}.db", crate::clock::now_ms()));
     if let Some(parent) = aside.parent() {
         std::fs::create_dir_all(parent)?;
     }
@@ -1368,7 +1368,7 @@ pub async fn restore_one(
         Some(text) => {
             parse_target(text).ok_or_else(|| NotRestored::NotAMoment(text.to_string()))?
         }
-        None => crate::platform::now_ms(),
+        None => crate::clock::now_ms(),
     };
     // A backup somebody names, or the ones this node keeps.
     //

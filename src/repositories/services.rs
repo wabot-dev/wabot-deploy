@@ -5,8 +5,9 @@ use std::collections::BTreeMap;
 use wabot::sqlite::rusqlite::OptionalExtension;
 use wabot::sqlite::SqliteDatabase;
 
+use crate::clock::now_ms;
 use crate::entities::service::{DesiredState, Kind, Service};
-use crate::platform::{now_ms, PlatformError, PlatformResult};
+use crate::platform::{PlatformError, PlatformResult};
 use crate::values::image_reference::ImageReference;
 
 /// One service by its slug inside a project.

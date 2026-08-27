@@ -185,7 +185,7 @@ pub(crate) async fn write(database: &SqliteDatabase, key: &str, value: &str) -> 
                  ON CONFLICT (\"key\") DO UPDATE SET \
                    \"value\" = excluded.\"value\", \
                    \"updated_at\" = excluded.\"updated_at\"",
-                (key, value, crate::platform::now_ms()),
+                (key, value, crate::clock::now_ms()),
             )?;
             Ok(())
         })

@@ -431,7 +431,7 @@ async fn remember(
                     digest,
                     media_type,
                     size,
-                    crate::platform::now_ms(),
+                    crate::clock::now_ms(),
                 ),
             )?;
             Ok(())

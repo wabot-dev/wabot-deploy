@@ -8191,7 +8191,7 @@ mod tests {
         );
 
         // A backup that holds it, as `backup` would have written one.
-        let taken_at = crate::platform::now_ms() - 3_600_000;
+        let taken_at = crate::clock::now_ms() - 3_600_000;
         let into = console
             .data_dir
             .join("backups")
@@ -8327,7 +8327,7 @@ mod tests {
         // A root that is not this node's own — `data_dir/backups` is
         // where its own would be, and there is nothing there.
         let away = console.data_dir.join("somewhere-else");
-        let taken_at = crate::platform::now_ms() - 7_200_000;
+        let taken_at = crate::clock::now_ms() - 7_200_000;
         let backup = away
             .join("nodes")
             .join("nd-test")

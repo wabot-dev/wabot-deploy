@@ -205,7 +205,7 @@ pub async fn watch(
 ) -> anyhow::Result<()> {
     let mut reported = 0usize;
     loop {
-        let down = sweep(&routes, crate::platform::now_ms()).await;
+        let down = sweep(&routes, crate::clock::now_ms()).await;
         // Only when the count moves. A node with one upstream down is a
         // node that would otherwise say so twelve times a minute for as
         // long as it stayed down, and each address already logs its own

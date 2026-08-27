@@ -24,7 +24,8 @@ use wabot::sqlite::rusqlite::OptionalExtension;
 use wabot::sqlite::SqliteDatabase;
 
 use super::roles::{NodeRole, ProjectRole};
-use super::{now_ms, sha256_hex, Account, AccountError, AccountResult};
+use super::{sha256_hex, Account, AccountError, AccountResult};
+use crate::clock::now_ms;
 
 /// How long a link is worth anything.
 ///

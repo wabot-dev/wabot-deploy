@@ -2,8 +2,9 @@
 
 use wabot::sqlite::SqliteDatabase;
 
+use crate::clock::now_ms;
 use crate::entities::release::{Release, Source};
-use crate::platform::{now_ms, PlatformResult};
+use crate::platform::PlatformResult;
 
 /// Record an image for a service.
 ///

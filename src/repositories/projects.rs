@@ -3,8 +3,9 @@
 use wabot::sqlite::rusqlite::OptionalExtension;
 use wabot::sqlite::SqliteDatabase;
 
+use crate::clock::now_ms;
 use crate::entities::project::Project;
-use crate::platform::{now_ms, slugify, PlatformError, PlatformResult};
+use crate::platform::{PlatformError, PlatformResult};
 
 pub async fn create(database: &SqliteDatabase, name: &str) -> PlatformResult<Project> {
     create_for(database, name, None).await
@@ -26,7 +27,7 @@ pub async fn create_for(
         ));
     }
 
-    let slug = slugify(name);
+    let slug = crate::values::slug::Slug::of(name).as_str().to_string();
     if slug.is_empty() {
         return Err(PlatformError::Refused(
             "that name has nothing a hostname can be built from — use letters or digits".into(),

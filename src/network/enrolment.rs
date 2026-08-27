@@ -15,8 +15,8 @@ use wabot::sqlite::rusqlite::{OptionalExtension, Row};
 use wabot::sqlite::SqliteDatabase;
 
 use crate::accounts::sha256_hex;
+use crate::clock::now_ms;
 use crate::network::NetworkResult;
-use crate::platform::now_ms;
 
 /// How long a token is worth anything.
 ///

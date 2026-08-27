@@ -24,8 +24,8 @@ use wabot::sqlite::SqliteDatabase;
 use super::api::Arriving;
 use super::token::{JoinToken, TokenError};
 use super::{call, keys, Kind, Node};
+use crate::clock::now_ms;
 use crate::config::Config;
-use crate::platform::now_ms;
 
 /// What a completed join left behind, for whoever has to report it.
 #[derive(Debug)]

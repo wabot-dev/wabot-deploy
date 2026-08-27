@@ -408,7 +408,7 @@ async fn back_up(
     let directory = config.node.data_dir.join("backups");
     std::fs::create_dir_all(&directory).map_err(|error| UpdateError::Io(error.to_string()))?;
 
-    let path = directory.join(format!("before-{version}-{}.db", crate::platform::now_ms()));
+    let path = directory.join(format!("before-{version}-{}.db", crate::clock::now_ms()));
     // A leftover from an attempt that failed after this point would
     // make `VACUUM INTO` refuse — it will not write onto a file that
     // exists.

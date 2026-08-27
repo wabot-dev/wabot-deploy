@@ -219,7 +219,7 @@ pub async fn grant(
                 connection.execute(
                     "INSERT INTO node_grant (\"node_id\", \"capability\", \"granted_at\") \
                      VALUES (?1, ?2, ?3)",
-                    (&node_id, capability, crate::platform::now_ms()),
+                    (&node_id, capability, crate::clock::now_ms()),
                 )?;
             }
             Ok(())
@@ -263,7 +263,7 @@ pub async fn set_granted(
                 connection.execute(
                     "INSERT INTO node_grant_withdrawn (\"node_id\", \"capability\", \"withdrawn_at\") \
                      VALUES (?1, ?2, ?3)",
-                    (&node, capability, crate::platform::now_ms()),
+                    (&node, capability, crate::clock::now_ms()),
                 )?;
             }
             Ok(())

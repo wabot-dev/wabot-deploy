@@ -417,7 +417,7 @@ async fn has_public_certificate(config: &Config, database: &SqliteDatabase, doma
     match crate::edge::certs::load(database, domain).await {
         Ok(Some(stored)) => {
             stored.issuer == config.acme.directory_url()
-                && stored.not_after > crate::platform::now_ms()
+                && stored.not_after > crate::clock::now_ms()
         }
         Ok(None) => false,
         Err(error) => {
@@ -777,7 +777,7 @@ mod tests {
             &database,
             "node.example.com",
             config.acme.directory_url(),
-            crate::platform::now_ms() + 30 * 86_400_000,
+            crate::clock::now_ms() + 30 * 86_400_000,
         )
         .await;
         assert_eq!(
@@ -801,7 +801,7 @@ mod tests {
             &database,
             "node.example.com",
             "https://acme-staging-v02.api.letsencrypt.org/directory",
-            crate::platform::now_ms() + 30 * 86_400_000,
+            crate::clock::now_ms() + 30 * 86_400_000,
         )
         .await;
 
@@ -822,7 +822,7 @@ mod tests {
             &database,
             "node.example.com",
             config.acme.directory_url(),
-            crate::platform::now_ms() - 1,
+            crate::clock::now_ms() - 1,
         )
         .await;
 

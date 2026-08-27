@@ -3,8 +3,9 @@
 use wabot::sqlite::rusqlite::{OptionalExtension, Row};
 use wabot::sqlite::SqliteDatabase;
 
+use crate::clock::now_ms;
 use crate::entities::tenant::Tenant;
-use crate::platform::{now_ms, slugify, PlatformError, PlatformResult};
+use crate::platform::{PlatformError, PlatformResult};
 
 const COLUMNS: &str = "\"id\", \"name\", \"slug\", \"domain\", \"quota_memory\", \
                        \"quota_cpu\", \"quota_disk\", \"created_at\"";
@@ -29,7 +30,7 @@ pub async fn create(database: &SqliteDatabase, name: &str) -> PlatformResult<Ten
             "an organisation's name is between 1 and 60 characters".into(),
         ));
     }
-    let slug = slugify(name);
+    let slug = crate::values::slug::Slug::of(name).as_str().to_string();
     if slug.is_empty() {
         return Err(PlatformError::Refused(
             "that name has nothing a hostname can be built from — use letters or digits".into(),

@@ -28,8 +28,8 @@
 use wabot::sqlite::rusqlite::{OptionalExtension, Row};
 use wabot::sqlite::{SqliteDatabase, SqliteResult};
 
+use crate::clock::now_ms;
 use crate::config::Config;
-use crate::platform::now_ms;
 
 /// What to do about a name's certificate when it needs one.
 #[derive(Debug, Clone, PartialEq, Eq)]

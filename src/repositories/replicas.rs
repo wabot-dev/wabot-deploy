@@ -4,8 +4,9 @@
 use wabot::sqlite::rusqlite::{OptionalExtension, Row};
 use wabot::sqlite::SqliteDatabase;
 
+use crate::clock::now_ms;
 use crate::entities::replica::{Placed, Replica};
-use crate::platform::{now_ms, PlatformError, PlatformResult};
+use crate::platform::{PlatformError, PlatformResult};
 
 /// Bring a service to `count` replicas here, and hand them back.
 ///

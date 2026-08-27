@@ -31,7 +31,7 @@ use wabot::sqlite::rusqlite::{OptionalExtension, Row};
 use wabot::sqlite::SqliteDatabase;
 
 use super::NetworkResult;
-use crate::platform::now_ms;
+use crate::clock::now_ms;
 
 /// What kind of instruction this is.
 ///
