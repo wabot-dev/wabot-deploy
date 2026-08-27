@@ -31,7 +31,7 @@ impl Project {
     /// Read by the capabilities form, which refuses to let a node stop
     /// being an owner while any of these are still here — a project of
     /// this node's own on a node that originates nothing would be
-    /// neither editable nor evictable. `services::Service::is_ours` is
+    /// neither editable nor evictable. `crate::entities::service::Service::is_ours` is
     /// the same check one level down, and every service mutation goes
     /// through it.
     pub fn is_ours(&self) -> bool {
@@ -367,21 +367,23 @@ mod tests {
     async fn deleting_a_project_takes_its_services() {
         let database = database().await;
         let project = create(&database, "doomed").await.expect("created");
-        super::super::services::create(
-            &database,
-            &project.id,
-            "api",
-            "docker.io/library/nginx:alpine",
-            &[],
-        )
+        crate::commands::create_service::CreateService {
+            project_id: &project.id,
+            name: "api",
+            image: "docker.io/library/nginx:alpine",
+            env: &[],
+        }
+        .run(&database)
         .await
         .expect("service");
 
         delete(&database, &project.id).await.expect("delete");
 
-        assert!(super::super::services::all(&database, Some(&project.id))
-            .await
-            .expect("query")
-            .is_empty());
+        assert!(
+            crate::repositories::services::all(&database, Some(&project.id))
+                .await
+                .expect("query")
+                .is_empty()
+        );
     }
 }

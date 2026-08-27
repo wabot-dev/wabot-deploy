@@ -277,14 +277,21 @@ fn decode(row: &wabot::sqlite::rusqlite::Row<'_>) -> wabot::sqlite::rusqlite::Re
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::platform::{projects, replicas, services};
+    use crate::platform::{projects, replicas};
+    use crate::repositories::services;
 
     async fn service() -> (SqliteDatabase, String) {
         let database = crate::db::open_in_memory().await.expect("open");
         let project = projects::create(&database, "demo").await.expect("project");
-        let service = services::create(&database, &project.id, "db", "postgres:17-alpine", &[])
-            .await
-            .expect("service");
+        let service = crate::commands::create_service::CreateService {
+            project_id: &project.id,
+            name: "db",
+            image: "postgres:17-alpine",
+            env: &[],
+        }
+        .run(&database)
+        .await
+        .expect("service");
         (database, service.id)
     }
 

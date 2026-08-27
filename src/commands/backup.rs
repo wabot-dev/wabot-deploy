@@ -898,7 +898,7 @@ pub async fn restore_node(
     // What is here now. A node with services of its own is either not
     // the one that died or is one somebody is about to lose.
     let existing = crate::db::open(&config.database_path()).await?;
-    let running = crate::platform::services::all(&existing, None)
+    let running = crate::repositories::services::all(&existing, None)
         .await
         .map(|services| services.len())
         .unwrap_or(0);
@@ -1339,7 +1339,7 @@ pub async fn restore_one(
 ) -> Result<Restored, NotRestored> {
     let refused = |error: crate::platform::PlatformError| NotRestored::Refused(error.to_string());
 
-    let services = crate::platform::services::all(database, None)
+    let services = crate::repositories::services::all(database, None)
         .await
         .map_err(refused)?;
     let Some(source) = services
@@ -1654,7 +1654,7 @@ async fn keep_images(database: &wabot::sqlite::SqliteDatabase, root: &Path) -> V
         // pushed to, so there is nothing here that a pull cannot get.
         return Vec::new();
     };
-    let Ok(services) = crate::platform::services::all(database, None).await else {
+    let Ok(services) = crate::repositories::services::all(database, None).await else {
         return Vec::new();
     };
     let Ok(client) = crate::runtime::client::Containerd::connect().await else {
@@ -1787,7 +1787,7 @@ async fn back_up_engines(
     into: &Path,
 ) -> Engines {
     let (Ok(services), Ok(projects)) = (
-        crate::platform::services::all(database, None).await,
+        crate::repositories::services::all(database, None).await,
         crate::platform::projects::all(database).await,
     ) else {
         // Unknown is not empty — the shape this file already keeps for

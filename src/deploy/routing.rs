@@ -16,7 +16,8 @@ use std::sync::Arc;
 use wabot::sqlite::SqliteDatabase;
 
 use crate::edge::routes::{self, RouteTable, Upstream};
-use crate::platform::{ports, services, PlatformResult};
+use crate::platform::{ports, PlatformResult};
+use crate::repositories::services;
 
 /// Where the edge sends a request for each copy of one service, and
 /// which copy each address belongs to.
@@ -317,13 +318,13 @@ mod tests {
             .await
             .expect("self");
         let project = projects::create(&database, "demo").await.expect("project");
-        let service = services::create(
-            &database,
-            &project.id,
-            "web",
-            "docker.io/library/nginx:alpine",
-            &[],
-        )
+        let service = crate::commands::create_service::CreateService {
+            project_id: &project.id,
+            name: "web",
+            image: "docker.io/library/nginx:alpine",
+            env: &[],
+        }
+        .run(&database)
         .await
         .expect("service");
         (database, project.id, service.id)

@@ -1,9 +1,9 @@
 use wabot::sqlite::SqliteDatabase;
 
 use crate::deploy::Deployer;
+use crate::entities::service::Service;
 use crate::platform::projects::Project;
 use crate::platform::replicas;
-use crate::platform::services::Service;
 
 /// Throw off a service another node placed here.
 ///

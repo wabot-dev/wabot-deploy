@@ -2,8 +2,8 @@ use crate::accounts::Account;
 use crate::authz::node_user;
 use crate::commands::stop_service::StopService;
 use crate::deploy::Deployer;
+use crate::entities::service::Service;
 use crate::platform::projects::Project;
-use crate::platform::services::Service;
 
 pub async fn run(
     deployer: &Deployer,

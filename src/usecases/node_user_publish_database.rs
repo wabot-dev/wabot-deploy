@@ -3,7 +3,7 @@ use wabot::sqlite::SqliteDatabase;
 use crate::accounts::Account;
 use crate::authz::node_user;
 use crate::commands::publish_database::PublishDatabase;
-use crate::platform::services::Service;
+use crate::entities::service::Service;
 
 pub async fn run(
     database: &SqliteDatabase,

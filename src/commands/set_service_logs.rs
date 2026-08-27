@@ -1,7 +1,8 @@
 use wabot::sqlite::SqliteDatabase;
 
+use crate::entities::service::Service;
 use crate::platform::presets;
-use crate::platform::services::{self, Service};
+use crate::repositories::services;
 
 /// **Timestamps are paid for in history.** The prefix is 28 bytes against
 /// a mean line of 148 measured here, so the same retention budget holds

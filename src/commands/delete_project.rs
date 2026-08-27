@@ -2,7 +2,7 @@ use wabot::sqlite::SqliteDatabase;
 
 use crate::deploy::Deployer;
 use crate::platform::projects::{self, Project};
-use crate::platform::services;
+use crate::repositories::services;
 
 pub struct DeleteProject<'a> {
     pub project: &'a Project,

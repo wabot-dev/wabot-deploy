@@ -4,10 +4,10 @@ use wabot::sqlite::SqliteDatabase;
 
 use crate::config::Config;
 use crate::deploy::Deployer;
+use crate::entities::service::Service;
 use crate::platform::projects::Project;
 use crate::platform::quotas;
 use crate::platform::replicas;
-use crate::platform::services::Service;
 use wabot::prelude::Container;
 
 /// Where copies added by the count control go.

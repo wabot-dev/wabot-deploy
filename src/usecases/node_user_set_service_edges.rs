@@ -4,7 +4,7 @@ use crate::accounts::Account;
 use crate::authz::node_user;
 use crate::commands::set_service_edges::SetServiceEdges;
 use crate::config::Config;
-use crate::platform::services::Service;
+use crate::entities::service::Service;
 
 pub async fn run(
     database: &SqliteDatabase,

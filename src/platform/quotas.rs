@@ -71,7 +71,7 @@ pub async fn charged(database: &SqliteDatabase, tenant_id: &str) -> PlatformResu
     let projects = super::access::of_tenant(database, tenant_id).await?;
     let mut charged = Charged::default();
     for project in projects {
-        for service in super::services::all(database, Some(&project.id)).await? {
+        for service in crate::repositories::services::all(database, Some(&project.id)).await? {
             let copies = super::replicas::of_service(database, &service.id)
                 .await?
                 .into_iter()
@@ -102,7 +102,7 @@ pub async fn charged(database: &SqliteDatabase, tenant_id: &str) -> PlatformResu
 pub async fn rooms_for(
     database: &SqliteDatabase,
     project: &super::projects::Project,
-    service: &super::services::Service,
+    service: &crate::entities::service::Service,
 ) -> PlatformResult<Option<(Rooms, String)>> {
     let Some(tenant_id) = &project.tenant_id else {
         return Ok(None);
@@ -147,7 +147,7 @@ pub async fn rooms_for(
 pub async fn admits(
     database: &SqliteDatabase,
     project: &super::projects::Project,
-    service: &super::services::Service,
+    service: &crate::entities::service::Service,
     memory: Option<u64>,
     cpu: Option<u32>,
     disk: Option<u64>,
@@ -212,13 +212,13 @@ pub async fn admits(
 async fn limitless(
     database: &SqliteDatabase,
     project: &super::projects::Project,
-    changing: &super::services::Service,
+    changing: &crate::entities::service::Service,
 ) -> PlatformResult<Option<String>> {
     let Some(tenant_id) = &project.tenant_id else {
         return Ok(None);
     };
     for project in super::access::of_tenant(database, tenant_id).await? {
-        for service in super::services::all(database, Some(&project.id)).await? {
+        for service in crate::repositories::services::all(database, Some(&project.id)).await? {
             if service.id != changing.id && service.memory_limit.is_none() {
                 return Ok(Some(service.slug));
             }
@@ -236,7 +236,7 @@ mod tests {
     async fn tenant_with_a_service() -> (
         SqliteDatabase,
         super::super::projects::Project,
-        super::super::services::Service,
+        crate::entities::service::Service,
     ) {
         let database = crate::db::open_in_memory().await.expect("open");
         let tenant = super::super::tenants::create(&database, "Acme")
@@ -245,13 +245,13 @@ mod tests {
         let project = super::super::projects::create_for(&database, "theirs", Some(&tenant.id))
             .await
             .expect("project");
-        let service = super::super::services::create(
-            &database,
-            &project.id,
-            "web",
-            "hub.example/theirs/web@sha256:a",
-            &[],
-        )
+        let service = crate::commands::create_service::CreateService {
+            project_id: &project.id,
+            name: "web",
+            image: "hub.example/theirs/web@sha256:a",
+            env: &[],
+        }
+        .run(&database)
         .await
         .expect("service");
         super::super::tenants::set_quota(&database, &tenant.id, Some(512 * MB), None, None)
@@ -269,7 +269,7 @@ mod tests {
     #[tokio::test]
     async fn a_tenants_budget_is_charged_per_copy_wherever_it_runs() {
         let (database, project, service) = tenant_with_a_service().await;
-        super::super::services::set_memory_limit(&database, &service.id, Some(128 * MB))
+        crate::repositories::services::set_memory_limit(&database, &service.id, Some(128 * MB))
             .await
             .expect("ceiling");
         // Slot 1 exists already: creating a service places one copy
@@ -319,10 +319,10 @@ mod tests {
     #[tokio::test]
     async fn a_tenant_over_its_ceiling_is_refused_and_told_by_how_much() {
         let (database, project, service) = tenant_with_a_service().await;
-        super::super::services::set_memory_limit(&database, &service.id, Some(128 * MB))
+        crate::repositories::services::set_memory_limit(&database, &service.id, Some(128 * MB))
             .await
             .expect("ceiling");
-        let service = super::super::services::find(&database, &service.id)
+        let service = crate::repositories::services::find(&database, &service.id)
             .await
             .expect("query")
             .expect("row");
@@ -352,13 +352,13 @@ mod tests {
     #[tokio::test]
     async fn a_quota_demands_that_its_services_have_ceilings() {
         let (database, project, service) = tenant_with_a_service().await;
-        let loose = super::super::services::create(
-            &database,
-            &project.id,
-            "worker",
-            "hub.example/theirs/worker@sha256:b",
-            &[],
-        )
+        let loose = crate::commands::create_service::CreateService {
+            project_id: &project.id,
+            name: "worker",
+            image: "hub.example/theirs/worker@sha256:b",
+            env: &[],
+        }
+        .run(&database)
         .await
         .expect("service");
 
@@ -371,7 +371,7 @@ mod tests {
 
         // And giving it one clears the way — a rule that could not be
         // satisfied would be worse than none.
-        super::super::services::set_memory_limit(&database, &loose.id, Some(64 * MB))
+        crate::repositories::services::set_memory_limit(&database, &loose.id, Some(64 * MB))
             .await
             .expect("ceiling");
         assert_eq!(
@@ -398,10 +398,10 @@ mod tests {
             .await
             .expect("a disk budget and nothing else");
         // A quota demands ceilings, so give the one service its own.
-        super::super::services::set_memory_limit(&database, &service.id, Some(64 * MB))
+        crate::repositories::services::set_memory_limit(&database, &service.id, Some(64 * MB))
             .await
             .expect("ceiling");
-        super::super::services::set_disk_limit(&database, &service.id, Some(128 * MB))
+        crate::repositories::services::set_disk_limit(&database, &service.id, Some(128 * MB))
             .await
             .expect("disk");
         super::super::replicas::place(&database, &service.id, Some("nd-elsewhere1"), 2)
@@ -415,7 +415,7 @@ mod tests {
             "disk is charged per copy like the other two"
         );
 
-        let service = super::super::services::find(&database, &service.id)
+        let service = crate::repositories::services::find(&database, &service.id)
             .await
             .expect("query")
             .expect("row");
@@ -443,13 +443,13 @@ mod tests {
         let project = super::super::projects::create(&database, "ours")
             .await
             .expect("project");
-        let service = super::super::services::create(
-            &database,
-            &project.id,
-            "web",
-            "hub.example/ours/web@sha256:a",
-            &[],
-        )
+        let service = crate::commands::create_service::CreateService {
+            project_id: &project.id,
+            name: "web",
+            image: "hub.example/ours/web@sha256:a",
+            env: &[],
+        }
+        .run(&database)
         .await
         .expect("service");
 

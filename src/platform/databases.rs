@@ -25,8 +25,8 @@ use serde::Serialize;
 use wabot::sqlite::rusqlite::{OptionalExtension, Row};
 use wabot::sqlite::SqliteDatabase;
 
-use super::services::Service;
 use super::{now_ms, postgres, presets, PlatformError, PlatformResult};
+use crate::entities::service::Service;
 
 /// Which engine. One today, and the enum is here rather than a string
 /// for the same reason `errand::Kind`'s is: the row can outlive the
@@ -152,21 +152,22 @@ pub async fn create(
         ));
     }
 
-    let service = super::services::create(
-        database,
+    let service = crate::commands::create_service::CreateService {
         project_id,
         name,
-        &postgres::image_for(version),
-        &[],
-    )
+        image: &postgres::image_for(version),
+        env: &[],
+    }
+    .run(database)
     .await?;
 
     // Marked before anything else reads it. A service that was a plain
     // container for even a moment is one the deploy path would have
     // started without its volume — which for a database is an empty
     // one that looks like it worked.
-    super::services::set_kind(database, &service.id, Kind::Postgres).await?;
-    super::services::set_memory_limit(database, &service.id, Some(memory_limit)).await?;
+    crate::repositories::services::set_kind(database, &service.id, Kind::Postgres).await?;
+    crate::repositories::services::set_memory_limit(database, &service.id, Some(memory_limit))
+        .await?;
 
     // The volume is what makes it a database rather than a container
     // that forgets. Nothing else on the node declares one yet.
@@ -244,7 +245,7 @@ pub async fn create(
     // Read back: the row carries the kind and the ceiling that were
     // set after it was made, and a caller handed the `create` copy
     // would see neither.
-    let service = super::services::find(database, &service.id)
+    let service = crate::repositories::services::find(database, &service.id)
         .await?
         .ok_or_else(|| PlatformError::Refused("the service vanished as it was made".into()))?;
 
@@ -257,7 +258,7 @@ pub async fn create(
     Ok((service, row))
 }
 
-use super::services::Kind;
+use crate::entities::service::Kind;
 
 /// The role every managed Postgres has from birth.
 pub const REPLICATION_USER: &str = "wabot_replication";
@@ -331,7 +332,7 @@ pub async fn dispatch(
     let project = super::projects::find(database, &service.project_id)
         .await?
         .ok_or_else(|| PlatformError::Refused("no project for this database".into()))?;
-    let running = super::services::find(database, &service.id)
+    let running = crate::repositories::services::find(database, &service.id)
         .await?
         .map_or(service.desired_state, |row| row.desired_state);
     let placements = super::replicas::of_service(database, &service.id).await?;
@@ -407,7 +408,7 @@ pub async fn dispatch(
             &format!("{host}:{port}"),
             &domain,
             slots,
-            running == super::services::DesiredState::Running,
+            running == crate::entities::service::DesiredState::Running,
         )?;
 
         let queued = crate::network::errand::queue_if_changed(
@@ -506,16 +507,17 @@ pub async fn restore_into(
     from: &str,
     target: Option<&str>,
 ) -> PlatformResult<(Service, Database)> {
-    let service = super::services::create(
-        database,
+    let service = crate::commands::create_service::CreateService {
         project_id,
         name,
-        &postgres::image_for(&source.version),
-        &[],
-    )
+        image: &postgres::image_for(&source.version),
+        env: &[],
+    }
+    .run(database)
     .await?;
-    super::services::set_kind(database, &service.id, Kind::Postgres).await?;
-    super::services::set_memory_limit(database, &service.id, Some(memory_limit)).await?;
+    crate::repositories::services::set_kind(database, &service.id, Kind::Postgres).await?;
+    crate::repositories::services::set_memory_limit(database, &service.id, Some(memory_limit))
+        .await?;
     super::volumes::create(
         database,
         &service.id,
@@ -793,7 +795,8 @@ fn decode(row: &Row<'_>) -> wabot::sqlite::rusqlite::Result<Database> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::platform::{ports, projects, replicas, services, volumes};
+    use crate::platform::{ports, projects, replicas, volumes};
+    use crate::repositories::services;
 
     async fn project() -> (SqliteDatabase, String) {
         let database = crate::db::open_in_memory().await.expect("open");

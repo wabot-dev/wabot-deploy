@@ -4,6 +4,51 @@ Written down as they are decided, in the order they were decided, with
 what each one costs. A rule with no cost written beside it is one
 somebody will break for a good reason and not notice they did.
 
+## 0. Six objects, and nothing else
+
+Everything in this tree is one of six things. If a file is none of them,
+it is in the wrong place.
+
+| | What it is |
+|---|---|
+| **Controller** | Receives from outside and responds. Reads a request, calls a use case, renders or redirects. |
+| **View** | The visual components — reusable pieces and whole pages. |
+| **UseCase** | The actions **and queries** of one kind of user. One file each, named for who does what. |
+| **Command** | Shared logic that use cases reuse. |
+| **Entity** | The business models, with their rules and their validation. |
+| **Repository** | Wraps one entity's data access: the `INSERT`, the `UPDATE`, the `SELECT`. |
+| **ValueObject** | A small shared thing that carries its own validation. **Immutable**, and checked once at construction — hold one and it cannot be wrong. |
+
+### The two mistakes this list exists to stop
+
+**A command that only calls somewhere else is not a command.** If the
+body lives in another module and the command forwards to it, the command
+is a second name for one call. The code goes *in* the command — the
+first four written here were wrappers and were deleted, and
+`CreateService` was a wrapper too until the body of
+`platform::services::create` moved into it.
+
+**A rule about a value is not the entity's either.** `validate_image`
+was a free function; making it `Service::validate_image` was still
+wrong, because what it validates is *an image reference*, not a service.
+It is `values::ImageReference` now — parsed once, immutable after, and
+`Service::new` takes the parsed thing rather than a `&str` it has to
+re-check.
+
+**An entity is not a bag of fields.** A model that validates nothing and
+decides nothing pushes its rules out into free functions, where every
+caller has to remember them. `validate_image` was one of those: a rule
+about what a `Service` may be, sitting in a module beside the queries.
+It is `Service::validate_image` now, and `Service::new` is where a
+service's rules are.
+
+### Where each one goes
+
+`src/console` controllers, `src/views`, `src/usecases`, `src/commands`,
+`src/entities`, `src/repositories`, `src/values`. `platform` was a name for four of
+these at once, which is why the rules ended up wherever the first caller
+needed them.
+
 ## 1. One use case per file, named for who does what
 
 **The most important one.** A file holds exactly one use case, and its

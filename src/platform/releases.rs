@@ -296,7 +296,8 @@ mod tests {
     }
 
     use super::*;
-    use crate::platform::{projects, services};
+    use crate::platform::projects;
+    use crate::repositories::services;
 
     /// The one marked as running, which is what every page shows —
     /// read from the list rather than from a query of its own, because
@@ -312,13 +313,13 @@ mod tests {
     async fn service() -> (SqliteDatabase, String) {
         let database = crate::db::open_in_memory().await.expect("open");
         let project = projects::create(&database, "demo").await.expect("project");
-        let service = services::create(
-            &database,
-            &project.id,
-            "api",
-            "node.example/demo/api:latest",
-            &[],
-        )
+        let service = crate::commands::create_service::CreateService {
+            project_id: &project.id,
+            name: "api",
+            image: "node.example/demo/api:latest",
+            env: &[],
+        }
+        .run(&database)
         .await
         .expect("service");
         (database, service.id)

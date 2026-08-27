@@ -21,15 +21,18 @@ mod console;
 mod db;
 mod deploy;
 mod edge;
+mod entities;
 mod ledger;
 mod network;
 mod node;
 mod pages;
 mod platform;
 mod registry;
+mod repositories;
 mod runtime;
 mod update;
 mod usecases;
+mod values;
 
 use cli::{Cli, Command};
 

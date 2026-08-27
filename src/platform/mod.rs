@@ -32,7 +32,6 @@ pub mod quotas;
 pub mod registry_credentials;
 pub mod releases;
 pub mod replicas;
-pub mod services;
 pub mod tenants;
 pub mod tokens;
 pub mod volumes;

@@ -4,7 +4,7 @@ use wabot::sqlite::SqliteDatabase;
 
 use crate::commands::backup::Restored;
 use crate::config::Config;
-use crate::platform::services::Service;
+use crate::entities::service::Service;
 
 /// **Into a copy, never over the original.** What this asks for is one
 /// database's volume out of one backup, unpacked beside the original,

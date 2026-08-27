@@ -819,11 +819,11 @@ impl NetworkApi {
         else {
             return Ok(refuse(StatusCode::NOT_FOUND, "no such project here"));
         };
-        let services = match crate::platform::services::all(&self.database, Some(&project.id)).await
-        {
-            Ok(services) => services,
-            Err(error) => return Ok(unreadable_platform(error)),
-        };
+        let services =
+            match crate::repositories::services::all(&self.database, Some(&project.id)).await {
+                Ok(services) => services,
+                Err(error) => return Ok(unreadable_platform(error)),
+            };
         let Some(service) = services
             .into_iter()
             .find(|service| service.name == asked.service)
@@ -1436,7 +1436,7 @@ async fn record(
     else {
         return Ok(false);
     };
-    let found = crate::platform::services::in_project(
+    let found = crate::repositories::services::in_project(
         database,
         &project.id,
         &crate::platform::slugify(&state.service),
@@ -1547,11 +1547,11 @@ async fn unclaimed(
     database: &SqliteDatabase,
     node: &str,
     reported: &[ReplicaState],
-) -> Vec<crate::platform::services::Service> {
+) -> Vec<crate::entities::service::Service> {
     let projects = crate::platform::projects::all(database)
         .await
         .unwrap_or_default();
-    let mut services: Vec<crate::platform::services::Service> = Vec::new();
+    let mut services: Vec<crate::entities::service::Service> = Vec::new();
 
     for state in reported {
         if state.evicted {
@@ -1563,7 +1563,7 @@ async fn unclaimed(
         else {
             continue;
         };
-        let found = crate::platform::services::in_project(
+        let found = crate::repositories::services::in_project(
             database,
             &project.id,
             &crate::platform::slugify(&state.service),
@@ -1743,13 +1743,13 @@ mod tests {
         let project = crate::platform::projects::create(&authority.database, "mine")
             .await
             .expect("project");
-        crate::platform::services::create(
-            &authority.database,
-            &project.id,
-            "web",
-            "docker.io/library/nginx:1",
-            &[],
-        )
+        crate::commands::create_service::CreateService {
+            project_id: &project.id,
+            name: "web",
+            image: "docker.io/library/nginx:1",
+            env: &[],
+        }
+        .run(&authority.database)
         .await
         .expect("service");
 
@@ -2089,13 +2089,13 @@ mod tests {
         let project = crate::platform::projects::create(&authority.database, "shop")
             .await
             .expect("project");
-        let service = crate::platform::services::create(
-            &authority.database,
-            &project.id,
-            "web",
-            "nginx:alpine",
-            &[],
-        )
+        let service = crate::commands::create_service::CreateService {
+            project_id: &project.id,
+            name: "web",
+            image: "nginx:alpine",
+            env: &[],
+        }
+        .run(&authority.database)
         .await
         .expect("service");
         // Being an edge for the name is what mints the secret here.
@@ -3260,13 +3260,13 @@ mod tests {
         let project = crate::platform::projects::create(&authority.database, "shared")
             .await
             .expect("project");
-        let service = crate::platform::services::create(
-            &authority.database,
-            &project.id,
-            "web",
-            "hub.example/shared/web@sha256:abc",
-            &[],
-        )
+        let service = crate::commands::create_service::CreateService {
+            project_id: &project.id,
+            name: "web",
+            image: "hub.example/shared/web@sha256:abc",
+            env: &[],
+        }
+        .run(&authority.database)
         .await
         .expect("service");
         crate::platform::replicas::place(

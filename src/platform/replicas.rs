@@ -827,14 +827,21 @@ pub async fn set_following(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::platform::{projects, services};
+    use crate::platform::projects;
+    use crate::repositories::services;
 
     async fn service() -> (SqliteDatabase, String) {
         let database = crate::db::open_in_memory().await.expect("open");
         let project = projects::create(&database, "demo").await.expect("project");
-        let service = services::create(&database, &project.id, "web", "alpine:3.23", &[])
-            .await
-            .expect("service");
+        let service = crate::commands::create_service::CreateService {
+            project_id: &project.id,
+            name: "web",
+            image: "alpine:3.23",
+            env: &[],
+        }
+        .run(&database)
+        .await
+        .expect("service");
         (database, service.id)
     }
 

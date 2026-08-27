@@ -113,7 +113,7 @@ async fn copies_that_failed(
     state: &super::ConsoleState,
     concerns: &mut Vec<Concern>,
 ) -> PlatformResult<()> {
-    let services = crate::platform::services::all(&state.database, None).await?;
+    let services = crate::repositories::services::all(&state.database, None).await?;
     let projects = crate::platform::projects::all(&state.database).await?;
 
     for replica in crate::platform::replicas::here(&state.database).await? {
@@ -144,7 +144,7 @@ async fn copies_that_failed(
 /// traffic. Without this the only sign is a service that is slower than
 /// it should be.
 async fn copies_that_stopped_answering(state: &super::ConsoleState, concerns: &mut Vec<Concern>) {
-    let Ok(services) = crate::platform::services::all(&state.database, None).await else {
+    let Ok(services) = crate::repositories::services::all(&state.database, None).await else {
         return;
     };
     let Ok(projects) = crate::platform::projects::all(&state.database).await else {
@@ -188,7 +188,7 @@ async fn a_database_with_every_copy_on_one_machine(
     concerns: &mut Vec<Concern>,
 ) {
     let (Ok(services), Ok(projects)) = (
-        crate::platform::services::all(&state.database, None).await,
+        crate::repositories::services::all(&state.database, None).await,
         crate::platform::projects::all(&state.database).await,
     ) else {
         return;

@@ -1286,10 +1286,15 @@ mod tests {
         let project = crate::platform::projects::create(&database, "shop")
             .await
             .expect("project");
-        let service =
-            crate::platform::services::create(&database, &project.id, "web", "nginx:alpine", &[])
-                .await
-                .expect("service");
+        let service = crate::commands::create_service::CreateService {
+            project_id: &project.id,
+            name: "web",
+            image: "nginx:alpine",
+            env: &[],
+        }
+        .run(&database)
+        .await
+        .expect("service");
 
         // One node: nothing to refuse.
         crate::platform::edges::set(
@@ -1423,10 +1428,15 @@ mod tests {
         let project = crate::platform::projects::create(&database, "demo")
             .await
             .expect("project");
-        let service =
-            crate::platform::services::create(&database, &project.id, "web", "alpine:3.23", &[])
-                .await
-                .expect("service");
+        let service = crate::commands::create_service::CreateService {
+            project_id: &project.id,
+            name: "web",
+            image: "alpine:3.23",
+            env: &[],
+        }
+        .run(&database)
+        .await
+        .expect("service");
         crate::platform::ports::create(
             &database,
             &service.id,

@@ -25,7 +25,8 @@ use wabot::rest::{RestError, RestResult};
 
 use wabot::sqlite::rusqlite::OptionalExtension;
 
-use crate::platform::{images, releases, services};
+use crate::platform::{images, releases};
+use crate::repositories::services;
 use crate::runtime::content;
 
 use super::blobs::{connect, internal, read_body};

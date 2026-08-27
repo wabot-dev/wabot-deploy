@@ -23,9 +23,8 @@ use wabot::sqlite::SqliteDatabase;
 
 use super::errand::{self, Errand, Kind};
 use crate::config::Config;
-use crate::platform::{
-    databases, ports, projects, registry_credentials, replicas, services, slugify,
-};
+use crate::platform::{databases, ports, projects, registry_credentials, replicas, slugify};
+use crate::repositories::services;
 use crate::runtime::images::Credential;
 
 /// How often a node asks. Short enough that a deployment somebody
@@ -1047,9 +1046,15 @@ async fn host_service(
         }
         None => {
             let env: Vec<(String, String)> = host.env.clone().into_iter().collect();
-            let made = services::create(database, &project.id, &host.service, &host.image, &env)
-                .await
-                .map_err(|error| error.to_string())?;
+            let made = crate::commands::create_service::CreateService {
+                project_id: &project.id,
+                name: &host.service,
+                image: &host.image,
+                env: &env,
+            }
+            .run(database)
+            .await
+            .map_err(|error| error.to_string())?;
             // Marked before anything else touches it. A service that
             // existed for even a moment without its origin is one this
             // node's console would have offered to edit.
@@ -1172,7 +1177,7 @@ async fn host_service(
             Err(_) => services::set_desired_state(
                 database,
                 &service.id,
-                crate::platform::services::DesiredState::Stopped,
+                crate::entities::service::DesiredState::Stopped,
             )
             .await
             .map_err(|error| error.to_string()),
@@ -1246,10 +1251,15 @@ async fn hold_standby(
             service
         }
         None => {
-            let made =
-                services::create(database, &project.id, &standby.service, &standby.image, &[])
-                    .await
-                    .map_err(|error| error.to_string())?;
+            let made = crate::commands::create_service::CreateService {
+                project_id: &project.id,
+                name: &standby.service,
+                image: &standby.image,
+                env: &[],
+            }
+            .run(database)
+            .await
+            .map_err(|error| error.to_string())?;
             services::set_origin(database, &made.id, authority)
                 .await
                 .map_err(|error| error.to_string())?;
@@ -1257,9 +1267,13 @@ async fn hold_standby(
         }
     };
 
-    services::set_kind(database, &service.id, services::Kind::Postgres)
-        .await
-        .map_err(|error| error.to_string())?;
+    services::set_kind(
+        database,
+        &service.id,
+        crate::entities::service::Kind::Postgres,
+    )
+    .await
+    .map_err(|error| error.to_string())?;
     services::set_memory_limit(database, &service.id, Some(standby.memory_limit))
         .await
         .map_err(|error| error.to_string())?;
@@ -1327,7 +1341,7 @@ async fn hold_standby(
             Err(_) => services::set_desired_state(
                 database,
                 &service.id,
-                crate::platform::services::DesiredState::Stopped,
+                crate::entities::service::DesiredState::Stopped,
             )
             .await
             .map_err(|error| error.to_string()),
@@ -1505,7 +1519,7 @@ async fn stop_unnamed(
     database: &SqliteDatabase,
     config: &Config,
     project: &projects::Project,
-    service: &services::Service,
+    service: &crate::entities::service::Service,
     slots: &[u32],
 ) -> Result<(), String> {
     let deployer = crate::deploy::Deployer::new(std::sync::Arc::new(database.clone()), config);
@@ -1818,7 +1832,10 @@ mod tests {
             .expect("services")
             .pop()
             .expect("the errand made one");
-        assert_eq!(service.desired_state, services::DesiredState::Running);
+        assert_eq!(
+            service.desired_state,
+            crate::entities::service::DesiredState::Running
+        );
 
         let mut stopped = placed;
         stopped["running"] = serde_json::json!(false);
@@ -1842,7 +1859,7 @@ mod tests {
             .expect("the service is still here");
         assert_eq!(
             after.desired_state,
-            services::DesiredState::Stopped,
+            crate::entities::service::DesiredState::Stopped,
             "a stop the local reconciliation will read"
         );
         assert_eq!(
@@ -2707,9 +2724,15 @@ mod tests {
                     .await
                     .expect("set image"),
                 None => {
-                    services::create(&database, &project.id, &host.service, &host.image, &[])
-                        .await
-                        .expect("create");
+                    crate::commands::create_service::CreateService {
+                        project_id: &project.id,
+                        name: &host.service,
+                        image: &host.image,
+                        env: &[],
+                    }
+                    .run(&database)
+                    .await
+                    .expect("create");
                 }
             }
         }
@@ -2737,9 +2760,15 @@ mod tests {
         assert!(!project.is_ours());
         assert_eq!(project.origin_node_id.as_deref(), Some("nd-authority"));
 
-        let made = services::create(&database, &project.id, "web", "hub.example/p/a:1", &[])
-            .await
-            .expect("service");
+        let made = crate::commands::create_service::CreateService {
+            project_id: &project.id,
+            name: "web",
+            image: "hub.example/p/a:1",
+            env: &[],
+        }
+        .run(&database)
+        .await
+        .expect("service");
         services::set_origin(&database, &made.id, "nd-authority")
             .await
             .expect("origin");

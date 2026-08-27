@@ -133,13 +133,13 @@ impl DatabasePages {
 /// the page is a save that hides what it did.
 fn settings_of(
     project: &crate::platform::projects::Project,
-    service: &crate::platform::services::Service,
+    service: &crate::entities::service::Service,
 ) -> String {
     // The tab, not the bare path: `/settings` is a redirect to the first
     // tab now, and a save that lands on a redirect is a save whose
     // fragment is dropped on the way — which is the same "a save that
     // hides what it did" this function exists to prevent.
-    super::services::Tab::Database.path(&project.slug, &service.slug)
+    crate::console::services::Tab::Database.path(&project.slug, &service.slug)
 }
 
 /// The rung offered first.
@@ -209,7 +209,7 @@ impl DatabaseApi {
         };
         let path = request.uri().path().to_string();
         let Some((project, service, _)) =
-            super::services::locate_for(&self.state, &self.auth, &path).await?
+            crate::console::services::locate_for(&self.state, &self.auth, &path).await?
         else {
             return Ok(see_other("/"));
         };
@@ -294,7 +294,7 @@ impl DatabaseApi {
         };
         let path = request.uri().path().to_string();
         let Some((project, service, _)) =
-            super::services::locate_for(&self.state, &self.auth, &path).await?
+            crate::console::services::locate_for(&self.state, &self.auth, &path).await?
         else {
             return Ok(see_other("/"));
         };
@@ -353,7 +353,7 @@ impl DatabaseApi {
         };
         let path = request.uri().path().to_string();
         let Some((project, service, _)) =
-            super::services::locate_for(&self.state, &self.auth, &path).await?
+            crate::console::services::locate_for(&self.state, &self.auth, &path).await?
         else {
             return Ok(see_other("/"));
         };
@@ -429,7 +429,7 @@ impl DatabaseApi {
             return Ok(see_other("/sign-in"));
         };
         let path = request.uri().path().to_string();
-        let Some(project_slug) = super::services::project_slug(&path) else {
+        let Some(project_slug) = crate::console::services::project_slug(&path) else {
             return Ok(see_other("/"));
         };
         let here = format!("/projects/{project_slug}/databases/new");
@@ -1151,7 +1151,7 @@ mod tests {
     use super::*;
     use crate::console::tests::Console;
     use crate::platform::databases;
-    use crate::platform::services;
+    use crate::repositories::services;
     use wabot::rest::axum::http::StatusCode;
 
     /// The card names exactly what the certificate covers, because the
@@ -1422,7 +1422,7 @@ mod tests {
             .expect("services")
             .pop()
             .expect("one");
-        assert_eq!(service.kind, services::Kind::Postgres);
+        assert_eq!(service.kind, crate::entities::service::Kind::Postgres);
         assert_eq!(service.image, "docker.io/library/postgres:17-alpine");
         assert_eq!(service.memory_limit, Some(128 * 1024 * 1024));
 

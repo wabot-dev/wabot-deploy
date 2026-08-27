@@ -15,7 +15,8 @@ use wabot::ui::hypertext::IntoView;
 use super::language::t;
 use crate::accounts::roles::ProjectRole;
 use crate::deploy::Observed;
-use crate::platform::{access, services};
+use crate::platform::access;
+use crate::repositories::services;
 
 use super::auth::{
     back_with_error, field, read_form, see_other, signed_in, PageQuery, SessionMiddleware,
@@ -514,7 +515,7 @@ fn service_table(
     // The third is why the copy running here is not, when it is not.
     // Carried alongside rather than read off the service: it belongs to
     // a replica now, and a service is several of them.
-    rows: &[(services::Service, StateCell, Option<String>)],
+    rows: &[(crate::entities::service::Service, StateCell, Option<String>)],
     allowed: crate::accounts::roles::Access,
 ) -> impl Renderable {
     let inner = rsx! {
@@ -879,7 +880,7 @@ async fn edge_cells(
     project: &crate::platform::projects::Project,
 ) -> std::collections::BTreeMap<String, EdgeCell> {
     let mut cells = std::collections::BTreeMap::new();
-    let Ok(services) = crate::platform::services::all(&state.database, Some(&project.id)).await
+    let Ok(services) = crate::repositories::services::all(&state.database, Some(&project.id)).await
     else {
         return cells;
     };
@@ -967,7 +968,7 @@ async fn replica_cells(
     busy: Option<&crate::node::cpu::Busy>,
 ) -> std::collections::BTreeMap<String, ReplicaCell> {
     let mut cells = std::collections::BTreeMap::new();
-    let Ok(services) = crate::platform::services::all(&state.database, Some(&project.id)).await
+    let Ok(services) = crate::repositories::services::all(&state.database, Some(&project.id)).await
     else {
         return cells;
     };
@@ -984,7 +985,7 @@ async fn replica_cells(
         else {
             continue;
         };
-        let stopped = service.desired_state == crate::platform::services::DesiredState::Stopped;
+        let stopped = service.desired_state == crate::entities::service::DesiredState::Stopped;
         // Which of its copies the edge has taken out of the rotation.
         // Once per service rather than once per replica: it is one read
         // of the health map and one derivation of the addresses.
@@ -1160,7 +1161,7 @@ async fn name_cells(
     project: &crate::platform::projects::Project,
 ) -> std::collections::BTreeMap<String, NameCell> {
     let mut cells = std::collections::BTreeMap::new();
-    let Ok(services) = crate::platform::services::all(&state.database, Some(&project.id)).await
+    let Ok(services) = crate::repositories::services::all(&state.database, Some(&project.id)).await
     else {
         return cells;
     };
@@ -2202,7 +2203,7 @@ mod tests {
             .form(&[("name", "api"), ("image", "docker.io/library/nginx:alpine")])
             .send()
             .await;
-        let service = crate::platform::services::all(&console.database, None)
+        let service = crate::repositories::services::all(&console.database, None)
             .await
             .expect("query")
             .pop()

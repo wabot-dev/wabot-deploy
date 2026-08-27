@@ -7,7 +7,7 @@ use crate::authz::node_user;
 use crate::commands::backup::Restored;
 use crate::commands::restore_database::RestoreDatabase;
 use crate::config::Config;
-use crate::platform::services::Service;
+use crate::entities::service::Service;
 
 pub async fn run(
     database: &Arc<SqliteDatabase>,

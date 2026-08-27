@@ -3,7 +3,7 @@ use wabot::sqlite::SqliteDatabase;
 use crate::accounts::Account;
 use crate::authz::tenant_user;
 use crate::commands::set_service_env::{Applied, SetServiceEnv};
-use crate::platform::services::Service;
+use crate::entities::service::Service;
 
 pub async fn run(
     database: &SqliteDatabase,

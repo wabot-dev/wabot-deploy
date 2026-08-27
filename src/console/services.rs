@@ -14,7 +14,8 @@ use wabot::ui::hypertext::IntoView;
 
 use super::language::t;
 use crate::deploy::dns;
-use crate::platform::{access, config_history, ports, releases, services};
+use crate::platform::{access, config_history, ports, releases};
+use crate::repositories::services;
 
 use super::auth::{back_with_error, field, read_form, see_other, signed_in, SessionMiddleware};
 use super::shell::{Area, Frame};
@@ -182,7 +183,7 @@ impl Tab {
     }
 
     /// The tabs this service has, in the order they are shown.
-    pub fn of(service: &services::Service) -> Vec<Tab> {
+    pub fn of(service: &crate::entities::service::Service) -> Vec<Tab> {
         let mut tabs = match service.kind.is_managed() {
             true => vec![Tab::Database, Tab::Resources],
             false => vec![Tab::Image, Tab::Environment, Tab::Resources, Tab::Network],
@@ -715,7 +716,7 @@ impl ServicePages {
                         &placements,
                         &nodes,
                         &queued,
-                        service.desired_state == services::DesiredState::Stopped,
+                        service.desired_state == crate::entities::service::DesiredState::Stopped,
                         &Running {
                             project_slug: &project.slug,
                             service_slug: &service.slug,
@@ -2448,7 +2449,7 @@ struct Exposure {
 }
 
 fn exposure(
-    service: &services::Service,
+    service: &crate::entities::service::Service,
     project_slug: &str,
     ports: &[crate::platform::ports::Port],
     node_domain: Option<&str>,
@@ -2569,7 +2570,7 @@ enum Push {
 }
 
 fn push(
-    service: &services::Service,
+    service: &crate::entities::service::Service,
     project_slug: &str,
     node_domain: Option<&str>,
 ) -> Option<Push> {
@@ -3099,7 +3100,7 @@ fn node_name<'a>(
 /// the machine it happens to be on.
 fn placement_card<'a>(
     project: &'a crate::platform::projects::Project,
-    service: &'a services::Service,
+    service: &'a crate::entities::service::Service,
     placements: &'a [crate::platform::replicas::Replica],
     nodes: &'a [crate::network::Node],
     // The copies out of the rotation, by replica id — see `Running`.
@@ -3139,7 +3140,7 @@ fn placement_card<'a>(
                                 <td data-replica=(&replica.id)>
                                     (placement_state(
                                         replica,
-                                        service.desired_state == services::DesiredState::Stopped,
+                                        service.desired_state == crate::entities::service::DesiredState::Stopped,
                                         replica
                                             .node_id
                                             .as_ref()
@@ -3254,7 +3255,7 @@ fn latest_for<'a>(
 
 fn served_by_form<'a>(
     project: &'a crate::platform::projects::Project,
-    service: &'a services::Service,
+    service: &'a crate::entities::service::Service,
     hostname: &'a str,
     public: &'a [crate::network::Node],
     serving: &'a [(String, String)],
@@ -3378,7 +3379,7 @@ fn placement_state<'a>(
 /// buttons would leave them wondering what they had done wrong.
 fn from_elsewhere_card<'a>(
     project: &'a crate::platform::projects::Project,
-    service: &'a services::Service,
+    service: &'a crate::entities::service::Service,
     mine: &'a [crate::platform::replicas::Replica],
     evicted: bool,
 ) -> impl Renderable + 'a {
@@ -3408,7 +3409,7 @@ fn from_elsewhere_card<'a>(
                             <td data-replica=(&replica.id)>
                                 (placement_state(
                                     replica,
-                                    service.desired_state == services::DesiredState::Stopped,
+                                    service.desired_state == crate::entities::service::DesiredState::Stopped,
                                     false,
                                     // Whoever routes this service knows
                                     // whether it answers, and for one
@@ -4783,7 +4784,7 @@ impl ServiceApi {
     ) -> RestResult<
         Option<(
             crate::platform::projects::Project,
-            services::Service,
+            crate::entities::service::Service,
             String,
         )>,
     > {
@@ -4806,7 +4807,7 @@ pub(crate) async fn locate_for(
 ) -> RestResult<
     Option<(
         crate::platform::projects::Project,
-        services::Service,
+        crate::entities::service::Service,
         String,
     )>,
 > {
@@ -5067,13 +5068,13 @@ mod tests {
         let project = crate::platform::projects::create(&database, "shop")
             .await
             .expect("project");
-        let service = services::create(
-            &database,
-            &project.id,
-            "web",
-            "registry.example/web@sha256:abc",
-            &[],
-        )
+        let service = crate::commands::create_service::CreateService {
+            project_id: &project.id,
+            name: "web",
+            image: "registry.example/web@sha256:abc",
+            env: &[],
+        }
+        .run(&database)
         .await
         .expect("service");
 
@@ -5226,7 +5227,7 @@ mod tests {
     }
 
     /// A project and a service to place, made the way the console does.
-    async fn placed_service(console: &Console, cookie: &str) -> services::Service {
+    async fn placed_service(console: &Console, cookie: &str) -> crate::entities::service::Service {
         console
             .harness
             .post("/projects")
@@ -5240,13 +5241,13 @@ mod tests {
             .into_iter()
             .find(|project| project.slug == "shared")
             .expect("made");
-        services::create(
-            &console.database,
-            &project.id,
-            "web",
-            "hub.example.com/shared/web@sha256:abc",
-            &[],
-        )
+        crate::commands::create_service::CreateService {
+            project_id: &project.id,
+            name: "web",
+            image: "hub.example.com/shared/web@sha256:abc",
+            env: &[],
+        }
+        .run(&console.database)
         .await
         .expect("service")
     }
@@ -6065,7 +6066,7 @@ mod tests {
         // A ceiling no node could hold, and no other node on the
         // network at all — so the only candidate is this one, whose
         // meters read nothing on the machine the suite runs on.
-        crate::platform::services::set_memory_limit(
+        crate::repositories::services::set_memory_limit(
             &console.database,
             &service.id,
             Some(64 * 1024 * 1024),
@@ -6170,7 +6171,7 @@ mod tests {
             .assert_status(StatusCode::SEE_OTHER);
 
         assert_eq!(
-            crate::platform::services::find(&console.database, &service.id)
+            crate::repositories::services::find(&console.database, &service.id)
                 .await
                 .expect("service")
                 .expect("row")
@@ -6204,13 +6205,13 @@ mod tests {
         let project = crate::platform::projects::create(&console.database, "shared")
             .await
             .expect("project");
-        crate::platform::services::create(
-            &console.database,
-            &project.id,
-            "web",
-            "hub.example/shared/web:latest",
-            &[],
-        )
+        crate::commands::create_service::CreateService {
+            project_id: &project.id,
+            name: "web",
+            image: "hub.example/shared/web:latest",
+            env: &[],
+        }
+        .run(&console.database)
         .await
         .expect("service");
         crate::network::save(
@@ -6431,7 +6432,7 @@ mod tests {
             .expect("there");
         assert_eq!(
             stored.desired_state,
-            services::DesiredState::Running,
+            crate::entities::service::DesiredState::Running,
             "the intent was changed"
         );
     }
@@ -6839,13 +6840,13 @@ mod tests {
             .expect("query")
             .expect("made");
 
-        let ours = services::create(
-            &console.database,
-            &project.id,
-            "api",
-            "node.example.com/my-api/api:latest",
-            &[],
-        )
+        let ours = crate::commands::create_service::CreateService {
+            project_id: &project.id,
+            name: "api",
+            image: "node.example.com/my-api/api:latest",
+            env: &[],
+        }
+        .run(&console.database)
         .await
         .expect("service");
         assert!(matches!(
@@ -6857,13 +6858,13 @@ mod tests {
             "a node with no domain has no host to write into a reference"
         );
 
-        let pinned = services::create(
-            &console.database,
-            &project.id,
-            "pinned",
-            "node.example.com/my-api/pinned@sha256:abc",
-            &[],
-        )
+        let pinned = crate::commands::create_service::CreateService {
+            project_id: &project.id,
+            name: "pinned",
+            image: "node.example.com/my-api/pinned@sha256:abc",
+            env: &[],
+        }
+        .run(&console.database)
         .await
         .expect("service");
         assert!(
@@ -6910,13 +6911,13 @@ mod tests {
             .await
             .expect("query")
             .expect("made");
-        let made = services::create(
-            &console.database,
-            &project.id,
-            "api",
-            "node.example.com/my-api/api:latest",
-            &[],
-        )
+        let made = crate::commands::create_service::CreateService {
+            project_id: &project.id,
+            name: "api",
+            image: "node.example.com/my-api/api:latest",
+            env: &[],
+        }
+        .run(&console.database)
         .await
         .expect("service");
 
@@ -6981,13 +6982,13 @@ mod tests {
             .await
             .expect("query")
             .expect("made");
-        services::create(
-            &console.database,
-            &project.id,
-            "api",
-            "node.example.com/my-api/api:latest",
-            &[],
-        )
+        crate::commands::create_service::CreateService {
+            project_id: &project.id,
+            name: "api",
+            image: "node.example.com/my-api/api:latest",
+            env: &[],
+        }
+        .run(&console.database)
         .await
         .expect("service");
         let made = crate::platform::databases::create(
@@ -7312,13 +7313,13 @@ mod tests {
         let project = projects::create(&console.database, "Coffe Store")
             .await
             .expect("project");
-        services::create(
-            &console.database,
-            &project.id,
-            "Coffe Landing",
-            "docker.io/library/nginx:alpine",
-            &[],
-        )
+        crate::commands::create_service::CreateService {
+            project_id: &project.id,
+            name: "Coffe Landing",
+            image: "docker.io/library/nginx:alpine",
+            env: &[],
+        }
+        .run(&console.database)
         .await
         .expect("service");
 
@@ -7361,13 +7362,13 @@ mod tests {
         let project = projects::create(&console.database, "wabot")
             .await
             .expect("project");
-        let made = services::create(
-            &console.database,
-            &project.id,
-            "nginx-2",
-            "node-1.tobaw.shop/wabot/nginx-2:new",
-            &[],
-        )
+        let made = crate::commands::create_service::CreateService {
+            project_id: &project.id,
+            name: "nginx-2",
+            image: "node-1.tobaw.shop/wabot/nginx-2:new",
+            env: &[],
+        }
+        .run(&console.database)
         .await
         .expect("service");
         services::set_tracking(&console.database, &made.id, Some("*"), true)
@@ -7406,13 +7407,13 @@ mod tests {
             .await
             .expect("query")
             .expect("made");
-        let made = services::create(
-            &console.database,
-            &project.id,
-            "api",
-            "node.example.com/my-api/api:latest",
-            &[],
-        )
+        let made = crate::commands::create_service::CreateService {
+            project_id: &project.id,
+            name: "api",
+            image: "node.example.com/my-api/api:latest",
+            env: &[],
+        }
+        .run(&console.database)
         .await
         .expect("service");
         services::set_tracking(
@@ -7483,13 +7484,13 @@ mod tests {
             .await
             .expect("query")
             .expect("made");
-        services::create(
-            &console.database,
-            &project.id,
-            "api",
-            "node.example.com/my-api/api:latest",
-            &[],
-        )
+        crate::commands::create_service::CreateService {
+            project_id: &project.id,
+            name: "api",
+            image: "node.example.com/my-api/api:latest",
+            env: &[],
+        }
+        .run(&console.database)
         .await
         .expect("service");
 
@@ -7574,13 +7575,13 @@ mod tests {
             .await
             .expect("query")
             .expect("made");
-        let made = services::create(
-            &console.database,
-            &project.id,
-            "api",
-            "node.example.com/my-api/api:latest",
-            &[],
-        )
+        let made = crate::commands::create_service::CreateService {
+            project_id: &project.id,
+            name: "api",
+            image: "node.example.com/my-api/api:latest",
+            env: &[],
+        }
+        .run(&console.database)
         .await
         .expect("service");
         crate::platform::releases::record(
@@ -7627,13 +7628,13 @@ mod tests {
             .await
             .expect("query")
             .expect("made");
-        services::create(
-            &console.database,
-            &project.id,
-            "api",
-            "node.example.com/my-api/api:latest",
-            &[],
-        )
+        crate::commands::create_service::CreateService {
+            project_id: &project.id,
+            name: "api",
+            image: "node.example.com/my-api/api:latest",
+            env: &[],
+        }
+        .run(&console.database)
         .await
         .expect("service");
 

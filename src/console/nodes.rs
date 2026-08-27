@@ -3163,7 +3163,8 @@ impl NodeApi {
     /// form that waited for three databases to restart is a form that
     /// times out.
     async fn redeploy_databases(&self) {
-        let Ok(services) = crate::platform::services::all(&self.state.database, None).await else {
+        let Ok(services) = crate::repositories::services::all(&self.state.database, None).await
+        else {
             return;
         };
         for service in services.iter().filter(|service| service.kind.is_managed()) {

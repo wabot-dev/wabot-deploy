@@ -1,6 +1,6 @@
+use crate::entities::service::Service;
+use crate::repositories::services;
 use wabot::sqlite::SqliteDatabase;
-
-use crate::platform::services::{self, Service};
 
 pub struct SetServiceImage<'a> {
     pub service: &'a Service,

@@ -38,9 +38,11 @@ use crate::platform::postgres;
 use crate::platform::projects::Project;
 use crate::platform::releases::{self, Release};
 use crate::platform::replicas::{self, Replica};
-use crate::platform::services::{self, DesiredState, Service};
+
+use crate::entities::service::{DesiredState, Service};
 use crate::platform::volumes::{self, Volume};
 use crate::platform::{projects, PlatformError};
+use crate::repositories::services;
 use crate::runtime::client::Containerd;
 use crate::runtime::containers::{self, TaskStatus};
 use crate::runtime::network::{self, PortMapping, ProjectNetwork};
@@ -1555,7 +1557,7 @@ impl Deployer {
     pub async fn claimed(database: &SqliteDatabase) -> Option<Vec<Claim>> {
         let (Ok(projects), Ok(services), Ok(mine)) = (
             crate::platform::projects::all(database).await,
-            crate::platform::services::all(database, None).await,
+            crate::repositories::services::all(database, None).await,
             crate::platform::replicas::here(database).await,
         ) else {
             return None;
@@ -4152,13 +4154,13 @@ mod tests {
         let project = projects::create(&database, "shared")
             .await
             .expect("project");
-        let service = services::create(
-            &database,
-            &project.id,
-            "web",
-            "registry.example/web@sha256:abc",
-            &[],
-        )
+        let service = crate::commands::create_service::CreateService {
+            project_id: &project.id,
+            name: "web",
+            image: "registry.example/web@sha256:abc",
+            env: &[],
+        }
+        .run(&database)
         .await
         .expect("service");
 
@@ -4593,9 +4595,15 @@ mod tests {
         let project = projects::create(&database, "shared")
             .await
             .expect("project");
-        let service = services::create(&database, &project.id, "web", "img@sha256:a", &[])
-            .await
-            .expect("service");
+        let service = crate::commands::create_service::CreateService {
+            project_id: &project.id,
+            name: "web",
+            image: "img@sha256:a",
+            env: &[],
+        }
+        .run(&database)
+        .await
+        .expect("service");
         services::set_memory_limit(&database, &service.id, Some(128 * mb))
             .await
             .expect("ceiling");
@@ -4664,9 +4672,15 @@ mod tests {
         let project = projects::create(&database, "shared")
             .await
             .expect("project");
-        let service = services::create(&database, &project.id, "web", "img@sha256:a", &[])
-            .await
-            .expect("service");
+        let service = crate::commands::create_service::CreateService {
+            project_id: &project.id,
+            name: "web",
+            image: "img@sha256:a",
+            env: &[],
+        }
+        .run(&database)
+        .await
+        .expect("service");
         let deployer = Deployer::new(
             std::sync::Arc::new(crate::db::open_in_memory().await.expect("open")),
             &crate::config::Config::default(),
@@ -4820,13 +4834,13 @@ mod tests {
         let project = projects::create(&database, "theirs")
             .await
             .expect("project");
-        let service = services::create(
-            &database,
-            &project.id,
-            "web",
-            "registry.example/web@sha256:abc",
-            &[],
-        )
+        let service = crate::commands::create_service::CreateService {
+            project_id: &project.id,
+            name: "web",
+            image: "registry.example/web@sha256:abc",
+            env: &[],
+        }
+        .run(&database)
         .await
         .expect("service");
         services::set_origin(&database, &service.id, "nd-authority")
@@ -4866,13 +4880,13 @@ mod tests {
         let project = projects::create(&database, "theirs")
             .await
             .expect("project");
-        let service = services::create(
-            &database,
-            &project.id,
-            "web",
-            "registry.example/web@sha256:abc",
-            &[],
-        )
+        let service = crate::commands::create_service::CreateService {
+            project_id: &project.id,
+            name: "web",
+            image: "registry.example/web@sha256:abc",
+            env: &[],
+        }
+        .run(&database)
         .await
         .expect("service");
         services::set_origin(&database, &service.id, "nd-authority")

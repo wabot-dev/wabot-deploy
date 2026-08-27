@@ -439,13 +439,13 @@ mod tests {
         let project = crate::platform::projects::create(&database, "demo")
             .await
             .expect("project");
-        let service = super::super::services::create(
-            &database,
-            &project.id,
-            "api",
-            "docker.io/library/nginx:alpine",
-            &[],
-        )
+        let service = crate::commands::create_service::CreateService {
+            project_id: &project.id,
+            name: "api",
+            image: "docker.io/library/nginx:alpine",
+            env: &[],
+        }
+        .run(&database)
         .await
         .expect("service");
         let port = create(
@@ -503,13 +503,13 @@ mod tests {
             .expect("project");
         let mut ports = Vec::new();
         for name in ["one", "two"] {
-            let service = crate::platform::services::create(
-                &database,
-                &project.id,
+            let service = crate::commands::create_service::CreateService {
+                project_id: &project.id,
                 name,
-                "registry.example/db@sha256:abc",
-                &[],
-            )
+                image: "registry.example/db@sha256:abc",
+                env: &[],
+            }
+            .run(&database)
             .await
             .expect("service");
             ports.push(
@@ -560,13 +560,13 @@ mod tests {
         let project = super::super::projects::create(&database, "demo")
             .await
             .expect("project");
-        let service = super::super::services::create(
-            &database,
-            &project.id,
-            "web",
-            "docker.io/library/nginx:alpine",
-            &[],
-        )
+        let service = crate::commands::create_service::CreateService {
+            project_id: &project.id,
+            name: "web",
+            image: "docker.io/library/nginx:alpine",
+            env: &[],
+        }
+        .run(&database)
         .await
         .expect("service");
         (database, service.id)
@@ -632,10 +632,15 @@ mod tests {
         let project = super::super::projects::create(&database, "demo")
             .await
             .expect("project");
-        let service =
-            super::super::services::create(&database, &project.id, "web", "alpine:3.23", &[])
-                .await
-                .expect("service");
+        let service = crate::commands::create_service::CreateService {
+            project_id: &project.id,
+            name: "web",
+            image: "alpine:3.23",
+            env: &[],
+        }
+        .run(&database)
+        .await
+        .expect("service");
 
         create(
             &database,
@@ -714,7 +719,7 @@ mod tests {
             .await
             .expect("created");
 
-        super::super::services::delete(&database, &service)
+        crate::repositories::services::delete(&database, &service)
             .await
             .expect("delete");
         assert!(all(&database).await.expect("query").is_empty());

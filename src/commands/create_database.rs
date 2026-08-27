@@ -1,6 +1,6 @@
 use wabot::sqlite::SqliteDatabase;
 
-use crate::platform::services::Service;
+use crate::entities::service::Service;
 use crate::platform::{databases, presets};
 
 /// An unbounded Postgres on a node with one core is the node, so the

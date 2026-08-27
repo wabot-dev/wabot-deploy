@@ -2,8 +2,10 @@ use wabot::sqlite::SqliteDatabase;
 
 use crate::deploy::Deployer;
 use crate::platform::projects::Project;
-use crate::platform::services::{self, Service};
+
+use crate::entities::service::Service;
 use crate::platform::{presets, quotas, replicas};
+use crate::repositories::services;
 
 /// What a form asks for, before anybody has decided whose project it is.
 #[derive(Clone, Copy)]

@@ -221,7 +221,7 @@ async fn images(
     // wanted. Read from the services rather than from what is running:
     // a service that is stopped still names the image it would start.
     let wanted: std::collections::HashSet<String> =
-        match crate::platform::services::all(database, None).await {
+        match crate::repositories::services::all(database, None).await {
             Ok(services) => services.into_iter().map(|service| service.image).collect(),
             // Unreadable rows are no grounds for deciding an image is
             // unwanted. With no list, everything is wanted — the shape

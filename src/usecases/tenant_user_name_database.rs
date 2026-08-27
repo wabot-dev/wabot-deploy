@@ -4,8 +4,8 @@ use crate::accounts::Account;
 use crate::authz::tenant_user;
 use crate::commands::name_database::{NameDatabase, Named};
 use crate::config::Config;
+use crate::entities::service::Service;
 use crate::platform::projects::Project;
-use crate::platform::services::Service;
 
 pub async fn run(
     database: &SqliteDatabase,
