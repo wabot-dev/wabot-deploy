@@ -3,7 +3,7 @@ use hypertext::prelude::*;
 use crate::console::language::t;
 use crate::console::language::word;
 use crate::console::layout;
-use crate::platform::presets;
+use crate::policies::presets;
 
 use crate::entities::project::Project;
 use crate::platform::tenants::Tenant;

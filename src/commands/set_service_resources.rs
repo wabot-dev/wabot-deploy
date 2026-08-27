@@ -4,7 +4,9 @@ use crate::deploy::Deployer;
 use crate::entities::project::Project;
 
 use crate::entities::service::Service;
-use crate::platform::{presets, quotas, replicas};
+use crate::platform::replicas;
+use crate::policies::presets;
+use crate::policies::quotas;
 use crate::repositories::services;
 
 /// What a form asks for, before anybody has decided whose project it is.

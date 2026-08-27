@@ -939,7 +939,7 @@ pub fn connection_url(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::platform::presets;
+    use crate::policies::presets;
 
     /// The primary is asked about *slots*, not about connected
     /// standbys, and the reason is that absence is not an answer:

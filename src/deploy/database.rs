@@ -1,6 +1,6 @@
 //! What a database container needs beyond what a service's does.
 //!
-//! The arithmetic and the file contents are in `platform::postgres`,
+//! The arithmetic and the file contents are in `crate::policies::postgres`,
 //! which is pure and where the numbers can be argued with. This is the
 //! half that touches the disk: it writes the two generated files and
 //! says what to mount, what to pass and how much shared memory to give.
@@ -16,7 +16,9 @@
 use std::path::{Path, PathBuf};
 
 use crate::platform::databases::Database;
-use crate::platform::{postgres, presets};
+
+use crate::policies::postgres;
+use crate::policies::presets;
 use crate::runtime::spec::BindMount;
 
 /// Everything the deploy path adds to the request for this copy.

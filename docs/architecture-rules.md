@@ -18,6 +18,7 @@ it is in the wrong place.
 | **Entity** | The business models, with their rules and their validation. |
 | **Repository** | Wraps one entity's data access: the `INSERT`, the `UPDATE`, the `SELECT`. |
 | **ValueObject** | A small shared thing that carries its own validation. **Immutable**, and checked once at construction — hold one and it cannot be wrong. |
+| **Policy** | A pure rule that belongs to no single entity: a table, a ladder, an admission sum. No storage, no actor, no identity. |
 
 ### The two mistakes this list exists to stop
 
@@ -45,9 +46,15 @@ service's rules are.
 ### Where each one goes
 
 `src/console` controllers, `src/views`, `src/usecases`, `src/commands`,
-`src/entities`, `src/repositories`, `src/values`. `platform` was a name for four of
-these at once, which is why the rules ended up wherever the first caller
-needed them.
+`src/entities`, `src/repositories`, `src/values`, `src/policies`. `platform` was a name for five of these at once, which is why the rules
+ended up wherever the first caller needed them. It is being taken apart.
+
+A **policy** is the one that is easy to mistake for a repository because
+it lives near the data. `presets` is a ladder of sizes; `postgres` is the
+arithmetic a memory ceiling implies for the engine; `quotas` is a sum
+that decides whether something fits. None of them stores anything, none
+of them is about one entity, and all of them are pure — which is what
+makes them the easiest things in this tree to test.
 
 ## 1. One use case per file, named for who does what
 

@@ -15,7 +15,7 @@ use wabot::ui::hypertext::IntoView;
 use super::language::t;
 use crate::accounts::roles::ProjectRole;
 use crate::deploy::Observed;
-use crate::platform::access;
+use crate::policies::access;
 use crate::repositories::services;
 
 use super::auth::{

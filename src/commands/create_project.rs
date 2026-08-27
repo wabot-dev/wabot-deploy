@@ -3,7 +3,7 @@ use wabot::sqlite::SqliteDatabase;
 use crate::accounts::roles::ProjectRole;
 use crate::accounts::Account;
 use crate::entities::project::Project;
-use crate::platform::access;
+use crate::policies::access;
 
 pub struct CreateProject<'a> {
     pub name: &'a str,

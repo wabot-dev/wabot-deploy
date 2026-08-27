@@ -389,7 +389,7 @@ pub fn routes(container: &Container) -> Router {
 ///   compile error at every `match`, which is the right way for that one
 ///   to be found.
 ///
-/// `platform::tenants`, `platform::quotas` and the columns go with them
+/// `platform::tenants`, `crate::policies::quotas` and the columns go with them
 /// and are read by nothing else. What stays behind is `tenant_id` on
 /// three rows, always NULL, which is what it meant before any of this.
 ///
@@ -400,7 +400,7 @@ pub fn routes(container: &Container) -> Router {
 /// thing than a redirect somebody has to remember to write.
 ///
 /// What it does **not** get is a second answer to "may they": that
-/// stays in `platform::access`, one function, asked by both. Two page
+/// stays in `crate::policies::access`, one function, asked by both. Two page
 /// trees is what Jorge asked for and is right; two authorisations is
 /// the thing that would drift, and the one that shows somebody a
 /// project they were removed from.

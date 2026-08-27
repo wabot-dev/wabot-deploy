@@ -5,7 +5,7 @@ use crate::authz::tenant_user;
 use crate::commands::create_database::{Asked, CreateDatabase};
 use crate::entities::project::Project;
 use crate::entities::service::Service;
-use crate::platform::access;
+use crate::policies::access;
 
 pub async fn run(
     database: &SqliteDatabase,

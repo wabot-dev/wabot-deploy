@@ -19,7 +19,7 @@ use wabot::ui::hypertext::IntoView;
 use super::language::t;
 use crate::accounts::roles::{NodeRole, ProjectRole};
 use crate::accounts::{self, invitations, sessions};
-use crate::platform::access;
+use crate::policies::access;
 
 use super::auth::{
     back_with_error, field, read_form, see_other, see_other_with_cookie, signed_in, JoinPage,

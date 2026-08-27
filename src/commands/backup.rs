@@ -1494,7 +1494,7 @@ pub async fn restore_one(
         &name,
         source
             .memory_limit
-            .unwrap_or(crate::platform::presets::SMALLEST),
+            .unwrap_or(crate::policies::presets::SMALLEST),
         &unpacks.display(),
         target,
     )

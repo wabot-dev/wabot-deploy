@@ -26,7 +26,7 @@ use wabot::rest::axum::response::Response;
 use wabot::rest::RestResult;
 use wabot::ui::hypertext::IntoView;
 
-use crate::platform::access;
+use crate::policies::access;
 use crate::update::runs::{self, Status};
 
 use super::auth::{signed_in, SessionMiddleware};

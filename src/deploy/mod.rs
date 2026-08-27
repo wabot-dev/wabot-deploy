@@ -35,9 +35,9 @@ use wabot::sqlite::SqliteDatabase;
 use crate::entities::project::Project;
 use crate::platform::databases;
 use crate::platform::ports::{self, Port};
-use crate::platform::postgres;
 use crate::platform::releases::{self, Release};
 use crate::platform::replicas::{self, Replica};
+use crate::policies::postgres;
 
 use crate::entities::service::{DesiredState, Service};
 use crate::platform::volumes::{self, Volume};
@@ -268,7 +268,7 @@ impl Rooms {
         }
         let millicores = cpu?;
         fits(self.cpu, u64::from(millicores), copies, who, |millicores| {
-            crate::platform::presets::cpu_label(u32::try_from(millicores).unwrap_or(u32::MAX))
+            crate::policies::presets::cpu_label(u32::try_from(millicores).unwrap_or(u32::MAX))
         })
     }
 }
@@ -1340,7 +1340,7 @@ impl Deployer {
         let cores = crate::node::cpu::allocatable_millicores(reserved_cpu);
         Rooms {
             memory: Room {
-                allocatable: crate::platform::presets::allocatable_memory(total, reserved_memory),
+                allocatable: crate::policies::presets::allocatable_memory(total, reserved_memory),
                 known: total > 0,
                 committed: committed.memory,
                 already: service.memory_limit.unwrap_or(0),
@@ -3356,7 +3356,7 @@ impl Deployer {
     /// container.
     ///
     /// Reads the rows and writes the generated files. The arithmetic is
-    /// `platform::postgres`, which is pure; this is the part that has
+    /// `crate::policies::postgres`, which is pure; this is the part that has
     /// to know where the other copies are.
     async fn prepare_engine(
         &self,
@@ -4758,7 +4758,7 @@ mod tests {
             replica.container_id(&project.slug, &service.slug),
         );
         for id in [&primary, &standby] {
-            volumes::ensure(node.path(), id, crate::platform::postgres::VOLUME).expect("volume");
+            volumes::ensure(node.path(), id, crate::policies::postgres::VOLUME).expect("volume");
         }
 
         // Containerd is not here, which is the ordinary case in a test
@@ -4770,11 +4770,11 @@ mod tests {
             .expect("forgotten");
 
         assert!(
-            !volumes::directory(node.path(), &standby, crate::platform::postgres::VOLUME).exists(),
+            !volumes::directory(node.path(), &standby, crate::policies::postgres::VOLUME).exists(),
             "the standby's data is gone"
         );
         assert!(
-            volumes::directory(node.path(), &primary, crate::platform::postgres::VOLUME).exists(),
+            volumes::directory(node.path(), &primary, crate::policies::postgres::VOLUME).exists(),
             "and the primary's is not — that one is the database"
         );
         assert!(

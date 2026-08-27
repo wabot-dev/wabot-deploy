@@ -39,7 +39,7 @@ use wabot::ui::hypertext::IntoView;
 use super::language::t;
 use crate::network::{self, enrolment::Enrolment, Kind};
 use crate::node::memory::{self, Snapshot};
-use crate::platform::access;
+use crate::policies::access;
 
 use super::auth::{signed_in, SessionMiddleware};
 use super::shell::{Area, Frame};
@@ -1125,22 +1125,22 @@ fn reserves_card<'a>(
     cores: u32,
 ) -> impl Renderable + 'a {
     let (memory, cpu) = reserves;
-    let default_memory = crate::platform::presets::default_memory_reserve(snapshot.total);
+    let default_memory = crate::policies::presets::default_memory_reserve(snapshot.total);
     let memory_value = memory
-        .map(crate::platform::presets::size_field)
+        .map(crate::policies::presets::size_field)
         .unwrap_or_default();
     let cpu_value = cpu
-        .map(crate::platform::presets::cores_field)
+        .map(crate::policies::presets::cores_field)
         .unwrap_or_default();
     let default_cpu =
-        crate::platform::presets::cores_field(crate::platform::presets::NODE_RESERVE_MILLICORES);
-    let default_memory_label = crate::platform::presets::label(default_memory);
-    let allocatable = crate::node::memory::human(crate::platform::presets::allocatable_memory(
+        crate::policies::presets::cores_field(crate::policies::presets::NODE_RESERVE_MILLICORES);
+    let default_memory_label = crate::policies::presets::label(default_memory);
+    let allocatable = crate::node::memory::human(crate::policies::presets::allocatable_memory(
         snapshot.total,
         memory,
     ));
-    let allocatable_cpu = crate::platform::presets::cpu_label(
-        crate::platform::presets::allocatable_cpu(cores * 1_000, cpu),
+    let allocatable_cpu = crate::policies::presets::cpu_label(
+        crate::policies::presets::allocatable_cpu(cores * 1_000, cpu),
     );
 
     rsx! {
@@ -2718,10 +2718,10 @@ fn memory_card<'a>(
                 <dt>(t("Promised"))</dt>
                 <dd>
                     (memory::human(committed.memory))(t(" of "))
-                    (memory::human(crate::platform::presets::allocatable_memory(snapshot.total, reserves.0)))
+                    (memory::human(crate::policies::presets::allocatable_memory(snapshot.total, reserves.0)))
                     (" · ")
-                    (crate::platform::presets::cpu_label(committed.cpu))(t(" of "))
-                    (crate::platform::presets::cpu_label(
+                    (crate::policies::presets::cpu_label(committed.cpu))(t(" of "))
+                    (crate::policies::presets::cpu_label(
                         crate::node::cpu::allocatable_millicores(reserves.1)
                     ))
                 </dd>

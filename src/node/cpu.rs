@@ -131,7 +131,7 @@ pub fn between(before: &Sample, after: &Sample) -> Option<Busy> {
 /// that have one read it and hand it over, which also keeps the number
 /// testable against a value rather than against a row.
 pub fn allocatable_millicores(reserve: Option<u32>) -> u32 {
-    crate::platform::presets::allocatable_cpu(cores() * 1_000, reserve)
+    crate::policies::presets::allocatable_cpu(cores() * 1_000, reserve)
 }
 
 /// How many the machine has.

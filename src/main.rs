@@ -27,6 +27,7 @@ mod network;
 mod node;
 mod pages;
 mod platform;
+mod policies;
 mod registry;
 mod repositories;
 mod runtime;

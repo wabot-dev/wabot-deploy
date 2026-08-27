@@ -46,8 +46,8 @@
 
 use wabot::sqlite::SqliteDatabase;
 
-use super::PlatformResult;
 use crate::deploy::{Room, Rooms};
+use crate::platform::PlatformResult;
 
 /// What one tenant has undertaken, over every copy anywhere.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -68,11 +68,11 @@ pub struct Charged {
 /// cost 768 MB, which is what they actually cost. Evicted copies do not
 /// count — the node holding one threw it off, and nothing is running.
 pub async fn charged(database: &SqliteDatabase, tenant_id: &str) -> PlatformResult<Charged> {
-    let projects = super::access::of_tenant(database, tenant_id).await?;
+    let projects = crate::policies::access::of_tenant(database, tenant_id).await?;
     let mut charged = Charged::default();
     for project in projects {
         for service in crate::repositories::services::all(database, Some(&project.id)).await? {
-            let copies = super::replicas::of_service(database, &service.id)
+            let copies = crate::platform::replicas::of_service(database, &service.id)
                 .await?
                 .into_iter()
                 .filter(|replica| !replica.evicted())
@@ -107,7 +107,7 @@ pub async fn rooms_for(
     let Some(tenant_id) = &project.tenant_id else {
         return Ok(None);
     };
-    let Some(tenant) = super::tenants::find(database, tenant_id).await? else {
+    let Some(tenant) = crate::platform::tenants::find(database, tenant_id).await? else {
         return Ok(None);
     };
     let charged = charged(database, tenant_id).await?;
@@ -186,7 +186,7 @@ pub async fn admits(
     let Some(tenant_id) = &project.tenant_id else {
         return Ok(None);
     };
-    let Some(tenant) = super::tenants::find(database, tenant_id).await? else {
+    let Some(tenant) = crate::platform::tenants::find(database, tenant_id).await? else {
         return Ok(None);
     };
     let charged = charged(database, tenant_id).await?;
@@ -217,7 +217,7 @@ async fn limitless(
     let Some(tenant_id) = &project.tenant_id else {
         return Ok(None);
     };
-    for project in super::access::of_tenant(database, tenant_id).await? {
+    for project in crate::policies::access::of_tenant(database, tenant_id).await? {
         for service in crate::repositories::services::all(database, Some(&project.id)).await? {
             if service.id != changing.id && service.memory_limit.is_none() {
                 return Ok(Some(service.slug));
@@ -239,7 +239,7 @@ mod tests {
         crate::entities::service::Service,
     ) {
         let database = crate::db::open_in_memory().await.expect("open");
-        let tenant = super::super::tenants::create(&database, "Acme")
+        let tenant = crate::platform::tenants::create(&database, "Acme")
             .await
             .expect("tenant");
         let project =
@@ -255,7 +255,7 @@ mod tests {
         .run(&database)
         .await
         .expect("service");
-        super::super::tenants::set_quota(&database, &tenant.id, Some(512 * MB), None, None)
+        crate::platform::tenants::set_quota(&database, &tenant.id, Some(512 * MB), None, None)
             .await
             .expect("quota");
         (database, project, service)
@@ -275,10 +275,10 @@ mod tests {
             .expect("ceiling");
         // Slot 1 exists already: creating a service places one copy
         // here. Two more, on two other machines.
-        super::super::replicas::place(&database, &service.id, Some("nd-elsewhere1"), 2)
+        crate::platform::replicas::place(&database, &service.id, Some("nd-elsewhere1"), 2)
             .await
             .expect("there");
-        super::super::replicas::place(&database, &service.id, Some("nd-elsewhere2"), 3)
+        crate::platform::replicas::place(&database, &service.id, Some("nd-elsewhere2"), 3)
             .await
             .expect("further");
 
@@ -303,7 +303,7 @@ mod tests {
     async fn a_tenant_without_a_quota_is_refused_nothing() {
         let (database, project, service) = tenant_with_a_service().await;
         let tenant_id = project.tenant_id.clone().expect("a tenant");
-        super::super::tenants::set_quota(&database, &tenant_id, None, None, None)
+        crate::platform::tenants::set_quota(&database, &tenant_id, None, None, None)
             .await
             .expect("lifted");
 
@@ -395,7 +395,7 @@ mod tests {
     async fn disk_is_charged_against_the_budget_even_though_nothing_enforces_it() {
         let (database, project, service) = tenant_with_a_service().await;
         let tenant_id = project.tenant_id.clone().expect("a tenant");
-        super::super::tenants::set_quota(&database, &tenant_id, None, None, Some(512 * MB))
+        crate::platform::tenants::set_quota(&database, &tenant_id, None, None, Some(512 * MB))
             .await
             .expect("a disk budget and nothing else");
         // A quota demands ceilings, so give the one service its own.
@@ -405,7 +405,7 @@ mod tests {
         crate::repositories::services::set_disk_limit(&database, &service.id, Some(128 * MB))
             .await
             .expect("disk");
-        super::super::replicas::place(&database, &service.id, Some("nd-elsewhere1"), 2)
+        crate::platform::replicas::place(&database, &service.id, Some("nd-elsewhere1"), 2)
             .await
             .expect("a second copy");
 

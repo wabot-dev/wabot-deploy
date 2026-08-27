@@ -4,7 +4,7 @@ use crate::accounts::invitations;
 use crate::accounts::roles::{NodeRole, ProjectRole};
 use crate::accounts::Account;
 use crate::authz::tenant_user;
-use crate::platform::access;
+use crate::policies::access;
 
 pub struct Asked<'a> {
     pub role: NodeRole,

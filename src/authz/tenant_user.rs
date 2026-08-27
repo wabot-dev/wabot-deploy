@@ -2,8 +2,8 @@ use wabot::sqlite::SqliteDatabase;
 
 use crate::accounts::Account;
 use crate::entities::project::Project;
-use crate::platform::access;
 use crate::platform::PlatformResult;
+use crate::policies::access;
 
 pub fn belongs_here(account: &Account) -> bool {
     account.tenant_id.is_some()

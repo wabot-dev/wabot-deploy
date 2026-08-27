@@ -25,8 +25,9 @@ use serde::Serialize;
 use wabot::sqlite::rusqlite::{OptionalExtension, Row};
 use wabot::sqlite::SqliteDatabase;
 
-use super::{now_ms, postgres, presets, PlatformError, PlatformResult};
+use super::{now_ms, PlatformError, PlatformResult};
 use crate::entities::service::Service;
+use crate::policies::{postgres, presets};
 
 /// Which engine. One today, and the enum is here rather than a string
 /// for the same reason `errand::Kind`'s is: the row can outlive the
@@ -457,7 +458,9 @@ fn instruction(
         // sent to a registry that is not this node's.
         username: None,
         secret: None,
-        memory_limit: service.memory_limit.unwrap_or(super::presets::SMALLEST),
+        memory_limit: service
+            .memory_limit
+            .unwrap_or(crate::policies::presets::SMALLEST),
         engine: row.engine.as_str().to_string(),
         version: row.version.clone(),
         database_name: row.database_name.clone(),

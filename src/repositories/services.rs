@@ -260,11 +260,11 @@ pub async fn set_memory_limit(
     // function is handed an id and would have to read the row back to
     // learn the kind.
     if let Some(bytes) = bytes {
-        if bytes < crate::platform::presets::MIN_MEMORY {
+        if bytes < crate::policies::presets::MIN_MEMORY {
             return Err(PlatformError::Refused(format!(
                 "{} is under {}, which is less than a container needs to start",
-                crate::platform::presets::label(bytes),
-                crate::platform::presets::label(crate::platform::presets::MIN_MEMORY)
+                crate::policies::presets::label(bytes),
+                crate::policies::presets::label(crate::policies::presets::MIN_MEMORY)
             )));
         }
     }
@@ -287,11 +287,11 @@ pub async fn set_cpu_limit(
     millicores: Option<u32>,
 ) -> PlatformResult<()> {
     if let Some(millicores) = millicores {
-        if millicores < crate::platform::presets::MIN_MILLICORES {
+        if millicores < crate::policies::presets::MIN_MILLICORES {
             return Err(PlatformError::Refused(format!(
                 "{} is under {}, which is less than a container needs to start",
-                crate::platform::presets::cpu_label(millicores),
-                crate::platform::presets::cpu_label(crate::platform::presets::MIN_MILLICORES)
+                crate::policies::presets::cpu_label(millicores),
+                crate::policies::presets::cpu_label(crate::policies::presets::MIN_MILLICORES)
             )));
         }
     }
@@ -315,10 +315,10 @@ pub async fn set_disk_limit(
     bytes: Option<u64>,
 ) -> PlatformResult<()> {
     if let Some(bytes) = bytes {
-        if bytes < crate::platform::presets::MIN_MEMORY {
+        if bytes < crate::policies::presets::MIN_MEMORY {
             return Err(PlatformError::Refused(format!(
                 "a disk ceiling under {} is one nothing could start in",
-                crate::platform::presets::label(crate::platform::presets::MIN_MEMORY)
+                crate::policies::presets::label(crate::policies::presets::MIN_MEMORY)
             )));
         }
     }

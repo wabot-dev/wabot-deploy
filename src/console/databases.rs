@@ -23,7 +23,10 @@ use super::language::t;
 use super::shell::{Area, Frame};
 use super::{layout, ConsoleState};
 use crate::platform::databases::Database;
-use crate::platform::{access, postgres, presets, replicas};
+use crate::platform::replicas;
+use crate::policies::access;
+use crate::policies::postgres;
+use crate::policies::presets;
 
 #[derive(Debug, Deserialize, Validate)]
 pub struct DatabaseForm {

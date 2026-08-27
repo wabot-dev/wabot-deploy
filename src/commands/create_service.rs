@@ -261,7 +261,7 @@ mod tests {
         .expect("created");
         assert_eq!(service.memory_limit, None);
 
-        let rung = crate::platform::presets::LADDER[1];
+        let rung = crate::policies::presets::LADDER[1];
         set_memory_limit(&database, &service.id, Some(rung))
             .await
             .expect("set");

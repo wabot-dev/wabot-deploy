@@ -711,7 +711,7 @@ async fn capacity(database: &SqliteDatabase, container: &Container) -> Option<su
     let cpu_reserve = crate::node::settings::cpu_reserve(database).await;
     let total = deployer.memory().await.total;
     Some(super::Capacity {
-        memory_allocatable: crate::platform::presets::allocatable_memory(total, memory_reserve),
+        memory_allocatable: crate::policies::presets::allocatable_memory(total, memory_reserve),
         memory_committed: committed.memory,
         cpu_allocatable: crate::node::cpu::allocatable_millicores(cpu_reserve),
         cpu_committed: committed.cpu,
@@ -1291,8 +1291,8 @@ async fn hold_standby(
         crate::platform::volumes::create(
             database,
             &service.id,
-            crate::platform::postgres::VOLUME,
-            crate::platform::postgres::DATA_MOUNT,
+            crate::policies::postgres::VOLUME,
+            crate::policies::postgres::DATA_MOUNT,
         )
         .await
         .map_err(|error| error.to_string())?;
@@ -1304,7 +1304,7 @@ async fn hold_standby(
         ports::create(
             database,
             &service.id,
-            crate::platform::postgres::PORT,
+            crate::policies::postgres::PORT,
             false,
             None,
             &[],

@@ -1,7 +1,7 @@
 //! Who may do what, asked per actor. See `docs/architecture-rules.md` §3.
 //!
 //! No module here reads a role or a grant table and re-decides it: each
-//! composes `platform::access` and `network::capability`. A question per
+//! composes `crate::policies::access` and `network::capability`. A question per
 //! actor; an answer computed once.
 
 pub mod node_user;

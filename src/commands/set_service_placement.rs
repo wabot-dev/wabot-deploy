@@ -6,8 +6,8 @@ use crate::config::Config;
 use crate::deploy::Deployer;
 use crate::entities::project::Project;
 use crate::entities::service::Service;
-use crate::platform::quotas;
 use crate::platform::replicas;
+use crate::policies::quotas;
 use wabot::prelude::Container;
 
 /// Where copies added by the count control go.

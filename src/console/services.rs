@@ -14,7 +14,8 @@ use wabot::ui::hypertext::IntoView;
 
 use super::language::t;
 use crate::deploy::dns;
-use crate::platform::{access, ports, releases};
+use crate::platform::{ports, releases};
+use crate::policies::access;
 use crate::repositories::config_history;
 use crate::repositories::services;
 
@@ -1807,7 +1808,7 @@ impl ServicePages {
                                    class="mono"
                                    placeholder=(t("two rotations"))
                                    value=(service.log_budget
-                                       .map(crate::platform::presets::size_field)
+                                       .map(crate::policies::presets::size_field)
                                        .unwrap_or_default())>
                             <p class="field-hint">(t("Per copy, and the live log counts against it \
                                  — a service with two copies on this machine writes two. Oldest \
@@ -1944,14 +1945,14 @@ impl ServicePages {
                         @if service.kind.is_managed() {
                             <select id="memory-size" name="memory">
                                 <option value="">(t("no ceiling"))</option>
-                                @for rung in crate::platform::presets::LADDER {
+                                @for rung in crate::policies::presets::LADDER {
                                     @if Some(rung) == service.memory_limit {
                                         <option value=(rung.to_string()) selected>(
-                                            crate::platform::presets::label(rung)
+                                            crate::policies::presets::label(rung)
                                         )</option>
                                     } @else {
                                         <option value=(rung.to_string())>(
-                                            crate::platform::presets::label(rung)
+                                            crate::policies::presets::label(rung)
                                         )</option>
                                     }
                                 }
@@ -1961,16 +1962,16 @@ impl ServicePages {
                                    list="memory-sizes" autocomplete="off"
                                    placeholder=(t("no ceiling"))
                                    value=(service.memory_limit
-                                       .map(crate::platform::presets::size_field)
+                                       .map(crate::policies::presets::size_field)
                                        .unwrap_or_default())>
                             // Suggestions, not a constraint: the field
                             // takes anything the machine can keep, and a
                             // datalist is plain HTML, so this is still a
                             // page that works with scripting off.
                             <datalist id="memory-sizes">
-                                @for rung in crate::platform::presets::LADDER {
+                                @for rung in crate::policies::presets::LADDER {
                                     <option value=(
-                                        crate::platform::presets::size_field(rung)
+                                        crate::policies::presets::size_field(rung)
                                     )></option>
                                 }
                             </datalist>
@@ -2003,12 +2004,12 @@ impl ServicePages {
                                list="cpu-sizes" autocomplete="off"
                                placeholder=(t("no ceiling"))
                                value=(service.cpu_millicores
-                                   .map(crate::platform::presets::cores_field)
+                                   .map(crate::policies::presets::cores_field)
                                    .unwrap_or_default())>
                         <datalist id="cpu-sizes">
-                            @for rung in crate::platform::presets::CPU_LADDER {
+                            @for rung in crate::policies::presets::CPU_LADDER {
                                 <option value=(
-                                    crate::platform::presets::cores_field(rung)
+                                    crate::policies::presets::cores_field(rung)
                                 )></option>
                             }
                         </datalist>
@@ -2023,7 +2024,7 @@ impl ServicePages {
                                autocomplete="off"
                                placeholder=(t("no ceiling"))
                                value=(service.disk_limit
-                                   .map(crate::platform::presets::label)
+                                   .map(crate::policies::presets::label)
                                    .unwrap_or_default())>
                         // **The one number on this page that reserves and
                         // does not enforce**, and saying so is the whole
@@ -6996,7 +6997,7 @@ mod tests {
             &project.id,
             "Orders",
             "17",
-            crate::platform::presets::LADDER[1],
+            crate::policies::presets::LADDER[1],
         )
         .await
         .expect("database");
@@ -7527,7 +7528,7 @@ mod tests {
             &project.id,
             "Orders",
             "17",
-            crate::platform::presets::LADDER[1],
+            crate::policies::presets::LADDER[1],
         )
         .await
         .expect("database");
@@ -7821,7 +7822,7 @@ mod tests {
         // names it — the path on the node is derived from the container
         // id and is not somebody's to type.
         assert!(
-            body.matches(crate::platform::postgres::DATA_MOUNT).count() >= 2,
+            body.matches(crate::policies::postgres::DATA_MOUNT).count() >= 2,
             "a disk for each copy: {body}"
         );
     }

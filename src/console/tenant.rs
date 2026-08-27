@@ -21,7 +21,7 @@ use super::shell::{Area, Frame};
 use super::{layout, ConsoleState};
 use crate::accounts::roles::{NodeRole, ProjectRole};
 use crate::accounts::{self, invitations};
-use crate::platform::access;
+use crate::policies::access;
 
 #[injectable]
 pub struct TenantPeoplePages {
