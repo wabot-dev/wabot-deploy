@@ -429,7 +429,7 @@ async fn send_there(
     let mine = crate::node::settings::domain(database, config).await;
     let secret = match mine.as_deref() == Some(registry.as_str()) {
         true => Some(
-            crate::platform::tokens::create(
+            crate::repositories::tokens::create(
                 database,
                 &project.id,
                 &format!("errand to {node_id}"),

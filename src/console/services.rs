@@ -14,7 +14,8 @@ use wabot::ui::hypertext::IntoView;
 
 use super::language::t;
 use crate::deploy::dns;
-use crate::platform::{access, config_history, ports, releases};
+use crate::platform::{access, ports, releases};
+use crate::repositories::config_history;
 use crate::repositories::services;
 
 use super::auth::{back_with_error, field, read_form, see_other, signed_in, SessionMiddleware};

@@ -1,6 +1,6 @@
 use wabot::sqlite::SqliteDatabase;
 
-use crate::platform::tokens;
+use crate::repositories::tokens;
 
 pub struct CreateProjectToken<'a> {
     pub project_id: &'a str,

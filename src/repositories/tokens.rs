@@ -1,29 +1,10 @@
-//! Push tokens: what a machine authenticates with.
-//!
-//! A CI job needs credentials, and giving it a person's is how a
-//! password ends up in a config file on a build agent. A push token is
-//! nobody's password: it belongs to a project, it can be revoked
-//! without changing anything else, and the worst a leaked one does is
-//! push images to that one project.
-//!
-//! Stored hashed, shown once. Same as every other token here.
+//! Every `SELECT`, `INSERT` and `UPDATE` a [`PushToken`] needs.
 
-use serde::Serialize;
 use wabot::sqlite::rusqlite::OptionalExtension;
 use wabot::sqlite::SqliteDatabase;
 
-use super::{now_ms, PlatformError, PlatformResult};
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct PushToken {
-    pub id: String,
-    pub project_id: String,
-    pub name: String,
-    pub created_at: i64,
-    /// When something last authenticated with it — the answer to "is
-    /// this one still in use" before somebody revokes it.
-    pub last_used_at: Option<i64>,
-}
+use crate::entities::push_token::PushToken;
+use crate::platform::{now_ms, PlatformError, PlatformResult};
 
 /// Mint one, returning the secret in clear.
 ///
@@ -77,6 +58,10 @@ pub async fn create(
     Ok((token, secret))
 }
 
+/// Which project this token pushes to, if it is one.
+///
+/// Records the use as it goes: a token nobody has used in months is
+/// the one to revoke, and that is only visible if using it says so.
 /// Which project this token pushes to, if it is one.
 ///
 /// Records the use as it goes: a token nobody has used in months is

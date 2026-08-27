@@ -1,44 +1,15 @@
-//! The environment, as it was.
-//!
-//! Kept apart from releases on purpose. Rolling back an image and
-//! rolling back a configuration are different intentions, and the
-//! usual case is "this build is bad, run the previous one, keep the
-//! settings I fixed since". Tying them together would make one of
-//! those impossible.
-//!
-//! ## Bounded, because a history nobody prunes is a table nobody reads
-//!
-//! The last twenty revisions. Far enough back to undo a bad afternoon,
-//! short enough that the page stays a page.
+//! Every `SELECT` and `INSERT` a [`Revision`] needs, and the depth the
+//! history is kept to.
 
 use std::collections::BTreeMap;
 
-use serde::Serialize;
 use wabot::sqlite::SqliteDatabase;
 
-use super::{now_ms, PlatformResult};
+use crate::entities::config_revision::Revision;
+use crate::platform::{now_ms, PlatformResult};
 
 /// How many revisions a service keeps.
 const KEEP: usize = 20;
-
-// Ordering is by timestamp *and* rowid. Two changes inside the same
-// millisecond — which a script makes trivially — would otherwise come
-// back in whatever order the engine felt like, so the newest revision
-// would sometimes be the older one and the prune would sometimes
-// delete the wrong row. rowid is monotonic for inserts, so it settles
-// the tie in the order things actually happened.
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct Revision {
-    pub id: String,
-    pub service_id: String,
-    pub env: BTreeMap<String, String>,
-    pub changed_by: Option<String>,
-    /// `edit` or `revert` — what somebody was doing.
-    pub reason: String,
-    pub created_at: i64,
-}
-
 /// Record the environment a service is being given.
 ///
 /// Called with the values *about* to take effect, so the newest
@@ -82,6 +53,7 @@ pub async fn record(
     Ok(())
 }
 
+/// A service's history, newest first.
 /// A service's history, newest first.
 pub async fn of_service(
     database: &SqliteDatabase,

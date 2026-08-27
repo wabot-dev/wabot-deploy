@@ -338,7 +338,8 @@ impl ProjectPages {
             return Ok(Redirect::found(here).into());
         }
 
-        let tokens = crate::platform::tokens::of_project(&self.state.database, &project.id).await?;
+        let tokens =
+            crate::repositories::tokens::of_project(&self.state.database, &project.id).await?;
         // Spent on read. "Shown once" used to mean "in the URL until
         // you navigate away", so a refresh put it back on the screen
         // and the back button found it an hour later.

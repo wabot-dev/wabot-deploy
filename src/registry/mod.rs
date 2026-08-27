@@ -41,8 +41,8 @@ use wabot::rest::axum::Router;
 use wabot::rest::RestResult;
 use wabot::sqlite::SqliteDatabase;
 
-use crate::platform::tokens;
 use crate::repositories::projects;
+use crate::repositories::tokens;
 
 /// What the registry needs to answer a request.
 pub struct RegistryState {

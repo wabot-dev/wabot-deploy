@@ -20,7 +20,6 @@
 //! allocates ports.
 
 pub mod access;
-pub mod config_history;
 pub mod databases;
 pub mod edges;
 pub mod images;
@@ -33,7 +32,6 @@ pub mod registry_credentials;
 pub mod releases;
 pub mod replicas;
 pub mod tenants;
-pub mod tokens;
 pub mod volumes;
 pub mod wal;
 
