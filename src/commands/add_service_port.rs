@@ -32,7 +32,9 @@ impl AddServicePort<'_> {
                 if self.asked.hostname.is_empty() {
                     return Err("serving over HTTPS needs a hostname".into());
                 }
-                let hostname = ports::normalize_hostname(self.asked.hostname);
+                let hostname = crate::values::hostname::Hostname::parse(self.asked.hostname)
+                    .as_str()
+                    .to_string();
 
                 let references = dns::references(database, config).await?;
                 if references.is_empty() {

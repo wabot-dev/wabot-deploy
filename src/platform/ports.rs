@@ -6,6 +6,8 @@
 //! three, and the common answer to the last two is "no".
 
 use serde::Serialize;
+
+use crate::values::hostname::Hostname;
 use wabot::sqlite::SqliteDatabase;
 
 use super::{now_ms, PlatformError, PlatformResult};
@@ -57,7 +59,10 @@ pub async fn create(
             "a port is a number between 1 and 65535".into(),
         ));
     }
-    let hostname = hostname.map(normalize_hostname).filter(|h| !h.is_empty());
+    let hostname = hostname
+        .map(Hostname::parse)
+        .filter(|name| !name.is_empty())
+        .map(|name| name.as_str().to_string());
 
     let host_port = if publish {
         Some(free_host_port(database).await?)
@@ -385,26 +390,6 @@ fn decode(row: &wabot::sqlite::rusqlite::Row<'_>) -> wabot::sqlite::rusqlite::Re
         host_port: row.get::<_, Option<i64>>(3)?.map(|port| port as u16),
         hostname: row.get(4)?,
     })
-}
-
-/// A hostname as it will be compared and stored.
-///
-/// Lowercase, no trailing dot, no scheme, no path — all of which
-/// somebody pastes, and none of which change which name is meant. The
-/// edge normalizes the `Host` header the same way, and a route stored
-/// differently from how it is looked up is a route that never matches.
-pub fn normalize_hostname(hostname: &str) -> String {
-    let hostname = hostname.trim().to_ascii_lowercase();
-    let hostname = hostname
-        .strip_prefix("https://")
-        .or_else(|| hostname.strip_prefix("http://"))
-        .unwrap_or(&hostname);
-    hostname
-        .split('/')
-        .next()
-        .unwrap_or_default()
-        .trim_end_matches('.')
-        .to_string()
 }
 
 #[cfg(test)]
@@ -735,7 +720,11 @@ mod tests {
             ("https://api.example.com/health", "api.example.com"),
             ("http://api.example.com", "api.example.com"),
         ] {
-            assert_eq!(normalize_hostname(given), expected, "given {given:?}");
+            assert_eq!(
+                Hostname::parse(given).as_str().to_string(),
+                expected,
+                "given {given:?}"
+            );
         }
     }
 

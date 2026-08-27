@@ -19,7 +19,9 @@ pub struct NameDatabase<'a> {
 
 impl NameDatabase<'_> {
     pub async fn run(&self, database: &SqliteDatabase, config: &Config) -> Result<Named, String> {
-        let typed = ports::normalize_hostname(self.typed);
+        let typed = crate::values::hostname::Hostname::parse(self.typed)
+            .as_str()
+            .to_string();
         if typed.is_empty() {
             return Err("a database is reached by name, so it has to have one".into());
         }

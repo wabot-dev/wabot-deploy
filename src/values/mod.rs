@@ -5,5 +5,6 @@
 //! is what separates it from an entity — an entity has an identity and a
 //! life, a value object is just a value that could not be wrong.
 
+pub mod hostname;
 pub mod image_reference;
 pub mod mount_point;

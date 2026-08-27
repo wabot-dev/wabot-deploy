@@ -34,7 +34,9 @@ pub async fn run(
         return Ok(Settled::Cleared);
     }
 
-    let domain = crate::platform::ports::normalize_hostname(typed);
+    let domain = crate::values::hostname::Hostname::parse(typed)
+        .as_str()
+        .to_string();
     // Resolved against itself: the node has no other way to know where
     // it is reachable, and "does this name arrive here" is the question.
     let outcome = crate::deploy::dns::resolves_here(&domain, &domain).await;
