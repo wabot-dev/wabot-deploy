@@ -31,6 +31,8 @@
 use std::path::{Path, PathBuf};
 
 use serde::Serialize;
+
+use crate::values::mount_point::MountPoint;
 use wabot::sqlite::SqliteDatabase;
 
 use super::{now_ms, slugify, PlatformError, PlatformResult};
@@ -143,7 +145,7 @@ pub async fn create(
             "a volume name is 1 to 32 characters a directory can hold".into(),
         ));
     }
-    let path = validate_path(path)?;
+    let path = MountPoint::parse(path)?.to_string();
 
     let volume = Volume {
         id: format!("vol-{}", wabot::prelude::password::generate(12)),
@@ -174,62 +176,7 @@ pub async fn create(
     Ok(volume)
 }
 
-/// Where a container may not be given a directory.
-///
-/// Every one of these is a mount the container needs to be a container
-/// — see `runtime::spec` — and a volume is appended *after* them, so it
-/// would win. Losing `/proc` is a container that does not start;
-/// losing `/etc/resolv.conf` is one that starts and cannot resolve
-/// anything, which is worse because it looks like the image's fault.
-const RESERVED: [&str; 9] = [
-    "/",
-    "/proc",
-    "/dev",
-    "/dev/pts",
-    "/dev/shm",
-    "/dev/mqueue",
-    "/sys",
-    "/etc/resolv.conf",
-    // The node writes this one too, from the rows — see `deploy::hosts`.
-    // A volume over it is a container that can reach nothing by name.
-    "/etc/hosts",
-];
-
-/// A destination the node can mount over without breaking the
-/// container.
-///
-/// Trailing slashes are trimmed so `/data` and `/data/` are one path
-/// rather than two rows the unique index would let through.
-fn validate_path(path: &str) -> PlatformResult<String> {
-    let path = path.trim().trim_end_matches('/');
-    let path = match path.is_empty() {
-        true => "/",
-        false => path,
-    };
-
-    if !path.starts_with('/') {
-        return Err(PlatformError::Refused(format!(
-            "a mount point is an absolute path: {path:?} — try /var/lib/postgresql/data"
-        )));
-    }
-    // `..` is refused rather than resolved. The destination is
-    // interpreted inside the container's own root by the runtime, so a
-    // traversal cannot reach the node's filesystem — but a path nobody
-    // can predict from reading it is one nobody can audit either.
-    if path.split('/').any(|part| part == "..") {
-        return Err(PlatformError::Refused(
-            "a mount point has no `..` in it".into(),
-        ));
-    }
-    if RESERVED.contains(&path) {
-        return Err(PlatformError::Refused(format!(
-            "{path} is one of the mounts a container needs to run, so nothing may be \
-             mounted over it"
-        )));
-    }
-    Ok(path.to_string())
-}
-
+/// Every directory this service keeps data in.
 pub async fn of_service(
     database: &SqliteDatabase,
     service_id: &str,

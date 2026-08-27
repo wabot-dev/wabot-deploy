@@ -6,3 +6,4 @@
 //! life, a value object is just a value that could not be wrong.
 
 pub mod image_reference;
+pub mod mount_point;
