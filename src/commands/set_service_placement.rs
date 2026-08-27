@@ -407,7 +407,10 @@ async fn send_there(
     by: &str,
     slots: Vec<u32>,
 ) -> Result<(), String> {
-    let Some(registry) = crate::platform::registry_credentials::host_of(&service.image) else {
+    let Some(registry) = crate::values::image_reference::ImageReference::parse(&service.image)
+        .ok()
+        .and_then(|r| r.host())
+    else {
         return Err(
             "that image does not name a registry, so there is nothing to pull it from".into(),
         );

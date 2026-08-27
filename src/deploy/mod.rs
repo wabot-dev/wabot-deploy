@@ -2517,7 +2517,10 @@ impl Deployer {
         if service.kind.is_managed() || !service.is_ours() {
             return;
         }
-        let Some(registry) = crate::platform::registry_credentials::host_of(&service.image) else {
+        let Some(registry) = crate::values::image_reference::ImageReference::parse(&service.image)
+            .ok()
+            .and_then(|r| r.host())
+        else {
             return;
         };
         let (placements, ports) = match (

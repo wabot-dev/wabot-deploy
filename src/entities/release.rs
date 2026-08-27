@@ -81,7 +81,9 @@ impl Release {
     /// Not the tag it arrived under — that is a label on a moving
     /// target, and the point of a release is that it does not move.
     pub fn pinned(&self) -> String {
-        let repository = crate::platform::images::Reference::parse(&self.reference)
+        let repository = crate::values::image_reference::ImageReference::parse(&self.reference)
+            .ok()
+            .and_then(|r| r.parts())
             .map(|reference| reference.repository)
             .unwrap_or_else(|| self.reference.clone());
         format!("{repository}@{}", self.digest)

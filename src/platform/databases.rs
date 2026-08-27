@@ -452,7 +452,10 @@ fn instruction(
         project: project.to_string(),
         service: service.name.clone(),
         image: service.image.clone(),
-        registry: super::registry_credentials::host_of(&service.image).unwrap_or_default(),
+        registry: crate::values::image_reference::ImageReference::parse(&service.image)
+            .ok()
+            .and_then(|r| r.host())
+            .unwrap_or_default(),
         // No credential: a database's image comes from Docker Hub, which
         // serves anybody. `send_there` explains what happens when one is
         // sent to a registry that is not this node's.

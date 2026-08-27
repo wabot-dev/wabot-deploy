@@ -6,6 +6,8 @@
 use wabot::sqlite::rusqlite::OptionalExtension;
 use wabot::sqlite::SqliteDatabase;
 
+use crate::values::image_reference::ImageReference;
+
 use super::{now_ms, PlatformResult};
 use crate::runtime::images::Credential;
 
@@ -53,7 +55,7 @@ pub async fn set(
 /// a registry that serves anybody, and a pull with no credential is how
 /// every deployment worked before this existed.
 pub async fn for_reference(database: &SqliteDatabase, reference: &str) -> Option<Credential> {
-    let host = host_of(reference)?;
+    let host = ImageReference::parse(reference).ok()?.host()?;
     let found: PlatformResult<Option<(String, String)>> = database
         .read(move |connection| {
             connection
@@ -78,27 +80,6 @@ pub async fn for_reference(database: &SqliteDatabase, reference: &str) -> Option
             None
         }
     }
-}
-
-/// The registry an image reference names, if it names one.
-///
-/// The rule every OCI client uses, and it is a heuristic rather than a
-/// grammar. Two conditions, and the second is the one that is easy to
-/// forget: there has to *be* a path after the first component, and that
-/// component has to look like a host — a dot, a colon, or exactly
-/// `localhost`.
-///
-/// Without the first condition `alpine:3.23` reads as a registry called
-/// `alpine` on port `3.23`, because a tag's colon looks exactly like a
-/// port's. That shipped for an hour in two copies of this rule, which is
-/// why there is now one and it is public.
-///
-/// `library/alpine` is not a host called `library` either — that is the
-/// second condition doing its job.
-pub fn host_of(reference: &str) -> Option<String> {
-    let (first, _) = reference.split_once('/')?;
-    let looks_like_a_host = first.contains('.') || first.contains(':') || first == "localhost";
-    looks_like_a_host.then(|| first.to_string())
 }
 
 #[cfg(test)]
@@ -150,31 +131,6 @@ mod tests {
             for_reference(&database, "hub.example.com/proj/app:v1").await,
             Some(rotated)
         );
-    }
-
-    /// `library/alpine` is not a host called `library`. Getting this
-    /// wrong would send a node's credential to Docker Hub.
-    #[test]
-    fn a_namespace_is_not_a_registry() {
-        assert_eq!(
-            host_of("hub.example.com/proj/app:v1").as_deref(),
-            Some("hub.example.com")
-        );
-        assert_eq!(
-            host_of("localhost:5000/proj/app").as_deref(),
-            Some("localhost:5000")
-        );
-        assert_eq!(host_of("localhost/proj/app").as_deref(), Some("localhost"));
-
-        assert_eq!(host_of("library/alpine:3.23"), None);
-        assert_eq!(host_of("alpine"), None);
-        assert_eq!(host_of(""), None);
-
-        // The one that got away: a tag's colon looks exactly like a
-        // port's, so a reference with no path at all read as a registry
-        // called `alpine` on port `3.23`.
-        assert_eq!(host_of("alpine:3.23"), None);
-        assert_eq!(host_of("ubuntu:24.04"), None);
     }
 
     /// The ordinary case, and not a failure: most images come from a

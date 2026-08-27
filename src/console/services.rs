@@ -2584,7 +2584,10 @@ fn push(
         return None;
     }
 
-    let Some(reference) = crate::platform::images::Reference::parse(&service.image) else {
+    let Some(reference) = crate::values::image_reference::ImageReference::parse(&service.image)
+        .ok()
+        .and_then(|r| r.parts())
+    else {
         return Some(Push::Pinned);
     };
     let Some(host) = node_domain else {
