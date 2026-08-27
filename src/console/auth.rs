@@ -26,7 +26,6 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use hypertext::prelude::*;
 use serde::Deserialize;
 use wabot::prelude::*;
 use wabot::rest::axum::body::Body;
@@ -38,7 +37,6 @@ use wabot::rest::{Middleware, RestResult};
 use wabot::ui::hypertext::IntoView;
 
 use crate::accounts::{self, sessions, Account};
-use crate::views::texts::language::t;
 
 use super::ConsoleState;
 use crate::views::layouts::layout;
@@ -244,46 +242,13 @@ impl AuthPages {
         let has_token = accounts::setup_token_valid(&self.state.database).await?;
 
         layout::head("Set up");
-        Ok(rsx! {
-            (layout::style_tag())
-            <main class="shell narrow">
-                (mark("Set up this node"))
-                @if let Some(message) = &query.error {
-                    (layout::error_note(message))
-                }
-                @if has_token {
-                    <p class="tagline">(t("The setup token was printed by `wabot-deploy install`. \
-                         It works once, and it expires."))</p>
-                    <form method="post" action="/setup" class="card stack" data-wabot-reload>
-                        <label for="setup_token">(t("Setup token"))</label>
-                        <input id="setup_token" name="setup_token" type="text"
-                               autocomplete="off" required>
-
-                        <label for="username">(t("Username"))</label>
-                        <input id="username" name="username" type="text"
-                               autocomplete="username" required>
-
-                        <label for="password">(t("Password"))</label>
-                        <input id="password" name="password" type="password"
-                               autocomplete="new-password" required>
-                        <p class="field-hint">(t("At least 12 characters. A phrase beats a puzzle — \
-                             this console can start containers on the machine."))</p>
-
-                        <div class="actions">
-                            <button type="submit">(t("Create administrator"))</button>
-                        </div>
-                    </form>
-                } @else {
-                    <section class="card stack">
-                        <p>(t("No setup token is outstanding, so nobody can be created \
-                             from here. Issue one on the node:"))</p>
-                        <pre><code>("wabot-deploy setup-token")</code></pre>
-                    </section>
-                }
-            </main>
-        }
-        .into_view()
-        .into())
+        let page = crate::views::pages::guest_setup_page::Setup {
+            has_token,
+            query_error: query.error.as_deref(),
+        };
+        Ok(crate::views::pages::guest_setup_page::render(&page)
+            .into_view()
+            .into())
     }
 
     #[view("/sign-in")]
@@ -300,45 +265,12 @@ impl AuthPages {
         }
 
         layout::head("Sign in");
-        Ok(rsx! {
-            (layout::style_tag())
-            <main class="shell narrow">
-                (mark("Sign in"))
-                @if let Some(message) = &query.error {
-                    (layout::error_note(message))
-                }
-                <form method="post" action="/sign-in" class="card stack" data-wabot-reload>
-                    <label for="username">(t("Username"))</label>
-                    <input id="username" name="username" type="text"
-                           autocomplete="username" required>
-
-                    <label for="password">(t("Password"))</label>
-                    <input id="password" name="password" type="password"
-                           autocomplete="current-password" required>
-
-                    <div class="actions">
-                        <button type="submit">(t("Sign in"))</button>
-                    </div>
-                </form>
-            </main>
-        }
-        .into_view()
-        .into())
-    }
-}
-
-/// The logo and a heading — what a page with no header bar opens with.
-pub(crate) fn mark(heading: &str) -> impl Renderable + '_ {
-    rsx! {
-        <header class="mark">
-            <img
-                src=(format!("{}/wabot-logo.png", super::assets::MOUNT))
-                alt="Wabot" width="36" height="36">
-            <div class="stack-sm">
-                <h1>(heading)</h1>
-                <p class="tagline">("wabot-deploy")</p>
-            </div>
-        </header>
+        let page = crate::views::pages::guest_sign_in_page::SignIn {
+            query_error: query.error.as_deref(),
+        };
+        Ok(crate::views::pages::guest_sign_in_page::render(&page)
+            .into_view()
+            .into())
     }
 }
 

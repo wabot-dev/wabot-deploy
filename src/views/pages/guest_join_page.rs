@@ -1,7 +1,7 @@
 use hypertext::prelude::*;
 
 use crate::accounts::invitations::Invitation;
-use crate::console::auth;
+use crate::views::components::mark::mark;
 use crate::views::layouts::layout;
 use crate::views::texts::language::t;
 
@@ -16,7 +16,7 @@ pub fn render<'a>(page: &'a Join<'a>) -> impl Renderable + 'a {
     rsx! {
         (layout::style_tag())
         <main class="shell narrow">
-            (auth::mark(page.heading))
+            (mark(page.heading))
             @if let Some(message) = &page.error {
                 (layout::error_note(message))
             }
