@@ -1,7 +1,8 @@
 use wabot::sqlite::SqliteDatabase;
 
 use crate::entities::service::Service;
-use crate::platform::{now_ms, replicas, PlatformError, PlatformResult};
+use crate::platform::{now_ms, PlatformError, PlatformResult};
+use crate::repositories::replicas;
 
 pub struct Asked<'a> {
     pub project: &'a str,

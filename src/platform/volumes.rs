@@ -224,7 +224,6 @@ fn decode(row: &wabot::sqlite::rusqlite::Row<'_>) -> wabot::sqlite::rusqlite::Re
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::platform::replicas;
     use crate::repositories::services;
 
     async fn service() -> (SqliteDatabase, String) {
@@ -265,7 +264,7 @@ mod tests {
     #[test]
     fn a_second_copy_does_not_rename_the_first_ones_directory() {
         let data = Path::new("/var/lib/wabot-deploy");
-        let replica = |slot| replicas::Replica {
+        let replica = |slot| crate::entities::replica::Replica {
             id: "rp-1".into(),
             service_id: "svc-1".into(),
             node_id: None,

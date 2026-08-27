@@ -35,11 +35,12 @@ use wabot::sqlite::SqliteDatabase;
 use crate::entities::port::Port;
 use crate::entities::project::Project;
 use crate::entities::release::Release;
+use crate::entities::replica::Replica;
 use crate::platform::databases;
-use crate::platform::replicas::{self, Replica};
 use crate::policies::postgres;
 use crate::repositories::ports;
 use crate::repositories::releases;
+use crate::repositories::replicas;
 
 use crate::entities::service::{DesiredState, Service};
 use crate::platform::volumes::{self, Volume};
@@ -1400,7 +1401,7 @@ impl Deployer {
 
         let mut candidates = Vec::new();
         for node in nodes {
-            let held: Vec<&replicas::Replica> = match node.is_self {
+            let held: Vec<&crate::entities::replica::Replica> = match node.is_self {
                 true => here.iter().collect(),
                 false => elsewhere
                     .iter()
@@ -1566,7 +1567,7 @@ impl Deployer {
         let (Ok(projects), Ok(services), Ok(mine)) = (
             crate::repositories::projects::all(database).await,
             crate::repositories::services::all(database, None).await,
-            crate::platform::replicas::here(database).await,
+            crate::repositories::replicas::here(database).await,
         ) else {
             return None;
         };
@@ -2302,7 +2303,7 @@ impl Deployer {
         };
 
         for service in services.iter().filter(|service| service.is_ours()) {
-            let held: Vec<&replicas::Replica> = elsewhere
+            let held: Vec<&crate::entities::replica::Replica> = elsewhere
                 .iter()
                 .filter(|replica| replica.service_id == service.id)
                 .filter(|replica| replica.node_id.as_deref() == Some(node_id))
@@ -2345,7 +2346,7 @@ impl Deployer {
                             &self.database,
                             &replica.id,
                             node.as_deref(),
-                            replicas::Placed::Planner,
+                            crate::entities::replica::Placed::Planner,
                             Some(&note),
                         )
                         .await
@@ -3099,7 +3100,7 @@ impl Deployer {
         let data_dir = &self.config.node.data_dir;
         let asker = format!(
             "{}.ask",
-            crate::platform::replicas::container_id_for(&project.slug, &service.slug, slot)
+            crate::entities::replica::container_id_for(&project.slug, &service.slug, slot)
         );
 
         let request = ContainerRequest {

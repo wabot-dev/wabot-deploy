@@ -116,7 +116,7 @@ async fn copies_that_failed(
     let services = crate::repositories::services::all(&state.database, None).await?;
     let projects = crate::repositories::projects::all(&state.database).await?;
 
-    for replica in crate::platform::replicas::here(&state.database).await? {
+    for replica in crate::repositories::replicas::here(&state.database).await? {
         let Some(reason) = &replica.last_error else {
             continue;
         };
@@ -195,7 +195,8 @@ async fn a_database_with_every_copy_on_one_machine(
     };
 
     for service in services.iter().filter(|s| s.kind.is_managed()) {
-        let Ok(copies) = crate::platform::replicas::of_service(&state.database, &service.id).await
+        let Ok(copies) =
+            crate::repositories::replicas::of_service(&state.database, &service.id).await
         else {
             continue;
         };

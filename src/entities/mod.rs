@@ -9,5 +9,6 @@ pub mod port;
 pub mod project;
 pub mod push_token;
 pub mod release;
+pub mod replica;
 pub mod service;
 pub mod tenant;

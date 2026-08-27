@@ -214,7 +214,8 @@ impl ProjectPages {
             // here — a service is *n* of them now, and this row still
             // shows one.
             let placements =
-                crate::platform::replicas::of_service(&self.state.database, &service.id).await?;
+                crate::repositories::replicas::of_service(&self.state.database, &service.id)
+                    .await?;
             let here = placements
                 .iter()
                 .find(|replica| replica.is_here() && !replica.evicted())
@@ -982,7 +983,7 @@ async fn replica_cells(
 
     for service in services {
         let Ok(replicas) =
-            crate::platform::replicas::of_service(&state.database, &service.id).await
+            crate::repositories::replicas::of_service(&state.database, &service.id).await
         else {
             continue;
         };
@@ -1039,7 +1040,7 @@ async fn replica_cells(
 /// So `placement_state` renders *this*, and there is nothing left to keep
 /// in step.
 pub(crate) fn replica_cell(
-    replica: &crate::platform::replicas::Replica,
+    replica: &crate::entities::replica::Replica,
     // Whether the service is meant to be running at all. Nobody waits for
     // news about a copy that is not, here or anywhere else.
     stopped: bool,
@@ -1259,8 +1260,8 @@ impl Whereabouts {
     }
 }
 
-pub(crate) fn where_it_runs(placements: &[crate::platform::replicas::Replica]) -> Whereabouts {
-    let live: Vec<&crate::platform::replicas::Replica> =
+pub(crate) fn where_it_runs(placements: &[crate::entities::replica::Replica]) -> Whereabouts {
+    let live: Vec<&crate::entities::replica::Replica> =
         placements.iter().filter(|r| !r.evicted()).collect();
 
     Whereabouts {
@@ -1295,7 +1296,7 @@ pub(crate) enum Elsewhere {
 /// the project's list, its stream, and the service's own page — and a
 /// badge that disagreed with itself between a first paint and the swap
 /// that followed is the failure `StateCell` exists to prevent.
-pub(crate) fn elsewhere_of(placements: &[crate::platform::replicas::Replica]) -> Option<Elsewhere> {
+pub(crate) fn elsewhere_of(placements: &[crate::entities::replica::Replica]) -> Option<Elsewhere> {
     let live = placements.iter().filter(|replica| !replica.evicted());
     if live.clone().any(|replica| replica.is_here()) {
         return None;
@@ -1514,7 +1515,7 @@ impl ProjectApi {
                     for service in services {
                         let observed = state.deployer.observe_service(&project, &service).await;
                         let busy = deploying.contains(&service.id);
-                        let placements = crate::platform::replicas::of_service(
+                        let placements = crate::repositories::replicas::of_service(
                             &state.database,
                             &service.id,
                         )
@@ -2082,25 +2083,24 @@ mod tests {
     /// table, a row each.
     #[test]
     fn the_column_counts_copies_rather_than_naming_one() {
-        let replica =
-            |slot, here: bool, address: Option<&str>| crate::platform::replicas::Replica {
-                id: format!("rp-{slot}"),
-                service_id: "svc-1".into(),
-                node_id: (!here).then(|| "nd-elsewhere".to_string()),
-                slot,
-                address: address.map(str::to_string),
-                overlay_port: None,
-                last_error: None,
-                evicted_at: None,
-                reserved_host: None,
-                memory_bytes: None,
-                disk_bytes: None,
-                cpu_millicores: None,
-                following: None,
-                wal_held: None,
-                placed_by: None,
-                placed_note: None,
-            };
+        let replica = |slot, here: bool, address: Option<&str>| crate::entities::replica::Replica {
+            id: format!("rp-{slot}"),
+            service_id: "svc-1".into(),
+            node_id: (!here).then(|| "nd-elsewhere".to_string()),
+            slot,
+            address: address.map(str::to_string),
+            overlay_port: None,
+            last_error: None,
+            evicted_at: None,
+            reserved_host: None,
+            memory_bytes: None,
+            disk_bytes: None,
+            cpu_millicores: None,
+            following: None,
+            wal_held: None,
+            placed_by: None,
+            placed_note: None,
+        };
 
         // The ordinary case: one copy, here, with an address the page
         // no longer shows.
@@ -2209,12 +2209,12 @@ mod tests {
             .expect("query")
             .pop()
             .expect("made");
-        let replica = crate::platform::replicas::ensure_here(&console.database, &service.id, 1)
+        let replica = crate::repositories::replicas::ensure_here(&console.database, &service.id, 1)
             .await
             .expect("a copy")
             .pop()
             .expect("one");
-        crate::platform::replicas::set_last_error(
+        crate::repositories::replicas::set_last_error(
             &console.database,
             &replica.id,
             Some("it started and exited 1"),
@@ -2293,7 +2293,7 @@ mod tests {
         // A guard that covers one of two functions producing the same
         // kind of value is a guard that will be right until somebody
         // touches the other one.
-        let replica = |address: Option<&str>| crate::platform::replicas::Replica {
+        let replica = |address: Option<&str>| crate::entities::replica::Replica {
             id: "rp-1".into(),
             service_id: "svc-1".into(),
             node_id: Some("nd-far".into()),
@@ -2311,16 +2311,16 @@ mod tests {
             placed_by: None,
             placed_note: None,
         };
-        let failed = crate::platform::replicas::Replica {
+        let failed = crate::entities::replica::Replica {
             last_error: Some("it exited 1".into()),
             ..replica(None)
         };
-        let evicted = crate::platform::replicas::Replica {
+        let evicted = crate::entities::replica::Replica {
             evicted_at: Some(1),
             ..replica(None)
         };
 
-        let not_following = crate::platform::replicas::Replica {
+        let not_following = crate::entities::replica::Replica {
             following: Some(false),
             ..replica(Some("10.42.1.5"))
         };

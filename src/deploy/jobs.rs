@@ -47,9 +47,9 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 use wabot::prelude::*;
 
-use crate::platform::replicas;
 use crate::repositories::projects;
 use crate::repositories::releases;
+use crate::repositories::replicas;
 use crate::repositories::services;
 
 /// Bring one service's container in line with its rows.

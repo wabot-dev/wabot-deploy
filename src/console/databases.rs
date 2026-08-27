@@ -23,7 +23,6 @@ use super::language::t;
 use super::shell::{Area, Frame};
 use super::{layout, ConsoleState};
 use crate::platform::databases::Database;
-use crate::platform::replicas;
 use crate::policies::access;
 use crate::policies::postgres;
 use crate::policies::presets;
@@ -680,7 +679,7 @@ pub fn window_card<'a>(
 
 pub fn database_card<'a>(
     row: &'a Database,
-    replicas: &'a [replicas::Replica],
+    replicas: &'a [crate::entities::replica::Replica],
     address: Option<String>,
     memory_limit: Option<u64>,
     // Every name it answers to, from `deploy::certificate_names` — the same
@@ -1196,7 +1195,7 @@ mod tests {
             Some("orders.db-test.node.example")
         );
 
-        let replicas = crate::platform::replicas::of_service(&database, &service.id)
+        let replicas = crate::repositories::replicas::of_service(&database, &service.id)
             .await
             .expect("replicas");
         let card = database_card(
@@ -1285,7 +1284,7 @@ mod tests {
             &service,
         )
         .await;
-        let replicas = crate::platform::replicas::of_service(&database, &service.id)
+        let replicas = crate::repositories::replicas::of_service(&database, &service.id)
             .await
             .expect("replicas");
         let address = Some("10.42.2.200".to_string());

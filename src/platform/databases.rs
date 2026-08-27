@@ -240,8 +240,8 @@ pub async fn create(
     // The address the connection string names. Allocated now rather
     // than at the first deployment, because the page shows it before
     // anything has started.
-    for replica in super::replicas::of_service(database, &service.id).await? {
-        super::replicas::reserve_host(database, project_id, &replica.id).await?;
+    for replica in crate::repositories::replicas::of_service(database, &service.id).await? {
+        crate::repositories::replicas::reserve_host(database, project_id, &replica.id).await?;
     }
 
     // Read back: the row carries the kind and the ceiling that were
@@ -337,7 +337,7 @@ pub async fn dispatch(
     let running = crate::repositories::services::find(database, &service.id)
         .await?
         .map_or(service.desired_state, |row| row.desired_state);
-    let placements = super::replicas::of_service(database, &service.id).await?;
+    let placements = crate::repositories::replicas::of_service(database, &service.id).await?;
 
     // Which node holds which slots. A node holding two copies is told
     // about both in one instruction, because the instruction is the
@@ -393,7 +393,7 @@ pub async fn dispatch(
                 }) else {
                     continue;
                 };
-                let _ = super::replicas::set_last_error(
+                let _ = crate::repositories::replicas::set_last_error(
                     database,
                     &replica.id,
                     Some("that node has not agreed to keep data for this one"),
@@ -666,7 +666,7 @@ pub async fn withdraw(
     )?;
 
     let mut sent = 0;
-    for node_id in super::replicas::of_service(database, &service.id)
+    for node_id in crate::repositories::replicas::of_service(database, &service.id)
         .await?
         .into_iter()
         .filter(|replica| !replica.evicted())
@@ -803,8 +803,9 @@ fn decode(row: &Row<'_>) -> wabot::sqlite::rusqlite::Result<Database> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::platform::{replicas, volumes};
+    use crate::platform::volumes;
     use crate::repositories::ports;
+    use crate::repositories::replicas;
     use crate::repositories::services;
 
     async fn project() -> (SqliteDatabase, String) {
@@ -927,12 +928,12 @@ mod tests {
         let (service, _) = create(&database, &project_id, "orders", "17", 256 * 1024 * 1024)
             .await
             .expect("created");
-        let here = super::super::replicas::of_service(&database, &service.id)
+        let here = crate::repositories::replicas::of_service(&database, &service.id)
             .await
             .expect("replicas")
             .pop()
             .expect("the primary");
-        super::super::replicas::ensure_overlay_port(&database, &here.id)
+        crate::repositories::replicas::ensure_overlay_port(&database, &here.id)
             .await
             .expect("port");
 

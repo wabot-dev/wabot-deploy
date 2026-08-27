@@ -6,8 +6,8 @@ use crate::config::Config;
 use crate::deploy::Deployer;
 use crate::entities::project::Project;
 use crate::entities::service::Service;
-use crate::platform::replicas;
 use crate::policies::quotas;
+use crate::repositories::replicas;
 use wabot::prelude::Container;
 
 /// Where copies added by the count control go.
@@ -181,7 +181,7 @@ async fn resize(
     on: &Placement,
 ) -> Result<BTreeSet<String>, String> {
     let service_id = &service.id;
-    let placements = crate::platform::replicas::of_service(database, service_id)
+    let placements = crate::repositories::replicas::of_service(database, service_id)
         .await
         .map_err(|error| error.to_string())?;
 
@@ -219,7 +219,7 @@ async fn resize(
                     .forget_replica(project, service, replica)
                     .await
                     .map_err(|error| error.to_string())?,
-                false => crate::platform::replicas::remove(database, &replica.id)
+                false => crate::repositories::replicas::remove(database, &replica.id)
                     .await
                     .map_err(|error| error.to_string())?,
             }
@@ -231,7 +231,7 @@ async fn resize(
     // `1..=wanted` would put slot 2 back and undo the removal that
     // just happened — which is exactly what it did.
     let before: std::collections::BTreeSet<String> =
-        crate::platform::replicas::of_service(database, service_id)
+        crate::repositories::replicas::of_service(database, service_id)
             .await
             .map_err(|error| error.to_string())?
             .into_iter()
@@ -240,9 +240,14 @@ async fn resize(
 
     match on {
         Placement::Named(node) => {
-            crate::platform::replicas::ensure_count(database, service_id, wanted, node.as_deref())
-                .await
-                .map_err(|error| error.to_string())?;
+            crate::repositories::replicas::ensure_count(
+                database,
+                service_id,
+                wanted,
+                node.as_deref(),
+            )
+            .await
+            .map_err(|error| error.to_string())?;
         }
         Placement::Anywhere => {
             // Gathered once, and the copies added inside the loop are
@@ -259,12 +264,12 @@ async fn resize(
                 spread_required: service.kind.is_managed(),
             };
             let service_id_owned = service_id.clone();
-            crate::platform::replicas::ensure_count_where(
+            crate::repositories::replicas::ensure_count_where(
                 database,
                 service_id,
                 wanted,
                 |existing| {
-                    let taken: Vec<&crate::platform::replicas::Replica> = existing
+                    let taken: Vec<&crate::entities::replica::Replica> = existing
                         .iter()
                         .filter(|replica| replica.service_id == service_id_owned)
                         .filter(|replica| !replica.evicted())
@@ -283,7 +288,7 @@ async fn resize(
                         .collect();
                     match crate::deploy::planner::choose(&updated, want) {
                         crate::deploy::planner::Choice::Chosen { node, why } => {
-                            Ok((node, crate::platform::replicas::Placed::Planner, Some(why)))
+                            Ok((node, crate::entities::replica::Placed::Planner, Some(why)))
                         }
                         crate::deploy::planner::Choice::Nowhere(reason) => Err(reason),
                     }
@@ -295,13 +300,15 @@ async fn resize(
     }
 
     // Which machines are newly holding one, so the caller tells them.
-    Ok(crate::platform::replicas::of_service(database, service_id)
-        .await
-        .map_err(|error| error.to_string())?
-        .into_iter()
-        .filter_map(|replica| replica.node_id)
-        .filter(|node| !before.contains(node))
-        .collect())
+    Ok(
+        crate::repositories::replicas::of_service(database, service_id)
+            .await
+            .map_err(|error| error.to_string())?
+            .into_iter()
+            .filter_map(|replica| replica.node_id)
+            .filter(|node| !before.contains(node))
+            .collect(),
+    )
 }
 
 /// Ask every node holding a replica of this service to run it, and
@@ -318,7 +325,7 @@ async fn dispatch(
     touched: BTreeSet<String>,
 ) -> Result<(), String> {
     let (database, deployer, container) = (on.database, on.deployer, on.container);
-    let placements = crate::platform::replicas::of_service(database, &service.id)
+    let placements = crate::repositories::replicas::of_service(database, &service.id)
         .await
         .map_err(|error| error.to_string())?;
 
@@ -520,7 +527,7 @@ async fn send_there(
 pub(crate) async fn dispatch_edges(
     deployer: &Deployer,
     service: &Service,
-    _placements: &[crate::platform::replicas::Replica],
+    _placements: &[crate::entities::replica::Replica],
 ) -> Result<(), String> {
     deployer.tell_edges(service).await;
     // And this node's own, whether or not it was chosen: the choice

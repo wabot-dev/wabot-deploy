@@ -40,8 +40,8 @@ use crate::repositories::services;
 /// halves it used to be: the page and the router have to derive the
 /// same address, and a second derivation is a second answer.
 pub fn upstreams_of(
-    here: &[crate::platform::replicas::Replica],
-    elsewhere: &[crate::platform::replicas::Replica],
+    here: &[crate::entities::replica::Replica],
+    elsewhere: &[crate::entities::replica::Replica],
     nodes: &[crate::network::Node],
     service_id: &str,
     container_port: u16,
@@ -105,13 +105,13 @@ pub async fn sync(
     let services = services::all(database, None).await?;
     // Addresses are per replica now: a service is *n* running copies,
     // and which of them a name reaches is the route table's question.
-    let placements = crate::platform::replicas::here(database).await?;
+    let placements = crate::repositories::replicas::here(database).await?;
     // And the copies that are *not* here: a name this node answers for
     // reaches every copy of its service, wherever it runs, or placing
     // one elsewhere would quietly halve what the name serves rather
     // than doubling it.
     let nodes = crate::network::all(database).await.unwrap_or_default();
-    let elsewhere = crate::platform::replicas::elsewhere(database).await?;
+    let elsewhere = crate::repositories::replicas::elsewhere(database).await?;
     // Which of this node's own names it was asked to answer for.
     //
     // It used to answer for all of them, automatically, because the
@@ -295,10 +295,10 @@ mod tests {
         service_id: &str,
         address: Option<&str>,
     ) {
-        let replicas = crate::platform::replicas::of_service(database, service_id)
+        let replicas = crate::repositories::replicas::of_service(database, service_id)
             .await
             .expect("replicas");
-        crate::platform::replicas::set_address(database, &replicas[0].id, address)
+        crate::repositories::replicas::set_address(database, &replicas[0].id, address)
             .await
             .expect("address");
     }
@@ -508,11 +508,11 @@ mod tests {
         crate::repositories::ports::set_hostname(&database, &port.id, Some(name))
             .await
             .expect("named");
-        let replica = crate::platform::replicas::in_slot(&database, &service.id, 1)
+        let replica = crate::repositories::replicas::in_slot(&database, &service.id, 1)
             .await
             .expect("query")
             .expect("its primary");
-        crate::platform::replicas::set_address(&database, &replica.id, Some("10.42.2.200"))
+        crate::repositories::replicas::set_address(&database, &replica.id, Some("10.42.2.200"))
             .await
             .expect("address");
 

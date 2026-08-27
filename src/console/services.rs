@@ -354,12 +354,13 @@ impl ServicePages {
             .await;
         // The address and the reason live on the copy that runs here —
         // a service is *n* of them now, and this page still shows one.
-        let here = crate::platform::replicas::here_for(&self.state.database, &service.id).await?;
+        let here =
+            crate::repositories::replicas::here_for(&self.state.database, &service.id).await?;
         // Where every copy of it runs, and the nodes it could run on.
         // Both only matter when this node is the one that decides — a
         // service that arrived from elsewhere is placed from there.
         let placements =
-            crate::platform::replicas::of_service(&self.state.database, &service.id).await?;
+            crate::repositories::replicas::of_service(&self.state.database, &service.id).await?;
         let nodes = crate::network::all(&self.state.database).await?;
         // Who could answer for a name, and who was asked to. Only a
         // node with an address the world can dial: sending a hostname
@@ -951,8 +952,8 @@ impl ServicePages {
 
         // Every copy, read once — this used to ask twice for the same
         // rows to answer two questions about them.
-        let copies: Vec<crate::platform::replicas::Replica> =
-            crate::platform::replicas::of_service(&self.state.database, &service.id)
+        let copies: Vec<crate::entities::replica::Replica> =
+            crate::repositories::replicas::of_service(&self.state.database, &service.id)
                 .await?
                 .into_iter()
                 .filter(|replica| !replica.evicted())
@@ -1006,7 +1007,7 @@ impl ServicePages {
                 .map(|(_, node)| node.clone())
         });
         let container = slot.filter(|_| holder.is_none()).map(|slot| {
-            crate::platform::replicas::container_id_for(&project.slug, &service.slug, slot)
+            crate::entities::replica::container_id_for(&project.slug, &service.slug, slot)
         });
         // Asked for now, and the refusal is the page's to print: a node
         // with no overlay session, a copy that has written nothing, a
@@ -1493,7 +1494,7 @@ impl ServicePages {
         // because the form that changes them is on this page now — the
         // table that shows what they are doing stays on the service's own.
         let placements =
-            crate::platform::replicas::of_service(&self.state.database, &service.id).await?;
+            crate::repositories::replicas::of_service(&self.state.database, &service.id).await?;
         // Which copies the edge stopped sending to, for the placement
         // table below.
         let silent = self.state.deployer.not_answering(&service).await;
@@ -2869,7 +2870,7 @@ async fn returning_to(request: Request, fallback: &str) -> String {
 /// back, not its cgroup — so this says nothing rather than guessing, which
 /// is the same rule the log page follows about a copy it cannot read.
 fn running_card<'a>(
-    placements: &'a [crate::platform::replicas::Replica],
+    placements: &'a [crate::entities::replica::Replica],
     nodes: &'a [crate::network::Node],
     queued: &'a [String],
     stopped: bool,
@@ -2879,7 +2880,7 @@ fn running_card<'a>(
     // next reader would say with a sigh.
     at: &'a Running<'a>,
 ) -> impl Renderable + 'a {
-    let live: Vec<&crate::platform::replicas::Replica> =
+    let live: Vec<&crate::entities::replica::Replica> =
         placements.iter().filter(|r| !r.evicted()).collect();
     // This node's own, which is the figure somebody sizing this machine
     // wants — a total across the network would answer a question nobody
@@ -3007,11 +3008,11 @@ fn running_card<'a>(
 /// for a copy on another machine.
 fn disks_card<'a>(
     volumes: &'a [crate::platform::volumes::Volume],
-    placements: &'a [crate::platform::replicas::Replica],
+    placements: &'a [crate::entities::replica::Replica],
     nodes: &'a [crate::network::Node],
     at: &'a Running<'a>,
 ) -> impl Renderable + 'a {
-    let live: Vec<&crate::platform::replicas::Replica> =
+    let live: Vec<&crate::entities::replica::Replica> =
         placements.iter().filter(|r| !r.evicted()).collect();
     let paths = volumes
         .iter()
@@ -3080,7 +3081,7 @@ struct Running<'a> {
 /// What a replica's node is called, for a table that reads rather than
 /// selects.
 fn node_name<'a>(
-    replica: &'a crate::platform::replicas::Replica,
+    replica: &'a crate::entities::replica::Replica,
     nodes: &'a [crate::network::Node],
 ) -> String {
     match &replica.node_id {
@@ -3107,7 +3108,7 @@ fn node_name<'a>(
 fn placement_card<'a>(
     project: &'a crate::entities::project::Project,
     service: &'a crate::entities::service::Service,
-    placements: &'a [crate::platform::replicas::Replica],
+    placements: &'a [crate::entities::replica::Replica],
     nodes: &'a [crate::network::Node],
     // The copies out of the rotation, by replica id — see `Running`.
     silent: &'a [String],
@@ -3203,7 +3204,7 @@ fn placement_card<'a>(
 /// the column agree without anything translating between them.
 fn node_option<'a>(
     node: &'a crate::network::Node,
-    replica: &'a crate::platform::replicas::Replica,
+    replica: &'a crate::entities::replica::Replica,
 ) -> impl Renderable + 'a {
     let value = match node.is_self {
         true => String::new(),
@@ -3340,7 +3341,7 @@ fn served_by_form<'a>(
 /// running" on load and "waiting for that node" two seconds later, because
 /// the decision had been made twice and only one copy was corrected.
 fn placement_state<'a>(
-    replica: &'a crate::platform::replicas::Replica,
+    replica: &'a crate::entities::replica::Replica,
     stopped: bool,
     queued: bool,
     not_answering: bool,
@@ -3386,7 +3387,7 @@ fn placement_state<'a>(
 fn from_elsewhere_card<'a>(
     project: &'a crate::entities::project::Project,
     service: &'a crate::entities::service::Service,
-    mine: &'a [crate::platform::replicas::Replica],
+    mine: &'a [crate::entities::replica::Replica],
     evicted: bool,
 ) -> impl Renderable + 'a {
     rsx! {
@@ -3528,7 +3529,7 @@ impl ServiceApi {
         // Only a copy that runs here, and only one that exists. Reading
         // a log by slot number alone would let a query string name a
         // container in another project.
-        let holds = crate::platform::replicas::of_service(&self.state.database, &service.id)
+        let holds = crate::repositories::replicas::of_service(&self.state.database, &service.id)
             .await
             .unwrap_or_default()
             .into_iter()
@@ -3538,7 +3539,7 @@ impl ServiceApi {
         }
 
         let container =
-            crate::platform::replicas::container_id_for(&project.slug, &service.slug, slot);
+            crate::entities::replica::container_id_for(&project.slug, &service.slug, slot);
         let data_dir = self.state.config.node.data_dir.clone();
         let stream = async_stream::stream! {
             let mut at = from;
@@ -4716,7 +4717,7 @@ impl ServiceApi {
         };
 
         let placements =
-            crate::platform::replicas::of_service(&self.state.database, &service.id).await?;
+            crate::repositories::replicas::of_service(&self.state.database, &service.id).await?;
         if let Err(reason) = crate::commands::set_service_placement::dispatch_edges(
             &self.state.deployer,
             &service,
@@ -4958,7 +4959,7 @@ mod tests {
     /// on this machine, in the same state, correctly said "not running".
     #[test]
     fn a_copy_that_is_not_meant_to_run_is_not_a_copy_we_are_waiting_for() {
-        let replica = crate::platform::replicas::Replica {
+        let replica = crate::entities::replica::Replica {
             id: "rp-1".into(),
             service_id: "svc-1".into(),
             node_id: Some("nd-far".into()),
@@ -5180,7 +5181,7 @@ mod tests {
     /// them one.
     #[test]
     fn what_the_page_paints_is_what_the_stream_sends() {
-        let replica = crate::platform::replicas::Replica {
+        let replica = crate::entities::replica::Replica {
             id: "rp-1".into(),
             service_id: "svc-1".into(),
             node_id: Some("nd-far".into()),
@@ -5207,7 +5208,7 @@ mod tests {
         // for a copy that reported one, because the question it answers
         // is about a process that is up and not replying.
         for address in [None, Some("10.42.1.5".to_string())] {
-            let replica = crate::platform::replicas::Replica {
+            let replica = crate::entities::replica::Replica {
                 address,
                 ..replica.clone()
             };
@@ -5269,7 +5270,7 @@ mod tests {
         let console = Console::new().await;
         let cookie = console.signed_in().await;
         let service = placed_service(&console, &cookie).await;
-        crate::platform::replicas::ensure_here(&console.database, &service.id, 1)
+        crate::repositories::replicas::ensure_here(&console.database, &service.id, 1)
             .await
             .expect("a copy here");
 
@@ -5301,7 +5302,7 @@ mod tests {
         let console = Console::new().await;
         let cookie = console.signed_in().await;
         let service = placed_service(&console, &cookie).await;
-        crate::platform::replicas::ensure_here(&console.database, &service.id, 2)
+        crate::repositories::replicas::ensure_here(&console.database, &service.id, 2)
             .await
             .expect("two copies here");
 
@@ -5354,11 +5355,11 @@ mod tests {
         let service = placed_service(&console, &cookie).await;
         // The copy this service already has, sent away — which is the
         // real shape of it: a service with one copy, running elsewhere.
-        let here = crate::platform::replicas::of_service(&console.database, &service.id)
+        let here = crate::repositories::replicas::of_service(&console.database, &service.id)
             .await
             .expect("copies");
         for replica in &here {
-            crate::platform::replicas::move_to(
+            crate::repositories::replicas::move_to(
                 &console.database,
                 &replica.id,
                 Some("nd-elsewhere"),
@@ -5401,7 +5402,7 @@ mod tests {
         let console = Console::new().await;
         let cookie = console.signed_in().await;
         let service = placed_service(&console, &cookie).await;
-        crate::platform::replicas::ensure_here(&console.database, &service.id, 1)
+        crate::repositories::replicas::ensure_here(&console.database, &service.id, 1)
             .await
             .expect("a copy here");
 
@@ -5543,7 +5544,7 @@ mod tests {
         let service = placed_service(&console, &cookie).await;
 
         // #2 thrown out where it ran, #3 alive and here.
-        let two = crate::platform::replicas::place(
+        let two = crate::repositories::replicas::place(
             &console.database,
             &service.id,
             Some("nd-elsewhere1"),
@@ -5551,10 +5552,10 @@ mod tests {
         )
         .await
         .expect("placed");
-        crate::platform::replicas::evict(&console.database, &two.id)
+        crate::repositories::replicas::evict(&console.database, &two.id)
             .await
             .expect("evicted");
-        crate::platform::replicas::place(&console.database, &service.id, None, 3)
+        crate::repositories::replicas::place(&console.database, &service.id, None, 3)
             .await
             .expect("placed");
 
@@ -5567,12 +5568,13 @@ mod tests {
             .await
             .assert_status(StatusCode::SEE_OTHER);
 
-        let left: Vec<u32> = crate::platform::replicas::of_service(&console.database, &service.id)
-            .await
-            .expect("replicas")
-            .into_iter()
-            .map(|replica| replica.slot)
-            .collect();
+        let left: Vec<u32> =
+            crate::repositories::replicas::of_service(&console.database, &service.id)
+                .await
+                .expect("replicas")
+                .into_iter()
+                .map(|replica| replica.slot)
+                .collect();
         assert_eq!(
             left,
             vec![1, 3],
@@ -5627,7 +5629,7 @@ mod tests {
             .await
             .assert_status(StatusCode::SEE_OTHER);
 
-        let placements = crate::platform::replicas::of_service(&console.database, &service.id)
+        let placements = crate::repositories::replicas::of_service(&console.database, &service.id)
             .await
             .expect("replicas");
         assert!(
@@ -5666,7 +5668,7 @@ mod tests {
         let location = response.header("location").unwrap_or_default();
         assert!(location.contains("error="), "{location}");
         assert!(
-            crate::platform::replicas::of_service(&console.database, &service.id)
+            crate::repositories::replicas::of_service(&console.database, &service.id)
                 .await
                 .expect("replicas")
                 .iter()
@@ -5696,7 +5698,7 @@ mod tests {
 
         assert_eq!(response.header("location"), Some("/"));
         assert!(
-            crate::platform::replicas::of_service(&console.database, &service.id)
+            crate::repositories::replicas::of_service(&console.database, &service.id)
                 .await
                 .expect("replicas")
                 .iter()
@@ -5758,7 +5760,7 @@ mod tests {
             .await
             .assert_status(StatusCode::SEE_OTHER);
 
-        let placements = crate::platform::replicas::of_service(&console.database, &service.id)
+        let placements = crate::repositories::replicas::of_service(&console.database, &service.id)
             .await
             .expect("replicas");
         assert_eq!(placements.len(), 2);
@@ -5852,16 +5854,16 @@ mod tests {
             .await
             .assert_status(StatusCode::SEE_OTHER);
 
-        let placements = crate::platform::replicas::of_service(&console.database, &service.id)
+        let placements = crate::repositories::replicas::of_service(&console.database, &service.id)
             .await
             .expect("replicas");
         assert_eq!(placements.len(), 3);
 
         // Slot 1 was already here and placed by a person; the two the
         // node added are the planner's, on the two other machines.
-        let added: Vec<&crate::platform::replicas::Replica> = placements
+        let added: Vec<&crate::entities::replica::Replica> = placements
             .iter()
-            .filter(|replica| replica.placed_by == Some(crate::platform::replicas::Placed::Planner))
+            .filter(|replica| replica.placed_by == Some(crate::entities::replica::Placed::Planner))
             .collect();
         assert_eq!(added.len(), 2, "{placements:?}");
 
@@ -5964,7 +5966,7 @@ mod tests {
             .await
             .assert_status(StatusCode::SEE_OTHER);
 
-        let placements = crate::platform::replicas::of_service(&console.database, &service.id)
+        let placements = crate::repositories::replicas::of_service(&console.database, &service.id)
             .await
             .expect("replicas");
         assert_eq!(
@@ -6099,7 +6101,7 @@ mod tests {
         assert!(location.contains("nowhere"), "{location}");
 
         assert_eq!(
-            crate::platform::replicas::of_service(&console.database, &service.id)
+            crate::repositories::replicas::of_service(&console.database, &service.id)
                 .await
                 .expect("replicas")
                 .len(),
@@ -6325,7 +6327,7 @@ mod tests {
             .await
             .assert_status(StatusCode::SEE_OTHER);
 
-        let placements = crate::platform::replicas::of_service(&console.database, &service.id)
+        let placements = crate::repositories::replicas::of_service(&console.database, &service.id)
             .await
             .expect("replicas");
         assert!(placements.iter().all(|replica| replica.is_here()));
@@ -6360,9 +6362,14 @@ mod tests {
         let console = Console::new().await;
         let cookie = console.signed_in().await;
         let service = placed_service(&console, &cookie).await;
-        crate::platform::replicas::place(&console.database, &service.id, Some("nd-elsewhere1"), 2)
-            .await
-            .expect("placed");
+        crate::repositories::replicas::place(
+            &console.database,
+            &service.id,
+            Some("nd-elsewhere1"),
+            2,
+        )
+        .await
+        .expect("placed");
 
         let response = console
             .harness
@@ -6375,7 +6382,7 @@ mod tests {
         let location = response.header("location").unwrap_or_default();
         assert!(!location.contains("error="), "{location}");
         assert_eq!(
-            crate::platform::replicas::of_service(&console.database, &service.id)
+            crate::repositories::replicas::of_service(&console.database, &service.id)
                 .await
                 .expect("replicas")
                 .len(),
@@ -6549,7 +6556,7 @@ mod tests {
             .expect("query")
             .pop()
             .expect("one service");
-        let failure = crate::platform::replicas::of_service(&console.database, &stored.id)
+        let failure = crate::repositories::replicas::of_service(&console.database, &stored.id)
             .await
             .expect("replicas")
             .into_iter()
@@ -6561,7 +6568,7 @@ mod tests {
             "the reason names the runtime: {failure}"
         );
         assert!(
-            crate::platform::replicas::of_service(&console.database, &stored.id)
+            crate::repositories::replicas::of_service(&console.database, &stored.id)
                 .await
                 .expect("replicas")
                 .into_iter()
@@ -6612,7 +6619,7 @@ mod tests {
                 .pop()
                 .expect("one service");
             if let Some(found) =
-                crate::platform::replicas::of_service(&console.database, &stored.id)
+                crate::repositories::replicas::of_service(&console.database, &stored.id)
                     .await
                     .expect("replicas")
                     .into_iter()
@@ -6708,7 +6715,7 @@ mod tests {
             .pop()
             .expect("one service");
         assert!(
-            crate::platform::replicas::of_service(&console.database, &stored.id)
+            crate::repositories::replicas::of_service(&console.database, &stored.id)
                 .await
                 .expect("replicas")
                 .into_iter()
@@ -7810,7 +7817,7 @@ mod tests {
         )
         .await
         .expect("database");
-        crate::platform::replicas::ensure_here(&console.database, &database.id, 2)
+        crate::repositories::replicas::ensure_here(&console.database, &database.id, 2)
             .await
             .expect("a second copy");
 

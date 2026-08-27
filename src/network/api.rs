@@ -841,7 +841,7 @@ impl NetworkApi {
         }
 
         let container =
-            crate::platform::replicas::container_id_for(&project.slug, &service.slug, asked.slot);
+            crate::entities::replica::container_id_for(&project.slug, &service.slug, asked.slot);
         let data_dir = &self.config.node.data_dir;
         // The whole kept history, or the live file. The same two readings
         // the local page offers, asked for the same way.
@@ -1447,7 +1447,7 @@ async fn record(
         return Ok(false);
     };
 
-    let replica = crate::platform::replicas::in_slot(database, &service.id, state.slot)
+    let replica = crate::repositories::replicas::in_slot(database, &service.id, state.slot)
         .await
         .map_err(|error| super::NetworkError::Refused(error.to_string()))?;
     // Only what this node placed *there*. A row that has since been
@@ -1489,12 +1489,12 @@ async fn record(
     // exactly the storm this function was fixed for earlier today, and it
     // would come back through a field nobody thought of as a decision.
     if !state.evicted && replica.memory_bytes != state.memory {
-        crate::platform::replicas::set_memory(database, &replica.id, state.memory)
+        crate::repositories::replicas::set_memory(database, &replica.id, state.memory)
             .await
             .map_err(|error| super::NetworkError::Refused(error.to_string()))?;
     }
     if !state.evicted && replica.disk_bytes != state.disk {
-        crate::platform::replicas::set_disk(database, &replica.id, state.disk)
+        crate::repositories::replicas::set_disk(database, &replica.id, state.disk)
             .await
             .map_err(|error| super::NetworkError::Refused(error.to_string()))?;
     }
@@ -1503,7 +1503,7 @@ async fn record(
     // sample — and blanking the column for it would read as "it stopped
     // using any" rather than "nobody has measured since".
     if !state.evicted && state.cpu.is_some() && replica.cpu_millicores != state.cpu {
-        crate::platform::replicas::set_cpu(database, &replica.id, state.cpu)
+        crate::repositories::replicas::set_cpu(database, &replica.id, state.cpu)
             .await
             .map_err(|error| super::NetworkError::Refused(error.to_string()))?;
     }
@@ -1514,14 +1514,14 @@ async fn record(
 
     let write = async {
         if state.evicted {
-            crate::platform::replicas::evict(database, &replica.id).await?;
+            crate::repositories::replicas::evict(database, &replica.id).await?;
             return Ok::<(), crate::platform::PlatformError>(());
         }
-        crate::platform::replicas::set_address(database, &replica.id, state.address.as_deref())
+        crate::repositories::replicas::set_address(database, &replica.id, state.address.as_deref())
             .await?;
-        crate::platform::replicas::set_overlay_port(database, &replica.id, state.overlay_port)
+        crate::repositories::replicas::set_overlay_port(database, &replica.id, state.overlay_port)
             .await?;
-        crate::platform::replicas::set_last_error(database, &replica.id, state.error.as_deref())
+        crate::repositories::replicas::set_last_error(database, &replica.id, state.error.as_deref())
             .await
     };
     write
@@ -1578,7 +1578,7 @@ async fn unclaimed(
             continue;
         }
 
-        let claimed = crate::platform::replicas::in_slot(database, &service.id, state.slot)
+        let claimed = crate::repositories::replicas::in_slot(database, &service.id, state.slot)
             .await
             .ok()
             .flatten()
@@ -2482,7 +2482,7 @@ mod tests {
             .await
             .assert_ok();
 
-        let after = crate::platform::replicas::in_slot(&authority.database, &placed, 2)
+        let after = crate::repositories::replicas::in_slot(&authority.database, &placed, 2)
             .await
             .expect("query")
             .expect("there");
@@ -2912,7 +2912,7 @@ mod tests {
             .await
             .assert_ok();
 
-        let after = crate::platform::replicas::in_slot(&authority.database, &placed, 2)
+        let after = crate::repositories::replicas::in_slot(&authority.database, &placed, 2)
             .await
             .expect("query")
             .expect("there");
@@ -2936,11 +2936,11 @@ mod tests {
             .assert_ok();
         let placed = placed_there(&authority, 2).await;
 
-        let replica = crate::platform::replicas::in_slot(&authority.database, &placed, 2)
+        let replica = crate::repositories::replicas::in_slot(&authority.database, &placed, 2)
             .await
             .expect("query")
             .expect("there");
-        crate::platform::replicas::move_to(&authority.database, &replica.id, None)
+        crate::repositories::replicas::move_to(&authority.database, &replica.id, None)
             .await
             .expect("home");
 
@@ -2957,7 +2957,7 @@ mod tests {
             .await
             .assert_ok();
 
-        let after = crate::platform::replicas::in_slot(&authority.database, &placed, 2)
+        let after = crate::repositories::replicas::in_slot(&authority.database, &placed, 2)
             .await
             .expect("query")
             .expect("there");
@@ -3046,11 +3046,11 @@ mod tests {
 
         // The row goes away, which is what a placement change leaves —
         // and the far node has not been told.
-        let replica = crate::platform::replicas::in_slot(&authority.database, &placed, 2)
+        let replica = crate::repositories::replicas::in_slot(&authority.database, &placed, 2)
             .await
             .expect("query")
             .expect("there");
-        crate::platform::replicas::remove(&authority.database, &replica.id)
+        crate::repositories::replicas::remove(&authority.database, &replica.id)
             .await
             .expect("removed");
 
@@ -3131,7 +3131,7 @@ mod tests {
             "a different figure on its own is not"
         );
 
-        let after = crate::platform::replicas::in_slot(&authority.database, &placed, 2)
+        let after = crate::repositories::replicas::in_slot(&authority.database, &placed, 2)
             .await
             .expect("query")
             .expect("there");
@@ -3184,7 +3184,7 @@ mod tests {
         record(&authority.database, "nd-joining001", &reporting(Some(250)))
             .await
             .expect("recorded");
-        let after = crate::platform::replicas::in_slot(&authority.database, &placed, 2)
+        let after = crate::repositories::replicas::in_slot(&authority.database, &placed, 2)
             .await
             .expect("query")
             .expect("there");
@@ -3201,7 +3201,7 @@ mod tests {
                 .expect("recorded"),
             "and it is still not news"
         );
-        let after = crate::platform::replicas::in_slot(&authority.database, &placed, 2)
+        let after = crate::repositories::replicas::in_slot(&authority.database, &placed, 2)
             .await
             .expect("query")
             .expect("there");
@@ -3269,7 +3269,7 @@ mod tests {
         .run(&authority.database)
         .await
         .expect("service");
-        crate::platform::replicas::place(
+        crate::repositories::replicas::place(
             &authority.database,
             &service.id,
             Some("nd-joining001"),

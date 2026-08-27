@@ -126,7 +126,7 @@ pub async fn of_service(
 /// reported none, so nothing can reach it, and an invented address in
 /// this list is a request that hangs instead of one that fails over.
 pub fn upstreams(
-    placements: &[super::replicas::Replica],
+    placements: &[crate::entities::replica::Replica],
     nodes: &[crate::network::Node],
 ) -> Vec<String> {
     let mut upstreams = Vec::new();
@@ -269,7 +269,7 @@ pub async fn secret_for(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::platform::replicas::Replica;
+    use crate::entities::replica::Replica;
     use crate::repositories::services;
 
     async fn service() -> (SqliteDatabase, String) {

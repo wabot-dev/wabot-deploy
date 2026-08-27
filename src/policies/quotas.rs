@@ -72,7 +72,7 @@ pub async fn charged(database: &SqliteDatabase, tenant_id: &str) -> PlatformResu
     let mut charged = Charged::default();
     for project in projects {
         for service in crate::repositories::services::all(database, Some(&project.id)).await? {
-            let copies = crate::platform::replicas::of_service(database, &service.id)
+            let copies = crate::repositories::replicas::of_service(database, &service.id)
                 .await?
                 .into_iter()
                 .filter(|replica| !replica.evicted())
@@ -275,10 +275,10 @@ mod tests {
             .expect("ceiling");
         // Slot 1 exists already: creating a service places one copy
         // here. Two more, on two other machines.
-        crate::platform::replicas::place(&database, &service.id, Some("nd-elsewhere1"), 2)
+        crate::repositories::replicas::place(&database, &service.id, Some("nd-elsewhere1"), 2)
             .await
             .expect("there");
-        crate::platform::replicas::place(&database, &service.id, Some("nd-elsewhere2"), 3)
+        crate::repositories::replicas::place(&database, &service.id, Some("nd-elsewhere2"), 3)
             .await
             .expect("further");
 
@@ -405,7 +405,7 @@ mod tests {
         crate::repositories::services::set_disk_limit(&database, &service.id, Some(128 * MB))
             .await
             .expect("disk");
-        crate::platform::replicas::place(&database, &service.id, Some("nd-elsewhere1"), 2)
+        crate::repositories::replicas::place(&database, &service.id, Some("nd-elsewhere1"), 2)
             .await
             .expect("a second copy");
 
