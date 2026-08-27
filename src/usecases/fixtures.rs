@@ -13,10 +13,10 @@ pub struct Organisation {
 
 pub async fn organisation() -> Organisation {
     let database = crate::db::open_in_memory().await.expect("open");
-    let acme = crate::platform::tenants::create(&database, "Acme")
+    let acme = crate::repositories::tenants::create(&database, "Acme")
         .await
         .expect("tenant");
-    let globex = crate::platform::tenants::create(&database, "Globex")
+    let globex = crate::repositories::tenants::create(&database, "Globex")
         .await
         .expect("tenant");
 

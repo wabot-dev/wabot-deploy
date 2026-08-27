@@ -1668,7 +1668,8 @@ async fn keep_images(database: &wabot::sqlite::SqliteDatabase, root: &Path) -> V
     for service in &services {
         // What it would actually deploy: the release that is running,
         // or the image on the service when nothing has been pushed.
-        let reference = match crate::platform::releases::of_service(database, &service.id).await {
+        let reference = match crate::repositories::releases::of_service(database, &service.id).await
+        {
             Ok(releases) => releases
                 .into_iter()
                 .find(|release| release.deployed_at.is_some())

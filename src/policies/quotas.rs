@@ -107,7 +107,7 @@ pub async fn rooms_for(
     let Some(tenant_id) = &project.tenant_id else {
         return Ok(None);
     };
-    let Some(tenant) = crate::platform::tenants::find(database, tenant_id).await? else {
+    let Some(tenant) = crate::repositories::tenants::find(database, tenant_id).await? else {
         return Ok(None);
     };
     let charged = charged(database, tenant_id).await?;
@@ -186,7 +186,7 @@ pub async fn admits(
     let Some(tenant_id) = &project.tenant_id else {
         return Ok(None);
     };
-    let Some(tenant) = crate::platform::tenants::find(database, tenant_id).await? else {
+    let Some(tenant) = crate::repositories::tenants::find(database, tenant_id).await? else {
         return Ok(None);
     };
     let charged = charged(database, tenant_id).await?;
@@ -239,7 +239,7 @@ mod tests {
         crate::entities::service::Service,
     ) {
         let database = crate::db::open_in_memory().await.expect("open");
-        let tenant = crate::platform::tenants::create(&database, "Acme")
+        let tenant = crate::repositories::tenants::create(&database, "Acme")
             .await
             .expect("tenant");
         let project =
@@ -255,7 +255,7 @@ mod tests {
         .run(&database)
         .await
         .expect("service");
-        crate::platform::tenants::set_quota(&database, &tenant.id, Some(512 * MB), None, None)
+        crate::repositories::tenants::set_quota(&database, &tenant.id, Some(512 * MB), None, None)
             .await
             .expect("quota");
         (database, project, service)
@@ -303,7 +303,7 @@ mod tests {
     async fn a_tenant_without_a_quota_is_refused_nothing() {
         let (database, project, service) = tenant_with_a_service().await;
         let tenant_id = project.tenant_id.clone().expect("a tenant");
-        crate::platform::tenants::set_quota(&database, &tenant_id, None, None, None)
+        crate::repositories::tenants::set_quota(&database, &tenant_id, None, None, None)
             .await
             .expect("lifted");
 
@@ -395,7 +395,7 @@ mod tests {
     async fn disk_is_charged_against_the_budget_even_though_nothing_enforces_it() {
         let (database, project, service) = tenant_with_a_service().await;
         let tenant_id = project.tenant_id.clone().expect("a tenant");
-        crate::platform::tenants::set_quota(&database, &tenant_id, None, None, Some(512 * MB))
+        crate::repositories::tenants::set_quota(&database, &tenant_id, None, None, Some(512 * MB))
             .await
             .expect("a disk budget and nothing else");
         // A quota demands ceilings, so give the one service its own.

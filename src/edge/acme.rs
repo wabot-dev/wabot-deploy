@@ -388,7 +388,7 @@ pub async fn wanted_names(database: &SqliteDatabase, config: &Config) -> Vec<Str
     // browser warning about impersonation rather than one about trust.
     //
     // Found on the node the first time one was given a domain.
-    match crate::platform::tenants::all(database).await {
+    match crate::repositories::tenants::all(database).await {
         Ok(tenants) => names.extend(tenants.into_iter().filter_map(|tenant| tenant.domain)),
         Err(error) => tracing::warn!(%error, "could not read the organisations' names"),
     }
@@ -1393,7 +1393,7 @@ mod tests {
         let mut config = Config::default();
         config.node.domain = Some("node.example.com".into());
 
-        let tenant = crate::platform::tenants::create(&database, "Acme")
+        let tenant = crate::repositories::tenants::create(&database, "Acme")
             .await
             .expect("tenant");
         // Until it has a domain there is nothing to want, and a tenant
@@ -1403,7 +1403,7 @@ mod tests {
             vec!["node.example.com".to_string()]
         );
 
-        crate::platform::tenants::set_domain(&database, &tenant.id, Some("acme.example.com"))
+        crate::repositories::tenants::set_domain(&database, &tenant.id, Some("acme.example.com"))
             .await
             .expect("domain");
         assert_eq!(

@@ -307,10 +307,10 @@ mod tests {
     #[tokio::test]
     async fn a_tenants_administrator_reaches_only_that_tenants_projects() {
         let (database, node_admin, _) = node().await;
-        let tenant = crate::platform::tenants::create(&database, "Acme")
+        let tenant = crate::repositories::tenants::create(&database, "Acme")
             .await
             .expect("tenant");
-        let other = crate::platform::tenants::create(&database, "Globex")
+        let other = crate::repositories::tenants::create(&database, "Globex")
             .await
             .expect("tenant");
 
@@ -377,7 +377,7 @@ mod tests {
     #[tokio::test]
     async fn administering_a_tenant_is_not_administering_the_machine() {
         let (database, node_admin, _) = node().await;
-        let tenant = crate::platform::tenants::create(&database, "Acme")
+        let tenant = crate::repositories::tenants::create(&database, "Acme")
             .await
             .expect("tenant");
         let admin = Account {
@@ -406,7 +406,7 @@ mod tests {
     #[tokio::test]
     async fn a_session_does_not_cross_between_scopes() {
         let (database, node_admin, _) = node().await;
-        let tenant = crate::platform::tenants::create(&database, "Acme")
+        let tenant = crate::repositories::tenants::create(&database, "Acme")
             .await
             .expect("tenant");
         let theirs = Account {

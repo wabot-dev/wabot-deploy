@@ -33,11 +33,12 @@ use std::sync::Arc;
 use wabot::sqlite::SqliteDatabase;
 
 use crate::entities::project::Project;
+use crate::entities::release::Release;
 use crate::platform::databases;
 use crate::platform::ports::{self, Port};
-use crate::platform::releases::{self, Release};
 use crate::platform::replicas::{self, Replica};
 use crate::policies::postgres;
+use crate::repositories::releases;
 
 use crate::entities::service::{DesiredState, Service};
 use crate::platform::volumes::{self, Volume};

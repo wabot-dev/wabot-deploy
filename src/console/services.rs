@@ -14,9 +14,10 @@ use wabot::ui::hypertext::IntoView;
 
 use super::language::t;
 use crate::deploy::dns;
-use crate::platform::{ports, releases};
+use crate::platform::ports;
 use crate::policies::access;
 use crate::repositories::config_history;
+use crate::repositories::releases;
 use crate::repositories::services;
 
 use super::auth::{back_with_error, field, read_form, see_other, signed_in, SessionMiddleware};
@@ -7585,12 +7586,12 @@ mod tests {
         .run(&console.database)
         .await
         .expect("service");
-        crate::platform::releases::record(
+        crate::repositories::releases::record(
             &console.database,
             &made.id,
             "node.example.com/my-api/api:new",
             "sha256:af618a130cbe1ecf7a82570bc32056e00e4c01edba81aca520bc1890fdee5009",
-            crate::platform::releases::Source::Push,
+            crate::entities::release::Source::Push,
         )
         .await
         .expect("release");

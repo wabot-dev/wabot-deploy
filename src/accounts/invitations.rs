@@ -108,7 +108,7 @@ pub async fn create_into(
         ));
     }
     if let Some(id) = &scope {
-        if crate::platform::tenants::find(database, id)
+        if crate::repositories::tenants::find(database, id)
             .await
             .map_err(|error| AccountError::Refused(error.to_string()))?
             .is_none()
@@ -365,7 +365,7 @@ mod tests {
     #[tokio::test]
     async fn a_link_into_an_organisation_makes_somebody_of_it() {
         let (database, admin) = node().await;
-        let tenant = crate::platform::tenants::create(&database, "Acme")
+        let tenant = crate::repositories::tenants::create(&database, "Acme")
             .await
             .expect("tenant");
 
@@ -399,10 +399,10 @@ mod tests {
     #[tokio::test]
     async fn nobody_invites_into_somebody_elses_organisation() {
         let (database, admin) = node().await;
-        let theirs = crate::platform::tenants::create(&database, "Acme")
+        let theirs = crate::repositories::tenants::create(&database, "Acme")
             .await
             .expect("tenant");
-        let rivals = crate::platform::tenants::create(&database, "Globex")
+        let rivals = crate::repositories::tenants::create(&database, "Globex")
             .await
             .expect("tenant");
 

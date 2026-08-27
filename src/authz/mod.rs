@@ -13,7 +13,12 @@ mod tests {
 
     fn persistence() -> Vec<(String, String)> {
         let mut found = Vec::new();
-        for directory in ["src/accounts", "src/platform"] {
+        for directory in [
+            "src/accounts",
+            "src/entities",
+            "src/platform",
+            "src/repositories",
+        ] {
             for entry in fs::read_dir(directory).expect("read the directory") {
                 let path = entry.expect("entry").path();
                 if path.extension().is_some_and(|kind| kind == "rs") {
@@ -34,9 +39,9 @@ mod tests {
         found
     }
 
-    /// The layer that writes rows answers *what the data may be*, which
-    /// is the same answer for every caller. *Who may ask* is the door's
-    /// question, and it differs per door — so a persistence module
+    /// The layers that hold rows answer *what the data may be*, which is
+    /// the same answer for every caller. *Who may ask* is the door's
+    /// question, and it differs per door — so an entity or a repository
     /// reaching for `authz` is one of the two sides about to disagree.
     ///
     /// Written as "never imports `authz`" rather than "never calls
@@ -55,7 +60,7 @@ mod tests {
 
         assert!(
             offenders.is_empty(),
-            "persistence must not authorise, and these reach for authz: {offenders:?}"
+            "entities and repositories must not authorise, and these reach for authz: {offenders:?}"
         );
     }
 }

@@ -1,56 +1,10 @@
-//! An organisation whose projects live on this node.
-//!
-//! ## What it is
-//!
-//! A frontier of ownership: some projects, the people who may reach
-//! them, a domain their names hang off, and a ceiling on what they may
-//! take between them. Everything under it is administered from here, the
-//! same way a service is administered from the node where it was
-//! created.
-//!
-//! ## What it deliberately is not
-//!
-//! A second control plane. There is no replicated database, no lease and
-//! no quorum — `docs/network.md` says authority is directed and there is
-//! no agreement to reach, and a tenant does not change that. Its copies
-//! may run on any node of the network that consented to run them; its
-//! rows live on this one.
-//!
-//! The cost is stated rather than discovered: while this node is down, a
-//! tenant cannot be **changed**. Its containers go on serving — the
-//! overlay, the port mappings and containerd all outlive this process —
-//! and its administration comes back with `restore-node`.
-//!
-//! ## The quota is the reservation
-//!
-//! As everywhere else here, and for the reason
-//! `migrations/0038_cpu_limit.sql` sets out: a request distinct from a
-//! limit buys density at the price of the interesting failures happening
-//! under load, on the fullest machine, at the worst moment. `NULL` is no
-//! quota, which is what every tenant has until somebody decides
-//! otherwise.
+//! Every `SELECT`, `INSERT` and `UPDATE` a [`Tenant`] needs.
 
-use serde::Serialize;
 use wabot::sqlite::rusqlite::{OptionalExtension, Row};
 use wabot::sqlite::SqliteDatabase;
 
-use super::{now_ms, slugify, PlatformError, PlatformResult};
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct Tenant {
-    pub id: String,
-    pub name: String,
-    pub slug: String,
-    /// What its console answers to, and the suffix its service names
-    /// hang off. `None` falls back to this node's own domain, which is
-    /// what every service did before tenants existed.
-    pub domain: Option<String>,
-    /// Bytes, millicores, bytes. `None` is no ceiling on that resource.
-    pub quota_memory: Option<u64>,
-    pub quota_cpu: Option<u32>,
-    pub quota_disk: Option<u64>,
-    pub created_at: i64,
-}
+use crate::entities::tenant::Tenant;
+use crate::platform::{now_ms, slugify, PlatformError, PlatformResult};
 
 const COLUMNS: &str = "\"id\", \"name\", \"slug\", \"domain\", \"quota_memory\", \
                        \"quota_cpu\", \"quota_disk\", \"created_at\"";

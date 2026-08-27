@@ -6,7 +6,7 @@ use crate::console::layout;
 use crate::policies::presets;
 
 use crate::entities::project::Project;
-use crate::platform::tenants::Tenant;
+use crate::entities::tenant::Tenant;
 
 pub struct Organisations<'a> {
     pub cards: &'a [(Tenant, Vec<Project>)],

@@ -31,8 +31,8 @@ use super::auth::{
 };
 use super::shell::{Area, Frame};
 use super::{layout, ConsoleState};
-use crate::platform::tenants;
 use crate::policies::access;
+use crate::repositories::tenants;
 
 #[injectable]
 pub struct TenantPages {

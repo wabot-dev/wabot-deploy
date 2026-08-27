@@ -25,7 +25,8 @@ use wabot::rest::{RestError, RestResult};
 
 use wabot::sqlite::rusqlite::OptionalExtension;
 
-use crate::platform::{images, releases};
+use crate::platform::images;
+use crate::repositories::releases;
 use crate::repositories::services;
 use crate::runtime::content;
 
@@ -311,7 +312,7 @@ async fn release(
             &service.id,
             &pushed,
             digest,
-            releases::Source::Push,
+            crate::entities::release::Source::Push,
         )
         .await?;
         recorded = true;

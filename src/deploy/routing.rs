@@ -257,7 +257,7 @@ pub async fn sync(
     // was written. A tenant renamed, given a different domain or deleted
     // would otherwise keep answering on the name it used to have, with a
     // certificate for it, for as long as the node ran.
-    let tenants = crate::platform::tenants::all(database).await?;
+    let tenants = crate::repositories::tenants::all(database).await?;
     let mut tenanted: Vec<String> = Vec::new();
     for tenant in tenants {
         let Some(domain) = tenant.domain else {

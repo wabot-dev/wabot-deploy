@@ -25,9 +25,7 @@ pub mod images;
 pub mod ports;
 pub mod projects;
 pub mod registry_credentials;
-pub mod releases;
 pub mod replicas;
-pub mod tenants;
 pub mod volumes;
 pub mod wal;
 

@@ -5,5 +5,7 @@
 
 pub mod config_history;
 pub mod projects;
+pub mod releases;
 pub mod services;
+pub mod tenants;
 pub mod tokens;

@@ -141,7 +141,7 @@ impl ConsoleState {
     /// can fix.
     pub(crate) async fn base_url_for(&self, tenant_id: Option<&str>) -> String {
         let theirs = match tenant_id {
-            Some(id) => crate::platform::tenants::find(&self.database, id)
+            Some(id) => crate::repositories::tenants::find(&self.database, id)
                 .await
                 .ok()
                 .flatten()

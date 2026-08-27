@@ -754,10 +754,10 @@ mod tests {
     #[tokio::test]
     async fn a_username_is_taken_once_per_frontier() {
         let database = crate::db::open_in_memory().await.expect("open");
-        let acme = crate::platform::tenants::create(&database, "Acme")
+        let acme = crate::repositories::tenants::create(&database, "Acme")
             .await
             .expect("tenant");
-        let globex = crate::platform::tenants::create(&database, "Globex")
+        let globex = crate::repositories::tenants::create(&database, "Globex")
             .await
             .expect("tenant");
 
@@ -809,7 +809,7 @@ mod tests {
     #[tokio::test]
     async fn signing_in_finds_the_one_in_that_frontier() {
         let database = crate::db::open_in_memory().await.expect("open");
-        let acme = crate::platform::tenants::create(&database, "Acme")
+        let acme = crate::repositories::tenants::create(&database, "Acme")
             .await
             .expect("tenant");
 

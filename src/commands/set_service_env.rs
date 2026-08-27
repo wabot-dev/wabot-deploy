@@ -3,8 +3,8 @@ use std::collections::BTreeMap;
 use wabot::sqlite::SqliteDatabase;
 
 use crate::entities::service::Service;
-use crate::platform::releases;
 use crate::repositories::config_history;
+use crate::repositories::releases;
 use crate::repositories::services;
 
 pub struct SetServiceEnv<'a> {

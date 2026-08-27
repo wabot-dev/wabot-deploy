@@ -33,7 +33,7 @@ pub async fn domain_for(
     node_domain: Option<&str>,
 ) -> Option<String> {
     let theirs = match &project.tenant_id {
-        Some(tenant_id) => super::tenants::find(database, tenant_id)
+        Some(tenant_id) => crate::repositories::tenants::find(database, tenant_id)
             .await
             .ok()
             .flatten()
