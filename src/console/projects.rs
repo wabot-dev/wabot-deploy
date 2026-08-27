@@ -2283,7 +2283,7 @@ mod tests {
 
         for cell in &placed {
             assert!(
-                crate::views::texts::es::lookup(&cell.word).is_some(),
+                crate::views::texts::lookup(&cell.word).is_some(),
                 "no Spanish for the state word {:?}",
                 cell.word
             );
@@ -2339,7 +2339,7 @@ mod tests {
         ];
         for cell in &copies {
             assert!(
-                crate::views::texts::es::lookup(&cell.word).is_some(),
+                crate::views::texts::lookup(&cell.word).is_some(),
                 "no Spanish for the replica word {:?}",
                 cell.word
             );

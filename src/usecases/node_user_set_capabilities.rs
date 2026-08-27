@@ -56,9 +56,7 @@ pub async fn run(
         .filter(|project| project.is_ours())
         .count();
     if !owns && mine > 0 {
-        return Err(format!(
-            "this node owns {mine} project(s) of its own — move or delete them first"
-        ));
+        return Err(crate::views::texts::sentences::still_owns_projects(mine));
     }
     capability::set_owns(database, owns)
         .await

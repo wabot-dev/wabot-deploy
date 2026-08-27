@@ -158,7 +158,7 @@ pub fn word(text: &str) -> &str {
 /// literal at build time. The table lives in `es.rs` because it is
 /// long and mechanical, and this module is neither.
 fn es(english: &str) -> Option<&'static str> {
-    crate::views::texts::es::lookup(english)
+    super::lookup(english)
 }
 
 #[cfg(test)]

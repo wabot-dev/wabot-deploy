@@ -46,7 +46,7 @@ pub async fn run(
         // right.
         if let Ok(Some(held)) = tenants::by_domain(database, &wanted).await {
             if held.id != tenant.id {
-                return Err(format!("{} already answers on that name", held.name));
+                return Err(crate::views::texts::sentences::name_is_taken(&held.name));
             }
         }
     }

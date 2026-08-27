@@ -45,9 +45,8 @@ pub async fn run(
         ));
     }
     if crate::update::github::Version::current() == Some(release.version) {
-        return Err(format!(
-            "{} is what this node is already running",
-            release.tag
+        return Err(crate::views::texts::sentences::already_running(
+            &release.tag,
         ));
     }
     if let Some(existing) = runs::in_flight(database)

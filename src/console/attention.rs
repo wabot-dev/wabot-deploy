@@ -539,7 +539,7 @@ mod tests {
             "Two nodes claim one address",
         ] {
             assert!(
-                crate::views::texts::es::lookup(what).is_some(),
+                crate::views::texts::lookup(what).is_some(),
                 "no Spanish for the concern {what:?}"
             );
             // And it is one this module actually produces. A guard
