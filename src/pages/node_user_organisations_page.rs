@@ -5,7 +5,7 @@ use crate::console::language::word;
 use crate::console::layout;
 use crate::platform::presets;
 
-use crate::platform::projects::Project;
+use crate::entities::project::Project;
 use crate::platform::tenants::Tenant;
 
 pub struct Organisations<'a> {

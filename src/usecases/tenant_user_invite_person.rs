@@ -101,7 +101,7 @@ mod tests {
     #[tokio::test]
     async fn a_project_outside_the_organisation_is_not_found() {
         let here = organisation().await;
-        let elsewhere = crate::platform::projects::create(&here.database, "the nodes own")
+        let elsewhere = crate::repositories::projects::create(&here.database, "the nodes own")
             .await
             .expect("project");
 

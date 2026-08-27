@@ -329,7 +329,7 @@ pub async fn dispatch(
         return Ok(0);
     };
 
-    let project = super::projects::find(database, &service.project_id)
+    let project = crate::repositories::projects::find(database, &service.project_id)
         .await?
         .ok_or_else(|| PlatformError::Refused("no project for this database".into()))?;
     let running = crate::repositories::services::find(database, &service.id)
@@ -639,7 +639,7 @@ pub async fn withdraw(
     if !service.is_ours() || row.primary_endpoint.is_some() {
         return Ok(0);
     }
-    let project = super::projects::find(database, &service.project_id)
+    let project = crate::repositories::projects::find(database, &service.project_id)
         .await?
         .ok_or_else(|| PlatformError::Refused("no project for this database".into()))?;
     let endpoint = primary
@@ -795,12 +795,14 @@ fn decode(row: &Row<'_>) -> wabot::sqlite::rusqlite::Result<Database> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::platform::{ports, projects, replicas, volumes};
+    use crate::platform::{ports, replicas, volumes};
     use crate::repositories::services;
 
     async fn project() -> (SqliteDatabase, String) {
         let database = crate::db::open_in_memory().await.expect("open");
-        let project = projects::create(&database, "demo").await.expect("project");
+        let project = crate::repositories::projects::create(&database, "demo")
+            .await
+            .expect("project");
         (database, project.id)
     }
 

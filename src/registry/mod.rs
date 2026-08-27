@@ -41,7 +41,8 @@ use wabot::rest::axum::Router;
 use wabot::rest::RestResult;
 use wabot::sqlite::SqliteDatabase;
 
-use crate::platform::{projects, tokens};
+use crate::platform::tokens;
+use crate::repositories::projects;
 
 /// What the registry needs to answer a request.
 pub struct RegistryState {
@@ -54,7 +55,7 @@ pub struct RegistryState {
 
 /// A caller that proved it may push to a project.
 pub struct Pusher {
-    pub project: projects::Project,
+    pub project: crate::entities::project::Project,
 }
 
 #[injectable]

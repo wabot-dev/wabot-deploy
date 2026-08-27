@@ -107,7 +107,7 @@ mod tests {
     async fn a_project_outside_the_organisation_is_refused() {
         let here = organisation().await;
         let acme = here.admin.tenant_id.clone().expect("scoped");
-        let elsewhere = crate::platform::projects::create(&here.database, "the nodes own")
+        let elsewhere = crate::repositories::projects::create(&here.database, "the nodes own")
             .await
             .expect("project");
 

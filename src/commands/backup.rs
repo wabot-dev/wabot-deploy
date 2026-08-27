@@ -1354,7 +1354,7 @@ pub async fn restore_one(
     else {
         return Err(NotRestored::NoSuchDatabase(service_slug.to_string()));
     };
-    let Some(project) = crate::platform::projects::find(database, &source.project_id)
+    let Some(project) = crate::repositories::projects::find(database, &source.project_id)
         .await
         .map_err(refused)?
     else {
@@ -1788,7 +1788,7 @@ async fn back_up_engines(
 ) -> Engines {
     let (Ok(services), Ok(projects)) = (
         crate::repositories::services::all(database, None).await,
-        crate::platform::projects::all(database).await,
+        crate::repositories::projects::all(database).await,
     ) else {
         // Unknown is not empty — the shape this file already keeps for
         // what a volume claims. Rows that cannot be read say nothing

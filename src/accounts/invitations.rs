@@ -326,7 +326,7 @@ fn decode(row: &wabot::sqlite::rusqlite::Row<'_>) -> wabot::sqlite::rusqlite::Re
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::platform::{access, projects};
+    use crate::platform::access;
 
     async fn node() -> (SqliteDatabase, Account) {
         let database = crate::db::open_in_memory().await.expect("open");
@@ -509,7 +509,7 @@ mod tests {
     #[tokio::test]
     async fn an_invitation_to_a_project_lands_them_in_it() {
         let (database, admin) = node().await;
-        let project = projects::create(&database, "shared")
+        let project = crate::repositories::projects::create(&database, "shared")
             .await
             .expect("project");
 

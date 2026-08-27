@@ -4,4 +4,5 @@
 //! `Service`, not in a free function beside the queries — see
 //! `docs/architecture-rules.md` §0.
 
+pub mod project;
 pub mod service;

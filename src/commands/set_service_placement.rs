@@ -4,8 +4,8 @@ use wabot::sqlite::SqliteDatabase;
 
 use crate::config::Config;
 use crate::deploy::Deployer;
+use crate::entities::project::Project;
 use crate::entities::service::Service;
-use crate::platform::projects::Project;
 use crate::platform::quotas;
 use crate::platform::replicas;
 use wabot::prelude::Container;
@@ -401,7 +401,7 @@ async fn dispatch(
 async fn send_there(
     database: &SqliteDatabase,
     config: &Config,
-    project: &crate::platform::projects::Project,
+    project: &crate::entities::project::Project,
     service: &Service,
     node_id: &str,
     by: &str,

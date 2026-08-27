@@ -23,7 +23,7 @@ use wabot::sqlite::SqliteDatabase;
 
 use super::errand::{self, Errand, Kind};
 use crate::config::Config;
-use crate::platform::{databases, ports, projects, registry_credentials, replicas, slugify};
+use crate::platform::{databases, ports, registry_credentials, replicas, slugify};
 use crate::repositories::services;
 use crate::runtime::images::Credential;
 
@@ -483,7 +483,7 @@ async fn report_for(
     container: &Container,
     authority: &str,
 ) -> Result<super::api::Report, String> {
-    let projects = projects::all(database)
+    let projects = crate::repositories::projects::all(database)
         .await
         .map_err(|error| error.to_string())?;
     let mut replicas = Vec::new();
@@ -1518,7 +1518,7 @@ async fn reload_routes(container: &Container) {
 async fn stop_unnamed(
     database: &SqliteDatabase,
     config: &Config,
-    project: &projects::Project,
+    project: &crate::entities::project::Project,
     service: &crate::entities::service::Service,
     slots: &[u32],
 ) -> Result<(), String> {
@@ -1548,8 +1548,8 @@ async fn ensure_project(
     database: &SqliteDatabase,
     name: &str,
     authority: &str,
-) -> Result<projects::Project, String> {
-    let existing = projects::all(database)
+) -> Result<crate::entities::project::Project, String> {
+    let existing = crate::repositories::projects::all(database)
         .await
         .map_err(|error| error.to_string())?
         .into_iter()
@@ -1583,15 +1583,15 @@ async fn ensure_project(
         };
     }
 
-    let project = projects::create(database, name)
+    let project = crate::repositories::projects::create(database, name)
         .await
         .map_err(|error| error.to_string())?;
-    projects::set_origin(database, &project.id, authority)
+    crate::repositories::projects::set_origin(database, &project.id, authority)
         .await
         .map_err(|error| error.to_string())?;
     // Read back, so what is returned carries the origin it was just
     // given rather than the `None` `create` handed out.
-    projects::find(database, &project.id)
+    crate::repositories::projects::find(database, &project.id)
         .await
         .map_err(|error| error.to_string())?
         .ok_or_else(|| "the project vanished as it was made".to_string())
@@ -2488,12 +2488,15 @@ mod tests {
 
         // And nothing was taken from the first.
         assert_eq!(
-            projects::all(&database).await.expect("projects").len(),
+            crate::repositories::projects::all(&database)
+                .await
+                .expect("projects")
+                .len(),
             1,
             "a second project appeared, or the first was rewritten"
         );
         assert_eq!(
-            projects::find(&database, &first.id)
+            crate::repositories::projects::find(&database, &first.id)
                 .await
                 .expect("query")
                 .expect("row")
@@ -2507,7 +2510,7 @@ mod tests {
     #[tokio::test]
     async fn an_errand_does_not_take_over_this_nodes_own_project() {
         let database = crate::db::open_in_memory().await.expect("open");
-        let mine = projects::create(&database, "orders")
+        let mine = crate::repositories::projects::create(&database, "orders")
             .await
             .expect("this node's own");
 
@@ -2516,7 +2519,7 @@ mod tests {
             .expect_err("refused");
         assert!(refused.contains("of its own"), "{refused}");
         assert!(
-            projects::find(&database, &mine.id)
+            crate::repositories::projects::find(&database, &mine.id)
                 .await
                 .expect("query")
                 .expect("row")
@@ -2641,7 +2644,7 @@ mod tests {
         };
 
         let ceilings = || async {
-            let project = crate::platform::projects::all(&database)
+            let project = crate::repositories::projects::all(&database)
                 .await
                 .expect("projects")
                 .into_iter()
@@ -2737,7 +2740,9 @@ mod tests {
             }
         }
 
-        let projects = projects::all(&database).await.expect("projects");
+        let projects = crate::repositories::projects::all(&database)
+            .await
+            .expect("projects");
         assert_eq!(projects.len(), 1, "a second project was made");
         let service = services::in_project(&database, &projects[0].id, "web")
             .await
@@ -2788,14 +2793,16 @@ mod tests {
     #[tokio::test]
     async fn an_errand_does_not_take_over_a_project_this_node_made() {
         let database = crate::db::open_in_memory().await.expect("open");
-        let mine = projects::create(&database, "shared").await.expect("mine");
+        let mine = crate::repositories::projects::create(&database, "shared")
+            .await
+            .expect("mine");
 
         let error = ensure_project(&database, "shared", "nd-authority")
             .await
             .expect_err("refused");
         assert!(error.contains("of its own"), "{error}");
 
-        let untouched = projects::find(&database, &mine.id)
+        let untouched = crate::repositories::projects::find(&database, &mine.id)
             .await
             .expect("query")
             .expect("still here");

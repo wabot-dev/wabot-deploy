@@ -154,7 +154,6 @@ pub async fn revoke(database: &SqliteDatabase, id: &str) -> PlatformResult<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::platform::projects;
 
     /// A project and a real account to blame the token on — the
     /// foreign key is there so a token outlives nobody.
@@ -166,7 +165,9 @@ mod tests {
         let admin = crate::accounts::create_admin(&database, &token, "admin", "a long passphrase")
             .await
             .expect("admin");
-        let project = projects::create(&database, "demo").await.expect("project");
+        let project = crate::repositories::projects::create(&database, "demo")
+            .await
+            .expect("project");
         (database, project.id, admin.id)
     }
 
@@ -201,7 +202,7 @@ mod tests {
     #[tokio::test]
     async fn a_token_belongs_to_one_project() {
         let (database, first, admin) = project().await;
-        let second = projects::create(&database, "other")
+        let second = crate::repositories::projects::create(&database, "other")
             .await
             .expect("project")
             .id;
@@ -280,7 +281,9 @@ mod tests {
             .await
             .expect("created");
 
-        projects::delete(&database, &project).await.expect("delete");
+        crate::repositories::projects::delete(&database, &project)
+            .await
+            .expect("delete");
         assert!(of_project(&database, &project)
             .await
             .expect("list")

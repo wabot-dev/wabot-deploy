@@ -101,7 +101,7 @@ pub async fn charged(database: &SqliteDatabase, tenant_id: &str) -> PlatformResu
 /// node's own arithmetic is the only one.
 pub async fn rooms_for(
     database: &SqliteDatabase,
-    project: &super::projects::Project,
+    project: &crate::entities::project::Project,
     service: &crate::entities::service::Service,
 ) -> PlatformResult<Option<(Rooms, String)>> {
     let Some(tenant_id) = &project.tenant_id else {
@@ -146,7 +146,7 @@ pub async fn rooms_for(
 /// else", because the second is advice that cannot work.
 pub async fn admits(
     database: &SqliteDatabase,
-    project: &super::projects::Project,
+    project: &crate::entities::project::Project,
     service: &crate::entities::service::Service,
     memory: Option<u64>,
     cpu: Option<u32>,
@@ -211,7 +211,7 @@ pub async fn admits(
 /// cannot be satisfied from the page it appears on.
 async fn limitless(
     database: &SqliteDatabase,
-    project: &super::projects::Project,
+    project: &crate::entities::project::Project,
     changing: &crate::entities::service::Service,
 ) -> PlatformResult<Option<String>> {
     let Some(tenant_id) = &project.tenant_id else {
@@ -235,16 +235,17 @@ mod tests {
 
     async fn tenant_with_a_service() -> (
         SqliteDatabase,
-        super::super::projects::Project,
+        crate::entities::project::Project,
         crate::entities::service::Service,
     ) {
         let database = crate::db::open_in_memory().await.expect("open");
         let tenant = super::super::tenants::create(&database, "Acme")
             .await
             .expect("tenant");
-        let project = super::super::projects::create_for(&database, "theirs", Some(&tenant.id))
-            .await
-            .expect("project");
+        let project =
+            crate::repositories::projects::create_for(&database, "theirs", Some(&tenant.id))
+                .await
+                .expect("project");
         let service = crate::commands::create_service::CreateService {
             project_id: &project.id,
             name: "web",
@@ -440,7 +441,7 @@ mod tests {
     #[tokio::test]
     async fn the_nodes_own_projects_answer_to_nobodys_quota() {
         let database = crate::db::open_in_memory().await.expect("open");
-        let project = super::super::projects::create(&database, "ours")
+        let project = crate::repositories::projects::create(&database, "ours")
             .await
             .expect("project");
         let service = crate::commands::create_service::CreateService {

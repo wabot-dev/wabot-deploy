@@ -132,7 +132,7 @@ impl DatabasePages {
 /// somebody who was half-way down a settings page. A save that moves
 /// the page is a save that hides what it did.
 fn settings_of(
-    project: &crate::platform::projects::Project,
+    project: &crate::entities::project::Project,
     service: &crate::entities::service::Service,
 ) -> String {
     // The tab, not the bare path: `/settings` is a redirect to the first
@@ -1166,7 +1166,7 @@ mod tests {
         crate::node::settings::set_domain(&database, Some("node.example"))
             .await
             .expect("domain");
-        let project = crate::platform::projects::create(&database, "db-test")
+        let project = crate::repositories::projects::create(&database, "db-test")
             .await
             .expect("project");
         let (service, row) = crate::platform::databases::create(
@@ -1263,7 +1263,7 @@ mod tests {
         crate::node::settings::set_domain(&database, Some("node.example"))
             .await
             .expect("domain");
-        let project = crate::platform::projects::create(&database, "db-test")
+        let project = crate::repositories::projects::create(&database, "db-test")
             .await
             .expect("project");
         let (service, row) = crate::platform::databases::create(
@@ -1337,7 +1337,7 @@ mod tests {
         crate::node::settings::set_domain(&database, Some("node.example"))
             .await
             .expect("domain");
-        let project = crate::platform::projects::create(&database, "db-test")
+        let project = crate::repositories::projects::create(&database, "db-test")
             .await
             .expect("project");
         let (service, _) = crate::platform::databases::create(
@@ -1389,7 +1389,7 @@ mod tests {
     }
 
     async fn project(console: &Console) -> String {
-        crate::platform::projects::create(&console.database, "shared")
+        crate::repositories::projects::create(&console.database, "shared")
             .await
             .expect("project")
             .id

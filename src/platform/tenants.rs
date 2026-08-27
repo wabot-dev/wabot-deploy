@@ -292,7 +292,7 @@ mod tests {
     async fn a_tenant_that_still_has_projects_is_not_deleted() {
         let database = database().await;
         let tenant = create(&database, "Acme").await.expect("created");
-        super::super::projects::create_for(&database, "theirs", Some(&tenant.id))
+        crate::repositories::projects::create_for(&database, "theirs", Some(&tenant.id))
             .await
             .expect("project");
 

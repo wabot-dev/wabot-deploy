@@ -12,8 +12,8 @@ use wabot::sqlite::SqliteDatabase;
 use crate::accounts::roles::{Access, NodeRole, ProjectRole};
 use crate::accounts::Account;
 
-use super::projects::Project;
 use super::{now_ms, PlatformError, PlatformResult};
+use crate::entities::project::Project;
 
 /// Somebody's place in a project, as the members page shows it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -44,7 +44,7 @@ pub async fn of(
         // Asked of the project rather than of a list, because this is
         // the function a page hands one id to; `projects_for` narrows
         // the same way in SQL, for the same reason it always did.
-        let scope = super::projects::find(database, project_id)
+        let scope = crate::repositories::projects::find(database, project_id)
             .await?
             .and_then(|project| project.tenant_id);
         return Ok(match (scope.as_deref(), account.tenant_id.as_deref()) {
@@ -107,7 +107,7 @@ pub async fn projects_for(
         // and filtered later leaks the day somebody adds a page that
         // forgets to filter.
         return match &account.tenant_id {
-            None => super::projects::all(database).await,
+            None => crate::repositories::projects::all(database).await,
             Some(tenant) => of_tenant(database, tenant).await,
         };
     }
@@ -173,7 +173,7 @@ pub async fn find_project(
     account: &Account,
     slug: &str,
 ) -> PlatformResult<Option<(Project, Access)>> {
-    let Some(project) = super::projects::find(database, slug).await? else {
+    let Some(project) = crate::repositories::projects::find(database, slug).await? else {
         return Ok(None);
     };
     let access = of(database, account, &project.id).await?;
@@ -314,13 +314,15 @@ mod tests {
             .await
             .expect("tenant");
 
-        let theirs = super::super::projects::create_for(&database, "theirs", Some(&tenant.id))
-            .await
-            .expect("project");
-        let rivals = super::super::projects::create_for(&database, "rivals", Some(&other.id))
-            .await
-            .expect("project");
-        let nodes_own = super::super::projects::create(&database, "the nodes own")
+        let theirs =
+            crate::repositories::projects::create_for(&database, "theirs", Some(&tenant.id))
+                .await
+                .expect("project");
+        let rivals =
+            crate::repositories::projects::create_for(&database, "rivals", Some(&other.id))
+                .await
+                .expect("project");
+        let nodes_own = crate::repositories::projects::create(&database, "the nodes own")
             .await
             .expect("project");
 
@@ -431,7 +433,7 @@ mod tests {
     #[tokio::test]
     async fn an_administrator_reaches_every_project_without_membership() {
         let (database, admin, _) = node().await;
-        let project = super::super::projects::create(&database, "theirs")
+        let project = crate::repositories::projects::create(&database, "theirs")
             .await
             .expect("project");
 
@@ -448,10 +450,10 @@ mod tests {
     #[tokio::test]
     async fn a_member_sees_only_the_projects_they_are_in() {
         let (database, _, member) = node().await;
-        let theirs = super::super::projects::create(&database, "theirs")
+        let theirs = crate::repositories::projects::create(&database, "theirs")
             .await
             .expect("project");
-        let other = super::super::projects::create(&database, "somebody elses")
+        let other = crate::repositories::projects::create(&database, "somebody elses")
             .await
             .expect("project");
 
@@ -475,7 +477,7 @@ mod tests {
     #[tokio::test]
     async fn a_project_you_cannot_see_is_indistinguishable_from_one_that_is_not_there() {
         let (database, _, member) = node().await;
-        super::super::projects::create(&database, "secret")
+        crate::repositories::projects::create(&database, "secret")
             .await
             .expect("project");
 
@@ -496,7 +498,7 @@ mod tests {
     #[tokio::test]
     async fn a_role_can_be_changed_without_a_second_row() {
         let (database, _, member) = node().await;
-        let project = super::super::projects::create(&database, "p")
+        let project = crate::repositories::projects::create(&database, "p")
             .await
             .expect("project");
 
@@ -517,7 +519,7 @@ mod tests {
     #[tokio::test]
     async fn the_last_owner_cannot_be_removed() {
         let (database, _, member) = node().await;
-        let project = super::super::projects::create(&database, "p")
+        let project = crate::repositories::projects::create(&database, "p")
             .await
             .expect("project");
         grant(&database, &member.id, &project.id, ProjectRole::Owner)
@@ -533,7 +535,7 @@ mod tests {
     #[tokio::test]
     async fn an_owner_can_leave_once_there_is_another() {
         let (database, admin, member) = node().await;
-        let project = super::super::projects::create(&database, "p")
+        let project = crate::repositories::projects::create(&database, "p")
             .await
             .expect("project");
         grant(&database, &member.id, &project.id, ProjectRole::Owner)
@@ -558,7 +560,7 @@ mod tests {
     #[tokio::test]
     async fn members_are_listed_with_the_owners_first() {
         let (database, admin, member) = node().await;
-        let project = super::super::projects::create(&database, "p")
+        let project = crate::repositories::projects::create(&database, "p")
             .await
             .expect("project");
         grant(&database, &member.id, &project.id, ProjectRole::Viewer)
@@ -578,14 +580,14 @@ mod tests {
     #[tokio::test]
     async fn memberships_go_with_the_project() {
         let (database, _, member) = node().await;
-        let project = super::super::projects::create(&database, "p")
+        let project = crate::repositories::projects::create(&database, "p")
             .await
             .expect("project");
         grant(&database, &member.id, &project.id, ProjectRole::Owner)
             .await
             .expect("grant");
 
-        super::super::projects::delete(&database, &project.id)
+        crate::repositories::projects::delete(&database, &project.id)
             .await
             .expect("delete");
         assert!(members(&database, &project.id)

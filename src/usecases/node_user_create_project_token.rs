@@ -4,7 +4,7 @@ use crate::accounts::roles::Access;
 use crate::accounts::Account;
 use crate::authz::node_user;
 use crate::commands::create_project_token::CreateProjectToken;
-use crate::platform::projects::Project;
+use crate::entities::project::Project;
 
 pub async fn run(
     database: &SqliteDatabase,

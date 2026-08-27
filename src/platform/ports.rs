@@ -436,7 +436,7 @@ mod tests {
         me.endpoint = Some("example.com:443".into());
         crate::network::save(&database, &me).await.expect("saved");
 
-        let project = crate::platform::projects::create(&database, "demo")
+        let project = crate::repositories::projects::create(&database, "demo")
             .await
             .expect("project");
         let service = crate::commands::create_service::CreateService {
@@ -498,7 +498,7 @@ mod tests {
     #[tokio::test]
     async fn publishing_picks_a_free_port_and_keeps_it() {
         let database = crate::db::open_in_memory().await.expect("open");
-        let project = crate::platform::projects::create(&database, "shared")
+        let project = crate::repositories::projects::create(&database, "shared")
             .await
             .expect("project");
         let mut ports = Vec::new();
@@ -557,7 +557,7 @@ mod tests {
 
     async fn service() -> (SqliteDatabase, String) {
         let database = crate::db::open_in_memory().await.expect("open");
-        let project = super::super::projects::create(&database, "demo")
+        let project = crate::repositories::projects::create(&database, "demo")
             .await
             .expect("project");
         let service = crate::commands::create_service::CreateService {
@@ -629,7 +629,7 @@ mod tests {
         let me = crate::network::ensure_self(&database, &crate::config::Config::default())
             .await
             .expect("self");
-        let project = super::super::projects::create(&database, "demo")
+        let project = crate::repositories::projects::create(&database, "demo")
             .await
             .expect("project");
         let service = crate::commands::create_service::CreateService {

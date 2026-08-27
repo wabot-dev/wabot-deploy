@@ -114,7 +114,7 @@ async fn copies_that_failed(
     concerns: &mut Vec<Concern>,
 ) -> PlatformResult<()> {
     let services = crate::repositories::services::all(&state.database, None).await?;
-    let projects = crate::platform::projects::all(&state.database).await?;
+    let projects = crate::repositories::projects::all(&state.database).await?;
 
     for replica in crate::platform::replicas::here(&state.database).await? {
         let Some(reason) = &replica.last_error else {
@@ -147,7 +147,7 @@ async fn copies_that_stopped_answering(state: &super::ConsoleState, concerns: &m
     let Ok(services) = crate::repositories::services::all(&state.database, None).await else {
         return;
     };
-    let Ok(projects) = crate::platform::projects::all(&state.database).await else {
+    let Ok(projects) = crate::repositories::projects::all(&state.database).await else {
         return;
     };
 
@@ -189,7 +189,7 @@ async fn a_database_with_every_copy_on_one_machine(
 ) {
     let (Ok(services), Ok(projects)) = (
         crate::repositories::services::all(&state.database, None).await,
-        crate::platform::projects::all(&state.database).await,
+        crate::repositories::projects::all(&state.database).await,
     ) else {
         return;
     };

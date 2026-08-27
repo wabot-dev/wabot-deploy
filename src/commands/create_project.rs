@@ -2,8 +2,8 @@ use wabot::sqlite::SqliteDatabase;
 
 use crate::accounts::roles::ProjectRole;
 use crate::accounts::Account;
+use crate::entities::project::Project;
 use crate::platform::access;
-use crate::platform::projects::{self, Project};
 
 pub struct CreateProject<'a> {
     pub name: &'a str,
@@ -12,7 +12,7 @@ pub struct CreateProject<'a> {
 
 impl CreateProject<'_> {
     pub async fn run(&self, database: &SqliteDatabase) -> Result<Project, String> {
-        // Here rather than in `projects::create`: the collector calls
+        // Here rather than in `crate::repositories::projects::create`: the collector calls
         // that too, for a project arriving on an errand, and a node that
         // runs other people's work is exactly the node this setting is
         // for. Refusing there would refuse the thing it exists to allow.
@@ -24,7 +24,7 @@ impl CreateProject<'_> {
             );
         }
 
-        let project = projects::create(database, self.name)
+        let project = crate::repositories::projects::create(database, self.name)
             .await
             .map_err(|error| error.to_string())?;
 

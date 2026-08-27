@@ -32,16 +32,16 @@ use std::sync::Arc;
 
 use wabot::sqlite::SqliteDatabase;
 
+use crate::entities::project::Project;
 use crate::platform::databases;
 use crate::platform::ports::{self, Port};
 use crate::platform::postgres;
-use crate::platform::projects::Project;
 use crate::platform::releases::{self, Release};
 use crate::platform::replicas::{self, Replica};
 
 use crate::entities::service::{DesiredState, Service};
 use crate::platform::volumes::{self, Volume};
-use crate::platform::{projects, PlatformError};
+use crate::platform::PlatformError;
 use crate::repositories::services;
 use crate::runtime::client::Containerd;
 use crate::runtime::containers::{self, TaskStatus};
@@ -410,7 +410,7 @@ impl Deployer {
         let domain = crate::node::settings::domain(&self.database, &self.config).await;
         let data_dir = &self.config.node.data_dir;
 
-        for project in projects::all(&self.database).await? {
+        for project in crate::repositories::projects::all(&self.database).await? {
             let services = services::all(&self.database, Some(&project.id)).await?;
             // **Per project, not once for the node.** An organisation's
             // names hang off its own domain, so the suffix is a property
@@ -424,7 +424,9 @@ impl Deployer {
             // What each copy answers on. The reserved address when there
             // is one — a database's, which does not move — and otherwise
             // where it was last seen.
-            let index = projects::ensure_network_index(&self.database, &project.id).await?;
+            let index =
+                crate::repositories::projects::ensure_network_index(&self.database, &project.id)
+                    .await?;
             let net = ProjectNetwork::new(index)?;
             let mut addresses = std::collections::BTreeMap::new();
             let mut named = Vec::new();
@@ -796,7 +798,9 @@ impl Deployer {
         let client = Containerd::connect().await?;
         let id = replica.container_id(&project.slug, &service.slug);
 
-        let index = projects::ensure_network_index(&self.database, &project.id).await?;
+        let index =
+            crate::repositories::projects::ensure_network_index(&self.database, &project.id)
+                .await?;
         let net = ProjectNetwork::new(index)?;
 
         // The container before the network: a create that fails after
@@ -1122,7 +1126,9 @@ impl Deployer {
     /// run time would not be the release anybody chose. This is also
     /// what makes a rollback a rollback.
     pub async fn deploy_release(&self, service: &Service, release: &Release) {
-        let Ok(Some(project)) = projects::find(&self.database, &service.project_id).await else {
+        let Ok(Some(project)) =
+            crate::repositories::projects::find(&self.database, &service.project_id).await
+        else {
             tracing::warn!(service = %service.slug, "no project for this service");
             return;
         };
@@ -1556,7 +1562,7 @@ impl Deployer {
     /// volumes.
     pub async fn claimed(database: &SqliteDatabase) -> Option<Vec<Claim>> {
         let (Ok(projects), Ok(services), Ok(mine)) = (
-            crate::platform::projects::all(database).await,
+            crate::repositories::projects::all(database).await,
             crate::repositories::services::all(database, None).await,
             crate::platform::replicas::here(database).await,
         ) else {
@@ -1783,7 +1789,9 @@ impl Deployer {
     /// a stored decision.
     pub async fn log_budgets(&self) -> std::collections::BTreeMap<String, u64> {
         let mut budgets = std::collections::BTreeMap::new();
-        let projects = projects::all(&self.database).await.unwrap_or_default();
+        let projects = crate::repositories::projects::all(&self.database)
+            .await
+            .unwrap_or_default();
         for project in projects {
             let found = services::all(&self.database, Some(&project.id))
                 .await
@@ -1804,7 +1812,9 @@ impl Deployer {
             let services = services::all(&self.database, None)
                 .await
                 .unwrap_or_default();
-            let projects = projects::all(&self.database).await.unwrap_or_default();
+            let projects = crate::repositories::projects::all(&self.database)
+                .await
+                .unwrap_or_default();
 
             // Every **replica**, not every service.
             //
@@ -1853,7 +1863,9 @@ impl Deployer {
         let services = services::all(&self.database, None)
             .await
             .unwrap_or_default();
-        let projects = projects::all(&self.database).await.unwrap_or_default();
+        let projects = crate::repositories::projects::all(&self.database)
+            .await
+            .unwrap_or_default();
 
         for service in services {
             let Some(project) = projects.iter().find(|p| p.id == service.project_id) else {
@@ -1930,7 +1942,7 @@ impl Deployer {
     /// destroys data.
     pub async fn reconcile(&self) -> DeployResult<usize> {
         let services = services::all(&self.database, None).await?;
-        let projects = projects::all(&self.database).await?;
+        let projects = crate::repositories::projects::all(&self.database).await?;
         // What should be up *here*, whoever placed it — a replica on
         // another node is not this one's to start, and an evicted one
         // is not either.
@@ -2149,7 +2161,7 @@ impl Deployer {
     async fn evict_ungranted(&self) {
         let (services, projects) = match (
             services::all(&self.database, None).await,
-            projects::all(&self.database).await,
+            crate::repositories::projects::all(&self.database).await,
         ) {
             (Ok(services), Ok(projects)) => (services, projects),
             _ => {
@@ -2278,7 +2290,7 @@ impl Deployer {
 
         let (Ok(services), Ok(projects), Ok(elsewhere)) = (
             services::all(&self.database, None).await,
-            projects::all(&self.database).await,
+            crate::repositories::projects::all(&self.database).await,
             replicas::elsewhere(&self.database).await,
         ) else {
             drained
@@ -2681,7 +2693,7 @@ impl Deployer {
     pub async fn refresh_certificates(&self) -> DeployResult<usize> {
         let client = Containerd::connect().await?;
         let data_dir = &self.config.node.data_dir;
-        let projects = projects::all(&self.database).await?;
+        let projects = crate::repositories::projects::all(&self.database).await?;
         let mut refreshed = 0;
 
         for service in services::all(&self.database, None).await? {
@@ -3006,7 +3018,8 @@ impl Deployer {
             let Ok(Some(row)) = databases::of_service(&self.database, &service.id).await else {
                 continue;
             };
-            let Ok(Some(project)) = projects::find(&self.database, &service.project_id).await
+            let Ok(Some(project)) =
+                crate::repositories::projects::find(&self.database, &service.project_id).await
             else {
                 continue;
             };
@@ -3597,9 +3610,10 @@ impl Deployer {
     }
 
     async fn network_of(&self, project: &Project) -> Option<ProjectNetwork> {
-        let index = projects::ensure_network_index(&self.database, &project.id)
-            .await
-            .ok()?;
+        let index =
+            crate::repositories::projects::ensure_network_index(&self.database, &project.id)
+                .await
+                .ok()?;
         ProjectNetwork::new(index).ok()
     }
 
@@ -3773,7 +3787,9 @@ pub async fn public_names_for(
     config: &crate::config::Config,
     key: &str,
 ) -> Vec<String> {
-    let projects = projects::all(database).await.unwrap_or_default();
+    let projects = crate::repositories::projects::all(database)
+        .await
+        .unwrap_or_default();
     for service in services::all(database, None).await.unwrap_or_default() {
         if !service.kind.is_managed() {
             continue;
@@ -3796,7 +3812,7 @@ pub async fn database_certificate_keys(
     database: &SqliteDatabase,
     config: &crate::config::Config,
 ) -> DeployResult<Vec<String>> {
-    let projects = projects::all(database).await?;
+    let projects = crate::repositories::projects::all(database).await?;
     let mut keys = Vec::new();
     for service in services::all(database, None).await? {
         if !service.kind.is_managed() {
@@ -4151,7 +4167,7 @@ mod tests {
     /// copy placed there.
     async fn placed_elsewhere() -> (SqliteDatabase, Project, Service) {
         let database = crate::db::open_in_memory().await.expect("open");
-        let project = projects::create(&database, "shared")
+        let project = crate::repositories::projects::create(&database, "shared")
             .await
             .expect("project");
         let service = crate::commands::create_service::CreateService {
@@ -4280,7 +4296,7 @@ mod tests {
     /// say where the primary answers.
     async fn database_with_a_standby_elsewhere() -> (SqliteDatabase, Project, Service) {
         let database = crate::db::open_in_memory().await.expect("open");
-        let project = projects::create(&database, "db-test")
+        let project = crate::repositories::projects::create(&database, "db-test")
             .await
             .expect("project");
         let (service, _) = crate::platform::databases::create(
@@ -4592,7 +4608,7 @@ mod tests {
     async fn the_room_on_another_machine_is_read_from_what_it_reported() {
         let mb = 1024 * 1024;
         let database = crate::db::open_in_memory().await.expect("open");
-        let project = projects::create(&database, "shared")
+        let project = crate::repositories::projects::create(&database, "shared")
             .await
             .expect("project");
         let service = crate::commands::create_service::CreateService {
@@ -4669,7 +4685,7 @@ mod tests {
     #[tokio::test]
     async fn a_node_that_has_not_said_what_it_has_is_not_refused() {
         let database = crate::db::open_in_memory().await.expect("open");
-        let project = projects::create(&database, "shared")
+        let project = crate::repositories::projects::create(&database, "shared")
             .await
             .expect("project");
         let service = crate::commands::create_service::CreateService {
@@ -4831,7 +4847,7 @@ mod tests {
     #[tokio::test]
     async fn a_copy_this_node_no_longer_agrees_to_run_is_thrown_off() {
         let database = crate::db::open_in_memory().await.expect("open");
-        let project = projects::create(&database, "theirs")
+        let project = crate::repositories::projects::create(&database, "theirs")
             .await
             .expect("project");
         let service = crate::commands::create_service::CreateService {
@@ -4877,7 +4893,7 @@ mod tests {
     #[tokio::test]
     async fn a_copy_this_node_still_agrees_to_run_is_left_alone() {
         let database = crate::db::open_in_memory().await.expect("open");
-        let project = projects::create(&database, "theirs")
+        let project = crate::repositories::projects::create(&database, "theirs")
             .await
             .expect("project");
         let service = crate::commands::create_service::CreateService {

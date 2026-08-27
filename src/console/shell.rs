@@ -16,7 +16,7 @@
 use hypertext::prelude::*;
 
 use crate::accounts::Account;
-use crate::platform::projects::Project;
+use crate::entities::project::Project;
 
 use super::assets;
 use super::language::t;

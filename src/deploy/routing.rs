@@ -303,7 +303,6 @@ mod tests {
     }
 
     use super::*;
-    use crate::platform::projects;
 
     /// A node with a name of its own, which is what makes it able to
     /// answer for one. Without the self row nothing here is an edge for
@@ -317,7 +316,9 @@ mod tests {
         crate::network::ensure_self(&database, &crate::config::Config::default())
             .await
             .expect("self");
-        let project = projects::create(&database, "demo").await.expect("project");
+        let project = crate::repositories::projects::create(&database, "demo")
+            .await
+            .expect("project");
         let service = crate::commands::create_service::CreateService {
             project_id: &project.id,
             name: "web",
@@ -482,7 +483,7 @@ mod tests {
         me.endpoint = Some("example.com:443".into());
         crate::network::save(&database, &me).await.expect("saved");
 
-        let project = crate::platform::projects::create(&database, "db-test")
+        let project = crate::repositories::projects::create(&database, "db-test")
             .await
             .expect("project");
         let (service, _) = crate::platform::databases::create(

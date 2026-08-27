@@ -5,8 +5,8 @@ use crate::authz::tenant_user;
 use crate::commands::check_database_certificate::CheckDatabaseCertificate;
 use crate::config::Config;
 use crate::edge::policy::RenewWith;
+use crate::entities::project::Project;
 use crate::entities::service::Service;
-use crate::platform::projects::Project;
 
 pub async fn run(
     database: &SqliteDatabase,

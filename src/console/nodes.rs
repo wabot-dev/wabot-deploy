@@ -4309,7 +4309,7 @@ pub(crate) mod tests {
             };
         }
 
-        crate::platform::projects::create(&console.database, "mine")
+        crate::repositories::projects::create(&console.database, "mine")
             .await
             .expect("a project of its own");
 
@@ -4321,11 +4321,11 @@ pub(crate) mod tests {
         );
 
         // With nothing of its own left, the same click is accepted.
-        let projects = crate::platform::projects::all(&console.database)
+        let projects = crate::repositories::projects::all(&console.database)
             .await
             .expect("projects");
         for project in projects {
-            crate::platform::projects::delete(&console.database, &project.id)
+            crate::repositories::projects::delete(&console.database, &project.id)
                 .await
                 .expect("removed");
         }

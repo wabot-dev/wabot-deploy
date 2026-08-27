@@ -385,7 +385,7 @@ impl ServicePages {
         // reserving it.
         let reserved_address = match (&engine, here.as_ref().and_then(|r| r.reserved_host)) {
             (Some(_), Some(host)) => {
-                let index = crate::platform::projects::ensure_network_index(
+                let index = crate::repositories::projects::ensure_network_index(
                     &self.state.database,
                     &project.id,
                 )
@@ -3099,7 +3099,7 @@ fn node_name<'a>(
 /// administering a service from where it was created rather than from
 /// the machine it happens to be on.
 fn placement_card<'a>(
-    project: &'a crate::platform::projects::Project,
+    project: &'a crate::entities::project::Project,
     service: &'a crate::entities::service::Service,
     placements: &'a [crate::platform::replicas::Replica],
     nodes: &'a [crate::network::Node],
@@ -3254,7 +3254,7 @@ fn latest_for<'a>(
 }
 
 fn served_by_form<'a>(
-    project: &'a crate::platform::projects::Project,
+    project: &'a crate::entities::project::Project,
     service: &'a crate::entities::service::Service,
     hostname: &'a str,
     public: &'a [crate::network::Node],
@@ -3378,7 +3378,7 @@ fn placement_state<'a>(
 /// node to go and argue with, and a page that simply showed fewer
 /// buttons would leave them wondering what they had done wrong.
 fn from_elsewhere_card<'a>(
-    project: &'a crate::platform::projects::Project,
+    project: &'a crate::entities::project::Project,
     service: &'a crate::entities::service::Service,
     mine: &'a [crate::platform::replicas::Replica],
     evicted: bool,
@@ -4439,7 +4439,7 @@ impl ServiceApi {
         let Some((project_slug, service_slug)) = service_path(&path) else {
             return Ok(see_other("/"));
         };
-        let Some(project) = crate::platform::projects::all(&self.state.database)
+        let Some(project) = crate::repositories::projects::all(&self.state.database)
             .await?
             .into_iter()
             .find(|project| project.slug == project_slug)
@@ -4783,7 +4783,7 @@ impl ServiceApi {
         path: &str,
     ) -> RestResult<
         Option<(
-            crate::platform::projects::Project,
+            crate::entities::project::Project,
             crate::entities::service::Service,
             String,
         )>,
@@ -4806,7 +4806,7 @@ pub(crate) async fn locate_for(
     path: &str,
 ) -> RestResult<
     Option<(
-        crate::platform::projects::Project,
+        crate::entities::project::Project,
         crate::entities::service::Service,
         String,
     )>,
@@ -4941,7 +4941,6 @@ fn parse_env(text: &str) -> Result<Vec<(String, String)>, String> {
 mod tests {
     use super::*;
     use crate::console::tests::Console;
-    use crate::platform::projects;
     use wabot::rest::axum::http::StatusCode;
 
     /// The three answers a copy with no address can have, and the two the
@@ -5065,7 +5064,7 @@ mod tests {
     #[tokio::test]
     async fn a_service_shows_every_way_in_and_always_its_own_name() {
         let database = crate::db::open_in_memory().await.expect("open");
-        let project = crate::platform::projects::create(&database, "shop")
+        let project = crate::repositories::projects::create(&database, "shop")
             .await
             .expect("project");
         let service = crate::commands::create_service::CreateService {
@@ -5235,7 +5234,7 @@ mod tests {
             .form(&[("name", "shared")])
             .send()
             .await;
-        let project = projects::all(&console.database)
+        let project = crate::repositories::projects::all(&console.database)
             .await
             .expect("projects")
             .into_iter()
@@ -6202,7 +6201,7 @@ mod tests {
             .await
             .expect("domain");
 
-        let project = crate::platform::projects::create(&console.database, "shared")
+        let project = crate::repositories::projects::create(&console.database, "shared")
             .await
             .expect("project");
         crate::commands::create_service::CreateService {
@@ -6528,7 +6527,7 @@ mod tests {
             .expect("query")
             .pop()
             .expect("one service");
-        let found = crate::platform::projects::find(&console.database, "my-api")
+        let found = crate::repositories::projects::find(&console.database, "my-api")
             .await
             .expect("query")
             .expect("present");
@@ -6813,7 +6812,7 @@ mod tests {
 
         let left = services::all(&console.database, None).await.expect("query");
         assert_eq!(left.len(), 1, "only one went");
-        let survivor = projects::find(&console.database, "two")
+        let survivor = crate::repositories::projects::find(&console.database, "two")
             .await
             .expect("query")
             .expect("present");
@@ -6835,7 +6834,7 @@ mod tests {
         let console = Console::new().await;
         let cookie = console.signed_in().await;
         service(&console, &cookie).await;
-        let project = projects::find(&console.database, "my-api")
+        let project = crate::repositories::projects::find(&console.database, "my-api")
             .await
             .expect("query")
             .expect("made");
@@ -6907,7 +6906,7 @@ mod tests {
         let console = Console::new().await;
         let cookie = console.signed_in().await;
         service(&console, &cookie).await;
-        let project = projects::find(&console.database, "my-api")
+        let project = crate::repositories::projects::find(&console.database, "my-api")
             .await
             .expect("query")
             .expect("made");
@@ -6978,7 +6977,7 @@ mod tests {
         let console = Console::new().await;
         let cookie = console.signed_in().await;
         service(&console, &cookie).await;
-        let project = projects::find(&console.database, "my-api")
+        let project = crate::repositories::projects::find(&console.database, "my-api")
             .await
             .expect("query")
             .expect("made");
@@ -7156,7 +7155,7 @@ mod tests {
         let console = Console::new().await;
         let cookie = console.signed_in().await;
         let page = service(&console, &cookie).await;
-        let project = projects::find(&console.database, "my-api")
+        let project = crate::repositories::projects::find(&console.database, "my-api")
             .await
             .expect("query")
             .expect("made");
@@ -7234,7 +7233,7 @@ mod tests {
         crate::node::settings::set_domain(&console.database, Some("example.com"))
             .await
             .expect("domain");
-        let project = crate::platform::projects::find(&console.database, "my-api")
+        let project = crate::repositories::projects::find(&console.database, "my-api")
             .await
             .expect("query")
             .expect("present");
@@ -7310,7 +7309,7 @@ mod tests {
         crate::node::settings::set_domain(&console.database, Some("node-1.tobaw.shop"))
             .await
             .expect("domain");
-        let project = projects::create(&console.database, "Coffe Store")
+        let project = crate::repositories::projects::create(&console.database, "Coffe Store")
             .await
             .expect("project");
         crate::commands::create_service::CreateService {
@@ -7359,7 +7358,7 @@ mod tests {
         crate::node::settings::set_domain(&console.database, Some("node-1.tobaw.shop"))
             .await
             .expect("domain");
-        let project = projects::create(&console.database, "wabot")
+        let project = crate::repositories::projects::create(&console.database, "wabot")
             .await
             .expect("project");
         let made = crate::commands::create_service::CreateService {
@@ -7403,7 +7402,7 @@ mod tests {
         crate::node::settings::set_domain(&console.database, Some("node.example.com"))
             .await
             .expect("domain");
-        let project = projects::find(&console.database, "my-api")
+        let project = crate::repositories::projects::find(&console.database, "my-api")
             .await
             .expect("query")
             .expect("made");
@@ -7480,7 +7479,7 @@ mod tests {
         let console = Console::new().await;
         let cookie = console.signed_in().await;
         service(&console, &cookie).await;
-        let project = projects::find(&console.database, "my-api")
+        let project = crate::repositories::projects::find(&console.database, "my-api")
             .await
             .expect("query")
             .expect("made");
@@ -7571,7 +7570,7 @@ mod tests {
         let console = Console::new().await;
         let cookie = console.signed_in().await;
         service(&console, &cookie).await;
-        let project = projects::find(&console.database, "my-api")
+        let project = crate::repositories::projects::find(&console.database, "my-api")
             .await
             .expect("query")
             .expect("made");
@@ -7624,7 +7623,7 @@ mod tests {
         crate::node::settings::set_domain(&console.database, Some("node.example.com"))
             .await
             .expect("domain");
-        let project = projects::find(&console.database, "my-api")
+        let project = crate::repositories::projects::find(&console.database, "my-api")
             .await
             .expect("query")
             .expect("made");
@@ -7792,7 +7791,7 @@ mod tests {
             "a service that keeps nothing says nothing: {plain}"
         );
 
-        let project = projects::find(&console.database, "my-api")
+        let project = crate::repositories::projects::find(&console.database, "my-api")
             .await
             .expect("query")
             .expect("made");
@@ -8150,7 +8149,7 @@ mod tests {
         let console = Console::new().await;
         let cookie = console.signed_in().await;
         service(&console, &cookie).await;
-        let project = projects::find(&console.database, "my-api")
+        let project = crate::repositories::projects::find(&console.database, "my-api")
             .await
             .expect("query")
             .expect("made");
@@ -8297,7 +8296,7 @@ mod tests {
         let console = Console::new().await;
         let cookie = console.signed_in().await;
         service(&console, &cookie).await;
-        let project = projects::find(&console.database, "my-api")
+        let project = crate::repositories::projects::find(&console.database, "my-api")
             .await
             .expect("query")
             .expect("made");
@@ -8419,7 +8418,7 @@ mod tests {
         let console = Console::new().await;
         let cookie = console.signed_in().await;
         service(&console, &cookie).await;
-        let project = projects::find(&console.database, "my-api")
+        let project = crate::repositories::projects::find(&console.database, "my-api")
             .await
             .expect("query")
             .expect("made");
@@ -8559,7 +8558,7 @@ mod tests {
         // different controller — against a real one, so a save that
         // works is what is being followed rather than a refusal that
         // happens to land in the same place.
-        let project = projects::find(&console.database, "my-api")
+        let project = crate::repositories::projects::find(&console.database, "my-api")
             .await
             .expect("query")
             .expect("made");
@@ -8654,7 +8653,7 @@ mod tests {
             .into_iter()
             .find(|account| account.username == "watcher")
             .expect("joined");
-        let project = crate::platform::projects::find(&console.database, "my-api")
+        let project = crate::repositories::projects::find(&console.database, "my-api")
             .await
             .expect("query")
             .expect("present");
@@ -8683,7 +8682,7 @@ mod tests {
     /// A hostname declared through `ports::create` rather than the
     /// form: the form checks DNS first, and no name resolves to a test.
     async fn hostname_on(console: &Console, hostname: &str) -> String {
-        let project = crate::platform::projects::find(&console.database, "my-api")
+        let project = crate::repositories::projects::find(&console.database, "my-api")
             .await
             .expect("query")
             .expect("present");

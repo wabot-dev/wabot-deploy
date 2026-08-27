@@ -81,7 +81,7 @@ mod tests {
 
     async fn project() -> (SqliteDatabase, String) {
         let database = crate::db::open_in_memory().await.expect("open");
-        let project = crate::platform::projects::create(&database, "demo")
+        let project = crate::repositories::projects::create(&database, "demo")
             .await
             .expect("project");
         (database, project.id)
@@ -116,7 +116,7 @@ mod tests {
     #[tokio::test]
     async fn the_same_name_is_free_in_another_project() {
         let (database, first) = project().await;
-        let second = crate::platform::projects::create(&database, "other")
+        let second = crate::repositories::projects::create(&database, "other")
             .await
             .expect("project")
             .id;

@@ -4,7 +4,7 @@ use crate::accounts::roles::Access;
 use crate::accounts::Account;
 use crate::authz::tenant_user;
 use crate::commands::revoke_project_token::RevokeProjectToken;
-use crate::platform::projects::Project;
+use crate::entities::project::Project;
 
 pub async fn run(
     database: &SqliteDatabase,

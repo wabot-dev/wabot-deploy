@@ -479,7 +479,7 @@ impl ProjectApi {
         path: &'a str,
     ) -> RestResult<
         Option<(
-            crate::platform::projects::Project,
+            crate::entities::project::Project,
             crate::accounts::roles::Access,
             Vec<&'a str>,
         )>,
@@ -511,7 +511,7 @@ impl ProjectApi {
 /// A reference moves freely — it is `Copy` — and the markup is
 /// rendered before the host wraps it.
 fn service_table(
-    project: &crate::platform::projects::Project,
+    project: &crate::entities::project::Project,
     // The third is why the copy running here is not, when it is not.
     // Carried alongside rather than read off the service: it belongs to
     // a replica now, and a service is several of them.
@@ -877,7 +877,7 @@ pub(crate) struct EdgeCell {
 /// asked for this once".
 async fn edge_cells(
     state: &super::ConsoleState,
-    project: &crate::platform::projects::Project,
+    project: &crate::entities::project::Project,
 ) -> std::collections::BTreeMap<String, EdgeCell> {
     let mut cells = std::collections::BTreeMap::new();
     let Ok(services) = crate::repositories::services::all(&state.database, Some(&project.id)).await
@@ -961,7 +961,7 @@ pub(crate) fn edge_cell(latest: Option<&crate::network::errand::Record>) -> Edge
 
 async fn replica_cells(
     state: &super::ConsoleState,
-    project: &crate::platform::projects::Project,
+    project: &crate::entities::project::Project,
     // What each container here is using, from two readings of the stream.
     // `None` on the first tick, which is why the cell is empty rather than
     // a dash: the page keeps what it has instead of flashing.
@@ -1158,7 +1158,7 @@ pub(crate) fn replica_cell(
 /// never changed on its own.
 async fn name_cells(
     state: &super::ConsoleState,
-    project: &crate::platform::projects::Project,
+    project: &crate::entities::project::Project,
 ) -> std::collections::BTreeMap<String, NameCell> {
     let mut cells = std::collections::BTreeMap::new();
     let Ok(services) = crate::repositories::services::all(&state.database, Some(&project.id)).await
@@ -1876,7 +1876,7 @@ impl ProjectApi {
 mod tests {
     use super::*;
     use crate::console::tests::Console;
-    use crate::platform::projects;
+    use crate::repositories::projects;
     use wabot::rest::axum::http::StatusCode;
 
     /// The property the whole model rests on: a project you are not in

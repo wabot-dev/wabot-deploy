@@ -1283,7 +1283,7 @@ mod tests {
     #[tokio::test]
     async fn a_name_on_two_nodes_is_not_ordered_for_blind() {
         let database = database().await;
-        let project = crate::platform::projects::create(&database, "shop")
+        let project = crate::repositories::projects::create(&database, "shop")
             .await
             .expect("project");
         let service = crate::commands::create_service::CreateService {
@@ -1425,7 +1425,7 @@ mod tests {
         let mut config = Config::default();
         config.node.domain = Some("node.example.com".into());
 
-        let project = crate::platform::projects::create(&database, "demo")
+        let project = crate::repositories::projects::create(&database, "demo")
             .await
             .expect("project");
         let service = crate::commands::create_service::CreateService {
@@ -1568,7 +1568,7 @@ mod tests {
         config.acme.directory = "staging".into();
 
         // A managed database, so its key wants two names.
-        let project = crate::platform::projects::create(&database, "db-test")
+        let project = crate::repositories::projects::create(&database, "db-test")
             .await
             .expect("project");
         let (service, _) = crate::platform::databases::create(

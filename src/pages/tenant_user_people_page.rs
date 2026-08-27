@@ -5,7 +5,7 @@ use crate::accounts::roles::{NodeRole, ProjectRole};
 use crate::accounts::Account;
 use crate::console::language::t;
 use crate::console::layout;
-use crate::platform::projects::Project;
+use crate::entities::project::Project;
 
 pub struct People<'a> {
     pub people: &'a [Account],

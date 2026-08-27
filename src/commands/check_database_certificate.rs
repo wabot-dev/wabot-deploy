@@ -2,8 +2,8 @@ use wabot::sqlite::SqliteDatabase;
 
 use crate::config::Config;
 use crate::edge::policy::RenewWith;
+use crate::entities::project::Project;
 use crate::entities::service::Service;
-use crate::platform::projects::Project;
 
 /// **ACME is refused unless both names resolve here**, and both is the
 /// point: the read pool's name is derived from the primary's, so an

@@ -46,7 +46,7 @@ pub async fn run(
     // no longer originates; not evictable, because they are its own. The
     // message names the count so it is a thing somebody can go and do.
     let owns = ticked.contains_key("own");
-    let mine = crate::platform::projects::all(database)
+    let mine = crate::repositories::projects::all(database)
         .await
         .map_err(|error| {
             tracing::warn!(%error, "could not count this node's own projects");

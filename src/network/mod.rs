@@ -2009,7 +2009,7 @@ pub(crate) mod tests {
         .expect("saved");
 
         // Something that is not the network, which must survive.
-        let project = crate::platform::projects::create(&database, "keep-me")
+        let project = crate::repositories::projects::create(&database, "keep-me")
             .await
             .expect("project");
 
@@ -2028,7 +2028,7 @@ pub(crate) mod tests {
 
         // The data, untouched — the reason somebody asked.
         assert!(
-            crate::platform::projects::find(&database, &project.id)
+            crate::repositories::projects::find(&database, &project.id)
                 .await
                 .expect("query")
                 .is_some(),

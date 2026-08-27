@@ -1,7 +1,7 @@
 use wabot::sqlite::SqliteDatabase;
 
 use crate::deploy::Deployer;
-use crate::platform::projects::Project;
+use crate::entities::project::Project;
 
 use crate::entities::service::Service;
 use crate::platform::{presets, quotas, replicas};

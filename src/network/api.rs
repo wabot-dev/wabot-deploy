@@ -809,7 +809,7 @@ impl NetworkApi {
         // an errand carries the project's and the service's names, a
         // report names a replica by them, and neither node has ever seen
         // the other's ids.
-        let projects = match crate::platform::projects::all(&self.database).await {
+        let projects = match crate::repositories::projects::all(&self.database).await {
             Ok(projects) => projects,
             Err(error) => return Ok(unreadable_platform(error)),
         };
@@ -945,7 +945,7 @@ impl NetworkApi {
         // must keep the one it should have.
         for service in unclaimed(&self.database, &node, &report.replicas).await {
             let Some(project) =
-                crate::platform::projects::find(&self.database, &service.project_id)
+                crate::repositories::projects::find(&self.database, &service.project_id)
                     .await
                     .ok()
                     .flatten()
@@ -1428,7 +1428,7 @@ async fn record(
     node: &str,
     state: &ReplicaState,
 ) -> Result<bool, super::NetworkError> {
-    let Some(project) = crate::platform::projects::all(database)
+    let Some(project) = crate::repositories::projects::all(database)
         .await
         .map_err(|error| super::NetworkError::Refused(error.to_string()))?
         .into_iter()
@@ -1548,7 +1548,7 @@ async fn unclaimed(
     node: &str,
     reported: &[ReplicaState],
 ) -> Vec<crate::entities::service::Service> {
-    let projects = crate::platform::projects::all(database)
+    let projects = crate::repositories::projects::all(database)
         .await
         .unwrap_or_default();
     let mut services: Vec<crate::entities::service::Service> = Vec::new();
@@ -1740,7 +1740,7 @@ mod tests {
 
         // A service of this node's own, which the joined node has no
         // claim on whatever it presents.
-        let project = crate::platform::projects::create(&authority.database, "mine")
+        let project = crate::repositories::projects::create(&authority.database, "mine")
             .await
             .expect("project");
         crate::commands::create_service::CreateService {
@@ -2086,7 +2086,7 @@ mod tests {
     #[tokio::test]
     async fn a_challenge_is_taken_only_from_a_node_that_holds_the_secret() {
         let authority = authority().await;
-        let project = crate::platform::projects::create(&authority.database, "shop")
+        let project = crate::repositories::projects::create(&authority.database, "shop")
             .await
             .expect("project");
         let service = crate::commands::create_service::CreateService {
@@ -3257,7 +3257,7 @@ mod tests {
 
     /// A service with a replica placed on the joined node, and its id.
     async fn placed_there(authority: &Authority, slot: u32) -> String {
-        let project = crate::platform::projects::create(&authority.database, "shared")
+        let project = crate::repositories::projects::create(&authority.database, "shared")
             .await
             .expect("project");
         let service = crate::commands::create_service::CreateService {

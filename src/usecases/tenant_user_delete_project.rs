@@ -5,7 +5,7 @@ use crate::accounts::Account;
 use crate::authz::tenant_user;
 use crate::commands::delete_project::DeleteProject;
 use crate::deploy::Deployer;
-use crate::platform::projects::Project;
+use crate::entities::project::Project;
 
 pub async fn run(
     database: &SqliteDatabase,

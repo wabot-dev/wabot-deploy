@@ -4,8 +4,8 @@ use crate::accounts::Account;
 use crate::authz::tenant_user;
 use crate::commands::evict_service::EvictService;
 use crate::deploy::Deployer;
+use crate::entities::project::Project;
 use crate::entities::service::Service;
-use crate::platform::projects::Project;
 
 pub async fn run(
     database: &SqliteDatabase,
