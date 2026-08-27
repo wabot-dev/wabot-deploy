@@ -36,8 +36,8 @@ use crate::entities::port::Port;
 use crate::entities::project::Project;
 use crate::entities::release::Release;
 use crate::entities::replica::Replica;
-use crate::platform::databases;
 use crate::policies::postgres;
+use crate::repositories::databases;
 use crate::repositories::ports;
 use crate::repositories::releases;
 use crate::repositories::replicas;
@@ -453,7 +453,7 @@ impl Deployer {
                 // a domain that has nothing to do with this node's.
                 let qualified = match row.is_some() {
                     true => {
-                        databases::qualified_name(
+                        crate::commands::create_database::qualified_name(
                             &self.database,
                             service,
                             &project.slug,
@@ -1763,7 +1763,7 @@ impl Deployer {
     /// the next boot. This one does not.
     pub async fn tear_down(&self, project: &Project, service: &Service) {
         self.tell_holders(project, service, Holding::LetGo).await;
-        if let Err(error) = crate::platform::databases::withdraw(
+        if let Err(error) = crate::commands::dispatch_standbys::withdraw(
             &self.database,
             service,
             self.primary_overlay(service).await.ok().flatten(),
@@ -2134,8 +2134,14 @@ impl Deployer {
             }
         };
         let domain = crate::node::settings::domain(&self.database, &self.config).await;
-        if let Err(error) =
-            databases::dispatch(&self.database, service, primary, domain, also).await
+        if let Err(error) = crate::commands::dispatch_standbys::dispatch(
+            &self.database,
+            service,
+            primary,
+            domain,
+            also,
+        )
+        .await
         {
             tracing::warn!(service = %service.slug, %error, "could not tell a node to hold a copy");
         }
@@ -2317,7 +2323,7 @@ impl Deployer {
             };
 
             // What the engine says accepts writes, when this is one.
-            let primary = crate::platform::databases::of_service(&self.database, &service.id)
+            let primary = crate::repositories::databases::of_service(&self.database, &service.id)
                 .await
                 .ok()
                 .flatten()
@@ -3093,7 +3099,7 @@ impl Deployer {
         &self,
         project: &Project,
         service: &Service,
-        row: &crate::platform::databases::Database,
+        row: &crate::entities::database::Database,
         address: &str,
         slot: u32,
     ) -> Result<Vec<postgres::SlotState>, String> {
@@ -3236,7 +3242,7 @@ impl Deployer {
         &self,
         client: &Containerd,
         service: &Service,
-        row: &crate::platform::databases::Database,
+        row: &crate::entities::database::Database,
         container_id: &str,
         endpoint: (String, u16),
         slot: u32,
@@ -3388,7 +3394,7 @@ impl Deployer {
 
         // An address of its own, for any copy that has not got one yet.
         //
-        // Here rather than only in `databases::create`, because a copy
+        // Here rather than only in `crate::commands::create_database::create`, because a copy
         // added afterwards — from the placement form, or by an errand —
         // goes through neither. On a node, the second replica of a
         // database came up on whatever `host-local` had next and with no
@@ -3538,7 +3544,7 @@ impl Deployer {
     /// so there is a window where the answer is honestly not known.
     fn primary_endpoint(
         &self,
-        row: &crate::platform::databases::Database,
+        row: &crate::entities::database::Database,
         placements: &[Replica],
         nodes: &[crate::network::Node],
         net: &ProjectNetwork,
@@ -3728,10 +3734,15 @@ pub async fn certificate_names(
     // they could — one function, so the certificate covers exactly what
     // `/etc/hosts` resolves. Two builders of this drifted once already and
     // the failure was a client dialling a name no certificate held.
-    let qualified = databases::qualified_name(database, service, &project.slug, domain.as_deref())
-        .await
-        .ok()
-        .flatten();
+    let qualified = crate::commands::create_database::qualified_name(
+        database,
+        service,
+        &project.slug,
+        domain.as_deref(),
+    )
+    .await
+    .ok()
+    .flatten();
     let mut names = Vec::new();
 
     // Both names, and the read pool's is not optional: a client
@@ -3983,7 +3994,7 @@ fn co_edges(
 /// anything running on the bridge; the subnet is added only for the case
 /// that genuinely needs it.
 fn replication_sources(
-    row: &crate::platform::databases::Database,
+    row: &crate::entities::database::Database,
     placements: &[Replica],
     nodes: &[crate::network::Node],
     net: &ProjectNetwork,
@@ -4029,9 +4040,9 @@ mod tests {
     #[test]
     fn the_node_may_take_a_base_backup_of_a_database_with_no_standby() {
         let net = ProjectNetwork::new(2).expect("a project network");
-        let row = crate::platform::databases::Database {
+        let row = crate::entities::database::Database {
             service_id: "svc-1".into(),
-            engine: crate::platform::databases::Engine::Postgres,
+            engine: crate::entities::database::Engine::Postgres,
             version: "17".into(),
             admin_user: "orders".into(),
             admin_password: "x".into(),
@@ -4306,13 +4317,13 @@ mod tests {
         let project = crate::repositories::projects::create(&database, "db-test")
             .await
             .expect("project");
-        let (service, _) = crate::platform::databases::create(
-            &database,
-            &project.id,
-            "orders",
-            "17",
-            256 * 1024 * 1024,
-        )
+        let (service, _) = crate::commands::create_database::CreateDatabase {
+            project_id: &project.id,
+            name: "orders",
+            version: "17",
+            memory_limit: 256 * 1024 * 1024,
+        }
+        .run(&database)
         .await
         .expect("created");
 

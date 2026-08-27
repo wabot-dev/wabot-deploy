@@ -1348,7 +1348,7 @@ pub async fn restore_one(
     else {
         return Err(NotRestored::NoSuchDatabase(service_slug.to_string()));
     };
-    let Some(row) = crate::platform::databases::of_service(database, &source.id)
+    let Some(row) = crate::repositories::databases::of_service(database, &source.id)
         .await
         .map_err(refused)?
     else {
@@ -1487,7 +1487,7 @@ pub async fn restore_one(
     let name = into
         .map(str::to_string)
         .unwrap_or_else(|| format!("{}-restored", source.slug));
-    let (restored, _) = crate::platform::databases::restore_into(
+    let (restored, _) = crate::commands::restore_database_into::restore_into(
         database,
         &row,
         &project.id,

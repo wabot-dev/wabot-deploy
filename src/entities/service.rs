@@ -179,7 +179,7 @@ impl Service {
     /// a service made from an errand gets its origin from `set_origin`,
     /// which only the collector calls, so forgetting it cannot silently
     /// make a foreign service editable. `Kind::Container` for the same
-    /// reason — `databases::create` says otherwise straight afterwards,
+    /// reason — `crate::commands::create_database::create` says otherwise straight afterwards,
     /// and a missed call cannot silently make something managed.
     pub fn new(
         project_id: &str,

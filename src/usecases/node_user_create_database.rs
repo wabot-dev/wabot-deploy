@@ -26,14 +26,21 @@ pub async fn run(
         return Err("you cannot deploy in this project".into());
     }
 
-    let service = CreateDatabase {
+    // Blank is not "no ceiling" here. An unbounded Postgres on a node
+    // with one core is the node, so the form's empty answer is the
+    // form's default answer.
+    let memory_limit = crate::policies::presets::parse(asked.memory)?
+        .unwrap_or(crate::commands::create_database::DEFAULT_PRESET);
+
+    let (service, _) = CreateDatabase {
         project_id: &project.id,
         name: asked.name,
         version: asked.version,
-        memory: asked.memory,
+        memory_limit,
     }
     .run(database)
-    .await?;
+    .await
+    .map_err(|error| error.to_string())?;
 
     Ok((project, service))
 }

@@ -379,7 +379,8 @@ impl ServicePages {
         // editor, neither of which a managed database has.
         let engine = match service.kind.is_managed() {
             true => {
-                crate::platform::databases::of_service(&self.state.database, &service.id).await?
+                crate::repositories::databases::of_service(&self.state.database, &service.id)
+                    .await?
             }
             false => None,
         };
@@ -7004,13 +7005,13 @@ mod tests {
         .run(&console.database)
         .await
         .expect("service");
-        let made = crate::platform::databases::create(
-            &console.database,
-            &project.id,
-            "Orders",
-            "17",
-            crate::policies::presets::LADDER[1],
-        )
+        let made = crate::commands::create_database::CreateDatabase {
+            project_id: &project.id,
+            name: "Orders",
+            version: "17",
+            memory_limit: crate::policies::presets::LADDER[1],
+        }
+        .run(&console.database)
         .await
         .expect("database");
 
@@ -7535,13 +7536,13 @@ mod tests {
             "the ladder is gone rather than offered: {plain}"
         );
 
-        let made = crate::platform::databases::create(
-            &console.database,
-            &project.id,
-            "Orders",
-            "17",
-            crate::policies::presets::LADDER[1],
-        )
+        let made = crate::commands::create_database::CreateDatabase {
+            project_id: &project.id,
+            name: "Orders",
+            version: "17",
+            memory_limit: crate::policies::presets::LADDER[1],
+        }
+        .run(&console.database)
         .await
         .expect("database");
         let body = console
@@ -7809,13 +7810,13 @@ mod tests {
             .await
             .expect("query")
             .expect("made");
-        let (database, _) = crate::platform::databases::create(
-            &console.database,
-            &project.id,
-            "orders",
-            "17",
-            256 * 1024 * 1024,
-        )
+        let (database, _) = crate::commands::create_database::CreateDatabase {
+            project_id: &project.id,
+            name: "orders",
+            version: "17",
+            memory_limit: 256 * 1024 * 1024,
+        }
+        .run(&console.database)
         .await
         .expect("database");
         crate::repositories::replicas::ensure_here(&console.database, &database.id, 2)
@@ -8167,13 +8168,13 @@ mod tests {
             .await
             .expect("query")
             .expect("made");
-        crate::platform::databases::create(
-            &console.database,
-            &project.id,
-            "orders",
-            "17",
-            256 * 1024 * 1024,
-        )
+        crate::commands::create_database::CreateDatabase {
+            project_id: &project.id,
+            name: "orders",
+            version: "17",
+            memory_limit: 256 * 1024 * 1024,
+        }
+        .run(&console.database)
         .await
         .expect("a database");
 
@@ -8257,7 +8258,7 @@ mod tests {
             .into_iter()
             .find(|service| service.slug == "orders-friday")
             .expect("the copy exists");
-        let row = crate::platform::databases::of_service(&console.database, &copy.id)
+        let row = crate::repositories::databases::of_service(&console.database, &copy.id)
             .await
             .expect("query")
             .expect("an engine row");
@@ -8283,7 +8284,7 @@ mod tests {
             .find(|service| service.slug == "orders")
             .expect("the original is still a service");
         assert!(
-            crate::platform::databases::of_service(&console.database, &original.id)
+            crate::repositories::databases::of_service(&console.database, &original.id)
                 .await
                 .expect("query")
                 .is_some()
@@ -8314,13 +8315,13 @@ mod tests {
             .await
             .expect("query")
             .expect("made");
-        crate::platform::databases::create(
-            &console.database,
-            &project.id,
-            "orders",
-            "17",
-            256 * 1024 * 1024,
-        )
+        crate::commands::create_database::CreateDatabase {
+            project_id: &project.id,
+            name: "orders",
+            version: "17",
+            memory_limit: 256 * 1024 * 1024,
+        }
+        .run(&console.database)
         .await
         .expect("a database");
 
@@ -8403,7 +8404,7 @@ mod tests {
             .into_iter()
             .find(|service| service.slug == "orders-from-away")
             .expect("the copy exists");
-        let row = crate::platform::databases::of_service(&console.database, &copy.id)
+        let row = crate::repositories::databases::of_service(&console.database, &copy.id)
             .await
             .expect("query")
             .expect("an engine row");
@@ -8436,13 +8437,13 @@ mod tests {
             .await
             .expect("query")
             .expect("made");
-        crate::platform::databases::create(
-            &console.database,
-            &project.id,
-            "orders",
-            "17",
-            256 * 1024 * 1024,
-        )
+        crate::commands::create_database::CreateDatabase {
+            project_id: &project.id,
+            name: "orders",
+            version: "17",
+            memory_limit: 256 * 1024 * 1024,
+        }
+        .run(&console.database)
         .await
         .expect("a database");
 
@@ -8576,13 +8577,13 @@ mod tests {
             .await
             .expect("query")
             .expect("made");
-        crate::platform::databases::create(
-            &console.database,
-            &project.id,
-            "orders",
-            "17",
-            256 * 1024 * 1024,
-        )
+        crate::commands::create_database::CreateDatabase {
+            project_id: &project.id,
+            name: "orders",
+            version: "17",
+            memory_limit: 256 * 1024 * 1024,
+        }
+        .run(&console.database)
         .await
         .expect("database");
         let database = "/projects/my-api/services/orders";

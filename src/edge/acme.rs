@@ -1571,13 +1571,13 @@ mod tests {
         let project = crate::repositories::projects::create(&database, "db-test")
             .await
             .expect("project");
-        let (service, _) = crate::platform::databases::create(
-            &database,
-            &project.id,
-            "orders",
-            "17",
-            256 * 1024 * 1024,
-        )
+        let (service, _) = crate::commands::create_database::CreateDatabase {
+            project_id: &project.id,
+            name: "orders",
+            version: "17",
+            memory_limit: 256 * 1024 * 1024,
+        }
+        .run(&database)
         .await
         .expect("created");
         let port = crate::repositories::ports::of_service(&database, &service.id)

@@ -22,7 +22,7 @@ use super::auth::{back_with_error, field, read_form, see_other, signed_in, Sessi
 use super::language::t;
 use super::shell::{Area, Frame};
 use super::{layout, ConsoleState};
-use crate::platform::databases::Database;
+use crate::entities::database::Database;
 use crate::policies::access;
 use crate::policies::postgres;
 use crate::policies::presets;
@@ -1152,7 +1152,7 @@ fn connection_block(strings: &Strings, published: Option<u16>) -> impl Renderabl
 mod tests {
     use super::*;
     use crate::console::tests::Console;
-    use crate::platform::databases;
+    use crate::repositories::databases;
     use crate::repositories::services;
     use wabot::rest::axum::http::StatusCode;
 
@@ -1171,13 +1171,13 @@ mod tests {
         let project = crate::repositories::projects::create(&database, "db-test")
             .await
             .expect("project");
-        let (service, row) = crate::platform::databases::create(
-            &database,
-            &project.id,
-            "orders",
-            "17",
-            256 * 1024 * 1024,
-        )
+        let (service, row) = crate::commands::create_database::CreateDatabase {
+            project_id: &project.id,
+            name: "orders",
+            version: "17",
+            memory_limit: 256 * 1024 * 1024,
+        }
+        .run(&database)
         .await
         .expect("created");
 
@@ -1268,13 +1268,13 @@ mod tests {
         let project = crate::repositories::projects::create(&database, "db-test")
             .await
             .expect("project");
-        let (service, row) = crate::platform::databases::create(
-            &database,
-            &project.id,
-            "orders",
-            "17",
-            256 * 1024 * 1024,
-        )
+        let (service, row) = crate::commands::create_database::CreateDatabase {
+            project_id: &project.id,
+            name: "orders",
+            version: "17",
+            memory_limit: 256 * 1024 * 1024,
+        }
+        .run(&database)
         .await
         .expect("created");
         let names = crate::deploy::certificate_names(
@@ -1342,13 +1342,13 @@ mod tests {
         let project = crate::repositories::projects::create(&database, "db-test")
             .await
             .expect("project");
-        let (service, _) = crate::platform::databases::create(
-            &database,
-            &project.id,
-            "orders",
-            "17",
-            256 * 1024 * 1024,
-        )
+        let (service, _) = crate::commands::create_database::CreateDatabase {
+            project_id: &project.id,
+            name: "orders",
+            version: "17",
+            memory_limit: 256 * 1024 * 1024,
+        }
+        .run(&database)
         .await
         .expect("created");
         let config = crate::config::Config::default();
@@ -1470,13 +1470,13 @@ mod tests {
         let console = Console::new().await;
         let cookie = console.signed_in().await;
         let project_id = project(&console).await;
-        let (service, _) = databases::create(
-            &console.database,
-            &project_id,
-            "orders",
-            "17",
-            64 * 1024 * 1024,
-        )
+        let (service, _) = crate::commands::create_database::CreateDatabase {
+            project_id: &project_id,
+            name: "orders",
+            version: "17",
+            memory_limit: 64 * 1024 * 1024,
+        }
+        .run(&console.database)
         .await
         .expect("created");
 

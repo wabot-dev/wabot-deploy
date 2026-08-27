@@ -19,7 +19,6 @@
 //! end. Until then containers share the host's network and the node
 //! allocates ports.
 
-pub mod databases;
 pub mod images;
 pub mod projects;
 pub mod registry_credentials;

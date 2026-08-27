@@ -15,7 +15,7 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::platform::databases::Database;
+use crate::entities::database::Database;
 
 use crate::policies::postgres;
 use crate::policies::presets;
@@ -573,7 +573,7 @@ fn slot_of(container_id: &str) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::platform::databases::Engine;
+    use crate::entities::database::Engine;
 
     fn database() -> Database {
         Database {
