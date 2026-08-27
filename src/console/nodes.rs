@@ -3521,7 +3521,7 @@ impl NodeApi {
             Ok(Drained::Moved { moved, refused }) if !refused.is_empty() => {
                 Ok(super::auth::back_with_error(
                     &here,
-                    &format!("{moved} copies moved; {}", refused.join("; ")),
+                    &crate::views::texts::sentences::copies_moved(moved, &refused),
                 ))
             }
             Ok(Drained::Moved { .. }) => Ok(super::auth::see_other(&here)),

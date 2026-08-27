@@ -96,7 +96,7 @@ impl ProjectPages {
                     // Above the list, and only when there is something.
                     // A panel that is always there is part of the
                     // wallpaper by the second week.
-                    (super::attention::card(&concerns))
+                    (crate::views::components::attention_card::card(&concerns))
 
                     @if projects.is_empty() {
                         // No second "Create project" here: the one in the
