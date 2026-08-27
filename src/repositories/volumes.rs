@@ -7,7 +7,7 @@ use wabot::sqlite::SqliteDatabase;
 
 use crate::clock::now_ms;
 use crate::entities::volume::Volume;
-use crate::platform::{PlatformError, PlatformResult};
+use crate::errors::{PlatformError, PlatformResult};
 use crate::values::mount_point::MountPoint;
 
 /// Where every volume on this node lives, under the data directory.

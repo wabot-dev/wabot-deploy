@@ -14,7 +14,7 @@ use crate::accounts::Account;
 
 use crate::clock::now_ms;
 use crate::entities::project::Project;
-use crate::platform::{PlatformError, PlatformResult};
+use crate::errors::{PlatformError, PlatformResult};
 
 /// Somebody's place in a project, as the members page shows it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]

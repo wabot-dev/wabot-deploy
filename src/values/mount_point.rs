@@ -1,6 +1,6 @@
 use std::fmt;
 
-use crate::platform::{PlatformError, PlatformResult};
+use crate::errors::{PlatformError, PlatformResult};
 
 /// A destination the node can mount over without breaking the container.
 ///

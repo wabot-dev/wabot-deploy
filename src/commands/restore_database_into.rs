@@ -6,7 +6,7 @@ use wabot::sqlite::SqliteDatabase;
 use crate::clock::now_ms;
 use crate::entities::database::Database;
 use crate::entities::service::{Kind, Service};
-use crate::platform::PlatformResult;
+use crate::errors::PlatformResult;
 use crate::policies::postgres;
 
 /// Make a database that will be restored into, rather than initialised.

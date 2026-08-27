@@ -1,6 +1,6 @@
 use std::fmt;
 
-use crate::platform::{PlatformError, PlatformResult};
+use crate::errors::{PlatformError, PlatformResult};
 
 /// A reference that names something containerd can resolve.
 ///

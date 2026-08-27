@@ -44,7 +44,7 @@ use crate::repositories::replicas;
 
 use crate::entities::service::{DesiredState, Service};
 use crate::entities::volume::Volume;
-use crate::platform::PlatformError;
+use crate::errors::PlatformError;
 use crate::repositories::services;
 use crate::repositories::volumes;
 use crate::runtime::client::Containerd;
@@ -421,9 +421,12 @@ impl Deployer {
             // of whose project this is rather than of the machine — and
             // the copy on another node has to resolve the same name this
             // one does.
-            let domain =
-                crate::platform::projects::domain_for(&self.database, &project, domain.as_deref())
-                    .await;
+            let domain = crate::policies::project_domain::domain_for(
+                &self.database,
+                &project,
+                domain.as_deref(),
+            )
+            .await;
 
             // What each copy answers on. The reserved address when there
             // is one — a database's, which does not move — and otherwise
@@ -953,9 +956,11 @@ impl Deployer {
         // What this node presents to the registry the image lives on,
         // if it has been given anything. `None` is the ordinary case —
         // an image from a registry that serves anybody.
-        let credential =
-            crate::platform::registry_credentials::for_reference(&self.database, &service.image)
-                .await;
+        let credential = crate::repositories::registry_credentials::for_reference(
+            &self.database,
+            &service.image,
+        )
+        .await;
 
         // The certificate, before the server that reads it. The names
         // it covers are the ones a client can connect to and still have
@@ -2863,7 +2868,7 @@ impl Deployer {
                 mounts,
                 ..Default::default()
             };
-            let credential = crate::platform::registry_credentials::for_reference(
+            let credential = crate::repositories::registry_credentials::for_reference(
                 &self.database,
                 &service.image,
             )
@@ -3277,9 +3282,11 @@ impl Deployer {
             ..Default::default()
         };
 
-        let credential =
-            crate::platform::registry_credentials::for_reference(&self.database, &service.image)
-                .await;
+        let credential = crate::repositories::registry_credentials::for_reference(
+            &self.database,
+            &service.image,
+        )
+        .await;
 
         let mut last = String::new();
         for attempt in 1..=SEED_ATTEMPTS {
@@ -3727,7 +3734,8 @@ pub async fn certificate_names(
         // certificate held.
         _ => {
             let node_domain = crate::node::settings::domain(database, config).await;
-            crate::platform::projects::domain_for(database, project, node_domain.as_deref()).await
+            crate::policies::project_domain::domain_for(database, project, node_domain.as_deref())
+                .await
         }
     };
     // The name the operator chose, or the one every database had before

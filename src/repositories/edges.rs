@@ -4,7 +4,7 @@
 use wabot::sqlite::SqliteDatabase;
 
 use crate::clock::now_ms;
-use crate::platform::PlatformResult;
+use crate::errors::PlatformResult;
 
 pub async fn set(
     database: &SqliteDatabase,

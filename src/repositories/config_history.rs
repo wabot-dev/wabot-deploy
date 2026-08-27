@@ -7,7 +7,7 @@ use wabot::sqlite::SqliteDatabase;
 
 use crate::clock::now_ms;
 use crate::entities::config_revision::Revision;
-use crate::platform::PlatformResult;
+use crate::errors::PlatformResult;
 
 /// How many revisions a service keeps.
 const KEEP: usize = 20;

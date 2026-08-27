@@ -1615,7 +1615,7 @@ impl ServicePages {
         // The organisation's domain when this project is one's — the
         // same function the certificate and the hosts file ask, so the
         // name proposed here is the name that ends up being served.
-        let suffix = crate::platform::projects::domain_for(
+        let suffix = crate::policies::project_domain::domain_for(
             &self.state.database,
             &project,
             domain.as_deref(),

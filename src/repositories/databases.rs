@@ -5,7 +5,7 @@ use wabot::sqlite::SqliteDatabase;
 
 use crate::clock::now_ms;
 use crate::entities::database::{Database, Engine};
-use crate::platform::PlatformResult;
+use crate::errors::PlatformResult;
 
 pub const REPLICATION_USER: &str = "wabot_replication";
 

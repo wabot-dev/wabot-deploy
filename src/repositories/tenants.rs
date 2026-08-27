@@ -5,7 +5,7 @@ use wabot::sqlite::SqliteDatabase;
 
 use crate::clock::now_ms;
 use crate::entities::tenant::Tenant;
-use crate::platform::{PlatformError, PlatformResult};
+use crate::errors::{PlatformError, PlatformResult};
 
 const COLUMNS: &str = "\"id\", \"name\", \"slug\", \"domain\", \"quota_memory\", \
                        \"quota_cpu\", \"quota_disk\", \"created_at\"";

@@ -5,7 +5,7 @@ use wabot::sqlite::SqliteDatabase;
 
 use crate::clock::now_ms;
 use crate::entities::project::Project;
-use crate::platform::{PlatformError, PlatformResult};
+use crate::errors::{PlatformError, PlatformResult};
 
 pub async fn create(database: &SqliteDatabase, name: &str) -> PlatformResult<Project> {
     create_for(database, name, None).await

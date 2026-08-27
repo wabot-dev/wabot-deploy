@@ -8,8 +8,8 @@ use wabot::sqlite::SqliteDatabase;
 
 use crate::values::image_reference::ImageReference;
 
-use super::PlatformResult;
 use crate::clock::now_ms;
+use crate::errors::PlatformResult;
 use crate::runtime::images::Credential;
 
 /// Remember how to authenticate to `host`.

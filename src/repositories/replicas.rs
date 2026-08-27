@@ -6,7 +6,7 @@ use wabot::sqlite::SqliteDatabase;
 
 use crate::clock::now_ms;
 use crate::entities::replica::{Placed, Replica};
-use crate::platform::{PlatformError, PlatformResult};
+use crate::errors::{PlatformError, PlatformResult};
 
 /// Bring a service to `count` replicas here, and hand them back.
 ///
@@ -382,7 +382,7 @@ pub async fn ensure_overlay_port(database: &SqliteDatabase, id: &str) -> Platfor
         .clone()
         .find(|candidate| !taken.contains(candidate))
         .ok_or_else(|| {
-            crate::platform::PlatformError::Refused(
+            crate::errors::PlatformError::Refused(
                 "every overlay port on this node is in use — that is 1000 replicas \
                  reachable from elsewhere"
                     .into(),
@@ -454,7 +454,7 @@ pub async fn reserve_host(
         .rev()
         .find(|candidate| !taken.contains(candidate))
         .ok_or_else(|| {
-            crate::platform::PlatformError::Refused(
+            crate::errors::PlatformError::Refused(
                 "every reserved address in this project's subnet is in use".into(),
             )
         })?;

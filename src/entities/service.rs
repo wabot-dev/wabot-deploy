@@ -19,7 +19,7 @@ pub const EVERY_TAG: &str = "*";
 
 use serde::Serialize;
 
-use crate::platform::{PlatformError, PlatformResult};
+use crate::errors::{PlatformError, PlatformResult};
 use crate::values::image_reference::ImageReference;
 use crate::values::slug::Slug;
 /// Where the node allocates host ports from.

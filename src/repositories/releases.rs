@@ -4,7 +4,7 @@ use wabot::sqlite::SqliteDatabase;
 
 use crate::clock::now_ms;
 use crate::entities::release::{Release, Source};
-use crate::platform::PlatformResult;
+use crate::errors::PlatformResult;
 
 /// Record an image for a service.
 ///
@@ -55,7 +55,7 @@ pub async fn record(
     find_by_digest(database, service_id, reference, digest)
         .await?
         .ok_or_else(|| {
-            crate::platform::PlatformError::Refused("the release vanished as it was written".into())
+            crate::errors::PlatformError::Refused("the release vanished as it was written".into())
         })
 }
 

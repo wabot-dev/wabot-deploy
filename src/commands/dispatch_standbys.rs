@@ -5,7 +5,7 @@ use wabot::sqlite::SqliteDatabase;
 
 use crate::entities::database::Database;
 use crate::entities::service::Service;
-use crate::platform::{PlatformError, PlatformResult};
+use crate::errors::{PlatformError, PlatformResult};
 use crate::repositories::databases::of_service;
 /// Tell every node holding a standby of this database what to hold.
 ///

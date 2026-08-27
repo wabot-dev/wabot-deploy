@@ -2,7 +2,7 @@ use wabot::sqlite::SqliteDatabase;
 
 use crate::clock::now_ms;
 use crate::entities::service::Service;
-use crate::platform::{PlatformError, PlatformResult};
+use crate::errors::{PlatformError, PlatformResult};
 use crate::repositories::replicas;
 
 pub struct Asked<'a> {

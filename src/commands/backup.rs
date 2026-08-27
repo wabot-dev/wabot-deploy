@@ -1337,7 +1337,7 @@ pub async fn restore_one(
     into: Option<&str>,
     from: Option<&Path>,
 ) -> Result<Restored, NotRestored> {
-    let refused = |error: crate::platform::PlatformError| NotRestored::Refused(error.to_string());
+    let refused = |error: crate::errors::PlatformError| NotRestored::Refused(error.to_string());
 
     let services = crate::repositories::services::all(database, None)
         .await

@@ -23,9 +23,9 @@ use wabot::sqlite::SqliteDatabase;
 
 use super::errand::{self, Errand, Kind};
 use crate::config::Config;
-use crate::platform::registry_credentials;
 use crate::repositories::databases;
 use crate::repositories::ports;
+use crate::repositories::registry_credentials;
 use crate::repositories::replicas;
 use crate::repositories::services;
 use crate::runtime::images::Credential;

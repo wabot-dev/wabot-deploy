@@ -47,7 +47,7 @@
 use wabot::sqlite::SqliteDatabase;
 
 use crate::deploy::{Room, Rooms};
-use crate::platform::PlatformResult;
+use crate::errors::PlatformResult;
 
 /// What one tenant has undertaken, over every copy anywhere.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]

@@ -32,7 +32,7 @@ use hypertext::prelude::*;
 use hypertext::Renderable;
 
 use super::language::t;
-use crate::platform::PlatformResult;
+use crate::errors::PlatformResult;
 
 /// How much somebody should care.
 ///

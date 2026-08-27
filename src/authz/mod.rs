@@ -16,8 +16,9 @@ mod tests {
         for directory in [
             "src/accounts",
             "src/entities",
-            "src/platform",
+            "src/policies",
             "src/repositories",
+            "src/values",
         ] {
             for entry in fs::read_dir(directory).expect("read the directory") {
                 let path = entry.expect("entry").path();
@@ -32,17 +33,23 @@ mod tests {
             }
         }
         assert!(
-            found.len() > 15,
+            found.len() > 30,
             "the scan found {} files, so it is reading the wrong place",
             found.len()
         );
         found
     }
 
-    /// The layers that hold rows answer *what the data may be*, which is
-    /// the same answer for every caller. *Who may ask* is the door's
-    /// question, and it differs per door — so an entity or a repository
-    /// reaching for `authz` is one of the two sides about to disagree.
+    /// Entities, repositories, policies and value objects answer *what
+    /// the data may be*, which is the same answer for every caller. *Who
+    /// may ask* is the door's question, and it differs per door — so any
+    /// of them reaching for `authz` is one of the two sides about to
+    /// disagree.
+    ///
+    /// This has fired twice for its own sanity floor, both times while
+    /// `platform` was being taken apart under it. That is the line
+    /// working: a guard that quietly starts checking nothing is worse
+    /// than no guard.
     ///
     /// Written as "never imports `authz`" rather than "never calls
     /// `is_admin`", because `invitations::create_into` legitimately reads
@@ -60,7 +67,7 @@ mod tests {
 
         assert!(
             offenders.is_empty(),
-            "entities and repositories must not authorise, and these reach for authz: {offenders:?}"
+            "nothing that holds data may authorise, and these reach for authz: {offenders:?}"
         );
     }
 }

@@ -7,6 +7,7 @@
 pub mod access;
 pub mod postgres;
 pub mod presets;
+pub mod project_domain;
 pub mod quotas;
 pub mod upstreams;
 pub mod wal;

@@ -1,5 +1,9 @@
-//! What is left of projects once the entity and its queries have their
-//! own homes: two policies that are not about storing a row.
+//! What domain a project's names hang off.
+//!
+//! **Here rather than in tenancy, and that is the point.** Its three
+//! callers ask about a *project*, which is a thing this node has with or
+//! without organisations — so none of them has to name one, and deleting
+//! tenancy simplifies this instead of touching them.
 
 use wabot::sqlite::SqliteDatabase;
 

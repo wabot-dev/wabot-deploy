@@ -1515,7 +1515,7 @@ async fn record(
     let write = async {
         if state.evicted {
             crate::repositories::replicas::evict(database, &replica.id).await?;
-            return Ok::<(), crate::platform::PlatformError>(());
+            return Ok::<(), crate::errors::PlatformError>(());
         }
         crate::repositories::replicas::set_address(database, &replica.id, state.address.as_deref())
             .await?;
@@ -1621,7 +1621,7 @@ fn is_private_endpoint(endpoint: &str) -> bool {
 /// A separate function rather than a generic one: the two error types
 /// come from different modules and neither is this one's to convert,
 /// which is the same reason `NetworkError` exists at all.
-fn unreadable_platform(error: crate::platform::PlatformError) -> Response {
+fn unreadable_platform(error: crate::errors::PlatformError) -> Response {
     tracing::error!(%error, "this node could not read its own rows for a caller");
     refuse(
         StatusCode::SERVICE_UNAVAILABLE,

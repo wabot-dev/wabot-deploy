@@ -6,7 +6,7 @@ use wabot::sqlite::SqliteDatabase;
 use crate::clock::now_ms;
 use crate::entities::database::{identifier, Database, Engine};
 use crate::entities::service::{Kind, Service};
-use crate::platform::{PlatformError, PlatformResult};
+use crate::errors::{PlatformError, PlatformResult};
 use crate::policies::{postgres, presets};
 use crate::repositories::databases::REPLICATION_USER;
 
