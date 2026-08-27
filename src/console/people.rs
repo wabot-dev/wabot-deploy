@@ -19,7 +19,6 @@ use wabot::ui::hypertext::IntoView;
 use crate::accounts::roles::{NodeRole, ProjectRole};
 use crate::accounts::{self, invitations, sessions};
 use crate::policies::access;
-use crate::views::texts::language::t;
 
 use super::auth::{
     back_with_error, field, read_form, see_other, see_other_with_cookie, signed_in, JoinPage,
@@ -67,155 +66,20 @@ impl PeoplePages {
 
         // The account's language, around the render and no wider:
         // the strings are read here, and nothing awaits inside.
+        let page = crate::views::pages::node_user_people_page::People {
+            account: &account,
+            people: &people,
+            invitations: &invitations,
+            projects: &projects,
+            now,
+            query_error: query.error.as_deref(),
+            query_invited: query.invited.as_deref(),
+        };
         let body = crate::views::texts::language::scoped(account.language, || {
-            rsx! {
-            (layout::style_tag())
-            <h1>(t("People"))</h1>
-            @if let Some(message) = &query.error {
-                (layout::error_note(message))
-            }
-            @if let Some(link) = &query.invited {
-                <section class="card stack">
-                    <p class="card-label">(t("Send this link"))</p>
-                    <p class="field-hint">(t("It works once and expires in seven days. The node will not \
-                         show it again — it is not stored in a form anybody can read \
-                         back."))</p>
-                    <pre><code>(link)</code></pre>
-                </section>
-            }
-
-            <section class="stack">
-                <p class="card-label">(t("Accounts"))</p>
-                <table>
-                    <thead>
-                        <tr><th>(t("Name"))</th><th>(t("On this node"))</th><th></th></tr>
-                    </thead>
-                    <tbody>
-                        @for person in &people {
-                            <tr>
-                                <td>(&person.username)</td>
-                                <td>(person.role.label())</td>
-                                <td class="row">
-                                    @if person.id != account.id {
-                                        <form method="post"
-                                              action=(format!("/people/{}/role", person.id))>
-                                            <input type="hidden" name="role" value=(
-                                                if person.is_admin() { "member" } else { "admin" }
-                                            )>
-                                            <button class="btn btn-secondary btn-sm" type="submit">
-                                                @if person.is_admin() {
-                                                    (t("Make a member"))
-                                                } @else {
-                                                    (t("Make an administrator"))
-                                                }
-                                            </button>
-                                        </form>
-                                        <form method="post"
-                                              action=(format!("/people/{}/delete", person.id))>
-                                            <button class="btn btn-ghost destructive btn-sm"
-                                                    type="submit">
-                                                (t("Remove"))
-                                            </button>
-                                        </form>
-                                    } @else {
-                                        <span class="tile-detail">(t("This is you"))</span>
-                                    }
-                                </td>
-                            </tr>
-                        }
-                    </tbody>
-                </table>
-            </section>
-
-            <section class="stack">
-                <p class="card-label">(t("Invite somebody"))</p>
-                <form method="post" action="/people/invite" class="card stack">
-                    <label for="node_role">(t("On this node"))</label>
-                    <select id="node_role" name="node_role">
-                        <option value="member">(t("Member — their own projects"))</option>
-                        <option value="admin">(t("Administrator — everything"))</option>
-                    </select>
-
-                    <label for="project">(t("Into a project"))</label>
-                    <select id="project" name="project">
-                        <option value="">(t("Nothing yet"))</option>
-                        @for project in &projects {
-                            <option value=(&project.slug)>(&project.name)</option>
-                        }
-                    </select>
-
-                    <label for="project_role">(t("As"))</label>
-                    <select id="project_role" name="project_role">
-                        @for role in ProjectRole::ALL {
-                            <option value=(role.as_str())>(role.label())</option>
-                        }
-                    </select>
-                    <p class="field-hint">(t("They choose their own username and password. Nobody here \
-                         ever sees it — which is the reason this is a link rather \
-                         than a form that sets one for them."))</p>
-
-                    <div class="actions">
-                        <button type="submit">(t("Create invitation"))</button>
-                    </div>
-                </form>
-            </section>
-
-            <section class="stack">
-                <p class="card-label">(t("Invitations"))</p>
-                @if invitations.is_empty() {
-                    <p class="tile-detail">(t("None."))</p>
-                } @else {
-                    <table>
-                        <thead>
-                            <tr><th>(t("For"))</th><th>(t("State"))</th><th></th></tr>
-                        </thead>
-                        <tbody>
-                            @for invitation in &invitations {
-                                <tr>
-                                    <td>
-                                        (invitation.node_role.label())
-                                        @if let Some(name) = &invitation.scope_name {
-                                            <div class="tile-detail">
-                                                (t("Organisation")) " " (name)
-                                            </div>
-                                        }
-                                    </td>
-                                    <td>
-                                        @if invitation.spent() {
-                                            <span class="badge">(t("Used"))</span>
-                                        } @else if invitation.expired(now) {
-                                            <span class="badge badge-warning">(t("Expired"))</span>
-                                        } @else {
-                                            <span class="badge badge-success">
-                                                <span class="dot dot-success"></span>(t("Open"))
-                                            </span>
-                                        }
-                                    </td>
-                                    <td>
-                                        @if !invitation.spent() {
-                                            <form method="post"
-                                                  action=(format!(
-                                                      "/people/invitations/{}/revoke",
-                                                      invitation.id
-                                                  ))>
-                                                <button class="btn btn-ghost destructive btn-sm"
-                                                        type="submit">
-                                                    (t("Withdraw"))
-                                                </button>
-                                            </form>
-                                        }
-                                    </td>
-                                </tr>
-                            }
-                        </tbody>
-                    </table>
-                }
-            </section>
-        }
-            .render()
-            .into_inner()
+            crate::views::pages::node_user_people_page::render(&page)
+                .render()
+                .into_inner()
         });
-
         Ok(frame.render(body).into_view().into())
     }
 
