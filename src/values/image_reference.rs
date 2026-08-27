@@ -225,4 +225,24 @@ mod tests {
         assert_eq!(parse("alpine:3.23").host(), None);
         assert_eq!(parse("ubuntu:24.04").host(), None);
     }
+
+    #[test]
+    fn a_plain_reference_splits_into_repository_and_tag() {
+        let reference = ImageReference::parse("docker.io/library/nginx:alpine")
+            .expect("valid")
+            .parts()
+            .expect("parsed");
+        assert_eq!(reference.repository, "docker.io/library/nginx");
+        assert_eq!(reference.tag, "alpine");
+    }
+    /// What every registry client assumes. Assuming anything else here
+    /// The case a naive split on the first colon gets wrong, and the
+    /// A digest names one exact image. There is nothing to watch, and
+    /// A push arrives with the host stripped, so this is what a stored
+    /// `library/nginx` is not hosted on a machine called `library`.
+    #[test]
+    fn nothing_is_parsed_out_of_nothing() {
+        assert_eq!(ImageReference::parse("").expect("valid").parts(), None);
+        assert_eq!(ImageReference::parse("   ").expect("valid").parts(), None);
+    }
 }

@@ -188,7 +188,7 @@ pub async fn set_tracking(
     // name of a tag nobody will ever push, and a setting that silently
     // matches nothing is the quietest kind of wrong.
     if let Some(tag) = track_tag.map(str::trim).filter(|tag| !tag.is_empty()) {
-        if tag.contains('*') && tag != crate::platform::images::EVERY_TAG {
+        if tag.contains('*') && tag != crate::entities::service::EVERY_TAG {
             return Err(PlatformError::Refused(format!(
                 "{tag:?} is not a tag. Use `*` on its own to watch every tag, or write one \
                  tag exactly — patterns are not matched."

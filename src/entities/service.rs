@@ -9,6 +9,14 @@
 
 use std::collections::BTreeMap;
 
+/// The tag that means "whatever I push".
+///
+/// A glob is the shape people expect for this, and exactly one of them is
+/// supported. `v*` is refused rather than read as a literal tag nobody
+/// will ever push — a setting that silently matches nothing is the kind
+/// of quiet failure this console keeps having to remove.
+pub const EVERY_TAG: &str = "*";
+
 use serde::Serialize;
 
 use crate::platform::{slugify, PlatformError, PlatformResult};
@@ -231,6 +239,50 @@ impl Service {
 }
 
 impl Service {
+    /// Does a push carrying `tag` belong to this service's watched set?
+    ///
+    /// The question `tracked_tag` cannot answer once `*` exists, and the
+    /// one the registry actually asks. Kept apart from the display so
+    /// that "which tag is watched" and "does this push count" cannot
+    /// drift: the badge on the page and the decision in the registry
+    /// come from one place each, and this is the deciding one.
+    pub fn watches(&self, tag: &str) -> bool {
+        match self.tracked_tag() {
+            Some(watched) if watched == EVERY_TAG => true,
+            Some(watched) => watched == tag,
+            None => false,
+        }
+    }
+
+    /// The tag this service watches for new images.
+    ///
+    /// Its own setting when it has one, and `latest` otherwise.
+    pub fn tracked_tag(&self) -> Option<String> {
+        match self.track_tag.as_deref() {
+            Some(tag) if !tag.trim().is_empty() => Some(tag.trim().to_string()),
+            // **`latest`, not the tag the service's image happens to carry.**
+            //
+            // It used to be the image's, and the settings form has always
+            // shown `latest` as this field's placeholder — so the interface
+            // promised one thing and the code did another. A service running
+            // `docker.io/library/nginx:alpine` with an empty field was
+            // watching `alpine`: a tag borrowed from somebody else's
+            // repository, for a registry the image is not even in.
+            //
+            // Which of the two to keep was decided by the placeholder. It is
+            // the part an operator reads, it said `latest`, and every
+            // reference the console's own push example produces carries
+            // `latest` too. Making the code agree with what the form already
+            // promised is a smaller surprise than changing the promise.
+            //
+            // A service pinned to `…/app:v2` in this registry now needs `v2`
+            // typed here to record releases from a `v2` push — and the badge
+            // on the service page says which tag is watched, so that is a
+            // visible state rather than a silent one. Reported by Jorge.
+            _ => Some("latest".into()),
+        }
+    }
+
     /// Whether this node is the one that decides about it.
     ///
     /// A service that arrived on an errand is administered from the
@@ -340,5 +392,89 @@ impl Service {
     /// what absent means. One question, asked here.
     pub fn awaiting_push(&self) -> bool {
         self.image.trim().is_empty()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A service with just enough of itself to answer about tags.
+    fn watching(image: &str, track_tag: Option<&str>) -> Service {
+        let mut service = Service::new("pr-1", "web", image, &[]).expect("valid");
+        service.track_tag = track_tag.map(str::to_string);
+        service
+    }
+
+    /// Nothing chosen means `latest`, whatever tag the image carries.
+    ///
+    /// This asserted the opposite — that a service watches the tag it
+    /// was created with — and the settings form has always shown
+    /// `latest` as this field's placeholder. So the interface promised
+    /// one thing and the code did another, and a service running
+    /// `docker.io/library/nginx:alpine` announced `watching :alpine`: a
+    /// tag borrowed from a repository this node does not host.
+    ///
+    /// The placeholder decided it. It is the part somebody reads, and
+    /// every reference the console's own push example produces carries
+    /// `latest`. Reported by Jorge.
+    /// `*` watches whatever arrives.
+    ///
+    /// Asked for by Jorge: a service whose every push should go out,
+    /// without naming a tag each time. It is the one glob supported, and
+    /// the reason is in `EVERY_TAG`.
+    #[test]
+    fn a_star_watches_every_tag() {
+        let image = "node.example/wabot/api:latest";
+        for pushed in ["latest", "v2", "2026-08-19", "anything-at-all"] {
+            assert!(watching(image, Some("*")).watches(pushed), "{pushed}");
+        }
+    }
+    /// And a named tag still watches only itself.
+    #[test]
+    fn a_named_tag_watches_only_itself() {
+        let image = "node.example/wabot/api:latest";
+        assert!(watching(image, Some("v2")).watches("v2"));
+        assert!(!watching(image, Some("v2")).watches("latest"));
+
+        // Including the default, which is `latest` and not everything —
+        // the star has to be asked for.
+        assert!(watching(image, None).watches("latest"));
+        assert!(!watching(image, None).watches("v2"));
+    }
+    #[test]
+    fn nothing_chosen_means_latest() {
+        assert_eq!(
+            watching("docker.io/library/nginx:alpine", None)
+                .tracked_tag()
+                .as_deref(),
+            Some("latest")
+        );
+        assert_eq!(
+            watching("node.example/team/api", None)
+                .tracked_tag()
+                .as_deref(),
+            Some("latest")
+        );
+    }
+    #[test]
+    fn its_own_setting_wins() {
+        assert_eq!(
+            watching("node.example/team/api:v1", Some("production"))
+                .tracked_tag()
+                .as_deref(),
+            Some("production")
+        );
+        // Empty is not a setting, so it falls to the default rather than
+        // to the image's `v1`. A service pinned to a tag in this
+        // registry has to say so here, and the badge on its page shows
+        // which tag is watched so that this is visible rather than
+        // silent.
+        assert_eq!(
+            watching("node.example/team/api:v1", Some("  "))
+                .tracked_tag()
+                .as_deref(),
+            Some("latest")
+        );
     }
 }

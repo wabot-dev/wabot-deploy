@@ -14,3 +14,4 @@ pub mod services;
 pub mod tenants;
 pub mod tokens;
 pub mod volumes;
+pub mod wal_archive;

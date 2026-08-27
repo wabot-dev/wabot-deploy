@@ -791,13 +791,13 @@ impl ServicePages {
                         // makes the difference visible instead of
                         // silent.
                         @if let Some(Push::To(_)) = &push {
-                            @let watched = crate::platform::images::tracked_tag(
-                                &service.image, service.track_tag.as_deref()
-                            ).unwrap_or_else(|| "latest".into());
+                            @let watched = service
+                                .tracked_tag()
+                                .unwrap_or_else(|| "latest".into());
                             // `watching :*` is a badge nobody can read.
                             // The star is the way it is *written*, not the
                             // way it is said.
-                            @if watched == crate::platform::images::EVERY_TAG {
+                            @if watched == crate::entities::service::EVERY_TAG {
                                 <span class="who">(t("watching every tag"))</span>
                             } @else {
                                 <span class="who">(format!("watching :{watched}"))</span>
@@ -2596,13 +2596,12 @@ fn push(
     let Some(host) = node_domain else {
         return Some(Push::Nameless);
     };
-    let tag = crate::platform::images::tracked_tag(&service.image, service.track_tag.as_deref())
-        .unwrap_or_else(|| "latest".into());
+    let tag = service.tracked_tag().unwrap_or_else(|| "latest".into());
     // **A star is a rule, not a tag.** `*` matches every tag on the way
     // in; it is not something anybody types after a colon, and a command
     // ending `:*` is one somebody pastes and watches fail. The example
     // shows `latest` — which the rule accepts along with everything else.
-    let tag = match tag == crate::platform::images::EVERY_TAG {
+    let tag = match tag == crate::entities::service::EVERY_TAG {
         true => "latest".to_string(),
         false => tag,
     };
@@ -7433,7 +7432,7 @@ mod tests {
         services::set_tracking(
             &console.database,
             &made.id,
-            Some(crate::platform::images::EVERY_TAG),
+            Some(crate::entities::service::EVERY_TAG),
             true,
         )
         .await

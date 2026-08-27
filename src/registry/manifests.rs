@@ -25,7 +25,6 @@ use wabot::rest::{RestError, RestResult};
 
 use wabot::sqlite::rusqlite::OptionalExtension;
 
-use crate::platform::images;
 use crate::repositories::releases;
 use crate::repositories::services;
 use crate::runtime::content;
@@ -260,7 +259,9 @@ async fn release(
         // deliberately pointed at `<host>/<something-else>` is a thing
         // somebody can have set up, and this is not the release that
         // takes it away.
-        let named_here = images::Reference::parse(&service.image)
+        let named_here = crate::values::image_reference::ImageReference::parse(&service.image)
+            .ok()
+            .and_then(|reference| reference.parts())
             .is_some_and(|reference| reference.name() == name);
         if by_slug.as_deref() != Some(service.slug.as_str()) && !named_here {
             continue;
@@ -281,7 +282,7 @@ async fn release(
         // Through `watches`, which is the only thing that answers this —
         // `*` means every tag, and a comparison against one name cannot
         // express that.
-        let watched = images::watches(&service.image, service.track_tag.as_deref(), reference);
+        let watched = service.watches(reference);
 
         // **The service now runs what was pushed, so its row says so.**
         //

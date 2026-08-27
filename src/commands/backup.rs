@@ -518,7 +518,7 @@ pub fn window(data_dir: &Path, container: &str, anchor: Option<i64>, keeping: bo
         return Window::NotKeeping;
     }
     let archive = crate::deploy::database::archive_dir(data_dir, container);
-    let held = crate::platform::wal::held(&archive);
+    let held = crate::repositories::wal_archive::held(&archive);
 
     let Some(from) = anchor else {
         // Keeping log with nothing to replay it onto. Said as its own
@@ -638,11 +638,11 @@ pub fn sweep(data_dir: &Path, now: i64, keep_days: i64) -> (usize, u64) {
         // nothing with it.
         let needed = std::fs::read_to_string(volume.join("backup_manifest"))
             .ok()
-            .and_then(|manifest| crate::platform::wal::start_of(&manifest))
-            .map(|(timeline, lsn)| crate::platform::wal::segment_name(timeline, lsn));
+            .and_then(|manifest| crate::policies::wal::start_of(&manifest))
+            .map(|(timeline, lsn)| crate::policies::wal::segment_name(timeline, lsn));
 
         let archive = crate::deploy::database::archive_dir(data_dir, &container);
-        let pruned = crate::platform::wal::prune(&archive, needed.as_deref());
+        let pruned = crate::repositories::wal_archive::prune(&archive, needed.as_deref());
         if pruned.removed > 0 {
             tracing::info!(
                 database = %container, removed = pruned.removed, freed = pruned.freed,
