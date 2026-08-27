@@ -249,7 +249,7 @@ async fn certificates_that_would_not_issue(
         });
     }
 
-    for port in crate::platform::ports::all(&state.database).await? {
+    for port in crate::repositories::ports::all(&state.database).await? {
         let Some(hostname) = &port.hostname else {
             continue;
         };

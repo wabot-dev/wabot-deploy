@@ -1,39 +1,21 @@
-//! What a service exposes.
-//!
-//! Three questions that used to be one column: what the process
-//! listens on, whether that is reachable from outside the node, and
-//! whether it answers HTTPS at a hostname. A port row answers all
-//! three, and the common answer to the last two is "no".
+//! Every `SELECT`, `INSERT` and `UPDATE` a [`Port`] needs.
 
-use serde::Serialize;
-
-use crate::values::hostname::Hostname;
 use wabot::sqlite::SqliteDatabase;
 
-use super::{now_ms, PlatformError, PlatformResult};
+use crate::entities::port::Port;
+use crate::platform::{now_ms, PlatformError, PlatformResult};
+use crate::values::hostname::Hostname;
 
 /// Where published ports are allocated from.
 ///
 /// Above the registered range and below the ephemeral one Linux hands
-/// out for outgoing connections, so an allocation cannot collide with
-/// a socket the kernel opened while nobody was looking.
-/// Where a *published* port comes from — one the operator asked to be
-/// reachable. `replicas::OVERLAY_PORT_RANGE` is deliberately disjoint
-/// from this, so the two allocators cannot hand out the same number
-/// without either of them consulting the other's table.
+/// out for outgoing connections, so an allocation cannot collide with a
+/// socket the kernel opened while nobody was looking.
+///
+/// `replicas::OVERLAY_PORT_RANGE` is deliberately disjoint from this, so
+/// the two allocators cannot hand out the same number without either of
+/// them consulting the other's table.
 pub(crate) const HOST_PORT_RANGE: std::ops::Range<u16> = 20000..29000;
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct Port {
-    pub id: String,
-    pub service_id: String,
-    /// What the process listens on inside the container.
-    pub container_port: u16,
-    /// The node's port when this one is published as raw TCP.
-    pub host_port: Option<u16>,
-    /// The hostname this port answers HTTPS on.
-    pub hostname: Option<String>,
-}
 
 /// Declare a port on a service.
 ///
@@ -142,7 +124,7 @@ async fn serve_from(
     hostname: &str,
     nodes: &[String],
 ) -> PlatformResult<()> {
-    let mut serving = super::edges::nodes_for(database, hostname).await?;
+    let mut serving = crate::platform::edges::nodes_for(database, hostname).await?;
     let wanted: Vec<String> = match nodes.is_empty() {
         true => crate::network::me(database)
             .await
@@ -162,7 +144,7 @@ async fn serve_from(
         }
     }
     if changed {
-        super::edges::set(database, service_id, hostname, &serving).await?;
+        crate::platform::edges::set(database, service_id, hostname, &serving).await?;
     }
     Ok(())
 }
@@ -284,7 +266,7 @@ pub async fn set_hostname(
     let was = port.as_ref().and_then(|port| port.hostname.clone());
     let service_id = port.map(|port| port.service_id);
     let serving = match &was {
-        Some(was) => super::edges::nodes_for(database, was).await?,
+        Some(was) => crate::platform::edges::nodes_for(database, was).await?,
         None => Vec::new(),
     };
 
@@ -307,7 +289,7 @@ pub async fn set_hostname(
     if let Some(was) = &was {
         if Some(was.as_str()) != hostname {
             if let Some(service_id) = &service_id {
-                super::edges::set(database, service_id, was, &[]).await?;
+                crate::platform::edges::set(database, service_id, was, &[]).await?;
             }
         }
     }
@@ -319,7 +301,7 @@ pub async fn set_hostname(
         match serving.is_empty() {
             true => serve_from(database, service_id, hostname, &[]).await?,
             false => {
-                super::edges::set(database, service_id, hostname, &serving).await?;
+                crate::platform::edges::set(database, service_id, hostname, &serving).await?;
             }
         }
     }
@@ -445,7 +427,7 @@ mod tests {
         .expect("port");
 
         assert_eq!(
-            super::super::edges::nodes_for(&database, "old.example.com")
+            crate::platform::edges::nodes_for(&database, "old.example.com")
                 .await
                 .expect("query"),
             vec![me.id.clone()],
@@ -457,14 +439,14 @@ mod tests {
             .expect("renamed");
 
         assert_eq!(
-            super::super::edges::nodes_for(&database, "new.example.com")
+            crate::platform::edges::nodes_for(&database, "new.example.com")
                 .await
                 .expect("query"),
             vec![me.id],
             "and the rename carries that over"
         );
         assert!(
-            super::super::edges::nodes_for(&database, "old.example.com")
+            crate::platform::edges::nodes_for(&database, "old.example.com")
                 .await
                 .expect("query")
                 .is_empty(),
@@ -639,7 +621,7 @@ mod tests {
         .expect("created");
 
         assert_eq!(
-            super::super::edges::nodes_for(&database, "api.example.com")
+            crate::platform::edges::nodes_for(&database, "api.example.com")
                 .await
                 .expect("query"),
             vec![me.id]
@@ -658,10 +640,12 @@ mod tests {
             .await
             .expect("created");
 
-        assert!(super::super::edges::nodes_for(&database, "api.example.com")
-            .await
-            .expect("query")
-            .is_empty());
+        assert!(
+            crate::platform::edges::nodes_for(&database, "api.example.com")
+                .await
+                .expect("query")
+                .is_empty()
+        );
     }
 
     #[tokio::test]

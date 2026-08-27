@@ -3,7 +3,7 @@ use wabot::sqlite::SqliteDatabase;
 use crate::config::Config;
 use crate::entities::project::Project;
 use crate::entities::service::Service;
-use crate::platform::ports;
+use crate::repositories::ports;
 
 pub struct Named {
     /// What it answered to before, when the rename replaced a name.

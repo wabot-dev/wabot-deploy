@@ -930,7 +930,7 @@ mod tests {
     /// than by both remembering to check the other's table.
     #[test]
     fn the_two_port_spaces_do_not_overlap() {
-        let published = super::super::ports::HOST_PORT_RANGE;
+        let published = crate::repositories::ports::HOST_PORT_RANGE;
         assert!(
             OVERLAY_PORT_RANGE.start >= published.end || OVERLAY_PORT_RANGE.end <= published.start,
             "an overlay port could be handed out twice"

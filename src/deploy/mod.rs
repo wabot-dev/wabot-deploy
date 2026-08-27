@@ -32,12 +32,13 @@ use std::sync::Arc;
 
 use wabot::sqlite::SqliteDatabase;
 
+use crate::entities::port::Port;
 use crate::entities::project::Project;
 use crate::entities::release::Release;
 use crate::platform::databases;
-use crate::platform::ports::{self, Port};
 use crate::platform::replicas::{self, Replica};
 use crate::policies::postgres;
+use crate::repositories::ports;
 use crate::repositories::releases;
 
 use crate::entities::service::{DesiredState, Service};
@@ -2525,7 +2526,7 @@ impl Deployer {
         };
         let (placements, ports) = match (
             replicas::of_service(&self.database, &service.id).await,
-            crate::platform::ports::of_service(&self.database, &service.id).await,
+            crate::repositories::ports::of_service(&self.database, &service.id).await,
         ) {
             (Ok(placements), Ok(ports)) => (placements, ports),
             _ => {

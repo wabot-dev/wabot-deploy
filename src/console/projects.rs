@@ -1168,7 +1168,7 @@ async fn name_cells(
     };
 
     for service in services {
-        let Ok(ports) = crate::platform::ports::of_service(&state.database, &service.id).await
+        let Ok(ports) = crate::repositories::ports::of_service(&state.database, &service.id).await
         else {
             continue;
         };

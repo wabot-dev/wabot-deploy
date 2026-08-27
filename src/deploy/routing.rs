@@ -16,7 +16,8 @@ use std::sync::Arc;
 use wabot::sqlite::SqliteDatabase;
 
 use crate::edge::routes::{self, RouteTable, Upstream};
-use crate::platform::{ports, PlatformResult};
+use crate::platform::PlatformResult;
+use crate::repositories::ports;
 use crate::repositories::services;
 
 /// Where the edge sends a request for each copy of one service, and
@@ -499,12 +500,12 @@ mod tests {
         // The state a database is in once it has a name and is running:
         // a hostname on its port row, an address on its copy.
         let name = "orders.db-test.example.com";
-        let port = crate::platform::ports::of_service(&database, &service.id)
+        let port = crate::repositories::ports::of_service(&database, &service.id)
             .await
             .expect("query")
             .pop()
             .expect("a database has one port");
-        crate::platform::ports::set_hostname(&database, &port.id, Some(name))
+        crate::repositories::ports::set_hostname(&database, &port.id, Some(name))
             .await
             .expect("named");
         let replica = crate::platform::replicas::in_slot(&database, &service.id, 1)

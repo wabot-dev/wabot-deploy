@@ -22,7 +22,6 @@
 pub mod databases;
 pub mod edges;
 pub mod images;
-pub mod ports;
 pub mod projects;
 pub mod registry_credentials;
 pub mod replicas;

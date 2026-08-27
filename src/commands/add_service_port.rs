@@ -2,8 +2,9 @@ use wabot::sqlite::SqliteDatabase;
 
 use crate::config::Config;
 use crate::deploy::dns;
+use crate::entities::port::Port;
 use crate::entities::service::Service;
-use crate::platform::ports::{self, Port};
+use crate::repositories::ports;
 
 #[derive(Clone, Copy)]
 pub struct Asked<'a> {

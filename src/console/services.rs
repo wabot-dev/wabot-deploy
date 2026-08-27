@@ -14,9 +14,9 @@ use wabot::ui::hypertext::IntoView;
 
 use super::language::t;
 use crate::deploy::dns;
-use crate::platform::ports;
 use crate::policies::access;
 use crate::repositories::config_history;
+use crate::repositories::ports;
 use crate::repositories::releases;
 use crate::repositories::services;
 
@@ -2454,7 +2454,7 @@ struct Exposure {
 fn exposure(
     service: &crate::entities::service::Service,
     project_slug: &str,
-    ports: &[crate::platform::ports::Port],
+    ports: &[crate::entities::port::Port],
     node_domain: Option<&str>,
 ) -> Exposure {
     let name = format!("{}.{project_slug}", service.slug);
@@ -2817,7 +2817,7 @@ fn push_example(push: &Push, auto_deploy: bool, settings: &str) -> impl Renderab
     )
 }
 
-fn reachable_at(port: &crate::platform::ports::Port, node_domain: Option<&str>) -> String {
+fn reachable_at(port: &crate::entities::port::Port, node_domain: Option<&str>) -> String {
     let mut where_from = Vec::new();
     if let Some(hostname) = &port.hostname {
         where_from.push(format!("https://{hostname}"));
@@ -5090,18 +5090,18 @@ mod tests {
 
         // One port, published *and* named: two ways in, not a choice
         // between them.
-        let http = crate::platform::ports::create(&database, &service.id, 80, true, None, &[])
+        let http = crate::repositories::ports::create(&database, &service.id, 80, true, None, &[])
             .await
             .expect("port");
-        crate::platform::ports::set_hostname(&database, &http.id, Some("shop.example.com"))
+        crate::repositories::ports::set_hostname(&database, &http.id, Some("shop.example.com"))
             .await
             .expect("named");
         // And a second port, exposed to nobody.
-        crate::platform::ports::create(&database, &service.id, 9000, false, None, &[])
+        crate::repositories::ports::create(&database, &service.id, 9000, false, None, &[])
             .await
             .expect("port");
 
-        let ports = crate::platform::ports::of_service(&database, &service.id)
+        let ports = crate::repositories::ports::of_service(&database, &service.id)
             .await
             .expect("ports");
         let open = exposure(&service, "shop", &ports, Some("node.example"));

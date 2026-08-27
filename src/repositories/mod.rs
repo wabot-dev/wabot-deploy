@@ -4,6 +4,7 @@
 //! orchestration is in a command. See `docs/architecture-rules.md` §0.
 
 pub mod config_history;
+pub mod ports;
 pub mod projects;
 pub mod releases;
 pub mod services;

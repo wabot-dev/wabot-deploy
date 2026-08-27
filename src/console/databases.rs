@@ -1362,12 +1362,12 @@ mod tests {
             "what every database had before a name could be chosen"
         );
 
-        let port = crate::platform::ports::of_service(&database, &service.id)
+        let port = crate::repositories::ports::of_service(&database, &service.id)
             .await
             .expect("ports")
             .pop()
             .expect("a database is created with one");
-        crate::platform::ports::set_hostname(&database, &port.id, Some("db.example.com"))
+        crate::repositories::ports::set_hostname(&database, &port.id, Some("db.example.com"))
             .await
             .expect("named");
 

@@ -184,7 +184,8 @@ pub async fn create(
     // container listens on to bind anything for it — an overlay port
     // for a standby elsewhere, or a host port if somebody publishes
     // it — and publishing is a separate decision somebody confirms.
-    super::ports::create(database, &service.id, postgres::PORT, false, None, &[]).await?;
+    crate::repositories::ports::create(database, &service.id, postgres::PORT, false, None, &[])
+        .await?;
 
     let identifier = identifier(&service.slug);
     let row = Database {
@@ -531,7 +532,8 @@ pub async fn restore_into(
         postgres::DATA_MOUNT,
     )
     .await?;
-    super::ports::create(database, &service.id, postgres::PORT, false, None, &[]).await?;
+    crate::repositories::ports::create(database, &service.id, postgres::PORT, false, None, &[])
+        .await?;
 
     let row = Database {
         service_id: service.id.clone(),
@@ -603,7 +605,7 @@ pub async fn qualified_name(
     project_slug: &str,
     suffix: Option<&str>,
 ) -> PlatformResult<Option<String>> {
-    if let Some(chosen) = super::ports::of_service(database, &service.id)
+    if let Some(chosen) = crate::repositories::ports::of_service(database, &service.id)
         .await?
         .into_iter()
         .find_map(|port| port.hostname)
@@ -801,7 +803,8 @@ fn decode(row: &Row<'_>) -> wabot::sqlite::rusqlite::Result<Database> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::platform::{ports, replicas, volumes};
+    use crate::platform::{replicas, volumes};
+    use crate::repositories::ports;
     use crate::repositories::services;
 
     async fn project() -> (SqliteDatabase, String) {

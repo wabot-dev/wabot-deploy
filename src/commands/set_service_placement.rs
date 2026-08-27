@@ -461,7 +461,7 @@ async fn send_there(
         // empty when no port has a hostname: nothing would proxy to
         // that service anyway, so a port there would be one nobody
         // asked for.
-        port: crate::platform::ports::of_service(database, &service.id)
+        port: crate::repositories::ports::of_service(database, &service.id)
             .await
             .map_err(|error| error.to_string())?
             .into_iter()

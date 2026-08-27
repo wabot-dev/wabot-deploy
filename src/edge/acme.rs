@@ -1437,7 +1437,7 @@ mod tests {
         .run(&database)
         .await
         .expect("service");
-        crate::platform::ports::create(
+        crate::repositories::ports::create(
             &database,
             &service.id,
             80,
@@ -1580,12 +1580,12 @@ mod tests {
         )
         .await
         .expect("created");
-        let port = crate::platform::ports::of_service(&database, &service.id)
+        let port = crate::repositories::ports::of_service(&database, &service.id)
             .await
             .expect("ports")
             .pop()
             .expect("a database has one");
-        crate::platform::ports::set_hostname(&database, &port.id, Some("localhost"))
+        crate::repositories::ports::set_hostname(&database, &port.id, Some("localhost"))
             .await
             .expect("named");
 
