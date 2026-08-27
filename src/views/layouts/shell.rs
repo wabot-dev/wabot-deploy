@@ -18,8 +18,8 @@ use hypertext::prelude::*;
 use crate::accounts::Account;
 use crate::entities::project::Project;
 
-use super::assets;
-use super::language::t;
+use crate::console::assets;
+use crate::views::texts::language::t;
 
 /// Which theme to paint in.
 ///
@@ -164,7 +164,7 @@ pub struct Frame {
     /// offering an action they will be refused is the nav lying.
     pub deploy: bool,
     pub theme: Theme,
-    pub language: crate::console::language::Language,
+    pub language: crate::views::texts::language::Language,
 }
 
 /// The last segment of a path when it names an action rather than a
@@ -252,11 +252,12 @@ impl Frame {
         // strings are read. See `language::scoped`.
         let language = self.language;
         let top =
-            crate::console::language::scoped(language, || self.topbar().render().into_inner());
-        let side =
-            crate::console::language::scoped(language, || self.sidebar().render().into_inner());
+            crate::views::texts::language::scoped(language, || self.topbar().render().into_inner());
+        let side = crate::views::texts::language::scoped(language, || {
+            self.sidebar().render().into_inner()
+        });
         let crumbs =
-            crate::console::language::scoped(language, || self.crumbs().render().into_inner());
+            crate::views::texts::language::scoped(language, || self.crumbs().render().into_inner());
         rsx! {
             <div class="app-shell" data-theme=(self.theme.attribute())>
                 (hypertext::Raw::dangerously_create(&top))
@@ -871,7 +872,7 @@ mod tests {
             username: "someone".into(),
             tenant_id: None,
             role: crate::accounts::roles::NodeRole::Admin,
-            language: crate::console::language::Language::En,
+            language: crate::views::texts::language::Language::En,
         };
         let frame = Frame::new(&account, Area::Settings, &[], None, "/people");
         let html = frame.render(String::new()).render().into_inner();
@@ -902,7 +903,7 @@ mod tests {
             username: "someone".into(),
             tenant_id: None,
             role: crate::accounts::roles::NodeRole::Admin,
-            language: crate::console::language::Language::En,
+            language: crate::views::texts::language::Language::En,
         };
         let project = Project {
             id: "prj-1".into(),
@@ -1015,7 +1016,7 @@ mod tests {
             username: "someone".into(),
             tenant_id: None,
             role: crate::accounts::roles::NodeRole::Admin,
-            language: crate::console::language::Language::En,
+            language: crate::views::texts::language::Language::En,
         };
         let frame = Frame::new(&account, Area::Projects, &[], None, "/");
         assert_eq!(frame.trail().len(), 1);
@@ -1044,7 +1045,7 @@ mod tests {
             username: "someone".into(),
             tenant_id: None,
             role: crate::accounts::roles::NodeRole::Admin,
-            language: crate::console::language::Language::En,
+            language: crate::views::texts::language::Language::En,
         };
         let frame = Frame::new(&account, Area::Projects, &[], None, "/projects/db-test");
         let html = frame.render(String::new()).render().into_inner();

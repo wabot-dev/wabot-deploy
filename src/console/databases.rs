@@ -19,13 +19,14 @@ use wabot::rest::RestResult;
 use wabot::ui::hypertext::IntoView;
 
 use super::auth::{back_with_error, field, read_form, see_other, signed_in, SessionMiddleware};
-use super::language::t;
-use super::shell::{Area, Frame};
-use super::{layout, ConsoleState};
+use super::ConsoleState;
 use crate::entities::database::Database;
 use crate::policies::access;
 use crate::policies::postgres;
 use crate::policies::presets;
+use crate::views::layouts::layout;
+use crate::views::layouts::shell::{Area, Frame};
+use crate::views::texts::language::t;
 
 #[derive(Debug, Deserialize, Validate)]
 pub struct DatabaseForm {
@@ -69,7 +70,7 @@ impl DatabasePages {
         .allowing(allowed);
 
         layout::head("Create database");
-        let body = super::language::scoped(account.language, || {
+        let body = crate::views::texts::language::scoped(account.language, || {
             rsx! {
             (layout::style_tag())
                 <div class="stack-sm">
@@ -538,8 +539,8 @@ pub fn restore_card<'a>(
     // archive cannot answer — so it is the placeholder rather than a
     // guess at what they want.
     let latest = match window {
-        Window::Between { to, .. } => super::layout::typed(*to),
-        Window::OnlyTheBackup { at } => super::layout::typed(*at),
+        Window::Between { to, .. } => crate::views::layouts::layout::typed(*to),
+        Window::OnlyTheBackup { at } => crate::views::layouts::layout::typed(*at),
         _ => String::new(),
     };
 
@@ -647,15 +648,15 @@ pub fn window_card<'a>(
                 }
                 Window::OnlyTheBackup { at } => {
                     <p class="field-hint">
-                        (t("A backup from "))<span class="mono">(super::layout::exactly(*at))</span>
+                        (t("A backup from "))<span class="mono">(crate::views::layouts::layout::exactly(*at))</span>
                         (t(", and no log after it yet. A minute of writes is what produces the \
                              first segment."))
                     </p>
                 }
                 Window::Between { from, to, gap } => {
                     <p class="field-hint">
-                        (t("Any moment between "))<span class="mono">(super::layout::exactly(*from))</span>
-                        (t(" and "))<span class="mono">(super::layout::exactly(*to))</span>
+                        (t("Any moment between "))<span class="mono">(crate::views::layouts::layout::exactly(*from))</span>
+                        (t(" and "))<span class="mono">(crate::views::layouts::layout::exactly(*to))</span>
                     </p>
                     // The end of the window is the hole, not the newest
                     // segment: recovery stops there, and everything

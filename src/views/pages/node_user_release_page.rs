@@ -1,9 +1,9 @@
 use hypertext::prelude::*;
 
 use super::node_user_updates_page::{day_of, install_form, rendered_notes, state_line};
-use crate::console::language::t;
-use crate::console::layout;
 use crate::update::github::{Release, Version};
+use crate::views::layouts::layout;
+use crate::views::texts::language::t;
 
 pub struct ReleaseView<'a> {
     pub release: &'a Release,

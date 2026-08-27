@@ -16,17 +16,18 @@ use wabot::rest::axum::response::Response;
 use wabot::rest::RestResult;
 use wabot::ui::hypertext::IntoView;
 
-use super::language::t;
 use crate::accounts::roles::{NodeRole, ProjectRole};
 use crate::accounts::{self, invitations, sessions};
 use crate::policies::access;
+use crate::views::texts::language::t;
 
 use super::auth::{
     back_with_error, field, read_form, see_other, see_other_with_cookie, signed_in, JoinPage,
     PageQuery, SessionMiddleware,
 };
-use super::shell::{Area, Frame};
-use super::{layout, ConsoleState};
+use super::ConsoleState;
+use crate::views::layouts::layout;
+use crate::views::layouts::shell::{Area, Frame};
 
 #[injectable]
 pub struct PeoplePages {
@@ -66,7 +67,7 @@ impl PeoplePages {
 
         // The account's language, around the render and no wider:
         // the strings are read here, and nothing awaits inside.
-        let body = super::language::scoped(account.language, || {
+        let body = crate::views::texts::language::scoped(account.language, || {
             rsx! {
             (layout::style_tag())
             <h1>(t("People"))</h1>
@@ -232,13 +233,13 @@ impl PeoplePages {
         let invitation = invitations::look_up(&self.state.database, &query.token).await?;
 
         layout::head("Join");
-        let page = crate::pages::guest_join_page::Join {
+        let page = crate::views::pages::guest_join_page::Join {
             heading: "Join this node",
             token: &query.token,
             invitation: invitation.as_ref(),
             error: query.error.as_deref(),
         };
-        Ok(crate::pages::guest_join_page::render(&page)
+        Ok(crate::views::pages::guest_join_page::render(&page)
             .into_view()
             .into())
     }

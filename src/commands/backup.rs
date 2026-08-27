@@ -834,7 +834,7 @@ pub async fn restore_node(
     println!("restoring from {}", from.display());
     println!(
         "  taken       {} by {}",
-        super::super::console::layout::exactly(manifest.taken_at),
+        crate::views::layouts::layout::exactly(manifest.taken_at),
         manifest.taken_by
     );
     println!(
@@ -1224,7 +1224,7 @@ pub async fn restore(
     println!(
         "  from      {} ({})",
         made.from,
-        super::super::console::layout::exactly(made.taken_at)
+        crate::views::layouts::layout::exactly(made.taken_at)
     );
     match &made.target {
         Some(target) => println!("  up to     {target} UTC"),

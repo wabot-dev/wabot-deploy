@@ -3,9 +3,9 @@ use hypertext::prelude::*;
 use crate::accounts::invitations::Invitation;
 use crate::accounts::roles::{NodeRole, ProjectRole};
 use crate::accounts::Account;
-use crate::console::language::t;
-use crate::console::layout;
 use crate::entities::project::Project;
+use crate::views::layouts::layout;
+use crate::views::texts::language::t;
 
 pub struct People<'a> {
     pub people: &'a [Account],
@@ -119,7 +119,7 @@ pub fn render<'a>(page: &'a People<'a>) -> impl Renderable + 'a {
                     <label for="project_role">(t("As"))</label>
                     <select id="project_role" name="project_role">
                         @for role in ProjectRole::ALL {
-                            <option value=(role.as_str())>(crate::console::language::word(role.label()))</option>
+                            <option value=(role.as_str())>(crate::views::texts::language::word(role.label()))</option>
                         }
                     </select>
                 }

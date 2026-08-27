@@ -1,10 +1,10 @@
 use hypertext::prelude::*;
 
-use crate::console::language::t;
-use crate::console::layout;
 use crate::update::github::Release;
 use crate::update::notes::{Block, Inline};
 use crate::update::runs::{Run, Status};
+use crate::views::layouts::layout;
+use crate::views::texts::language::t;
 
 pub struct Updates<'a> {
     pub history: &'a [Run],

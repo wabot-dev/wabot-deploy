@@ -16,12 +16,13 @@ use wabot::ui::hypertext::IntoView;
 use super::auth::{
     back_with_error, field, read_form, see_other, signed_in, JoinPage, PageQuery, SessionMiddleware,
 };
-use super::language::t;
-use super::shell::{Area, Frame};
-use super::{layout, ConsoleState};
+use super::ConsoleState;
 use crate::accounts::roles::{NodeRole, ProjectRole};
 use crate::accounts::{self, invitations};
 use crate::policies::access;
+use crate::views::layouts::layout;
+use crate::views::layouts::shell::{Area, Frame};
+use crate::views::texts::language::t;
 
 #[injectable]
 pub struct TenantPeoplePages {
@@ -64,7 +65,7 @@ impl TenantPeoplePages {
 
         layout::head("People");
         let frame = Frame::new(&account, Area::Settings, &projects, None, "/people");
-        let page = crate::pages::tenant_user_people_page::People {
+        let page = crate::views::pages::tenant_user_people_page::People {
             people: &people,
             live: &live,
             projects: &projects,
@@ -72,8 +73,8 @@ impl TenantPeoplePages {
             query_error: query.error.as_deref(),
             query_invited: query.invited.as_deref(),
         };
-        let body = super::language::scoped(account.language, || {
-            crate::pages::tenant_user_people_page::render(&page)
+        let body = crate::views::texts::language::scoped(account.language, || {
+            crate::views::pages::tenant_user_people_page::render(&page)
                 .render()
                 .into_inner()
         });
@@ -101,13 +102,13 @@ impl TenantPeoplePages {
             Some(name) => name.to_string(),
             None => t("Join this organisation").to_string(),
         };
-        let page = crate::pages::guest_join_page::Join {
+        let page = crate::views::pages::guest_join_page::Join {
             heading: &heading,
             token: &token,
             invitation: invitation.as_ref(),
             error: query.error.as_deref(),
         };
-        Ok(crate::pages::guest_join_page::render(&page)
+        Ok(crate::views::pages::guest_join_page::render(&page)
             .into_view()
             .into())
     }

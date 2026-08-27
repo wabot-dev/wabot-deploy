@@ -1,7 +1,7 @@
 //! The Spanish for what the console says.
 //!
 //! Long and mechanical on purpose, and kept away from
-//! [`super::language`], which is neither. Sorted by the English, which
+//! [`crate::views::texts::language`], which is neither. Sorted by the English, which
 //! is what makes the lookup a binary search and what makes a duplicate
 //! or a stray entry something `cargo test` can find rather than
 //! something a reader has to.
@@ -1278,19 +1278,19 @@ mod tests {
     #[test]
     fn every_string_the_console_asks_for_is_translated() {
         const SOURCES: &[&str] = &[
-            include_str!("assets.rs"),
-            include_str!("attention.rs"),
-            include_str!("shell.rs"),
-            include_str!("tenant.rs"),
-            include_str!("tenants.rs"),
-            include_str!("layout.rs"),
-            include_str!("auth.rs"),
-            include_str!("people.rs"),
-            include_str!("databases.rs"),
-            include_str!("projects.rs"),
-            include_str!("services.rs"),
-            include_str!("nodes.rs"),
-            include_str!("updates.rs"),
+            include_str!("../../console/assets.rs"),
+            include_str!("../../console/attention.rs"),
+            include_str!("../layouts/shell.rs"),
+            include_str!("../../console/tenant.rs"),
+            include_str!("../../console/tenants.rs"),
+            include_str!("../layouts/layout.rs"),
+            include_str!("../../console/auth.rs"),
+            include_str!("../../console/people.rs"),
+            include_str!("../../console/databases.rs"),
+            include_str!("../../console/projects.rs"),
+            include_str!("../../console/services.rs"),
+            include_str!("../../console/nodes.rs"),
+            include_str!("../../console/updates.rs"),
         ];
 
         let mut missing = Vec::new();
@@ -1327,7 +1327,7 @@ mod tests {
     /// one — the same lesson as the source list below, one level in.
     #[test]
     fn the_words_a_concern_is_labelled_with_are_translated() {
-        let source = include_str!("attention.rs");
+        let source = include_str!("../../console/attention.rs");
         let mut missing = Vec::new();
         for (index, _) in source.match_indices("what: \"") {
             let rest = &source[index + 7..];
@@ -1392,19 +1392,19 @@ mod tests {
     /// The same list as the scan above, in one place so the two cannot
     /// disagree about what is read.
     const SOURCES_FOR_TEST: &[&str] = &[
-        include_str!("assets.rs"),
-        include_str!("attention.rs"),
-        include_str!("shell.rs"),
-        include_str!("tenant.rs"),
-        include_str!("tenants.rs"),
-        include_str!("layout.rs"),
-        include_str!("auth.rs"),
-        include_str!("people.rs"),
-        include_str!("databases.rs"),
-        include_str!("projects.rs"),
-        include_str!("services.rs"),
-        include_str!("nodes.rs"),
-        include_str!("updates.rs"),
+        include_str!("../../console/assets.rs"),
+        include_str!("../../console/attention.rs"),
+        include_str!("../layouts/shell.rs"),
+        include_str!("../../console/tenant.rs"),
+        include_str!("../../console/tenants.rs"),
+        include_str!("../layouts/layout.rs"),
+        include_str!("../../console/auth.rs"),
+        include_str!("../../console/people.rs"),
+        include_str!("../../console/databases.rs"),
+        include_str!("../../console/projects.rs"),
+        include_str!("../../console/services.rs"),
+        include_str!("../../console/nodes.rs"),
+        include_str!("../../console/updates.rs"),
     ];
 
     /// Every string that reaches `t` through a *variable* rather than

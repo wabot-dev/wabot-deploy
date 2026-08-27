@@ -6,8 +6,8 @@
 use hypertext::prelude::*;
 use hypertext::Raw;
 
-use super::assets;
-use super::language::t;
+use crate::console::assets;
+use crate::views::texts::language::t;
 
 /// Declare the head every console page needs.
 ///
@@ -94,7 +94,7 @@ pub fn typed(at_ms: i64) -> String {
 /// the node keeps. Absolute dates are for release notes, which come
 /// with their own.
 pub fn when(at_ms: i64) -> String {
-    let seconds = (super::now_ms() - at_ms) / 1000;
+    let seconds = (crate::console::now_ms() - at_ms) / 1000;
     match seconds {
         // Clock skew, or a row written in the same tick.
         s if s < 0 => "just now".into(),
@@ -889,7 +889,7 @@ pub fn style_tag() -> impl Renderable {
     // request.
     rsx! {
         <style>(Raw::dangerously_create(CSS))</style>
-        <style>(Raw::dangerously_create(super::shell::CSS))</style>
+        <style>(Raw::dangerously_create(crate::views::layouts::shell::CSS))</style>
     }
 }
 
@@ -1030,7 +1030,7 @@ mod tests {
     /// claim can be made at all.
     #[test]
     fn the_copy_button_has_a_name_and_not_only_a_glyph() {
-        let script = include_str!("../../assets/console.js");
+        let script = include_str!("../../../assets/console.js");
         let island = script
             .split("wabot.island('copy'")
             .nth(1)
@@ -1078,7 +1078,7 @@ mod tests {
 
     #[test]
     fn the_two_dark_palettes_agree() {
-        let sheet = include_str!("../../assets/wabot.css");
+        let sheet = include_str!("../../../assets/wabot.css");
         let chosen = tokens(sheet, "[data-theme='dark'] {");
         let followed = tokens(sheet, ".app-shell:not([data-theme='light']) {");
         assert!(!chosen.is_empty(), "the explicit dark block was not found");
@@ -1144,7 +1144,7 @@ mod tests {
     /// without touching this test.
     #[test]
     fn a_classed_submit_is_not_the_primary_button() {
-        let sheet = include_str!("../../assets/wabot.css");
+        let sheet = include_str!("../../../assets/wabot.css");
         for rule in sheet.split('}') {
             let Some((selectors, body)) = rule.split_once('{') else {
                 continue;

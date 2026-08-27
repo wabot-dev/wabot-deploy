@@ -27,7 +27,6 @@ mod errors;
 mod ledger;
 mod network;
 mod node;
-mod pages;
 mod policies;
 mod registry;
 mod repositories;
@@ -35,6 +34,7 @@ mod runtime;
 mod update;
 mod usecases;
 mod values;
+mod views;
 
 use cli::{Cli, Command};
 

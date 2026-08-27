@@ -36,14 +36,15 @@ use wabot::rest::axum::response::Response;
 use wabot::rest::RestResult;
 use wabot::ui::hypertext::IntoView;
 
-use super::language::t;
 use crate::network::{self, enrolment::Enrolment, Kind};
 use crate::node::memory::{self, Snapshot};
 use crate::policies::access;
+use crate::views::texts::language::t;
 
 use super::auth::{signed_in, SessionMiddleware};
-use super::shell::{Area, Frame};
-use super::{layout, ConsoleState};
+use super::ConsoleState;
+use crate::views::layouts::layout;
+use crate::views::layouts::shell::{Area, Frame};
 
 #[derive(Debug, Deserialize, Validate)]
 pub struct NodePage {
@@ -244,7 +245,7 @@ impl NodePages {
         let frame = Frame::new(&account, Area::Network, &projects, None, "/network");
         // The account's language, around the render and no wider:
         // the strings are read here, and nothing awaits inside.
-        let body = super::language::scoped(account.language, || {
+        let body = crate::views::texts::language::scoped(account.language, || {
             rsx! {
                 (layout::style_tag())
                 <h1>(t("Network"))</h1>
@@ -362,7 +363,7 @@ impl NodePages {
 
         layout::head("Invite a node");
         let frame = Frame::new(&account, Area::Network, &projects, None, "/network/invite");
-        let body = super::language::scoped(account.language, || {
+        let body = crate::views::texts::language::scoped(account.language, || {
             rsx! {
                 (layout::style_tag())
                 <h1>(t("Invite a node"))</h1>
@@ -418,7 +419,7 @@ impl NodePages {
 
         layout::head("Join a network");
         let frame = Frame::new(&account, Area::Network, &projects, None, "/network/join");
-        let body = super::language::scoped(account.language, || {
+        let body = crate::views::texts::language::scoped(account.language, || {
             rsx! {
                 (layout::style_tag())
                 <h1>(t("Join a network"))</h1>
@@ -579,7 +580,7 @@ impl NodePages {
 
         layout::head("Node");
         let frame = Frame::new(&account, Area::Settings, &projects, None, "/node");
-        let body = super::language::scoped(account.language, || {
+        let body = crate::views::texts::language::scoped(account.language, || {
             rsx! {
                 (layout::style_tag())
                 <h1>(t("Node"))</h1>
@@ -707,7 +708,7 @@ impl NodePages {
             let frame = Frame::new(&account, Area::Network, &projects, None, path);
             // The account's language, around the render and no wider:
             // the strings are read here, and nothing awaits inside.
-            let body = super::language::scoped(account.language, || {
+            let body = crate::views::texts::language::scoped(account.language, || {
                 rsx! {
                     (layout::style_tag())
                     <div class="split">
@@ -805,7 +806,7 @@ impl NodePages {
         let frame = Frame::new(&account, Area::Network, &projects, None, path);
         // The account's language, around the render and no wider:
         // the strings are read here, and nothing awaits inside.
-        let body = super::language::scoped(account.language, || {
+        let body = crate::views::texts::language::scoped(account.language, || {
             rsx! {
                     (layout::style_tag())
                     <div class="split">

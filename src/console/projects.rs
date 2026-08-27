@@ -12,17 +12,18 @@ use wabot::rest::axum::response::Response;
 use wabot::rest::RestResult;
 use wabot::ui::hypertext::IntoView;
 
-use super::language::t;
 use crate::accounts::roles::ProjectRole;
 use crate::deploy::Observed;
 use crate::policies::access;
 use crate::repositories::services;
+use crate::views::texts::language::t;
 
 use super::auth::{
     back_with_error, field, read_form, see_other, signed_in, PageQuery, SessionMiddleware,
 };
-use super::shell::{Area, Frame};
-use super::{layout, ConsoleState};
+use super::ConsoleState;
+use crate::views::layouts::layout;
+use crate::views::layouts::shell::{Area, Frame};
 
 #[derive(Debug, Deserialize, Validate)]
 pub struct ProjectQuery {
@@ -76,7 +77,7 @@ impl ProjectPages {
         let frame = Frame::new(&account, Area::Projects, &projects, None, "/");
         // The account's language, around the render and no wider:
         // the strings are read here, and nothing awaits inside.
-        let body = super::language::scoped(account.language, || {
+        let body = crate::views::texts::language::scoped(account.language, || {
             rsx! {
                     (layout::style_tag())
                     <div class="split">
@@ -148,7 +149,7 @@ impl ProjectPages {
         let frame = Frame::new(&account, Area::Projects, &projects, None, "/projects/new");
         // The account's language, around the render and no wider:
         // the strings are read here, and nothing awaits inside.
-        let body = super::language::scoped(account.language, || {
+        let body = crate::views::texts::language::scoped(account.language, || {
             rsx! {
                 (layout::style_tag())
                 <h1>(t("Create project"))</h1>
@@ -247,7 +248,7 @@ impl ProjectPages {
         .allowing(allowed);
         // The account's language, around the render and no wider:
         // the strings are read here, and nothing awaits inside.
-        let body = super::language::scoped(account.language, || {
+        let body = crate::views::texts::language::scoped(account.language, || {
             rsx! {
                     (layout::style_tag())
                     <div class="split">
@@ -371,7 +372,7 @@ impl ProjectPages {
         layout::head(&format!("{} settings", project.name));
         // The account's language, around the render and no wider:
         // the strings are read here, and nothing awaits inside.
-        let body = super::language::scoped(account.language, || {
+        let body = crate::views::texts::language::scoped(account.language, || {
             rsx! {
                 (layout::style_tag())
                 <div class="split">
@@ -809,7 +810,7 @@ impl Live {
     /// translated here, on the way out.
     fn translate(&mut self) {
         for cell in self.services.values_mut() {
-            cell.word = super::language::word(&cell.word).to_string();
+            cell.word = crate::views::texts::language::word(&cell.word).to_string();
             // The one field composed rather than looked up. Said here
             // and rendered by `say` on the page, so a count sent two
             // seconds after a page load cannot be in the other
@@ -817,11 +818,11 @@ impl Live {
             cell.address = cell.whereabouts.say();
         }
         for cell in self.replicas.values_mut() {
-            cell.word = super::language::word(&cell.word).to_string();
-            cell.detail = super::language::word(&cell.detail).to_string();
+            cell.word = crate::views::texts::language::word(&cell.word).to_string();
+            cell.detail = crate::views::texts::language::word(&cell.detail).to_string();
         }
         for cell in self.edges.values_mut() {
-            cell.word = super::language::word(&cell.word).to_string();
+            cell.word = crate::views::texts::language::word(&cell.word).to_string();
         }
     }
 }
@@ -1405,7 +1406,7 @@ pub(crate) fn state_cell(
 pub(crate) fn state_badge(cell: &StateCell) -> impl Renderable + '_ {
     rsx! {
         <span class=(cell.badge)>
-            <span class=(cell.dot)></span>(super::language::word(&cell.word))
+            <span class=(cell.dot)></span>(crate::views::texts::language::word(&cell.word))
         </span>
     }
 }
@@ -1553,7 +1554,7 @@ impl ProjectApi {
                 // back to English two seconds later, which is the same
                 // "decided in two places" failure as the words themselves,
                 // one layer down.
-                super::language::scoped(account.language, || {
+                crate::views::texts::language::scoped(account.language, || {
                     live.translate();
                     String::new()
                 });
@@ -2143,23 +2144,25 @@ mod tests {
     #[test]
     fn the_count_of_copies_is_read_in_the_accounts_language() {
         let three = Whereabouts { total: 3, away: 2 };
-        let spanish =
-            crate::console::language::scoped(crate::console::language::Language::Es, || {
-                three.say()
-            });
+        let spanish = crate::views::texts::language::scoped(
+            crate::views::texts::language::Language::Es,
+            || three.say(),
+        );
         assert_eq!(spanish, "3 réplicas · 2 en otro nodo");
 
         assert_eq!(
-            crate::console::language::scoped(crate::console::language::Language::Es, || {
-                Whereabouts { total: 1, away: 1 }.say()
-            }),
+            crate::views::texts::language::scoped(
+                crate::views::texts::language::Language::Es,
+                || { Whereabouts { total: 1, away: 1 }.say() }
+            ),
             "1 en otro nodo"
         );
         // Singular, and the plural is not "1 replicas".
         assert_eq!(
-            crate::console::language::scoped(crate::console::language::Language::Es, || {
-                Whereabouts { total: 1, away: 0 }.say()
-            }),
+            crate::views::texts::language::scoped(
+                crate::views::texts::language::Language::Es,
+                || { Whereabouts { total: 1, away: 0 }.say() }
+            ),
             "1 réplica"
         );
     }
@@ -2280,7 +2283,7 @@ mod tests {
 
         for cell in &placed {
             assert!(
-                crate::console::es::lookup(&cell.word).is_some(),
+                crate::views::texts::es::lookup(&cell.word).is_some(),
                 "no Spanish for the state word {:?}",
                 cell.word
             );
@@ -2336,7 +2339,7 @@ mod tests {
         ];
         for cell in &copies {
             assert!(
-                crate::console::es::lookup(&cell.word).is_some(),
+                crate::views::texts::es::lookup(&cell.word).is_some(),
                 "no Spanish for the replica word {:?}",
                 cell.word
             );

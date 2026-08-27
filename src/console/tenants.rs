@@ -29,10 +29,11 @@ use wabot::ui::hypertext::IntoView;
 use super::auth::{
     back_with_error, field, read_form, see_other, signed_in, PageQuery, SessionMiddleware,
 };
-use super::shell::{Area, Frame};
-use super::{layout, ConsoleState};
+use super::ConsoleState;
 use crate::policies::access;
 use crate::repositories::tenants;
+use crate::views::layouts::layout;
+use crate::views::layouts::shell::{Area, Frame};
 
 #[injectable]
 pub struct TenantPages {
@@ -70,13 +71,13 @@ impl TenantPages {
         }
 
         let frame = Frame::new(&account, Area::Settings, &[], None, "/organisations");
-        let page = crate::pages::node_user_organisations_page::Organisations {
+        let page = crate::views::pages::node_user_organisations_page::Organisations {
             cards: &cards,
             query_error: query.error.as_deref(),
             query_invited: query.invited.as_deref(),
         };
-        let body = super::language::scoped(account.language, || {
-            crate::pages::node_user_organisations_page::render(&page)
+        let body = crate::views::texts::language::scoped(account.language, || {
+            crate::views::pages::node_user_organisations_page::render(&page)
                 .render()
                 .into_inner()
         });

@@ -303,7 +303,7 @@ pub async fn run(config: Config, config_path: &Path) -> anyhow::Result<i32> {
     match attempt.ok_at {
         Some(at) => println!(
             "  last good    {} ({})",
-            crate::console::layout::exactly(at),
+            crate::views::layouts::layout::exactly(at),
             attempt.note.as_deref().unwrap_or("no detail recorded")
         ),
         None => println!("  last good    none taken from this node"),
@@ -312,7 +312,10 @@ pub async fn run(config: Config, config_path: &Path) -> anyhow::Result<i32> {
         problems += 1;
         println!("  LAST FAILED  {reason}");
         if let Some(at) = attempt.at {
-            println!("               at {}", crate::console::layout::exactly(at));
+            println!(
+                "               at {}",
+                crate::views::layouts::layout::exactly(at)
+            );
         }
     }
 

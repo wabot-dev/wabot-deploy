@@ -31,8 +31,8 @@
 use hypertext::prelude::*;
 use hypertext::Renderable;
 
-use super::language::t;
 use crate::errors::PlatformResult;
+use crate::views::texts::language::t;
 
 /// How much somebody should care.
 ///
@@ -479,7 +479,7 @@ pub fn card(concerns: &[Concern]) -> impl Renderable + '_ {
                                     <td>
                                         <span class=(concern.weight.badge())>
                                             <span class=(concern.weight.dot())></span>
-                                            (super::language::word(&concern.what))
+                                            (crate::views::texts::language::word(&concern.what))
                                         </span>
                                     </td>
                                     // Somebody's own string, or the
@@ -539,7 +539,7 @@ mod tests {
             "Two nodes claim one address",
         ] {
             assert!(
-                crate::console::es::lookup(what).is_some(),
+                crate::views::texts::es::lookup(what).is_some(),
                 "no Spanish for the concern {what:?}"
             );
             // And it is one this module actually produces. A guard

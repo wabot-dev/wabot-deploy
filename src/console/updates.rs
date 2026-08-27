@@ -30,8 +30,9 @@ use crate::policies::access;
 use crate::update::runs::{self, Status};
 
 use super::auth::{signed_in, SessionMiddleware};
-use super::shell::{Area, Frame};
-use super::{layout, ConsoleState};
+use super::ConsoleState;
+use crate::views::layouts::layout;
+use crate::views::layouts::shell::{Area, Frame};
 
 #[derive(Debug, Deserialize, Validate)]
 pub struct UpdatesPage {
@@ -86,15 +87,15 @@ impl UpdatePages {
         let frame = Frame::new(&account, Area::Settings, &projects, None, "/updates");
         // The account's language, around the render and no wider:
         // the strings are read here, and nothing awaits inside.
-        let page = crate::pages::node_user_updates_page::Updates {
+        let page = crate::views::pages::node_user_updates_page::Updates {
             history: &history,
             latest: latest.as_ref(),
             available: &available,
             query_error: query.error.as_deref(),
             query_started: query.started.as_deref(),
         };
-        let body = super::language::scoped(account.language, || {
-            crate::pages::node_user_updates_page::render(&page)
+        let body = crate::views::texts::language::scoped(account.language, || {
+            crate::views::pages::node_user_updates_page::render(&page)
                 .render()
                 .into_inner()
         });
@@ -132,13 +133,13 @@ impl UpdatePages {
         let frame = Frame::new(&account, Area::Settings, &projects, None, "/updates");
         // The account's language, around the render and no wider:
         // the strings are read here, and nothing awaits inside.
-        let page = crate::pages::node_user_release_page::ReleaseView {
+        let page = crate::views::pages::node_user_release_page::ReleaseView {
             release: &release,
             current,
             query_error: query.error.as_deref(),
         };
-        let body = super::language::scoped(account.language, || {
-            crate::pages::node_user_release_page::render(&page)
+        let body = crate::views::texts::language::scoped(account.language, || {
+            crate::views::pages::node_user_release_page::render(&page)
                 .render()
                 .into_inner()
         });

@@ -58,8 +58,8 @@ mod tests {
             id: "acc-1".into(),
             username: "jorge".into(),
             role,
-            theme: crate::console::shell::Theme::System,
-            language: crate::console::language::Language::En,
+            theme: crate::views::layouts::shell::Theme::System,
+            language: crate::views::texts::language::Language::En,
             tenant_id: tenant.map(str::to_string),
         }
     }

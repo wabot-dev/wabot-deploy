@@ -25,14 +25,10 @@ pub mod assets;
 pub mod attention;
 pub mod auth;
 pub mod databases;
-pub mod es;
-pub mod language;
-pub mod layout;
 pub mod nodes;
 pub mod people;
 pub mod projects;
 pub mod services;
-pub mod shell;
 pub mod tenant;
 pub mod tenants;
 pub mod updates;
@@ -1086,7 +1082,7 @@ pub(crate) mod tests {
             ("people.rs", include_str!("people.rs")),
             ("projects.rs", include_str!("projects.rs")),
             ("services.rs", include_str!("services.rs")),
-            ("shell.rs", include_str!("shell.rs")),
+            ("shell.rs", include_str!("../views/layouts/shell.rs")),
             ("updates.rs", include_str!("updates.rs")),
         ];
 
@@ -1151,7 +1147,7 @@ pub(crate) mod tests {
             ("people.rs", include_str!("people.rs")),
             ("projects.rs", include_str!("projects.rs")),
             ("services.rs", include_str!("services.rs")),
-            ("shell.rs", include_str!("shell.rs")),
+            ("shell.rs", include_str!("../views/layouts/shell.rs")),
             ("updates.rs", include_str!("updates.rs")),
         ];
         // What a browser reads as "this is a sign-in".

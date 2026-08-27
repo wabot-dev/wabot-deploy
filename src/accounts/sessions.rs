@@ -72,11 +72,13 @@ pub async fn lookup(database: &SqliteDatabase, token: &str) -> AccountResult<Opt
                             // Read here too, for the same reason: a
                             // theme chosen on one page has to be the
                             // one the next page renders in.
-                            theme: crate::console::shell::Theme::parse(&row.get::<_, String>(3)?),
+                            theme: crate::views::layouts::shell::Theme::parse(
+                                &row.get::<_, String>(3)?,
+                            ),
                             // And the language, for the third time the
                             // same reason: a page rendered in the other
                             // one is a console that forgot mid-click.
-                            language: crate::console::language::Language::parse(
+                            language: crate::views::texts::language::Language::parse(
                                 &row.get::<_, String>(4)?,
                             ),
                             // And the scope, for the fourth: it is what

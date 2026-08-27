@@ -88,11 +88,11 @@ pub struct Account {
     pub role: roles::NodeRole,
     /// Which theme they read in. Travels with the account so the
     /// choice follows the person rather than the browser.
-    pub theme: crate::console::shell::Theme,
+    pub theme: crate::views::layouts::shell::Theme,
     /// Which language they read in. Beside the theme and for the same
     /// reason: a preference that does not follow somebody between
     /// machines is one they set again on each.
-    pub language: crate::console::language::Language,
+    pub language: crate::views::texts::language::Language,
     /// Which tenant they belong to. `None` is this node's own operator.
     ///
     /// **A scope, not a role.** `role` says how much somebody may do and
@@ -278,8 +278,8 @@ async fn insert(
     tenant_id: Option<&str>,
 ) -> AccountResult<Account> {
     let account = Account {
-        theme: crate::console::shell::Theme::System,
-        language: crate::console::language::Language::En,
+        theme: crate::views::layouts::shell::Theme::System,
+        language: crate::views::texts::language::Language::En,
         id: format!("acc-{}", wabot::prelude::password::generate(16)),
         username: username.to_string(),
         // Whose frontier they are in. It arrives on the invitation and
@@ -437,8 +437,8 @@ fn decode(row: &wabot::sqlite::rusqlite::Row<'_>) -> wabot::sqlite::rusqlite::Re
         id: row.get(0)?,
         username: row.get(1)?,
         role: roles::NodeRole::parse(&row.get::<_, String>(2)?),
-        theme: crate::console::shell::Theme::parse(&row.get::<_, String>(3)?),
-        language: crate::console::language::Language::parse(&row.get::<_, String>(4)?),
+        theme: crate::views::layouts::shell::Theme::parse(&row.get::<_, String>(3)?),
+        language: crate::views::texts::language::Language::parse(&row.get::<_, String>(4)?),
         tenant_id: row.get(5)?,
     })
 }
@@ -447,7 +447,7 @@ fn decode(row: &wabot::sqlite::rusqlite::Row<'_>) -> wabot::sqlite::rusqlite::Re
 pub async fn set_theme(
     database: &SqliteDatabase,
     id: &str,
-    theme: crate::console::shell::Theme,
+    theme: crate::views::layouts::shell::Theme,
 ) -> AccountResult<()> {
     let (id, theme) = (id.to_string(), theme.as_str().to_string());
     database
@@ -466,7 +466,7 @@ pub async fn set_theme(
 pub async fn set_language(
     database: &SqliteDatabase,
     id: &str,
-    language: crate::console::language::Language,
+    language: crate::views::texts::language::Language,
 ) -> AccountResult<()> {
     let (id, language) = (id.to_string(), language.as_str().to_string());
     database
@@ -606,8 +606,8 @@ pub async fn authenticate(
         .await?;
 
     Ok(Some(Account {
-        theme: crate::console::shell::Theme::parse(&theme),
-        language: crate::console::language::Language::parse(&language),
+        theme: crate::views::layouts::shell::Theme::parse(&theme),
+        language: crate::views::texts::language::Language::parse(&language),
         id,
         username,
         tenant_id,

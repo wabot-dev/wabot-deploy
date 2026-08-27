@@ -37,11 +37,11 @@ use wabot::rest::axum::response::Response;
 use wabot::rest::{Middleware, RestResult};
 use wabot::ui::hypertext::IntoView;
 
-use super::language::t;
 use crate::accounts::{self, sessions, Account};
+use crate::views::texts::language::t;
 
-use super::layout;
 use super::ConsoleState;
+use crate::views::layouts::layout;
 
 /// Reads the session cookie and records who it names.
 ///
@@ -432,7 +432,7 @@ impl AuthApi {
             Err(response) => return Ok(response),
         };
 
-        let theme = super::shell::Theme::parse(field(&form, "theme"));
+        let theme = crate::views::layouts::shell::Theme::parse(field(&form, "theme"));
         if let Err(error) =
             crate::accounts::set_theme(&self.state.database, &account.id, theme).await
         {
@@ -461,7 +461,7 @@ impl AuthApi {
             Err(response) => return Ok(response),
         };
 
-        let language = super::language::Language::parse(field(&form, "language"));
+        let language = crate::views::texts::language::Language::parse(field(&form, "language"));
         if let Err(error) =
             crate::accounts::set_language(&self.state.database, &account.id, language).await
         {

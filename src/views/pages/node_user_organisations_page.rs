@@ -1,9 +1,9 @@
 use hypertext::prelude::*;
 
-use crate::console::language::t;
-use crate::console::language::word;
-use crate::console::layout;
 use crate::policies::presets;
+use crate::views::layouts::layout;
+use crate::views::texts::language::t;
+use crate::views::texts::language::word;
 
 use crate::entities::project::Project;
 use crate::entities::tenant::Tenant;

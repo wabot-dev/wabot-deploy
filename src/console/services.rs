@@ -12,17 +12,18 @@ use wabot::rest::axum::response::Response;
 use wabot::rest::RestResult;
 use wabot::ui::hypertext::IntoView;
 
-use super::language::t;
 use crate::deploy::dns;
 use crate::policies::access;
 use crate::repositories::config_history;
 use crate::repositories::ports;
 use crate::repositories::releases;
 use crate::repositories::services;
+use crate::views::texts::language::t;
 
 use super::auth::{back_with_error, field, read_form, see_other, signed_in, SessionMiddleware};
-use super::shell::{Area, Frame};
-use super::{layout, ConsoleState};
+use super::ConsoleState;
+use crate::views::layouts::layout;
+use crate::views::layouts::shell::{Area, Frame};
 
 /// The value the placement form sends for "let the node decide".
 ///
@@ -256,7 +257,7 @@ impl ServicePages {
         layout::head("Create service");
         // The account's language, around the render and no wider:
         // the strings are read here, and nothing awaits inside.
-        let body = super::language::scoped(account.language, || {
+        let body = crate::views::texts::language::scoped(account.language, || {
             rsx! {
             (layout::style_tag())
                 <div class="stack-sm">
@@ -574,7 +575,7 @@ impl ServicePages {
         layout::head(&service.name);
         // The account's language, around the render and no wider:
         // the strings are read here, and nothing awaits inside.
-        let body = super::language::scoped(account.language, || {
+        let body = crate::views::texts::language::scoped(account.language, || {
             rsx! {
             (layout::style_tag())
                 <div class="split">
@@ -1140,7 +1141,7 @@ impl ServicePages {
         // Read before the render takes `holder`: the island below is for
         // a copy on this machine and nothing else.
         let here = holder.is_none();
-        let body = super::language::scoped(account.language, || {
+        let body = crate::views::texts::language::scoped(account.language, || {
             rsx! {
             (layout::style_tag())
                 // Title and copy tabs on one line, the shape every
@@ -1379,10 +1380,10 @@ impl ServicePages {
                     "service": service_for_island,
                     "slot": slot,
                     "from": from,
-                    "following": super::language::scoped(account.language, || {
+                    "following": crate::views::texts::language::scoped(account.language, || {
                         t("Following").to_string()
                     }),
-                    "reconnecting": super::language::scoped(account.language, || {
+                    "reconnecting": crate::views::texts::language::scoped(account.language, || {
                         t("Reconnecting…").to_string()
                     }),
                 }),
@@ -1643,7 +1644,7 @@ impl ServicePages {
         layout::head(&format!("{} settings", service.name));
         // The account's language, around the render and no wider:
         // the strings are read here, and nothing awaits inside.
-        let body = super::language::scoped(account.language, || {
+        let body = crate::views::texts::language::scoped(account.language, || {
             rsx! {
             (layout::style_tag())
                 <div class="split">
@@ -1877,7 +1878,7 @@ impl ServicePages {
                                             <td class="tile-detail">
                                                 <details>
                                                     <summary>
-                                                        <span class="mono">(super::layout::exactly(revision.created_at))</span>
+                                                        <span class="mono">(crate::views::layouts::layout::exactly(revision.created_at))</span>
                                                         (" · ")
                                                         @if revision.env.len() == 1 {
                                                             (t("1 value"))
@@ -3323,7 +3324,7 @@ fn served_by_form<'a>(
                               false => "badge badge-info is-hidden",
                           })
                           data-edge=(format!("{}|{}", hostname, node.id))>
-                        <span class=(cell.dot)></span>(super::language::word(&cell.word))
+                        <span class=(cell.dot)></span>(crate::views::texts::language::word(&cell.word))
                     </span>
                 </label>
             }
@@ -3350,10 +3351,10 @@ fn placement_state<'a>(
     let cell = super::projects::replica_cell(replica, stopped, queued, not_answering);
     rsx! {
         @if cell.dot.is_empty() {
-            <span class=(cell.badge)>(super::language::word(&cell.word))</span>
+            <span class=(cell.badge)>(crate::views::texts::language::word(&cell.word))</span>
         } @else {
             <span class=(cell.badge)>
-                <span class=(cell.dot)></span>(super::language::word(&cell.word))
+                <span class=(cell.dot)></span>(crate::views::texts::language::word(&cell.word))
             </span>
         }
         // The line under it: an address while it is up, a reason while it
