@@ -475,7 +475,7 @@ impl NetworkApi {
             return Ok(json(StatusCode::BAD_REQUEST, &Settled { settled: false }));
         };
 
-        let held = crate::platform::edges::secret_for(&self.database, &asked.hostname)
+        let held = crate::repositories::edges::secret_for(&self.database, &asked.hostname)
             .await
             .ok()
             .flatten();
@@ -2099,7 +2099,7 @@ mod tests {
         .await
         .expect("service");
         // Being an edge for the name is what mints the secret here.
-        crate::platform::edges::set(
+        crate::repositories::edges::set(
             &authority.database,
             &service.id,
             "shop.example.com",
@@ -2107,10 +2107,11 @@ mod tests {
         )
         .await
         .expect("edges");
-        let secret = crate::platform::edges::secret_for(&authority.database, "shop.example.com")
-            .await
-            .expect("query")
-            .expect("minted");
+        let secret =
+            crate::repositories::edges::secret_for(&authority.database, "shop.example.com")
+                .await
+                .expect("query")
+                .expect("minted");
 
         let asking = serde_json::json!({
             "hostname": "shop.example.com",

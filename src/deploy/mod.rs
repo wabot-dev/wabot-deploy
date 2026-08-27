@@ -43,9 +43,10 @@ use crate::repositories::releases;
 use crate::repositories::replicas;
 
 use crate::entities::service::{DesiredState, Service};
-use crate::platform::volumes::{self, Volume};
+use crate::entities::volume::Volume;
 use crate::platform::PlatformError;
 use crate::repositories::services;
+use crate::repositories::volumes;
 use crate::runtime::client::Containerd;
 use crate::runtime::containers::{self, TaskStatus};
 use crate::runtime::network::{self, PortMapping, ProjectNetwork};
@@ -2421,14 +2422,14 @@ impl Deployer {
             return;
         }
         let (Ok(chosen), Ok(nodes), Ok(placements)) = (
-            crate::platform::edges::of_service(&self.database, &service.id).await,
+            crate::repositories::edges::of_service(&self.database, &service.id).await,
             crate::network::all(&self.database).await,
             replicas::of_service(&self.database, &service.id).await,
         ) else {
             tracing::warn!(service = %service.slug, "could not work out who answers for its names");
             return;
         };
-        let upstreams = crate::platform::edges::upstreams(&placements, &nodes);
+        let upstreams = crate::policies::upstreams::upstreams(&placements, &nodes);
         let me = nodes.iter().find(|node| node.is_self).map(|node| &*node.id);
         let mine = crate::edge::certs::ca_certificate_pem(&self.database)
             .await
@@ -2466,7 +2467,7 @@ impl Deployer {
                 hostname: hostname.clone(),
                 upstreams: upstreams.clone(),
                 peers: co_edges(&chosen, &nodes, hostname, node_id, mine.as_deref()),
-                secret: crate::platform::edges::secret_for(&self.database, hostname)
+                secret: crate::repositories::edges::secret_for(&self.database, hostname)
                     .await
                     .ok()
                     .flatten(),

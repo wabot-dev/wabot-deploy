@@ -891,7 +891,7 @@ async fn edge_cells(
         .unwrap_or_default();
 
     for service in services {
-        let Ok(chosen) = crate::platform::edges::of_service(&state.database, &service.id).await
+        let Ok(chosen) = crate::repositories::edges::of_service(&state.database, &service.id).await
         else {
             continue;
         };

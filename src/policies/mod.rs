@@ -8,3 +8,4 @@ pub mod access;
 pub mod postgres;
 pub mod presets;
 pub mod quotas;
+pub mod upstreams;

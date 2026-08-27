@@ -124,7 +124,7 @@ async fn serve_from(
     hostname: &str,
     nodes: &[String],
 ) -> PlatformResult<()> {
-    let mut serving = crate::platform::edges::nodes_for(database, hostname).await?;
+    let mut serving = crate::repositories::edges::nodes_for(database, hostname).await?;
     let wanted: Vec<String> = match nodes.is_empty() {
         true => crate::network::me(database)
             .await
@@ -144,7 +144,7 @@ async fn serve_from(
         }
     }
     if changed {
-        crate::platform::edges::set(database, service_id, hostname, &serving).await?;
+        crate::repositories::edges::set(database, service_id, hostname, &serving).await?;
     }
     Ok(())
 }
@@ -266,7 +266,7 @@ pub async fn set_hostname(
     let was = port.as_ref().and_then(|port| port.hostname.clone());
     let service_id = port.map(|port| port.service_id);
     let serving = match &was {
-        Some(was) => crate::platform::edges::nodes_for(database, was).await?,
+        Some(was) => crate::repositories::edges::nodes_for(database, was).await?,
         None => Vec::new(),
     };
 
@@ -289,7 +289,7 @@ pub async fn set_hostname(
     if let Some(was) = &was {
         if Some(was.as_str()) != hostname {
             if let Some(service_id) = &service_id {
-                crate::platform::edges::set(database, service_id, was, &[]).await?;
+                crate::repositories::edges::set(database, service_id, was, &[]).await?;
             }
         }
     }
@@ -301,7 +301,7 @@ pub async fn set_hostname(
         match serving.is_empty() {
             true => serve_from(database, service_id, hostname, &[]).await?,
             false => {
-                crate::platform::edges::set(database, service_id, hostname, &serving).await?;
+                crate::repositories::edges::set(database, service_id, hostname, &serving).await?;
             }
         }
     }
@@ -427,7 +427,7 @@ mod tests {
         .expect("port");
 
         assert_eq!(
-            crate::platform::edges::nodes_for(&database, "old.example.com")
+            crate::repositories::edges::nodes_for(&database, "old.example.com")
                 .await
                 .expect("query"),
             vec![me.id.clone()],
@@ -439,14 +439,14 @@ mod tests {
             .expect("renamed");
 
         assert_eq!(
-            crate::platform::edges::nodes_for(&database, "new.example.com")
+            crate::repositories::edges::nodes_for(&database, "new.example.com")
                 .await
                 .expect("query"),
             vec![me.id],
             "and the rename carries that over"
         );
         assert!(
-            crate::platform::edges::nodes_for(&database, "old.example.com")
+            crate::repositories::edges::nodes_for(&database, "old.example.com")
                 .await
                 .expect("query")
                 .is_empty(),
@@ -621,7 +621,7 @@ mod tests {
         .expect("created");
 
         assert_eq!(
-            crate::platform::edges::nodes_for(&database, "api.example.com")
+            crate::repositories::edges::nodes_for(&database, "api.example.com")
                 .await
                 .expect("query"),
             vec![me.id]
@@ -641,7 +641,7 @@ mod tests {
             .expect("created");
 
         assert!(
-            crate::platform::edges::nodes_for(&database, "api.example.com")
+            crate::repositories::edges::nodes_for(&database, "api.example.com")
                 .await
                 .expect("query")
                 .is_empty()

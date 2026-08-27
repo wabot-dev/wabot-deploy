@@ -373,7 +373,7 @@ pub async fn wanted_names(database: &SqliteDatabase, config: &Config) -> Vec<Str
     // cannot pass — repeated twice a day, against an authority that
     // locks the account out after five failures.
     let me = crate::network::me(database).await.ok().flatten();
-    match crate::platform::edges::of_node(database, me.as_ref().map(|node| &*node.id)).await {
+    match crate::repositories::edges::of_node(database, me.as_ref().map(|node| &*node.id)).await {
         Ok(serving) => names.extend(serving),
         Err(error) => tracing::warn!(%error, "could not read which names this node serves"),
     }
@@ -794,7 +794,7 @@ pub async fn ensure(
 /// ordering a real certificate is a guard nobody tests.
 async fn shared_with_other_nodes(database: &SqliteDatabase, names: &[String]) -> Option<String> {
     for name in names {
-        let serving = crate::platform::edges::nodes_for(database, name)
+        let serving = crate::repositories::edges::nodes_for(database, name)
             .await
             .unwrap_or_default();
         if serving.len() < 2 {
@@ -808,7 +808,7 @@ async fn shared_with_other_nodes(database: &SqliteDatabase, names: &[String]) ->
         // somebody else about. That is the state an errand from an older
         // version leaves behind, and a deployment on the owning node ends
         // it.
-        if crate::platform::edges::peers_for(database, name)
+        if crate::repositories::edges::peers_for(database, name)
             .await
             .unwrap_or_default()
             .is_empty()
@@ -844,13 +844,13 @@ async fn publish_to_co_edges(
 ) -> Result<(), String> {
     let mut told: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
     for name in names {
-        let peers = crate::platform::edges::peers_for(database, name)
+        let peers = crate::repositories::edges::peers_for(database, name)
             .await
             .map_err(|error| error.to_string())?;
         if peers.is_empty() {
             continue;
         }
-        let Some(secret) = crate::platform::edges::secret_for(database, name)
+        let Some(secret) = crate::repositories::edges::secret_for(database, name)
             .await
             .map_err(|error| error.to_string())?
         else {
@@ -1297,7 +1297,7 @@ mod tests {
         .expect("service");
 
         // One node: nothing to refuse.
-        crate::platform::edges::set(
+        crate::repositories::edges::set(
             &database,
             &service.id,
             "shop.example.com",
@@ -1313,7 +1313,7 @@ mod tests {
         // Two, and this node knows both: nothing to refuse, because the
         // token will be published to the other before the authority is
         // told to look.
-        crate::platform::edges::set(
+        crate::repositories::edges::set(
             &database,
             &service.id,
             "shop.example.com",

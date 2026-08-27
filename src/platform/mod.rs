@@ -20,11 +20,9 @@
 //! allocates ports.
 
 pub mod databases;
-pub mod edges;
 pub mod images;
 pub mod projects;
 pub mod registry_credentials;
-pub mod volumes;
 pub mod wal;
 
 #[derive(Debug, thiserror::Error)]

@@ -1,52 +1,13 @@
-//! Storage that outlives the container.
-//!
-//! ## What a container had instead
-//!
-//! Nothing. `containers::run` removes whatever is under the id before
-//! it starts, and removing a container removes its snapshot — so what a
-//! container wrote is gone at the next deployment. Right for a service
-//! that starts from its image, and total loss for anything holding
-//! data.
-//!
-//! ## The row is the service's, the directory is the replica's
-//!
-//! Where to mount and what to call it is one answer for every copy: the
-//! same image with the same layout. The bytes are not. Two copies of a
-//! database on one node are two databases, and a directory they shared
-//! would be two servers writing one data directory, which corrupts it
-//! in seconds rather than eventually.
-//!
-//! ## The directory is derived, never stored
-//!
-//! `<data_dir>/volumes/<container id>/<name>` — reconstructible from
-//! the rows alone, which is the same rule `Replica::container_id`
-//! follows and for the same reason: what cleans up after a crash starts
-//! from the rows and asks the disk what it has.
-//!
-//! Nothing here deletes anything. A directory whose rows went away is
-//! an orphan somebody can still recover from; a directory this module
-//! removed on its own is not. Discarding one is [`discard`], and the
-//! only caller is a confirmation somebody typed.
+//! A [`Volume`]'s data access, in both stores it has: the rows, and the
+//! directories on disk.
 
 use std::path::{Path, PathBuf};
 
-use serde::Serialize;
-
-use crate::values::mount_point::MountPoint;
 use wabot::sqlite::SqliteDatabase;
 
-use super::{now_ms, slugify, PlatformError, PlatformResult};
-
-/// One mount point a service keeps its data in.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct Volume {
-    pub id: String,
-    pub service_id: String,
-    /// A slug. The last component of the directory on the node.
-    pub name: String,
-    /// Where it appears inside the container.
-    pub path: String,
-}
+use crate::entities::volume::Volume;
+use crate::platform::{now_ms, slugify, PlatformError, PlatformResult};
+use crate::values::mount_point::MountPoint;
 
 /// Where every volume on this node lives, under the data directory.
 pub fn root(data_dir: &Path) -> PathBuf {

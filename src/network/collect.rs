@@ -551,7 +551,7 @@ async fn report_for(
                     // volume is this machine's directory and its size is
                     // not something the node that placed the copy could
                     // ever compute.
-                    disk: crate::platform::volumes::used_by(
+                    disk: crate::repositories::volumes::used_by(
                         &config.node.data_dir,
                         &replica.container_id(&project.slug, &service.slug),
                     ),
@@ -1285,12 +1285,12 @@ async fn hold_standby(
 
     // The volume and the port, which the deploy path reads rather than
     // assumes. Both convergent: a second errand finds them there.
-    if crate::platform::volumes::of_service(database, &service.id)
+    if crate::repositories::volumes::of_service(database, &service.id)
         .await
         .map_err(|error| error.to_string())?
         .is_empty()
     {
-        crate::platform::volumes::create(
+        crate::repositories::volumes::create(
             database,
             &service.id,
             crate::policies::postgres::VOLUME,
@@ -1423,13 +1423,13 @@ async fn serve_name(
     }
     let peer_ids: Vec<String> = edge.peers.iter().map(|peer| peer.node_id.clone()).collect();
     if let Err(error) =
-        crate::platform::edges::remember_peers(database, &edge.hostname, &peer_ids).await
+        crate::repositories::edges::remember_peers(database, &edge.hostname, &peer_ids).await
     {
         tracing::warn!(%error, hostname = %edge.hostname, "could not record who else serves it");
     }
     if let Some(secret) = &edge.secret {
         if let Err(error) =
-            crate::platform::edges::accept_secret(database, &edge.hostname, secret).await
+            crate::repositories::edges::accept_secret(database, &edge.hostname, secret).await
         {
             tracing::warn!(%error, hostname = %edge.hostname, "could not store the relay secret");
         }
@@ -2230,13 +2230,13 @@ mod tests {
         // And the name knows who its co-edges are, with the secret to
         // reach them.
         assert_eq!(
-            crate::platform::edges::peers_for(&database, "app.example.com")
+            crate::repositories::edges::peers_for(&database, "app.example.com")
                 .await
                 .expect("query"),
             vec!["nd-sibling".to_string()]
         );
         assert_eq!(
-            crate::platform::edges::secret_for(&database, "app.example.com")
+            crate::repositories::edges::secret_for(&database, "app.example.com")
                 .await
                 .expect("query")
                 .as_deref(),

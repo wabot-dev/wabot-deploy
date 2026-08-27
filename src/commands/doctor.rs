@@ -186,7 +186,7 @@ pub async fn run(config: Config, config_path: &Path) -> anyhow::Result<i32> {
             // the word `volumes`, so a node with two containers and no
             // storage at all reported `volumes 2` — a report that says
             // something untrue is worse than one that says nothing.
-            let root = crate::platform::volumes::root(&config.node.data_dir);
+            let root = crate::repositories::volumes::root(&config.node.data_dir);
             let stored = std::fs::read_dir(&root)
                 .map(|entries| entries.flatten().filter(|e| e.path().is_dir()).count())
                 .unwrap_or(0);

@@ -1118,7 +1118,7 @@ fn restore_volumes(from: &Path, config: &Config) -> usize {
 
     for entry in entries.flatten() {
         let container = entry.file_name().to_string_lossy().to_string();
-        let into = crate::platform::volumes::root(&config.node.data_dir).join(&container);
+        let into = crate::repositories::volumes::root(&config.node.data_dir).join(&container);
 
         // A managed engine's backup is two tarballs, not a directory
         // tree — the deploy path unpacks those, because unpacking is
@@ -1554,7 +1554,7 @@ async fn copy_volumes(
     config: &Config,
     into: &Path,
 ) -> Vec<Copied> {
-    let root = crate::platform::volumes::root(&config.node.data_dir);
+    let root = crate::repositories::volumes::root(&config.node.data_dir);
     let Ok(entries) = std::fs::read_dir(&root) else {
         return Vec::new();
     };

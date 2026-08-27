@@ -3,7 +3,7 @@ use wabot::sqlite::SqliteDatabase;
 use crate::config::Config;
 use crate::deploy::dns;
 use crate::entities::service::Service;
-use crate::platform::edges;
+use crate::repositories::edges;
 
 /// Which public nodes answer for one of this service's names.
 ///

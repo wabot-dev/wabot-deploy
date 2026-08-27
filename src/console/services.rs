@@ -515,7 +515,7 @@ impl ServicePages {
                     }));
         // What this service keeps, which is a row per volume and a
         // directory per copy of it.
-        let volumes = crate::platform::volumes::of_service(&self.state.database, &service.id)
+        let volumes = crate::repositories::volumes::of_service(&self.state.database, &service.id)
             .await
             .unwrap_or_default();
         // And what each copy here holds. One walk per copy, on a page
@@ -528,7 +528,7 @@ impl ServicePages {
             .map(|replica| {
                 (
                     replica.id.clone(),
-                    crate::platform::volumes::used_by(
+                    crate::repositories::volumes::used_by(
                         &self.state.config.node.data_dir,
                         &replica.container_id(&project.slug, &service.slug),
                     ),
@@ -1482,7 +1482,8 @@ impl ServicePages {
         // the Alpine node did for an hour before anybody noticed. This
         // node needs no grant to instruct itself.
         let public_nodes = crate::network::edge_candidates(&self.state.database).await?;
-        let serving = crate::platform::edges::of_service(&self.state.database, &service.id).await?;
+        let serving =
+            crate::repositories::edges::of_service(&self.state.database, &service.id).await?;
         // Read once for the page rather than per hostname: the card asks
         // the same question for every name, and this is how it answers it
         // with the same function the stream uses.
@@ -3007,7 +3008,7 @@ fn running_card<'a>(
 /// figure its own node reports, and the only one that can exist here
 /// for a copy on another machine.
 fn disks_card<'a>(
-    volumes: &'a [crate::platform::volumes::Volume],
+    volumes: &'a [crate::entities::volume::Volume],
     placements: &'a [crate::entities::replica::Replica],
     nodes: &'a [crate::network::Node],
     at: &'a Running<'a>,
@@ -8115,7 +8116,7 @@ mod tests {
         // And the row says *that* node answers for it. The old default —
         // always this one — would have stored a hostname shown as served
         // and served by nobody.
-        let serving = crate::platform::edges::nodes_for(&console.database, "localhost")
+        let serving = crate::repositories::edges::nodes_for(&console.database, "localhost")
             .await
             .expect("query");
         assert!(

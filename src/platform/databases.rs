@@ -172,7 +172,7 @@ pub async fn create(
 
     // The volume is what makes it a database rather than a container
     // that forgets. Nothing else on the node declares one yet.
-    super::volumes::create(
+    crate::repositories::volumes::create(
         database,
         &service.id,
         postgres::VOLUME,
@@ -525,7 +525,7 @@ pub async fn restore_into(
     crate::repositories::services::set_kind(database, &service.id, Kind::Postgres).await?;
     crate::repositories::services::set_memory_limit(database, &service.id, Some(memory_limit))
         .await?;
-    super::volumes::create(
+    crate::repositories::volumes::create(
         database,
         &service.id,
         postgres::VOLUME,
@@ -803,10 +803,10 @@ fn decode(row: &Row<'_>) -> wabot::sqlite::rusqlite::Result<Database> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::platform::volumes;
     use crate::repositories::ports;
     use crate::repositories::replicas;
     use crate::repositories::services;
+    use crate::repositories::volumes;
 
     async fn project() -> (SqliteDatabase, String) {
         let database = crate::db::open_in_memory().await.expect("open");

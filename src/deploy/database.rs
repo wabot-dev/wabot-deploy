@@ -264,7 +264,7 @@ pub fn prepare(plan: &Plan<'_>) -> std::io::Result<Preparation> {
 
 /// Where the server's certificate and key live on the node.
 pub fn tls_dir(data_dir: &Path, container_id: &str) -> PathBuf {
-    crate::platform::volumes::directory(data_dir, container_id, postgres::VOLUME).join("tls")
+    crate::repositories::volumes::directory(data_dir, container_id, postgres::VOLUME).join("tls")
 }
 
 /// Put the certificate where the server will read it.
@@ -396,7 +396,7 @@ pub fn tls_owner_is_wrong(_data_dir: &Path, _container_id: &str) -> bool {
 /// empty" is a different question with a different answer on any mount
 /// that has a `lost+found` in it.
 pub fn seeded(data_dir: &Path, container_id: &str) -> bool {
-    crate::platform::volumes::directory(data_dir, container_id, postgres::VOLUME)
+    crate::repositories::volumes::directory(data_dir, container_id, postgres::VOLUME)
         .join("pgdata")
         .join(postgres::VERSION_FILE)
         .exists()
@@ -445,7 +445,8 @@ pub fn outgrown(data_dir: &Path, container_id: &str, max_connections: u32) -> bo
 }
 
 fn ceiling_path(data_dir: &Path, container_id: &str) -> PathBuf {
-    crate::platform::volumes::directory(data_dir, container_id, postgres::VOLUME).join(CEILING_FILE)
+    crate::repositories::volumes::directory(data_dir, container_id, postgres::VOLUME)
+        .join(CEILING_FILE)
 }
 
 fn recorded_ceiling(data_dir: &Path, container_id: &str) -> Option<u32> {
@@ -476,7 +477,7 @@ pub fn record_ceiling(data_dir: &Path, container_id: &str, max_connections: u32)
 /// nothing of its own, which is what makes this safe here and unsafe
 /// one directory over.
 pub fn discard_standby_data(data_dir: &Path, container_id: &str) -> std::io::Result<()> {
-    let pgdata = crate::platform::volumes::directory(data_dir, container_id, postgres::VOLUME)
+    let pgdata = crate::repositories::volumes::directory(data_dir, container_id, postgres::VOLUME)
         .join("pgdata");
     match std::fs::remove_dir_all(&pgdata) {
         Err(error) if error.kind() != std::io::ErrorKind::NotFound => Err(error),
@@ -490,7 +491,7 @@ pub fn discard_standby_data(data_dir: &Path, container_id: &str) -> std::io::Res
 /// `pg_basebackup -R`. The role is what the rows say it is; a file in
 /// the volume is what it was the last time somebody looked.
 pub fn write_standby_signal(data_dir: &Path, container_id: &str) -> std::io::Result<()> {
-    let pgdata = crate::platform::volumes::directory(data_dir, container_id, postgres::VOLUME)
+    let pgdata = crate::repositories::volumes::directory(data_dir, container_id, postgres::VOLUME)
         .join("pgdata");
     std::fs::write(pgdata.join(postgres::STANDBY_SIGNAL), b"")
 }
@@ -709,7 +710,7 @@ mod tests {
         // Nothing recorded yet: a volume seeded before any of this
         // existed is left alone rather than copied again on sight.
         assert!(!outgrown(dir.path(), id, big.max_connections));
-        crate::platform::volumes::ensure(dir.path(), id, postgres::VOLUME).expect("volume");
+        crate::repositories::volumes::ensure(dir.path(), id, postgres::VOLUME).expect("volume");
         record_ceiling(dir.path(), id, big.max_connections);
 
         let mut small = plan(dir.path(), id, &row, postgres::Role::Standby);
@@ -730,7 +731,7 @@ mod tests {
 
         // And what it throws away is the data directory alone — the
         // volume around it holds the certificate the server reads.
-        let volume = crate::platform::volumes::directory(dir.path(), id, postgres::VOLUME);
+        let volume = crate::repositories::volumes::directory(dir.path(), id, postgres::VOLUME);
         std::fs::create_dir_all(volume.join("pgdata")).expect("pgdata");
         std::fs::write(volume.join("pgdata").join(postgres::VERSION_FILE), "17").expect("write");
         std::fs::create_dir_all(tls_dir(dir.path(), id)).expect("tls");

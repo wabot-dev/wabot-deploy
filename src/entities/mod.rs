@@ -12,3 +12,4 @@ pub mod release;
 pub mod replica;
 pub mod service;
 pub mod tenant;
+pub mod volume;

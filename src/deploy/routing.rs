@@ -123,7 +123,7 @@ pub async fn sync(
     // another machine would mean this node answering for a name it was
     // not chosen for.
     let me = crate::network::me(database).await.ok().flatten();
-    let serving = crate::platform::edges::of_node(database, me.as_ref().map(|node| &*node.id))
+    let serving = crate::repositories::edges::of_node(database, me.as_ref().map(|node| &*node.id))
         .await
         .unwrap_or_default();
 
@@ -426,9 +426,14 @@ mod tests {
         running_at(&database, &service, Some("10.42.1.5")).await;
 
         // Somebody else answers for it now.
-        crate::platform::edges::set(&database, &service, "api.example.com", &["nd-other".into()])
-            .await
-            .expect("set");
+        crate::repositories::edges::set(
+            &database,
+            &service,
+            "api.example.com",
+            &["nd-other".into()],
+        )
+        .await
+        .expect("set");
 
         let table = Arc::new(RouteTable::new());
         sync(&database, Some("node.example"), Some(&table))
@@ -528,7 +533,7 @@ mod tests {
         // And the row that decides the certificate is untouched, which
         // is what keeps `verify-full` working against the name.
         assert!(
-            crate::platform::edges::of_node(
+            crate::repositories::edges::of_node(
                 &database,
                 crate::network::me(&database)
                     .await
