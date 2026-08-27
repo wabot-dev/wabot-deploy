@@ -614,7 +614,7 @@ impl ServicePages {
                         // one page they were watching to find out when
                         // it stopped.
                         <div class="row" data-state=(&service.id)>
-                            (super::projects::state_badge(&cell))
+                            (crate::views::components::service_state::state_badge(&cell))
                             // How many copies there are, beside the word
                             // for what they are doing — where a
                             // container's address used to be, under the
@@ -633,7 +633,7 @@ impl ServicePages {
                             // out a service is down was the one place
                             // you could not start it.
                             @if allowed.may_deploy() && service.is_ours() {
-                                (super::projects::deploy_controls(
+                                (crate::views::components::service_state::deploy_controls(
                                     &project.slug,
                                     &service.slug,
                                     &cell,

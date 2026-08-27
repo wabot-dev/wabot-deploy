@@ -284,7 +284,7 @@ impl ProjectPages {
                             <p>(t("No services yet."))</p>
                         </section>
                     } @else {
-                        (service_table(&project, &rows, allowed))
+                        (crate::views::components::service_table::service_table(&project, &rows, allowed))
                     }
 
             }
@@ -390,7 +390,7 @@ impl ProjectPages {
                     (layout::error_note(message))
                 }
 
-                (people_card(&here, &members, allowed))
+                (crate::views::components::people_card::people_card(&here, &members, allowed))
 
                 <section class="card stack">
                     <div class="split">
@@ -500,287 +500,8 @@ impl ProjectApi {
     }
 }
 
-/// What a service is doing, from containerd rather than from a column.
-///
-/// The distinction the badge exists to make: "Running" is a task with a
-/// pid, and everything else says which kind of not-running it is. A
-/// runtime that cannot be reached is its own answer, because
-/// redeploying is the wrong response to it.
-/// The services table, as an island host.
-///
-/// Its own function for the reason `Frame::render` gives: an `rsx!`
-/// expands to a closure that captures by move, so nesting one inside
-/// the page's would have both wanting the same `project` and `rows`.
-/// A reference moves freely — it is `Copy` — and the markup is
-/// rendered before the host wraps it.
-fn service_table(
-    project: &crate::entities::project::Project,
-    // The third is why the copy running here is not, when it is not.
-    // Carried alongside rather than read off the service: it belongs to
-    // a replica now, and a service is several of them.
-    rows: &[(crate::entities::service::Service, StateCell, Option<String>)],
-    allowed: crate::accounts::roles::Access,
-) -> impl Renderable {
-    let inner = rsx! {
-                    <table>
-                        <thead>
-                            <tr>
-                                <th>(t("Service"))</th>
-                                // The copies. Headed by nothing, for the
-                                // reason the delete column is: the cell
-                                // says "3 replicas · 2 elsewhere", which
-                                // names itself. It was headed "Address"
-                                // and held one, until a service had more
-                                // than one copy and the column started
-                                // answering a different question.
-                                <th class="address"></th>
-                                <th class="state">(t("State"))</th>
-                                // The delete column. Headed by nothing,
-                                // because "Delete" over a column of
-                                // Delete buttons reads as a heading for
-                                // a thing rather than a label for one.
-                                <th></th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            @for (service, cell, failure) in rows {
-                                <tr>
-                                    <td>
-                                        <a href=(format!(
-                                            "/projects/{}/services/{}",
-                                            project.slug, service.slug
-                                        ))>(&service.name)</a>
-                                    </td>
-                                    <td class="mono address" data-address=(&service.id)>
-                                        (cell.whereabouts.say())
-                                    </td>
-                                    <td class="state" data-state=(&service.id)>
-                                        (state_badge(cell))
-                                    </td>
-                                    <td class="row">
-                                        @if allowed.may_deploy() {
-                                            (deploy_controls(
-                                                &project.slug,
-                                                &service.slug,
-                                                cell,
-                                                &format!("/projects/{}", project.slug),
-                                            ))
-                                        }
-                                    </td>
-                                </tr>
-                                @if let Some(failure) = failure {
-                                    <tr>
-                                        <td colspan="4" class="failure">(failure)</td>
-                                    </tr>
-                                }
-                            }
-                        </tbody>
-                    </table>
-    }
-    .render()
-    .into_inner();
-
-    wabot::ui::hypertext::island(
-        "project-live",
-        &serde_json::json!({ "project": &project.slug }),
-        hypertext::Raw::dangerously_create(&inner),
-    )
-}
-
-/// Whether a row's control is the one that applies.
-///
-/// A class rather than the `hidden` attribute, because `hidden` is
-/// boolean *by presence*: `rsx!` renders `hidden=(false)` as
-/// `hidden="false"`, which hides the element just as thoroughly. Both
-/// controls were hidden on first paint and only appeared when the
-/// stream's first message set the DOM property. `class` has no such
-/// trap — an empty one matches nothing.
-fn shown(applies: bool) -> &'static str {
-    if applies {
-        ""
-    } else {
-        "is-hidden"
-    }
-}
-
-/// One control, disabled or not.
-///
-/// Written twice rather than `disabled=(busy)`, for the same reason:
-/// `disabled="false"` disables. There is no way to spell "no attribute"
-/// in an `rsx!` attribute value, so the branch is on the element.
-/// The play and the stop, for whichever page is showing a service.
-///
-/// One definition, because the project's list and the service's own
-/// page must not disagree about which control applies — and they had
-/// no way not to, since the detail page simply had neither. A service
-/// you can see the state of and cannot start is a page that shows a
-/// problem and withholds the fix.
-///
-/// Both actions are rendered and one is hidden, so the stream can swap
-/// them by toggling: an island may hide what does not apply, not build
-/// what does. The check that counts is on the POST; this is so the page
-/// does not offer what it will refuse.
-pub(crate) fn deploy_controls<'a>(
-    project_slug: &'a str,
-    service_slug: &'a str,
-    cell: &'a StateCell,
-    // Where to go afterwards. The form carries it because only the form
-    // knows which page it is on — the same two controls live on the
-    // list and on the service's own page.
-    from: &'a str,
-) -> impl Renderable + 'a {
-    rsx! {
-        <form method="post" data-action="deploy"
-              class=(shown(cell.action == "deploy"))
-              action=(format!("/projects/{project_slug}/services/{service_slug}/deploy"))>
-            <input type="hidden" name="from" value=(from)>
-            (action_button("Deploy", PLAY, cell.busy))
-        </form>
-        <form method="post" data-action="stop"
-              class=(shown(cell.action == "stop"))
-              action=(format!("/projects/{project_slug}/services/{service_slug}/stop"))>
-            <input type="hidden" name="from" value=(from)>
-            (action_button("Stop", STOP, cell.busy))
-        </form>
-    }
-}
-
-fn action_button(label: &'static str, icon: &'static str, busy: bool) -> impl Renderable {
-    rsx! {
-        @if busy {
-            <button class="btn btn-secondary btn-sm icon" type="submit"
-                    title=(label) aria-label=(label) disabled>
-                (hypertext::Raw::dangerously_create(icon))
-            </button>
-        } @else {
-            <button class="btn btn-secondary btn-sm icon" type="submit"
-                    title=(label) aria-label=(label)>
-                (hypertext::Raw::dangerously_create(icon))
-            </button>
-        }
-    }
-}
-
 /// Lucide `play` and `square`, inlined.
 ///
-/// Inlined rather than fetched: the design system names Lucide for the
-/// rare icon, and this console cannot reach a CDN — the same reason the
-/// fonts are vendored. A deliberate substitution, since the original
-/// product has no icon here.
-///
-/// Raw because `rsx!` validates element names and does not know SVG's.
-/// XSS SAFETY: two constants in this file, never a value from a
-/// request.
-const PLAY: &str = r#"<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polygon points="6 3 20 12 6 21 6 3"/></svg>"#;
-
-const STOP: &str = r#"<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="1"/></svg>"#;
-
-/// Who is in this project, and how to change that.
-///
-/// A section of the settings page rather than a page of its own. It was
-/// three unlabelled columns and a wide row of fields under a heading
-/// that said "People" — a table with no headers reads as a list of
-/// facts nobody explained, and the role was a word floating beside a
-/// name with nothing saying what it was.
-///
-/// So: headers, the roles said in a sentence under the form, and the
-/// add form as a labelled row rather than three controls in a line.
-fn people_card<'a>(
-    here: &'a str,
-    members: &'a [access::Member],
-    allowed: crate::accounts::roles::Access,
-) -> impl Renderable + 'a {
-    rsx! {
-        <section class="card stack">
-            <p class="card-label">(t("People"))</p>
-            @if members.is_empty() {
-                <p class="tile-detail">(t("Nobody yet. Administrators of this node reach every project \
-                     without being added to it."))</p>
-            } @else {
-                <table>
-                    <thead>
-                        <tr>
-                            <th>(t("Person"))</th>
-                            <th>(t("Can"))</th>
-                            <th></th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        @for member in members {
-                            <tr>
-                                <td>(&member.username)</td>
-                                <td>
-                                    <span class="badge">(member.role.label())</span>
-                                    <span class="tile-detail">(role_means(member.role))</span>
-                                </td>
-                                <td class="row-actions">
-                                    @if allowed.may_administer() {
-                                        <form method="post"
-                                              action=(format!(
-                                                  "{here}/people/{}/remove", member.account_id
-                                              ))>
-                                            <button class="btn btn-ghost destructive btn-sm"
-                                                    type="submit">(t("Remove"))</button>
-                                        </form>
-                                    }
-                                </td>
-                            </tr>
-                        }
-                    </tbody>
-                </table>
-            }
-
-            @if allowed.may_administer() {
-                <form method="post" action=(format!("{here}/people")) class="stack-sm">
-                    <div class="add-person">
-                        <div>
-                            <label for="member">(t("Username"))</label>
-                            // Named `member`, not `username`, and with
-                            // no placeholder repeating the word.
-                            //
-                            // `autocomplete="off"` is a request, and
-                            // Safari refuses it here: it decides a field
-                            // is a login from the *name, id and
-                            // placeholder*, and all three said
-                            // `username`. So the keychain offered the
-                            // operator their own account for a field
-                            // asking who to add — reported twice, with
-                            // the arrow pointing at it.
-                            //
-                            // The name is also the truer one. This is
-                            // not your username; it is the person you
-                            // are adding.
-                            <input id="member" name="member" type="text" autocomplete="off"
-                                   required>
-                        </div>
-                        <div>
-                            <label for="role">(t("Can"))</label>
-                            <select id="role" name="role">
-                                @for role in ProjectRole::ALL {
-                                    <option value=(role.as_str())>(role.label())</option>
-                                }
-                            </select>
-                        </div>
-                        <button type="submit">(t("Add"))</button>
-                    </div>
-                    <p class="field-hint">(t("Somebody who already has an account on this node — adding \
-                         them here does not create one. A new person is invited from \
-                         Settings, People."))</p>
-                </form>
-            }
-        </section>
-    }
-}
-
-/// What a role lets somebody do, in the words the page can afford.
-fn role_means(role: ProjectRole) -> &'static str {
-    match role {
-        ProjectRole::Owner => "everything here, including who else is in it",
-        ProjectRole::Deployer => "deploy and change services",
-        ProjectRole::Viewer => "look, and change nothing",
-    }
-}
-
 /// Everything on a project's pages that changes without a click.
 ///
 /// Three maps rather than one, because they are keyed by three
@@ -1193,17 +914,17 @@ async fn name_cells(
 /// server already rendered — see the island rules in CLAUDE.md.
 #[derive(serde::Serialize)]
 pub(crate) struct StateCell {
-    word: String,
-    badge: &'static str,
-    dot: &'static str,
+    pub word: String,
+    pub badge: &'static str,
+    pub dot: &'static str,
     /// Which control applies: `deploy` or `stop`. Always one of the
     /// two — a control that vanishes takes the column's width with it
     /// and leaves nothing to press or to read.
-    action: &'static str,
+    pub action: &'static str,
     /// Whether it is pressable. A deployment in flight shows `stop`
     /// disabled: that is where it is heading, and saying so is more
     /// use than an empty cell.
-    busy: bool,
+    pub busy: bool,
     /// Where it runs, in the reader's language.
     ///
     /// Written by [`LiveState::translate`], which is the only thing that
@@ -1211,7 +932,7 @@ pub(crate) struct StateCell {
     /// [`StateCell::whereabouts`] inside its own render scope. Two
     /// callers of one function rather than one value passed through two
     /// places that would each have to remember to translate it.
-    address: String,
+    pub address: String,
     /// The parts of that sentence, before it is one.
     ///
     /// A count and a language are decided in different places — the
@@ -1394,20 +1115,6 @@ pub(crate) fn state_cell(
             address: address.clone(),
             whereabouts: whereabouts.clone(),
         },
-    }
-}
-
-/// What a service is doing, as a dot and a word.
-///
-/// Rendered from the same [`StateCell`] the stream sends, so the first
-/// paint and every update after it come from one place. They used to be
-/// two functions that had to be kept in step, which is the kind of pair
-/// that drifts.
-pub(crate) fn state_badge(cell: &StateCell) -> impl Renderable + '_ {
-    rsx! {
-        <span class=(cell.badge)>
-            <span class=(cell.dot)></span>(crate::views::texts::language::word(&cell.word))
-        </span>
     }
 }
 
