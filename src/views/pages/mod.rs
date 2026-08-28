@@ -6,8 +6,12 @@
 pub mod guest_join_page;
 pub mod guest_setup_page;
 pub mod guest_sign_in_page;
+pub mod new_project_page;
 pub mod node_user_organisations_page;
 pub mod node_user_people_page;
 pub mod node_user_release_page;
 pub mod node_user_updates_page;
+pub mod project_page;
+pub mod project_settings_page;
+pub mod projects_page;
 pub mod tenant_user_people_page;

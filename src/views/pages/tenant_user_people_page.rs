@@ -1,7 +1,8 @@
 use hypertext::prelude::*;
 
 use crate::accounts::invitations::Invitation;
-use crate::accounts::roles::{NodeRole, ProjectRole};
+use crate::accounts::roles::NodeRole;
+use crate::accounts::roles::ProjectRole;
 use crate::accounts::Account;
 use crate::entities::project::Project;
 use crate::views::layouts::layout;

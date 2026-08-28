@@ -77,54 +77,16 @@ impl ProjectPages {
         let frame = Frame::new(&account, Area::Projects, &projects, None, "/");
         // The account's language, around the render and no wider:
         // the strings are read here, and nothing awaits inside.
+        let page = crate::views::pages::projects_page::Projects {
+            projects: &projects,
+            owns,
+            concerns: &concerns,
+            query_error: query.error.as_deref(),
+        };
         let body = crate::views::texts::language::scoped(account.language, || {
-            rsx! {
-                    (layout::style_tag())
-                    <div class="split">
-                        <h1>(t("Projects"))</h1>
-                        // Hidden rather than disabled, and the POST
-                        // refuses either way: a button that cannot work
-                        // is a question somebody has to answer twice.
-                        @if owns {
-                            <a class="btn" href="/projects/new">(t("Create project"))</a>
-                        }
-                    </div>
-                    @if let Some(message) = &query.error {
-                        (layout::error_note(message))
-                    }
-
-                    // Above the list, and only when there is something.
-                    // A panel that is always there is part of the
-                    // wallpaper by the second week.
-                    (crate::views::components::attention_card::card(&concerns))
-
-                    @if projects.is_empty() {
-                        // No second "Create project" here: the one in the
-                        // header is on this page whether or not the list is
-                        // empty, and two buttons a hand's width apart that
-                        // do the same thing read as two different things.
-                        <section class="empty">
-                            @if owns {
-                                <p>(t("No projects yet."))</p>
-                            } @else {
-                                <p>(t("This node owns nothing, by its own setting. It runs what other \
-                                     nodes ask it to run; anything that arrives that way is \
-                                     administered from the node that sent it."))</p>
-                            }
-                        </section>
-                    } @else {
-                        <div class="grid">
-                            @for project in &projects {
-                                <a class="card tile" href=(format!("/projects/{}", project.slug))>
-                                    <p class="tile-name">(&project.name)</p>
-                                    <p class="tile-detail">(&project.slug)</p>
-                                </a>
-                            }
-                        </div>
-                    }
-            }
-            .render()
-            .into_inner()
+            crate::views::pages::projects_page::render(&page)
+                .render()
+                .into_inner()
         });
 
         Ok(frame.render(body).into_view().into())
@@ -149,27 +111,13 @@ impl ProjectPages {
         let frame = Frame::new(&account, Area::Projects, &projects, None, "/projects/new");
         // The account's language, around the render and no wider:
         // the strings are read here, and nothing awaits inside.
+        let page = crate::views::pages::new_project_page::NewProject {
+            query_error: query.error.as_deref(),
+        };
         let body = crate::views::texts::language::scoped(account.language, || {
-            rsx! {
-                (layout::style_tag())
-                <h1>(t("Create project"))</h1>
-                @if let Some(message) = &query.error {
-                    (layout::error_note(message))
-                }
-                <form method="post" action="/projects" class="card stack">
-                    <label for="name">(t("Name"))</label>
-                    <input id="name" name="name" type="text" autocomplete="off" required autofocus>
-                    <p class="field-hint">(t("The slug is derived from the name, and it is what \
-                         hostnames and containerd labels are built from."))</p>
-
-                    <div class="actions">
-                        <button type="submit">(t("Create project"))</button>
-                        <a class="btn btn-ghost" href="/">(t("Cancel"))</a>
-                    </div>
-                </form>
-        }
-            .render()
-            .into_inner()
+            crate::views::pages::new_project_page::render(&page)
+                .render()
+                .into_inner()
         });
 
         Ok(frame.render(body).into_view().into())
@@ -248,48 +196,18 @@ impl ProjectPages {
         .allowing(allowed);
         // The account's language, around the render and no wider:
         // the strings are read here, and nothing awaits inside.
+        let page = crate::views::pages::project_page::ProjectView {
+            project: &project,
+            allowed,
+            rows: &rows,
+            new_service: &new_service,
+            new_database: &new_database,
+            query_error: query.error.as_deref(),
+        };
         let body = crate::views::texts::language::scoped(account.language, || {
-            rsx! {
-                    (layout::style_tag())
-                    <div class="split">
-                        <div class="stack-sm">
-                            <h1>(&project.name)</h1>
-                        </div>
-                        @if allowed.may_deploy() {
-                            <div class="row">
-                                // Secondary, and beside rather than
-                                // above: a database is a service of a
-                                // particular kind, not a second thing
-                                // this page is about.
-                                <a class="btn btn-secondary" href=(&new_database)>(
-                                    t("Create database")
-                                )</a>
-                                <a class="btn" href=(&new_service)>(t("Create service"))</a>
-                            </div>
-                        }
-                    </div>
-                    @if let Some(message) = &query.error {
-                        (layout::error_note(message))
-                    }
-
-                    @if rows.is_empty() {
-                        // No second pair of buttons here. The ones in the
-                        // header are on this page whether or not the list
-                        // is empty, so an empty project showed both a
-                        // hand's width apart — which reads as two
-                        // different things rather than one. The projects
-                        // list above already had this right; this page
-                        // did not follow it. Reported by Jorge.
-                        <section class="empty">
-                            <p>(t("No services yet."))</p>
-                        </section>
-                    } @else {
-                        (crate::views::components::service_table::service_table(&project, &rows, allowed))
-                    }
-
-            }
-            .render()
-            .into_inner()
+            crate::views::pages::project_page::render(&page)
+                .render()
+                .into_inner()
         });
 
         Ok(frame.render(body).into_view().into())
@@ -372,96 +290,20 @@ impl ProjectPages {
         layout::head(&format!("{} settings", project.name));
         // The account's language, around the render and no wider:
         // the strings are read here, and nothing awaits inside.
+        let page = crate::views::pages::project_settings_page::ProjectSettings {
+            project: &project,
+            allowed,
+            here: &here,
+            members: &members,
+            tokens: &tokens,
+            revealed: revealed.as_deref(),
+            registry_host: Some(registry_host.as_str()),
+            query_error: query.error.as_deref(),
+        };
         let body = crate::views::texts::language::scoped(account.language, || {
-            rsx! {
-                (layout::style_tag())
-                <div class="split">
-                    <div class="stack-sm">
-                        <h1>(t("Settings"))</h1>
-                    </div>
-                    // What this account may do here, said once at the
-                    // top. It used to be on the people page and is more
-                    // use beside the controls it explains: a button
-                    // that is not there reads as missing until
-                    // something says why.
-                    <span class="who">(t("You are: "))(allowed.label())</span>
-                </div>
-                @if let Some(message) = &query.error {
-                    (layout::error_note(message))
-                }
-
-                (crate::views::components::people_card::people_card(&here, &members, allowed))
-
-                <section class="card stack">
-                    <div class="split">
-                        <p class="card-label">(t("Push tokens"))</p>
-                        <span class="who">(&registry_host)("/")(&project.slug)("/…")</span>
-                    </div>
-                    @if let Some(secret) = &revealed {
-                        <p class="field-hint">(t("Shown once. Use it as the password: "))</p>
-                        <pre><code>("docker login ")(&registry_host)(" -u ci -p ")(secret)</code></pre>
-                    }
-                    @if tokens.is_empty() {
-                        <p class="tile-detail">(t("None. A token is what CI authenticates with — it is nobody's \
-                             password, and revoking it changes nothing else."))</p>
-                    } @else {
-                        <table>
-                            <tbody>
-                                @for token in &tokens {
-                                    <tr>
-                                        <td>(&token.name)</td>
-                                        <td class="tile-detail">
-                                            @if token.last_used_at.is_some() {
-                                                (t("used"))
-                                            } @else {
-                                                (t("never used"))
-                                            }
-                                        </td>
-                                        <td>
-                                            <form method="post"
-                                                  action=(format!(
-                                                      "{here}/tokens/{}/revoke", token.id
-                                                  ))>
-                                                <button class="btn btn-ghost destructive btn-sm"
-                                                        type="submit">(t("Revoke"))</button>
-                                            </form>
-                                        </td>
-                                    </tr>
-                                }
-                            </tbody>
-                        </table>
-                    }
-                    <form method="post" action=(format!("{here}/tokens")) class="row">
-                        <input name="name" type="text" autocomplete="off" placeholder="what it is for" required>
-                        <button class="btn btn-secondary" type="submit">(t("Create token"))</button>
-                    </form>
-                </section>
-
-                @if allowed.may_administer() {
-                    <section class="card stack">
-                        <p class="card-label">(t("Danger zone"))</p>
-                        // Says what happens rather than what does not.
-                        // It used to read "Nothing is stopped first — do
-                        // that yourself", which was true of the code and
-                        // told somebody to go and do a thing the page
-                        // gave them no way to do — and left containers
-                        // running and volumes on disk when they did not.
-                        <p class="tile-detail">(t("Deleting a project stops and removes every service \
-                             under it, and takes everything its databases stored on this node. \
-                             There is no undo."))</p>
-                        // Typing the name is the confirmation — see the
-                        // handler, which is where it is actually checked.
-                        <form method="post" action=(format!("{here}/delete")) class="stack">
-                            <label for="confirm">(t("Type the name to confirm: "))(&project.slug)</label>
-                            <input id="confirm" name="confirm" type="text" autocomplete="off"
-                                   class="mono" required placeholder=(&project.slug)>
-                            <button class="btn btn-danger" type="submit">(t("Delete project"))</button>
-                        </form>
-                    </section>
-                }
-        }
-            .render()
-            .into_inner()
+            crate::views::pages::project_settings_page::render(&page)
+                .render()
+                .into_inner()
         });
 
         Ok(frame.render(body).into_view().into())
