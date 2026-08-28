@@ -259,47 +259,15 @@ impl ServicePages {
         layout::head("Create service");
         // The account's language, around the render and no wider:
         // the strings are read here, and nothing awaits inside.
+        let page = crate::views::pages::new_service_page::NewService {
+            action: &action,
+            back: &back,
+            query_error: query.error.as_deref(),
+        };
         let body = crate::views::texts::language::scoped(account.language, || {
-            rsx! {
-            (layout::style_tag())
-                <div class="stack-sm">
-                    <h1>(t("Create service"))</h1>
-                </div>
-                @if let Some(message) = &query.error {
-                    (layout::error_note(message))
-                }
-                <form method="post" action=(&action) class="card stack">
-                    <label for="name">(t("Name"))</label>
-                    <input id="name" name="name" type="text" autocomplete="off" required autofocus>
-
-                    <label for="image">(t("Image, if you have one"))</label>
-                    // Not `required`. A service for your own application
-                    // has no image until you have pushed one, and this
-                    // field being mandatory meant typing a reference for
-                    // something that did not exist yet. Reported by
-                    // Jorge.
-                    <input id="image" name="image" type="text" autocomplete="off" class="mono"
-                           placeholder="docker.io/library/nginx:alpine">
-                    <p class="field-hint">(t("A reference containerd can resolve. Fully qualified — \
-                         there is no implicit registry here."))</p>
-                    <p class="field-hint">(t("Leave it empty for your own application: the service \
-                         waits, and the first push to its own repository becomes its first \
-                         release. The page will show you the two commands."))</p>
-
-                    <label for="env">(t("Environment"))</label>
-                    <textarea id="env" name="env" autocomplete="off" rows="6" class="mono"
-                              placeholder="KEY=value"></textarea>
-                    <p class="field-hint">(t("One KEY=value per line. Everything after the first = is \
-                         the value, so a value may contain one."))</p>
-
-                    <div class="actions">
-                        <button type="submit">(t("Create service"))</button>
-                        <a class="btn btn-ghost" href=(&back)>(t("Cancel"))</a>
-                    </div>
-                </form>
-        }
-            .render()
-            .into_inner()
+            crate::views::pages::new_service_page::render(&page)
+                .render()
+                .into_inner()
         });
 
         Ok(frame.render(body).into_view().into())

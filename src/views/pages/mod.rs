@@ -8,6 +8,7 @@ pub mod guest_setup_page;
 pub mod guest_sign_in_page;
 pub mod new_database_page;
 pub mod new_project_page;
+pub mod new_service_page;
 pub mod node_user_organisations_page;
 pub mod node_user_people_page;
 pub mod node_user_release_page;
