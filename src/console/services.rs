@@ -686,7 +686,7 @@ impl ServicePages {
                 </section>
 
                 @if let Some(row) = &engine {
-                    (super::databases::database_card(
+                    (crate::views::components::database_cards::database_card(
                         row,
                         &placements,
                         reserved_address.clone(),
@@ -700,14 +700,14 @@ impl ServicePages {
                     // rather than about the node — even though what
                     // decides it is a switch on the node's page, which
                     // is why the card says so when it is off.
-                    (super::databases::window_card(&window, elsewhere.as_deref()))
+                    (crate::views::components::database_cards::window_card(&window, elsewhere.as_deref()))
                     // And somewhere to go with it. Only when a backup on
                     // this node actually holds this database: a form that
                     // can only refuse is worse than the sentence saying
                     // why, and what the window measures is the archive,
                     // which can be there with no base copy to replay onto.
                     @if restorable {
-                        (super::databases::restore_card(
+                        (crate::views::components::database_cards::restore_card(
                             &project.slug,
                             &service.slug,
                             &window,
@@ -1688,17 +1688,17 @@ impl ServicePages {
                 // is left to choose is the size.
                 @if tab == Tab::Database {
                     @if let Some(name) = names.first() {
-                        (super::databases::name_card(
+                        (crate::views::components::database_cards::name_card(
                             &database_actions.0,
                             name,
                             &crate::deploy::hosts::pool_name(name),
                         ))
                     }
                     @if let (Some(policy), Some(cells)) = (&database_policy, &database_cells) {
-                        (super::databases::certificate_card(&database_actions.1, policy, cells))
+                        (crate::views::components::database_cards::certificate_card(&database_actions.1, policy, cells))
                     }
                     @if let Some(name) = names.first() {
-                        (super::databases::published_card(
+                        (crate::views::components::database_cards::published_card(
                             &database_actions.2,
                             ports.first().and_then(|port| port.host_port),
                             name,
