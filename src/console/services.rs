@@ -22,6 +22,8 @@ use crate::views::texts::language::t;
 
 use super::auth::{back_with_error, field, read_form, see_other, signed_in, SessionMiddleware};
 use super::ConsoleState;
+use crate::views::components::service_push::Push;
+use crate::views::components::service_running::Running;
 use crate::views::layouts::layout;
 use crate::views::layouts::shell::{Area, Frame};
 
@@ -31,7 +33,7 @@ use crate::views::layouts::shell::{Area, Frame};
 /// means *here* and has since the per-slot selectors were written. Two
 /// intentions that differ have to be two values, or changing one of them
 /// silently changes what every existing form does.
-const ANYWHERE: &str = "anywhere";
+pub(crate) const ANYWHERE: &str = "anywhere";
 
 #[derive(Debug, Deserialize, Validate)]
 pub struct ServiceForm {
@@ -559,8 +561,17 @@ impl ServicePages {
         let settings = Tab::Image.path(&project.slug, &service.slug);
         let logs = format!("/projects/{}/services/{}/logs", project.slug, service.slug);
         let domain = crate::node::settings::domain(&self.state.database, &self.state.config).await;
-        let exposure = exposure(&service, &project.slug, &ports, domain.as_deref());
-        let push = push(&service, &project.slug, domain.as_deref());
+        let exposure = crate::views::components::service_ports::exposure(
+            &service,
+            &project.slug,
+            &ports,
+            domain.as_deref(),
+        );
+        let push = crate::views::components::service_push::push(
+            &service,
+            &project.slug,
+            domain.as_deref(),
+        );
 
         let all_projects = access::projects_for(&self.state.database, &account).await?;
         let frame = Frame::new(
@@ -662,7 +673,7 @@ impl ServicePages {
                     // certificate and the published port — each of which
                     // says a true thing this one cannot.
                     @if !service.kind.is_managed() {
-                        (exposure_card(
+                        (crate::views::components::service_ports::exposure_card(
                             &exposure,
                             matches!(observed, crate::deploy::Observed::Running { .. }),
                         ))
@@ -718,7 +729,7 @@ impl ServicePages {
                 }
 
                 @if service.is_ours() {
-                    (running_card(
+                    (crate::views::components::service_running::running_card(
                         &placements,
                         &nodes,
                         &queued,
@@ -736,7 +747,7 @@ impl ServicePages {
                     // saying so would be a row of dashes explaining an
                     // absence nobody asked about.
                     @if !volumes.is_empty() {
-                        (disks_card(
+                        (crate::views::components::service_running::disks_card(
                             &volumes,
                             &placements,
                             &nodes,
@@ -750,7 +761,7 @@ impl ServicePages {
                         ))
                     }
                 } @else {
-                    (from_elsewhere_card(
+                    (crate::views::components::service_placement::from_elsewhere_card(
                         &project,
                         &service,
                         &placements
@@ -895,7 +906,7 @@ impl ServicePages {
                     // the name under the project, and the one tag this
                     // service watches — from three other pages.
                     @if let Some(push) = &push {
-                        (push_example(push, service.auto_deploy, &settings))
+                        (crate::views::components::service_push::push_example(push, service.auto_deploy, &settings))
                     }
                 </section>
                 }
@@ -1280,7 +1291,7 @@ impl ServicePages {
                                                 <td class="mono tile-detail">
                                                     <a href=(format!(
                                                         "/projects/{project_slug}/services/{service_slug}/logs?slot={slot}&q={}&page={page}&at={}",
-                                                        urlencode(&needle_text), line.number
+                                                        crate::views::components::service_push::urlencode(&needle_text), line.number
                                                     ))>(line.number)</a>
                                                 </td>
                                                 <td class="mono log-hit">(&line.text)</td>
@@ -1293,13 +1304,13 @@ impl ServicePages {
                                         @if page > 1 {
                                             <a class="btn btn-ghost btn-sm" href=(format!(
                                                 "/projects/{project_slug}/services/{service_slug}/logs?slot={slot}&q={}&page={}",
-                                                urlencode(&needle_text), page - 1
+                                                crate::views::components::service_push::urlencode(&needle_text), page - 1
                                             ))>(t("Newer matches"))</a>
                                         }
                                         @if page * PER_PAGE < found.total {
                                             <a class="btn btn-ghost btn-sm" href=(format!(
                                                 "/projects/{project_slug}/services/{service_slug}/logs?slot={slot}&q={}&page={}",
-                                                urlencode(&needle_text), page + 1
+                                                crate::views::components::service_push::urlencode(&needle_text), page + 1
                                             ))>(t("Older matches"))</a>
                                         }
                                     </div>
@@ -1609,7 +1620,11 @@ impl ServicePages {
         // What a push at this service would have to be called. The same
         // function the service's own page uses, so the two cannot disagree
         // about the name — which is the whole content of this card.
-        let push = push(&service, &project.slug, domain.as_deref());
+        let push = crate::views::components::service_push::push(
+            &service,
+            &project.slug,
+            domain.as_deref(),
+        );
         // Where a push token is made, which is the prerequisite the card
         // names. A link rather than a sentence saying where to look.
         let project_settings = format!("/projects/{}/settings", project.slug);
@@ -1769,7 +1784,7 @@ impl ServicePages {
                         // sequence behind a disclosure; this is the one
                         // command, with the name in full, because the
                         // question here is "what do I push to".
-                        (push_target(&push, &project_settings))
+                        (crate::views::components::service_push::push_target(&push, &project_settings))
                     </section>
                 }
                 @if tab == Tab::Logs {
@@ -2104,7 +2119,7 @@ impl ServicePages {
                                         <td class="mono">(port.container_port)</td>
                                         <td>(kind)</td>
                                         <td class="mono reach">
-                                            <span>(reachable_at(port, domain.as_deref()))</span>
+                                            <span>(crate::views::components::service_ports::reachable_at(port, domain.as_deref()))</span>
                                             // Rendered whether or not it
                                             // applies and hidden by a
                                             // class, so the stream can
@@ -2183,7 +2198,7 @@ impl ServicePages {
                     }
 
                     <p class="card-label">(t("Expose a port"))</p>
-                    (port_form(&add, &suggestion, account.is_admin()))
+                    (crate::views::components::service_ports::port_form(&add, &suggestion, account.is_admin()))
                 </section>
                 }
 
@@ -2194,7 +2209,7 @@ impl ServicePages {
                 // deciding are the split this console draws everywhere
                 // else.
                 @if tab == Tab::Replicas && service.is_ours() {
-                    (placement_card(
+                    (crate::views::components::service_placement::placement_card(
                         &project, &service, &placements, &placement_nodes, &silent, &queued,
                     ))
                 }
@@ -2237,7 +2252,7 @@ impl ServicePages {
                             <div class="card stack">
                                 @for port in &ports {
                                     @if let Some(hostname) = &port.hostname {
-                                        (served_by_form(
+                                        (crate::views::components::service_placement::served_by_form(
                                             &project, &service, hostname,
                                             &public_nodes, &serving, &orders,
                                         ))
@@ -2305,540 +2320,6 @@ impl ServicePages {
     }
 }
 
-/// Declaring a port, as an island host.
-///
-/// Its own function for the reason `Frame::render` gives: an `rsx!`
-/// expands to a closure that captures by move, so nesting one inside
-/// another makes both want the same `add` and `suggestion`. Rendering
-/// this one first ends its borrow before the page's begins.
-fn port_form<'a>(
-    add: &'a str,
-    suggestion: &'a Option<(String, bool)>,
-    admin: bool,
-) -> impl Renderable + 'a {
-    wabot::ui::hypertext::island_bare(
-        "fields",
-        rsx! {
-                        <form method="post" action=(add) class="card stack">
-                            <label for="container_port">(t("Container port"))</label>
-                            <input id="container_port" name="container_port" type="number" autocomplete="off"
-                                   min="1" max="65535" placeholder="80" required>
-                            <p class="field-hint">(t("What the process listens on inside the container."))</p>
-
-                            <label class="check">
-                                <input type="checkbox" name="publish" value="1">
-                                (t("Publish on the node's public address (raw TCP)"))
-                            </label>
-                            // "For a database or anything that is not
-                            // HTTP" was right when this form was the only
-                            // way to expose one. A managed database has
-                            // its own card now and never reaches this
-                            // form, so the example named the one case that
-                            // no longer arrives here.
-                            <p class="field-hint">(t("For anything that is not HTTP — a queue, a \
-                                 socket, an engine with its own protocol. The node picks the \
-                                 outside port, and it is reachable from the whole internet \
-                                 unless a firewall says otherwise."))</p>
-
-                            // Whether HTTPS is offered at all depends on the
-                            // node having a domain. Without one, `add_port`
-                            // refuses every hostname — it has nothing to
-                            // check "does this point here" against — so a
-                            // ticked box and a filled field could only ever
-                            // come back as an error.
-                            @match &suggestion {
-                                Some((name, true)) => {
-                                    <label class="check">
-                                        <input type="checkbox" name="https" value="1">
-                                        (t("Serve over HTTPS at a hostname"))
-                                    </label>
-                                    <div class="stack" data-when="https">
-                                        <p class="field-hint">(t("A wildcard record covers this node, so this \
-                                             name already resolves here. Leave it as it is."))</p>
-                                        <input name="hostname" type="text" autocomplete="off" class="mono"
-                                               value=(name) data-required-when="https">
-                                    </div>
-                                }
-                                Some((name, false)) => {
-                                    <label class="check">
-                                        <input type="checkbox" name="https" value="1">
-                                        (t("Serve over HTTPS at a hostname"))
-                                    </label>
-                                    <div class="stack" data-when="https">
-                                        <p class="field-hint">(t("No wildcard record answers for this node, so "))(name)(t(" will not resolve. Either add \
-                                             *.<node domain> pointing at this node, or type \
-                                             a hostname you have already pointed here — it \
-                                             is checked before it is accepted."))</p>
-                                        <input name="hostname" type="text" autocomplete="off" class="mono"
-                                               placeholder="api.example.com"
-                                               data-required-when="https">
-                                    </div>
-                                }
-                                None => {
-                                    <label class="check">
-                                        <input type="checkbox" name="https" value="1" disabled>
-                                        (t("Serve over HTTPS at a hostname"))
-                                    </label>
-                                    <p class="field-hint">(t("This node has no domain of its own, so it cannot \
-                                         check that a name points here — and it will not \
-                                         route one it could not check. The node needs a \
-                                         domain before anything can be served over HTTPS."))</p>
-                                    @if admin {
-                                        <a class="btn btn-secondary btn-sm" href="/node">(t("Set the node's domain"))</a>
-                                    } @else {
-                                        <p class="field-hint">(t("Ask whoever runs this node to set one."))</p>
-                                    }
-                                }
-                            }
-
-                            // **Chosen here rather than after.** A port
-                            // created with HTTPS took the default and began
-                            // ordering from Let's Encrypt at once, so an
-                            // operator who wanted self-signed was already
-                            // late for the first attempt — and a failed
-                            // order counts against an account that locks at
-                            // five an hour.
-                            @if suggestion.is_some() {
-                                <div class="stack" data-when="https">
-                                    <label for="renew_with">(t("Certificate"))</label>
-                                    <select id="renew_with" name="renew_with">
-                                        <option value="acme">(t("Let's Encrypt"))</option>
-                                        <option value="self_signed">(t("Signed here"))</option>
-                                        <option value="file">(t("Read from files on this node"))</option>
-                                    </select>
-                                    <div class="stack" data-when="renew_with=file">
-                                        <input name="cert_path" type="text" autocomplete="off"
-                                               class="mono" placeholder="/etc/ssl/certs/site.pem"
-                                               data-required-when="renew_with=file">
-                                        <input name="key_path" type="text" autocomplete="off"
-                                               class="mono" placeholder="/etc/ssl/private/site.key"
-                                               data-required-when="renew_with=file">
-                                    </div>
-                                </div>
-                            }
-
-                            <div class="actions">
-                                <button type="submit">(t("Add port"))</button>
-                            </div>
-                        </form>
-        },
-    )
-}
-
-/// Where a port can be reached from, in one cell.
-/// Where this service answers, split by who can reach it.
-///
-/// ## Why a list and not a picker
-///
-/// A database has one thing reachable two ways, so a radio between them
-/// is right. A service is not that: **each port is its own exposure**, and
-/// a port can be published as raw TCP, served over HTTPS at a hostname,
-/// both, or neither. Jorge's question was how somebody sees at a glance
-/// what a service offers the world — and a control that shows one string
-/// and hides the rest answers the opposite question.
-///
-/// ## The inside name does not depend on a port
-///
-/// Every container in the project resolves `<service>.<project>`, because
-/// the node writes it into their hosts files from the *replica addresses*
-/// — nothing about that reads the port table. A worker that declares no
-/// port still has a name, and something else in the project can still
-/// reach whatever it listens on. An earlier version of this card offered
-/// nothing at all for that service, which was wrong in the direction that
-/// matters: it is the case where somebody most needs to be told the name.
-struct Exposure {
-    /// One per way in from outside the node, in the order they were
-    /// declared. Empty is a real answer and the card says so.
-    outside: Vec<String>,
-    /// The name a sibling service dials, with a port per declared one —
-    /// and the bare name when there are none.
-    inside: Vec<String>,
-}
-
-fn exposure(
-    service: &crate::entities::service::Service,
-    project_slug: &str,
-    ports: &[crate::entities::port::Port],
-    node_domain: Option<&str>,
-) -> Exposure {
-    let name = format!("{}.{project_slug}", service.slug);
-    let mut outside = Vec::new();
-
-    for port in ports {
-        // A hostname is served over HTTPS by an edge; a published port is
-        // whatever the container speaks, on this node's address. A port
-        // can be both, and then it is two ways in rather than one.
-        if let Some(hostname) = &port.hostname {
-            outside.push(format!("https://{hostname}"));
-        }
-        if let Some(host_port) = port.host_port {
-            outside.push(match node_domain {
-                Some(domain) => format!("{domain}:{host_port}"),
-                // Without a domain the number is still worth showing: the
-                // operator knows their own address and this is the part
-                // they cannot guess.
-                None => format!("this node:{host_port}"),
-            });
-        }
-    }
-
-    let inside = match ports.is_empty() {
-        true => vec![name],
-        false => ports
-            .iter()
-            .map(|port| format!("{name}:{}", port.container_port))
-            .collect(),
-    };
-    Exposure { outside, inside }
-}
-
-/// Both lists, each line copyable.
-///
-/// Every string on screen at once, which is the point. The copy island
-/// puts a button on each — it walks `[data-copy]` and appends one per
-/// block, so a list costs nothing that a single string did not.
-fn exposure_card<'a>(exposure: &'a Exposure, running: bool) -> impl Renderable + 'a {
-    let (copy, copied) = (t("Copy"), t("Copied"));
-    let line = move |value: &str| {
-        rsx! {
-            <div class="dsn-line">
-                <pre class="dsn-value" data-copy
-                     data-copy-label=(copy) data-copied-label=(copied)>(value)</pre>
-            </div>
-        }
-        .render()
-        .into_inner()
-    };
-    let outside: Vec<String> = exposure.outside.iter().map(|url| line(url)).collect();
-    let inside: Vec<String> = exposure.inside.iter().map(|url| line(url)).collect();
-
-    let inner = rsx! {
-        <div class="dsn stack-sm">
-            <p class="card-label">(t("From outside the node"))</p>
-            @if outside.is_empty() {
-                <p class="field-hint">(t("Nothing. It answers inside the project only — publish \
-                     a port or give one a hostname in settings."))</p>
-            } @else {
-                <div class="dsn-values">
-                    @for html in &outside {
-                        (hypertext::Raw::dangerously_create(html))
-                    }
-                </div>
-            }
-
-            <p class="card-label">(t("Inside the project"))</p>
-            <div class="dsn-values">
-                @for html in &inside {
-                    (hypertext::Raw::dangerously_create(html))
-                }
-            </div>
-            <p class="field-hint">(t("Every container in this project resolves that name, on \
-                 any node holding a copy — whether or not anything is exposed."))</p>
-            @if !running {
-                <p class="field-hint">(t("Nothing answers at any of these while it is not \
-                     running."))</p>
-            }
-        </div>
-    }
-    .render()
-    .into_inner();
-
-    // XSS SAFETY: every line above is this function's own markup, built
-    // from strings the page already renders escaped.
-    wabot::ui::hypertext::island(
-        "copy",
-        &serde_json::json!({}),
-        hypertext::Raw::dangerously_create(&inner),
-    )
-}
-
-/// What the releases card can say about pushing to this service.
-///
-/// [`Push::To`] carries the same three parts the registry compares when
-/// a manifest arrives — this node as the host, the repository name
-/// without one, and the tag the service watches — so what the page
-/// shows is what `release` will match rather than a second guess at it.
-///
-/// The other three are the ways a push cannot land here, and they are
-/// why this is not an `Option`: printing nothing left somebody looking
-/// at a card that says "push an image to this repository" above an
-/// empty space, with no way to find out which repository or why there
-/// wasn't one. A dead end is a value somebody can act on.
-enum Push {
-    /// Push here, and it becomes a release.
-    To(String),
-    /// The image belongs to another registry, so a push to this node
-    /// matches no service. Carries the reference that would work.
-    Elsewhere(String),
-    /// Pinned by digest: it names bytes, and nothing watches bytes.
-    Pinned,
-    /// No domain, so this node's registry has no name to dial.
-    Nameless,
-}
-
-fn push(
-    service: &crate::entities::service::Service,
-    project_slug: &str,
-    node_domain: Option<&str>,
-) -> Option<Push> {
-    // Managed images are the node's own choice, pinned to a major
-    // version; nothing is ever pushed at one, and there is nothing
-    // useful to say about that.
-    if service.kind.is_managed() {
-        return None;
-    }
-
-    let Some(reference) = crate::values::image_reference::ImageReference::parse(&service.image)
-        .ok()
-        .and_then(|r| r.parts())
-    else {
-        return Some(Push::Pinned);
-    };
-    let Some(host) = node_domain else {
-        return Some(Push::Nameless);
-    };
-    let tag = service.tracked_tag().unwrap_or_else(|| "latest".into());
-    // **A star is a rule, not a tag.** `*` matches every tag on the way
-    // in; it is not something anybody types after a colon, and a command
-    // ending `:*` is one somebody pastes and watches fail. The example
-    // shows `latest` — which the rule accepts along with everything else.
-    let tag = match tag == crate::entities::service::EVERY_TAG {
-        true => "latest".to_string(),
-        false => tag,
-    };
-
-    // The token guard refuses a repository that is not the project's,
-    // and `release` compares names before tags — so an image from
-    // anywhere else can never be matched by a push here, whatever it is
-    // addressed to. What it would take is the service's image field
-    // naming this node.
-    let name = reference.name();
-    match name == project_slug || name.starts_with(&format!("{project_slug}/")) {
-        // The registry names a pushed image under the node's own host,
-        // and that is what containerd is later asked to pull. A
-        // reference with no host is one containerd reads as its first
-        // segment being a registry to dial.
-        true => Some(Push::To(format!("{host}/{name}:{tag}"))),
-        // `latest`, and not the tag the other registry's image carries.
-        // A service created from `nginx:alpine` was offered
-        // `…/nubo-app:alpine` — the tag belongs to somebody else's
-        // image, and inheriting it means every service made from a
-        // public base image suggests a tag nobody would have chosen.
-        false => Some(Push::Elsewhere(format!(
-            "{host}/{project_slug}/{}:latest",
-            service.slug
-        ))),
-    }
-}
-
-/// A search term, safe to put in a link.
-///
-/// `rsx!` escapes for HTML and that is a different job: a needle with a
-/// `&` in it would end the query parameter and start another, and one
-/// with a `#` would turn the rest into a fragment. Both are things
-/// somebody searches a log for.
-fn urlencode(text: &str) -> String {
-    form_urlencoded::Serializer::new(String::new())
-        .append_pair("q", text)
-        .finish()
-        .trim_start_matches("q=")
-        .to_string()
-}
-
-/// The one command, with the name in full, on the tab that decides what
-/// a push does.
-///
-/// The service's own page has the whole sequence — build, then push —
-/// behind a disclosure, because there it is read once while setting the
-/// service up. Here the question is narrower: the field above says which
-/// tag is watched, and this says what to push at it.
-///
-/// Not translated, and the sentence around it is: it is pasted into a
-/// terminal, and a terminal does not speak Spanish.
-fn push_target<'a>(push: &'a Option<Push>, tokens: &'a str) -> impl Renderable + 'a {
-    let (copy, copied) = (t("Copy"), t("Copied"));
-    // **Both references are pushable, and that is the point.** A service
-    // running somebody else's image still has a name here, and the
-    // registry matches a push by `<project>/<service>` as well as by the
-    // declared image — so `Elsewhere` carries a command that works today,
-    // not an explanation of why there is none.
-    //
-    // That is what the paragraph here was hiding. Jorge said it made no
-    // sense and it went, which left this card empty on exactly the service
-    // he was looking at: `docker.io/library/nginx:alpine` in project
-    // `coffe-store`. Empty was worse than the paragraph; the command is
-    // better than both.
-    let command = match push {
-        Some(Push::To(target)) | Some(Push::Elsewhere(target)) => format!("docker push {target}"),
-        _ => String::new(),
-    };
-    let replaces = matches!(push, Some(Push::Elsewhere(_)));
-    let inner = rsx! {
-        <div class="dsn stack-sm">
-            @if !command.is_empty() {
-                <div class="dsn-line">
-                    <pre class="dsn-value" data-copy
-                         data-copy-label=(copy) data-copied-label=(copied)>(&command)</pre>
-                </div>
-                // **The link is its own string.** An inline link splits a
-                // sentence in two whatever you do, so the split is at a
-                // phrase boundary and the space and the full stop are
-                // literals outside `t` — a translated string that ends in
-                // a space is one somebody trims by accident.
-                //
-                // Worded by Jorge, who called what was here rubbish: it
-                // said "after docker login with a push token from the
-                // project page" and left somebody to find that page.
-                <p class="field-hint">
-                    (t("An example of how to push to this service. First you have to log in with \
-                        a token, which you can generate in"))
-                    (" ")
-                    <a href=(tokens)>(t("the project's settings"))</a>
-                    (".")
-                </p>
-                // Six words, because pushing here does change what the
-                // service runs and somebody should know before they do it.
-                @if replaces {
-                    <p class="field-hint">(t("This replaces the image above."))</p>
-                }
-            }
-            // The dead ends, each said rather than left blank. A card
-            // headed "what to push at" with nothing under it is one
-            // somebody reads as broken rather than as not applicable.
-            @if matches!(push, Some(Push::Pinned)) {
-                <p class="field-hint">(t("This service is pinned to one image by digest, which \
-                     names bytes rather than a name a push can move. Give it a tag above for \
-                     pushes to reach it."))</p>
-            }
-            @if matches!(push, Some(Push::Nameless)) {
-                <p class="field-hint">(t("This node has no domain, so its registry has no name a \
-                     client could dial. Give the node one in its settings, and the command to \
-                     push here appears."))</p>
-            }
-        </div>
-    }
-    .render()
-    .into_inner();
-
-    // XSS SAFETY: the markup above is this function's own, and the
-    // reference inside it went through `rsx!`'s escaping.
-    wabot::ui::hypertext::island(
-        "copy",
-        &serde_json::json!({}),
-        hypertext::Raw::dangerously_create(&inner),
-    )
-}
-
-/// Two commands that put an image on this service, and a button to take
-/// them.
-///
-/// The commands are not translated and the sentence around them is —
-/// they are pasted into a terminal, and a terminal does not speak
-/// Spanish. Behind a `<details>` for the same reason the connection
-/// strings are: it is read once when the service is set up and is in
-/// the way every time after that.
-fn push_example(push: &Push, auto_deploy: bool, settings: &str) -> impl Renderable {
-    let (copy, copied) = (t("Copy"), t("Copied"));
-    // `docker build -t <target> .` rather than a tag step with a
-    // placeholder in it: a command with `<your image>` in the middle is
-    // one somebody pastes and watches fail. This one is complete.
-    // Both cases with a reference get the commands. The second one has
-    // a step in front of it — point the service here first — and that
-    // is a sentence, not a reason to withhold what to type: the card
-    // showed the bare reference and Jorge went looking for the build
-    // and the push that were not there.
-    let target = match push {
-        Push::To(target) | Push::Elsewhere(target) => target.as_str(),
-        _ => "",
-    };
-    let commands = match target.is_empty() {
-        true => String::new(),
-        false => format!("docker build -t {target} .\ndocker push {target}"),
-    };
-    let settings = settings.to_string();
-    let landing = matches!(push, Push::To(_));
-    let inner = rsx! {
-        <details>
-            <summary>(t("How to push"))</summary>
-            <div class="dsn stack-sm">
-                // The dead ends, each with the one thing that ends it.
-                // Said rather than left blank: the line above this card
-                // tells somebody to push an image to "this repository",
-                // and until something changes there is none.
-                @if matches!(push, Push::Elsewhere(_)) {
-                    <p class="field-hint">(t("This service runs an image from another registry, \
-                         so nothing pushed to this node can land on it — a push is matched to a \
-                         service by the name it carries. Point the service at this reference \
-                         instead, and push that:"))</p>
-                    <p class="field-hint">
-                        <a href=(&settings)>(t("Change the image in settings"))</a>
-                    </p>
-                }
-                @if !commands.is_empty() {
-                    <p class="field-hint">(t("From the directory with the Dockerfile, after \
-                         docker login with a push token from the project page."))</p>
-                    <div class="dsn-line">
-                        <pre class="dsn-value" data-copy
-                             data-copy-label=(copy) data-copied-label=(copied)>(&commands)</pre>
-                    </div>
-                }
-                @if landing {
-                    @if auto_deploy {
-                        <p class="field-hint">(t("The push deploys it. Any other tag is stored and \
-                             changes nothing here."))</p>
-                    } @else {
-                        <p class="field-hint">(t("The push appears above as a release, and waits for \
-                             somebody to deploy it. Any other tag is stored and changes nothing \
-                             here."))</p>
-                    }
-                }
-                @if matches!(push, Push::Pinned) {
-                    <p class="field-hint">(t("This service is pinned to one image by digest, \
-                         which names bytes rather than a name a push can move. Give it a tag in \
-                         settings for pushes to reach it."))</p>
-                    <p class="field-hint">
-                        <a href=(&settings)>(t("Change the image in settings"))</a>
-                    </p>
-                }
-                @if matches!(push, Push::Nameless) {
-                    <p class="field-hint">(t("This node has no domain, so its registry has no \
-                         name a client could dial. Give the node one in its settings, and the \
-                         command to push here appears."))</p>
-                }
-            </div>
-        </details>
-    }
-    .render()
-    .into_inner();
-
-    // XSS SAFETY: the markup above is this function's own, and the
-    // reference inside it went through `rsx!`'s escaping.
-    wabot::ui::hypertext::island(
-        "copy",
-        &serde_json::json!({}),
-        hypertext::Raw::dangerously_create(&inner),
-    )
-}
-
-fn reachable_at(port: &crate::entities::port::Port, node_domain: Option<&str>) -> String {
-    let mut where_from = Vec::new();
-    if let Some(hostname) = &port.hostname {
-        where_from.push(format!("https://{hostname}"));
-    }
-    if let Some(host_port) = port.host_port {
-        where_from.push(match node_domain {
-            Some(domain) => format!("{domain}:{host_port}"),
-            None => format!("this node:{host_port}"),
-        });
-    }
-    if where_from.is_empty() {
-        // Not "nothing": the port is reachable, just only from inside
-        // the project, and that is a useful thing to have said.
-        return "the project only".into();
-    }
-    where_from.join("  ")
-}
-
 /// Where to send the browser after a control was pressed.
 ///
 /// The form says, because only the form knows: the same play and stop
@@ -2858,604 +2339,6 @@ async fn returning_to(request: Request, fallback: &str) -> String {
     match from.starts_with('/') && !from.starts_with("//") {
         true => from.to_string(),
         false => fallback.to_string(),
-    }
-}
-
-/// What each copy is doing and what it is using, here.
-///
-/// The detail page's half of what used to be one card: a table is what
-/// somebody opens this page to read, and the selectors that change a
-/// placement are a decision, which is settings' half.
-///
-/// Memory is per replica and only for the copies on **this** machine. A
-/// copy elsewhere is measured by the node running it and reports its state
-/// back, not its cgroup — so this says nothing rather than guessing, which
-/// is the same rule the log page follows about a copy it cannot read.
-fn running_card<'a>(
-    placements: &'a [crate::entities::replica::Replica],
-    nodes: &'a [crate::network::Node],
-    queued: &'a [String],
-    stopped: bool,
-    // The ids this table is about, and what each copy here is using. One
-    // struct because they travel together and seven bare arguments is a
-    // call nobody can read — which the linter says with a number and the
-    // next reader would say with a sigh.
-    at: &'a Running<'a>,
-) -> impl Renderable + 'a {
-    let live: Vec<&crate::entities::replica::Replica> =
-        placements.iter().filter(|r| !r.evicted()).collect();
-    // This node's own, which is the figure somebody sizing this machine
-    // wants — a total across the network would answer a question nobody
-    // asked while hiding the one they did.
-    let here: u64 = live
-        .iter()
-        .filter_map(|replica| {
-            at.used
-                .get(&replica.container_id(at.project_slug, at.service_slug))
-                .copied()
-        })
-        .sum();
-
-    rsx! {
-        <section class="stack">
-            <div class="split">
-                <p class="card-label">(t("Where this runs"))</p>
-                <span class="who">
-                    (format!("{} replica(s)", live.len()))
-                    @if here > 0 {
-                        (" · ")(crate::node::memory::human(here))(t(" here"))
-                    }
-                </span>
-            </div>
-
-            <div class="card stack">
-                <table>
-                    <thead>
-                        <tr>
-                            <th>(t("Replica"))</th>
-                            <th>(t("Node"))</th>
-                            <th>(t("State"))</th>
-                            <th>(t("CPU"))</th>
-                            <th>(t("Memory"))</th>
-                            <th>(t("Disk"))</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        @for replica in &live {
-                            <tr>
-                                <td class="mono">("#")(replica.slot)</td>
-                                <td class="mono">(node_name(replica, nodes))</td>
-                                <td data-replica=(&replica.id)>
-                                    (placement_state(
-                                        replica,
-                                        stopped,
-                                        replica.node_id.as_ref().is_some_and(|node| {
-                                            queued.iter().any(|q| q == node)
-                                        }),
-                                        at.silent.contains(&replica.id),
-                                    ))
-                                </td>
-                                // A copy here is read from its cgroup; one
-                                // elsewhere is whatever its own node last
-                                // reported, which is the only way that
-                                // figure can exist on this machine. Still
-                                // "—" when neither has one, because a
-                                // database using no memory is not a
-                                // reading anybody should believe.
-                                // For a copy here the stream writes this,
-                                // because it has the two readings a rate
-                                // needs; for one elsewhere the server
-                                // renders what that node worked out and
-                                // sent, and the stream leaves it alone.
-                                //
-                                // The two are measured over different
-                                // windows — two seconds against a report
-                                // interval — which the card below says
-                                // rather than letting somebody read the
-                                // remote copy as the calmer one.
-                                <td class="mono" data-cpu=(&replica.id)>(
-                                    replica
-                                        .cpu_millicores
-                                        .filter(|_| !replica.is_here())
-                                        .map(|milli| format!("{milli}m"))
-                                        .unwrap_or_default()
-                                )</td>
-                                <td class="mono">(
-                                    at.used.get(&replica.container_id(at.project_slug, at.service_slug))
-                                        .copied()
-                                        .or(replica.memory_bytes)
-                                        .map(crate::node::memory::human)
-                                        .unwrap_or_else(|| "—".into())
-                                )</td>
-                                // What its volume holds. The figure that
-                                // matters most for a database and the one
-                                // nothing else watches: a memory ceiling
-                                // is a decision somebody made, and a
-                                // volume grows until the machine is full.
-                                <td class="mono">(
-                                    at.disk.get(&replica.id)
-                                        .copied()
-                                        .flatten()
-                                        .or(replica.disk_bytes)
-                                        .map(crate::node::memory::human)
-                                        .unwrap_or_else(|| "—".into())
-                                )</td>
-                            </tr>
-                        }
-                    </tbody>
-                </table>
-                @if live.iter().any(|replica| !replica.is_here()) {
-                    <p class="field-hint">(t("A copy here is measured every couple of seconds; \
-                         one on another node is measured by that node, across the interval it \
-                         reports on. The same unit, and the second is the smoother of the \
-                         two."))</p>
-                }
-            </div>
-        </section>
-    }
-}
-
-/// The disks themselves: one per copy, and that is the whole point.
-///
-/// The table above measures them and never says what they *are* — so a
-/// database's storage was a number in a column and nothing that said
-/// there is a directory on a machine, one for each copy, that outlives
-/// every deployment. Asked for by name.
-///
-/// One row per copy rather than one per volume-and-copy, because a
-/// service declares one volume today and the row would be the same
-/// sentence repeated. The paths are listed in the cell when there are
-/// several, and the size is the copy's total either way — which is the
-/// figure its own node reports, and the only one that can exist here
-/// for a copy on another machine.
-fn disks_card<'a>(
-    volumes: &'a [crate::entities::volume::Volume],
-    placements: &'a [crate::entities::replica::Replica],
-    nodes: &'a [crate::network::Node],
-    at: &'a Running<'a>,
-) -> impl Renderable + 'a {
-    let live: Vec<&crate::entities::replica::Replica> =
-        placements.iter().filter(|r| !r.evicted()).collect();
-    let paths = volumes
-        .iter()
-        .map(|volume| volume.path.clone())
-        .collect::<Vec<_>>()
-        .join("  ");
-
-    rsx! {
-        <section class="stack">
-            <p class="card-label">(t("Persistent disks"))</p>
-            <div class="card stack">
-                <table>
-                    <thead>
-                        <tr>
-                            <th>(t("Replica"))</th>
-                            <th>(t("Node"))</th>
-                            <th>(t("Inside the container"))</th>
-                            <th>(t("Holds"))</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        @for replica in &live {
-                            <tr>
-                                <td class="mono">("#")(replica.slot)</td>
-                                <td class="mono">(node_name(replica, nodes))</td>
-                                <td class="mono">(&paths)</td>
-                                <td class="mono">(
-                                    at.disk.get(&replica.id)
-                                        .copied()
-                                        .flatten()
-                                        .or(replica.disk_bytes)
-                                        .map(crate::node::memory::human)
-                                        .unwrap_or_else(|| "—".into())
-                                )</td>
-                            </tr>
-                        }
-                    </tbody>
-                </table>
-                <p class="field-hint">(t("A disk belongs to one copy and survives every \
-                     deployment — a container is replaced, the directory under it is not. \
-                     Two copies never share one: that would be two servers writing the same \
-                     files. It goes when the copy does, and a copy that comes back gets an \
-                     empty one."))</p>
-            </div>
-        </section>
-    }
-}
-
-/// Where this table is, and what it measured there.
-///
-/// Memory comes from the cgroups of the copies on this machine; disk from
-/// walking their volumes. A copy elsewhere is in neither map and falls back
-/// to what its own node last reported.
-struct Running<'a> {
-    project_slug: &'a str,
-    service_slug: &'a str,
-    used: &'a std::collections::BTreeMap<String, u64>,
-    disk: &'a std::collections::BTreeMap<String, Option<u64>>,
-    /// The copies this node's edge has taken out of the rotation, by
-    /// replica id. Empty when this node routes nothing for the service,
-    /// which is every node that is not an edge for it — health is known
-    /// by whoever proxies, and nobody else has an opinion to offer.
-    silent: &'a [String],
-}
-
-/// What a replica's node is called, for a table that reads rather than
-/// selects.
-fn node_name<'a>(
-    replica: &'a crate::entities::replica::Replica,
-    nodes: &'a [crate::network::Node],
-) -> String {
-    match &replica.node_id {
-        Some(id) => nodes
-            .iter()
-            .find(|node| &node.id == id)
-            .map(|node| node.name.clone())
-            .unwrap_or_else(|| id.clone()),
-        None => nodes
-            .iter()
-            .find(|node| node.is_self)
-            .map(|node| node.name.clone())
-            .unwrap_or_else(|| t("this node").to_string()),
-    }
-}
-
-/// Where every copy of this service runs, and how to change it.
-///
-/// One row per replica, each naming the node it is on. The first is
-/// this node by default and there is nothing special about it — "stays
-/// here" is a placement like any other, which is the whole point of
-/// administering a service from where it was created rather than from
-/// the machine it happens to be on.
-fn placement_card<'a>(
-    project: &'a crate::entities::project::Project,
-    service: &'a crate::entities::service::Service,
-    placements: &'a [crate::entities::replica::Replica],
-    nodes: &'a [crate::network::Node],
-    // The copies out of the rotation, by replica id — see `Running`.
-    silent: &'a [String],
-    // The nodes with an instruction about this service still waiting to
-    // be collected, so a copy that has been told reads apart from one
-    // that has not.
-    queued: &'a [String],
-) -> impl Renderable + 'a {
-    let action = format!(
-        "/projects/{}/services/{}/placement",
-        project.slug, service.slug
-    );
-    rsx! {
-        <section class="stack" id="placement">
-            <div class="split">
-                <p class="card-label">(t("Where this runs"))</p>
-                <span class="who">(format!("{} replica(s)", placements.len()))</span>
-            </div>
-
-            <form method="post" action=(&action) class="card stack">
-                <table>
-                    <thead>
-                        <tr><th>(t("Replica"))</th><th>(t("Node"))</th><th>(t("State"))</th></tr>
-                    </thead>
-                    <tbody>
-                        @for replica in placements {
-                            <tr>
-                                <td class="mono">("#")(replica.slot)</td>
-                                <td>
-                                    <select name=(format!("slot-{}", replica.slot))>
-                                        @for node in nodes {
-                                            (node_option(node, replica))
-                                        }
-                                    </select>
-                                </td>
-                                <td data-replica=(&replica.id)>
-                                    (placement_state(
-                                        replica,
-                                        service.desired_state == crate::entities::service::DesiredState::Stopped,
-                                        replica
-                                            .node_id
-                                            .as_ref()
-                                            .is_some_and(|node| queued.iter().any(|q| q == node)),
-                                        silent.contains(&replica.id),
-                                    ))
-                                </td>
-                            </tr>
-                        }
-                    </tbody>
-                </table>
-
-                <div class="placement-count">
-                    <div>
-                        <label for="replicas">(t("How many"))</label>
-                        <input id="replicas" name="replicas" type="number" autocomplete="off" min="1" max="16"
-                               value=(placements.len().to_string())>
-                    </div>
-                    <div>
-                        <label for="new-on">(t("New ones on"))</label>
-                        <select id="new-on" name="new-on">
-                            <option value=(ANYWHERE)>(t("Wherever there is room"))</option>
-                            @for node in nodes {
-                                @if node.is_self {
-                                    <option value="" selected>(&node.name)</option>
-                                } @else {
-                                    <option value=(&node.id)>(&node.name)</option>
-                                }
-                            }
-                        </select>
-                    </div>
-                </div>
-                <p class="field-hint">(t("A new copy is created on the node you pick, rather than here and \
-                     moved after — which would start a container on this machine and \
-                     stop it again for nothing. Removing takes the ones already thrown \
-                     out first, then the highest-numbered; the node running one is told \
-                     to stop it."))</p>
-                <p class="field-hint">(t("Wherever there is room spreads new copies across nodes that have \
-                     agreed to run this and have the memory for it, emptiest first. It \
-                     writes an ordinary row saying why, and never moves one you placed \
-                     yourself."))</p>
-                <div class="actions">
-                    <button type="submit">(t("Save placement"))</button>
-                </div>
-            </form>
-        </section>
-    }
-}
-
-/// One node in a replica's selector.
-///
-/// This node is the **empty** value, because "here" is the absence of a
-/// placement elsewhere — the same shape the row has, so the form and
-/// the column agree without anything translating between them.
-fn node_option<'a>(
-    node: &'a crate::network::Node,
-    replica: &'a crate::entities::replica::Replica,
-) -> impl Renderable + 'a {
-    let value = match node.is_self {
-        true => String::new(),
-        false => node.id.clone(),
-    };
-    let chosen = match node.is_self {
-        true => replica.is_here(),
-        false => replica.node_id.as_deref() == Some(node.id.as_str()),
-    };
-    rsx! {
-        @if chosen {
-            <option value=(value) selected>(&node.name)</option>
-        } @else {
-            <option value=(value)>(&node.name)</option>
-        }
-    }
-}
-
-/// Which public nodes answer for one of this service's names.
-///
-/// Only the owner sees it: an edge is part of administering the service,
-/// and the whole point of the origin rule is that this is decided in one
-/// place. A node that merely runs a replica has nothing to choose here.
-///
-/// Every choice is a checkbox rather than a single selector because a
-/// name can be served from several nodes at once — that is what makes it
-/// survive one of them going away.
-///
-/// The name is the heading and the nodes are a column under it. It was
-/// one flex line — a label, the boxes and a button, all in a row — which
-/// is what fitted inside the cell it used to live in and reads as one
-/// run-on sentence anywhere else.
-/// The most recent instruction to one node about one name.
-///
-/// The same filter `edge_cells` uses, so the two cannot disagree about
-/// which errand is the current one.
-fn latest_for<'a>(
-    orders: &'a [crate::network::errand::Record],
-    hostname: &str,
-    node_id: &str,
-) -> Option<&'a crate::network::errand::Record> {
-    orders
-        .iter()
-        .filter(|order| order.node_id == node_id)
-        .filter(|order| order.kind == crate::network::errand::Kind::Edge)
-        .filter(|order| {
-            order
-                .payload
-                .get("hostname")
-                .and_then(|value| value.as_str())
-                == Some(hostname)
-        })
-        .max_by_key(|order| order.created_at)
-}
-
-fn served_by_form<'a>(
-    project: &'a crate::entities::project::Project,
-    service: &'a crate::entities::service::Service,
-    hostname: &'a str,
-    public: &'a [crate::network::Node],
-    serving: &'a [(String, String)],
-    // Every instruction this node has queued, so the badge below can be
-    // computed here rather than written optimistically and corrected by
-    // a stream that may not reach this page.
-    orders: &'a [crate::network::errand::Record],
-) -> impl Renderable + 'a {
-    let chosen: Vec<&str> = serving
-        .iter()
-        .filter(|(name, _)| name == hostname)
-        .map(|(_, node)| node.as_str())
-        .collect();
-    rsx! {
-        <form method="post" class="stack-sm"
-              action=(format!(
-                  "/projects/{}/services/{}/edges",
-                  project.slug, service.slug
-              ))>
-            <input type="hidden" name="hostname" value=(hostname)>
-            // The name this form is about, and it has to be here: two
-            // ports with two hostnames render two of these, and without
-            // it they are the same list of nodes twice. It read as a
-            // label — "also served by" — only while the address was in
-            // the cell next door.
-            <p class="mono">(hostname)</p>
-            @for node in public {
-                <label class="check">
-                    @if chosen.contains(&node.id.as_str()) {
-                        <input type="checkbox"
-                               name=(format!("edge-{}", node.id)) value="1" checked>
-                    } @else {
-                        <input type="checkbox"
-                               name=(format!("edge-{}", node.id)) value="1">
-                    }
-                    <span>(&node.name)</span>
-                    // How far the instruction to that node has got.
-                    // Ticking a box used to be the end of what this
-                    // page said: an errand went out, a name was
-                    // claimed, a certificate was ordered, and none of
-                    // it came back here — so the only honest reading of
-                    // a ticked box was "somebody asked for this once".
-                    // **Computed, not assumed.** This wrote `Asked`
-                    // whenever a box was ticked and left the stream to
-                    // replace it — so a page the stream does not reach
-                    // said `Asked` for ever, and Jorge's node said it
-                    // about a name it was already serving with a
-                    // certificate. Its errand table was empty: with
-                    // nothing pending the answer was always "serving",
-                    // and nothing worked that out.
-                    //
-                    // The same function the stream uses, so the first
-                    // paint and every update after it read the same.
-                    @let cell = super::projects::edge_cell(latest_for(orders, hostname, &node.id));
-                    <span class=(match chosen.contains(&node.id.as_str()) {
-                              true => cell.badge,
-                              false => "badge badge-info is-hidden",
-                          })
-                          data-edge=(format!("{}|{}", hostname, node.id))>
-                        <span class=(cell.dot)></span>(crate::views::texts::language::word(&cell.word))
-                    </span>
-                </label>
-            }
-            <div class="actions">
-                <button class="btn btn-secondary btn-sm" type="submit">(t("Save"))</button>
-            </div>
-        </form>
-    }
-}
-
-/// What a replica is doing, rendered from the one decision.
-///
-/// The words and the classes come from `projects::replica_cell`, which the
-/// stream sends as data — so the first paint and every update after it
-/// cannot disagree. They did: a stopped service's remote copy read "not
-/// running" on load and "waiting for that node" two seconds later, because
-/// the decision had been made twice and only one copy was corrected.
-fn placement_state<'a>(
-    replica: &'a crate::entities::replica::Replica,
-    stopped: bool,
-    queued: bool,
-    not_answering: bool,
-) -> impl Renderable + 'a {
-    let cell = super::projects::replica_cell(replica, stopped, queued, not_answering);
-    rsx! {
-        @if cell.dot.is_empty() {
-            <span class=(cell.badge)>(crate::views::texts::language::word(&cell.word))</span>
-        } @else {
-            <span class=(cell.badge)>
-                <span class=(cell.dot)></span>(crate::views::texts::language::word(&cell.word))
-            </span>
-        }
-        // The line under it: an address while it is up, a reason while it
-        // is not. `failure` is the class the stream writes a reason into,
-        // and it is what the page has always used for one.
-        // **Always rendered, even empty.** The stream can only write into
-        // an element the server already put there — `console.js` looks the
-        // line up and does nothing when it is missing — so a row that had
-        // nothing to say when the page loaded could never gain a reason.
-        // A deployment that failed a second later flipped the badge to
-        // `Failed` live and dropped the *why* on the floor, and it took a
-        // manual refresh to see it. Reported by Jorge, mistyping an image
-        // name.
-        //
-        // `:empty` hides it, so an empty line costs no space. The class
-        // carries the severity and the island rewrites it from the badge,
-        // because a line that starts grey and becomes a failure has to
-        // turn red with it.
-        @if cell.badge.contains("danger") {
-            <p class="failure detail-line" data-detail>(&cell.detail)</p>
-        } @else {
-            <p class="tile-detail detail-line" data-detail>(&cell.detail)</p>
-        }
-    }
-}
-
-/// A service this node did not create.
-///
-/// Named rather than hidden: somebody looking at it needs to know which
-/// node to go and argue with, and a page that simply showed fewer
-/// buttons would leave them wondering what they had done wrong.
-fn from_elsewhere_card<'a>(
-    project: &'a crate::entities::project::Project,
-    service: &'a crate::entities::service::Service,
-    mine: &'a [crate::entities::replica::Replica],
-    evicted: bool,
-) -> impl Renderable + 'a {
-    rsx! {
-        <section class="card stack">
-            <p class="card-label">(t("From another node"))</p>
-            <p>(t("This service is administered from the node that placed it here, and \
-                 nothing on this page will change it."))</p>
-            <dl class="kv">
-                <dt>(t("Placed by"))</dt>
-                <dd class="mono">(service.origin_node_id.as_deref().unwrap_or("—"))</dd>
-            </dl>
-
-            // What is actually on *this* machine. The page used to name
-            // the node that sent it and stop there, so the operator
-            // could not see how many copies they were running or what
-            // any of them was doing — which is the one thing they can
-            // see about it that the other node cannot.
-            <table>
-                <thead>
-                    <tr><th>(t("Running here"))</th><th>(t("State"))</th></tr>
-                </thead>
-                <tbody>
-                    @for replica in mine {
-                        <tr>
-                            <td class="mono">("#")(replica.slot)</td>
-                            <td data-replica=(&replica.id)>
-                                (placement_state(
-                                    replica,
-                                    service.desired_state == crate::entities::service::DesiredState::Stopped,
-                                    false,
-                                    // Whoever routes this service knows
-                                    // whether it answers, and for one
-                                    // that arrived on an errand that is
-                                    // the node which placed it.
-                                    false,
-                                ))
-                            </td>
-                        </tr>
-                    }
-                </tbody>
-            </table>
-            <p class="field-hint">(t("The machine is yours: throwing it out is something you can always do, \
-                 and it is the only thing here that is."))</p>
-        </section>
-
-        <section class="card stack">
-            <p class="card-label">(t("Throw it off this node"))</p>
-            @if evicted {
-                <p>(t("Already thrown out. Its containers are stopped and the node that \
-                     placed it has been told — or will be, the next time it asks."))</p>
-                <p class="field-hint">(t("The rows stay because they are what carries that news. Removing \
-                     them here would leave the other node sending the same instruction \
-                     again."))</p>
-            } @else {
-                <p>(t("Stops its containers here and tells the node that placed it to \
-                     stop asking. It cannot be undone from this side — that node \
-                     decides what happens next, and it may place it somewhere else."))</p>
-                <form method="post" action=(format!(
-                    "/projects/{}/services/{}/evict", project.slug, service.slug
-                ))>
-                    <button class="btn btn-ghost destructive" type="submit">
-                        (t("Throw it out"))
-                    </button>
-                </form>
-            }
-        </section>
     }
 }
 
@@ -4984,9 +3867,11 @@ mod tests {
         // also sends — that pairing is what broke: this word was corrected
         // in the renderer and not in the decision, so the page said one
         // thing on load and the other two seconds later.
-        let stopped = placement_state(&replica, true, false, false)
-            .render()
-            .into_inner();
+        let stopped = crate::views::components::service_placement::placement_state(
+            &replica, true, false, false,
+        )
+        .render()
+        .into_inner();
         assert!(stopped.contains("Not running"), "{stopped}");
         assert!(
             !stopped.contains("Waiting"),
@@ -4995,16 +3880,20 @@ mod tests {
 
         // Told, and the instruction not yet collected. Legible rather than
         // silent, which is most of what makes a wait feel long.
-        let queued = placement_state(&replica, false, true, false)
-            .render()
-            .into_inner();
+        let queued = crate::views::components::service_placement::placement_state(
+            &replica, false, true, false,
+        )
+        .render()
+        .into_inner();
         assert!(queued.contains("Queued for that node"), "{queued}");
 
         // And the case the word was written for: it has the instruction
         // and the answer has not come back.
-        let waiting = placement_state(&replica, false, false, false)
-            .render()
-            .into_inner();
+        let waiting = crate::views::components::service_placement::placement_state(
+            &replica, false, false, false,
+        )
+        .render()
+        .into_inner();
         assert!(waiting.contains("Waiting for that node"), "{waiting}");
     }
 
@@ -5087,7 +3976,12 @@ mod tests {
         .expect("service");
 
         // A worker: no port, nothing outside, and still a name.
-        let alone = exposure(&service, "shop", &[], Some("node.example"));
+        let alone = crate::views::components::service_ports::exposure(
+            &service,
+            "shop",
+            &[],
+            Some("node.example"),
+        );
         assert!(alone.outside.is_empty());
         assert_eq!(alone.inside, ["web.shop"]);
 
@@ -5107,7 +4001,12 @@ mod tests {
         let ports = crate::repositories::ports::of_service(&database, &service.id)
             .await
             .expect("ports");
-        let open = exposure(&service, "shop", &ports, Some("node.example"));
+        let open = crate::views::components::service_ports::exposure(
+            &service,
+            "shop",
+            &ports,
+            Some("node.example"),
+        );
         assert_eq!(
             open.outside.len(),
             2,
@@ -5128,7 +4027,9 @@ mod tests {
         );
 
         // Every string on screen at once, which is the whole point.
-        let card = exposure_card(&open, true).render().into_inner();
+        let card = crate::views::components::service_ports::exposure_card(&open, true)
+            .render()
+            .into_inner();
         for url in open.outside.iter().chain(open.inside.iter()) {
             assert!(card.contains(url.as_str()), "{url} is missing: {card}");
         }
@@ -5217,9 +4118,11 @@ mod tests {
             for stopped in [true, false] {
                 for queued in [true, false] {
                     for silent in [true, false] {
-                        let painted = placement_state(&replica, stopped, queued, silent)
-                            .render()
-                            .into_inner();
+                        let painted = crate::views::components::service_placement::placement_state(
+                            &replica, stopped, queued, silent,
+                        )
+                        .render()
+                        .into_inner();
                         let streamed =
                             super::super::projects::replica_cell(&replica, stopped, queued, silent);
                         assert!(
@@ -6864,11 +5767,14 @@ mod tests {
         .await
         .expect("service");
         assert!(matches!(
-            push(&ours, "my-api", Some("node.example.com")),
+            crate::views::components::service_push::push(&ours, "my-api", Some("node.example.com")),
             Some(Push::To(target)) if target == "node.example.com/my-api/api:latest"
         ));
         assert!(
-            matches!(push(&ours, "my-api", None), Some(Push::Nameless)),
+            matches!(
+                crate::views::components::service_push::push(&ours, "my-api", None),
+                Some(Push::Nameless)
+            ),
             "a node with no domain has no host to write into a reference"
         );
 
@@ -6883,7 +5789,11 @@ mod tests {
         .expect("service");
         assert!(
             matches!(
-                push(&pinned, "my-api", Some("node.example.com")),
+                crate::views::components::service_push::push(
+                    &pinned,
+                    "my-api",
+                    Some("node.example.com")
+                ),
                 Some(Push::Pinned)
             ),
             "a digest names bytes, and nothing watches it"
@@ -6902,7 +5812,7 @@ mod tests {
         // tag is somebody else's image's, and every service made from a
         // public base would otherwise be told to push one.
         assert!(matches!(
-            push(&theirs, "my-api", Some("node.example.com")),
+            crate::views::components::service_push::push(&theirs, "my-api", Some("node.example.com")),
             Some(Push::Elsewhere(instead))
                 if instead == "node.example.com/my-api/web:latest"
         ));
