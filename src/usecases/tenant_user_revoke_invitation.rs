@@ -31,6 +31,7 @@ pub async fn run(
 mod tests {
     use super::*;
     use crate::accounts::roles::{NodeRole, ProjectRole};
+    use crate::dtos::requests::invite_person::InvitePerson;
     use crate::usecases::fixtures::{organisation, Organisation};
     use crate::usecases::tenant_user_invite_person;
 
@@ -38,9 +39,9 @@ mod tests {
         tenant_user_invite_person::run(
             &here.database,
             account,
-            tenant_user_invite_person::Asked {
+            &InvitePerson {
                 role: NodeRole::Member,
-                project: None,
+                project: String::new(),
                 project_role: ProjectRole::Viewer,
             },
         )

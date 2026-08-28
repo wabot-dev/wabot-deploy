@@ -1,19 +1,10 @@
 use wabot::sqlite::SqliteDatabase;
 
 use crate::accounts::{invitations, Account};
+use crate::dtos::requests::join::Join;
 
-pub struct Asked<'a> {
-    pub token: &'a str,
-    pub username: &'a str,
-    pub password: &'a str,
-}
-
-pub async fn run(
-    database: &SqliteDatabase,
-    scope: &str,
-    asked: Asked<'_>,
-) -> Result<Account, String> {
-    let Some(invitation) = invitations::look_up(database, asked.token)
+pub async fn run(database: &SqliteDatabase, scope: &str, asked: &Join) -> Result<Account, String> {
+    let Some(invitation) = invitations::look_up(database, &asked.token)
         .await
         .map_err(|error| error.to_string())?
     else {
@@ -26,7 +17,7 @@ pub async fn run(
         return Err("that invitation is not for this organisation".into());
     }
 
-    invitations::accept(database, asked.token, asked.username, asked.password)
+    invitations::accept(database, &asked.token, &asked.username, &asked.password)
         .await
         .map_err(|error| error.to_string())
 }
@@ -35,6 +26,7 @@ pub async fn run(
 mod tests {
     use super::*;
     use crate::accounts::roles::{NodeRole, ProjectRole};
+    use crate::dtos::requests::invite_person::InvitePerson;
     use crate::usecases::fixtures::organisation;
     use crate::usecases::{node_user_invite_person, tenant_user_invite_person};
 
@@ -44,9 +36,9 @@ mod tests {
                 tenant_user_invite_person::run(
                     &here.database,
                     &here.admin,
-                    tenant_user_invite_person::Asked {
+                    &InvitePerson {
                         role: NodeRole::Member,
-                        project: None,
+                        project: String::new(),
                         project_role: ProjectRole::Viewer,
                     },
                 )
@@ -58,9 +50,9 @@ mod tests {
                 node_user_invite_person::run(
                     &here.database,
                     &here.operator,
-                    node_user_invite_person::Asked {
+                    &InvitePerson {
                         role: NodeRole::Member,
-                        project: None,
+                        project: String::new(),
                         project_role: ProjectRole::Viewer,
                     },
                 )
@@ -79,10 +71,10 @@ mod tests {
         let born = run(
             &here.database,
             here.admin.tenant_id.as_deref().expect("scoped"),
-            Asked {
-                token: &token,
-                username: "newcomer",
-                password: "a long passphrase here",
+            &Join {
+                token: token.clone(),
+                username: "newcomer".into(),
+                password: "a long passphrase here".into(),
             },
         )
         .await
@@ -98,10 +90,10 @@ mod tests {
         let refused = run(
             &here.database,
             here.admin.tenant_id.as_deref().expect("scoped"),
-            Asked {
-                token: &token,
-                username: "newcomer",
-                password: "a long passphrase here",
+            &Join {
+                token: token.clone(),
+                username: "newcomer".into(),
+                password: "a long passphrase here".into(),
             },
         )
         .await
@@ -119,10 +111,10 @@ mod tests {
         assert!(run(
             &here.database,
             here.rival.tenant_id.as_deref().expect("scoped"),
-            Asked {
-                token: &token,
-                username: "newcomer",
-                password: "a long passphrase here",
+            &Join {
+                token: token.clone(),
+                username: "newcomer".into(),
+                password: "a long passphrase here".into(),
             },
         )
         .await

@@ -2,22 +2,22 @@ use wabot::sqlite::SqliteDatabase;
 
 use crate::accounts::Account;
 use crate::authz::node_user;
-use crate::commands::create_service::{Asked, CreateService};
-use crate::entities::project::Project;
-use crate::entities::service::Service;
+use crate::commands::create_service::CreateService;
+use crate::dtos::requests::create_service::CreateService as Asked;
+use crate::dtos::responses::service_created::ServiceCreated;
 use crate::policies::access;
 
 pub async fn run(
     database: &SqliteDatabase,
     account: &Account,
-    asked: Asked<'_>,
+    asked: &Asked,
     env: &[(String, String)],
-) -> Result<(Project, Service), String> {
+) -> Result<ServiceCreated, String> {
     if !node_user::belongs_here(account) {
         return Err("that is not this console's to make".into());
     }
 
-    let Some((project, allowed)) = access::find_project(database, account, asked.project)
+    let Some((project, allowed)) = access::find_project(database, account, &asked.project)
         .await
         .map_err(|error| error.to_string())?
     else {
@@ -29,13 +29,17 @@ pub async fn run(
 
     let service = CreateService {
         project_id: &project.id,
-        name: asked.name,
-        image: asked.image,
+        name: &asked.name,
+        image: &asked.image,
         env,
     }
     .run(database)
     .await
     .map_err(|error| error.to_string())?;
 
-    Ok((project, service))
+    Ok(ServiceCreated {
+        service_id: service.id,
+        project_slug: project.slug,
+        service_slug: service.slug,
+    })
 }

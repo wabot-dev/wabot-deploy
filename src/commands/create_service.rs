@@ -5,12 +5,6 @@ use crate::entities::service::Service;
 use crate::errors::{PlatformError, PlatformResult};
 use crate::repositories::replicas;
 
-pub struct Asked<'a> {
-    pub project: &'a str,
-    pub name: &'a str,
-    pub image: &'a str,
-}
-
 pub struct CreateService<'a> {
     pub project_id: &'a str,
     pub name: &'a str,

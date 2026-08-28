@@ -133,19 +133,16 @@ impl PeopleApi {
             Err(response) => return Ok(response),
         };
 
-        let asked = crate::usecases::node_user_invite_person::Asked {
-            role: match field(&form, "node_role") {
-                "admin" => NodeRole::Admin,
-                _ => NodeRole::Member,
-            },
-            project: Some(field(&form, "project")),
+        let asked = crate::dtos::requests::invite_person::InvitePerson {
+            role: NodeRole::parse(field(&form, "node_role")),
+            project: field(&form, "project").to_string(),
             project_role: ProjectRole::parse(field(&form, "project_role")),
         };
 
         let invited = match crate::usecases::node_user_invite_person::run(
             &self.state.database,
             &account,
-            asked,
+            &asked,
         )
         .await
         {
@@ -268,13 +265,7 @@ impl PeopleApi {
 
         let account = match crate::usecases::guest_join_as_node_user::run(
             &self.state.database,
-            crate::usecases::guest_join_as_node_user::Asked {
-                token: &token,
-                username: field(&form, "username"),
-                // Not trimmed: the spaces are part of it, and removing
-                // them silently produces a password nobody can type back.
-                password: form.get("password").map(String::as_str).unwrap_or_default(),
-            },
+            &super::auth::joining(&token, &form),
         )
         .await
         {

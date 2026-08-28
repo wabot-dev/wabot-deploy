@@ -1,32 +1,22 @@
 use wabot::sqlite::SqliteDatabase;
 
 use crate::accounts::invitations;
-use crate::accounts::roles::{NodeRole, ProjectRole};
 use crate::accounts::Account;
 use crate::authz::tenant_user;
+use crate::dtos::requests::invite_person::InvitePerson;
+use crate::dtos::responses::person_invited::PersonInvited;
 use crate::policies::access;
-
-pub struct Asked<'a> {
-    pub role: NodeRole,
-    pub project: Option<&'a str>,
-    pub project_role: ProjectRole,
-}
-
-#[derive(Debug)]
-pub struct Invited {
-    pub token: String,
-}
 
 pub async fn run(
     database: &SqliteDatabase,
     account: &Account,
-    asked: Asked<'_>,
-) -> Result<Invited, String> {
+    asked: &InvitePerson,
+) -> Result<PersonInvited, String> {
     if !tenant_user::administers(account) {
         return Err("only an administrator of this organisation can invite somebody".into());
     }
 
-    let project = match asked.project.filter(|slug| !slug.trim().is_empty()) {
+    let project = match asked.project() {
         None => None,
         Some(slug) => match access::find_project(database, account, slug)
             .await
@@ -47,19 +37,20 @@ pub async fn run(
     .await
     .map_err(|error| error.to_string())?;
 
-    Ok(Invited { token })
+    Ok(PersonInvited { token })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::accounts;
+    use crate::accounts::roles::{NodeRole, ProjectRole};
     use crate::usecases::fixtures::organisation;
 
-    fn asked() -> Asked<'static> {
-        Asked {
+    fn asked() -> InvitePerson {
+        InvitePerson {
             role: NodeRole::Member,
-            project: None,
+            project: String::new(),
             project_role: ProjectRole::Viewer,
         }
     }
@@ -67,7 +58,7 @@ mod tests {
     #[tokio::test]
     async fn the_link_opens_the_organisation_it_was_made_in() {
         let here = organisation().await;
-        let invited = run(&here.database, &here.admin, asked())
+        let invited = run(&here.database, &here.admin, &asked())
             .await
             .expect("invited");
 
@@ -83,7 +74,7 @@ mod tests {
     #[tokio::test]
     async fn the_machines_operator_cannot_run_it() {
         let here = organisation().await;
-        let refused = run(&here.database, &here.operator, asked())
+        let refused = run(&here.database, &here.operator, &asked())
             .await
             .expect_err("refused");
         assert!(
@@ -95,7 +86,7 @@ mod tests {
     #[tokio::test]
     async fn a_member_cannot_invite() {
         let here = organisation().await;
-        assert!(run(&here.database, &here.member, asked()).await.is_err());
+        assert!(run(&here.database, &here.member, &asked()).await.is_err());
     }
 
     #[tokio::test]
@@ -108,8 +99,8 @@ mod tests {
         let refused = run(
             &here.database,
             &here.admin,
-            Asked {
-                project: Some(&elsewhere.slug),
+            &InvitePerson {
+                project: elsewhere.slug.clone(),
                 ..asked()
             },
         )

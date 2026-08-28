@@ -28,10 +28,18 @@
 //! setting can make a node look reachable when it is not — which is why
 //! `Kind` was derived from the endpoint in the first place.
 
+use serde::{Deserialize, Serialize};
 use wabot::sqlite::{SqliteDatabase, SqliteResult};
 
 /// A thing one node can be asked to do.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+///
+/// Serialised **lowercase, which is what `name()` already spells** — a
+/// request DTO carries these, and a second spelling for one thing is how
+/// a value written by one side stops being read by the other.
+/// `a_capability_serialises_as_the_name_it_is_known_by` holds them
+/// together, over `ALL`, so a new variant cannot be added to only one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum Capability {
     /// Run replicas of a service, and pull the images for them.
     ///
@@ -358,6 +366,16 @@ pub fn to_list(capabilities: &[Capability]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_capability_serialises_as_the_name_it_is_known_by() {
+        for capability in Capability::ALL {
+            let written = serde_json::to_string(&capability).expect("serialise");
+            assert_eq!(written, format!("{:?}", capability.name()));
+            let read: Capability = serde_json::from_str(&written).expect("read back");
+            assert_eq!(read, capability);
+        }
+    }
 
     #[tokio::test]
     async fn a_node_does_both_until_it_is_told_otherwise() {

@@ -1157,7 +1157,7 @@ impl NodeApi {
         // the new name and the public one. Asking it here is what makes
         // saving a domain reissue rather than merely record.
         match settled {
-            Ok(crate::usecases::node_user_set_node_domain::Settled::Named(domain)) => {
+            Ok(crate::dtos::responses::domain_settled::Settled::Named(domain)) => {
                 self.state.certificates.now();
                 Ok(super::auth::see_other(&format!(
                     "{here}?{}",
@@ -1166,7 +1166,7 @@ impl NodeApi {
                         .finish()
                 )))
             }
-            Ok(crate::usecases::node_user_set_node_domain::Settled::Cleared) => {
+            Ok(crate::dtos::responses::domain_settled::Settled::Cleared) => {
                 self.state.certificates.now();
                 Ok(super::auth::back_with_error(
                     here,
@@ -1262,12 +1262,16 @@ impl NodeApi {
             Err(response) => return Ok(response),
         };
 
+        let asked = crate::dtos::requests::set_capabilities::SetCapabilities {
+            provides: super::auth::capabilities_ticked(&form, ""),
+            owns: form.contains_key("own"),
+        };
         if let Err(reason) = crate::usecases::node_user_set_capabilities::run(
             &self.state.database,
             &self.state.config,
             &self.state.deployer,
             &account,
-            &form,
+            &asked,
         )
         .await
         {
@@ -1326,12 +1330,23 @@ impl NodeApi {
             Err(response) => return Ok(response),
         };
 
+        let asked = crate::dtos::requests::set_backup_plan::SetBackupPlan {
+            destination: super::auth::field(&form, "destination").to_string(),
+            cadence: super::auth::field(&form, "cadence").to_string(),
+            hour: super::auth::field(&form, "hour").to_string(),
+            weekday: super::auth::field(&form, "weekday").to_string(),
+            keep_days: super::auth::field(&form, "keep_days").to_string(),
+            // Presence, not value: an unticked checkbox sends nothing at
+            // all, so this is the last place that can tell it from a
+            // form that never carried the field.
+            archiving: form.contains_key("archiving"),
+        };
+
         let saved = crate::usecases::node_user_set_backup_plan::run(
             &self.state.database,
             &self.state.config,
             &account,
-            &form,
-            |name| super::auth::field(&form, name).to_string(),
+            &asked,
         )
         .await;
 
@@ -1377,17 +1392,17 @@ impl NodeApi {
             Ok(form) => form,
             Err(response) => return Ok(response),
         };
-        let asked = crate::usecases::node_user_set_bucket_credentials::Asked {
-            access_key_id: super::auth::field(&form, "access_key_id"),
-            secret_access_key: super::auth::field(&form, "secret_access_key"),
-            region: super::auth::field(&form, "region"),
-            endpoint: super::auth::field(&form, "endpoint"),
+        let asked = crate::dtos::requests::set_bucket_credentials::SetBucketCredentials {
+            access_key_id: super::auth::field(&form, "access_key_id").to_string(),
+            secret_access_key: super::auth::field(&form, "secret_access_key").to_string(),
+            region: super::auth::field(&form, "region").to_string(),
+            endpoint: super::auth::field(&form, "endpoint").to_string(),
         };
         match crate::usecases::node_user_set_bucket_credentials::run(
             &self.state.database,
             &self.state.config,
             &account,
-            asked,
+            &asked,
         )
         .await
         {
@@ -1484,12 +1499,16 @@ impl NodeApi {
         // nodes shows. This is a note on a token that has not been spent
         // yet, for the operator who minted three of them this afternoon
         // — so it is bounded, and it is not required.
+        let asked = crate::dtos::requests::mint_join_token::MintJoinToken {
+            name: super::auth::field(&form, "name").to_string(),
+            requires: super::auth::capabilities_ticked(&form, "require-"),
+            offers: super::auth::capabilities_ticked(&form, "offer-"),
+        };
         let token = match crate::usecases::node_user_mint_join_token::run(
             &self.state.database,
             &self.state.config,
             &account,
-            super::auth::field(&form, "name"),
-            &form,
+            &asked,
         )
         .await
         {
@@ -1540,13 +1559,22 @@ impl NodeApi {
             Ok(form) => form,
             Err(response) => return Ok(response),
         };
-        use crate::usecases::node_user_spend_join_token::Spent;
+        use crate::dtos::responses::join_token_spent::Spent;
+        let asked = crate::dtos::requests::spend_join_token::SpendJoinToken {
+            token: super::auth::field(&form, "token").to_string(),
+            agreed: form.contains_key("agreed"),
+            // The form's spelling stops here. A checkbox arrives only
+            // when ticked, so presence is the answer.
+            accepted: crate::network::capability::Capability::ALL
+                .into_iter()
+                .filter(|capability| form.contains_key(&format!("accept-{}", capability.name())))
+                .collect(),
+        };
         match crate::usecases::node_user_spend_join_token::run(
             &self.state.database,
             &self.state.config,
             &account,
-            super::auth::field(&form, "token"),
-            &form,
+            &asked,
         )
         .await
         {
@@ -1628,7 +1656,7 @@ impl NodeApi {
         };
         let here = format!("/network/{id}");
 
-        use crate::usecases::node_user_drain_node::Drained;
+        use crate::dtos::responses::node_drained::Drained;
         match crate::usecases::node_user_drain_node::run(
             &self.state.database,
             &self.state.deployer,
@@ -1728,7 +1756,11 @@ impl NodeApi {
         };
 
         let here = format!("/network/{id}");
-        match crate::usecases::node_user_set_grants::run(&self.state.database, &account, &id, &form)
+        let asked = crate::dtos::requests::set_grants::SetGrants {
+            node: id.to_string(),
+            agreed: super::auth::capabilities_ticked(&form, ""),
+        };
+        match crate::usecases::node_user_set_grants::run(&self.state.database, &account, &asked)
             .await
         {
             Ok(()) => Ok(super::auth::see_other(&here)),

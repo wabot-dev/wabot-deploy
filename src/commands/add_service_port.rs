@@ -6,18 +6,9 @@ use crate::entities::port::Port;
 use crate::entities::service::Service;
 use crate::repositories::ports;
 
-#[derive(Clone, Copy)]
-pub struct Asked<'a> {
-    pub container_port: u16,
-    pub publish: bool,
-    /// Empty unless HTTPS was asked for.
-    pub hostname: &'a str,
-    pub https: bool,
-}
-
 pub struct AddServicePort<'a> {
     pub service: &'a Service,
-    pub asked: Asked<'a>,
+    pub asked: &'a crate::dtos::requests::add_service_port::AddServicePort,
 }
 
 impl AddServicePort<'_> {
@@ -33,7 +24,7 @@ impl AddServicePort<'_> {
                 if self.asked.hostname.is_empty() {
                     return Err("serving over HTTPS needs a hostname".into());
                 }
-                let hostname = crate::values::hostname::Hostname::parse(self.asked.hostname)
+                let hostname = crate::values::hostname::Hostname::parse(&self.asked.hostname)
                     .as_str()
                     .to_string();
 

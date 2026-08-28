@@ -2467,17 +2467,25 @@ impl ServiceApi {
             Err(message) => return Ok(back_with_error(&form_url, &message)),
         };
 
-        let asked = crate::commands::create_service::Asked {
-            project: slug,
-            name: field(&form, "name"),
-            image: field(&form, "image"),
+        // Built here and validated here: the use case is handed a
+        // request whose *shape* is already right, and asks only the
+        // questions a form cannot answer.
+        let asked = crate::dtos::requests::create_service::CreateService {
+            project: slug.to_string(),
+            name: field(&form, "name").to_string(),
+            image: field(&form, "image").to_string(),
+            env: field(&form, "env").to_string(),
         };
+        if let Err(reason) = asked.validate() {
+            return Ok(back_with_error(&form_url, &reason.to_string()));
+        }
+
         let made = match crate::authz::node_user::belongs_here(&account) {
             true => {
                 crate::usecases::node_user_create_service::run(
                     &self.state.database,
                     &account,
-                    asked,
+                    &asked,
                     &env,
                 )
                 .await
@@ -2486,14 +2494,14 @@ impl ServiceApi {
                 crate::usecases::tenant_user_create_service::run(
                     &self.state.database,
                     &account,
-                    asked,
+                    &asked,
                     &env,
                 )
                 .await
             }
         };
         match made {
-            Ok((project, service)) => {
+            Ok(made) => {
                 // Deployed on creation. The alternative — create, then
                 // press Deploy — makes the common case two steps and
                 // leaves a row that describes nothing.
@@ -2501,10 +2509,10 @@ impl ServiceApi {
                 // Straight to the service's own page: declaring ports
                 // is the next thing anybody does, and it is where the
                 // reason lives if this deployment failed.
-                self.enqueue(&service.id, None).await;
+                self.enqueue(&made.service_id, None).await;
                 Ok(see_other(&format!(
                     "/projects/{}/services/{}",
-                    project.slug, service.slug
+                    made.project_slug, made.service_slug
                 )))
             }
             Err(reason) => Ok(back_with_error(&form_url, &reason)),
@@ -2545,10 +2553,10 @@ impl ServiceApi {
         let Some(account) = signed_in(&self.auth) else {
             return Ok(see_other("/sign-in"));
         };
-        let asked = crate::commands::add_service_port::Asked {
+        let asked = crate::dtos::requests::add_service_port::AddServicePort {
             container_port,
             publish: checked(&form, "publish"),
-            hostname: field(&form, "hostname"),
+            hostname: field(&form, "hostname").to_string(),
             https: checked(&form, "https"),
         };
         let opened = match crate::authz::node_user::belongs_here(&account) {
@@ -2558,7 +2566,7 @@ impl ServiceApi {
                     &self.state.config,
                     &account,
                     &service,
-                    asked,
+                    &asked,
                 )
                 .await
             }
@@ -2568,7 +2576,7 @@ impl ServiceApi {
                     &self.state.config,
                     &account,
                     &service,
-                    asked,
+                    &asked,
                 )
                 .await
             }
@@ -2971,10 +2979,10 @@ impl ServiceApi {
         let Some(account) = signed_in(&self.auth) else {
             return Ok(see_other("/sign-in"));
         };
-        let asked = crate::commands::set_service_resources::Asked {
-            memory: field(&form, "memory"),
-            cpu: field(&form, "cpu"),
-            disk: field(&form, "disk"),
+        let asked = crate::dtos::requests::set_service_resources::SetServiceResources {
+            memory: field(&form, "memory").to_string(),
+            cpu: field(&form, "cpu").to_string(),
+            disk: field(&form, "disk").to_string(),
         };
         let changed = match crate::authz::node_user::belongs_here(&account) {
             true => {
@@ -2984,7 +2992,7 @@ impl ServiceApi {
                     &account,
                     &project,
                     &service,
-                    asked,
+                    &asked,
                 )
                 .await
             }
@@ -2995,7 +3003,7 @@ impl ServiceApi {
                     &account,
                     &project,
                     &service,
-                    asked,
+                    &asked,
                 )
                 .await
             }
@@ -3075,7 +3083,7 @@ impl ServiceApi {
             Ok(applied) => applied,
             Err(reason) => return Ok(back_with_error(&here, &reason)),
         };
-        self.enqueue(&applied.service.id, applied.release_id.as_deref())
+        self.enqueue(&applied.service_id, applied.release_id.as_deref())
             .await;
         Ok(see_other(&format!("{here}#environment")))
     }
@@ -3157,7 +3165,7 @@ impl ServiceApi {
             Ok(applied) => applied,
             Err(reason) => return Ok(back_with_error(&here, &reason)),
         };
-        self.enqueue(&applied.service.id, applied.release_id.as_deref())
+        self.enqueue(&applied.service_id, applied.release_id.as_deref())
             .await;
         Ok(see_other(&format!("{here}#environment")))
     }

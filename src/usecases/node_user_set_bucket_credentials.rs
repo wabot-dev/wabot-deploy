@@ -4,16 +4,8 @@ use crate::accounts::Account;
 use crate::authz::node_user;
 use crate::commands::s3::Credentials;
 use crate::config::Config;
+use crate::dtos::requests::set_bucket_credentials::SetBucketCredentials;
 use crate::usecases::node_user_set_backup_plan::bucket_refusal;
-
-pub struct Asked<'a> {
-    pub access_key_id: &'a str,
-    /// Empty keeps what is stored: a page that showed the secret back to
-    /// be re-typed would be a page that shows the secret.
-    pub secret_access_key: &'a str,
-    pub region: &'a str,
-    pub endpoint: &'a str,
-}
 
 /// The credential lands in the **config file, never the database** — a
 /// database is what a backup copies, and a backup carrying the key to
@@ -22,7 +14,7 @@ pub async fn run(
     database: &SqliteDatabase,
     config: &Config,
     account: &Account,
-    asked: Asked<'_>,
+    asked: &SetBucketCredentials,
 ) -> Result<(), String> {
     if !node_user::manages_the_machine(account) {
         return Err("only an administrator of this node can do that".into());
@@ -36,7 +28,7 @@ pub async fn run(
     };
 
     let stored = config.s3();
-    let secret = match asked.secret_access_key {
+    let secret = match asked.secret_access_key.as_str() {
         "" => match stored.as_ref().map(|held| held.secret_access_key.clone()) {
             Some(held) => held,
             None => {

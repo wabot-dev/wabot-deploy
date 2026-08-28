@@ -9,18 +9,10 @@ use crate::policies::quotas;
 use crate::repositories::replicas;
 use crate::repositories::services;
 
-/// What a form asks for, before anybody has decided whose project it is.
-#[derive(Clone, Copy)]
-pub struct Asked<'a> {
-    pub memory: &'a str,
-    pub cpu: &'a str,
-    pub disk: &'a str,
-}
-
 pub struct SetServiceResources<'a> {
     pub project: &'a Project,
     pub service: &'a Service,
-    pub asked: Asked<'a>,
+    pub asked: &'a crate::dtos::requests::set_service_resources::SetServiceResources,
 }
 
 impl SetServiceResources<'_> {
@@ -36,11 +28,11 @@ impl SetServiceResources<'_> {
         // A managed engine's ceiling is a preset, because the number also
         // sets the engine's arithmetic; anything else takes a size.
         let memory = match self.service.kind.is_managed() {
-            true => presets::parse(self.asked.memory),
-            false => presets::parse_size(self.asked.memory),
+            true => presets::parse(&self.asked.memory),
+            false => presets::parse_size(&self.asked.memory),
         }?;
-        let cpu = presets::parse_cores(self.asked.cpu)?;
-        let disk = presets::parse_size(self.asked.disk)?;
+        let cpu = presets::parse_cores(&self.asked.cpu)?;
+        let disk = presets::parse_size(&self.asked.disk)?;
 
         let copies = replicas::of_service(database, &self.service.id)
             .await

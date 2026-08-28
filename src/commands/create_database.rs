@@ -15,15 +15,6 @@ use crate::repositories::databases::REPLICATION_USER;
 /// ceiling".
 pub const DEFAULT_PRESET: u64 = 256 * 1024 * 1024;
 
-/// What a form asks for, before anybody has decided whose project it is.
-#[derive(Clone, Copy)]
-pub struct Asked<'a> {
-    pub project: &'a str,
-    pub name: &'a str,
-    pub version: &'a str,
-    pub memory: &'a str,
-}
-
 pub struct CreateDatabase<'a> {
     pub project_id: &'a str,
     pub name: &'a str,

@@ -5,13 +5,9 @@ use wabot::sqlite::SqliteDatabase;
 use crate::accounts::Account;
 use crate::authz::node_user;
 use crate::config::Config;
+use crate::dtos::responses::release_started::ReleaseStarted;
 use crate::update::runs;
 use crate::update::Catalogue;
-
-#[derive(Debug)]
-pub struct Started {
-    pub tag: String,
-}
 
 /// Everything that can be refused is refused **here**, while there is
 /// still a request to answer. What happens after this returns is
@@ -23,7 +19,7 @@ pub async fn run(
     catalogue: &Arc<Catalogue>,
     account: &Account,
     tag: &str,
-) -> Result<Started, String> {
+) -> Result<ReleaseStarted, String> {
     if !node_user::manages_the_machine(account) {
         return Err("only an administrator of this node can do that".into());
     }
@@ -70,7 +66,7 @@ pub async fn run(
         Some(account.id.clone()),
     );
 
-    Ok(Started {
+    Ok(ReleaseStarted {
         tag: release.tag.clone(),
     })
 }

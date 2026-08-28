@@ -133,6 +133,40 @@ pub fn field<'a>(form: &'a HashMap<String, String>, name: &str) -> &'a str {
     form.get(name).map(|value| value.trim()).unwrap_or_default()
 }
 
+/// The request behind both join doors, which is one form read the same
+/// way twice — the node's console and an organisation's differ in which
+/// invitations they will spend, not in what the person typed.
+pub fn joining(token: &str, form: &HashMap<String, String>) -> crate::dtos::requests::join::Join {
+    crate::dtos::requests::join::Join {
+        token: token.to_string(),
+        username: field(form, "username").to_string(),
+        // Not trimmed: the spaces are part of it, and removing them
+        // silently produces a password nobody can type back.
+        password: form.get("password").cloned().unwrap_or_default(),
+    }
+}
+
+/// Which capabilities a set of checkboxes agreed to.
+///
+/// **Presence, not value.** A checkbox that is off sends nothing at all,
+/// so the whole set has to be drawn every time and absence is the
+/// answer — a form built from part of the list once turned `store` off
+/// in silence. Reading `Capability::ALL` is what makes a new one a
+/// compile error rather than a field nobody wrote.
+///
+/// The prefix is the form's own spelling (`require-`, `offer-`, or none
+/// at all), and it stops here: a use case that had to know it would be a
+/// use case only a browser can call.
+pub fn capabilities_ticked(
+    form: &HashMap<String, String>,
+    prefix: &str,
+) -> Vec<crate::network::capability::Capability> {
+    crate::network::capability::Capability::ALL
+        .into_iter()
+        .filter(|capability| form.contains_key(&format!("{prefix}{}", capability.name())))
+        .collect()
+}
+
 // ---------- the responses a form POST needs ------------------------------
 
 /// 303 See Other.

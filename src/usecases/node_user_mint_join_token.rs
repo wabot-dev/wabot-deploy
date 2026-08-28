@@ -1,10 +1,9 @@
-use std::collections::HashMap;
-
 use wabot::sqlite::SqliteDatabase;
 
 use crate::accounts::Account;
 use crate::authz::node_user;
 use crate::config::Config;
+use crate::dtos::requests::mint_join_token::MintJoinToken;
 use crate::network;
 use crate::network::capability::Capability;
 
@@ -17,13 +16,12 @@ pub async fn run(
     database: &SqliteDatabase,
     config: &Config,
     account: &Account,
-    name: &str,
-    ticked: &HashMap<String, String>,
+    asked: &MintJoinToken,
 ) -> Result<String, String> {
     if !node_user::manages_the_machine(account) {
         return Err("only an administrator of this node can do that".into());
     }
-    if name.chars().count() > 60 {
+    if asked.name.chars().count() > 60 {
         return Err("that note is too long for the column it goes in".into());
     }
 
@@ -42,25 +40,16 @@ pub async fn run(
         return Err("this node has no address on its own overlay yet".into());
     };
 
-    let requires: Vec<Capability> = Capability::ALL
-        .into_iter()
-        .filter(|capability| ticked.contains_key(&format!("require-{}", capability.name())))
-        .collect();
-    let offers: Vec<Capability> = Capability::ALL
-        .into_iter()
-        .filter(|capability| ticked.contains_key(&format!("offer-{}", capability.name())))
-        .collect();
-
     let assigned_ip = network::overlay::allocate(database)
         .await
         .map_err(|error| error.to_string())?;
     let (_, secret) = network::enrolment::create(
         database,
-        name,
+        &asked.name,
         &assigned_ip,
         &account.id,
-        &requires,
-        &offers,
+        &asked.requires,
+        &asked.offers,
     )
     .await
     .map_err(|error| error.to_string())?;
@@ -73,8 +62,8 @@ pub async fn run(
         overlay_ip,
         assigned_ip,
         secret,
-        requires: Some(names(&requires)),
-        offers: Some(names(&offers)),
+        requires: Some(names(&asked.requires)),
+        offers: Some(names(&asked.offers)),
     }
     .encode())
 }

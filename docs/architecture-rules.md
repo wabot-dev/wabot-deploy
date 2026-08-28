@@ -4,10 +4,10 @@ Written down as they are decided, in the order they were decided, with
 what each one costs. A rule with no cost written beside it is one
 somebody will break for a good reason and not notice they did.
 
-## 0. Six objects, and nothing else
+## 0. The objects, and nothing else
 
-Everything in this tree is one of six things. If a file is none of them,
-it is in the wrong place.
+Everything in this tree is one of these. If a file is none of them, it
+is in the wrong place.
 
 | | What it is |
 |---|---|
@@ -19,6 +19,9 @@ it is in the wrong place.
 | **Repository** | Wraps one entity's data access: the `INSERT`, the `UPDATE`, the `SELECT`. |
 | **ValueObject** | A small shared thing that carries its own validation. **Immutable**, and checked once at construction — hold one and it cannot be wrong. |
 | **Policy** | A pure rule that belongs to no single entity: a table, a ladder, an admission sum. No storage, no actor, no identity. |
+| **Request** | What one use case needs to be asked. A controller builds it from a form; the use case reads nothing else. |
+| **Response** | What a use case hands back — never an entity. |
+| **Dto** | A shape more than one request or response carries. |
 
 ### The two mistakes this list exists to stop
 
@@ -475,3 +478,99 @@ fragment — and four assertions read off the runtime's source. **The rest
 is verified in a browser by somebody**, which is this project's standing
 rule for anything visual.
 
+
+
+## 9. A use case takes a request and hands back a response
+
+The two ends of a use case are named shapes that live in `src/dtos`.
+Never a form, never an argument list that grew, never an entity coming
+back out.
+
+```
+form ──▶ Controller ──▶ Request ──▶ UseCase ──▶ Response ──▶ Controller ──▶ View
+```
+
+**The controller builds the request, and it arrives validated.** By the
+time `run` is called the shape is right: a name that is a name, a
+project that was named at all. What the request cannot answer — whether
+the project exists, whether this actor may deploy in it, whether the
+node owns services — stays inside, because none of it can be asked of a
+form.
+
+### Not every use case has one
+
+A request earns its place when the ask has more than one part, or when
+it comes off a form: those are the two cases where a shape goes wrong
+silently. A use case given one identifier the router already parsed
+takes it as an argument. A struct around a single `&str` is a name to
+keep agreeing with and buys no check the type did not already make.
+
+### A rule with a better sentence stays where the sentence is
+
+`Validate` answers *a field arrived, and it is the right length*. It
+cannot say **no release chosen**, or **that project belongs to an
+organisation — invite them from its own page**. So the derive covers
+shape and the use case keeps every sentence somebody can act on. A
+constraint written in both places is a constraint that will disagree
+with itself.
+
+That is also why several requests carry **text where a number is
+meant** — `keep_days`, `memory`, `cpu`, `disk`. Typed here, serde
+refuses first and says *invalid digit*; left as text, `presets::parse_size`
+says which value it could not read and what the grammar is. Two fields
+go further and refuse nothing at all: an unreadable `hour` or `weekday`
+takes the default and is clamped, because a backup that runs at the
+wrong hour beats a form that will not save.
+
+### The form's own spelling stops at the controller
+
+An unticked checkbox sends **nothing at all**, so presence is the
+answer — and `accept-host`, `require-edge`, `own` are the browser's
+words for it. A use case that knew them would be a use case only a
+browser can call, leaving the CLI and an errand no door. So the
+controller translates: `capabilities_ticked(&form, "require-")` returns
+`Vec<Capability>`, and `Capability` serialises as the lowercase name it
+already had, held to it by
+`a_capability_serialises_as_the_name_it_is_known_by` over `ALL`.
+
+### What was actually wrong
+
+Six `Asked` structs and five outcomes were declared beside the `run`
+that used them, three of them inside `commands/` with a doc comment that
+said *"what a form asks for"*. One use case took a `HashMap` **and a
+closure over it**. Two console handlers each built their own shape for
+the same ask. None of it was caught by a test, because every one of them
+compiled.
+
+### The guard
+
+Three, and all three read the directory rather than a list — *a guard
+that names its inputs is right until somebody adds an input*, which has
+cost this project five times:
+
+- `a_use_case_declares_no_shape_of_its_own`
+- `no_use_case_reads_a_form` — `HashMap`, `read_form`, `axum`,
+  `form_urlencoded`
+- `every_dto_written_is_a_dto_the_tree_knows_about`
+
+The first two carry a floor (`read > 50`), because a scan pointed at the
+wrong place finds nothing wrong and passes.
+
+### Mapping
+
+`wabot::mapper::map` exists in the framework: it serialises,
+deserialises and **validates**, agreeing on field *names* rather than
+types, with no "just convert it" variant on purpose. It round-trips
+through `serde_json::Value` — right for a request off a form, wrong for
+a hot loop. Where a response is built from an entity, write the fields
+out: `EnvApplied { service_id: applied.service.id, .. }` is where the
+entity stops, and the compiler is what says which field is missing.
+
+### What it costs
+
+A shape to name, and a file for it. And two structs where one nearly
+worked: `commands::set_service_env::Applied` carries the `Service`
+because the command's callers are in the domain, and the use case is
+what turns it into `EnvApplied`. Where a command's return has no entity
+in it — `NameDatabase` — the command returns the response itself and the
+duplicate does not exist.

@@ -21,6 +21,7 @@ mod config;
 mod console;
 mod db;
 mod deploy;
+mod dtos;
 mod edge;
 mod entities;
 mod errors;

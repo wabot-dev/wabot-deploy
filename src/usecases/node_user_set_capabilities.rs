@@ -1,11 +1,10 @@
-use std::collections::HashMap;
-
 use wabot::sqlite::SqliteDatabase;
 
 use crate::accounts::Account;
 use crate::authz::node_user;
 use crate::config::Config;
 use crate::deploy::Deployer;
+use crate::dtos::requests::set_capabilities::SetCapabilities;
 use crate::network::capability::{self, Capability};
 
 /// **The one POST under `/node` that had no admin check**, and the
@@ -19,16 +18,14 @@ pub async fn run(
     config: &Config,
     deployer: &Deployer,
     account: &Account,
-    ticked: &HashMap<String, String>,
+    asked: &SetCapabilities,
 ) -> Result<(), String> {
     if !node_user::manages_the_machine(account) {
         return Err("only an administrator of this node can do that".into());
     }
 
     for capability in Capability::ALL {
-        // A checkbox arrives only when ticked, so its absence is the
-        // answer rather than a missing field.
-        let wanted = ticked.contains_key(capability.name());
+        let wanted = asked.provides.contains(&capability);
         capability::set_provides(database, capability, wanted)
             .await
             .map_err(|error| {
@@ -45,7 +42,7 @@ pub async fn run(
     // them in a state nothing can act on: not editable, because this node
     // no longer originates; not evictable, because they are its own. The
     // message names the count so it is a thing somebody can go and do.
-    let owns = ticked.contains_key("own");
+    let owns = asked.owns;
     let mine = crate::repositories::projects::all(database)
         .await
         .map_err(|error| {

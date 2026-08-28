@@ -1,32 +1,24 @@
-use std::collections::HashMap;
-
 use wabot::sqlite::SqliteDatabase;
 
 use crate::accounts::Account;
 use crate::authz::node_user;
 use crate::commands::destination::Destination;
 use crate::config::Config;
+use crate::dtos::requests::set_backup_plan::SetBackupPlan;
+use crate::dtos::responses::backup_plan_saved::BackupPlanSaved;
 use crate::node::backups::{self, Cadence, Plan};
-
-pub struct Saved {
-    /// Whether the timestamped-log setting moved. The caller redeploys
-    /// the managed engines when it did, because it is something they read
-    /// at startup.
-    pub archiving_changed: bool,
-}
 
 pub async fn run(
     database: &SqliteDatabase,
     config: &Config,
     account: &Account,
-    fields: &HashMap<String, String>,
-    field: impl Fn(&str) -> String,
-) -> Result<Saved, String> {
+    asked: &SetBackupPlan,
+) -> Result<BackupPlanSaved, String> {
     if !node_user::manages_the_machine(account) {
         return Err("only an administrator of this node can do that".into());
     }
 
-    let typed = field("destination");
+    let typed = asked.destination.trim().to_string();
     let destination = match typed.is_empty() {
         true => None,
         false => {
@@ -48,7 +40,7 @@ pub async fn run(
         }
     };
 
-    let keep_days = match field("keep_days").as_str() {
+    let keep_days = match asked.keep_days.trim() {
         "" => crate::commands::backup::KEEP_DAYS,
         text => match text.parse::<i64>() {
             Ok(days) if days >= backups::MIN_KEEP_DAYS => days,
@@ -63,12 +55,16 @@ pub async fn run(
 
     let plan = Plan {
         destination,
-        cadence: Cadence::parse(&field("cadence")),
-        hour: field("hour")
+        cadence: Cadence::parse(asked.cadence.trim()),
+        hour: asked
+            .hour
+            .trim()
             .parse()
             .unwrap_or(Plan::default().hour)
             .min(23),
-        weekday: field("weekday")
+        weekday: asked
+            .weekday
+            .trim()
             .parse()
             .unwrap_or(Plan::default().weekday)
             .min(backups::SUNDAY),
@@ -80,7 +76,7 @@ pub async fn run(
     })?;
 
     let was = crate::node::settings::archiving(database).await;
-    let wanted = fields.contains_key("archiving");
+    let wanted = asked.archiving;
     let archiving_changed = match crate::node::settings::set_archiving(database, wanted).await {
         Ok(()) => was != wanted,
         Err(error) => {
@@ -89,7 +85,7 @@ pub async fn run(
         }
     };
 
-    Ok(Saved { archiving_changed })
+    Ok(BackupPlanSaved { archiving_changed })
 }
 
 /// Ask the bucket, and say what it said — or `None` if there is nothing

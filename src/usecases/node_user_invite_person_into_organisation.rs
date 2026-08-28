@@ -1,44 +1,32 @@
 use wabot::sqlite::SqliteDatabase;
 
 use crate::accounts::invitations;
-use crate::accounts::roles::{NodeRole, ProjectRole};
 use crate::accounts::Account;
 use crate::authz::node_user;
+use crate::dtos::requests::invite_person_into_organisation::InvitePersonIntoOrganisation;
+use crate::dtos::responses::person_invited_into_organisation::PersonInvitedIntoOrganisation;
 use crate::policies::access;
 use crate::repositories::tenants;
-
-pub struct Asked<'a> {
-    pub organisation: &'a str,
-    pub role: NodeRole,
-    pub project: Option<&'a str>,
-    pub project_role: ProjectRole,
-}
-
-#[derive(Debug)]
-pub struct Invited {
-    pub organisation: String,
-    pub token: String,
-}
 
 /// The only way into an organisation, since one with nobody in it cannot
 /// invite anybody either.
 pub async fn run(
     database: &SqliteDatabase,
     account: &Account,
-    asked: Asked<'_>,
-) -> Result<Invited, String> {
+    asked: &InvitePersonIntoOrganisation,
+) -> Result<PersonInvitedIntoOrganisation, String> {
     if !node_user::shares_the_machine_out(account) {
         return Err("only an administrator of this node can do that".into());
     }
 
-    let Some(tenant) = tenants::find(database, asked.organisation)
+    let Some(tenant) = tenants::find(database, &asked.organisation)
         .await
         .map_err(|error| error.to_string())?
     else {
         return Err("no such organisation".into());
     };
 
-    let project = match asked.project.filter(|slug| !slug.trim().is_empty()) {
+    let project = match asked.project() {
         None => None,
         Some(slug) => match access::find_project(database, account, slug)
             .await
@@ -66,7 +54,7 @@ pub async fn run(
     .await
     .map_err(|error| error.to_string())?;
 
-    Ok(Invited {
+    Ok(PersonInvitedIntoOrganisation {
         organisation: tenant.id,
         token,
     })
@@ -75,13 +63,14 @@ pub async fn run(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::accounts::roles::{NodeRole, ProjectRole};
     use crate::usecases::fixtures::organisation;
 
-    fn asked(organisation: &str) -> Asked<'_> {
-        Asked {
-            organisation,
+    fn asked(organisation: &str) -> InvitePersonIntoOrganisation {
+        InvitePersonIntoOrganisation {
+            organisation: organisation.to_string(),
             role: NodeRole::Member,
-            project: None,
+            project: String::new(),
             project_role: ProjectRole::Viewer,
         }
     }
@@ -91,7 +80,7 @@ mod tests {
         let here = organisation().await;
         let acme = here.admin.tenant_id.clone().expect("scoped");
 
-        let invited = run(&here.database, &here.operator, asked(&acme))
+        let invited = run(&here.database, &here.operator, &asked(&acme))
             .await
             .expect("invited");
         let found = invitations::look_up(&here.database, &invited.token)
@@ -115,8 +104,8 @@ mod tests {
         let refused = run(
             &here.database,
             &here.operator,
-            Asked {
-                project: Some(&elsewhere.slug),
+            &InvitePersonIntoOrganisation {
+                project: elsewhere.slug.clone(),
                 ..asked(&acme)
             },
         )
@@ -129,7 +118,7 @@ mod tests {
     async fn an_organisations_administrator_cannot_run_it() {
         let here = organisation().await;
         let acme = here.admin.tenant_id.clone().expect("scoped");
-        assert!(run(&here.database, &here.admin, asked(&acme))
+        assert!(run(&here.database, &here.admin, &asked(&acme))
             .await
             .is_err());
     }

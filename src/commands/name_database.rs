@@ -1,15 +1,10 @@
 use wabot::sqlite::SqliteDatabase;
 
 use crate::config::Config;
+use crate::dtos::responses::database_named::DatabaseNamed;
 use crate::entities::project::Project;
 use crate::entities::service::Service;
 use crate::repositories::ports;
-
-pub struct Named {
-    /// What it answered to before, when the rename replaced a name.
-    pub was: Option<String>,
-    pub now: String,
-}
 
 pub struct NameDatabase<'a> {
     pub project: &'a Project,
@@ -18,7 +13,11 @@ pub struct NameDatabase<'a> {
 }
 
 impl NameDatabase<'_> {
-    pub async fn run(&self, database: &SqliteDatabase, config: &Config) -> Result<Named, String> {
+    pub async fn run(
+        &self,
+        database: &SqliteDatabase,
+        config: &Config,
+    ) -> Result<DatabaseNamed, String> {
         let typed = crate::values::hostname::Hostname::parse(self.typed)
             .as_str()
             .to_string();
@@ -44,7 +43,7 @@ impl NameDatabase<'_> {
             .await
             .map_err(|error| error.to_string())?;
 
-        Ok(Named {
+        Ok(DatabaseNamed {
             was: was.filter(|was| was != &typed),
             now: typed,
         })

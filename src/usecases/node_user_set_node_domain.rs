@@ -1,17 +1,11 @@
 use wabot::sqlite::SqliteDatabase;
 
+use crate::dtos::responses::domain_settled::Settled;
+
 use crate::accounts::Account;
 use crate::authz::node_user;
 use crate::config::Config;
 use crate::deploy::Deployer;
-
-pub enum Settled {
-    /// The name was checked and saved. The caller has a sentence to show
-    /// that the page's own stream cannot: that it resolved *before*
-    /// anything was asked of an authority.
-    Named(String),
-    Cleared,
-}
 
 pub async fn run(
     database: &SqliteDatabase,

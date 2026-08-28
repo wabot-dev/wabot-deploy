@@ -1,21 +1,11 @@
 use wabot::sqlite::SqliteDatabase;
 
+use crate::dtos::responses::node_drained::Drained;
+
 use crate::accounts::Account;
 use crate::authz::node_user;
 use crate::deploy::Deployer;
 use crate::network;
-
-pub enum Drained {
-    BackInService,
-    /// Draining is **convergent, not atomic**: a node that is not
-    /// answering keeps its containers until it collects the errand with
-    /// the slot gone, so the count and the refusals are both worth
-    /// showing.
-    Moved {
-        moved: usize,
-        refused: Vec<String>,
-    },
-}
 
 pub async fn run(
     database: &SqliteDatabase,

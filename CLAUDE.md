@@ -34,7 +34,7 @@ bindings in a build script.
 
 ## The architecture rules
 
-Eight, written in full with their costs in
+Nine, written in full with their costs in
 [`docs/architecture-rules.md`](docs/architecture-rules.md). They are
 about **the shape of this software**. How the network of nodes is put
 together is a separate subject with its own documents — see "The
@@ -66,11 +66,17 @@ network and the databases" below.
    run over `fetch`, the button disables and reports, and nothing
    reloads or scrolls. Enhancement only — see "The console works without
    JavaScript".
+9. **A use case takes a request and hands back a response.** Both live
+   in `src/dtos`, and the controller is what builds the request — so it
+   arrives with its shape already right. The form's own spelling stops
+   there: an unticked checkbox sends nothing, and a use case that knew
+   `accept-host` would be one only a browser could call.
 
-Where the tree stands: the people-and-invitations slice is refactored
-end to end across three actors. `console/services.rs` (9,600 lines),
-`console/nodes.rs` (6,500) and `console/projects.rs` (3,000) are not,
-and no `cli_user_` or `remote_node_` use case exists yet.
+Where the tree stands: every use case's two ends are DTOs, and three
+guards read the directory to keep them there. `console/services.rs`
+(9,600 lines), `console/nodes.rs` (6,500) and `console/projects.rs`
+(3,000) still hold nine `rsx!` blocks between them, and no `cli_user_`
+or `remote_node_` use case exists yet.
 
 ## The framework is ours
 

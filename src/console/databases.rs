@@ -361,18 +361,21 @@ impl DatabaseApi {
         // The two are the same today and will not stay that way: an
         // organisation has a quota and the machine's own frontier does
         // not.
-        let asked = crate::commands::create_database::Asked {
-            project: project_slug,
-            name: field(&form, "name"),
-            version: field(&form, "version"),
-            memory: field(&form, "memory"),
+        let asked = crate::dtos::requests::create_database::CreateDatabase {
+            project: project_slug.to_string(),
+            name: field(&form, "name").to_string(),
+            version: field(&form, "version").to_string(),
+            memory: field(&form, "memory").to_string(),
         };
+        if let Err(reason) = asked.validate() {
+            return Ok(back_with_error(&here, &reason.to_string()));
+        }
         let made = match crate::authz::node_user::belongs_here(&account) {
             true => {
                 crate::usecases::node_user_create_database::run(
                     &self.state.database,
                     &account,
-                    asked,
+                    &asked,
                 )
                 .await
             }
@@ -380,7 +383,7 @@ impl DatabaseApi {
                 crate::usecases::tenant_user_create_database::run(
                     &self.state.database,
                     &account,
-                    asked,
+                    &asked,
                 )
                 .await
             }

@@ -207,20 +207,21 @@ impl TenantApi {
             Err(response) => return Ok(response),
         };
 
-        let asked = crate::usecases::node_user_invite_person_into_organisation::Asked {
-            organisation: id,
-            role: match field(&form, "node_role") {
-                "admin" => crate::accounts::roles::NodeRole::Admin,
-                _ => crate::accounts::roles::NodeRole::Member,
-            },
-            project: Some(field(&form, "project")),
-            project_role: crate::accounts::roles::ProjectRole::parse(field(&form, "project_role")),
-        };
+        let asked =
+            crate::dtos::requests::invite_person_into_organisation::InvitePersonIntoOrganisation {
+                organisation: id.to_string(),
+                role: crate::accounts::roles::NodeRole::parse(field(&form, "node_role")),
+                project: field(&form, "project").to_string(),
+                project_role: crate::accounts::roles::ProjectRole::parse(field(
+                    &form,
+                    "project_role",
+                )),
+            };
 
         let invited = match crate::usecases::node_user_invite_person_into_organisation::run(
             &self.state.database,
             &account,
-            asked,
+            &asked,
         )
         .await
         {
