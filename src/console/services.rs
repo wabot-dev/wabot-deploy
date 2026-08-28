@@ -22,8 +22,6 @@ use crate::views::texts::language::t;
 
 use super::auth::{back_with_error, field, read_form, see_other, signed_in, SessionMiddleware};
 use super::ConsoleState;
-use crate::views::components::service_push::Push;
-use crate::views::components::service_running::Running;
 use crate::views::layouts::layout;
 use crate::views::layouts::shell::{Area, Frame};
 
@@ -516,11 +514,11 @@ impl ServicePages {
         let project_slug = project.slug.clone();
         // Built once and shared by the badge and the control, so the
         // page cannot show "running" beside a play button.
-        let cell = super::projects::state_cell(
+        let cell = crate::views::components::service_state::state_cell(
             &observed,
             deploying,
-            super::projects::where_it_runs(&placements),
-            super::projects::elsewhere_of(&placements),
+            crate::views::components::service_state::where_it_runs(&placements),
+            crate::views::components::service_state::elsewhere_of(&placements),
         );
         // The tab, because every use of this link is about the image or
         // the tag: a bare `/settings` is a redirect now, and sending
@@ -552,336 +550,50 @@ impl ServicePages {
         .allowing(allowed);
 
         layout::head(&service.name);
+        let running = crate::views::components::service_running::Running {
+            project_slug: &project.slug,
+            service_slug: &service.slug,
+            used: &used,
+            disk: &disk,
+            silent: &silent,
+        };
+        let page = crate::views::pages::service_page::ServiceDetail {
+            project: &project,
+            service: &service,
+            allowed,
+            error: query.error.as_deref(),
+            logs_path: &logs,
+            settings_path: &settings,
+            cell: &cell,
+            observed_running: matches!(observed, crate::deploy::Observed::Running { .. }),
+            here: here.as_ref(),
+            exposure: &exposure,
+            placements: &placements,
+            nodes: &nodes,
+            queued: &queued,
+            running,
+            volumes: &volumes,
+            engine: engine
+                .as_ref()
+                .map(|row| crate::views::pages::service_page::Engine {
+                    row,
+                    address: reserved_address.clone(),
+                    names: &names,
+                    signs_here,
+                    host_port: ports.first().and_then(|port| port.host_port),
+                    window: &window,
+                    elsewhere: elsewhere.as_deref(),
+                    restorable,
+                }),
+            releases: &releases,
+            push: push.as_ref(),
+        };
         // The account's language, around the render and no wider:
         // the strings are read here, and nothing awaits inside.
         let body = crate::views::texts::language::scoped(account.language, || {
-            rsx! {
-            (layout::style_tag())
-                <div class="split">
-                    <div class="stack-sm">
-                        <h1>(&service.name)</h1>
-                    </div>
-                    <div class="row">
-                        // Beside Settings, because "what is it saying"
-                        // is read as often as "how is it configured" —
-                        // and until now the only answer to the first was
-                        // the one line kept on the row after it died.
-                        <a class="btn btn-secondary" href=(&logs)>(t("Logs"))</a>
-                        @if allowed.may_deploy() {
-                            <a class="btn btn-secondary" href=(&settings)>(t("Settings"))</a>
-                        }
-                        // No "Back to project" here: the breadcrumb's
-                        // arrow above already goes there, and one thing
-                        // must not be doable two ways — a second control
-                        // for it reads as a second destination. Reported
-                        // by Jorge.
-                    </div>
-                </div>
-
-                @if let Some(message) = &query.error {
-                    (layout::error_note(message))
-                }
-
-                <section class="card stack">
-                    <div class="split">
-                        <p class="card-label">(t("Container"))</p>
-                        // `data-state` and `data-address` are what the
-                        // project's island writes into, keyed by service
-                        // id — so this page joins that stream instead of
-                        // opening one of its own. The badge said
-                        // "Deploying" until somebody reloaded, on the
-                        // one page they were watching to find out when
-                        // it stopped.
-                        <div class="row" data-state=(&service.id)>
-                            (crate::views::components::service_state::state_badge(&cell))
-                            // How many copies there are, beside the word
-                            // for what they are doing — where a
-                            // container's address used to be, under the
-                            // label "Address". Two things were wrong
-                            // with that: the stream writes this same
-                            // element, so a page that first painted an
-                            // address turned into a count two seconds
-                            // later under a label for the other one, and
-                            // an address belongs to one copy, which the
-                            // replicas table below names one by one.
-                            <span class="tile-detail" data-address=(&service.id)>
-                                (cell.whereabouts.say())
-                            </span>
-                            // The page showed the state and withheld the
-                            // control, so the one place you go to find
-                            // out a service is down was the one place
-                            // you could not start it.
-                            @if allowed.may_deploy() && service.is_ours() {
-                                (crate::views::components::service_state::deploy_controls(
-                                    &project.slug,
-                                    &service.slug,
-                                    &cell,
-                                    &format!(
-                                        "/projects/{}/services/{}",
-                                        project.slug, service.slug
-                                    ),
-                                ))
-                            }
-                        </div>
-                    </div>
-                    <dl class="kv">
-                        <dt>(t("Image"))</dt>
-                        <dd>(&service.image)</dd>
-                    </dl>
-                    // The string somebody came for. A page that shows what
-                    // a service is should hand it over rather than leave
-                    // it to be assembled from a hostname in one row and a
-                    // port in another — which is what a database's card
-                    // does, and what Jorge asked this one to do.
-                    // Not for a managed database, and the reason is that
-                    // this block would lie: it turns a port with a
-                    // hostname into `https://<name>`, and a database
-                    // answers the Postgres protocol on a TCP socket. What
-                    // it offers is its own three cards — the name, the
-                    // certificate and the published port — each of which
-                    // says a true thing this one cannot.
-                    @if !service.kind.is_managed() {
-                        (crate::views::components::service_ports::exposure_card(
-                            &exposure,
-                            matches!(observed, crate::deploy::Observed::Running { .. }),
-                        ))
-                    }
-                    // Always rendered, empty when there is nothing, and
-                    // hooked to the copy here by its replica id — the
-                    // stream already carries every replica's reason, so
-                    // this reads the same value the table below does
-                    // rather than a second copy of it in the payload.
-                    //
-                    // It was conditional, so a deployment that failed
-                    // after the page loaded left this card silent until a
-                    // refresh while the badge said `Failed`. Reported by
-                    // Jorge. `:empty` hides it.
-                    @if let Some(replica) = here.as_ref() {
-                        <p class="failure detail-line"
-                           data-replica-detail=(&replica.id)>(
-                            replica.last_error.clone().unwrap_or_default()
-                        )</p>
-                    }
-                </section>
-
-                @if let Some(row) = &engine {
-                    (crate::views::components::database_cards::database_card(
-                        row,
-                        &placements,
-                        reserved_address.clone(),
-                        service.memory_limit,
-                        &names,
-                        signs_here,
-                        ports.first().and_then(|port| port.host_port),
-                    ))
-                    // How far back it can be taken. Beside the database
-                    // card because it is a fact about this database
-                    // rather than about the node — even though what
-                    // decides it is a switch on the node's page, which
-                    // is why the card says so when it is off.
-                    (crate::views::components::database_cards::window_card(&window, elsewhere.as_deref()))
-                    // And somewhere to go with it. Only when a backup on
-                    // this node actually holds this database: a form that
-                    // can only refuse is worse than the sentence saying
-                    // why, and what the window measures is the archive,
-                    // which can be there with no base copy to replay onto.
-                    @if restorable {
-                        (crate::views::components::database_cards::restore_card(
-                            &project.slug,
-                            &service.slug,
-                            &window,
-                            &format!("{}-restored", service.slug),
-                            elsewhere.as_deref(),
-                        ))
-                    }
-                }
-
-                @if service.is_ours() {
-                    (crate::views::components::service_running::running_card(
-                        &placements,
-                        &nodes,
-                        &queued,
-                        service.desired_state == crate::entities::service::DesiredState::Stopped,
-                        &Running {
-                            project_slug: &project.slug,
-                            service_slug: &service.slug,
-                            used: &used,
-                            disk: &disk,
-                            silent: &silent,
-                        },
-                    ))
-                    // Only where there is one to show. A service that
-                    // declares no volume keeps nothing, and a card
-                    // saying so would be a row of dashes explaining an
-                    // absence nobody asked about.
-                    @if !volumes.is_empty() {
-                        (crate::views::components::service_running::disks_card(
-                            &volumes,
-                            &placements,
-                            &nodes,
-                            &Running {
-                                project_slug: &project.slug,
-                                service_slug: &service.slug,
-                                used: &used,
-                                disk: &disk,
-                                silent: &silent,
-                            },
-                        ))
-                    }
-                } @else {
-                    (crate::views::components::service_placement::from_elsewhere_card(
-                        &project,
-                        &service,
-                        &placements
-                            .iter()
-                            .filter(|replica| replica.is_here())
-                            .cloned()
-                            .collect::<Vec<_>>(),
-                        placements.iter().all(|replica| replica.evicted()),
-                    ))
-                }
-
-                // A managed database has no releases and no tag to watch:
-                // its image is written by the node, pinned to the major
-                // version the operator chose, and a push to this node's
-                // registry has nothing to do with it. The card said
-                // "nothing has been pushed yet — create a push token and
-                // push an image", which is an instruction that would
-                // achieve nothing here.
-                @if !service.kind.is_managed() {
-                <section class="stack">
-                    <div class="split">
-                        <p class="card-label">(t("Releases"))</p>
-                        // **Only where a push here could match.** The
-                        // badge appeared for every service, including one
-                        // running an image from another registry — and
-                        // for those it read the *foreign* tag, so a
-                        // service on `docker.io/library/nginx:alpine`
-                        // announced `watching :alpine` directly above
-                        // this card's own sentence saying a push to this
-                        // node can never land on it, and above a copyable
-                        // command proposing `:latest`. Three answers to
-                        // one question. Reported by Jorge.
-                        //
-                        // The tag itself defaults to `latest` — see
-                        // `images::tracked_tag`, where the settings
-                        // form's own placeholder decided it. A service
-                        // pinned to `…/app:v2` in this registry has to
-                        // say so in that field, and this badge is what
-                        // makes the difference visible instead of
-                        // silent.
-                        @if let Some(Push::To(_)) = &push {
-                            @let watched = service
-                                .tracked_tag()
-                                .unwrap_or_else(|| "latest".into());
-                            // `watching :*` is a badge nobody can read.
-                            // The star is the way it is *written*, not the
-                            // way it is said.
-                            @if watched == crate::entities::service::EVERY_TAG {
-                                <span class="who">(t("watching every tag"))</span>
-                            } @else {
-                                <span class="who">(format!("watching :{watched}"))</span>
-                            }
-                        }
-                    </div>
-                    @if releases.is_empty() {
-                        <p class="tile-detail">(t("Nothing has been pushed yet. Create a push token on the \
-                             project page and push an image to this repository."))</p>
-                    } @else {
-                        <table>
-                            <thead>
-                                <tr>
-                                    <th>(t("Image"))</th>
-                                    <th>(t("From"))</th>
-                                    <th>(t("State"))</th>
-                                    <th></th>
-                                </tr>
-                            </thead>
-                            <tbody>
-                                @for release in &releases {
-                                    <tr>
-                                        // **The tag first, the digest
-                                        // under it.** This showed only
-                                        // the short digest under a column
-                                        // headed "Image", and eight hex
-                                        // characters are not something
-                                        // anybody can tell apart — least
-                                        // of all "which of these did I
-                                        // push". The reference has always
-                                        // been on the row and nothing
-                                        // rendered it. Reported by Jorge.
-                                        //
-                                        // The tag rather than the whole
-                                        // reference, because the
-                                        // repository is identical on
-                                        // every row of this table and a
-                                        // column of the same forty
-                                        // characters distinguishes
-                                        // nothing. The whole thing is in
-                                        // the title, with the digest.
-                                        <td class="mono"
-                                            title=(format!("{}\n{}", release.reference, release.digest))>
-                                            (release.tag())
-                                            // A block, because `span` put
-                                            // the digest *beside* the tag
-                                            // with nothing between them —
-                                            // `newsha256:af618a130cbe`,
-                                            // one unreadable word where
-                                            // the comment above promised
-                                            // two lines. `.tile-detail`
-                                            // is written for a block (it
-                                            // zeroes a paragraph's
-                                            // margin) and says nothing
-                                            // about `display`, so putting
-                                            // it on an inline element
-                                            // styled the colour and left
-                                            // the layout to the default.
-                                            // Reported by Jorge, from the
-                                            // page.
-                                            <div class="tile-detail">(release.short_digest())</div>
-                                        </td>
-                                        <td class="tile-detail">(release.source.label())</td>
-                                        <td>
-                                            @if release.deployed_at.is_some() {
-                                                <span class="badge badge-success">
-                                                    <span class="dot dot-success"></span>
-                                                    (t("Running"))
-                                                </span>
-                                            }
-                                        </td>
-                                        <td>
-                                            @if allowed.may_deploy()
-                                                && release.deployed_at.is_none() {
-                                                <form method="post"
-                                                      action=(format!(
-                                                          "/projects/{}/services/{}/releases/{}/deploy",
-                                                          project.slug, service.slug, release.id
-                                                      ))>
-                                                    <button class="btn btn-secondary btn-sm"
-                                                            type="submit">(t("Deploy this"))</button>
-                                                </form>
-                                            }
-                                        </td>
-                                    </tr>
-                                }
-                            </tbody>
-                        </table>
-                    }
-
-                    // How to put one here. The page said "push an image
-                    // to this repository" and left somebody to work out
-                    // the three parts of the reference — the node's host,
-                    // the name under the project, and the one tag this
-                    // service watches — from three other pages.
-                    @if let Some(push) = &push {
-                        (crate::views::components::service_push::push_example(push, service.auto_deploy, &settings))
-                    }
-                </section>
-                }
-
-        }
-            .render()
-            .into_inner()
+            crate::views::pages::service_page::render(&page)
+                .render()
+                .into_inner()
         });
 
         // The project's own island, on the project's own stream. It
@@ -1047,7 +759,7 @@ impl ServicePages {
         // kept history — the line somebody wants is usually before the
         // restart that made them look, which is the reason this exists at
         // all.
-        const PER_PAGE: usize = 50;
+        use crate::views::pages::service_logs_page::PER_PAGE;
         const RADIUS: usize = 12;
         let needle = query
             .q
@@ -1120,232 +832,30 @@ impl ServicePages {
         // Read before the render takes `holder`: the island below is for
         // a copy on this machine and nothing else.
         let here = holder.is_none();
+        let logs = crate::views::pages::service_logs_page::Logs {
+            project_slug: &project_slug,
+            service_slug: &service_slug,
+            service_name: &service_name,
+            readable: &readable,
+            slot,
+            holder: holder.as_deref(),
+            elsewhere,
+            everything,
+            has_history,
+            kept,
+            text: &text,
+            from,
+            remote_error: remote_error.as_deref(),
+            needle: needle.as_deref().unwrap_or_default(),
+            page,
+            found: found.as_ref(),
+            at,
+            window: &window,
+        };
         let body = crate::views::texts::language::scoped(account.language, || {
-            rsx! {
-            (layout::style_tag())
-                // Title and copy tabs on one line, the shape every
-                // other page here uses for a heading and its controls —
-                // and the tabs belong beside it rather than in a row of
-                // their own, because they select what the panel below
-                // shows.
-                <div class="split">
-                    <div class="stack-sm">
-                        <h1>(&service_name)</h1>
-                        // **This said the opposite of what happens.** It
-                        // described `prepare`, which truncated on every
-                        // deployment, and `resume` replaced that precisely
-                        // because a deployment is the moment somebody most
-                        // wants what came before it. Nothing updated the
-                        // sentence, so the page promised no history on the
-                        // page that has one. Caught by Jorge reading it.
-                        <p class="tile-detail">(t("What this copy has written. A deployment marks \
-                             a line and carries on rather than starting the file again, so this \
-                             holds every run since the last rotation — and the ones before that \
-                             are in everything kept."))</p>
-                    </div>
-                    @if readable.len() > 1 {
-                        <div class="row">
-                            @for one in &readable {
-                                @if Some(*one) == slot {
-                                    <span class="badge">(t("Copy "))(one)</span>
-                                } @else {
-                                    <a class="btn btn-ghost btn-sm"
-                                       href=(format!(
-                                           "/projects/{project_slug}/services/{service_slug}/logs?slot={one}"
-                                       ))>(t("Copy "))(one)</a>
-                                }
-                            }
-                        </div>
-                    }
-                </div>
-
-                @if let Some(slot) = slot {
-                    <section class="card stack">
-                        <div class="split">
-                            @if everything {
-                                <p class="card-label">(t("Everything kept"))</p>
-                            } @else {
-                                <p class="card-label">(t("Output"))</p>
-                            }
-                            // Written by the island, and rendered
-                            // whether or not scripting is on: a label
-                            // that only appears with a script is one
-                            // somebody without a script cannot read.
-                            @if holder.is_some() {
-                                // A copy on another machine does not
-                                // follow either, and for a plainer
-                                // reason: this is one answer to one
-                                // question, fetched when the page was
-                                // rendered. Reloading asks again.
-                                <span class="tile-detail">
-                                    (t("Read from the node running it — reload to ask again"))
-                                </span>
-                            } @else if everything {
-                                // The whole view does not follow: its
-                                // offsets are into a concatenation, so
-                                // resuming from one would read the wrong
-                                // bytes. Said plainly rather than
-                                // leaving a stream label that lies.
-                                <a class="btn btn-ghost btn-sm"
-                                   href=(format!(
-                                       "/projects/{project_slug}/services/{service_slug}/logs?slot={slot}"
-                                   ))>(t("Follow what it is saying now"))</a>
-                            } @else {
-                                // Written by the island, and rendered
-                                // whether or not scripting is on: a label
-                                // that only appears with a script is one
-                                // somebody without a script cannot read.
-                                <span class="tile-detail" data-logs-state>
-                                    (t("Not following — reload to see more"))
-                                </span>
-                            }
-                        </div>
-                        @if (has_history || holder.is_some()) && !everything {
-                            <p class="tile-detail">
-                                (t("Older output is kept from before the last restarts."))
-                                " "
-                                <a href=(format!(
-                                    "/projects/{project_slug}/services/{service_slug}/logs?slot={slot}&all=1"
-                                ))>(t("Show everything kept"))</a>
-                            </p>
-                        }
-                        @if let Some(reason) = &remote_error {
-                            (layout::error_note(reason))
-                        }
-                        // **Searching is a link, not a script.** A GET
-                        // form, so a search can be shared, bookmarked and
-                        // gone back from — and it works with scripting
-                        // off, which is the rule this console is built
-                        // to. `slot` rides along or a search would jump
-                        // to another copy.
-                        //
-                        // Only for a copy here. Searching a log on
-                        // another machine means that machine scanning
-                        // it, which is a different endpoint and a
-                        // decision about somebody else's one core — so
-                        // the reading travels and the sweep does not.
-                        @if holder.is_none() {
-                            <form method="get" class="row"
-                                  action=(format!(
-                                      "/projects/{project_slug}/services/{service_slug}/logs"
-                                  ))>
-                                <input type="hidden" name="slot" value=(slot)>
-                                <input name="q" type="search" autocomplete="off" class="mono"
-                                       value=(needle.clone().unwrap_or_default())
-                                       placeholder=(t("Find in everything kept"))>
-                                <button class="btn btn-secondary" type="submit">(t("Find"))</button>
-                            </form>
-                        }
-
-                        @if let Some(found) = &found {
-                            @let needle_text = needle.clone().unwrap_or_default();
-                            @if found.total == 0 {
-                                <p class="tile-detail">(t("Nothing matched, in "))
-                                    (found.scanned)(t(" lines kept."))</p>
-                            } @else {
-                                <p class="tile-detail">
-                                    (found.total)(t(" matched, of "))(found.scanned)
-                                    (t(" lines kept."))
-                                </p>
-                                // Every match a link to itself in context.
-                                // The number is what it is counted at, and
-                                // the page says so: a sweep that drops the
-                                // oldest generation shifts them all down,
-                                // so this is a place and not an address.
-                                <table>
-                                    <tbody>
-                                        @for line in &found.lines {
-                                            <tr>
-                                                <td class="mono tile-detail">
-                                                    <a href=(format!(
-                                                        "/projects/{project_slug}/services/{service_slug}/logs?slot={slot}&q={}&page={page}&at={}",
-                                                        crate::views::components::service_push::urlencode(&needle_text), line.number
-                                                    ))>(line.number)</a>
-                                                </td>
-                                                <td class="mono log-hit">(&line.text)</td>
-                                            </tr>
-                                        }
-                                    </tbody>
-                                </table>
-                                @if found.total > PER_PAGE {
-                                    <div class="row">
-                                        @if page > 1 {
-                                            <a class="btn btn-ghost btn-sm" href=(format!(
-                                                "/projects/{project_slug}/services/{service_slug}/logs?slot={slot}&q={}&page={}",
-                                                crate::views::components::service_push::urlencode(&needle_text), page - 1
-                                            ))>(t("Newer matches"))</a>
-                                        }
-                                        @if page * PER_PAGE < found.total {
-                                            <a class="btn btn-ghost btn-sm" href=(format!(
-                                                "/projects/{project_slug}/services/{service_slug}/logs?slot={slot}&q={}&page={}",
-                                                crate::views::components::service_push::urlencode(&needle_text), page + 1
-                                            ))>(t("Older matches"))</a>
-                                        }
-                                    </div>
-                                }
-                            }
-                            @if !window.is_empty() {
-                                @let target = at.unwrap_or(0);
-                                <p class="card-label">(t("Around line "))(target)</p>
-                                <pre class="log">@for line in &window {
-@if line.number == target {
-(">")(" ")(&line.text)("\n")
-} @else {
-("  ")(&line.text)("\n")
-}
-}</pre>
-                            }
-                        } @else if holder.is_some() {
-                            // No `data-logs-out`: the island polls this
-                            // node's own endpoint, and there is nothing
-                            // of this copy here to poll for.
-                            <pre class="log">(&text)</pre>
-                        } @else {
-                            <pre class="log" data-logs-out
-                                 data-slot=(slot)
-                                 data-from=(from)>(&text)</pre>
-                        }
-                        // Three states, not two. "No file" and "an
-                        // empty file" look the same on the page and are
-                        // not the same thing: a container started before
-                        // its output was being kept has no file at all,
-                        // and telling that one "nothing yet" is a page
-                        // saying the container is quiet when the truth
-                        // is that nobody was listening. Found on a node
-                        // — a service running since before this shipped.
-                        @if !kept && holder.is_some() {
-                            // The reason is already above, in the far
-                            // node's own words. Repeating a guess under
-                            // it would be this node explaining a machine
-                            // it cannot see.
-                        } @else if !kept {
-                            <p class="tile-detail">(t("This container was started before its output \
-                                 was being kept. Deploy it again and it will \
-                                 write from then on."))</p>
-                        } @else if text.trim().is_empty() {
-                            <p class="tile-detail">(t("Nothing yet. A container that has only just \
-                                 started may not have written anything."))</p>
-                        }
-                    </section>
-                } @else if elsewhere {
-                    // Reached when every copy is elsewhere *and* none of
-                    // them has a node recorded — a placement that has not
-                    // been reported yet. Once one has, its slot is
-                    // readable and the panel above is what renders.
-                    <section class="card stack">
-                        <p>(t("No copy of this service runs on this node."))</p>
-                        <p class="tile-detail">(t("A copy writes its log on the machine that runs it. This \
-                             node asks that machine for it — but it has not said which \
-                             machine yet, which it does on its next report."))</p>
-                    </section>
-                } @else {
-                    <section class="card stack">
-                        <p>(t("This service is not running anywhere."))</p>
-                    </section>
-                }
-            }
-            .render()
-            .into_inner()
+            crate::views::pages::service_logs_page::render(&logs)
+                .render()
+                .into_inner()
         });
 
         // One stream, for the copy being read. The island needs to know
@@ -3819,6 +3329,7 @@ fn parse_env(text: &str) -> Result<Vec<(String, String)>, String> {
 mod tests {
     use super::*;
     use crate::console::tests::Console;
+    use crate::views::components::service_push::Push;
     use wabot::rest::axum::http::StatusCode;
 
     /// The three answers a copy with no address can have, and the two the

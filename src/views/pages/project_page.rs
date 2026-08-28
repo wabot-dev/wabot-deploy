@@ -9,7 +9,7 @@ pub struct ProjectView<'a> {
     pub allowed: crate::accounts::roles::Access,
     pub rows: &'a [(
         crate::entities::service::Service,
-        crate::console::projects::StateCell,
+        crate::views::components::service_state::StateCell,
         Option<String>,
     )],
     pub new_service: &'a str,

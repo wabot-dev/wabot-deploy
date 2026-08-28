@@ -5,7 +5,7 @@
 
 use hypertext::prelude::*;
 
-use crate::console::projects::StateCell;
+use crate::views::components::service_state::StateCell;
 use crate::views::texts::language::t;
 
 /// What a service is doing, from containerd rather than from a column.
