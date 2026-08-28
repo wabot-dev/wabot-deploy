@@ -382,7 +382,7 @@ async fn a_backup_that_did_not_work(state: &super::ConsoleState, concerns: &mut 
         why: first_line(&reason),
         // The tab, by name rather than by string: a slug that moved would
         // otherwise leave a concern linking to a redirect.
-        go: super::nodes::NodeTab::Backup.path(),
+        go: crate::views::pages::node_user_node_settings_page::NodeTab::Backup.path(),
     });
 }
 

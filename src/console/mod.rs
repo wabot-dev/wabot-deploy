@@ -184,40 +184,7 @@ impl ConsoleState {
     }
 }
 
-/// How the node's TLS is currently answered for.
-pub(crate) struct CertificateFacts {
-    /// `letsencrypt`, `letsencrypt-staging`, `self-signed`, or whatever
-    /// common name signed a certificate found on disk. A fact.
-    pub issuer: String,
-    pub days_left: i64,
-    pub trusted: bool,
-    /// How the node came by it, which is a different question — see
-    /// migration `0012`.
-    pub source: crate::edge::certs::Source,
-}
-
-impl CertificateFacts {
-    /// How long until renewal starts, or `None` when nothing will
-    /// renew — a self-signed certificate reports zero days left, and
-    /// subtracting the window from that is a negative number about an
-    /// event that is not coming.
-    /// What a name with nothing issued for it looks like: the node is
-    /// serving it off the local authority's certificate, which is what
-    /// `refresh_local` keeps covering every name.
-    pub(crate) fn none() -> Self {
-        Self {
-            issuer: "self-signed".into(),
-            days_left: 0,
-            trusted: false,
-            source: crate::edge::certs::Source::SelfSigned,
-        }
-    }
-
-    pub(crate) fn renews_in_days(&self) -> Option<i64> {
-        let renews_in = self.days_left - RENEW_WINDOW_DAYS;
-        (renews_in > 0).then_some(renews_in)
-    }
-}
+pub(crate) use crate::dtos::certificate_facts::CertificateFacts;
 
 pub(crate) async fn certificate_facts(state: &ConsoleState) -> CertificateFacts {
     // The domain is not carried back out: every caller already knows it
@@ -267,10 +234,6 @@ fn short_issuer(issuer: &str) -> String {
         url => url.split('/').nth(2).unwrap_or(url).into(),
     }
 }
-
-/// Renewal starts this far before expiry, so "renews in" is the
-/// remaining life minus the window rather than the whole of it.
-const RENEW_WINDOW_DAYS: i64 = 30;
 
 pub(crate) fn now_ms() -> i64 {
     std::time::SystemTime::now()

@@ -1518,7 +1518,7 @@ impl ServicePages {
                 let policy =
                     crate::edge::policy::for_name(&self.state.database, &self.state.config, name)
                         .await;
-                let state = super::nodes::CertificateState::read(
+                let state = crate::views::components::node_certificate::CertificateState::read(
                     &facts,
                     Some(name),
                     policy.last_error.clone(),
@@ -1572,7 +1572,7 @@ impl ServicePages {
                 continue;
             };
             let facts = super::certificate_facts_for(&self.state, hostname).await;
-            let state = super::nodes::CertificateState::read(
+            let state = crate::views::components::node_certificate::CertificateState::read(
                 &facts,
                 Some(hostname),
                 // Not the node's stored failure: it records one reason

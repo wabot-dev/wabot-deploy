@@ -498,7 +498,7 @@ pub fn certificate_card<'a>(
     // is a page saying what was *asked for* and never what happened —
     // which is what sent Jorge to `doctor` to find out whether his
     // certificate had been issued.
-    cells: &'a crate::console::nodes::CertificateCells,
+    cells: &'a crate::views::components::node_certificate::CertificateCells,
 ) -> impl Renderable + 'a {
     let signs_here = matches!(
         policy.renew_with,

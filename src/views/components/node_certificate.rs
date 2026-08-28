@@ -1,14 +1,164 @@
 //! Where a name's certificate comes from, and what is installed.
 
-use crate::console::nodes::CertificateCells;
-use crate::console::nodes::CertificateState;
-use crate::views::layouts::layout;
 use crate::views::texts::language::t;
 use hypertext::prelude::*;
 
+/// What the node's TLS is, as one answer.
+///
+/// Assembled rather than read off a single column, because the honest
+/// answer needs three sources: whether a public authority is being
+/// asked at all, what is installed, and whether the loop is asking
+/// right now. The page used to show only the last *failure*, so a node
+/// that had just been given a domain looked identical to one that had
+/// never been asked about — and the button said "Request a
+/// certificate" whether or not a request was possible.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CertificateState {
+    /// ACME is off in the config. The local authority is the answer,
+    /// not a stage on the way to one.
+    Local,
+    /// No domain, so there is no name a public authority could certify.
+    Nameless,
+    /// The loop is asking, now.
+    Working,
+    /// A domain is set, nothing has failed, and nothing has arrived.
+    Waiting,
+    Trusted,
+    /// Real ACME against Let's Encrypt staging: untrusted by design.
+    Staging,
+    /// Read off disk. Whether a browser trusts it depends on a trust
+    /// store this node cannot see, so it is reported as what it is
+    /// rather than as trusted or not.
+    FromFile,
+    /// Asked and refused. The loop keeps trying.
+    Failed(String),
+}
+impl CertificateState {
+    pub fn read(
+        facts: &crate::dtos::certificate_facts::CertificateFacts,
+        domain: Option<&str>,
+        last_error: Option<String>,
+        phase: crate::edge::acme::Phase,
+        acme_disabled: bool,
+    ) -> Self {
+        if acme_disabled {
+            return Self::Local;
+        }
+        if domain.is_none() {
+            return Self::Nameless;
+        }
+        // Before the outcome, on purpose: a renewal of a certificate
+        // that is currently fine is still something happening, and a
+        // page that hid it would be a page that never shows this state
+        // on the node where it works.
+        if phase == crate::edge::acme::Phase::Working {
+            return Self::Working;
+        }
+        // Before the trust check, because trust is not a thing this
+        // node can decide about a certificate it was handed.
+        if facts.source == crate::edge::certs::Source::File {
+            return Self::FromFile;
+        }
+        if facts.trusted {
+            return Self::Trusted;
+        }
+        if facts.issuer == "letsencrypt-staging" {
+            return Self::Staging;
+        }
+        match last_error {
+            Some(reason) => Self::Failed(reason),
+            None => Self::Waiting,
+        }
+    }
+
+    /// The word, and the two classes that colour it.
+    pub(crate) fn badge(&self) -> (&'static str, &'static str, &'static str) {
+        match self {
+            Self::Local => ("Local", "badge badge-info", "dot dot-info"),
+            Self::Nameless => ("Self-signed", "badge badge-info", "dot dot-info"),
+            Self::Working => ("Requesting", "badge badge-info", "dot dot-info dot-pulse"),
+            Self::Waiting => ("Waiting", "badge badge-info", "dot dot-info dot-pulse"),
+            Self::Trusted => ("Trusted", "badge badge-success", "dot dot-success"),
+            Self::Staging => ("Not trusted", "badge badge-warning", "dot dot-warning"),
+            Self::FromFile => ("From file", "badge badge-info", "dot dot-info"),
+            Self::Failed(_) => ("Failed", "badge badge-danger", "dot dot-danger"),
+        }
+    }
+
+    /// What it means, in one sentence somebody can act on.
+    pub(crate) fn note(&self) -> &'static str {
+        match self {
+            Self::Local => {
+                "A public authority is not being asked for this node. It serves its \
+                 own authority's certificate, which browsers will not trust."
+            }
+            Self::Nameless => {
+                "This node has no domain, so there is no name an authority could \
+                 certify. It serves its own authority's certificate. Set a domain \
+                 below and it will ask for a public one."
+            }
+            Self::Working => {
+                "Asking the certificate authority now. This page updates itself when \
+                 the answer arrives."
+            }
+            Self::Waiting => {
+                "The domain is set and the request has not been made yet. This page \
+                 updates itself when it is."
+            }
+            Self::Trusted => {
+                "This page reached you over TLS with a publicly trusted certificate \
+                 the node obtained and installed on its own."
+            }
+            Self::Staging => {
+                "Staging certificate — browsers will not trust it, which is expected. \
+                 Set acme.directory to production when you are done testing."
+            }
+            Self::FromFile => {
+                "Read from the files below. This node cannot renew it — it did not \
+                 ask for it — so whatever keeps those files current is what keeps \
+                 this certificate current. If they stop being refreshed, the node \
+                 signs for this name itself rather than let it expire."
+            }
+            Self::Failed(_) => {
+                "The last attempt was refused. The node keeps trying, waiting longer \
+                 after each failure, and serves its own authority's certificate in \
+                 the meantime."
+            }
+        }
+    }
+
+    pub(crate) fn failure(&self) -> &str {
+        match self {
+            Self::Failed(reason) => reason,
+            _ => "",
+        }
+    }
+
+    /// Whether asking again, without changing anything, could help.
+    pub(crate) fn may_retry(&self) -> bool {
+        matches!(self, Self::Failed(_) | Self::Waiting)
+    }
+}
+/// Everything the card shows, formatted.
+///
+/// Built here rather than in the browser so the two halves cannot
+/// disagree: the same values render the first paint and every update
+/// after it. Same reason as [`Cells`].
+#[derive(serde::Serialize)]
+pub struct CertificateCells {
+    pub domain: String,
+    pub issuer: String,
+    pub renews: String,
+    pub word: &'static str,
+    pub badge: &'static str,
+    pub dot: &'static str,
+    pub note: &'static str,
+    pub failure: String,
+}
+
 pub fn certificate_cells(
     state: &CertificateState,
-    facts: &crate::console::CertificateFacts,
+    facts: &crate::dtos::certificate_facts::CertificateFacts,
     domain: Option<&str>,
 ) -> CertificateCells {
     let (word, badge, dot) = state.badge();
@@ -49,7 +199,10 @@ pub fn certificate_card<'a>(
     domain: Option<&'a str>,
     // The two it reads, rather than a page struct: it is rendered from
     // `/node` now, whose query has no `node` in it.
-    query: &'a crate::console::nodes::NodeSettingsPage,
+    // What the DNS check said, which belongs beside the form that asked
+    // for it. **Not the page's error** — that is shown once at the top,
+    // and this card used to show it a second time.
+    checked: Option<&'a str>,
 ) -> impl Renderable + 'a {
     rsx! {
         <section class="card stack">
@@ -75,11 +228,8 @@ pub fn certificate_card<'a>(
             // script assigns into it, and `.failure:empty` hides it.
             <p class="failure" data-cert="failure">(&cells.failure)</p>
 
-            @if let Some(message) = &query.checked {
+            @if let Some(message) = checked {
                 <p class="note">(message)</p>
-            }
-            @if let Some(message) = &query.error {
-                (layout::error_note(message))
             }
 
             <form method="post" action="/node/certificate" class="stack">
@@ -216,10 +366,13 @@ pub fn certificate_island<'a>(
     state: &'a CertificateState,
     policy: &'a crate::edge::policy::Policy,
     domain: Option<&'a str>,
-    query: &'a crate::console::nodes::NodeSettingsPage,
+    // What the DNS check said, which belongs beside the form that asked
+    // for it. **Not the page's error** — that is shown once at the top,
+    // and this card used to show it a second time.
+    checked: Option<&'a str>,
 ) -> impl Renderable + 'a {
     let inner = rsx! {
-        (certificate_card(cells, state, policy, domain, query))
+        (certificate_card(cells, state, policy, domain, checked))
     }
     .render()
     .into_inner();

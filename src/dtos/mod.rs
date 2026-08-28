@@ -27,6 +27,7 @@
 //! request and wrong for a hot loop — write the field-by-field
 //! conversion there, where the compiler says which field is missing.
 
+pub mod certificate_facts;
 pub mod requests;
 pub mod responses;
 
