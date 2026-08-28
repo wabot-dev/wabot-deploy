@@ -338,17 +338,17 @@ mod tests {
         let mut missing = Vec::new();
         for capability in Capability::ALL {
             for word in [
-                crate::console::nodes::asking(capability),
-                crate::console::nodes::why(capability),
-                crate::console::nodes::offering(capability),
+                crate::views::components::node_capabilities::asking(capability),
+                crate::views::components::node_capabilities::why(capability),
+                crate::views::components::node_capabilities::offering(capability),
                 // And what the same capability is called on this node's
                 // own page, which is a different sentence: there it is
                 // what another node may ask, here it is what this one
                 // does at all. Left out of the first version of this,
                 // which is the mistake this test exists to catch.
-                crate::console::nodes::doing(capability),
-                crate::console::nodes::doing_why(capability, true),
-                crate::console::nodes::doing_why(capability, false),
+                crate::views::components::node_capabilities::doing(capability),
+                crate::views::components::node_capabilities::doing_why(capability, true),
+                crate::views::components::node_capabilities::doing_why(capability, false),
             ] {
                 if lookup(word).is_none() {
                     missing.push(word.to_string());

@@ -525,7 +525,7 @@ pub fn certificate_card<'a>(
                 <p class="failure">(&cells.failure)</p>
             }
 
-            (crate::console::nodes::certificate_source_form(action, policy))
+            (crate::views::components::node_certificate::certificate_source_form(action, policy))
             @if signs_here {
                 <p class="field-hint">(t("This node signs it, so a client has to be given the \
                      authority before it can verify anything. A container gets it at \

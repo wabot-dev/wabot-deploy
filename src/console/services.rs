@@ -1527,7 +1527,13 @@ impl ServicePages {
                 );
                 (
                     Some(policy),
-                    Some(super::nodes::certificate_cells(&state, &facts, Some(name))),
+                    Some(
+                        crate::views::components::node_certificate::certificate_cells(
+                            &state,
+                            &facts,
+                            Some(name),
+                        ),
+                    ),
                 )
             }
             None => (None, None),
@@ -1579,7 +1585,11 @@ impl ServicePages {
             let policy =
                 crate::edge::policy::for_name(&self.state.database, &self.state.config, hostname)
                     .await;
-            let cells = super::nodes::certificate_cells(&state, &facts, Some(hostname));
+            let cells = crate::views::components::node_certificate::certificate_cells(
+                &state,
+                &facts,
+                Some(hostname),
+            );
             certificates.push((port.id.clone(), hostname.clone(), cells, policy));
         }
 
@@ -2121,7 +2131,7 @@ impl ServicePages {
                                                 // browser warning somebody is
                                                 // about to meet.
                                                 <span class="tile-detail">(
-                                                    super::nodes::source_word(&policy.renew_with)
+                                                    crate::views::components::node_certificate::source_word(&policy.renew_with)
                                                 )</span>
                                             } @else {
                                                 <span class="tile-detail">("—")</span>

@@ -36,7 +36,7 @@ use wabot::rest::axum::response::Response;
 use wabot::rest::RestResult;
 use wabot::ui::hypertext::IntoView;
 
-use crate::network::{self, enrolment::Enrolment, Kind};
+use crate::network::{self};
 use crate::node::memory::{self, Snapshot};
 use crate::policies::access;
 use crate::views::texts::language::t;
@@ -91,7 +91,7 @@ impl NodeTab {
         }
     }
 
-    fn label(self) -> &'static str {
+    pub(crate) fn label(self) -> &'static str {
         match self {
             // The domain is what somebody comes here for; its certificate
             // is the consequence of having one, and the card inside still
@@ -256,7 +256,7 @@ impl NodePages {
                 }
 
                 @if let Some((token, terms)) = &reviewing {
-                    (review_card(token, terms))
+                    (crate::views::components::node_enrolment::review_card(token, terms))
                 }
 
 
@@ -287,7 +287,7 @@ impl NodePages {
                                         (" · ")(address)
                                     }
                                 } @else {
-                                    (reach(node))
+                                    (crate::views::components::node_usage::reach(node))
                                 }
                             </p>
                         </a>
@@ -310,7 +310,7 @@ impl NodePages {
                             </thead>
                             <tbody>
                                 @for authority in &authorities {
-                                    (authority_row(
+                                    (crate::views::components::node_enrolment::authority_row(
                                         authority,
                                         &nodes,
                                         agreed
@@ -380,8 +380,8 @@ impl NodePages {
                              then join."))</p>
                     </section>
                 }
-                (enrol_card(may_enrol))
-                (minted_card(&enrolments, &nodes, now))
+                (crate::views::components::node_enrolment::enrol_card(may_enrol))
+                (crate::views::components::node_enrolment::minted_card(&enrolments, &nodes, now))
             }
             .render()
             .into_inner()
@@ -427,9 +427,9 @@ impl NodePages {
                     (layout::error_note(message))
                 }
                 @if let Some((token, terms)) = &reviewing {
-                    (review_card(token, terms))
+                    (crate::views::components::node_enrolment::review_card(token, terms))
                 }
-                (join_card(query.joined.as_deref()))
+                (crate::views::components::node_enrolment::join_card(query.joined.as_deref()))
             }
             .render()
             .into_inner()
@@ -548,7 +548,11 @@ impl NodePages {
             self.state.certificates.phase(),
             self.state.config.acme.disabled,
         );
-        let cells = certificate_cells(&state, &facts, domain.as_deref());
+        let cells = crate::views::components::node_certificate::certificate_cells(
+            &state,
+            &facts,
+            domain.as_deref(),
+        );
         // What an empty destination means, spelled out as the path it
         // actually is. A placeholder saying "the default" would leave
         // somebody looking for a directory whose name they were never
@@ -610,20 +614,20 @@ impl NodePages {
                     // island — with only its half of the markup, which the
                     // runtime tolerates: a cell it cannot find is skipped.
                     // The meters are on the node's status page.
-                    (certificate_island(
+                    (crate::views::components::node_certificate::certificate_island(
                         &self_id, &cells, &state, &policy, domain.as_deref(), &query
                     ))
                 }
                 @if tab == NodeTab::Allows {
-                    (capabilities_card(&provides, reachable, owns, owned))
+                    (crate::views::components::node_capabilities::capabilities_card(&provides, reachable, owns, owned))
                 }
                 @if tab == NodeTab::Resources {
-                    (reserves_card(&snapshot, reserves, cores))
+                    (crate::views::components::node_settings_cards::reserves_card(&snapshot, reserves, cores))
                 }
                 @if let Some((plan, attempt, taken, s3)) = &backups {
-                    (backup_card(plan, archiving, &default_destination))
-                    (bucket_card(s3.as_ref(), &config_path, plan))
-                    (backup_state_card(plan, attempt, taken, &self_id, running))
+                    (crate::views::components::node_backup::backup_card(plan, archiving, &default_destination))
+                    (crate::views::components::node_backup::bucket_card(s3.as_ref(), &config_path, plan))
+                    (crate::views::components::node_backup::backup_state_card(plan, attempt, taken, &self_id, running))
                 }
             }
             .render()
@@ -714,23 +718,23 @@ impl NodePages {
                     <div class="split">
                         <div class="stack-sm">
                             <h1>(&node.name)</h1>
-                            <p class="slug-preview">(t("joined · "))(reach(&node))</p>
+                            <p class="slug-preview">(t("joined · "))(crate::views::components::node_usage::reach(&node))</p>
                         </div>
                     </div>
                     @if let Some(message) = &query.error {
                         (layout::error_note(message))
                     }
-                    (network_card(&node))
+                    (crate::views::components::node_usage::network_card(&node))
 
                     // What was asked of this node and how it went. It
                     // stays: the form above it — "run a service there" —
                     // is what went, and this is the record of every
                     // instruction, including the ones the service page
                     // now sends.
-                    (usage_card(&node, node.last_seen_at.map(layout::when)))
-                    (manage_card(&node, &releases, catalogue_failed))
-                    (grants_card(&node, &granted))
-                    (errands_card(&node.id, &orders))
+                    (crate::views::components::node_usage::usage_card(&node, node.last_seen_at.map(layout::when)))
+                    (crate::views::components::node_settings_cards::manage_card(&node, &releases, catalogue_failed))
+                    (crate::views::components::node_capabilities::grants_card(&node, &granted))
+                    (crate::views::components::node_errands::errands_card(&node.id, &orders))
 
                     <section class="card stack">
                         <p class="card-label">(t("Take it out of service"))</p>
@@ -822,1411 +826,18 @@ impl NodePages {
                     // `<script>`, which a boosted navigation never runs —
                     // arriving here by clicking a link left the page a
                     // snapshot with no sign that it was one.
-                    (live_cards(&node.id, &disk, &committed, &snapshot, reserves))
+                    (crate::views::components::node_usage::live_cards(&node.id, &disk, &committed, &snapshot, reserves))
 
                     // Outside the island: none of it streams, and a card
                     // inside the host would be replaced by an update that
                     // has nothing to say about it.
-                    (network_card(&node))
+                    (crate::views::components::node_usage::network_card(&node))
             }
             .render()
             .into_inner()
         });
 
         Ok(frame.render(body).into_view().into())
-    }
-}
-
-/// The terms of a join, before it is a join.
-///
-/// Two lists and a decision. What the other node is **asking** of this
-/// one, each item its own checkbox because each is refusable on its
-/// own — a node may agree to serve somebody's names and never run their
-/// containers — and what it **offers** in return, which is not a
-/// checkbox because it is not this node's to accept or decline: it is
-/// what the other node has already decided to allow.
-///
-/// Ticking nothing is a real answer and stays available. A node can
-/// join to *use* another one and agree to do nothing for it, and a
-/// screen that made the empty choice impossible would be asking for
-/// consent it had already decided to have.
-fn review_card<'a>(token: &'a str, terms: &'a network::token::JoinToken) -> impl Renderable + 'a {
-    let requires = terms.requires();
-    let offers = terms.offers();
-    rsx! {
-        <section class="stack">
-            <p class="card-label">(t("Before you join"))</p>
-            <form method="post" action="/network/join" class="card stack">
-                <input type="hidden" name="token" value=(token)>
-                <input type="hidden" name="agreed" value="1">
-
-                <p class="tile-detail">
-                    (format!("{} is asking to be able to:", terms.name))
-                </p>
-                @if requires.is_empty() {
-                    <p class="tile-detail">(t("Nothing. It is handing this node an address on its \
-                         overlay and asking for nothing back."))</p>
-                } @else {
-                    @for capability in &requires {
-                        <label class="capability">
-                            <input type="checkbox" name=(format!("accept-{}", capability.name()))
-                                   value="1" checked>
-                            <span>
-                                <strong>(asking(*capability))</strong>
-                                <span class="tile-detail">(why(*capability))</span>
-                            </span>
-                        </label>
-                    }
-                    <p class="field-hint">(t("Untick anything you would rather not agree to. You can \
-                         revoke any of it later from this page, and this node \
-                         keeps working either way."))</p>
-                }
-
-                <p class="tile-detail">(format!("In return, {} lets this node:", terms.name))</p>
-                @if offers.is_empty() {
-                    <p class="tile-detail">(t("Nothing. This node will take its instructions and give \
-                         it none."))</p>
-                } @else {
-                    <ul class="notes">
-                        @for capability in &offers {
-                            <li>(offering(*capability))</li>
-                        }
-                    </ul>
-                }
-
-                <div class="actions">
-                    <button type="submit">(t("Join"))</button>
-                    <a class="btn btn-ghost" href="/network">(t("Cancel"))</a>
-                </div>
-            </form>
-        </section>
-    }
-}
-
-/// What this node has agreed that node may ask of it.
-///
-/// **The local decision, and the only one this page can change.** The
-/// other direction — what that node lets *this* one ask of it — is on its
-/// row as `allows`, learned from its reports, and reading one for the
-/// other is the trap phase 8 walked into: they answer opposite questions.
-/// So both are here, and only one of them is a form.
-fn grants_card<'a>(
-    node: &'a network::Node,
-    granted: &'a [(network::capability::Capability, bool)],
-) -> impl Renderable + 'a {
-    rsx! {
-        <section class="stack">
-            <p class="card-label">(t("What this node does for it"))</p>
-            <form method="post" action=(format!("/network/{}/grants", node.id)) class="card stack">
-                @for (capability, on) in granted {
-                    <label class="capability">
-                        @if *on {
-                            <input type="checkbox" name=(capability.name()) value="1" checked>
-                        } @else {
-                            <input type="checkbox" name=(capability.name()) value="1">
-                        }
-                        <span>
-                            <strong>(t(asking(*capability)))</strong>
-                            <span class="tile-detail">(t(why(*capability)))</span>
-                        </span>
-                    </label>
-                }
-                <p class="field-hint">(t("A grant is this node's own decision and lives on this \
-                     machine. Withdrawing one asks nobody's permission — consent \
-                     is for taking work on, not for putting it down."))</p>
-                <div class="actions">
-                    <button type="submit">(t("Save"))</button>
-                </div>
-            </form>
-
-            <div class="card stack">
-                <p class="card-label">(t("What it lets this node ask of it"))</p>
-                @if node.allows.is_empty() {
-                    <p class="tile-detail">(t("Nothing. Anything asked of it would be refused, so this \
-                         node does not offer it as somewhere to place a replica, \
-                         serve a name or keep a copy."))</p>
-                } @else {
-                    <ul class="notes">
-                        @for capability in &node.allows {
-                            <li>(t(offering(*capability)))</li>
-                        }
-                    </ul>
-                }
-                <p class="field-hint">(t("Learned from what that node reports, because the decision is \
-                     a row on that machine. Changing it is done from its own \
-                     console."))</p>
-            </div>
-        </section>
-    }
-}
-
-/// What that node is running, and what it has been asked to run.
-///
-/// The version is a **learned** fact and the wanted one is a decision, so
-/// the card says both and never conflates them: "asked for v0.7.1, still
-/// on 0.6.6" is the honest reading of a node that has not collected yet,
-/// of one that is off, and of one that refused — and the reason for the
-/// third is on the errand row below.
-fn manage_card<'a>(
-    node: &'a network::Node,
-    releases: &'a [String],
-    catalogue_failed: bool,
-) -> impl Renderable + 'a {
-    let may_manage = node
-        .allows
-        .contains(&network::capability::Capability::Manage);
-    let behind = node.wanted_version.as_deref().is_some_and(|wanted| {
-        node.version
-            .as_deref()
-            .is_none_or(|running| !crate::update::is_release(wanted, running))
-    });
-    rsx! {
-        <section class="stack">
-            <p class="card-label">(t("Keeping it up to date"))</p>
-            <div class="card stack">
-                <dl class="kv">
-                    <dt>(t("Running"))</dt>
-                    <dd class="mono">(node.version.as_deref().unwrap_or("—"))</dd>
-                    @if let Some(wanted) = &node.wanted_version {
-                        <dt>(t("Asked for"))</dt>
-                        <dd class="mono">(wanted)</dd>
-                    }
-                </dl>
-                @if node.version.is_none() {
-                    <p class="note">(t("It has not said. A node that has never reported a version is \
-                         either older than this or has not been heard from — asking \
-                         it to catch up is what finds out which."))</p>
-                }
-                // The failure that cannot travel on the errand: it is
-                // settled before the install starts, because the install
-                // ends by replacing the process that would settle it.
-                @if let Some(note) = node.update_note.as_deref().filter(|note| !note.is_empty()) {
-                    (layout::error_note(note))
-                }
-                @if behind {
-                    <p class="note">(t("It is not there yet. The instruction is collected on that \
-                         node's own schedule, and a node that is off collects it \
-                         when it comes back."))</p>
-                }
-            </div>
-
-            @if !may_manage {
-                <div class="card stack">
-                    <p class="tile-detail">(t("That node has not agreed to be kept up to date from \
-                         here. It is granted on the node itself, from its own \
-                         console — a grant belongs to the machine it binds."))</p>
-                </div>
-            } @else {
-                <form method="post" action=(format!("/network/{}/version", node.id))
-                      class="card stack">
-                    <label class="field">
-                        <span class="field-label">(t("Release"))</span>
-                        <select name="version">
-                            <option value="">(t("— no version asked for —"))</option>
-                            @for tag in releases {
-                                @if node.wanted_version.as_deref() == Some(tag.as_str()) {
-                                    <option value=(tag) selected>(tag)</option>
-                                } @else {
-                                    <option value=(tag)>(tag)</option>
-                                }
-                            }
-                        </select>
-                    </label>
-                    @if catalogue_failed {
-                        <p class="field-hint">(t("The release list could not be read just now, so this \
-                             is empty. Nothing about that node has changed."))</p>
-                    } @else {
-                        <p class="field-hint">(t("It resolves the tag itself, against the same list its \
-                             own console reads — so a release with no build for that \
-                             machine is refused there, with the reason on the \
-                             instruction below."))</p>
-                    }
-                    <div class="actions">
-                        <button type="submit">(t("Ask for this release"))</button>
-                    </div>
-                </form>
-
-                <form method="post" action=(format!("/network/{}/command", node.id))
-                      class="card stack">
-                    <p class="card-label">(t("Once, now"))</p>
-                    <p class="field-hint">(t("Neither of these is a state it converges on: asked \
-                         twice, it happens twice. Restarting replaces the process \
-                         and leaves the containers running."))</p>
-                    <div class="actions">
-                        <button class="btn btn-ghost" type="submit" name="action" value="restart">
-                            (t("Restart it"))
-                        </button>
-                        <button class="btn btn-ghost" type="submit" name="action" value="back-up">
-                            (t("Back it up now"))
-                        </button>
-                    </div>
-                </form>
-            }
-        </section>
-    }
-}
-
-/// What holding this capability lets the other node do here.
-pub(crate) fn asking(capability: network::capability::Capability) -> &'static str {
-    match capability {
-        network::capability::Capability::Host => "Run its containers on this node",
-        network::capability::Capability::Edge => "Have this node answer for its hostnames",
-        network::capability::Capability::Store => "Keep a copy of its data on this node",
-        network::capability::Capability::Manage => "Keep this node up to date, and restart it",
-    }
-}
-
-pub(crate) fn why(capability: network::capability::Capability) -> &'static str {
-    match capability {
-        network::capability::Capability::Host => {
-            "It can place replicas of its services here and pull the images \
-             for them. It cannot touch anything else on this node."
-        }
-        network::capability::Capability::Edge => {
-            "It can ask this node to terminate TLS for one of its names and \
-             proxy to wherever that service runs."
-        }
-        network::capability::Capability::Store => {
-            "It can place a read-only copy of one of its databases here, and \
-             that copy is every row of it — on this node's disk, taking this \
-             node's space. Running somebody's container is not the same \
-             favour, which is why this is asked for separately."
-        }
-        network::capability::Capability::Manage => {
-            "It can install a release of this project here, restart the service \
-             and ask for a backup. It creates nothing, reads no data and touches \
-             no account — but it decides which binary this node runs."
-        }
-    }
-}
-
-pub(crate) fn offering(capability: network::capability::Capability) -> &'static str {
-    match capability {
-        network::capability::Capability::Host => "Run this node's containers over there",
-        network::capability::Capability::Edge => "Answer for this node's hostnames",
-        network::capability::Capability::Store => "Keep a copy of this node's data over there",
-        network::capability::Capability::Manage => "Update and restart that node from here",
-    }
-}
-
-/// What this machine keeps for itself, and what is left for services.
-///
-/// It was two constants: 15 % of memory with a floor of 256 MB, and a
-/// quarter core. Those are a reasonable guess and cannot be right for
-/// every machine — deliberately generous on a small node, and on a 32 GB
-/// box 15 % is five gigabytes nothing is using. Asked for by Jorge.
-///
-/// The refusal is the interesting half and it is on the POST: a reserve
-/// under what this node's own processes are *measured* using right now is
-/// refused with the reading, because the node can answer that question
-/// about itself and a constant cannot.
-fn reserves_card<'a>(
-    snapshot: &'a Snapshot,
-    reserves: (Option<u64>, Option<u32>),
-    cores: u32,
-) -> impl Renderable + 'a {
-    let (memory, cpu) = reserves;
-    let default_memory = crate::policies::presets::default_memory_reserve(snapshot.total);
-    let memory_value = memory
-        .map(crate::policies::presets::size_field)
-        .unwrap_or_default();
-    let cpu_value = cpu
-        .map(crate::policies::presets::cores_field)
-        .unwrap_or_default();
-    let default_cpu =
-        crate::policies::presets::cores_field(crate::policies::presets::NODE_RESERVE_MILLICORES);
-    let default_memory_label = crate::policies::presets::label(default_memory);
-    let allocatable = crate::node::memory::human(crate::policies::presets::allocatable_memory(
-        snapshot.total,
-        memory,
-    ));
-    let allocatable_cpu = crate::policies::presets::cpu_label(
-        crate::policies::presets::allocatable_cpu(cores * 1_000, cpu),
-    );
-
-    rsx! {
-        <section class="card stack" id="reserves">
-            <p class="card-label">(t("Reserved for the node"))</p>
-            <form method="post" action="/node/reserves" class="stack">
-                <label for="memory-reserve">(t("Memory"))</label>
-                <input id="memory-reserve" name="memory" type="text" autocomplete="off"
-                       placeholder=(&default_memory_label) value=(&memory_value)>
-                <p class="field-hint">(t("Kept for the console, the edge, containerd and \
-                     everything else on this machine. Empty means the default, which is 15 % \
-                     with a floor of 256 MB."))</p>
-
-                <label for="cpu-reserve">(t("CPU"))</label>
-                <input id="cpu-reserve" name="cpu" type="text" autocomplete="off"
-                       placeholder=(&default_cpu) value=(&cpu_value)>
-                <p class="field-hint">(t("Cores, like 0.5, or millicores with an m. Empty means \
-                     the default of a quarter core."))</p>
-
-                // The consequence, in the units the rest of the console
-                // uses. A reserve is only meaningful as "what is left",
-                // and an operator typing a number should not have to do
-                // the subtraction to find out what they did.
-                <p class="field-hint">(t("Leaves "))(&allocatable)(t(" and "))
-                    (&allocatable_cpu)(t(" for services."))</p>
-                <div class="actions">
-                    <button type="submit">(t("Save"))</button>
-                </div>
-            </form>
-        </section>
-    }
-}
-
-/// What the switch for one capability says on this node's own page.
-///
-/// Separate from [`asking`], which is the same capability seen from the
-/// other side of a join: there it is "what that node may do here", and
-/// here it is "what this node does at all". Exhaustive, so a capability
-/// added later cannot reach the form without words — which is how `store`
-/// came to have no checkbox on a form that wrote its setting anyway.
-pub(crate) fn doing(capability: network::capability::Capability) -> &'static str {
-    match capability {
-        network::capability::Capability::Host => "Run containers",
-        network::capability::Capability::Edge => "Answer for hostnames",
-        network::capability::Capability::Store => "Keep copies of other nodes' data",
-        network::capability::Capability::Manage => "Be kept up to date from elsewhere",
-    }
-}
-
-/// And what turning it off costs. `reachable` is only read by `Edge`,
-/// which is the one capability an address decides.
-pub(crate) fn doing_why(
-    capability: network::capability::Capability,
-    reachable: bool,
-) -> &'static str {
-    match capability {
-        network::capability::Capability::Host => {
-            "Replicas can be placed here — its own services included. A \
-             small node can own projects and run none of them."
-        }
-        network::capability::Capability::Edge if reachable => {
-            "It terminates TLS for names, its own and other nodes'. Turning \
-             this off makes it a private node — that is all private has ever \
-             meant."
-        }
-        network::capability::Capability::Edge => {
-            "Needs a domain that resolves here. Without an address the world \
-             can dial, this node is private whatever it would prefer."
-        }
-        network::capability::Capability::Store => {
-            "A standby of somebody's database lives on this node's disk and \
-             grows with it. Running a container is not the same favour."
-        }
-        network::capability::Capability::Manage => {
-            "A node that has been granted this can install a release here, \
-             restart the service and ask for a backup. Turning it off \
-             withdraws that from every node at once."
-        }
-    }
-}
-
-/// What this node does at all, and whether it originates any of it.
-///
-/// **Generated from `Capability::ALL`, not written out.** The first
-/// version drew two checkboxes while the handler wrote a setting for
-/// every capability in the enum, so saving this form turned `store` off
-/// in silence: the node stopped being offered as somewhere a standby
-/// could go, and refused the errands for the ones it already held. A
-/// capability with no checkbox has to be impossible rather than
-/// noticed, which is what a loop and an exhaustive `match` make it.
-fn capabilities_card(
-    provides: &[(network::capability::Capability, bool)],
-    reachable: bool,
-    owns: bool,
-    owned: usize,
-) -> impl Renderable + '_ {
-    rsx! {
-        <section class="stack">
-            <p class="card-label">(t("What this node does"))</p>
-            <form method="post" action="/node/capabilities" class="card stack">
-                @for (capability, on) in provides {
-                    <label class="capability">
-                        // A capability that needs an address, on a node
-                        // that has none, is a switch that could be turned
-                        // on to no effect.
-                        @if capability.needs_endpoint() && !reachable {
-                            <input type="checkbox" name=(capability.name()) value="1" disabled>
-                        } @else if *on {
-                            <input type="checkbox" name=(capability.name()) value="1" checked>
-                        } @else {
-                            <input type="checkbox" name=(capability.name()) value="1">
-                        }
-                        <span>
-                            <strong>(t(doing(*capability)))</strong>
-                            <span class="tile-detail">(t(doing_why(*capability, reachable)))</span>
-                        </span>
-                    </label>
-                }
-
-                // Not one of them, and deliberately below them with its
-                // own words: every capability above is something another
-                // node asks of this one, and this is what this node is
-                // for. It has no grant and appears in no token.
-                <label class="capability">
-                    @if owns {
-                        <input type="checkbox" name="own" value="1" checked>
-                    } @else {
-                        <input type="checkbox" name="own" value="1">
-                    }
-                    <span>
-                        <strong>(t("Own projects and services"))</strong>
-                        <span class="tile-detail">(t("Off, this node originates nothing: no projects \
-                             of its own, no services, no names. What arrived \
-                             on an errand goes on running — it was never this \
-                             node's."))</span>
-                        @if owns && owned > 0 {
-                            <span class="tile-detail">(t("This node owns "))(owned.to_string())
-                                (t(" of its own projects, and has to let go of them before this \
-                                     can be turned off."))</span>
-                        }
-                    </span>
-                </label>
-
-                // The write-ahead log used to be here, as a third thing
-                // the node either does or does not do. It is on the
-                // Backup tab now, beside the schedule and the window it
-                // is bounded by: point-in-time recovery is the *reach* of
-                // a backup — no base copy, nothing to replay the log onto
-                // — and a switch two tabs away from the thing it depends
-                // on is a switch somebody turns on and gains nothing by.
-
-                <div class="actions">
-                    <button type="submit">(t("Save"))</button>
-                </div>
-            </form>
-        </section>
-    }
-}
-
-/// Where a copy of this node goes, and when.
-///
-/// One form, because it is one decision: a destination with no schedule
-/// is a field nobody acts on, and a schedule with nowhere to write is a
-/// job that fails at three in the morning. The write-ahead log switch is
-/// here too — it decides how far a restore *reaches* from whatever this
-/// takes, and it was two tabs away from the thing it depends on.
-fn backup_card<'a>(
-    plan: &'a crate::node::backups::Plan,
-    archiving: bool,
-    default_destination: &'a str,
-) -> impl Renderable + 'a {
-    use crate::node::backups::Cadence;
-
-    let destination = plan.destination.clone().unwrap_or_default();
-    let keep_days = plan.keep_days.to_string();
-    // Written out rather than taken from a table so that the scan in
-    // `es.rs` can see them: it reads the source for calls to `t` with a
-    // literal in them, and a label that arrives as a value is a string it
-    // cannot check.
-    let days = [
-        t("Monday"),
-        t("Tuesday"),
-        t("Wednesday"),
-        t("Thursday"),
-        t("Friday"),
-        t("Saturday"),
-        t("Sunday"),
-    ];
-
-    // An island host for the same reason the certificate form is one:
-    // what the runtime hides here is only what does not apply, and with
-    // scripting off every field is visible and the form still submits.
-    wabot::ui::hypertext::island_bare(
-        "fields",
-        rsx! {
-            <section class="stack" id="backup">
-                <p class="card-label">(t("Backing up this node"))</p>
-                <form method="post" action="/node/backups" class="card stack">
-                    <label for="backup-destination">(t("Where the copy goes"))</label>
-                    // The path is a path: not translated, and monospaced
-                    // like every other thing on this console that somebody
-                    // pastes into a terminal.
-                    <input id="backup-destination" name="destination" type="text"
-                           autocomplete="off" class="mono" value=(&destination)
-                           placeholder=(default_destination)>
-                    <p class="field-hint">(t("A directory on this machine, ssh://[user@]host/path, \
-                         or s3://bucket/prefix. Leave it empty and the copy stays here, in the \
-                         path the field shows — which protects against nothing that has ever \
-                         happened to a disk."))</p>
-                    <p class="field-hint">(t("SSH uses this machine's own keys and needs nothing \
-                         stored. S3 needs its credentials in config.toml, which is deliberate: a \
-                         key that can read every backup in the network must not be inside the \
-                         thing being backed up."))</p>
-
-                    <label for="backup-cadence">(t("How often"))</label>
-                    <select id="backup-cadence" name="cadence">
-                        @if plan.cadence == Cadence::Off {
-                            <option value="" selected>(t("Never — I take them myself"))</option>
-                        } @else {
-                            <option value="">(t("Never — I take them myself"))</option>
-                        }
-                        @if plan.cadence == Cadence::Daily {
-                            <option value="daily" selected>(t("Every day"))</option>
-                        } @else {
-                            <option value="daily">(t("Every day"))</option>
-                        }
-                        @if plan.cadence == Cadence::Weekly {
-                            <option value="weekly" selected>(t("Every week"))</option>
-                        } @else {
-                            <option value="weekly">(t("Every week"))</option>
-                        }
-                    </select>
-
-                    // `Cadence::Off` stores as the empty string, which is
-                    // what lets `data-when="cadence"` — the island's
-                    // "this control has a value" — hide the hour when
-                    // nothing is scheduled. One attribute rather than a
-                    // second condition and another script.
-                    <div class="stack" data-when="cadence=weekly">
-                        <label for="backup-weekday">(t("Day"))</label>
-                        <select id="backup-weekday" name="weekday">
-                            @for (index, day) in days.iter().enumerate() {
-                                @if usize::from(plan.weekday) == index {
-                                    <option value=(index.to_string()) selected>(day)</option>
-                                } @else {
-                                    <option value=(index.to_string())>(day)</option>
-                                }
-                            }
-                        </select>
-                    </div>
-                    <div class="stack" data-when="cadence">
-                        <label for="backup-hour">(t("At"))</label>
-                        <select id="backup-hour" name="hour">
-                            @for hour in 0..24u8 {
-                                @if plan.hour == hour {
-                                    <option value=(hour.to_string()) selected>
-                                        (format!("{hour:02}:00"))
-                                    </option>
-                                } @else {
-                                    <option value=(hour.to_string())>
-                                        (format!("{hour:02}:00"))
-                                    </option>
-                                }
-                            }
-                        </select>
-                        <p class="field-hint">(t("UTC, which is what the node keeps. An hour \
-                             chosen in your own zone would be somebody else's afternoon, and a \
-                             copy of every database is not what a busy hour needs."))</p>
-                    </div>
-
-                    <label for="backup-keep">(t("Kept for"))</label>
-                    <input id="backup-keep" name="keep_days" type="text" inputmode="numeric"
-                           autocomplete="off" value=(&keep_days) placeholder="7">
-                    <p class="field-hint">(t("Days. Everything inside the window costs disk and \
-                         everything outside it is gone — an hourly pass drops the backups that \
-                         have expired, and the log no surviving backup needs. The oldest one is \
-                         kept until a newer one can anchor the window, so it is never shorter \
-                         than it says."))</p>
-
-                    <label class="capability">
-                        @if archiving {
-                            <input type="checkbox" name="archiving" value="1" checked>
-                        } @else {
-                            <input type="checkbox" name="archiving" value="1">
-                        }
-                        <span>
-                            <strong>(t("Keep the write-ahead log"))</strong>
-                            <span class="tile-detail">(t("Lets a database be restored to any \
-                                 minute, rather than only to the moment of a backup. It costs \
-                                 disk — a segment a minute per database, compressed — and it \
-                                 takes effect at each database's next deployment."))</span>
-                            <span class="tile-detail">(t("It reaches back to the oldest backup \
-                                 and no further: the log is replayed onto one, so without a \
-                                 backup to anchor it this keeps disk nothing can use."))</span>
-                        </span>
-                    </label>
-
-                    <div class="actions">
-                        <button type="submit">(t("Save"))</button>
-                    </div>
-                </form>
-            </section>
-        },
-    )
-}
-
-/// The bucket's credential, and where it is kept.
-///
-/// **Jorge asked for this**: configuring a bucket was an SSH session and
-/// a text editor, which is the shape of a feature nobody sets up. What
-/// does *not* change is where it lands — the config file, never the
-/// database, because a key that can read every backup in the network must
-/// not be inside the thing being backed up. So the card says which file,
-/// and the file says the console wrote it.
-///
-/// **Not "AWS".** Every provider that speaks this protocol is one of
-/// these: an endpoint, a region, a key and a secret. Amazon is the case
-/// where the endpoint is left empty.
-///
-/// The secret goes in and never comes back: it renders as an empty field
-/// whatever is stored, and an empty field on save means "keep the one you
-/// have" — which is what makes changing a region a one-field edit rather
-/// than a hunt for a secret nobody wrote down.
-fn bucket_card<'a>(
-    stored: Option<&'a crate::commands::s3::Credentials>,
-    config_path: &'a str,
-    plan: &'a crate::node::backups::Plan,
-) -> impl Renderable + 'a {
-    let key = stored.map(|c| c.access_key_id.clone()).unwrap_or_default();
-    let region = stored
-        .map(|c| c.region.clone())
-        .unwrap_or_else(|| "us-east-1".to_string());
-    let endpoint = stored.and_then(|c| c.endpoint.clone()).unwrap_or_default();
-    // Whether the destination is the bucket these belong to. It decides
-    // one thing: forgetting them while the backups go there would leave a
-    // schedule that cannot work, so that is refused rather than allowed
-    // and reported afterwards.
-    let in_use = plan
-        .destination
-        .as_deref()
-        .and_then(|text| crate::commands::destination::Destination::parse(text).ok())
-        .is_some_and(|destination| {
-            matches!(
-                destination,
-                crate::commands::destination::Destination::S3 { .. }
-            )
-        });
-
-    rsx! {
-        <section class="stack">
-            <p class="card-label">(t("Bucket credentials"))</p>
-            <form method="post" action="/node/backups/credentials" class="card stack">
-                <div class="split">
-                    <span>
-                        @if stored.is_some() {
-                            <span class="dot dot-success"></span>(t("stored"))
-                        } @else {
-                            <span class="dot dot-warning"></span>(t("none on this node"))
-                        }
-                    </span>
-                </div>
-                <p class="field-hint">(t("For any storage that speaks the S3 protocol — Amazon, \
-                     Backblaze, Wasabi, DigitalOcean, MinIO, Ceph. They are kept in "))
-                    <span class="mono">(config_path)</span>
-                    (t(", never in this node's database: a key that can read every backup in the \
-                     network must not be inside the thing being backed up. A backup holds the \
-                     database, the volumes and the images — it does not hold that file."))</p>
-
-                <label for="s3-key">(t("Access key id"))</label>
-                <input id="s3-key" name="access_key_id" type="text" autocomplete="off"
-                       class="mono" value=(&key)>
-
-                <label for="s3-secret">(t("Secret access key"))</label>
-                // `new-password`, or the browser's password manager offers
-                // the operator's own login for this console — which
-                // happened once already on the sign-in form and was found
-                // by somebody looking at the page, not by a test.
-                <input id="s3-secret" name="secret_access_key" type="password"
-                       autocomplete="new-password" class="mono" value="">
-                @if stored.is_some() {
-                    <p class="field-hint">(t("Stored. Leave this empty to keep it — it is never \
-                         shown again, here or anywhere else."))</p>
-                } @else {
-                    <p class="field-hint">(t("Whatever the provider generated. It is written to \
-                         the file above and never rendered back."))</p>
-                }
-
-                <label for="s3-region">(t("Region"))</label>
-                <input id="s3-region" name="region" type="text" autocomplete="off" class="mono"
-                       value=(&region) placeholder="us-east-1">
-                <p class="field-hint">(t("Part of the signature, so a wrong one is a refused \
-                     request rather than a slow one. Providers that have no regions still want \
-                     the one they document — often us-east-1."))</p>
-
-                <label for="s3-endpoint">(t("Endpoint"))</label>
-                <input id="s3-endpoint" name="endpoint" type="text" autocomplete="off"
-                       class="mono" value=(&endpoint)
-                       placeholder="https://s3.us-west-004.backblazeb2.com">
-                <p class="field-hint">(t("Empty for Amazon's own S3. For anything else, the URL \
-                     the provider gives you — and with one set, buckets are addressed as a path \
-                     rather than a subdomain, which is what MinIO and most of the others \
-                     want."))</p>
-
-                <p class="field-hint">(t("Saving asks the bucket to list what it holds, when the \
-                     destination above is one — the same call a backup starts with, so a key \
-                     that saves is a key that works."))</p>
-
-                <div class="actions">
-                    <button type="submit">(t("Save"))</button>
-                </div>
-            </form>
-
-            // Its own form: a second button inside the one above would
-            // submit the fields with it, and forgetting a credential must
-            // not depend on what is typed beside it.
-            @if stored.is_some() {
-                <form method="post" action="/node/backups/credentials/forget" class="card stack">
-                    <p class="field-hint">(t("Removing them takes the section out of the file. \
-                         Nothing else about the plan changes — and backups to a bucket stop \
-                         working, which is why this is refused while the destination is one."))</p>
-                    <div class="actions">
-                        @if in_use {
-                            <button class="btn btn-secondary" type="submit" disabled>
-                                (t("Forget them"))
-                            </button>
-                        } @else {
-                            <button class="btn btn-secondary" type="submit">(t("Forget them"))</button>
-                        }
-                    </div>
-                </form>
-            }
-        </section>
-    }
-}
-
-/// How the last one went, and the button that takes one now.
-///
-/// A card of its own rather than a line on the form: what it says is not
-/// a setting, and the two questions it answers — "is there a copy of this
-/// node anywhere" and "did the last attempt work" — are the ones somebody
-/// opens this tab to ask.
-fn backup_state_card<'a>(
-    plan: &'a crate::node::backups::Plan,
-    attempt: &'a crate::node::backups::Attempt,
-    taken: &'a [(std::path::PathBuf, crate::commands::backup::Manifest)],
-    self_id: &'a str,
-    running: bool,
-) -> impl Renderable + 'a {
-    use crate::node::backups::Cadence;
-
-    let next = crate::node::backups::next_slot(plan, super::now_ms());
-    // Ten, and the count says what was left out. A node kept for a year
-    // with a daily backup would otherwise render a table nobody scrolls.
-    let showing: Vec<&(std::path::PathBuf, crate::commands::backup::Manifest)> =
-        taken.iter().take(10).collect();
-    let remote = plan
-        .destination
-        .as_deref()
-        .and_then(|text| crate::commands::destination::Destination::parse(text).ok())
-        .is_some_and(|destination| destination.is_remote());
-
-    rsx! {
-        <section class="card stack">
-            <div class="split">
-                <p class="card-label">(t("The last one"))</p>
-                // Not a form field: a button that submits nothing but the
-                // request itself. Its own form because a POST inside the
-                // settings form would save the plan as a side effect of
-                // asking for a backup.
-                <form method="post" action="/node/backups/now">
-                    @if running {
-                        <button class="btn btn-secondary" type="submit" disabled>
-                            (t("Backing up…"))
-                        </button>
-                    } @else {
-                        <button class="btn btn-secondary" type="submit">(t("Back up now"))</button>
-                    }
-                </form>
-            </div>
-
-            <dl class="kv">
-                <dt>(t("Last attempt"))</dt>
-                <dd>
-                    @if running {
-                        <span class="dot dot-info"></span>(t("running now"))
-                    } @else if let Some(at) = attempt.at {
-                        (layout::when(at))
-                    } @else {
-                        (t("never from here"))
-                    }
-                </dd>
-                @if let Some(at) = attempt.ok_at {
-                    <dt>(t("Last good one"))</dt>
-                    // Absolute as well as relative: this is the moment a
-                    // restore would land on, and "3 days ago" cannot be
-                    // typed into anything.
-                    <dd>(layout::when(at))(" · ")<span class="mono">(layout::exactly(at))</span></dd>
-                }
-                @if let Some(note) = &attempt.note {
-                    <dt>(t("It held"))</dt>
-                    <dd>(note)</dd>
-                }
-                <dt>(t("Next"))</dt>
-                <dd>
-                    @if plan.cadence == Cadence::Off {
-                        (t("nothing is scheduled"))
-                    } @else if let Some(at) = next {
-                        <span class="mono">(layout::exactly(at))</span>
-                    } @else {
-                        (t("nothing is scheduled"))
-                    }
-                </dd>
-            </dl>
-
-            // The reason the last one failed, where somebody looking for
-            // it will be. It is whatever refused — rsync's words, or an
-            // authority's — so it renders as it arrived.
-            @if let Some(reason) = &attempt.error {
-                <p class="form-error">
-                    <strong>(t("The last attempt did not work: "))</strong>(reason)
-                </p>
-                <p class="field-hint">(t("A slot gets one attempt: a copy of every database \
-                     retried every few minutes is a machine that stops answering. Fix what it \
-                     names and press Back up now, or wait for the next one."))</p>
-            }
-
-            @if showing.is_empty() {
-                <p class="note">(t("Nothing on this machine. A backup taken here and sent \
-                     somewhere else leaves nothing behind, which is the point — this list is \
-                     what is still on this disk."))</p>
-            } @else {
-                <table>
-                    <thead>
-                        <tr>
-                            <th>(t("Taken"))</th>
-                            <th>(t("Holds"))</th>
-                            <th>(t("Of"))</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        @for (path, manifest) in &showing {
-                            (backup_row(path, manifest, self_id))
-                        }
-                    </tbody>
-                </table>
-                @if taken.len() > showing.len() {
-                    <p class="note">(t("Showing the newest "))(showing.len().to_string())
-                        (t(" of "))(taken.len().to_string())(t(" on this disk."))</p>
-                }
-            }
-            @if remote {
-                <p class="note">(t("The copies are sent away and the local staging directory is \
-                     removed when the transfer succeeds, so this list is not what the \
-                     destination holds."))</p>
-            }
-        </section>
-    }
-}
-
-/// One backup on the disk.
-fn backup_row<'a>(
-    path: &'a std::path::Path,
-    manifest: &'a crate::commands::backup::Manifest,
-    self_id: &'a str,
-) -> impl Renderable + 'a {
-    let crash = manifest
-        .volumes
-        .iter()
-        .filter(|copied| copied.how == crate::commands::backup::How::CrashConsistent)
-        .count();
-    // Whose it is. A shared root holds several nodes' backups — that is
-    // what makes one bucket the answer for a network — so a row about
-    // another machine has to say so rather than read as this one's.
-    let whose = match manifest.node_id.as_deref() {
-        Some(id) if id == self_id => t("this node").to_string(),
-        Some(_) => manifest
-            .node_name
-            .clone()
-            .or_else(|| manifest.node_id.clone())
-            .unwrap_or_else(|| t("another node").to_string()),
-        None => t("a node with no id").to_string(),
-    };
-
-    rsx! {
-        <tr>
-            <td>
-                <span class="mono">(layout::exactly(manifest.taken_at))</span>
-                // The directory, because moving it off this machine is
-                // the one thing an operator will do with it and `scp`
-                // wants the path.
-                //
-                // **A `<p>`, not a span.** `.tile-detail` carries no
-                // margin of its own, so a span sits flush against what
-                // is beside it: on the node this rendered as
-                // `02:43 UTC/var/lib/…`, one word, and Jorge saw it
-                // before any test did. The class is the same either way
-                // — what makes it a second line is the element.
-                <p class="tile-detail mono">(path.display().to_string())</p>
-            </td>
-            <td>
-                (manifest.volumes.len().to_string())(t(" volume(s)"))
-                @if crash > 0 {
-                    // Named, not folded in. A file copy of a running
-                    // process may restore into a process that will not
-                    // start, and which of the two this is decides whether
-                    // the backup is worth anything.
-                    <p class="tile-detail">(crash.to_string())(t(" copied while running"))</p>
-                }
-            </td>
-            <td>(whose)</td>
-        </tr>
-    }
-}
-
-/// Mint a token for a node that is not here yet — or say why not.
-///
-/// The refusal is a card rather than a hidden form: "this node cannot
-/// do that" is an answer, and a section that vanishes leaves somebody
-/// looking for the thing they read about.
-fn enrol_card(may_enrol: bool) -> impl Renderable {
-    rsx! {
-        <section class="stack">
-            <p class="card-label">(t("Invite a node"))</p>
-            @if may_enrol {
-                <form method="post" action="/network/enrol" class="card stack">
-                    // Not "what to call it". A node's name is its own —
-                    // it says what it is on the join callback, and that
-                    // is what the nodes list shows. Asking for one here
-                    // produced a second name for one machine, differing
-                    // by which table you read: the same fault the
-                    // databases had, one floor up.
-                    <label for="name">(t("A note, if you want one"))</label>
-                    <input id="name" name="name" type="text" autocomplete="off"
-                           placeholder=(t("the box in the rack by the window"))>
-                    <p class="field-hint">(t("Only to tell one unspent token from another. The node \
-                         names itself when it joins, and that is the name this \
-                         console shows."))</p>
-
-                    // Both lists are drawn from `Capability::ALL`, not
-                    // written out. The *handler* has always read them by
-                    // name — `require-{name}` — and the form had two
-                    // boxes typed by hand, so adding a third capability
-                    // left it unaskable: the code that granted it was
-                    // complete and the only screen that could request it
-                    // did not know it existed.
-                    <p class="tile-detail">(t("Ask that node to let this one:"))</p>
-                    @for capability in network::capability::Capability::ALL {
-                        <label class="capability">
-                            <input type="checkbox" name=(format!("require-{}", capability.name()))
-                                   value="1" checked>
-                            // `offering`, not `asking`: these two are
-                            // written from the granting node's side, and
-                            // this list is what *this* node wants to be
-                            // allowed to do over there. Swapping them
-                            // reads plausibly and says the opposite.
-                            <span>(t(offering(capability)))</span>
-                        </label>
-                    }
-
-                    <p class="tile-detail">(t("And offer it, in return:"))</p>
-                    @for capability in network::capability::Capability::ALL {
-                        <label class="capability">
-                            <input type="checkbox" name=(format!("offer-{}", capability.name()))
-                                   value="1">
-                            <span>(t(asking(capability)))</span>
-                        </label>
-                    }
-                    <p class="field-hint">(t("Both lists travel inside the token and are shown on the \
-                         other machine before it is spent. Whoever holds it \
-                         accepts or refuses each one — so what is asked for here \
-                         is a request, not a setting."))</p>
-
-                    <p class="field-hint">(t("This mints a token carrying this node's address, its overlay \
-                         key and an address on the overlay for the new node. Joining \
-                         with it there records this node as an authority — which that \
-                         node can revoke at any time — and tells this one it arrived."))</p>
-                    // The failure that will actually happen, said beside
-                    // the button rather than discovered on the far
-                    // machine: joining calls back over this hostname,
-                    // and a node serving its own authority's certificate
-                    // is one nothing else trusts yet.
-                    <p class="field-hint">(t("The other machine has to trust the certificate this console \
-                         is served on. Until this node has a public one, joining will \
-                         refuse rather than send its token to whatever answered."))</p>
-                    <div class="actions">
-                        <button type="submit">(t("Create join token"))</button>
-                    </div>
-                </form>
-            } @else {
-                <section class="card stack">
-                    <p>(t("This node has no address another one could call back on, so it \
-                         cannot enrol anybody yet."))</p>
-                    <p class="field-hint">(t("Set a domain on this node's own page. A joining node reaches it \
-                         over the same hostname and certificate this console is served \
-                         on, and that certificate has to be one the other machine \
-                         already trusts."))</p>
-                </section>
-            }
-        </section>
-    }
-}
-
-/// Paste a token from somewhere else, and what became of the ones this
-/// node minted.
-///
-/// One section, because they are two halves of the same question — the
-/// tokens this node handed out, and the one it was handed.
-/// The tokens this node has minted and nobody has spent.
-///
-/// It was inside `join_card`, which put "what I have offered other nodes"
-/// under the heading "join a network" — the opposite direction. It belongs
-/// beside the form that mints them.
-fn minted_card<'a>(
-    enrolments: &'a [Enrolment],
-    nodes: &'a [network::Node],
-    now: i64,
-) -> impl Renderable + 'a {
-    rsx! {
-        @if !enrolments.is_empty() {
-            <section class="stack">
-                <p class="card-label">(t("Tokens this node minted"))</p>
-                <table>
-                    <thead>
-                        <tr>
-                            <th>(t("For"))</th><th>(t("Address"))</th>
-                            <th>(t("State"))</th><th></th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        @for enrolment in enrolments {
-                            (enrolment_row(enrolment, nodes, now))
-                        }
-                    </tbody>
-                </table>
-            </section>
-        }
-    }
-}
-
-fn join_card(joined: Option<&str>) -> impl Renderable + '_ {
-    rsx! {
-        <section class="stack">
-            <p class="card-label">(t("Join a network"))</p>
-            @if let Some(name) = joined {
-                <section class="card stack">
-                    <p>(t("This node now takes instructions from "))(name)(".")</p>
-                    <p class="field-hint">(t("Only what it was granted, which is listed beside it below. \
-                         Revoking any of it takes effect here and immediately."))</p>
-                </section>
-            }
-            <form method="post" action="/network/join" class="card stack">
-                <label for="token">(t("Join token"))</label>
-                <input id="token" name="token" type="text" class="mono"
-                       placeholder="wdj1.…" autocomplete="off" required>
-                <p class="field-hint">(t("From the network page of the node you are joining: invite a node \
-                     there, and it shows one token, once. Pasting it here does \
-                     what `wabot-deploy join` does in a terminal — this node records \
-                     that one as an authority and tells it so. The same token can be \
-                     pasted again if something goes wrong part-way."))</p>
-                <div class="actions">
-                    <button type="submit">(t("Join"))</button>
-                </div>
-            </form>
-        </section>
-    }
-}
-
-/// What a node is, in the one line the list has room for.
-///
-/// Said as what it *does*, not as a category. "Private" is a word this
-/// console printed at somebody and expected them to know it meant "does
-/// not answer for names" — and since the capability switch it is not
-/// even a property of the machine, it is a decision. So the page says
-/// the decision.
-fn kind_word(kind: Kind) -> &'static str {
-    match kind {
-        Kind::Public => t("answers for names"),
-        Kind::Private => t("runs containers only"),
-    }
-}
-
-/// How this node reaches another one — or, for itself, what it is.
-///
-/// Two questions, and they were being answered by one column. A node
-/// with a public address that joins a hub reads `public` on its own
-/// page, because it is, and the hub had it listed as `private` at the
-/// same moment. Both rows were right and the pair was nonsense: the
-/// hub does not know what that machine is, only that it has nothing
-/// but an overlay address for it.
-///
-/// So a row about somebody else describes the *relationship*. Found by
-/// looking at the two consoles side by side, which is the only place
-/// it is visible.
-fn reach(node: &network::Node) -> String {
-    if node.is_self {
-        return kind_word(node.kind).to_string();
-    }
-    match &node.overlay_ip {
-        // Where it lives on the overlay, which is how everything
-        // reaches it: an errand over its control plane, a request from
-        // an edge to a container it runs.
-        Some(address) => format!("on the overlay at {address}"),
-        None => "no address for it yet".to_string(),
-    }
-}
-
-/// What is known about a node's place on the overlay.
-///
-/// The same card for this node and for a joined one, because it is the
-/// same set of facts: an id other nodes use, an address, a key, and
-/// where this node would reach it. A node that has never enrolled
-/// anybody and never joined anything has neither of the middle two, and
-/// says so rather than showing an empty row.
-/// How full another machine is, from what it last reported.
-///
-/// This node's own page has meters, read live; a node it cannot reach had
-/// nothing at all — the report carried replicas, an endpoint and a list of
-/// permissions and said nothing about the machine. So the network area
-/// answered every question except the one somebody opens it with.
-///
-/// Two lines rather than the meter and its five parts. The parts are that
-/// machine's internals, its own console draws them, and no decision here
-/// turns on which process holds which megabyte. Whether it is running out
-/// is the thing another node needs.
-///
-/// A node that has not reported since these columns existed says so,
-/// rather than showing nought — which would read as an idle machine.
-fn usage_card<'a>(node: &'a network::Node, seen: Option<String>) -> impl Renderable + 'a {
-    rsx! {
-        <section class="card stack">
-            <p class="card-label">(t("How full it is"))</p>
-            @if let Some(usage) = node.usage {
-                <dl class="kv">
-                    <dt>(t("Memory"))</dt>
-                    <dd class="mono">
-                        (crate::node::memory::human(usage.memory_used))(t(" of "))
-                        (crate::node::memory::human(usage.memory_total))
-                    </dd>
-                    <dt>(t("Disk"))</dt>
-                    <dd class="mono">
-                        (crate::node::memory::human(
-                            usage.disk_total.saturating_sub(usage.disk_free)
-                        ))(t(" of "))
-                        (crate::node::memory::human(usage.disk_total))
-                        (" · ")
-                        (crate::node::memory::human(usage.disk_free))(t(" free"))
-                    </dd>
-                </dl>
-                // When, because a reading with no time on it is one
-                // somebody trusts after the node has stopped reporting.
-                @if let Some(seen) = &seen {
-                    <p class="field-hint">(t("As reported "))(seen)(".")</p>
-                }
-            } @else {
-                <p class="field-hint">(t("Nothing yet. A node reports this every fifteen \
-                     seconds once it is running a version that sends it — until then this \
-                     says nothing rather than nought, which would read as an idle \
-                     machine."))</p>
-            }
-        </section>
-    }
-}
-
-fn network_card(node: &network::Node) -> impl Renderable + '_ {
-    rsx! {
-        <section class="card stack">
-            <div class="split">
-                <p class="card-label">(t("On this network"))</p>
-                <span class="badge badge-info">
-                    <span class="dot dot-info"></span>(reach(node))
-                </span>
-            </div>
-
-            <dl class="kv">
-                <dt>(t("Id"))</dt>
-                <dd class="mono">(&node.id)</dd>
-                // "Reachable at" and not "endpoint": the empty case is
-                // the interesting one, and it means this node has no
-                // address to dial that one at — not that the machine
-                // is unreachable, which is not something this node
-                // knows. See `reach`.
-                <dt>(t("This node dials it at"))</dt>
-                <dd class="mono">(node.endpoint.as_deref().unwrap_or("—"))</dd>
-                <dt>(t("Overlay address"))</dt>
-                <dd class="mono">(node.overlay_ip.as_deref().unwrap_or("not on one"))</dd>
-                <dt>(t("Public key"))</dt>
-                <dd class="mono">(node.public_key.as_deref().unwrap_or("none yet"))</dd>
-            </dl>
-
-            @if node.is_self {
-                <p class="note">(t("A key and an address appear the first time this node enrols \
-                     another one or joins one itself. The overlay is what carries \
-                     traffic between nodes — an edge here reaching a container that \
-                     runs somewhere else."))</p>
-            } @else {
-                <p class="note">(t("Recorded when this node joined — what it said about itself when it \
-                     arrived. Instructions do not travel over the overlay: that node \
-                     collects them over the same connection it enrolled through, which \
-                     is why nothing here has to be able to reach it."))</p>
-            }
-        </section>
-    }
-}
-
-/// One instruction, and what became of it.
-///
-/// A failure is an *answer*, and it says what it was — the state worth
-/// worrying about is the one that never came back, which is why "asked
-/// for and never settled" is its own word rather than an absence.
-/// What this node has asked that one to do, and how far it has got.
-///
-/// Its own island host because the errand table is on a *joined* node's
-/// page, and the live cards are on this node's own — two pages, so two
-/// hosts, both talking to the same stream.
-fn errands_card<'a>(
-    node_id: &'a str,
-    orders: &'a [network::errand::Record],
-) -> impl Renderable + 'a {
-    let inner = rsx! {
-        @if !orders.is_empty() {
-            <table>
-                <thead>
-                    <tr>
-                        <th>(t("Asked"))</th><th>(t("State"))</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    @for order in orders {
-                        (errand_row(order))
-                    }
-                </tbody>
-            </table>
-        }
-    }
-    .render()
-    .into_inner();
-
-    wabot::ui::hypertext::island(
-        "node-live",
-        &serde_json::json!({ "node": node_id }),
-        hypertext::Raw::dangerously_create(&inner),
-    )
-}
-
-fn errand_row(order: &network::errand::Record) -> impl Renderable + '_ {
-    rsx! {
-        <tr>
-            <td>
-                (order.kind.as_str())
-                // A second line, for the reason written on the backup
-                // row above: a `.tile-detail` span renders flush against
-                // what precedes it, so this read as `hostnd-BuhSasl…`.
-                <p class="tile-detail">(&order.id)</p>
-            </td>
-            <td data-errand=(&order.id)>
-                @if let Some(reason) = &order.error {
-                    <span class="badge badge-danger">
-                        <span class="dot dot-danger"></span>(t("Refused"))
-                    </span>
-                    <p class="failure">(reason)</p>
-                } @else if order.done() {
-                    <span class="badge badge-success">
-                        <span class="dot dot-success"></span>(t("Done"))
-                    </span>
-                } @else if order.taken_at.is_some() {
-                    <span class="badge badge-info">
-                        <span class="dot dot-info dot-pulse"></span>(t("Collected"))
-                    </span>
-                } @else {
-                    <span class="badge badge-info">
-                        <span class="dot dot-info"></span>(t("Waiting to be collected"))
-                    </span>
-                }
-            </td>
-        </tr>
-    }
-}
-
-/// One join token, and what became of it.
-///
-/// `nodes` is every node this one knows, so a spent token can be shown
-/// under the name of the machine that spent it. The note the operator
-/// left is a stand-in until then, and it stops being shown the moment
-/// there is something truer: a machine has one name, and it is the one
-/// it gives itself.
-fn enrolment_row<'a>(
-    enrolment: &'a Enrolment,
-    nodes: &'a [network::Node],
-    now: i64,
-) -> impl Renderable + 'a {
-    let spent = enrolment.spent();
-    let called = enrolment
-        .used_by
-        .as_deref()
-        .and_then(|id| nodes.iter().find(|node| node.id == id))
-        .map(|node| node.name.as_str())
-        .unwrap_or(match enrolment.name.is_empty() {
-            // Nothing to say rather than an empty cell: the address
-            // beside it is what identifies an unspent token, and it is
-            // already there.
-            true => "—",
-            false => enrolment.name.as_str(),
-        });
-    rsx! {
-        <tr>
-            <td>(called)</td>
-            <td class="mono">(&enrolment.overlay_ip)</td>
-            <td>
-                // "Is it still worth carrying to a machine" first,
-                // because it is the question somebody opens this table
-                // to answer.
-                @if enrolment.live(now) {
-                    <span class="badge badge-success">
-                        <span class="dot dot-success"></span>(t("Waiting"))
-                    </span>
-                } @else if spent {
-                    <span class="badge">(t("Used"))</span>
-                } @else {
-                    <span class="badge badge-warning">(t("Expired"))</span>
-                }
-            </td>
-            <td>
-                // A used token is history, and withdrawing one would
-                // free an address a node is already answering to.
-                @if !spent {
-                    <form method="post"
-                          action=(format!("/network/enrolments/{}/withdraw", enrolment.id))>
-                        <button class="btn btn-ghost destructive btn-sm" type="submit">
-                            (t("Withdraw"))
-                        </button>
-                    </form>
-                }
-            </td>
-        </tr>
-    }
-}
-
-/// One authority, named by the node it belongs to when that node is
-/// known here — an id is not something anybody recognises.
-fn authority_row<'a>(
-    authority: &'a network::Authority,
-    nodes: &'a [network::Node],
-    held: &'a [network::capability::Capability],
-) -> impl Renderable + 'a {
-    let name = nodes
-        .iter()
-        .find(|node| node.id == authority.node_id)
-        .map(|node| node.name.as_str())
-        .unwrap_or(authority.node_id.as_str());
-
-    rsx! {
-        <tr>
-            <td>
-                (name)
-                <span class="tile-detail">(&authority.node_id)</span>
-            </td>
-            <td>
-                @if held.is_empty() {
-                    <span class="tile-detail">(t("nothing"))</span>
-                } @else {
-                    @for capability in held {
-                        <span class="badge">(capability.name())</span>
-                    }
-                }
-            </td>
-            <td>
-                @if authority.live() {
-                    <span class="badge badge-success">
-                        <span class="dot dot-success"></span>(t("Allowed"))
-                    </span>
-                } @else {
-                    <span class="badge">(t("Revoked"))</span>
-                }
-            </td>
-            <td>
-                @if authority.live() {
-                    <form method="post"
-                          action=(format!("/network/revoke/{}", authority.node_id))>
-                        <button class="btn btn-ghost destructive btn-sm" type="submit">
-                            (t("Revoke"))
-                        </button>
-                    </form>
-                }
-            </td>
-        </tr>
     }
 }
 
@@ -2317,7 +928,7 @@ impl CertificateState {
     }
 
     /// The word, and the two classes that colour it.
-    fn badge(&self) -> (&'static str, &'static str, &'static str) {
+    pub(crate) fn badge(&self) -> (&'static str, &'static str, &'static str) {
         match self {
             Self::Local => ("Local", "badge badge-info", "dot dot-info"),
             Self::Nameless => ("Self-signed", "badge badge-info", "dot dot-info"),
@@ -2331,7 +942,7 @@ impl CertificateState {
     }
 
     /// What it means, in one sentence somebody can act on.
-    fn note(&self) -> &'static str {
+    pub(crate) fn note(&self) -> &'static str {
         match self {
             Self::Local => {
                 "A public authority is not being asked for this node. It serves its \
@@ -2372,7 +983,7 @@ impl CertificateState {
         }
     }
 
-    fn failure(&self) -> &str {
+    pub(crate) fn failure(&self) -> &str {
         match self {
             Self::Failed(reason) => reason,
             _ => "",
@@ -2380,7 +991,7 @@ impl CertificateState {
     }
 
     /// Whether asking again, without changing anything, could help.
-    fn may_retry(&self) -> bool {
+    pub(crate) fn may_retry(&self) -> bool {
         matches!(self, Self::Failed(_) | Self::Waiting)
     }
 }
@@ -2392,145 +1003,14 @@ impl CertificateState {
 /// after it. Same reason as [`Cells`].
 #[derive(serde::Serialize)]
 pub(crate) struct CertificateCells {
-    domain: String,
+    pub domain: String,
     pub(crate) issuer: String,
     pub(crate) renews: String,
     pub(crate) word: &'static str,
     pub(crate) badge: &'static str,
     pub(crate) dot: &'static str,
-    note: &'static str,
+    pub note: &'static str,
     pub(crate) failure: String,
-}
-
-pub(crate) fn certificate_cells(
-    state: &CertificateState,
-    facts: &super::CertificateFacts,
-    domain: Option<&str>,
-) -> CertificateCells {
-    let (word, badge, dot) = state.badge();
-    CertificateCells {
-        domain: domain.unwrap_or("not set").to_string(),
-        issuer: facts.issuer.clone(),
-        // Always a row, even when nothing renews: the script only
-        // replaces text that is already on the page, so a row that
-        // appears only sometimes is a row that can never update.
-        renews: match facts.renews_in_days() {
-            Some(days) => format!("{days} days"),
-            None => "—".into(),
-        },
-        word,
-        badge,
-        dot,
-        note: state.note(),
-        failure: state.failure().to_string(),
-    }
-}
-
-/// What certificate this node serves, and how to change it.
-///
-/// The form is the answer to a node installed before its DNS was
-/// ready: it serves its own authority's certificate, and until now
-/// there was no way to ask again — with the same name or a different
-/// one — without editing a file and restarting.
-///
-/// The button says what it does. It used to say "Request a
-/// certificate", which was one of the things it did, only sometimes,
-/// and never the thing an operator came here to do: the field beside
-/// it is the node's domain, and saving it is what starts everything
-/// else.
-fn certificate_card<'a>(
-    cells: &'a CertificateCells,
-    state: &'a CertificateState,
-    policy: &'a crate::edge::policy::Policy,
-    domain: Option<&'a str>,
-    // The two it reads, rather than a page struct: it is rendered from
-    // `/node` now, whose query has no `node` in it.
-    query: &'a NodeSettingsPage,
-) -> impl Renderable + 'a {
-    rsx! {
-        <section class="card stack">
-            <div class="split">
-                <p class="card-label">(t("Certificate"))</p>
-                <span class=(cells.badge) data-cert="badge">
-                    <span class=(cells.dot) data-cert="dot"></span>
-                    <span data-cert="word">(cells.word)</span>
-                </span>
-            </div>
-
-            <dl class="kv">
-                <dt>(t("Domain"))</dt>
-                <dd data-cert="domain">(&cells.domain)</dd>
-                <dt>(t("Issuer"))</dt>
-                <dd data-cert="issuer">(&cells.issuer)</dd>
-                <dt>(t("Renews in"))</dt>
-                <dd data-cert="renews">(&cells.renews)</dd>
-            </dl>
-
-            <p class="note" data-cert="note">(cells.note)</p>
-            // Always present, empty when there is nothing to say: the
-            // script assigns into it, and `.failure:empty` hides it.
-            <p class="failure" data-cert="failure">(&cells.failure)</p>
-
-            @if let Some(message) = &query.checked {
-                <p class="note">(message)</p>
-            }
-            @if let Some(message) = &query.error {
-                (layout::error_note(message))
-            }
-
-            <form method="post" action="/node/certificate" class="stack">
-                <label for="domain">(t("Domain"))</label>
-                <input id="domain" name="domain" type="text" autocomplete="off" class="mono"
-                       value=(domain.unwrap_or_default())
-                       placeholder="node.example.com">
-                <p class="field-hint">(t("It must resolve to this node, and this node must be reachable on \
-                     port 80 — that is what the challenge answers on. Both are checked \
-                     before anything is requested. Saving reissues: the node takes the \
-                     new name on its own certificate straight away, then asks a public \
-                     authority for one."))</p>
-                <div class="actions">
-                    <button type="submit">(t("Save domain"))</button>
-                    @if state.may_retry() {
-                        // Asking again with the same name is its own
-                        // action: the usual fix for a refusal is out
-                        // there — a DNS record, a firewall — and having
-                        // to re-type the domain to retry reads as
-                        // though the domain were the problem.
-                        <button class="btn btn-secondary" type="submit"
-                                name="retry" value="1">(t("Try again"))</button>
-                    }
-                </div>
-            </form>
-
-            (certificate_source_form("/node/certificate/source", policy))
-        </section>
-    }
-}
-
-/// Where one name's certificate comes from.
-///
-/// Shared by the node's own certificate and every service hostname,
-/// because it is the same question — the node's domain is not a
-/// special case, it is only the name that had a page first. The ids
-/// carry the action so two of these on one page do not collide.
-/// Read a certificate source out of a form, refusing what cannot work.
-///
-/// **Shared, because it is the same question wherever it is asked** — the
-/// node's own name, a service's hostname, a database's. It was written
-/// twice with the same reasoning in both, and a third copy is what made it
-/// worth one: the two subtleties here are the file pair being *read* before
-/// it is trusted, and anything unrecognised falling back to ACME rather
-/// than to a file source that could lose a certificate.
-/// What signed it, in three words.
-///
-/// "Valid" says nothing about who signed it, and a name on a self-signed
-/// certificate is a browser warning somebody is about to meet.
-pub(crate) fn source_word(renew_with: &crate::edge::policy::RenewWith) -> &'static str {
-    match renew_with {
-        crate::edge::policy::RenewWith::Acme => t("Let's Encrypt"),
-        crate::edge::policy::RenewWith::SelfSigned => t("self-signed"),
-        crate::edge::policy::RenewWith::File { .. } => t("from a file"),
-    }
 }
 
 pub(crate) fn source_from(
@@ -2577,371 +1057,12 @@ pub(crate) async fn store_source(
     stored.map_err(|error| error.to_string())
 }
 
-pub(crate) fn certificate_source_form(
-    action: &str,
-    policy: &crate::edge::policy::Policy,
-) -> impl Renderable {
-    let (cert_path, key_path) = match &policy.renew_with {
-        crate::edge::policy::RenewWith::File {
-            cert_path,
-            key_path,
-        } => (cert_path.as_str(), key_path.as_str()),
-        _ => ("", ""),
-    };
-    let field = |suffix: &str| format!("{}-{suffix}", policy.name);
-
-    // An island host, not a bare form: the client runtime re-hydrates
-    // registered islands after a boosted navigation, and a listener
-    // attached once at load would belong to a form the next swap threw
-    // away. Without scripting this is a `<wabot-island>` wrapper around
-    // a form that works, which is the whole cost.
-    wabot::ui::hypertext::island_bare(
-        "fields",
-        rsx! {
-            <form method="post" action=(action) class="stack">
-                <label for=(field("source"))>(t("Where the certificate comes from"))</label>
-                <select id=(field("source")) name="renew_with">
-                    @for (value, label) in SOURCES {
-                        @if policy.renew_with.as_str() == *value {
-                            <option value=(value) selected>(label)</option>
-                        } @else {
-                            <option value=(value)>(label)</option>
-                        }
-                    }
-                </select>
-
-                // Only the file answer needs these, so only the file
-                // answer shows them. Without scripting they stay visible
-                // and the form still works — the server reads them only
-                // when `renew_with` says `file`.
-                <div class="stack" data-when="renew_with=file">
-                    <label for=(field("cert"))>(t("Certificate file"))</label>
-                    <input id=(field("cert")) name="cert_path" type="text" autocomplete="off" class="mono"
-                           value=(cert_path) placeholder="/etc/ssl/name.crt"
-                           data-required-when="renew_with=file">
-                    <label for=(field("key"))>(t("Key file"))</label>
-                    <input id=(field("key")) name="key_path" type="text" autocomplete="off" class="mono"
-                           value=(key_path) placeholder="/etc/ssl/name.key"
-                           data-required-when="renew_with=file">
-                    <p class="field-hint">(t("Both are read now and refused if they do not match, do not cover \
-                         this name, or have already expired — a bad pair installed would \
-                         break every handshake, including the one serving this page. After \
-                         that the node rereads them and reinstalls whatever it finds, which \
-                         is how a certificate it cannot renew stays current."))</p>
-                </div>
-                <div class="actions">
-                    <button class="btn btn-secondary" type="submit">(t("Save source"))</button>
-                </div>
-            </form>
-        },
-    )
-}
-
 /// The three answers, in the order somebody is likeliest to want them.
-const SOURCES: &[(&str, &str)] = &[
+pub(crate) const SOURCES: &[(&str, &str)] = &[
     ("acme", "A public authority (Let's Encrypt)"),
     ("self_signed", "This node's own authority"),
     ("file", "Read from files on this node"),
 ];
-
-fn memory_card<'a>(
-    snapshot: &'a Snapshot,
-    // What this node has promised, against what it may promise. A
-    // ceiling is a reservation here, so these two decide whether another
-    // service fits — and an operator who cannot see them experiences
-    // that rule as a form that says no.
-    committed: &'a crate::deploy::Committed,
-    // What the operator said this machine keeps for itself, memory then
-    // CPU, or `None` each for the default. It reaches the "promised of"
-    // figure, which is the whole point of the setting being editable.
-    reserves: (Option<u64>, Option<u32>),
-) -> impl Renderable + 'a {
-    let containers = snapshot.containers_total();
-
-    rsx! {
-        <section class="card stack">
-            <div class="split">
-                <p class="card-label">(t("Memory"))</p>
-                <span class="mono" data-cell="summary">
-                    (memory::human(snapshot.used()))(t(" of "))(memory::human(snapshot.total))
-                </span>
-            </div>
-
-            <div class="meter" data-meter>
-                <span class="meter-part meter-node"
-                      style=(width(snapshot, snapshot.node)) data-bar="node"></span>
-                <span class="meter-part meter-runtime"
-                      style=(width(snapshot, snapshot.containerd + snapshot.shims))
-                      data-bar="runtime"></span>
-                <span class="meter-part meter-containers"
-                      style=(width(snapshot, containers)) data-bar="containers"></span>
-                <span class="meter-part meter-rest"
-                      style=(width(snapshot, snapshot.rest())) data-bar="rest"></span>
-            </div>
-
-            <table class="mem">
-                <tbody>
-                    // The names are names — `wabot-deploy`, `containerd`,
-                    // a shim — and stay as they are on any machine. The
-                    // sentences beside them are prose, and used to render
-                    // in English inside a console that was otherwise in
-                    // Spanish, because they reach `row` as values and
-                    // never went through `t`.
-                    (row("node", "wabot-deploy", "meter-node", snapshot.node,
-                         t("The console, the edge and the deploy path — this process.")))
-                    (row("containerd", "containerd", "meter-runtime", snapshot.containerd,
-                         t("The container runtime, shared by every service.")))
-                    (row("shims", &format!("shims ({})", snapshot.shim_count), "meter-runtime",
-                         snapshot.shims,
-                         t("One per running container. The runtime's overhead, not the image's.")))
-                    (row("containers", "containers", "meter-containers", containers,
-                         t("What the images themselves are using, from their cgroups.")))
-                    (row("rest", t("everything else"), "meter-rest", snapshot.rest(),
-                         t("The kernel, the distribution, and anything else on this machine.")))
-                </tbody>
-            </table>
-
-            <p class="note">(t("The parts overlap slightly: a container's page cache counts both in its \
-                 own reading and in the system's, and shared pages count for each process \
-                 that maps them. \"Everything else\" is what is left over rather than a \
-                 measurement of its own."))</p>
-
-            // CPU arrives on the stream and only from the second tick —
-            // a rate is the difference between two readings — so the
-            // server renders the dash it will replace rather than
-            // nothing, which would be a row that appears two seconds
-            // after the page. The disk is a card of its own below: it
-            // has parts, and a line saying how full a filesystem is
-            // answers none of the questions somebody has when it is.
-            <dl class="kv">
-                <dt>(t("CPU"))</dt>
-                <dd data-cell="cpu">("—")</dd>
-                <dt>(t("Promised"))</dt>
-                <dd>
-                    (memory::human(committed.memory))(t(" of "))
-                    (memory::human(crate::policies::presets::allocatable_memory(snapshot.total, reserves.0)))
-                    (" · ")
-                    (crate::policies::presets::cpu_label(committed.cpu))(t(" of "))
-                    (crate::policies::presets::cpu_label(
-                        crate::node::cpu::allocatable_millicores(reserves.1)
-                    ))
-                </dd>
-            </dl>
-            // The number that cannot be counted, said rather than
-            // folded in. A container with no ceiling may take
-            // everything, and a sum that quietly omitted them would be
-            // a figure somebody trusts for a decision it cannot
-            // support.
-            @if committed.unbounded > 0 {
-                <p class="field-hint">
-                    (committed.unbounded)(t(" copies here have no memory ceiling, so what is \
-                         promised is a floor rather than a total — any of them may take what \
-                         is left."))
-                </p>
-            } @else {
-                <p class="field-hint">(t("What a service may take is also what is reserved for \
-                     it: this node counts what it has promised and refuses to promise more. \
-                     What it keeps for itself — the console, the edge, containerd — is already \
-                     out of these figures."))</p>
-            }
-
-            @if snapshot.swap_total > 0 {
-                <dl class="kv">
-                    <dt>(t("Swap"))</dt>
-                    <dd data-cell="swap">
-                        (memory::human(snapshot.swap_used))(t(" of "))
-                        (memory::human(snapshot.swap_total))
-                    </dd>
-                </dl>
-            }
-        </section>
-    }
-}
-
-/// The other ceiling a machine has, in the parts it is made of.
-///
-/// A line saying a filesystem is 57 % full answers none of the questions
-/// somebody has when it is: what is taking it, and which of those can be
-/// got back. So it is the memory card's shape — a bar in parts and a
-/// table with the same colours — and the parts are the three directories
-/// this node can name.
-///
-/// Read once, when the page is drawn. The memory beside it ticks every
-/// two seconds and this must not: each part is a directory walk, and
-/// walking containerd's tree every two seconds would put this node at
-/// the top of its own CPU column.
-fn disk_card(disk: &crate::node::disk::Breakdown) -> impl Renderable + '_ {
-    // Through `bar_width`, which is the only thing that writes one of
-    // these. This card had its own closure emitting a bare `7.0000%` —
-    // and a `style` attribute wants a *declaration*, so the browser threw
-    // the whole thing away and every segment had no width. The bar was
-    // flat and empty while the numbers under it were right, which is what
-    // makes this kind of fault survive: nothing looks broken, it just
-    // looks like nothing is using the disk. Reported by Jorge.
-    //
-    // The exact mirror of the memory meter's bug, one page over: there a
-    // *declaration* was assigned where the CSSOM wanted a value
-    // (`style.width = "width:12%"`), here a value was written where the
-    // attribute wanted a declaration. One helper now, so the two cannot
-    // disagree again.
-    let width = |bytes: u64| bar_width(disk.percent_of_total(bytes));
-
-    rsx! {
-        <section class="card stack">
-            <div class="split">
-                <p class="card-label">(t("Disk"))</p>
-                <span class="mono">
-                    (memory::human(disk.filesystem.used()))(t(" of "))
-                    (memory::human(disk.filesystem.total))
-                    // A separator is punctuation, not prose: it goes
-                    // through no table, like a command or a hostname.
-                    (" · ")(memory::human(disk.filesystem.available))(t(" free"))
-                </span>
-            </div>
-
-            <div class="meter">
-                <span class="meter-part meter-containers"
-                      style=(width(disk.volumes.bytes))></span>
-                <span class="meter-part meter-runtime"
-                      style=(width(disk.images.bytes))></span>
-                <span class="meter-part meter-node"
-                      style=(width(disk.node.bytes))></span>
-                <span class="meter-part meter-rest" style=(width(disk.rest()))></span>
-            </div>
-
-            <table class="mem">
-                <tbody>
-                    (row("volumes", t("persistent disks"), "meter-containers", disk.volumes.bytes,
-                         t("What services keep. One disk per copy — two copies of a database \
-                            on one machine are two databases.")))
-                    (row("images", "containerd", "meter-runtime", disk.images.bytes,
-                         t("The images pulled to this node and the snapshots unpacked from \
-                            them. Nothing collects these yet.")))
-                    (row("node", "wabot-deploy", "meter-node", disk.node.bytes,
-                         t("This node's own: its database, its certificates and the logs it \
-                            keeps for each container.")))
-                    (row("rest", t("everything else"), "meter-rest", disk.rest(),
-                         t("The kernel, the distribution, and anything else on this machine.")))
-                </tbody>
-            </table>
-
-            @if disk.partial() {
-                <p class="note">(t("One of these directories was too big to walk while a page \
-                     was waiting, so its figure is a floor and \"everything else\" is the \
-                     larger for it."))</p>
-            }
-        </section>
-    }
-}
-
-fn row<'a>(
-    key: &'a str,
-    label: &'a str,
-    swatch: &'a str,
-    bytes: u64,
-    detail: &'a str,
-) -> impl Renderable + 'a {
-    rsx! {
-        <tr>
-            <td class="mem-key">
-                <span class=(format!("swatch {swatch}"))></span>
-                (label)
-            </td>
-            <td class="mono" data-cell=(key)>(memory::human(bytes))</td>
-            <td class="tile-detail">(detail)</td>
-        </tr>
-    }
-}
-
-/// One part's share, as a value the CSSOM will take.
-///
-/// A bare percentage, not a declaration. It used to be `width:12.34%`,
-/// which is right as an attribute and **inert** as an assignment: the
-/// stream does `bar.style.width = value`, the CSSOM refuses a value it
-/// cannot parse, and it refuses silently. So the meter froze at whatever
-/// the first paint drew while the figures beside it went on changing —
-/// visible only as a page where the numbers moved and the bar did not.
-fn percent(snapshot: &Snapshot, bytes: u64) -> String {
-    format!("{:.2}%", snapshot.percent_of_total(bytes))
-}
-
-/// The same share as a declaration, for the attribute in the first paint.
-fn width(snapshot: &Snapshot, bytes: u64) -> String {
-    bar_width(snapshot.percent_of_total(bytes))
-}
-
-/// A meter segment's width, as a `style` attribute's whole contents.
-///
-/// **A declaration, not a value.** `style="7%"` is not CSS and a browser
-/// discards the attribute entirely — silently, leaving a bar that renders
-/// flat while the figures beside it are correct. Every meter in this
-/// console goes through here so that there is one place to be right, and
-/// `every_meter_width_is_a_declaration` fails on a second one that does
-/// not.
-fn bar_width(percent: f64) -> String {
-    format!("width:{percent:.4}%")
-}
-
-/// The two cards that update themselves, in one island host.
-///
-/// Props carry the node id, because the client needs it to open the
-/// stream and reading it out of the URL would be the browser deriving
-/// something the server already knew.
-#[allow(clippy::too_many_arguments)]
-/// The certificate, on the page that can change it.
-///
-/// Its own island since the meters left for the node's status page: the
-/// three used to share one host because they were on one page. The
-/// runtime tolerates a host that carries only part of the payload's
-/// markup — `set(host.querySelector(…))` skips what it cannot find — so
-/// splitting them costs nothing but this function.
-fn certificate_island<'a>(
-    node_id: &'a str,
-    cells: &'a CertificateCells,
-    state: &'a CertificateState,
-    policy: &'a crate::edge::policy::Policy,
-    domain: Option<&'a str>,
-    query: &'a NodeSettingsPage,
-) -> impl Renderable + 'a {
-    let inner = rsx! {
-        (certificate_card(cells, state, policy, domain, query))
-    }
-    .render()
-    .into_inner();
-
-    wabot::ui::hypertext::island(
-        "node-live",
-        // Asked for by id rather than by a word meaning "this one": the
-        // endpoint takes an id, and a second spelling for the same thing
-        // is how a stream ends up answering about the wrong machine.
-        &serde_json::json!({ "node": node_id }),
-        hypertext::Raw::dangerously_create(&inner),
-    )
-}
-
-fn live_cards<'a>(
-    node_id: &'a str,
-    disk: &'a crate::node::disk::Breakdown,
-    committed: &'a crate::deploy::Committed,
-    snapshot: &'a Snapshot,
-    reserves: (Option<u64>, Option<u32>),
-) -> impl Renderable + 'a {
-    let inner = rsx! {
-        (memory_card(snapshot, committed, reserves))
-        (disk_card(disk))
-    }
-    .render()
-    .into_inner();
-
-    // Rendered first, then wrapped: `rsx!` expands to a closure that
-    // captures by move, and nesting one inside the island's would have
-    // both wanting the same borrows. Same reason as `Frame::render`.
-    wabot::ui::hypertext::island(
-        "node-live",
-        &serde_json::json!({ "node": node_id }),
-        hypertext::Raw::dangerously_create(&inner),
-    )
-}
 
 /// The server half.
 #[injectable]
@@ -3854,7 +1975,7 @@ impl NodeApi {
                 );
                 let payload = serde_json::to_string(&Live {
                     inner: cells(&snapshot, busy.as_ref()),
-                    certificate: certificate_cells(&certificate, &facts, domain.as_deref()),
+                    certificate: crate::views::components::node_certificate::certificate_cells(&certificate, &facts, domain.as_deref()),
                     errands: errand_cells(&state.database, &id).await,
                 })
                 .unwrap_or_else(|_| "{}".into());
@@ -3972,9 +2093,9 @@ async fn errand_cells(
 /// disagree about formatting: the same `human()` renders the first
 /// paint and every update after it.
 #[derive(serde::Serialize)]
-struct Cells {
-    cells: BTreeMap<String, String>,
-    bars: BTreeMap<String, String>,
+pub(crate) struct Cells {
+    pub cells: BTreeMap<String, String>,
+    pub bars: BTreeMap<String, String>,
 }
 
 fn cells(snapshot: &Snapshot, busy: Option<&crate::node::cpu::Busy>) -> Cells {
@@ -4016,10 +2137,22 @@ fn cells(snapshot: &Snapshot, busy: Option<&crate::node::cpu::Busy>) -> Cells {
     ]);
 
     let bars = BTreeMap::from([
-        ("node".to_string(), percent(snapshot, snapshot.node)),
-        ("runtime".to_string(), percent(snapshot, runtime)),
-        ("containers".to_string(), percent(snapshot, containers)),
-        ("rest".to_string(), percent(snapshot, snapshot.rest())),
+        (
+            "node".to_string(),
+            crate::views::components::node_usage::percent(snapshot, snapshot.node),
+        ),
+        (
+            "runtime".to_string(),
+            crate::views::components::node_usage::percent(snapshot, runtime),
+        ),
+        (
+            "containers".to_string(),
+            crate::views::components::node_usage::percent(snapshot, containers),
+        ),
+        (
+            "rest".to_string(),
+            crate::views::components::node_usage::percent(snapshot, snapshot.rest()),
+        ),
     ]);
 
     Cells { cells, bars }
@@ -4030,6 +2163,7 @@ pub(crate) mod tests {
     use super::*;
     use crate::config::Config;
     use crate::console::tests::Console;
+    use crate::network::Kind;
     use wabot::rest::axum::http::StatusCode;
 
     fn snapshot() -> Snapshot {
@@ -4051,9 +2185,13 @@ pub(crate) mod tests {
     #[test]
     fn every_streamed_cell_has_a_place_on_the_page() {
         let snapshot = snapshot();
-        let rendered = memory_card(&snapshot, &Default::default(), (None, None))
-            .render()
-            .into_inner();
+        let rendered = crate::views::components::node_usage::memory_card(
+            &snapshot,
+            &Default::default(),
+            (None, None),
+        )
+        .render()
+        .into_inner();
         let payload = cells(&snapshot, None);
 
         for key in payload.cells.keys() {
@@ -4096,10 +2234,14 @@ pub(crate) mod tests {
 
         // And the first paint still needs the whole declaration, because
         // there it is the attribute.
-        assert!(memory_card(&snapshot, &Default::default(), (None, None))
-            .render()
-            .into_inner()
-            .contains("style=\"width:"));
+        assert!(crate::views::components::node_usage::memory_card(
+            &snapshot,
+            &Default::default(),
+            (None, None)
+        )
+        .render()
+        .into_inner()
+        .contains("style=\"width:"));
     }
 
     /// Every meter's width goes through `bar_width`.
@@ -4126,7 +2268,7 @@ pub(crate) mod tests {
             if line.trim_start().starts_with("//") || !line.contains(needle) {
                 continue;
             }
-            if !line.contains("width(") {
+            if !line.contains("crate::views::components::node_usage::width(") {
                 wrong.push(number + 1);
             }
         }
@@ -4140,9 +2282,15 @@ pub(crate) mod tests {
     /// confusion that caused this twice.
     #[test]
     fn a_meter_width_is_a_declaration_and_not_a_bare_value() {
-        assert_eq!(bar_width(7.5), "width:7.5000%");
+        assert_eq!(
+            crate::views::components::node_usage::bar_width(7.5),
+            "width:7.5000%"
+        );
         // Zero is still sized, rather than left for whatever was there.
-        assert_eq!(bar_width(0.0), "width:0.0000%");
+        assert_eq!(
+            crate::views::components::node_usage::bar_width(0.0),
+            "width:0.0000%"
+        );
     }
 
     /// The figures are formatted once, on the server, so the first
@@ -4150,9 +2298,13 @@ pub(crate) mod tests {
     #[test]
     fn the_first_paint_and_the_stream_agree() {
         let snapshot = snapshot();
-        let rendered = memory_card(&snapshot, &Default::default(), (None, None))
-            .render()
-            .into_inner();
+        let rendered = crate::views::components::node_usage::memory_card(
+            &snapshot,
+            &Default::default(),
+            (None, None),
+        )
+        .render()
+        .into_inner();
 
         for value in cells(&snapshot, None).cells.values() {
             if value.contains("of 0 B") {
