@@ -72,11 +72,11 @@ network and the databases" below.
    there: an unticked checkbox sends nothing, and a use case that knew
    `accept-host` would be one only a browser could call.
 
-Where the tree stands: every use case's two ends are DTOs, and three
-guards read the directory to keep them there. `console/services.rs`
-(9,600 lines), `console/nodes.rs` (6,500) and `console/projects.rs`
-(3,000) still hold nine `rsx!` blocks between them, and no `cli_user_`
-or `remote_node_` use case exists yet.
+Where the tree stands: every use case's two ends are DTOs and no
+controller draws — four guards read directories to keep it that way.
+`src/views/pages/` holds 24 files; `console/services.rs` is still 6,800
+lines of handlers and `console/nodes.rs` 3,700. No `cli_user_` or
+`remote_node_` use case exists yet.
 
 ## The framework is ours
 

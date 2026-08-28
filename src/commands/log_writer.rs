@@ -198,13 +198,33 @@ mod tests {
     /// If this fails, change the sentence and its Spanish rather than
     /// deleting the test: a form quoting a cost it does not impose is
     /// worse than one quoting none, because somebody plans around it.
+    ///
+    /// **It reads the directories, not a file.** It named
+    /// `console/services.rs`, and went red the day the card moved to a
+    /// page of its own — which is the fault this project has paid for
+    /// five times and the reason no guard here names its inputs.
     #[test]
     fn the_console_quotes_the_same_number_it_writes() {
-        let page = include_str!("../console/services.rs");
+        let wanted = format!("{PREFIX_BYTES} bytes on every line");
+        let mut read = 0;
+        let mut found = false;
+        for directory in ["src/views/pages", "src/views/components", "src/console"] {
+            for entry in std::fs::read_dir(directory).expect("the console is there") {
+                let path = entry.expect("entry").path();
+                if path.extension().is_none_or(|kind| kind != "rs") {
+                    continue;
+                }
+                read += 1;
+                found |= std::fs::read_to_string(&path)
+                    .expect("read")
+                    .contains(&wanted);
+            }
+        }
         assert!(
-            page.contains(&format!("{PREFIX_BYTES} bytes on every line")),
-            "the logs card no longer states {PREFIX_BYTES} bytes"
+            read > 40,
+            "the scan read {read} files, so it is looking in the wrong place"
         );
+        assert!(found, "no page states {PREFIX_BYTES} bytes any more");
     }
 
     /// The instant is sortable text, which is what makes `sort` and

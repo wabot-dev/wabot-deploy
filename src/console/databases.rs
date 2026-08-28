@@ -96,7 +96,7 @@ fn settings_of(
     // tab now, and a save that lands on a redirect is a save whose
     // fragment is dropped on the way — which is the same "a save that
     // hides what it did" this function exists to prevent.
-    crate::console::services::Tab::Database.path(&project.slug, &service.slug)
+    crate::views::pages::service_settings_page::Tab::Database.path(&project.slug, &service.slug)
 }
 
 #[injectable]

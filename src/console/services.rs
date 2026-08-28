@@ -3,6 +3,8 @@
 use std::sync::Arc;
 
 use hypertext::prelude::*;
+
+use crate::views::pages::service_settings_page::{Panel, Tab};
 use serde::Deserialize;
 use wabot::prelude::*;
 use wabot::rest::axum::body::Body;
@@ -112,111 +114,6 @@ pub struct ServiceSettings {
     /// it. Not stored: it describes the world a second ago, and the
     /// next attempt asks again.
     pub checked: Option<String>,
-}
-
-/// Which tab of a service's settings a page is showing.
-///
-/// **One URL each**, rather than one page that hides and shows with
-/// script. A tab can be linked, opened in another window and read with
-/// scripting off, and the page sends only the sections it is showing —
-/// which is the actual cause of the scroll this replaced. Twelve sections
-/// in a column meant the way to reach the last one was to know it was
-/// there.
-///
-/// The set depends on the kind, and not as a courtesy: a managed database
-/// has no image, no tag and no environment — the node writes all three
-/// from the engine's row — and no ports, edges or certificates of the sort
-/// this console serves, because Postgres speaks its own protocol on a
-/// published port. Offering it those tabs would be offering five empty
-/// pages. A tab it does not have is redirected rather than rendered
-/// blank, so a hand-typed URL lands somewhere real.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum Tab {
-    Image,
-    Database,
-    Environment,
-    Resources,
-    Network,
-    Replicas,
-    Logs,
-    Danger,
-}
-
-impl Tab {
-    /// The path segment. Not translated: it is a URL, and a URL that
-    /// changes with the reader's language is one that cannot be shared.
-    pub fn slug(self) -> &'static str {
-        match self {
-            Tab::Image => "image",
-            Tab::Database => "database",
-            Tab::Environment => "environment",
-            Tab::Resources => "resources",
-            Tab::Network => "network",
-            Tab::Replicas => "replicas",
-            Tab::Logs => "logs",
-            Tab::Danger => "danger",
-        }
-    }
-
-    fn label(self) -> &'static str {
-        match self {
-            Tab::Image => t("Image"),
-            Tab::Database => t("Database"),
-            Tab::Environment => t("Environment"),
-            Tab::Resources => t("Resources"),
-            Tab::Network => t("Network"),
-            Tab::Replicas => t("Replicas"),
-            Tab::Logs => t("Logs"),
-            Tab::Danger => t("Danger"),
-        }
-    }
-
-    fn parse(slug: &str) -> Option<Self> {
-        [
-            Tab::Image,
-            Tab::Database,
-            Tab::Environment,
-            Tab::Resources,
-            Tab::Network,
-            Tab::Replicas,
-            Tab::Logs,
-            Tab::Danger,
-        ]
-        .into_iter()
-        .find(|tab| tab.slug() == slug)
-    }
-
-    /// The tabs this service has, in the order they are shown.
-    pub fn of(service: &crate::entities::service::Service) -> Vec<Tab> {
-        let mut tabs = match service.kind.is_managed() {
-            true => vec![Tab::Database, Tab::Resources],
-            false => vec![Tab::Image, Tab::Environment, Tab::Resources, Tab::Network],
-        };
-        // Where the copies go is a decision only the node that placed
-        // them can make. A service that arrived on an errand has none to
-        // offer, so the tab would be a page with nothing on it.
-        if service.is_ours() {
-            tabs.push(Tab::Replicas);
-        }
-        // **Including a database.** This was gated to plain containers
-        // because the logs section happened to sit inside the branch that
-        // also held the image, the tag and the environment — three things
-        // the node writes for a database. Timestamping is not one of them:
-        // `try_deploy` reads `service.log_timestamps` for every kind and
-        // hands containerd the same `binary://` either way, so the setting
-        // already worked and only the page withheld it.
-        tabs.push(Tab::Logs);
-        tabs.push(Tab::Danger);
-        tabs
-    }
-
-    /// Where a save on this tab comes back to.
-    pub fn path(self, project: &str, service: &str) -> String {
-        format!(
-            "/projects/{project}/services/{service}/settings/{}",
-            self.slug()
-        )
-    }
 }
 
 #[injectable]
@@ -956,182 +853,181 @@ impl ServicePages {
         };
 
         let ports = ports::of_service(&self.state.database, &service.id).await?;
-        let history = config_history::of_service(&self.state.database, &service.id).await?;
 
-        // What a managed database is configured with. Here rather than on
-        // the service's own page because that is the split this console
-        // already draws — the page you open to see what something is doing
-        // should not be four forms deep — and because a service's
-        // certificate source has always lived on this page. They were on
-        // the detail page only because that is where I was working.
-        // Who could answer for a name, and who was asked to.
-        //
-        // Only a node with an address the world can dial, and only one
-        // that agreed to be asked: a node that never granted `edge`
-        // cannot be told to serve a name — the errand would sit in its
-        // queue for ever while this page said it was served, which is what
-        // the Alpine node did for an hour before anybody noticed. This
-        // node needs no grant to instruct itself.
-        let public_nodes = crate::network::edge_candidates(&self.state.database).await?;
-        let serving =
-            crate::repositories::edges::of_service(&self.state.database, &service.id).await?;
-        // Read once for the page rather than per hostname: the card asks
-        // the same question for every name, and this is how it answers it
-        // with the same function the stream uses.
-        let orders = crate::network::errand::all(&self.state.database)
-            .await
-            .unwrap_or_default();
-
-        // Where the copies are and where they could be. On this page
-        // because the form that changes them is on this page now — the
-        // table that shows what they are doing stays on the service's own.
-        let placements =
-            crate::repositories::replicas::of_service(&self.state.database, &service.id).await?;
-        // Which copies the edge stopped sending to, for the placement
-        // table below.
-        let silent = self.state.deployer.not_answering(&service).await;
-        // **Which favour this copy is asking for**, not `host` flatly: a
-        // managed database travels as `Kind::Database` and needs `store`,
-        // so filtering on `host` offered nodes whose errand would be
-        // skipped in silence at dispatch. See `Kind::placement_capability`.
-        let placement_nodes = crate::network::candidates_for(
-            &self.state.database,
-            service.kind.placement_capability(),
-        )
-        .await?;
-        let queued: Vec<String> = crate::network::errand::all(&self.state.database)
-            .await?
-            .into_iter()
-            .filter(|record| record.done_at.is_none())
-            .filter(|record| {
-                record.payload.get("service").and_then(|name| name.as_str())
-                    == Some(service.name.as_str())
-            })
-            .map(|record| record.node_id)
-            .collect();
-
-        let names = match service.kind.is_managed() {
-            true => {
-                crate::deploy::certificate_names(
+        // **Only what this tab draws.** Eight tabs used to read every
+        // one's data on every render — the certificate of every port, the
+        // whole environment history, the placement candidates and two
+        // sweeps of the errand table — for a page that shows one of them.
+        let panel = match tab {
+            Tab::Database => {
+                let names = crate::deploy::certificate_names(
                     &self.state.database,
                     &self.state.config,
                     &project,
                     &service,
                 )
-                .await
-            }
-            false => Vec::new(),
-        };
-        let (database_policy, database_cells) = match names.first() {
-            Some(name) => {
-                let facts = super::certificate_facts_for(&self.state, name).await;
-                let policy =
-                    crate::edge::policy::for_name(&self.state.database, &self.state.config, name)
+                .await;
+                let certificate = match names.first() {
+                    Some(name) => {
+                        let facts = super::certificate_facts_for(&self.state, name).await;
+                        let policy = crate::edge::policy::for_name(
+                            &self.state.database,
+                            &self.state.config,
+                            name,
+                        )
                         .await;
-                let state = crate::views::components::node_certificate::CertificateState::read(
-                    &facts,
-                    Some(name),
-                    policy.last_error.clone(),
-                    self.state.certificates.phase(),
-                    self.state.config.acme.disabled,
-                );
-                (
-                    Some(policy),
-                    Some(
-                        crate::views::components::node_certificate::certificate_cells(
+                        let state =
+                            crate::views::components::node_certificate::CertificateState::read(
+                                &facts,
+                                Some(name),
+                                policy.last_error.clone(),
+                                self.state.certificates.phase(),
+                                self.state.config.acme.disabled,
+                            );
+                        let cells = crate::views::components::node_certificate::certificate_cells(
                             &state,
                             &facts,
                             Some(name),
-                        ),
+                        );
+                        Some((policy, cells))
+                    }
+                    None => None,
+                };
+                Panel::Database {
+                    name: names.first().cloned(),
+                    actions: (
+                        format!("{here}/database/name"),
+                        format!("{here}/database/certificate"),
+                        format!("{here}/database/publish"),
                     ),
-                )
-            }
-            None => (None, None),
-        };
-        let database_actions = (
-            format!("{here}/database/name"),
-            format!("{here}/database/certificate"),
-            format!("{here}/database/publish"),
-        );
-        let env_text: String = service
-            .env
-            .iter()
-            .map(|(key, value)| format!("{key}={value}\n"))
-            .collect();
-
-        let mut secured = std::collections::BTreeSet::new();
-        for port in &ports {
-            if let Some(hostname) = &port.hostname {
-                if crate::edge::certs::load(&self.state.database, hostname)
-                    .await
-                    .ok()
-                    .flatten()
-                    .is_some_and(|certificate| certificate.issuer != "self-signed")
-                {
-                    secured.insert(hostname.clone());
+                    certificate,
+                    host_port: ports.first().and_then(|port| port.host_port),
                 }
             }
-        }
-
-        // One answer per name the service is served under. The node's
-        // domain is not a special case of this — it is the same
-        // question asked about a different name.
-        let mut certificates = Vec::new();
-        for port in &ports {
-            let Some(hostname) = &port.hostname else {
-                continue;
-            };
-            let facts = super::certificate_facts_for(&self.state, hostname).await;
-            let state = crate::views::components::node_certificate::CertificateState::read(
-                &facts,
-                Some(hostname),
-                // Not the node's stored failure: it records one reason
-                // for the whole node, and attributing it to this name
-                // would be the console guessing.
-                None,
-                self.state.certificates.phase(),
-                self.state.config.acme.disabled,
-            );
-            let policy =
-                crate::edge::policy::for_name(&self.state.database, &self.state.config, hostname)
-                    .await;
-            let cells = crate::views::components::node_certificate::certificate_cells(
-                &state,
-                &facts,
-                Some(hostname),
-            );
-            certificates.push((port.id.clone(), hostname.clone(), cells, policy));
-        }
-
-        let add = format!("{here}/ports");
-        let domain = crate::node::settings::domain(&self.state.database, &self.state.config).await;
-        // What a push at this service would have to be called. The same
-        // function the service's own page uses, so the two cannot disagree
-        // about the name — which is the whole content of this card.
-        let push = crate::views::components::service_push::push(
-            &service,
-            &project.slug,
-            domain.as_deref(),
-        );
-        // Where a push token is made, which is the prerequisite the card
-        // names. A link rather than a sentence saying where to look.
-        let project_settings = format!("/projects/{}/settings", project.slug);
-        // The organisation's domain when this project is one's — the
-        // same function the certificate and the hosts file ask, so the
-        // name proposed here is the name that ends up being served.
-        let suffix = crate::policies::project_domain::domain_for(
-            &self.state.database,
-            &project,
-            domain.as_deref(),
-        )
-        .await;
-        let suggestion = match &suffix {
-            Some(suffix) => {
-                let name = dns::suggested_hostname(&service.slug, &project.slug, suffix);
-                let wildcard = dns::wildcard_works(suffix).await;
-                Some((name, wildcard))
+            Tab::Image => {
+                let domain =
+                    crate::node::settings::domain(&self.state.database, &self.state.config).await;
+                Panel::Image {
+                    push: crate::views::components::service_push::push(
+                        &service,
+                        &project.slug,
+                        domain.as_deref(),
+                    ),
+                    project_settings: format!("/projects/{}/settings", project.slug),
+                }
             }
-            None => None,
+            Tab::Logs => Panel::Logs,
+            Tab::Environment => Panel::Environment {
+                env_text: service
+                    .env
+                    .iter()
+                    .map(|(key, value)| format!("{key}={value}\n"))
+                    .collect(),
+                history: config_history::of_service(&self.state.database, &service.id).await?,
+            },
+            Tab::Resources => Panel::Resources,
+            Tab::Network => {
+                let domain =
+                    crate::node::settings::domain(&self.state.database, &self.state.config).await;
+                // Whether each HTTPS name has a certificate yet. Asked
+                // rather than assumed: the certificate arrives seconds
+                // after the route does, and a page that showed the name as
+                // ready would be wrong for exactly the window somebody is
+                // looking at it.
+                let mut secured = std::collections::BTreeSet::new();
+                let mut certificates = Vec::new();
+                for port in &ports {
+                    let Some(hostname) = &port.hostname else {
+                        continue;
+                    };
+                    if crate::edge::certs::load(&self.state.database, hostname)
+                        .await
+                        .ok()
+                        .flatten()
+                        .is_some_and(|certificate| certificate.issuer != "self-signed")
+                    {
+                        secured.insert(hostname.clone());
+                    }
+                    let facts = super::certificate_facts_for(&self.state, hostname).await;
+                    let policy = crate::edge::policy::for_name(
+                        &self.state.database,
+                        &self.state.config,
+                        hostname,
+                    )
+                    .await;
+                    let state = crate::views::components::node_certificate::CertificateState::read(
+                        &facts,
+                        Some(hostname),
+                        // A name's own failure only. The node-wide reason
+                        // belongs to the node's domain, and reading it here
+                        // would blame this name for that one.
+                        None,
+                        self.state.certificates.phase(),
+                        self.state.config.acme.disabled,
+                    );
+                    let cells = crate::views::components::node_certificate::certificate_cells(
+                        &state,
+                        &facts,
+                        Some(hostname),
+                    );
+                    certificates.push((port.id.clone(), hostname.clone(), cells, policy));
+                }
+                let suffix = crate::policies::project_domain::domain_for(
+                    &self.state.database,
+                    &project,
+                    domain.as_deref(),
+                )
+                .await;
+                let suggestion = match &suffix {
+                    Some(suffix) => Some((
+                        dns::suggested_hostname(&service.slug, &project.slug, suffix),
+                        dns::wildcard_works(suffix).await,
+                    )),
+                    None => None,
+                };
+                Panel::Network {
+                    certificates,
+                    secured,
+                    domain,
+                    add: format!("{here}/ports"),
+                    suggestion,
+                    may_publish: account.is_admin(),
+                    public_nodes: crate::network::edge_candidates(&self.state.database).await?,
+                    serving: crate::repositories::edges::of_service(
+                        &self.state.database,
+                        &service.id,
+                    )
+                    .await?,
+                    orders: crate::network::errand::all(&self.state.database)
+                        .await
+                        .unwrap_or_default(),
+                    ports: ports.clone(),
+                }
+            }
+            Tab::Replicas => Panel::Replicas {
+                placements: crate::repositories::replicas::of_service(
+                    &self.state.database,
+                    &service.id,
+                )
+                .await?,
+                nodes: crate::network::candidates_for(
+                    &self.state.database,
+                    service.kind.placement_capability(),
+                )
+                .await?,
+                silent: self.state.deployer.not_answering(&service).await,
+                queued: crate::network::errand::all(&self.state.database)
+                    .await?
+                    .into_iter()
+                    .filter(|record| record.done_at.is_none())
+                    .filter(|record| {
+                        record.payload.get("service").and_then(|name| name.as_str())
+                            == Some(service.name.as_str())
+                    })
+                    .map(|record| record.node_id)
+                    .collect(),
+            },
+            Tab::Danger => Panel::Danger,
         };
 
         let all_projects = access::projects_for(&self.state.database, &account).await?;
@@ -1145,663 +1041,20 @@ impl ServicePages {
         .allowing(allowed);
 
         layout::head(&format!("{} settings", service.name));
-        // The account's language, around the render and no wider:
-        // the strings are read here, and nothing awaits inside.
+        let page = crate::views::pages::service_settings_page::ServiceSettings {
+            project: &project,
+            service: &service,
+            base: &here,
+            tabs: &tabs,
+            tab,
+            panel,
+            error: query.error.as_deref(),
+            checked: query.checked.as_deref(),
+        };
         let body = crate::views::texts::language::scoped(account.language, || {
-            rsx! {
-            (layout::style_tag())
-                <div class="split">
-                    <div class="stack-sm">
-                        <h1>(t("Settings"))</h1>
-                    </div>
-                    // No "Back to service" here either: the breadcrumb
-                    // above already goes there. Third time this pattern
-                    // was reported, so there is now a test that fails on
-                    // the fourth — see
-                    // `no_page_offers_a_way_back_the_breadcrumb_already_is`.
-                </div>
-
-                // Links, not buttons and not script: each tab is a page.
-                // `aria-current` rather than only a class, because "which
-                // one am I on" is the whole information a tab bar carries
-                // and a colour is not available to everybody reading it.
-                <nav class="tabs" aria-label=(t("Settings"))>
-                    @for entry in &tabs {
-                        @if *entry == tab {
-                            <a href=(entry.path(&project.slug, &service.slug))
-                               class="tab active" aria-current="page">(entry.label())</a>
-                        } @else {
-                            <a href=(entry.path(&project.slug, &service.slug))
-                               class="tab">(entry.label())</a>
-                        }
-                    }
-                </nav>
-
-                @if let Some(message) = &query.error {
-                    (layout::error_note(message))
-                }
-                @if let Some(message) = &query.checked {
-                    <p class="note">(message)</p>
-                }
-
-                // A managed database has no image to point at, no tag to
-                // watch and no environment to edit: the node writes all
-                // three from the engine's row, and a form here would be
-                // one whose value the next deployment overwrites. What
-                // is left to choose is the size.
-                @if tab == Tab::Database {
-                    @if let Some(name) = names.first() {
-                        (crate::views::components::database_cards::name_card(
-                            &database_actions.0,
-                            name,
-                            &crate::deploy::hosts::pool_name(name),
-                        ))
-                    }
-                    @if let (Some(policy), Some(cells)) = (&database_policy, &database_cells) {
-                        (crate::views::components::database_cards::certificate_card(&database_actions.1, policy, cells))
-                    }
-                    @if let Some(name) = names.first() {
-                        (crate::views::components::database_cards::published_card(
-                            &database_actions.2,
-                            ports.first().and_then(|port| port.host_port),
-                            name,
-                        ))
-                    }
-
-                }
-                @if tab == Tab::Image {
-                    // **The image first, then what happens on a push.**
-                    // The tracking form used to be above, so the tab
-                    // opened on a rule about pushes before saying what
-                    // the service runs. Asked for in this order by Jorge.
-                    <section class="stack" id="image">
-                        <p class="card-label">(t("Image"))</p>
-                        // The form that did not exist. A service was
-                        // pinned to whatever it was created with, and
-                        // this card's own push example told people to
-                        // "point the service at this reference" with
-                        // nothing to point it with. Reported by Jorge.
-                        <form method="post" action=(format!("{here}/image")) class="card stack">
-                            <input id="service-image" name="image" type="text" autocomplete="off"
-                                   class="mono" value=(&service.image)
-                                   placeholder="docker.io/library/nginx:alpine">
-                            <p class="field-hint">(t("Saving redeploys the service with this image. \
-                                 Empty makes it wait for a push to its own repository \
-                                 instead."))</p>
-                            <div class="actions">
-                                <button type="submit">(t("Save image"))</button>
-                            </div>
-                        </form>
-                    </section>
-
-                    <section class="stack" id="releases">
-                        <p class="card-label">(t("Automatic deployment"))</p>
-                        <form method="post" action=(format!("{here}/tracking")) class="card stack">
-                            // The switch before the field it governs: the
-                            // tag only means anything once a push is
-                            // allowed to deploy, and the form read the
-                            // other way round.
-                            <label class="check">
-                                // `checked="false"` checks it. This box read
-                                // as on whatever the row said, and saving the
-                                // form then turned it on for real.
-                                @if service.auto_deploy {
-                                    <input type="checkbox" name="auto_deploy" value="1" checked>
-                                } @else {
-                                    <input type="checkbox" name="auto_deploy" value="1">
-                                }
-                                (t("Deploy a push automatically"))
-                            </label>
-                            <p class="field-hint">(t("Without this, a push is recorded as a release and waits \
-                                 for somebody to deploy it from the service page."))</p>
-
-                            <label for="track_tag">(t("Tag to watch"))</label>
-                            <input id="track_tag" name="track_tag" type="text" autocomplete="off" class="mono"
-                                   value=(service.track_tag.clone().unwrap_or_default())
-                                   placeholder="latest">
-                            <p class="field-hint">(t("Pushing to this tag deploys the image \
-                                 immediately. You can use * to deploy automatically whatever you \
-                                 push."))</p>
-                            <div class="actions">
-                                <button type="submit">(t("Save"))</button>
-                            </div>
-                        </form>
-
-                        // What to type, on the page that decides what a
-                        // push does. The service's own page has the whole
-                        // sequence behind a disclosure; this is the one
-                        // command, with the name in full, because the
-                        // question here is "what do I push to".
-                        (crate::views::components::service_push::push_target(&push, &project_settings))
-                    </section>
-                }
-                @if tab == Tab::Logs {
-
-                    <section class="stack" id="logs">
-                        <p class="card-label">(t("Logs"))</p>
-                        <form method="post" action=(format!("{here}/log-timestamps")) class="card stack">
-                            <label class="check">
-                                @if service.log_timestamps {
-                                    <input type="checkbox" name="log_timestamps" value="1" checked>
-                                } @else {
-                                    <input type="checkbox" name="log_timestamps" value="1">
-                                }
-                                (t("Timestamp every line, and mark which stream it came from"))
-                            </label>
-                            // **The cost, in numbers measured on a node.**
-                            // This is a switch whose price is invisible
-                            // until somebody goes looking for history that
-                            // is no longer there, so the figures are on the
-                            // form rather than in a document.
-                            <p class="field-hint">(t("Without this, containerd appends the container's \
-                                 bytes to a file and no process sits in between. With it, one \
-                                 wabot-deploy process per copy reads the output and writes it \
-                                 — which is what makes a timestamp possible, and what the \
-                                 costs below buy."))</p>
-                            <ul class="field-hint">
-                                <li>(t("Memory: about 0.3 MB of private memory per copy. `top` will show nearer 8 MB, and almost all of that is this binary's own code shared with every other wabot-deploy process on the machine — including the node itself. Measured here, on a real service."))</li>
-                                <li>(t("Disk: 28 bytes on every line. On a real service here that is a fifth more, so the same retention budget holds about a sixth fewer lines — timestamps are paid for in history."))</li>
-                                <li>(t("Risk: the reader is between the container and its log. If it stops reading, the container blocks on its next write. It drops lines rather than stopping, which is the whole reason this is offered at all — but it is why the default is off."))</li>
-                            </ul>
-                            <p class="field-hint">(t("Takes effect at the next deployment: containerd cannot change a running container's output."))</p>
-
-                            // **Bytes, because the question is disk.** The
-                            // per-container rule was a *count* of
-                            // generations, so "how much may this service
-                            // keep" had no answer and no dial — and the two
-                            // services on a node that matter are never the
-                            // two that talk the same amount.
-                            <label for="log_budget">(t("Keep at most"))</label>
-                            <input id="log_budget" name="log_budget" type="text" autocomplete="off"
-                                   class="mono"
-                                   placeholder=(t("two rotations"))
-                                   value=(service.log_budget
-                                       .map(crate::policies::presets::size_field)
-                                       .unwrap_or_default())>
-                            <p class="field-hint">(t("Per copy, and the live log counts against it \
-                                 — a service with two copies on this machine writes two. Oldest \
-                                 history is dropped first, and what the container is saying now \
-                                 is never dropped."))</p>
-                            // **What "two rotations" weighs, said rather
-                            // than left to be asked.** Jorge asked, and the
-                            // constant's own comment answered it wrongly —
-                            // see `logs::GENERATIONS`. A rotation is not a
-                            // fixed size: it is whatever the live file had
-                            // reached at the restart that rotated it.
-                            <p class="field-hint">(t("Empty keeps two rotations behind the live \
-                                 file. No log file passes 8 MB, so that is 24 MB for a copy \
-                                 that has restarted twice."))</p>
-                            <p class="field-hint">(t("The node's own budget still applies over \
-                                 all of them, so this can ask for more than it gets."))</p>
-                            <div class="actions">
-                                <button type="submit">(t("Save"))</button>
-                            </div>
-                        </form>
-                    </section>
-                }
-                @if tab == Tab::Environment {
-
-                    <section class="stack" id="environment">
-                        <p class="card-label">(t("Environment"))</p>
-                        <form method="post" action=(format!("{here}/env")) class="card stack">
-                            <textarea name="env" autocomplete="off" rows="6" class="mono"
-                                      placeholder="KEY=value">(&env_text)</textarea>
-                            <p class="field-hint">(t("Saving redeploys the service with these values. The image \
-                                 it runs does not change."))</p>
-                            <div class="actions">
-                                <button type="submit">(t("Save environment"))</button>
-                            </div>
-                        </form>
-
-                        @if !history.is_empty() {
-                            <table>
-                                <tbody>
-                                    @for revision in history.iter().skip(1) {
-                                        <tr>
-                                            // **What restoring this would
-                                            // leave.** The row said only
-                                            // how many values there were
-                                            // and the raw word `edit`, so
-                                            // choosing between two
-                                            // revisions meant guessing —
-                                            // and the button replaces the
-                                            // running environment.
-                                            // Reported by Jorge.
-                                            //
-                                            // A `<details>` rather than a
-                                            // second page: it is native,
-                                            // so it opens with scripting
-                                            // off, and it keeps a long
-                                            // history readable. The values
-                                            // are shown in full because
-                                            // the textarea above already
-                                            // shows the current ones that
-                                            // way — hiding only the old
-                                            // ones would protect nothing.
-                                            <td class="tile-detail">
-                                                <details>
-                                                    <summary>
-                                                        <span class="mono">(crate::views::layouts::layout::exactly(revision.created_at))</span>
-                                                        (" · ")
-                                                        @if revision.env.len() == 1 {
-                                                            (t("1 value"))
-                                                        } @else {
-                                                            (revision.env.len())(t(" values"))
-                                                        }
-                                                        (" · ")
-                                                        @if revision.reason == "revert" {
-                                                            (t("restored"))
-                                                        } @else {
-                                                            (t("edited"))
-                                                        }
-                                                    </summary>
-                                                    @if revision.env.is_empty() {
-                                                        <p>(t("No values — restoring this clears the environment."))</p>
-                                                    } @else {
-                                                        <pre class="mono">(
-                                                            revision.env.iter()
-                                                                .map(|(key, value)| format!("{key}={value}"))
-                                                                .collect::<Vec<_>>()
-                                                                .join("\n")
-                                                        )</pre>
-                                                    }
-                                                </details>
-                                            </td>
-                                            <td>
-                                                <form method="post"
-                                                      action=(format!(
-                                                          "{here}/env/{}/revert", revision.id
-                                                      ))>
-                                                    <button class="btn btn-ghost btn-sm"
-                                                            type="submit">(t("Restore"))</button>
-                                                </form>
-                                            </td>
-                                        </tr>
-                                    }
-                                </tbody>
-                            </table>
-                        }
-                    </section>
-                }
-                @if tab == Tab::Resources {
-
-                // What a container may take, for every kind of service.
-                //
-                // The memory half used to be a database's alone, because
-                // that is where presets were invented — and a plain
-                // container could take the machine's memory with nothing
-                // on any page to stop it. The column was always on
-                // `service`; only the form was not.
-                //
-                // The section carries the id, because the id is where a
-                // save comes back to. The memory field's own was
-                // `memory` too, and two elements with one id is a
-                // fragment that lands on whichever the browser finds
-                // first.
-                <section class="stack" id="memory">
-                    <p class="card-label">(t("Resources"))</p>
-                    <form method="post" action=(format!("{here}/memory")) class="card stack">
-                        <label for="memory-size">(t("Memory"))</label>
-                        // **A list only where the size is also a
-                        // configuration.** A database's ceiling picks
-                        // `shared_buffers` and five other numbers, so a
-                        // rung is a thing an operator can reason about;
-                        // for a plain container the same list meant
-                        // somebody who knows their service needs 300 MB
-                        // had to choose 256 or 512. Free field there, and
-                        // the ladder stays as suggestions beside it.
-                        @if service.kind.is_managed() {
-                            <select id="memory-size" name="memory">
-                                <option value="">(t("no ceiling"))</option>
-                                @for rung in crate::policies::presets::LADDER {
-                                    @if Some(rung) == service.memory_limit {
-                                        <option value=(rung.to_string()) selected>(
-                                            crate::policies::presets::label(rung)
-                                        )</option>
-                                    } @else {
-                                        <option value=(rung.to_string())>(
-                                            crate::policies::presets::label(rung)
-                                        )</option>
-                                    }
-                                }
-                            </select>
-                        } @else {
-                            <input id="memory-size" name="memory" type="text"
-                                   list="memory-sizes" autocomplete="off"
-                                   placeholder=(t("no ceiling"))
-                                   value=(service.memory_limit
-                                       .map(crate::policies::presets::size_field)
-                                       .unwrap_or_default())>
-                            // Suggestions, not a constraint: the field
-                            // takes anything the machine can keep, and a
-                            // datalist is plain HTML, so this is still a
-                            // page that works with scripting off.
-                            <datalist id="memory-sizes">
-                                @for rung in crate::policies::presets::LADDER {
-                                    <option value=(
-                                        crate::policies::presets::size_field(rung)
-                                    )></option>
-                                }
-                            </datalist>
-                        }
-                        // A database's ceiling is not only a ceiling: it
-                        // picks `shared_buffers` and five other numbers,
-                        // and saying so is the difference between an
-                        // operator choosing a size and choosing a
-                        // configuration.
-                        @if service.kind.is_managed() {
-                            <p class="field-hint">(t("The ceiling on the container and the engine's \
-                                 own settings, together. It takes effect at the next deployment: a \
-                                 cgroup limit is written when the container is created, and nothing \
-                                 reaches into a running one to change it."))</p>
-                        } @else {
-                            <p class="field-hint">(t("A size, like 512 MB or 1.5 GB — a bare \
-                                 number is megabytes. Over this the kernel kills the container \
-                                 rather than letting it swap, which is the outcome to want: a \
-                                 process quietly swapping is invisible until everything on the \
-                                 node is slow."))</p>
-                        }
-
-                        <label for="cpu-size">(t("CPU"))</label>
-                        // Free for every kind, including a database:
-                        // nothing derives a setting from the CPU ceiling
-                        // the way `postgres::tuning` derives six from the
-                        // memory one, so there is no configuration here to
-                        // keep on a rung.
-                        <input id="cpu-size" name="cpu" type="text"
-                               list="cpu-sizes" autocomplete="off"
-                               placeholder=(t("no ceiling"))
-                               value=(service.cpu_millicores
-                                   .map(crate::policies::presets::cores_field)
-                                   .unwrap_or_default())>
-                        <datalist id="cpu-sizes">
-                            @for rung in crate::policies::presets::CPU_LADDER {
-                                <option value=(
-                                    crate::policies::presets::cores_field(rung)
-                                )></option>
-                            }
-                        </datalist>
-                        <p class="field-hint">(t("Cores, like 0.5 or 2 — or millicores with an \
-                             m, like 500m. Over this the container is throttled, not killed: it \
-                             runs slowly rather than stopping. A ceiling is also what is reserved \
-                             for it — the node counts what it has promised, and refuses to \
-                             promise more than it has."))</p>
-
-                        <label for="disk-size">(t("Disk"))</label>
-                        <input id="disk-size" name="disk" type="text"
-                               autocomplete="off"
-                               placeholder=(t("no ceiling"))
-                               value=(service.disk_limit
-                                   .map(crate::policies::presets::label)
-                                   .unwrap_or_default())>
-                        // **The one number on this page that reserves and
-                        // does not enforce**, and saying so is the whole
-                        // point of the sentence: a field that looks like
-                        // the two above and quietly does less is the
-                        // `archiving` label again, where a switch said
-                        // "on" over a database that was not archiving.
-                        <p class="field-hint">(t("This one reserves space; it does not enforce it. \
-                             There is nothing to write it into — volumes share a filesystem, \
-                             and dividing one properly needs XFS project quotas or a file per \
-                             volume. What the node does with this number is refuse to place \
-                             more than it can hold, and say on this page when a copy has gone \
-                             past what it was promised."))</p>
-                        <div class="actions">
-                            <button type="submit">(t("Save"))</button>
-                        </div>
-                    </form>
-                </section>
-                }
-
-                // A database's port is not a list to add to. It has
-                // exactly one, 5432, written by the node when the database
-                // was created — a second would be a port nothing listens
-                // on — and the HTTPS hostname this form asks for is a name
-                // an edge would serve, which is not something Postgres can
-                // be reached through. Its name, its certificate and its
-                // published port are three cards on the service's own
-                // page.
-                @if tab == Tab::Network {
-                <section class="stack" id="ports">
-                    // **One table, because it answers one question.** The
-                    // certificates were a second section below this one,
-                    // so "is my service reachable and is its certificate
-                    // all right" meant reading two lists and matching
-                    // hostnames between them by eye. Merged at Jorge's
-                    // ask, and named for what a row is.
-                    <p class="card-label">(t("Exposed ports"))</p>
-                    @if ports.is_empty() {
-                        <p class="tile-detail">(t("This service exposes nothing. That is the right answer for \
-                             a worker; add a port for anything that listens."))</p>
-                    } @else {
-                        <table>
-                            <thead>
-                                <tr>
-                                    <th>(t("Port"))</th>
-                                    <th>(t("Type"))</th>
-                                    <th>(t("Reachable at"))</th>
-                                    <th>(t("Certificate"))</th>
-                                    <th></th>
-                                </tr>
-                            </thead>
-                            <tbody>
-                                @for port in &ports {
-                                    // What this port is, which is two
-                                    // independent answers and not one: a
-                                    // port can be published on the node's
-                                    // address, served over HTTPS at a
-                                    // name, both, or neither — and neither
-                                    // is a real row, reachable from inside
-                                    // the project and nowhere else.
-                                    @let kind = match (port.host_port.is_some(),
-                                                       port.hostname.is_some()) {
-                                        (true, true) => t("HTTPS · TCP"),
-                                        (false, true) => t("HTTPS"),
-                                        (true, false) => t("TCP"),
-                                        (false, false) => t("internal"),
-                                    };
-                                    @let certificate = certificates
-                                        .iter()
-                                        .find(|(id, ..)| id == &port.id);
-                                    <tr>
-                                        <td class="mono">(port.container_port)</td>
-                                        <td>(kind)</td>
-                                        <td class="mono reach">
-                                            <span>(crate::views::components::service_ports::reachable_at(port, domain.as_deref()))</span>
-                                            // Rendered whether or not it
-                                            // applies and hidden by a
-                                            // class, so the stream can
-                                            // show it without building
-                                            // markup — the rule every
-                                            // island here follows. An
-                                            // ACME order takes minutes,
-                                            // and this was true only at
-                                            // the instant it rendered.
-                                            @if let Some(hostname) = &port.hostname {
-                                                <span data-name=(hostname)
-                                                      class=(match secured.contains(hostname) {
-                                                          true => "badge badge-info is-hidden",
-                                                          false => "badge badge-info",
-                                                      })>
-                                                    <span class="dot dot-info dot-pulse"></span>
-                                                    (t("Certificate on the way"))
-                                                </span>
-                                            }
-                                        </td>
-                                        <td>
-                                            @if let Some((_, _, cells, policy)) = certificate {
-                                                <span class=(cells.badge)>
-                                                    <span class=(cells.dot)></span>
-                                                    <span>(cells.word)</span>
-                                                </span>
-                                                // The source, because "valid"
-                                                // says nothing about who signed
-                                                // it — and a name on a
-                                                // self-signed certificate is a
-                                                // browser warning somebody is
-                                                // about to meet.
-                                                <span class="tile-detail">(
-                                                    crate::views::components::node_certificate::source_word(&policy.renew_with)
-                                                )</span>
-                                            } @else {
-                                                <span class="tile-detail">("—")</span>
-                                            }
-                                        </td>
-                                        <td>
-                                            <form method="post"
-                                                  action=(format!("{add}/{}/delete", port.id))>
-                                                <button class="btn btn-ghost destructive btn-sm"
-                                                        type="submit">
-                                                    (t("Remove"))
-                                                </button>
-                                            </form>
-                                        </td>
-                                    </tr>
-                                    // **The reason on its own line, and only
-                                    // the reason.** An ACME failure is a
-                                    // sentence — `DNS problem: NXDOMAIN
-                                    // looking up A for …` — and a column
-                                    // either truncates it or wrecks the table.
-                                    // An error is a value somebody acts on, so
-                                    // it gets the room to be read.
-                                    //
-                                    // Changing the source afterwards was here
-                                    // in a disclosure and is gone at Jorge's
-                                    // ask: the way to change it is to remove
-                                    // the port and expose it again. One way to
-                                    // do a thing, and the choice is made where
-                                    // it matters — before the first order.
-                                    @if let Some((_, _, cells, _)) = certificate {
-                                        @if !cells.failure.is_empty() {
-                                            <tr class="port-detail">
-                                                <td colspan="5">
-                                                    <p class="failure">(&cells.failure)</p>
-                                                </td>
-                                            </tr>
-                                        }
-                                    }
-                                }
-                            </tbody>
-                        </table>
-                    }
-
-                    <p class="card-label">(t("Expose a port"))</p>
-                    (crate::views::components::service_ports::port_form(&add, &suggestion, account.is_admin()))
-                </section>
-                }
-
-                // Where the copies go, which is a decision like every
-                // other one on this page. It was on the service's own page
-                // for both kinds, and the table it sat above — what is
-                // running and what it is using — stays there: reading and
-                // deciding are the split this console draws everywhere
-                // else.
-                @if tab == Tab::Replicas && service.is_ours() {
-                    (crate::views::components::service_placement::placement_card(
-                        &project, &service, &placements, &placement_nodes, &silent, &queued,
-                    ))
-                }
-
-                // Which nodes answer for each of this service's names.
-                //
-                // A card of its own rather than a column inside the ports
-                // table, which is where it lived: it is a decision about a
-                // *name*, and the table it was in is about ports — one of
-                // which may have no name at all, and a name may be served
-                // by several nodes. Reading a checkbox grid out of a cell
-                // was the page asking somebody to hold two questions at
-                // once.
-                //
-                // Only where there is a choice to make: a node with no
-                // public address cannot answer for a name, and a service
-                // with no hostname has nothing to be answered for.
-                //
-                // And never for a database, which is the same fault as
-                // the route this card describes. "A node answers for a
-                // name by claiming it, getting a certificate for it, and
-                // proxying to wherever the copies run" — the last third
-                // is false for Postgres, which speaks its own protocol
-                // and is reached on a published port rather than through
-                // an edge. Offering the choice would be offering a thing
-                // the node cannot do. Its certificate and its port are
-                // two cards of its own, and they say the true version.
-                @if tab == Tab::Network
-                    && service.is_ours()
-                    && !public_nodes.is_empty()
-                {
-                    @if ports.iter().any(|port| port.hostname.is_some()) {
-                        <section class="stack" id="edges">
-                            // Named for what it does rather than for the mechanism.
-                            // "Who answers for these names" is how the
-                            // routing thinks about it and meant nothing to
-                            // Jorge, who reads this to decide where his
-                            // service is reachable from.
-                            <p class="card-label">(t("Nodes that expose the service"))</p>
-                            <div class="card stack">
-                                @for port in &ports {
-                                    @if let Some(hostname) = &port.hostname {
-                                        (crate::views::components::service_placement::served_by_form(
-                                            &project, &service, hostname,
-                                            &public_nodes, &serving, &orders,
-                                        ))
-                                    }
-                                }
-                                <p class="field-hint">(t("A node answers for a name by claiming it, \
-                                     getting a certificate for it, and proxying to wherever the \
-                                     copies run. Only nodes with an address the world can dial \
-                                     are here, and only those that agreed to be asked."))</p>
-                            </div>
-                        </section>
-                    }
-                }
-
-                @if tab == Tab::Danger {
-
-                // Last on the page, always. Deleting is not one setting
-                // among the others and reading it as one is how somebody
-                // presses it on the way past — it sat above the
-                // certificates here, which put a destructive button in
-                // the middle of a page people scroll through.
-                <section class="card stack">
-                    <p class="card-label">(t("Danger zone"))</p>
-                    // A database's data goes with it, and that sentence
-                    // is the whole reason this branch exists: the
-                    // generic wording says the images stay in the
-                    // registry, which is true and reads as reassurance
-                    // about the wrong thing entirely.
-                    @if service.kind.is_managed() {
-                        <p class="tile-detail">(t("Deleting a database stops it and removes everything \
-                             it stored on this node. There is no undo and there is no backup — a \
-                             read-only copy is not one, because a deletion reaches it too."))</p>
-                    } @else {
-                        <p class="tile-detail">(t("Deleting a service stops its container and removes it. The \
-                             images it was built from stay in the registry."))</p>
-                    }
-                    // **Typing the name is the confirmation.** There was
-                    // none: one click and it was gone. The reasoning
-                    // written down for that was "a dialog needs
-                    // JavaScript and this console works without it, and
-                    // the Danger zone heading is the warning" — half
-                    // right, and the wrong conclusion. A *dialog* needs
-                    // scripting; a field does not, and this one is
-                    // checked on the POST, which is the check that
-                    // counts. A heading is not a warning. Reported by
-                    // Jorge, who pressed it.
-                    <form method="post" action=(format!("{here}/delete")) class="stack">
-                        <label for="confirm">(t("Type the name to confirm: "))(&service.slug)</label>
-                        <input id="confirm" name="confirm" type="text" autocomplete="off"
-                               class="mono" required placeholder=(&service.slug)>
-                        @if service.kind.is_managed() {
-                            <button class="btn btn-danger" type="submit">(t("Delete database and its data"))</button>
-                        } @else {
-                            <button class="btn btn-danger" type="submit">(t("Delete service"))</button>
-                        }
-                    </form>
-                </section>
-                }
-        }
-            .render()
-            .into_inner()
+            crate::views::pages::service_settings_page::render(&page)
+                .render()
+                .into_inner()
         });
 
         Ok(frame.render(body).into_view().into())
