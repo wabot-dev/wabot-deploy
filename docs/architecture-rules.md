@@ -478,6 +478,28 @@ refuses any rule about a button that transitions or animates `width`,
 `all`. It is a fact about the declaration, not a list of today's rules,
 so a variant added tomorrow is covered without touching it.
 
+### The mark is the button's own text colour
+
+It was a fixed green and red — `--c-success-fg` and `--c-danger-fg` —
+which read on a pale card and vanish on the black primary button, where
+almost every confirmed action in this console happens. Reported by Jorge.
+
+`currentColor`, not a rule per variant: primary, danger and brand are
+dark with light text, secondary and ghost are light with dark text, and a
+list of the three would be the fault this project has paid for five times
+— right until somebody adds a sixth. This is legible on any button by
+construction.
+
+Colour is not the signal and does not need to be: **the glyph is.** A
+tick and a cross tell them apart, which is the rule `service_state.rs`
+already writes down — a colour alone says nothing to somebody who cannot
+tell two of them apart.
+
+The label is hidden with `visibility`, never with `color: transparent`.
+Blanking the colour blanks `currentColor` with it, so the mark would be
+drawn in the same nothing as the label. `the_mark_on_a_button_is_the_colour_of_its_own_text`
+asserts both halves, because one without the other is invisible feedback.
+
 ### An icon-only button gets no mark
 
 It has no label for one to replace, so a check lands beside the glyph and

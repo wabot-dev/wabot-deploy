@@ -174,12 +174,28 @@ wabot-outlet {
    somebody was about to press.
 
    So the mark does not sit *after* the label — it sits **over** it. The
-   label goes transparent and the check is drawn across the whole button,
-   which costs no width, keeps the label centred where it already was,
-   and needs no reserved gutter on every button in the console. Appending
-   it was the first attempt and it was wrong twice over: `.btn` is
+   label is hidden and the check is drawn across the whole button, which
+   costs no width, keeps the label centred where it already was, and
+   needs no reserved gutter on every button in the console. Appending it
+   was the first attempt and it was wrong twice over: `.btn` is
    `inline-flex` with a `gap`, so a `::after` becomes a flex item — it
    widened the button *and* pushed the label off centre.
+
+   **The mark is the button's own text colour**, not a fixed green and
+   red. Those were `--c-success-fg` and `--c-danger-fg`, which read on a
+   pale card and vanish on the black primary button — where almost every
+   confirmed action in this console happens. Reported by Jorge.
+
+   `currentColor` rather than a rule per variant: primary, danger and
+   brand are dark with light text, secondary and ghost are light with
+   dark text, and a list of the three would be the fault this project
+   has paid for five times — right until somebody adds a sixth. This is
+   legible on any button by construction.
+
+   What is lost is colour as the signal, and nothing: **the glyph is the
+   signal.** A tick and a cross are what tell them apart, which is the
+   rule `service_state.rs` already writes down — a colour alone says
+   nothing to somebody who cannot tell two of them apart.
 
    Nothing here transitions a dimension. The two properties that move are
    opacity and colour. */
@@ -193,31 +209,33 @@ button[data-wabot-state="busy"] {
   cursor: progress;
 }
 
-/* The label steps aside rather than being removed: taking it out of flow
-   would let the button reflow to the mark's width, which is the size
-   change this whole block exists to prevent. */
+/* `visibility`, not `color: transparent`, and that is what makes the
+   mark inheritable: blanking the colour would blank `currentColor` with
+   it, so the check would be drawn in the same nothing as the label.
+   Visibility does not touch layout, and a pseudo-element can turn it
+   back on for itself — which is the whole trick. */
 button[data-wabot-state="done"]:not(.btn-icon),
 button[data-wabot-state="failed"]:not(.btn-icon) {
-  color: transparent;
+  visibility: hidden;
 }
 
 button[data-wabot-state="done"]:not(.btn-icon)::after,
 button[data-wabot-state="failed"]:not(.btn-icon)::after {
+  visibility: visible;
   position: absolute;
   inset: 0;
   display: grid;
   place-items: center;
+  color: currentColor;
   font-weight: 600;
 }
 
 button[data-wabot-state="done"]:not(.btn-icon)::after {
   content: "\2713";
-  color: rgb(var(--c-success-fg));
 }
 
 button[data-wabot-state="failed"]:not(.btn-icon)::after {
   content: "\00D7";
-  color: rgb(var(--c-danger-fg));
 }
 
 /* **An icon-only button gets no mark, ever.** It has no label for one to
@@ -1316,6 +1334,56 @@ mod tests {
         assert!(
             wrong.is_empty(),
             "an icon-only button is `btn-icon`, not `icon`: {wrong:#?}"
+        );
+    }
+    /// **The mark takes the button's own colour.**
+    ///
+    /// It was a fixed `--c-success-fg` green and `--c-danger-fg` red,
+    /// which read on a pale card and vanished on the black primary
+    /// button — where almost every confirmed action in this console
+    /// happens. Reported by Jorge.
+    ///
+    /// `currentColor` rather than a rule per variant: three of the five
+    /// are dark with light text and two are light with dark text, and a
+    /// list of the three would be the fault this project has paid for
+    /// five times, right until somebody adds a sixth.
+    ///
+    /// **And the label must be hidden by `visibility`, not by colour.**
+    /// Blanking the colour blanks `currentColor` with it, so the check
+    /// would be drawn in the same nothing as the label — a button that
+    /// reports by going blank. That is why this asserts both halves: one
+    /// without the other is invisible feedback.
+    #[test]
+    fn the_mark_on_a_button_is_the_colour_of_its_own_text() {
+        let mut marks = 0;
+        for rule in super::CSS.split('}') {
+            let Some((selectors, body)) = rule.split_once('{') else {
+                continue;
+            };
+            if !selectors.contains("data-wabot-state") {
+                continue;
+            }
+            let named = selectors.trim().lines().last().unwrap_or_default().trim();
+            if named.contains("::after") {
+                marks += 1;
+                assert!(
+                    !body.contains("--c-"),
+                    "{named:?} gives the mark a fixed colour; it takes the button's"
+                );
+                continue;
+            }
+            // The rule that clears the way for it.
+            if body.contains("content") {
+                continue;
+            }
+            assert!(
+                !body.contains("color: transparent"),
+                "{named:?} blanks the colour, which blanks the mark with it —                  hide the label with `visibility`"
+            );
+        }
+        assert!(
+            marks >= 3,
+            "found {marks} rules drawing the mark, so this is reading the wrong place"
         );
     }
 }
