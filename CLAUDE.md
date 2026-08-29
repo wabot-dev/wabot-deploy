@@ -64,8 +64,10 @@ network and the databases" below.
    authorisation belongs in the use case.
 8. **A button says it is working, and the page does not move.** Actions
    run over `fetch`, the button disables and reports, and nothing
-   reloads or scrolls. Enhancement only — see "The console works without
-   JavaScript".
+   reloads or scrolls. **It never changes size** — the mark is drawn
+   over the label, not after it — and an **icon-only button gets no
+   mark at all**, because it has no label for one to replace.
+   Enhancement only — see "The console works without JavaScript".
 9. **A use case takes a request and hands back a response.** Both live
    in `src/dtos`, and the controller is what builds the request — so it
    arrives with its shape already right. The form's own spelling stops

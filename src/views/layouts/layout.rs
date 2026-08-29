@@ -168,11 +168,23 @@ wabot-outlet {
    sets `data-wabot-state` and disables it; what the three states look
    like is ours.
 
-   `min-width` is held while busy so the label swap does not resize the
-   button under the cursor, and the glyph is a check rather than an icon
-   because status here is a word or a mark, never a picture. */
+   **A button never changes size.** Not while it works, not when it
+   reports, not for an animation. A control that grows under the cursor
+   moves whatever is beside it, and on a row of them it moves the one
+   somebody was about to press.
+
+   So the mark does not sit *after* the label — it sits **over** it. The
+   label goes transparent and the check is drawn across the whole button,
+   which costs no width, keeps the label centred where it already was,
+   and needs no reserved gutter on every button in the console. Appending
+   it was the first attempt and it was wrong twice over: `.btn` is
+   `inline-flex` with a `gap`, so a `::after` becomes a flex item — it
+   widened the button *and* pushed the label off centre.
+
+   Nothing here transitions a dimension. The two properties that move are
+   opacity and colour. */
 button[data-wabot-state] {
-  min-width: max-content;
+  position: relative;
   transition: opacity 120ms ease, color 120ms ease;
 }
 
@@ -181,21 +193,41 @@ button[data-wabot-state="busy"] {
   cursor: progress;
 }
 
-button[data-wabot-state="done"]::after,
-button[data-wabot-state="failed"]::after {
-  margin-left: 0.4rem;
+/* The label steps aside rather than being removed: taking it out of flow
+   would let the button reflow to the mark's width, which is the size
+   change this whole block exists to prevent. */
+button[data-wabot-state="done"]:not(.btn-icon),
+button[data-wabot-state="failed"]:not(.btn-icon) {
+  color: transparent;
+}
+
+button[data-wabot-state="done"]:not(.btn-icon)::after,
+button[data-wabot-state="failed"]:not(.btn-icon)::after {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
   font-weight: 600;
 }
 
-button[data-wabot-state="done"]::after {
+button[data-wabot-state="done"]:not(.btn-icon)::after {
   content: "\2713";
   color: rgb(var(--c-success-fg));
 }
 
-button[data-wabot-state="failed"]::after {
+button[data-wabot-state="failed"]:not(.btn-icon)::after {
   content: "\00D7";
   color: rgb(var(--c-danger-fg));
 }
+
+/* **An icon-only button gets no mark, ever.** It has no label for one to
+   replace, so a check landed beside the glyph and the control read as
+   two things — a stop square with a tick next to it, reported from the
+   page. What tells you it worked is the thing it changed: the badge goes
+   to Running, the row goes away.
+
+   It still dims while it works, which is the half of the feedback that
+   costs nothing. */
 
 .narrow { max-width: 30rem; }
 
@@ -341,13 +373,24 @@ button[data-wabot-state="failed"]::after {
 .state { width: 9rem; }
 .address { width: 9rem; }
 
-/* An icon button is square, and its glyph is centred rather than
-   sitting on the text baseline it no longer has. */
-.btn.icon {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
+/* A small icon button keeps the box it had. `.btn-icon` is sized for the
+   header, where the control carries itself; in a table row it sits
+   beside a badge and a 2.25rem square would be the largest thing on the
+   row.
+
+   It is `.btn-icon` and not a second spelling, which it was: the play and
+   stop controls said `.icon` while every other icon-only button said
+   `.btn-icon`, so a rule written against one of them silently missed the
+   other — which is how the check mark ended up beside a stop square. */
+.btn-icon.btn-sm {
+  width: auto;
+  height: auto;
   padding: 0.35rem 0.6rem;
+}
+.btn-icon.btn-sm svg {
+  width: 15px;
+  height: 15px;
+  stroke-width: 2;
 }
 .state .badge { white-space: nowrap; }
 
@@ -1165,5 +1208,114 @@ mod tests {
                 );
             }
         }
+    }
+    /// **A button never changes size.** Rule 8.
+    ///
+    /// It moves whatever is beside it, and on a row of controls it moves
+    /// the one somebody was about to press. This reads both stylesheets
+    /// — the design system's and this console's — and refuses any rule
+    /// about a button that transitions or animates a property with a
+    /// size in it.
+    ///
+    /// It is expressed as a fact about the declaration rather than a
+    /// list of the rules that exist today, so a new button variant is
+    /// covered without touching this test.
+    #[test]
+    fn nothing_about_a_button_animates_a_dimension() {
+        const SIZED: [&str; 8] = [
+            "width",
+            "height",
+            "padding",
+            "margin",
+            "font-size",
+            "transform",
+            "scale",
+            "all",
+        ];
+        let mut checked = 0;
+        for (name, sheet) in [
+            (
+                "assets/wabot.css",
+                include_str!("../../../assets/wabot.css"),
+            ),
+            ("layout.rs", super::CSS),
+        ] {
+            for rule in sheet.split('}') {
+                let Some((selectors, body)) = rule.split_once('{') else {
+                    continue;
+                };
+                if !selectors.contains("button") && !selectors.contains(".btn") {
+                    continue;
+                }
+                // The comment above a rule is part of the split, and
+                // printing it whole buries the selector the reader needs.
+                let named = selectors.trim().lines().last().unwrap_or_default().trim();
+                checked += 1;
+                for line in body.lines() {
+                    let line = line.trim();
+                    let moving = line.starts_with("transition:") || line.starts_with("animation:");
+                    if !moving {
+                        continue;
+                    }
+                    for property in SIZED {
+                        assert!(
+                            !line.contains(property),
+                            "{name}: {named:?} moves {property:?} — a button keeps its size"
+                        );
+                    }
+                }
+            }
+        }
+        assert!(
+            checked > 10,
+            "the scan found {checked} button rules, so it is reading the wrong place"
+        );
+    }
+
+    /// **An icon-only button is spelled one way**, because the rule that
+    /// withholds the check mark from it is keyed on that word.
+    ///
+    /// It was spelled two: the play and stop controls said `.icon` while
+    /// every other icon-only button said `.btn-icon`. So a check mark
+    /// landed beside a stop square — the control read as two things, and
+    /// the CSS that was supposed to prevent it was looking at the other
+    /// name. Reported by Jorge, from the page.
+    #[test]
+    fn an_icon_only_button_is_spelled_one_way() {
+        let mut read = 0;
+        let mut wrong: Vec<String> = Vec::new();
+        for directory in [
+            "src/views/components",
+            "src/views/pages",
+            "src/views/layouts",
+        ] {
+            for entry in std::fs::read_dir(directory).expect("the views are there") {
+                let path = entry.expect("entry").path();
+                if path.extension().is_none_or(|kind| kind != "rs") {
+                    continue;
+                }
+                read += 1;
+                for line in std::fs::read_to_string(&path).expect("read").lines() {
+                    let Some(rest) = line.split_once("class=\"") else {
+                        continue;
+                    };
+                    let Some((classes, _)) = rest.1.split_once('"') else {
+                        continue;
+                    };
+                    let named = classes.split_whitespace().any(|word| word == "icon");
+                    if named {
+                        wrong.push(format!("{classes:?}"));
+                    }
+                }
+            }
+        }
+        assert!(
+            read > 30,
+            "the scan read {read} view files, so it is reading the wrong place"
+        );
+        assert!(
+            wrong.is_empty(),
+            "an icon-only button is `btn-icon`, not `icon`: {wrong:#?}"
+        );
     }
 }

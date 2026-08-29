@@ -31,12 +31,12 @@ pub fn shown(applies: bool) -> &'static str {
 pub fn action_button(label: &'static str, icon: &'static str, busy: bool) -> impl Renderable {
     rsx! {
         @if busy {
-            <button class="btn btn-secondary btn-sm icon" type="submit"
+            <button class="btn btn-secondary btn-sm btn-icon" type="submit"
                     title=(label) aria-label=(label) disabled>
                 (hypertext::Raw::dangerously_create(icon))
             </button>
         } @else {
-            <button class="btn btn-secondary btn-sm icon" type="submit"
+            <button class="btn btn-secondary btn-sm btn-icon" type="submit"
                     title=(label) aria-label=(label)>
                 (hypertext::Raw::dangerously_create(icon))
             </button>

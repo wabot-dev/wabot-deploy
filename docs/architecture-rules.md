@@ -460,6 +460,38 @@ file, and every wabot app inherits it.
   every rejection, so the runtime reads the landing URL's `error`
   parameter instead.
 
+### A button never changes size
+
+Not while it works, not when it reports, not for an animation. A control
+that grows under the cursor moves whatever is beside it, and on a row of
+them it moves the one somebody was about to press.
+
+So the mark does not sit **after** the label, it sits **over** it: the
+label goes transparent and the check is drawn across the whole button.
+Appending it was the first attempt and it was wrong twice over — `.btn`
+is `inline-flex` with a `gap`, so a `::after` becomes a flex item, which
+widened the button *and* pushed the label off centre.
+
+`nothing_about_a_button_animates_a_dimension` reads both stylesheets and
+refuses any rule about a button that transitions or animates `width`,
+`height`, `padding`, `margin`, `font-size`, `transform`, `scale` or
+`all`. It is a fact about the declaration, not a list of today's rules,
+so a variant added tomorrow is covered without touching it.
+
+### An icon-only button gets no mark
+
+It has no label for one to replace, so a check lands beside the glyph and
+the control reads as two things — a stop square with a tick next to it,
+reported by Jorge from the page. What tells you it worked is the thing it
+changed: the badge goes to Running, the row goes away. It still dims
+while it works, which is the half of the feedback that costs nothing.
+
+**And it is spelled one way.** It was spelled two: the play and stop
+controls said `.icon` while every other icon-only button said
+`.btn-icon`, so the rule that withholds the mark was looking at the other
+name. That is the same fault as a guard naming its inputs, in CSS.
+`an_icon_only_button_is_spelled_one_way` reads the view directories.
+
 ### The opt-out, and the three that use it
 
 `data-wabot-reload` on the form, the same spelling a link already uses.
