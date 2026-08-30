@@ -174,7 +174,8 @@ wabot-outlet {
    somebody was about to press.
 
    So the mark does not sit *after* the label — it sits **over** it. The
-   label is hidden and the check is drawn across the whole button, which
+   label's glyphs are hidden and the check is drawn across the whole
+   button, which
    costs no width, keeps the label centred where it already was, and
    needs no reserved gutter on every button in the console. Appending it
    was the first attempt and it was wrong twice over: `.btn` is
@@ -209,24 +210,37 @@ button[data-wabot-state="busy"] {
   cursor: progress;
 }
 
-/* `visibility`, not `color: transparent`, and that is what makes the
-   mark inheritable: blanking the colour would blank `currentColor` with
-   it, so the check would be drawn in the same nothing as the label.
-   Visibility does not touch layout, and a pseudo-element can turn it
-   back on for itself — which is the whole trick. */
+/* Hiding the label needs a property that takes the **glyphs** and
+   nothing else, and the two obvious ones each take something the mark
+   needs:
+
+   - `visibility: hidden` hides the element, background included. The
+     dark button went white for the round trip, and the check — drawn in
+     the button's light text colour — vanished on it. Shipped, and
+     reported by Jorge from the page.
+   - `color: transparent` keeps the background but blanks `currentColor`
+     with it, so the mark is drawn in the same nothing as the label.
+
+   `-webkit-text-fill-color` fills the glyphs and leaves `color` alone,
+   which is exactly the pair of things wanted: the label goes, the
+   background stays, and `currentColor` is still the button's own text
+   colour for the mark to take. Prefixed and a de facto standard —
+   every engine implements it under this name.
+
+   The mark sets it back for itself. */
 button[data-wabot-state="done"]:not(.btn-icon),
 button[data-wabot-state="failed"]:not(.btn-icon) {
-  visibility: hidden;
+  -webkit-text-fill-color: transparent;
 }
 
 button[data-wabot-state="done"]:not(.btn-icon)::after,
 button[data-wabot-state="failed"]:not(.btn-icon)::after {
-  visibility: visible;
   position: absolute;
   inset: 0;
   display: grid;
   place-items: center;
   color: currentColor;
+  -webkit-text-fill-color: currentColor;
   font-weight: 600;
 }
 
@@ -1355,7 +1369,7 @@ mod tests {
     /// without the other is invisible feedback.
     #[test]
     fn the_mark_on_a_button_is_the_colour_of_its_own_text() {
-        let mut marks = 0;
+        let (mut marks, mut hides) = (0, 0);
         for rule in super::CSS.split('}') {
             let Some((selectors, body)) = rule.split_once('{') else {
                 continue;
@@ -1372,18 +1386,25 @@ mod tests {
                 );
                 continue;
             }
-            // The rule that clears the way for it.
-            if body.contains("content") {
+            // The rule that hides the label, recognised by the job it
+            // does rather than by the property it uses — naming the
+            // property would only ever catch the mistake this was
+            // written after, and there have been two of those.
+            if !selectors.contains("done") || !selectors.contains("failed") {
                 continue;
             }
+            hides += 1;
             assert!(
-                !body.contains("color: transparent"),
-                "{named:?} blanks the colour, which blanks the mark with it —                  hide the label with `visibility`"
+                body.contains("-webkit-text-fill-color: transparent"),
+                "{named:?} hides the label some other way. `visibility` takes the \
+                 background with it and `color` takes `currentColor` with it — \
+                 both shipped, and both left nothing on the button"
             );
         }
         assert!(
-            marks >= 3,
-            "found {marks} rules drawing the mark, so this is reading the wrong place"
+            marks >= 3 && hides == 1,
+            "found {marks} rules drawing the mark and {hides} hiding the label, \
+             so this is reading the wrong place"
         );
     }
 }

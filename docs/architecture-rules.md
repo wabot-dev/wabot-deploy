@@ -495,10 +495,24 @@ tick and a cross tell them apart, which is the rule `service_state.rs`
 already writes down — a colour alone says nothing to somebody who cannot
 tell two of them apart.
 
-The label is hidden with `visibility`, never with `color: transparent`.
-Blanking the colour blanks `currentColor` with it, so the mark would be
-drawn in the same nothing as the label. `the_mark_on_a_button_is_the_colour_of_its_own_text`
-asserts both halves, because one without the other is invisible feedback.
+Hiding the label then needs a property that takes the **glyphs** and
+nothing else, and the two obvious ones each take something the mark
+needs. Both were shipped, and both left nothing on the button:
+
+- `visibility: hidden` hides the element, background included. The dark
+  button went white for the round trip and the check — drawn in its light
+  text colour — vanished on it.
+- `color: transparent` keeps the background and blanks `currentColor`
+  with it, so the mark is drawn in the same nothing as the label.
+
+`-webkit-text-fill-color` fills the glyphs and leaves `color` alone,
+which is the pair of things wanted. Prefixed, and a de facto standard.
+
+`the_mark_on_a_button_is_the_colour_of_its_own_text` asserts the mark
+takes no fixed colour **and** that the label is hidden this way. Its
+first version named `color: transparent` as the thing to refuse and let
+`visibility` straight through — a guard written against the last mistake
+catches the last mistake. It recognises the rule by the job it does now.
 
 ### An icon-only button gets no mark
 
