@@ -38,6 +38,24 @@ pub fn still_owns_projects(count: usize) -> String {
     }
 }
 
+/// Services this organisation runs with no memory ceiling at all.
+///
+/// **A quota demands ceilings.** One unmeasurable service makes the
+/// whole quota decoration, so the page says how many rather than leaving
+/// somebody to meet the refusal later and go looking.
+pub fn services_without_a_ceiling(count: usize) -> String {
+    match current() {
+        Language::En => format!(
+            "{count} service(s) have no memory ceiling, so they count for nothing here — \
+             a quota with one of those under it is not a ceiling"
+        ),
+        Language::Es => format!(
+            "{count} servicio(s) no tienen techo de memoria, así que no cuentan aquí — \
+             una cuota con uno de ésos debajo no es un techo"
+        ),
+    }
+}
+
 /// A name another organisation already answers on.
 pub fn name_is_taken(holder: &str) -> String {
     match current() {

@@ -185,6 +185,10 @@ mod tests {
         "Let's Encrypt",
         "Logs",
         "Secret access key",
+        // The word for the identifier itself, which is what goes in a
+        // URL and in a `docker push` — CLAUDE.md's rule that a slug is
+        // not prose, applied to the column that heads a list of them.
+        "Slug",
         "Swap",
         "TCP",
     ];

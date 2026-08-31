@@ -669,6 +669,63 @@ pub(crate) mod tests {
         );
     }
 
+    /// An organisation's own pages open, and every tab of its settings.
+    ///
+    /// **A page behind a path parameter is invisible to the list above**,
+    /// which can only hold paths that need no id — so `/organisations`
+    /// was covered and the page it opens was not. This makes one, then
+    /// knocks on every door it has.
+    ///
+    /// What it catches is the failure that has no test anywhere else: a
+    /// route registered under another route's parameter answers 404, and
+    /// a 404 renders as an empty body that every assertion about content
+    /// passes straight over.
+    #[tokio::test]
+    async fn an_organisations_pages_all_open() {
+        let console = Console::new().await;
+        let cookie = console.signed_in().await;
+        let operator = crate::accounts::all(&console.database)
+            .await
+            .expect("accounts")
+            .into_iter()
+            .next()
+            .expect("the operator");
+        let tenant = crate::usecases::node_user_create_organisation::run(
+            &console.database,
+            &operator,
+            "Acme",
+        )
+        .await
+        .expect("an organisation");
+
+        let mut paths = vec![format!("/organisations/{}", tenant.id)];
+        // Read off the enum rather than written out: a tab added
+        // tomorrow is covered without touching this.
+        for tab in crate::views::pages::node_user_organisation_settings_page::OrganisationTab::all()
+        {
+            paths.push(tab.path(&tenant.id));
+        }
+
+        for path in &paths {
+            let body = console
+                .harness
+                .get(path)
+                .header("cookie", &cookie)
+                .send()
+                .await
+                .body;
+            assert!(
+                !body.trim().is_empty(),
+                "{path} answered nothing — a 404 or a redirect where a page belongs"
+            );
+            assert!(body.contains("<title>"), "{path} has no title");
+            assert!(
+                body.contains("Acme"),
+                "{path} does not name the organisation it is about"
+            );
+        }
+    }
+
     /// Every page an operator can open carries a stylesheet.
     ///
     /// **The two tests around this one ask `/setup` and stop there**, so
