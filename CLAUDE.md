@@ -103,12 +103,20 @@ picked up by the already-published `wabot` without republishing it —
 and publishing the workspace to ship one file would put twenty versions
 on crates.io identical to their predecessors.
 
-Two things to check before publishing one: `cargo package -p <crate>`
-compiles the tarball against the **published** dependencies, which is
-the only proof it will build for anybody else; and clippy over the
-workspace still fails in `wabot-core` (the `channel = "stable"` hazard
-this file describes, in the repo that has it), so ask it about the
-crate you are shipping with `--no-deps`.
+Before publishing one, run `cargo package -p <crate>`: it compiles the
+tarball against the **published** dependencies, which is the only proof
+it will build for anybody else.
+
+**Both repositories pin the same compiler**, and that is the point of
+pinning. wabot-rust said `channel = "stable"` until 2026-08-30 — the
+hazard described above, in the repo that had it — and had drifted far
+enough that `cargo clippy --workspace` failed on ten lints nobody
+introduced. It is `1.97.0` in both now, so a lint cannot pass here and
+fail there. Raising it is a deliberate edit **in both**.
+
+Its MSRV was a lie too: `rust-version` said 1.75 while the code needed
+1.82. It is right in the tree; the crates already on crates.io still
+advertise 1.75, which the next publish of each carries.
 
 ## Conventions the code already follows
 
