@@ -28,7 +28,7 @@ pub struct Revealed<'a> {
 /// controller that stashed a sentence would have stashed it in whichever
 /// language nobody asked for.
 pub enum What<'a> {
-    /// `wabot-deploy join <token>`, run on the other machine.
+    /// The token itself, pasted into the other node.
     JoinToken,
     /// A link into an organisation, on that organisation's own name.
     InvitationInto(&'a str),
@@ -41,7 +41,7 @@ pub enum What<'a> {
 impl What<'_> {
     fn heading(&self) -> &'static str {
         match self {
-            What::JoinToken => t("Run this on the other node"),
+            What::JoinToken => t("Paste this into the other node"),
             What::InvitationInto(_) | What::Invitation => t("Send this link"),
             What::PushToken => t("Log in with this"),
         }
@@ -65,9 +65,18 @@ pub fn render<'a>(page: &'a Revealed<'a>) -> impl Renderable + 'a {
             (copyable(page.secret))
             @match &page.what {
                 What::JoinToken => {
-                    <p class="field-hint">(t("It works once and expires in 24 hours. The other \
-                         machine has to be a node already: install it there first, then \
-                         join."))</p>
+                    // **The token alone, not the command.** It is pasted
+                    // into the other node's console far more often than
+                    // into its terminal, and a prefix somebody has to
+                    // delete first is worse than one they can type. The
+                    // command is named here for the terminal case, and
+                    // not translated — a terminal does not speak
+                    // Spanish.
+                    <p class="field-hint">(t("On the other node's console: Network, then Join a \
+                         network. Or on its terminal:"))</p>
+                    <p class="field-hint mono">("wabot-deploy join <token>")</p>
+                    <p class="field-hint">(t("It works once and expires in 24 hours. That machine \
+                         has to be a node already: install it there first, then join."))</p>
                 }
                 What::InvitationInto(name) => {
                     <p class="field-hint">(sentences::invitation_into(name))</p>
@@ -91,11 +100,18 @@ pub fn render<'a>(page: &'a Revealed<'a>) -> impl Renderable + 'a {
 /// One island around one value: the runtime re-hydrates it after every
 /// boosted swap, which an inline `<script>` on this page would not
 /// survive — and this page is always arrived at by one.
+///
+/// **`.dsn-line` is not decoration.** The island appends the button as a
+/// sibling of the block, and that rule is what makes the pair a row:
+/// without it the button laid itself out underneath as a full-width bar,
+/// which is what shipped. Reported by Jorge from the page.
 fn copyable(value: &str) -> impl Renderable + '_ {
     let (copy, copied) = (t("Copy"), t("Copied"));
     let inner = rsx! {
-        <pre class="dsn-value" data-copy
-             data-copy-label=(copy) data-copied-label=(copied)>(value)</pre>
+        <div class="dsn-line">
+            <pre class="dsn-value" data-copy
+                 data-copy-label=(copy) data-copied-label=(copied)>(value)</pre>
+        </div>
     }
     .render()
     .into_inner();

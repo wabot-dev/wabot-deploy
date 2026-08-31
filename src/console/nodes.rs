@@ -65,16 +65,13 @@ pub struct NodeSettingsPage {
 #[derive(Debug, Deserialize, Validate)]
 pub struct NodesPage {
     pub error: Option<String>,
-    /// Names a join token this node is holding for one read. Not the
-    /// token — see `ConsoleState::reveals`.
-    pub shown: Option<String>,
     /// The node this one has just joined. A name, not a secret, so the
     /// query string is the right place for it — the same rule
     /// `back_with_error` follows.
     pub joined: Option<String>,
     /// Names a pasted token waiting to be read *once*, so its terms can
-    /// be shown before it is spent. Same store and same rule as
-    /// `shown`: the nonce travels, the token does not.
+    /// be shown before it is spent. The nonce travels, the token does
+    /// not — see `ConsoleState::reveals`.
     pub review: Option<String>,
 }
 
@@ -208,13 +205,6 @@ impl NodePages {
         let nodes = network::all(&self.state.database).await?;
         let enrolments = network::enrolment::all(&self.state.database).await?;
         let projects = access::projects_for(&self.state.database, &account).await?;
-        // Spent on read: the token exists in clear for exactly this one
-        // page load, and a query parameter would put it in the address
-        // bar, the history and every refresh. See `ConsoleState::reveals`.
-        let revealed = query
-            .shown
-            .as_deref()
-            .and_then(|nonce| self.state.reveals.take(nonce));
         let may_enrol = nodes.iter().any(|node| node.is_self && node.may_be_edge());
         let now = super::now_ms();
 
@@ -223,7 +213,6 @@ impl NodePages {
         let page = crate::views::pages::node_user_invite_node_page::InviteNode {
             nodes: &nodes,
             enrolments: &enrolments,
-            revealed: revealed.as_deref(),
             may_enrol,
             now,
             error: query.error.as_deref(),
@@ -1100,10 +1089,7 @@ impl NodeApi {
         // Through the reveal store, not the query string: the token is
         // the secret, and a query string is read by the address bar, the
         // history and every refresh.
-        let nonce = self
-            .state
-            .reveals
-            .stash(format!("wabot-deploy join {token}"));
+        let nonce = self.state.reveals.stash(token);
         Ok(super::auth::see_other(&format!(
             "/network/invite/shown?{}",
             form_urlencoded::Serializer::new(String::new())
@@ -3213,9 +3199,14 @@ pub(crate) mod tests {
             .body
     }
 
-    /// The whole enrolment surface: a token, shown once, with the
-    /// command that spends it — and an address held for the node it
-    /// was minted for.
+    /// The whole enrolment surface: a token, shown once, on a page whose
+    /// arrow goes back to the one that minted it.
+    ///
+    /// **The token alone, and not the command.** It is pasted into the
+    /// other node's console far more often than into its terminal, and a
+    /// prefix somebody has to delete first is worse than one they can
+    /// type — reported by Jorge. So what is asserted is that the block
+    /// holds the token and nothing before it.
     #[tokio::test]
     async fn a_join_token_is_shown_once_with_what_to_do_with_it() {
         let console = Console::new().await;
@@ -3223,10 +3214,16 @@ pub(crate) mod tests {
 
         let body = enrol(&console, &cookie, "alpine").await;
         let shown = body
-            .split_once("wabot-deploy join ")
-            .map(|(_, rest)| rest.split('<').next().unwrap_or_default().to_string())
-            .expect("the command to run, with the token in it");
+            .split_once("data-copied-label=")
+            .and_then(|(_, rest)| rest.split_once('>'))
+            .and_then(|(_, rest)| rest.split_once("</pre>"))
+            .map(|(secret, _)| secret.trim().to_string())
+            .expect("the block that holds it");
         assert!(shown.starts_with("wdj1."), "{body}");
+        assert!(
+            !shown.contains(' '),
+            "the token came with something in front of it: {shown:?}"
+        );
         // **The name and the address are not here.** The token has a
         // page of its own now, with one thing on it; the list of what
         // has been minted stays on the page that minted them, which is

@@ -1407,4 +1407,57 @@ mod tests {
              so this is reading the wrong place"
         );
     }
+    /// **A copyable block sits in a `.dsn-line`.**
+    ///
+    /// The island appends the button as a *sibling* of the block, so
+    /// that rule is the whole of what makes the pair a row: without it
+    /// the button lays itself out underneath, a full-width bar the width
+    /// of the card. It shipped that way on the page that shows a secret
+    /// once, and Jorge found it by opening it — nothing here can see a
+    /// layout.
+    ///
+    /// So this asserts the one structural fact that stops it: every
+    /// `data-copy` in the views has `dsn-line` in the markup that
+    /// encloses it. It reads the directories, not a list of the files
+    /// that happen to have one today.
+    #[test]
+    fn a_copyable_block_sits_in_a_row() {
+        let mut loose: Vec<String> = Vec::new();
+        let mut found = 0;
+        for directory in ["src/views/components", "src/views/pages"] {
+            for entry in std::fs::read_dir(directory).expect("the views are there") {
+                let path = entry.expect("entry").path();
+                if path.extension().is_none_or(|kind| kind != "rs") {
+                    continue;
+                }
+                let name = path.file_name().unwrap_or_default().to_string_lossy();
+                let source = std::fs::read_to_string(&path).expect("read");
+                // Per block rather than per file: a file with two and a
+                // wrapper for one of them would pass a file-wide check.
+                for (index, _) in source
+                    .match_indices("data-copy\n")
+                    .chain(source.match_indices("data-copy "))
+                {
+                    found += 1;
+                    // The markup, not the prose. The first version of
+                    // this looked for the word and a doc comment
+                    // explaining the rule satisfied it — so breaking the
+                    // page on purpose left the guard green, which is how
+                    // it was caught.
+                    let before = &source[index.saturating_sub(400)..index];
+                    if !before.contains(r#"class="dsn-line""#) {
+                        loose.push(format!("{name} @ {index}"));
+                    }
+                }
+            }
+        }
+        assert!(
+            found > 2,
+            "the scan found {found} copyable blocks, so it is reading the wrong place"
+        );
+        assert!(
+            loose.is_empty(),
+            "these get a full-width button under them instead of beside them: {loose:#?}"
+        );
+    }
 }

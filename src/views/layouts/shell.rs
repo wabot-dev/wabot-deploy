@@ -410,6 +410,11 @@ impl Frame {
     /// and prettifying an id is how a page stops matching `ctr`.
     fn label_for(&self, collection: &str, id: &str) -> String {
         match collection {
+            // The network's own sub-pages are words, not ids. Without
+            // this the crumb read `invite` — lowercase, English, and
+            // sitting between two translated ones. Reported by Jorge
+            // from a page whose breadcrumb was otherwise right.
+            "network" if id == "invite" => t("Invite a node").to_string(),
             "projects" => self
                 .projects
                 .iter()
