@@ -117,13 +117,13 @@ pub struct ServiceSettings {
 }
 
 #[injectable]
-pub struct ServicePages {
+pub struct ServiceUiController {
     state: Arc<ConsoleState>,
     auth: Arc<Auth>,
 }
 
 #[ui_controller("/", app)]
-impl ServicePages {
+impl ServiceUiController {
     #[view("/projects/:project/services/new")]
     #[middleware(SessionMiddleware)]
     async fn new_service(&self, query: ServiceForm) -> UiResult<ViewOutcome> {
@@ -1084,13 +1084,13 @@ async fn returning_to(request: Request, fallback: &str) -> String {
 }
 
 #[injectable]
-pub struct ServiceApi {
+pub struct ServiceRestController {
     state: Arc<ConsoleState>,
     auth: Arc<Auth>,
 }
 
 #[rest_controller("/")]
-impl ServiceApi {
+impl ServiceRestController {
     /// The same log, following.
     ///
     /// Sends only what arrived since the offset it was given, so a page
@@ -1370,9 +1370,9 @@ impl ServiceApi {
                 // the message says so — losing the port would be worse
                 // than a certificate that needs a second visit.
                 if let Some(hostname) = port.hostname.as_deref() {
-                    match super::nodes::source_from(&form, hostname) {
+                    match super::auth::source_from(&form, hostname) {
                         Ok(renew_with) => {
-                            if let Err(error) = super::nodes::store_source(
+                            if let Err(error) = crate::commands::store_certificate_source::run(
                                 &self.state.database,
                                 &self.state.config,
                                 hostname,
@@ -2390,7 +2390,7 @@ impl ServiceApi {
     }
 }
 
-impl ServiceApi {
+impl ServiceRestController {
     /// Ask for a deployment and answer the browser.
     ///
     /// The reason a failure is not returned here: by the time one
@@ -2873,8 +2873,9 @@ mod tests {
                         )
                         .render()
                         .into_inner();
-                        let streamed =
-                            super::super::projects::replica_cell(&replica, stopped, queued, silent);
+                        let streamed = crate::views::components::project_cells::replica_cell(
+                            &replica, stopped, queued, silent,
+                        );
                         assert!(
                             painted.contains(&streamed.word),
                             "the paint says something the stream does not: \
@@ -6447,7 +6448,7 @@ mod tests {
             body.contains("data-required-when=\"https\""),
             "required only with the box: {body}"
         );
-        super::super::nodes::tests::conditions_name_real_controls(&body);
+        super::super::node_rest_controller::tests::conditions_name_real_controls(&body);
     }
 
     /// The default answer: a service exposes nothing.

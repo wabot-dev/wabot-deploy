@@ -146,6 +146,18 @@ pub fn joining(token: &str, form: &HashMap<String, String>) -> crate::dtos::requ
     }
 }
 
+/// One query parameter, escaped.
+///
+/// Here rather than in a controller because both halves of the updates
+/// page need it — the pages to send a refusal back, the forms to send
+/// one on. Two copies of four lines is two places for the key to be
+/// spelled differently.
+pub fn encode(key: &str, value: &str) -> String {
+    form_urlencoded::Serializer::new(String::new())
+        .append_pair(key, value)
+        .finish()
+}
+
 /// Which capabilities a set of checkboxes agreed to.
 ///
 /// **Presence, not value.** A checkbox that is off sends nothing at all,
@@ -165,6 +177,33 @@ pub fn capabilities_ticked(
         .into_iter()
         .filter(|capability| form.contains_key(&format!("{prefix}{}", capability.name())))
         .collect()
+}
+
+pub fn source_from(
+    form: &std::collections::HashMap<String, String>,
+    name: &str,
+) -> Result<crate::edge::policy::RenewWith, String> {
+    match field(form, "renew_with") {
+        "self_signed" => Ok(crate::edge::policy::RenewWith::SelfSigned),
+        "file" => {
+            let cert_path = field(form, "cert_path").trim().to_string();
+            let key_path = field(form, "key_path").trim().to_string();
+            if cert_path.is_empty() || key_path.is_empty() {
+                return Err("reading from files needs both a certificate and a key".into());
+            }
+            // Refused now, while there is somebody to tell.
+            crate::edge::certs::from_files(name, &cert_path, &key_path)
+                .map_err(|error| error.to_string())?;
+            Ok(crate::edge::policy::RenewWith::File {
+                cert_path,
+                key_path,
+            })
+        }
+        // Including anything a hand-written form might send: ACME is the
+        // default, and defaulting to it cannot lose a certificate the way
+        // defaulting to a file source could.
+        _ => Ok(crate::edge::policy::RenewWith::Acme),
+    }
 }
 
 // ---------- the responses a form POST needs ------------------------------
@@ -248,13 +287,13 @@ pub fn signed_in(auth: &Auth) -> Option<Account> {
 
 /// Setup and sign-in. The only two pages a stranger may see.
 #[injectable]
-pub struct AuthPages {
+pub struct AuthUiController {
     state: Arc<ConsoleState>,
     auth: Arc<Auth>,
 }
 
 #[ui_controller("/", app)]
-impl AuthPages {
+impl AuthUiController {
     /// Create the first administrator.
     ///
     /// Guarded twice over: the page is gone once an account exists, and
@@ -310,14 +349,14 @@ impl AuthPages {
 /// `#[raw]` throughout: what a form needs back is a 303 with a
 /// `Set-Cookie` on it, and the JSON path cannot express either.
 #[injectable]
-pub struct AuthApi {
+pub struct AuthRestController {
     state: Arc<ConsoleState>,
     /// Only `/theme` needs it — it writes against whoever is asking.
     auth: Arc<Auth>,
 }
 
 #[rest_controller("/")]
-impl AuthApi {
+impl AuthRestController {
     #[post("/setup")]
     #[raw]
     async fn create_admin(&self, request: Request) -> RestResult<Response> {

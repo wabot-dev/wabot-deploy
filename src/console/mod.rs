@@ -24,15 +24,23 @@
 pub mod assets;
 pub mod attention;
 pub mod auth;
-pub mod databases;
-pub mod nodes;
-pub mod people;
-pub mod projects;
-mod reveal;
+pub mod database_rest_controller;
+pub mod database_ui_controller;
+pub mod live;
+pub mod node_rest_controller;
+pub mod node_ui_controller;
+pub mod people_rest_controller;
+pub mod people_ui_controller;
+pub mod project_rest_controller;
+pub mod project_ui_controller;
+pub mod reveal_ui_controller;
 pub mod services;
-pub mod tenant;
-pub mod tenants;
-pub mod updates;
+pub mod tenant_people_rest_controller;
+pub mod tenant_people_ui_controller;
+pub mod tenant_rest_controller;
+pub mod tenant_ui_controller;
+pub mod update_rest_controller;
+pub mod update_ui_controller;
 
 use std::sync::Arc;
 
@@ -267,25 +275,25 @@ pub fn register(
     // visitor's identity handed to everybody after them.
     register_transients!(
         container,
-        auth::AuthPages,
-        auth::AuthApi,
-        nodes::NodePages,
-        nodes::NodeApi,
-        people::PeoplePages,
-        people::PeopleApi,
-        projects::ProjectPages,
-        projects::ProjectApi,
-        reveal::RevealPages,
-        databases::DatabaseApi,
-        databases::DatabasePages,
-        services::ServicePages,
-        services::ServiceApi,
-        tenants::TenantPages,
-        tenants::TenantApi,
-        tenant::TenantPeoplePages,
-        tenant::TenantPeopleApi,
-        updates::UpdatePages,
-        updates::UpdateApi
+        auth::AuthUiController,
+        auth::AuthRestController,
+        node_ui_controller::NodeUiController,
+        node_rest_controller::NodeRestController,
+        people_ui_controller::PeopleUiController,
+        people_rest_controller::PeopleRestController,
+        project_ui_controller::ProjectUiController,
+        project_rest_controller::ProjectRestController,
+        reveal_ui_controller::RevealUiController,
+        database_rest_controller::DatabaseRestController,
+        database_ui_controller::DatabaseUiController,
+        services::ServiceUiController,
+        services::ServiceRestController,
+        tenant_ui_controller::TenantUiController,
+        tenant_rest_controller::TenantRestController,
+        tenant_people_ui_controller::TenantPeopleUiController,
+        tenant_people_rest_controller::TenantPeopleRestController,
+        update_ui_controller::UpdateUiController,
+        update_rest_controller::UpdateRestController
     );
 }
 
@@ -303,16 +311,16 @@ pub fn register(
 /// said "on this node" to somebody administering an organisation, and
 /// that is the mismatch this split exists for.
 fn shared(container: &Container, pages: Router, forms: Router) -> (Router, Router) {
-    let pages = auth::AuthPages::register_ui_routes(container, pages);
-    let pages = databases::DatabasePages::register_ui_routes(container, pages);
-    let pages = projects::ProjectPages::register_ui_routes(container, pages);
-    let pages = reveal::RevealPages::register_ui_routes(container, pages);
-    let pages = services::ServicePages::register_ui_routes(container, pages);
+    let pages = auth::AuthUiController::register_ui_routes(container, pages);
+    let pages = database_ui_controller::DatabaseUiController::register_ui_routes(container, pages);
+    let pages = project_ui_controller::ProjectUiController::register_ui_routes(container, pages);
+    let pages = reveal_ui_controller::RevealUiController::register_ui_routes(container, pages);
+    let pages = services::ServiceUiController::register_ui_routes(container, pages);
 
-    let forms = auth::AuthApi::register_routes(container, forms);
-    let forms = databases::DatabaseApi::register_routes(container, forms);
-    let forms = projects::ProjectApi::register_routes(container, forms);
-    let forms = services::ServiceApi::register_routes(container, forms);
+    let forms = auth::AuthRestController::register_routes(container, forms);
+    let forms = database_rest_controller::DatabaseRestController::register_routes(container, forms);
+    let forms = project_rest_controller::ProjectRestController::register_routes(container, forms);
+    let forms = services::ServiceRestController::register_routes(container, forms);
     (pages, forms)
 }
 
@@ -321,15 +329,15 @@ fn shared(container: &Container, pages: Router, forms: Router) -> (Router, Route
 pub fn routes(container: &Container) -> Router {
     let (pages, forms) = shared(container, wabot::ui::ui_router(), Router::new());
 
-    let pages = nodes::NodePages::register_ui_routes(container, pages);
-    let pages = people::PeoplePages::register_ui_routes(container, pages);
-    let pages = tenants::TenantPages::register_ui_routes(container, pages);
-    let pages = updates::UpdatePages::register_ui_routes(container, pages);
+    let pages = node_ui_controller::NodeUiController::register_ui_routes(container, pages);
+    let pages = people_ui_controller::PeopleUiController::register_ui_routes(container, pages);
+    let pages = tenant_ui_controller::TenantUiController::register_ui_routes(container, pages);
+    let pages = update_ui_controller::UpdateUiController::register_ui_routes(container, pages);
 
-    let forms = nodes::NodeApi::register_routes(container, forms);
-    let forms = people::PeopleApi::register_routes(container, forms);
-    let forms = tenants::TenantApi::register_routes(container, forms);
-    let forms = updates::UpdateApi::register_routes(container, forms);
+    let forms = node_rest_controller::NodeRestController::register_routes(container, forms);
+    let forms = people_rest_controller::PeopleRestController::register_routes(container, forms);
+    let forms = tenant_rest_controller::TenantRestController::register_routes(container, forms);
+    let forms = update_rest_controller::UpdateRestController::register_routes(container, forms);
 
     pages
         .merge(forms)
@@ -369,8 +377,11 @@ pub fn routes(container: &Container) -> Router {
 pub fn tenant_routes(container: &Container) -> Router {
     let (pages, forms) = shared(container, wabot::ui::ui_router(), Router::new());
 
-    let pages = tenant::TenantPeoplePages::register_ui_routes(container, pages);
-    let forms = tenant::TenantPeopleApi::register_routes(container, forms);
+    let pages =
+        tenant_people_ui_controller::TenantPeopleUiController::register_ui_routes(container, pages);
+    let forms = tenant_people_rest_controller::TenantPeopleRestController::register_routes(
+        container, forms,
+    );
 
     pages
         .merge(forms)
@@ -653,25 +664,36 @@ pub(crate) mod tests {
 
     #[test]
     fn the_node_console_does_not_know_what_an_organisation_is() {
-        // Everything the machine's operator has that is not about
-        // sharing the machine out.
-        const NODE_SCOPE: &[(&str, &str)] = &[
-            ("people.rs", include_str!("people.rs")),
-            ("nodes.rs", include_str!("nodes.rs")),
-            ("updates.rs", include_str!("updates.rs")),
-            // Shared by both routers, and therefore held to the same
-            // rule: a page about a project or a service reads the same
-            // in either frontier.
-            ("projects.rs", include_str!("projects.rs")),
-            ("services.rs", include_str!("services.rs")),
-            ("databases.rs", include_str!("databases.rs")),
-        ];
+        // **Every controller that is not about sharing the machine
+        // out.** A list here would be right until somebody added a
+        // controller — and splitting the console into one file per
+        // controller added nine at once, which is when this went red.
+        // It reads the directory and takes out the two the rule is
+        // about, so a tenth is covered by existing.
+        let mut node_scope: Vec<(String, String)> = Vec::new();
+        for entry in std::fs::read_dir("src/console").expect("the console is there") {
+            let path = entry.expect("entry").path();
+            let name = path
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .to_string();
+            if !name.ends_with("_controller.rs") || name.starts_with("tenant") {
+                continue;
+            }
+            node_scope.push((name, std::fs::read_to_string(&path).expect("read")));
+        }
+        assert!(
+            node_scope.len() > 8,
+            "the scan found {} controllers, so it is reading the wrong place",
+            node_scope.len()
+        );
 
         let mut leaks = Vec::new();
-        for (name, source) in NODE_SCOPE {
+        for (name, source) in &node_scope {
             for reach in [
                 "platform::tenants",
-                "console::tenant::",
+                "console::tenant_people",
                 "tenant_routes",
                 "TenantPeople",
                 "administers_scope",
@@ -1150,6 +1172,44 @@ pub(crate) mod tests {
         );
     }
 
+    /// Everywhere the console can write a field: its controllers, and
+    /// the three directories that draw.
+    ///
+    /// **One scan, read by both of the tests below.** It was a list of
+    /// eight file names in each of them, which missed every field that
+    /// moved into `src/views/pages` when the controllers stopped
+    /// drawing, and would have missed the nine controllers the console
+    /// gained when it was split into one file each. A third test cannot
+    /// forget a directory now, because there is nowhere to forget it.
+    fn drawing_sources() -> Vec<(String, String)> {
+        let mut sources = Vec::new();
+        for directory in [
+            "src/console",
+            "src/views/pages",
+            "src/views/components",
+            "src/views/layouts",
+        ] {
+            for entry in std::fs::read_dir(directory).expect("the directory is there") {
+                let path = entry.expect("entry").path();
+                if path.extension().is_none_or(|kind| kind != "rs") {
+                    continue;
+                }
+                let name = path
+                    .file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .to_string();
+                sources.push((name, std::fs::read_to_string(&path).expect("read")));
+            }
+        }
+        assert!(
+            sources.len() > 50,
+            "the scan read {} files, so it is reading the wrong place",
+            sources.len()
+        );
+        sources
+    }
+
     /// Every field somebody types into says what may be filled into it.
     ///
     /// A field that declares nothing gets the browser's guess, and the
@@ -1170,19 +1230,10 @@ pub(crate) mod tests {
     /// It promises that the console asked.
     #[test]
     fn every_field_says_what_may_be_autofilled_into_it() {
-        const SOURCES: &[(&str, &str)] = &[
-            ("auth.rs", include_str!("auth.rs")),
-            ("databases.rs", include_str!("databases.rs")),
-            ("nodes.rs", include_str!("nodes.rs")),
-            ("people.rs", include_str!("people.rs")),
-            ("projects.rs", include_str!("projects.rs")),
-            ("services.rs", include_str!("services.rs")),
-            ("shell.rs", include_str!("../views/layouts/shell.rs")),
-            ("updates.rs", include_str!("updates.rs")),
-        ];
+        let sources = drawing_sources();
 
         let mut silent = Vec::new();
-        for (name, source) in SOURCES {
+        for (name, source) in &sources {
             for element in fields(source) {
                 if !element.contains("autocomplete=") {
                     silent.push(format!("{name}: {}", element.trim()));
@@ -1202,8 +1253,23 @@ pub(crate) mod tests {
     /// Hidden fields, checkboxes and radios are left out: nothing is
     /// filled into them, and `autocomplete` has no meaning there.
     fn fields(source: &str) -> Vec<String> {
+        // **Code, not prose.** A comment naming `<input>` is not a
+        // field, and the doc block on this very function was reported as
+        // two of them the moment the scan started reading the file it
+        // lives in.
+        let source: String = source
+            .lines()
+            .filter(|line| !line.trim_start().starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let source = source.as_str();
         let mut found = Vec::new();
-        for tag in ["<input", "<textarea"] {
+        // Assembled rather than written out, or the scan finds its own
+        // predicate: it reads every file that draws, and this one is now
+        // among them. The same trap `every_meter_width_is_a_declaration`
+        // already names, sprung the moment the sources became a
+        // directory read.
+        for tag in [concat!("<", "input"), concat!("<", "textarea")] {
             let mut rest = source;
             while let Some(start) = rest.find(tag) {
                 rest = &rest[start..];
@@ -1235,16 +1301,7 @@ pub(crate) mod tests {
     /// about the person filling them in.
     #[test]
     fn only_a_real_credential_field_is_named_like_one() {
-        const SOURCES: &[(&str, &str)] = &[
-            ("auth.rs", include_str!("auth.rs")),
-            ("databases.rs", include_str!("databases.rs")),
-            ("nodes.rs", include_str!("nodes.rs")),
-            ("people.rs", include_str!("people.rs")),
-            ("projects.rs", include_str!("projects.rs")),
-            ("services.rs", include_str!("services.rs")),
-            ("shell.rs", include_str!("../views/layouts/shell.rs")),
-            ("updates.rs", include_str!("updates.rs")),
-        ];
+        let sources = drawing_sources();
         // What a browser reads as "this is a sign-in".
         const CREDENTIAL_WORDS: &[&str] = &["username", "password", "email"];
         // What a field says when autofill is genuinely wanted.
@@ -1255,7 +1312,7 @@ pub(crate) mod tests {
         ];
 
         let mut pretending = Vec::new();
-        for (name, source) in SOURCES {
+        for (name, source) in &sources {
             for element in fields(source) {
                 let declares = PURPOSES.iter().any(|purpose| element.contains(purpose));
                 if declares {

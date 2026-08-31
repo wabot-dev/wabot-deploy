@@ -241,7 +241,7 @@ pub fn served_by_form<'a>(
                     //
                     // The same function the stream uses, so the first
                     // paint and every update after it read the same.
-                    @let cell = crate::console::projects::edge_cell(latest_for(orders, hostname, &node.id));
+                    @let cell = crate::views::components::project_cells::edge_cell(latest_for(orders, hostname, &node.id));
                     <span class=(match chosen.contains(&node.id.as_str()) {
                               true => cell.badge,
                               false => "badge badge-info is-hidden",
@@ -271,7 +271,12 @@ pub fn placement_state<'a>(
     queued: bool,
     not_answering: bool,
 ) -> impl Renderable + 'a {
-    let cell = crate::console::projects::replica_cell(replica, stopped, queued, not_answering);
+    let cell = crate::views::components::project_cells::replica_cell(
+        replica,
+        stopped,
+        queued,
+        not_answering,
+    );
     rsx! {
         @if cell.dot.is_empty() {
             <span class=(cell.badge)>(crate::views::texts::language::word(&cell.word))</span>

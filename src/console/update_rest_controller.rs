@@ -1,162 +1,26 @@
-//! Updates: what this node is running, what it could run, and the
-//! button that changes it.
-//!
-//! ## One click, and everything it has to say first
-//!
-//! Installing a release restarts the node — every container keeps
-//! running, but the console, the proxy and the registry go away for a
-//! few seconds. So the page shows what is about to happen before it
-//! offers the button: which version, published when, and the notes
-//! that came with it.
-//!
-//! ## What the page reads while an update runs
-//!
-//! The run row, which the update writes as it goes. The process is
-//! replaced at the end, so the page a browser reloads afterwards is
-//! served by the *new* binary reading a row the old one wrote — which
-//! is exactly why that state lives in the database.
+//! What the updates page posts to, and the stream it feeds.
 
 use std::sync::Arc;
 
-use hypertext::prelude::*;
-use serde::Deserialize;
 use wabot::prelude::*;
 use wabot::rest::axum::extract::Request;
 use wabot::rest::axum::response::Response;
 use wabot::rest::RestResult;
-use wabot::ui::hypertext::IntoView;
 
-use crate::policies::access;
-use crate::update::runs::{self, Status};
+use crate::update::runs::Status;
 
 use super::auth::{signed_in, SessionMiddleware};
 use super::ConsoleState;
-use crate::views::layouts::layout;
-use crate::views::layouts::shell::{Area, Frame};
-
-#[derive(Debug, Deserialize, Validate)]
-pub struct UpdatesPage {
-    pub error: Option<String>,
-    pub started: Option<String>,
-}
-
-#[derive(Debug, Deserialize, Validate)]
-pub struct ReleasePage {
-    pub tag: String,
-    pub error: Option<String>,
-}
-
-#[injectable]
-pub struct UpdatePages {
-    state: Arc<ConsoleState>,
-    auth: Arc<Auth>,
-}
-
-#[ui_controller("/", app)]
-impl UpdatePages {
-    #[view("/updates")]
-    #[middleware(SessionMiddleware)]
-    async fn index(&self, query: UpdatesPage) -> UiResult<ViewOutcome> {
-        let Some(account) = signed_in(&self.auth) else {
-            return Ok(Redirect::found("/sign-in").into());
-        };
-        // Updating the node is the node's business, which belongs to
-        // whoever runs it.
-        if !crate::authz::node_user::manages_the_machine(&account) {
-            return Ok(Redirect::found("/").into());
-        }
-
-        let projects = access::projects_for(&self.state.database, &account).await?;
-        let history = runs::recent(&self.state.database, 5)
-            .await
-            .unwrap_or_else(|error| {
-                // The release list and the version are the page; a
-                // history that cannot be read is a missing card, not a
-                // missing page.
-                tracing::warn!(%error, "could not read the update history");
-                Vec::new()
-            });
-        let latest = history.first().cloned();
-
-        // A failure to reach GitHub is not a failure of the page: this
-        // node runs fine without ever asking, and the page still has
-        // to say what version it is and what happened last time.
-        let available = crate::update::availability(&self.state.catalogue).await;
-
-        layout::head("Updates");
-        let frame = Frame::new(&account, Area::Settings, &projects, None, "/updates");
-        // The account's language, around the render and no wider:
-        // the strings are read here, and nothing awaits inside.
-        let page = crate::views::pages::node_user_updates_page::Updates {
-            history: &history,
-            latest: latest.as_ref(),
-            available: &available,
-            query_error: query.error.as_deref(),
-            query_started: query.started.as_deref(),
-        };
-        let body = crate::views::texts::language::scoped(account.language, || {
-            crate::views::pages::node_user_updates_page::render(&page)
-                .render()
-                .into_inner()
-        });
-
-        Ok(frame.render(body).into_view().into())
-    }
-
-    /// One release, in full — the notes are the reason this page
-    /// exists rather than a version number on a button.
-    #[view("/updates/:tag")]
-    #[middleware(SessionMiddleware)]
-    async fn release(&self, query: ReleasePage) -> UiResult<ViewOutcome> {
-        let Some(account) = signed_in(&self.auth) else {
-            return Ok(Redirect::found("/sign-in").into());
-        };
-        if !crate::authz::node_user::manages_the_machine(&account) {
-            return Ok(Redirect::found("/").into());
-        }
-
-        let releases = match self.state.catalogue.releases().await {
-            Ok(releases) => releases,
-            Err(error) => {
-                let back = format!("/updates?{}", encode("error", &error.to_string()));
-                return Ok(Redirect::found(back).into());
-            }
-        };
-        let Some(release) = crate::update::github::find(&releases, &query.tag).cloned() else {
-            return Ok(Redirect::found("/updates").into());
-        };
-
-        let projects = access::projects_for(&self.state.database, &account).await?;
-        let current = crate::update::github::Version::current();
-
-        layout::head(&format!("wabot-deploy {}", release.version));
-        let frame = Frame::new(&account, Area::Settings, &projects, None, "/updates");
-        // The account's language, around the render and no wider:
-        // the strings are read here, and nothing awaits inside.
-        let page = crate::views::pages::node_user_release_page::ReleaseView {
-            release: &release,
-            current,
-            query_error: query.error.as_deref(),
-        };
-        let body = crate::views::texts::language::scoped(account.language, || {
-            crate::views::pages::node_user_release_page::render(&page)
-                .render()
-                .into_inner()
-        });
-
-        Ok(frame.render(body).into_view().into())
-    }
-}
 
 /// The server half.
 #[injectable]
-pub struct UpdateApi {
+pub struct UpdateRestController {
     state: Arc<ConsoleState>,
     auth: Arc<Auth>,
 }
 
 #[rest_controller("/")]
-impl UpdateApi {
+impl UpdateRestController {
     /// What the update is doing, until it takes the process with it.
     ///
     /// The one stream here whose *disconnection* carries meaning. See
@@ -257,7 +121,7 @@ impl UpdateApi {
 
         Ok(super::auth::see_other(&format!(
             "/updates?{}",
-            encode(
+            super::auth::encode(
                 "started",
                 &format!(
                     "Installing {}. The node restarts when it is ready — this page \
@@ -269,16 +133,11 @@ impl UpdateApi {
     }
 }
 
-fn encode(key: &str, value: &str) -> String {
-    form_urlencoded::Serializer::new(String::new())
-        .append_pair(key, value)
-        .finish()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::console::tests::Console;
+    use crate::update::runs;
     use wabot::rest::axum::http::StatusCode;
 
     /// The page has to render on a node that cannot reach GitHub — the

@@ -336,7 +336,7 @@ pub struct Refusal {
 const MAX_BODY: usize = 64 * 1024;
 
 #[injectable]
-pub struct NetworkApi {
+pub struct NetworkRestController {
     database: Arc<SqliteDatabase>,
     /// For the overlay: a node that just joined is a peer, and the
     /// interface has to be told before anything can reach it.
@@ -382,7 +382,7 @@ fn constant_time_eq(held: &[u8], presented: &[u8]) -> bool {
 }
 
 #[rest_controller("/api/network")]
-impl NetworkApi {
+impl NetworkRestController {
     /// Come and ask me: an authority saying an errand is waiting.
     ///
     /// The one endpoint here that is called *by* an authority rather than
@@ -1641,11 +1641,11 @@ fn refuse(status: StatusCode, reason: &str) -> Response {
 /// Nothing is discovered: a type left out here panics on resolve.
 pub fn register(container: &Container, config: crate::config::Config) {
     container.register_instance::<crate::config::Config>(Arc::new(config));
-    register_transients!(container, NetworkApi);
+    register_transients!(container, NetworkRestController);
 }
 
 pub fn routes(container: &Container) -> Router {
-    NetworkApi::register_routes(container, Router::new())
+    NetworkRestController::register_routes(container, Router::new())
 }
 
 #[cfg(test)]

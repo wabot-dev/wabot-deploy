@@ -1,112 +1,23 @@
-//! Databases: the create form, the POST behind it, and the card the
-//! service page shows instead of an image field.
-//!
-//! ## Why it is not the service form with a checkbox
-//!
-//! A managed database has no image to type, no environment to edit and
-//! no tag to watch: the node writes all three. What it has instead is a
-//! version, a size, and credentials it generated. Two forms that share
-//! only the name field are two forms.
+//! What a managed database's forms post to.
 
 use std::sync::Arc;
 
-use hypertext::prelude::*;
-use serde::Deserialize;
 use wabot::prelude::*;
 use wabot::rest::axum::extract::Request;
 use wabot::rest::axum::response::Response;
 use wabot::rest::RestResult;
-use wabot::ui::hypertext::IntoView;
 
 use super::auth::{back_with_error, field, read_form, see_other, signed_in, SessionMiddleware};
 use super::ConsoleState;
-use crate::policies::access;
-use crate::views::layouts::layout;
-use crate::views::layouts::shell::{Area, Frame};
-
-#[derive(Debug, Deserialize, Validate)]
-pub struct DatabaseForm {
-    pub project: String,
-    pub error: Option<String>,
-}
 
 #[injectable]
-pub struct DatabasePages {
-    state: Arc<ConsoleState>,
-    auth: Arc<Auth>,
-}
-
-#[ui_controller("/", app)]
-impl DatabasePages {
-    #[view("/projects/:project/databases/new")]
-    #[middleware(SessionMiddleware)]
-    async fn new_database(&self, query: DatabaseForm) -> UiResult<ViewOutcome> {
-        let Some(account) = signed_in(&self.auth) else {
-            return Ok(Redirect::found("/sign-in").into());
-        };
-        let Some((project, allowed)) =
-            access::find_project(&self.state.database, &account, &query.project).await?
-        else {
-            return Ok(Redirect::found("/?error=no+such+project").into());
-        };
-        if !allowed.may_deploy() {
-            return Ok(Redirect::found(format!("/projects/{}", project.slug)).into());
-        }
-
-        let action = format!("/projects/{}/databases", project.slug);
-        let back = format!("/projects/{}", project.slug);
-        let all_projects = access::projects_for(&self.state.database, &account).await?;
-        let frame = Frame::new(
-            &account,
-            Area::Projects,
-            &all_projects,
-            Some(&project),
-            format!("/projects/{}/databases/new", project.slug),
-        )
-        .allowing(allowed);
-
-        layout::head("Create database");
-        let page = crate::views::pages::new_database_page::NewDatabase {
-            action: &action,
-            back: &back,
-            query_error: query.error.as_deref(),
-        };
-        let body = crate::views::texts::language::scoped(account.language, || {
-            crate::views::pages::new_database_page::render(&page)
-                .render()
-                .into_inner()
-        });
-
-        Ok(frame.render(body).into_view().into())
-    }
-}
-
-/// Where these three forms live, and so where saving one goes back to.
-///
-/// The name, the certificate and the published port are settings, and
-/// `locate_for` answers with the *project* — the right fallback for a
-/// control on the project's own list, and the wrong place to land
-/// somebody who was half-way down a settings page. A save that moves
-/// the page is a save that hides what it did.
-fn settings_of(
-    project: &crate::entities::project::Project,
-    service: &crate::entities::service::Service,
-) -> String {
-    // The tab, not the bare path: `/settings` is a redirect to the first
-    // tab now, and a save that lands on a redirect is a save whose
-    // fragment is dropped on the way — which is the same "a save that
-    // hides what it did" this function exists to prevent.
-    crate::views::pages::service_settings_page::Tab::Database.path(&project.slug, &service.slug)
-}
-
-#[injectable]
-pub struct DatabaseApi {
+pub struct DatabaseRestController {
     state: Arc<ConsoleState>,
     auth: Arc<Auth>,
 }
 
 #[rest_controller("/")]
-impl DatabaseApi {
+impl DatabaseRestController {
     /// What this database is called.
     ///
     /// The name is written and everything derived from it follows in the
@@ -173,7 +84,7 @@ impl DatabaseApi {
         if let Some(was) = named.was {
             let policy =
                 crate::edge::policy::for_name(&self.state.database, &self.state.config, &was).await;
-            if let Err(error) = super::nodes::store_source(
+            if let Err(error) = crate::commands::store_certificate_source::run(
                 &self.state.database,
                 &self.state.config,
                 &named.now,
@@ -292,7 +203,7 @@ impl DatabaseApi {
         let Some(first) = names.first().cloned() else {
             return Ok(back_with_error(&here, "this database has no name yet"));
         };
-        let renew_with = match super::nodes::source_from(&form, &first) {
+        let renew_with = match super::auth::source_from(&form, &first) {
             Ok(renew_with) => renew_with,
             Err(reason) => return Ok(back_with_error(&here, &reason)),
         };
@@ -326,9 +237,13 @@ impl DatabaseApi {
             Err(reason) => return Ok(back_with_error(&here, &reason)),
         };
 
-        if let Err(error) =
-            super::nodes::store_source(&self.state.database, &self.state.config, &name, &renew_with)
-                .await
+        if let Err(error) = crate::commands::store_certificate_source::run(
+            &self.state.database,
+            &self.state.config,
+            &name,
+            &renew_with,
+        )
+        .await
         {
             return Ok(back_with_error(&here, &error));
         }
@@ -410,12 +325,30 @@ impl DatabaseApi {
     }
 }
 
+/// Where these three forms live, and so where saving one goes back to.
+///
+/// The name, the certificate and the published port are settings, and
+/// `locate_for` answers with the *project* — the right fallback for a
+/// control on the project's own list, and the wrong place to land
+/// somebody who was half-way down a settings page. A save that moves
+/// the page is a save that hides what it did.
+fn settings_of(
+    project: &crate::entities::project::Project,
+    service: &crate::entities::service::Service,
+) -> String {
+    // The tab, not the bare path: `/settings` is a redirect to the first
+    // tab now, and a save that lands on a redirect is a save whose
+    // fragment is dropped on the way — which is the same "a save that
+    // hides what it did" this function exists to prevent.
+    crate::views::pages::service_settings_page::Tab::Database.path(&project.slug, &service.slug)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::*;
     use crate::console::tests::Console;
     use crate::repositories::databases;
     use crate::repositories::services;
+    use hypertext::Renderable;
     use wabot::rest::axum::http::StatusCode;
 
     /// The card names exactly what the certificate covers, because the

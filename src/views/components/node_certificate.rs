@@ -3,6 +3,13 @@
 use crate::views::texts::language::t;
 use hypertext::prelude::*;
 
+/// The three answers, in the order somebody is likeliest to want them.
+pub const SOURCES: &[(&str, &str)] = &[
+    ("acme", "A public authority (Let's Encrypt)"),
+    ("self_signed", "This node's own authority"),
+    ("file", "Read from files on this node"),
+];
+
 /// What the node's TLS is, as one answer.
 ///
 /// Assembled rather than read off a single column, because the honest
@@ -311,7 +318,7 @@ pub fn certificate_source_form(
             <form method="post" action=(action) class="stack">
                 <label for=(field("source"))>(t("Where the certificate comes from"))</label>
                 <select id=(field("source")) name="renew_with">
-                    @for (value, label) in crate::console::nodes::SOURCES {
+                    @for (value, label) in SOURCES {
                         @if policy.renew_with.as_str() == *value {
                             <option value=(value) selected>(label)</option>
                         } @else {

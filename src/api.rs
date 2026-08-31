@@ -60,12 +60,12 @@ pub struct Ready {
 }
 
 #[singleton]
-pub struct HealthController {
+pub struct HealthRestController {
     node: Arc<NodeStatus>,
 }
 
 #[rest_controller("/")]
-impl HealthController {
+impl HealthRestController {
     /// Liveness. Touches nothing, so it stays true for exactly as long
     /// as the process can answer at all — which is the only question
     /// a restart policy should be asking.
@@ -102,11 +102,11 @@ impl HealthController {
 /// Nothing is discovered: a type left out here panics on resolve.
 pub fn register(container: &Container, database: Arc<SqliteDatabase>) {
     container.register_instance::<NodeStatus>(Arc::new(NodeStatus::new(database)));
-    register_singletons!(container, HealthController);
+    register_singletons!(container, HealthRestController);
 }
 
 pub fn routes(container: &Container) -> Router {
-    HealthController::register_routes(container, Router::new())
+    HealthRestController::register_routes(container, Router::new())
 }
 
 #[cfg(test)]

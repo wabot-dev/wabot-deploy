@@ -275,8 +275,8 @@ pub fn state_cell(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::console::projects::replica_cell;
     use crate::deploy::Observed;
+    use crate::views::components::project_cells::replica_cell;
 
     /// The column counts copies and never names an address.
     ///

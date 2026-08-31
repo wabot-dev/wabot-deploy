@@ -1,648 +1,36 @@
-//! Nodes: the list, and what one is spending.
+//! What the network and node pages post to, and the stream they feed.
 //!
-//! ## The only JavaScript in the product
-//!
-//! Two things on this page change without anybody pressing anything.
-//! Memory changes every second, and a page showing a number from when
-//! it was rendered is a page somebody reloads to check. A certificate
-//! request finishes minutes after it starts, and the page used to
-//! handle that by telling the operator to reload in a few seconds —
-//! which is the console admitting it does not know.
-//!
-//! So this one view carries a script: an `EventSource` that replaces
-//! both in place. One stream, not two, because one page holding two
-//! connections open is twice the thing to get wrong; memory rides a
-//! two-second tick and the certificate rides a change signal from the
-//! renewal loop, and `live_stream` merges them.
-//!
-//! It is deliberately the *whole* of the client's involvement. The
-//! page renders complete and correct with scripting off — the script
-//! only replaces text and classes that are already there — so the
-//! console keeps working on a machine where the stream cannot be
-//! opened, which is the machine somebody is most likely looking at
-//! this page from. Without it the page is a snapshot, which is what it
-//! always was.
+//! The live cells live here because the stream is what sends them: the
+//! pages paint from the same numbers once, through the components, and
+//! nothing else reads these.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use hypertext::prelude::*;
-use serde::Deserialize;
 use wabot::prelude::*;
 use wabot::rest::axum::body::Body;
 use wabot::rest::axum::extract::Request;
 use wabot::rest::axum::http::{header, StatusCode};
 use wabot::rest::axum::response::Response;
 use wabot::rest::RestResult;
-use wabot::ui::hypertext::IntoView;
 
 use crate::network::{self};
 use crate::node::memory::{self, Snapshot};
-use crate::policies::access;
 
 use super::auth::{signed_in, SessionMiddleware};
 use super::ConsoleState;
 use crate::views::components::node_certificate::{CertificateCells, CertificateState};
-use crate::views::layouts::layout;
-use crate::views::layouts::shell::{Area, Frame};
-use crate::views::pages::node_user_node_settings_page::{NodeTab, Panel};
-
-#[derive(Debug, Deserialize, Validate)]
-pub struct NodePage {
-    pub node: String,
-    pub error: Option<String>,
-}
-
-#[derive(Debug, Deserialize, Validate, Default)]
-pub struct NodeSettingsPage {
-    pub error: Option<String>,
-    pub checked: Option<String>,
-    /// Which tab, from the path. Absent on the bare `/node`, which sends
-    /// you to the first one.
-    pub tab: Option<String>,
-}
-
-#[derive(Debug, Deserialize, Validate)]
-pub struct NodesPage {
-    pub error: Option<String>,
-    /// The node this one has just joined. A name, not a secret, so the
-    /// query string is the right place for it — the same rule
-    /// `back_with_error` follows.
-    pub joined: Option<String>,
-    /// Names a pasted token waiting to be read *once*, so its terms can
-    /// be shown before it is spent. The nonce travels, the token does
-    /// not — see `ConsoleState::reveals`.
-    pub review: Option<String>,
-}
-
-#[injectable]
-pub struct NodePages {
-    state: Arc<ConsoleState>,
-    auth: Arc<Auth>,
-}
-
-#[ui_controller("/", app)]
-impl NodePages {
-    /// Where the gear lands.
-    ///
-    /// A redirect rather than a page of its own: a landing page whose
-    /// whole content is links to the three pages already in the sidebar
-    /// is a click somebody has to make before doing anything. The nodes
-    /// are what this section is mostly about, so that is where it opens
-    /// — and the sidebar says what else is here.
-    #[view("/settings")]
-    #[middleware(SessionMiddleware)]
-    ///
-    /// **This is the machine's gear, and it only ever opens the
-    /// machine's settings.** Another frontier's console is a different
-    /// router with its own landing — see `console::tenant` — so this
-    /// controller has no second case to carry, which is what keeps the
-    /// two halves separable.
-    async fn settings(&self) -> UiResult<ViewOutcome> {
-        match signed_in(&self.auth)
-            .is_some_and(|account| crate::authz::node_user::manages_the_machine(&account))
-        {
-            true => Ok(Redirect::found("/node").into()),
-            false => Ok(Redirect::found("/").into()),
-        }
-    }
-
-    /// Where `/nodes` used to be, both of them.
-    ///
-    /// The list moved to its own area and the machine's own settings to
-    /// `/node`, so the old path cannot land on either without choosing.
-    /// It chooses the list: that is what the plural said, and a link kept
-    /// from before is far more likely to be somebody's bookmark of "how
-    /// are my nodes" than of the certificate form.
-    #[view("/nodes")]
-    #[middleware(SessionMiddleware)]
-    async fn nodes_moved(&self) -> UiResult<ViewOutcome> {
-        Ok(Redirect::found("/network").into())
-    }
-
-    #[view("/nodes/:node")]
-    #[middleware(SessionMiddleware)]
-    async fn node_moved(&self, query: NodePage) -> UiResult<ViewOutcome> {
-        Ok(Redirect::found(format!("/network/{}", query.node)).into())
-    }
-
-    #[view("/network")]
-    #[middleware(SessionMiddleware)]
-    async fn index(&self, query: NodesPage) -> UiResult<ViewOutcome> {
-        let Some(account) = signed_in(&self.auth) else {
-            return Ok(Redirect::found("/sign-in").into());
-        };
-        // The node belongs to whoever runs it. Hiding the link is
-        // courtesy; this is the boundary.
-        if !crate::authz::node_user::manages_the_machine(&account) {
-            return Ok(Redirect::found("/").into());
-        }
-
-        let nodes = network::all(&self.state.database).await?;
-        let authorities = network::authorities(&self.state.database).await?;
-        // What each of them was actually agreed to, which is the whole
-        // point of the terms screen: a row saying only "takes
-        // instructions from" would hide the difference between a node
-        // that may do everything here and one that may do nothing.
-        let mut agreed: Vec<(String, Vec<network::capability::Capability>)> = Vec::new();
-        for authority in &authorities {
-            agreed.push((
-                authority.node_id.clone(),
-                network::capability::granted_to(&self.state.database, &authority.node_id).await,
-            ));
-        }
-        let projects = access::projects_for(&self.state.database, &account).await?;
-        // A token pasted a moment ago, held for exactly this render so
-        // its terms can be read before it is spent. Taken, not copied:
-        // a reload asks for it again, which is the same behaviour the
-        // minted token has and is the honest one for a secret.
-        let reviewing = query
-            .review
-            .as_deref()
-            .and_then(|nonce| self.state.reveals.take(nonce))
-            .and_then(|token| {
-                network::token::JoinToken::decode(&token)
-                    .ok()
-                    .map(|terms| (token, terms))
-            });
-
-        layout::head("Network");
-        let frame = Frame::new(&account, Area::Network, &projects, None, "/network");
-        // The account's language, around the render and no wider:
-        // the strings are read here, and nothing awaits inside.
-        let page = crate::views::pages::node_user_network_page::Network {
-            nodes: &nodes,
-            authorities: &authorities,
-            agreed: &agreed,
-            reviewing: reviewing.as_ref(),
-            error: query.error.as_deref(),
-        };
-        let body = crate::views::texts::language::scoped(account.language, || {
-            crate::views::pages::node_user_network_page::render(&page)
-                .render()
-                .into_inner()
-        });
-
-        Ok(frame.render(body).into_view().into())
-    }
-
-    /// Mint a token for a node that is not here yet.
-    ///
-    /// Its own page because it is the consequential half of the network
-    /// area: a form that hands out an authority over this machine has no
-    /// business half-way down a list somebody opened to check on things.
-    /// The token it produces is shown here, once.
-    #[view("/network/invite")]
-    #[middleware(SessionMiddleware)]
-    async fn invite(&self, query: NodesPage) -> UiResult<ViewOutcome> {
-        let Some(account) = signed_in(&self.auth) else {
-            return Ok(Redirect::found("/sign-in").into());
-        };
-        if !crate::authz::node_user::manages_the_machine(&account) {
-            return Ok(Redirect::found("/").into());
-        }
-
-        let nodes = network::all(&self.state.database).await?;
-        let enrolments = network::enrolment::all(&self.state.database).await?;
-        let projects = access::projects_for(&self.state.database, &account).await?;
-        let may_enrol = nodes.iter().any(|node| node.is_self && node.may_be_edge());
-        let now = super::now_ms();
-
-        layout::head("Invite a node");
-        let frame = Frame::new(&account, Area::Network, &projects, None, "/network/invite");
-        let page = crate::views::pages::node_user_invite_node_page::InviteNode {
-            nodes: &nodes,
-            enrolments: &enrolments,
-            may_enrol,
-            now,
-            error: query.error.as_deref(),
-        };
-        let body = crate::views::texts::language::scoped(account.language, || {
-            crate::views::pages::node_user_invite_node_page::render(&page)
-                .render()
-                .into_inner()
-        });
-
-        Ok(frame.render(body).into_view().into())
-    }
-
-    /// Spend a token minted somewhere else.
-    ///
-    /// The terms screen lands here too: a token pasted is held for exactly
-    /// one render so what it asks for can be read *before* it is spent.
-    /// That order is the whole point — terms shown after committing are a
-    /// consent screen for a decision already made.
-    #[view("/network/join")]
-    #[middleware(SessionMiddleware)]
-    async fn join_page(&self, query: NodesPage) -> UiResult<ViewOutcome> {
-        let Some(account) = signed_in(&self.auth) else {
-            return Ok(Redirect::found("/sign-in").into());
-        };
-        if !crate::authz::node_user::manages_the_machine(&account) {
-            return Ok(Redirect::found("/").into());
-        }
-
-        let projects = access::projects_for(&self.state.database, &account).await?;
-        let reviewing = query
-            .review
-            .as_deref()
-            .and_then(|nonce| self.state.reveals.take(nonce))
-            .and_then(|token| {
-                network::token::JoinToken::decode(&token)
-                    .ok()
-                    .map(|terms| (token, terms))
-            });
-
-        layout::head("Join a network");
-        let frame = Frame::new(&account, Area::Network, &projects, None, "/network/join");
-        let page = crate::views::pages::node_user_join_network_page::JoinNetwork {
-            reviewing: reviewing.as_ref(),
-            joined: query.joined.as_deref(),
-            error: query.error.as_deref(),
-        };
-        let body = crate::views::texts::language::scoped(account.language, || {
-            crate::views::pages::node_user_join_network_page::render(&page)
-                .render()
-                .into_inner()
-        });
-
-        Ok(frame.render(body).into_view().into())
-    }
-
-    /// This machine, and only what is editable about it.
-    ///
-    /// It was `/nodes`, mixed in with the list of every node and the two
-    /// enrolment forms — so "what does this node do" and "what are my
-    /// nodes doing" were one page with one name. Singular here, and the
-    /// list is its own area.
-    /// The bare path is not a page: it names the first tab.
-    #[view("/node")]
-    #[middleware(SessionMiddleware)]
-    async fn this_node_root(&self) -> UiResult<ViewOutcome> {
-        // Nobody signed in goes to sign in, not to the projects list: the
-        // three answers are different and `the_nodes_pages_need_a_session`
-        // asks every page in the area which one it gives.
-        let Some(account) = signed_in(&self.auth) else {
-            return Ok(Redirect::found("/sign-in").into());
-        };
-        match account.is_admin() {
-            true => Ok(Redirect::found(NodeTab::Domain.path()).into()),
-            false => Ok(Redirect::found("/").into()),
-        }
-    }
-
-    #[view("/node/:tab")]
-    #[middleware(SessionMiddleware)]
-    async fn this_node(&self, query: NodeSettingsPage) -> UiResult<ViewOutcome> {
-        let Some(account) = signed_in(&self.auth) else {
-            return Ok(Redirect::found("/sign-in").into());
-        };
-        if !crate::authz::node_user::manages_the_machine(&account) {
-            return Ok(Redirect::found("/").into());
-        }
-
-        // A word that is not a tab goes to the first one, which covers a
-        // hand-typed URL and a link kept from before there were tabs.
-        let Some(tab) = query.tab.as_deref().and_then(NodeTab::parse) else {
-            return Ok(Redirect::found(NodeTab::Domain.path()).into());
-        };
-
-        let projects = access::projects_for(&self.state.database, &account).await?;
-        let nodes = network::all(&self.state.database).await?;
-        let self_id = nodes
-            .iter()
-            .find(|node| node.is_self)
-            .map(|node| node.id.clone())
-            .unwrap_or_default();
-
-        // **Only what this tab draws.** All of it used to be read on
-        // every render, and the cost is not theoretical: `backup::taken`
-        // is a `read_dir` and a `manifest.json` per backup in the root,
-        // and this is the page somebody opens because their node is
-        // unwell. The comment saying so was already on one of them.
-        let panel = match tab {
-            NodeTab::Domain => {
-                let domain =
-                    crate::node::settings::domain(&self.state.database, &self.state.config).await;
-                let facts = super::certificate_facts(&self.state).await;
-                let policy = crate::edge::policy::for_name(
-                    &self.state.database,
-                    &self.state.config,
-                    domain
-                        .as_deref()
-                        .unwrap_or(crate::edge::certs::FALLBACK_NAME),
-                )
-                .await;
-                let state = CertificateState::read(
-                    &facts,
-                    domain.as_deref(),
-                    // This name's own, falling back to the node-wide
-                    // reason for a failure recorded before there were
-                    // per-name ones.
-                    policy
-                        .last_error
-                        .clone()
-                        .or(crate::node::settings::acme_error(&self.state.database).await),
-                    self.state.certificates.phase(),
-                    self.state.config.acme.disabled,
-                );
-                let cells = crate::views::components::node_certificate::certificate_cells(
-                    &state,
-                    &facts,
-                    domain.as_deref(),
-                );
-                Panel::Domain {
-                    self_id,
-                    cells,
-                    state,
-                    policy,
-                    domain,
-                    checked: query.checked.clone(),
-                }
-            }
-            NodeTab::Allows => {
-                let domain =
-                    crate::node::settings::domain(&self.state.database, &self.state.config).await;
-                let mut provides = Vec::new();
-                for capability in network::capability::Capability::ALL {
-                    let on = network::capability::provides(&self.state.database, capability).await;
-                    provides.push((capability, on));
-                }
-                Panel::Allows {
-                    provides,
-                    reachable: nodes
-                        .iter()
-                        .any(|node| node.is_self && node.endpoint.is_some())
-                        || domain.is_some(),
-                    owns: network::capability::owns(&self.state.database).await,
-                    owned: projects.iter().filter(|project| project.is_ours()).count(),
-                }
-            }
-            NodeTab::Resources => Panel::Resources {
-                // The reading, not a stream: this page does not host the
-                // meters.
-                snapshot: self.state.deployer.memory().await,
-                reserves: (
-                    crate::node::settings::memory_reserve(&self.state.database).await,
-                    crate::node::settings::cpu_reserve(&self.state.database).await,
-                ),
-                cores: crate::node::cpu::cores(),
-            },
-            NodeTab::Backup => Panel::Backup {
-                plan: crate::node::backups::plan(&self.state.database).await,
-                attempt: crate::node::backups::last(&self.state.database).await,
-                taken: crate::commands::backup::taken(&self.state.config.node.data_dir),
-                s3: self.state.config.s3(),
-                archiving: crate::node::settings::archiving(&self.state.database).await,
-                default_destination: self
-                    .state
-                    .config
-                    .node
-                    .data_dir
-                    .join("backups")
-                    .display()
-                    .to_string(),
-                config_path: self
-                    .state
-                    .config
-                    .source
-                    .clone()
-                    .unwrap_or_else(|| std::path::PathBuf::from(crate::config::DEFAULT_CONFIG_PATH))
-                    .display()
-                    .to_string(),
-                self_id,
-                // A flag rather than a row, so the card stays a function
-                // of values — see `node::backups::in_progress`.
-                running: crate::node::backups::in_progress(),
-            },
-        };
-
-        layout::head("Node");
-        let frame = Frame::new(&account, Area::Settings, &projects, None, "/node");
-        let page = crate::views::pages::node_user_node_settings_page::NodeSettings {
-            tab,
-            panel,
-            error: query.error.as_deref(),
-        };
-        let body = crate::views::texts::language::scoped(account.language, || {
-            crate::views::pages::node_user_node_settings_page::render(&page)
-                .render()
-                .into_inner()
-        });
-
-        Ok(frame.render(body).into_view().into())
-    }
-
-    #[view("/network/:node")]
-    #[middleware(SessionMiddleware)]
-    async fn node(&self, query: NodePage) -> UiResult<ViewOutcome> {
-        let Some(account) = signed_in(&self.auth) else {
-            return Ok(Redirect::found("/sign-in").into());
-        };
-        if !crate::authz::node_user::manages_the_machine(&account) {
-            return Ok(Redirect::found("/").into());
-        }
-        let Some(node) = network::find(&self.state.database, &query.node).await? else {
-            return Ok(Redirect::found("/network").into());
-        };
-
-        let projects = access::projects_for(&self.state.database, &account).await?;
-
-        // A node that is not this one has no memory reading and no
-        // certificate: both are answers only the machine itself can
-        // give, and nothing asks it anything yet. So the page says what
-        // is known rather than rendering cards full of "unknown".
-        if !node.is_self {
-            let path = format!("/network/{}", node.id);
-            // Everything this node could ask that one to run, named the
-            // way somebody picking from a list would recognise.
-            let orders: Vec<network::errand::Record> = network::errand::all(&self.state.database)
-                .await?
-                .into_iter()
-                .filter(|record| record.node_id == node.id)
-                .collect();
-            // What this node has agreed to do for that one. Every
-            // capability, so the form cannot be missing one — the same
-            // rule the capabilities card follows, for the same reason.
-            let held = network::capability::granted_to(&self.state.database, &node.id).await;
-            let granted: Vec<(network::capability::Capability, bool)> =
-                network::capability::Capability::ALL
-                    .into_iter()
-                    .map(|capability| (capability, held.contains(&capability)))
-                    .collect();
-            // The releases somebody can ask that node for.
-            //
-            // **Only when it has agreed to be kept up to date.** Reading
-            // the list is a call to GitHub — cached for fifteen minutes,
-            // and still a call — and a page that cannot offer the form
-            // has no use for it. A failure is a card with an empty list
-            // and a sentence saying so, never a page that does not
-            // render: this console is opened when a node is unwell, and
-            // GitHub being unreachable is one of the ways that happens.
-            let may_manage = node
-                .allows
-                .contains(&network::capability::Capability::Manage);
-            let (releases, catalogue_failed) = match may_manage {
-                false => (Vec::new(), false),
-                true => match self.state.catalogue.releases().await {
-                    Ok(releases) => (
-                        releases
-                            .into_iter()
-                            // Not filtered by what *this* machine can
-                            // install: the answer belongs to the node
-                            // being asked, which resolves the tag itself.
-                            // One artifact per release today makes the
-                            // two the same; the principle is what keeps
-                            // it honest when they stop being.
-                            .map(|release| release.tag)
-                            .collect(),
-                        false,
-                    ),
-                    Err(error) => {
-                        tracing::warn!(%error, "could not read the release list");
-                        (Vec::new(), true)
-                    }
-                },
-            };
-            layout::head(&node.name);
-            let frame = Frame::new(&account, Area::Network, &projects, None, path);
-            let page = crate::views::pages::node_user_remote_node_page::RemoteNode {
-                node: &node,
-                orders: &orders,
-                granted: &granted,
-                releases: &releases,
-                catalogue_failed,
-                error: query.error.as_deref(),
-            };
-            // The account's language, around the render and no wider:
-            // the strings are read here, and nothing awaits inside.
-            let body = crate::views::texts::language::scoped(account.language, || {
-                crate::views::pages::node_user_remote_node_page::render(&page)
-                    .render()
-                    .into_inner()
-            });
-
-            return Ok(frame.render(body).into_view().into());
-        }
-
-        let snapshot = self.state.deployer.memory().await;
-        // One call, and about the directory the node writes into rather
-        // than about `/`: they are usually the same filesystem and the day
-        // they are not is the day this matters.
-        // Every part of it, which is three directory walks — so once per
-        // render and never on the stream beside it: the memory tick is
-        // every two seconds, and walking containerd's tree that often
-        // would be this node's own reading of itself, at the top of its
-        // own CPU column.
-        let committed = self.state.deployer.committed().await;
-        let reserves = (
-            crate::node::settings::memory_reserve(&self.state.database).await,
-            crate::node::settings::cpu_reserve(&self.state.database).await,
-        );
-        let disk = crate::node::disk::breakdown(
-            &self.state.config.node.data_dir,
-            std::path::Path::new(crate::node::disk::CONTAINERD_ROOT),
-        );
-        let path = format!("/network/{}", node.id);
-
-        layout::head(&node.name);
-        let frame = Frame::new(&account, Area::Network, &projects, None, path);
-        let page = crate::views::pages::node_user_this_node_page::ThisNode {
-            node: &node,
-            disk: &disk,
-            committed: &committed,
-            snapshot: &snapshot,
-            reserves,
-        };
-        // The account's language, around the render and no wider:
-        // the strings are read here, and nothing awaits inside.
-        let body = crate::views::texts::language::scoped(account.language, || {
-            crate::views::pages::node_user_this_node_page::render(&page)
-                .render()
-                .into_inner()
-        });
-
-        Ok(frame.render(body).into_view().into())
-    }
-}
-
-/// Where this node's own page is.
-///
-/// Looked up rather than named by a constant: the id is minted when the
-/// node is installed, so there is no path a `const` could hold. Back to
-/// the list if there is somehow no row — a redirect to a page that does
-/// not exist is worse than one to the page above it.
-async fn self_path(database: &wabot::sqlite::SqliteDatabase) -> String {
-    match network::me(database).await {
-        Ok(Some(me)) => format!("/network/{}", me.id),
-        Ok(None) => "/network".to_string(),
-        Err(error) => {
-            tracing::warn!(%error, "could not read this node's own row");
-            "/network".to_string()
-        }
-    }
-}
-
-pub(crate) fn source_from(
-    form: &std::collections::HashMap<String, String>,
-    name: &str,
-) -> Result<crate::edge::policy::RenewWith, String> {
-    match super::auth::field(form, "renew_with") {
-        "self_signed" => Ok(crate::edge::policy::RenewWith::SelfSigned),
-        "file" => {
-            let cert_path = super::auth::field(form, "cert_path").trim().to_string();
-            let key_path = super::auth::field(form, "key_path").trim().to_string();
-            if cert_path.is_empty() || key_path.is_empty() {
-                return Err("reading from files needs both a certificate and a key".into());
-            }
-            // Refused now, while there is somebody to tell.
-            crate::edge::certs::from_files(name, &cert_path, &key_path)
-                .map_err(|error| error.to_string())?;
-            Ok(crate::edge::policy::RenewWith::File {
-                cert_path,
-                key_path,
-            })
-        }
-        // Including anything a hand-written form might send: ACME is the
-        // default, and defaulting to it cannot lose a certificate the way
-        // defaulting to a file source could.
-        _ => Ok(crate::edge::policy::RenewWith::Acme),
-    }
-}
-
-/// Store it — **forgetting** rather than writing the default.
-///
-/// A stored default would go stale the day `acme.disabled` changed, and
-/// then say the opposite of what the node does.
-pub(crate) async fn store_source(
-    database: &wabot::sqlite::SqliteDatabase,
-    config: &crate::config::Config,
-    name: &str,
-    renew_with: &crate::edge::policy::RenewWith,
-) -> Result<(), String> {
-    let stored = match renew_with == &crate::edge::policy::RenewWith::default_for(config) {
-        true => crate::edge::policy::clear(database, name).await,
-        false => crate::edge::policy::set(database, name, renew_with).await,
-    };
-    stored.map_err(|error| error.to_string())
-}
-
-/// The three answers, in the order somebody is likeliest to want them.
-pub(crate) const SOURCES: &[(&str, &str)] = &[
-    ("acme", "A public authority (Let's Encrypt)"),
-    ("self_signed", "This node's own authority"),
-    ("file", "Read from files on this node"),
-];
+use crate::views::pages::node_user_node_settings_page::NodeTab;
 
 /// The server half.
 #[injectable]
-pub struct NodeApi {
+pub struct NodeRestController {
     state: Arc<ConsoleState>,
     auth: Arc<Auth>,
 }
 
 #[rest_controller("/")]
-impl NodeApi {
+impl NodeRestController {
     /// The node's certificate authority, as a file.
     ///
     /// Because a client that cannot verify is a client using `require`,
@@ -1466,13 +854,18 @@ impl NodeApi {
             Err(reason) => return Ok(super::auth::back_with_error(here, &reason)),
         };
 
-        let renew_with = match source_from(&form, &name) {
+        let renew_with = match super::auth::source_from(&form, &name) {
             Ok(renew_with) => renew_with,
             Err(reason) => return Ok(super::auth::back_with_error(here, &reason)),
         };
 
-        if let Err(error) =
-            store_source(&self.state.database, &self.state.config, &name, &renew_with).await
+        if let Err(error) = crate::commands::store_certificate_source::run(
+            &self.state.database,
+            &self.state.config,
+            &name,
+            &renew_with,
+        )
+        .await
         {
             return Ok(super::auth::back_with_error(here, &error));
         }
@@ -1760,12 +1153,30 @@ fn cells(snapshot: &Snapshot, busy: Option<&crate::node::cpu::Busy>) -> Cells {
     Cells { cells, bars }
 }
 
+/// Where this node's own page is.
+///
+/// Looked up rather than named by a constant: the id is minted when the
+/// node is installed, so there is no path a `const` could hold. Back to
+/// the list if there is somehow no row — a redirect to a page that does
+/// not exist is worse than one to the page above it.
+async fn self_path(database: &wabot::sqlite::SqliteDatabase) -> String {
+    match network::me(database).await {
+        Ok(Some(me)) => format!("/network/{}", me.id),
+        Ok(None) => "/network".to_string(),
+        Err(error) => {
+            tracing::warn!(%error, "could not read this node's own row");
+            "/network".to_string()
+        }
+    }
+}
+
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
     use crate::config::Config;
     use crate::console::tests::Console;
     use crate::network::Kind;
+    use hypertext::Renderable;
     use wabot::rest::axum::http::StatusCode;
 
     fn snapshot() -> Snapshot {
@@ -1861,7 +1272,20 @@ pub(crate) mod tests {
     /// third card is exactly how this happened a second time.
     #[test]
     fn every_meter_width_is_a_declaration() {
-        let source = include_str!("nodes.rs");
+        // Both halves of what was one file, and every other controller
+        // with them: a `style` attribute is a `style` attribute wherever
+        // it is written, and naming the file this used to live in is
+        // what made it silent the moment that file was split.
+        let source: String = std::fs::read_dir("src/console")
+            .expect("the console is there")
+            .filter_map(|entry| {
+                let path = entry.ok()?.path();
+                path.extension()
+                    .filter(|kind| *kind == "rs")
+                    .and(std::fs::read_to_string(&path).ok())
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
         // Assembled rather than written out, or this scan finds its own
         // predicate and reports the line it is reading from.
         let needle = concat!("style", "=(");

@@ -59,12 +59,12 @@ pub struct Pusher {
 }
 
 #[injectable]
-pub struct Registry {
+pub struct RegistryRestController {
     state: Arc<RegistryState>,
 }
 
 #[rest_controller("/v2")]
-impl Registry {
+impl RegistryRestController {
     /// The version check every client makes first.
     ///
     /// Answering `200` with the version header is what tells a client
@@ -186,7 +186,7 @@ impl Registry {
     }
 }
 
-impl Registry {
+impl RegistryRestController {
     /// Who is pushing, from the `Authorization` header.
     ///
     /// Basic auth with the push token as the password. The username is
@@ -346,11 +346,11 @@ fn not_found() -> Response {
 
 pub fn register(container: &Container, state: Arc<RegistryState>) {
     container.register_instance::<RegistryState>(state);
-    register_transients!(container, Registry);
+    register_transients!(container, RegistryRestController);
 }
 
 pub fn routes(container: &Container) -> Router {
-    Registry::register_routes(container, Router::new())
+    RegistryRestController::register_routes(container, Router::new())
 }
 
 #[cfg(test)]

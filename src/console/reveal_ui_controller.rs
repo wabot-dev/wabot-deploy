@@ -48,12 +48,12 @@ pub struct ShownForPage {
 }
 
 #[injectable]
-pub struct RevealPages {
+pub struct RevealUiController {
     state: Arc<ConsoleState>,
     auth: Arc<Auth>,
 }
 
-impl RevealPages {
+impl RevealUiController {
     /// Render one, or send them back where they came from.
     ///
     /// **A spent nonce is not an error.** It is what a refresh looks
@@ -116,7 +116,7 @@ impl WhatKind {
 }
 
 #[ui_controller("/", app)]
-impl RevealPages {
+impl RevealUiController {
     /// A token for a node that is not here yet.
     #[view("/network/invite/shown")]
     #[middleware(SessionMiddleware)]

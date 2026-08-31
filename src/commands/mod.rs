@@ -45,3 +45,4 @@ pub mod set_service_resources;
 pub mod set_service_tracking;
 pub mod setup_token;
 pub mod stop_service;
+pub mod store_certificate_source;
