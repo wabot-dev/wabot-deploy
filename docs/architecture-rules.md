@@ -548,6 +548,43 @@ rule for anything visual.
 
 
 
+## A secret shown once gets a page of its own
+
+Not a card bolted to the top of whatever minted it. The invite page came
+back with the token above its own form; an organisation came back with
+the link above its quota — so the one thing somebody has to act on *now*
+arrived surrounded by the controls they had just finished using, and the
+only way to clear it is a reload, which is what spends the nonce. Jorge:
+*"es muy extraña la experiencia"*.
+
+One page, one thing on it, and the breadcrumb's arrow is the way back —
+the page draws no button for it, per
+`no_page_offers_a_way_back_the_breadcrumb_already_is`. Four routes and
+one view: what the page *says* depends on which secret it is, and the
+route is what knows, so the kind comes from the path and the value comes
+from the nonce.
+
+**The arrow and a spent nonce go to the same place.** A refresh landing
+somewhere the arrow does not point is two answers to "where was I".
+
+**The store holds what goes on the clipboard**, not the raw secret. A
+join token becomes `wabot-deploy join …` and a push token becomes the
+whole `docker login …` before either is stashed — the page chooses the
+words around a value, never the value.
+
+### And a secret never travels in the query string
+
+`ConsoleState::reveals` was written because a push token used to, and it
+was written as if that were the only one. **Three invitation links were
+still doing it** — the node's people page, an organisation's, a
+tenant's. A query parameter is read by the address bar, the history and
+every refresh, and an invitation link is a secret: whoever holds it
+becomes an account.
+
+`a_redirect_carries_a_nonce_and_never_a_secret` reads the controllers
+for the spellings a secret has travelled under. A fact about the
+redirect, not a list of the handlers that mint something.
+
 ## 9. A use case takes a request and hands back a response
 
 The two ends of a use case are named shapes that live in `src/dtos`.

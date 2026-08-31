@@ -28,6 +28,7 @@ pub mod databases;
 pub mod nodes;
 pub mod people;
 pub mod projects;
+mod reveal;
 pub mod services;
 pub mod tenant;
 pub mod tenants;
@@ -274,6 +275,7 @@ pub fn register(
         people::PeopleApi,
         projects::ProjectPages,
         projects::ProjectApi,
+        reveal::RevealPages,
         databases::DatabaseApi,
         databases::DatabasePages,
         services::ServicePages,
@@ -304,6 +306,7 @@ fn shared(container: &Container, pages: Router, forms: Router) -> (Router, Route
     let pages = auth::AuthPages::register_ui_routes(container, pages);
     let pages = databases::DatabasePages::register_ui_routes(container, pages);
     let pages = projects::ProjectPages::register_ui_routes(container, pages);
+    let pages = reveal::RevealPages::register_ui_routes(container, pages);
     let pages = services::ServicePages::register_ui_routes(container, pages);
 
     let forms = auth::AuthApi::register_routes(container, forms);
@@ -512,11 +515,7 @@ pub(crate) mod tests {
                 .send()
                 .await;
             let location = response.header("location").expect("redirected");
-            let query = location.split_once('?').expect("carries the link").1;
-            let link = form_urlencoded::parse(query.as_bytes())
-                .find(|(key, _)| key == "invited")
-                .map(|(_, value)| value.into_owned())
-                .expect("the link");
+            let link = self.secret_at(location, admin_cookie).await;
             let token = link.rsplit('/').next().expect("the token").to_string();
 
             let joined = self
@@ -539,6 +538,36 @@ pub(crate) mod tests {
 
         /// Complete setup and return the session cookie, in the form a
         /// request carries it.
+        /// Follow a redirect that carries a nonce, and read the secret
+        /// off the page it names.
+        ///
+        /// **The secret is not in the URL any more**, which is the whole
+        /// point of the reveal store — so a test that read it from the
+        /// query was reading the thing this fixed. It goes through the
+        /// page instead, which is also the only way the four routes are
+        /// exercised at all.
+        pub async fn secret_at(&self, location: &str, cookie: &str) -> String {
+            let body = self
+                .harness
+                .get(location)
+                .header("cookie", cookie)
+                .send()
+                .await
+                .body;
+            // The block the copy island puts a button on. Named by its
+            // attribute rather than by position: it is the one element
+            // on that page whose text *is* the secret.
+            let opened = body
+                .split_once("data-copied-label=")
+                .and_then(|(_, rest)| rest.split_once('>'))
+                .map(|(_, rest)| rest)
+                .unwrap_or_else(|| panic!("no secret on {location}: {body}"));
+            opened
+                .split_once("</pre>")
+                .map(|(secret, _)| secret.trim().to_string())
+                .unwrap_or_else(|| panic!("the block never closes on {location}"))
+        }
+
         pub async fn signed_in(&self) -> String {
             let response = self
                 .harness
@@ -666,6 +695,52 @@ pub(crate) mod tests {
              halves are no longer separable:\n{}",
             leaks.len(),
             leaks.join("\n")
+        );
+    }
+
+    /// **A secret never travels in the query string.**
+    ///
+    /// `ConsoleState::reveals` exists because a push token used to, and
+    /// it was written as if that were the only one — three invitation
+    /// links were still doing it two months later, on the node's people
+    /// page, an organisation's, and a tenant's. A query parameter is
+    /// read by the address bar, the browser's history and every
+    /// refresh.
+    ///
+    /// So this is expressed as a fact about the redirect rather than a
+    /// list of the handlers that mint something: **what a POST puts in
+    /// the URL is a nonce or a message, never a value that lets
+    /// somebody in.** It reads the controllers for the two spellings a
+    /// secret has ever travelled under.
+    #[test]
+    fn a_redirect_carries_a_nonce_and_never_a_secret() {
+        let mut carrying: Vec<String> = Vec::new();
+        let mut read = 0;
+        for entry in std::fs::read_dir("src/console").expect("the console is there") {
+            let path = entry.expect("entry").path();
+            if path.extension().is_none_or(|kind| kind != "rs") {
+                continue;
+            }
+            read += 1;
+            let name = path.file_name().unwrap_or_default().to_string_lossy();
+            let source = std::fs::read_to_string(&path).expect("read");
+            for spelling in [
+                "append_pair(\"invited\"",
+                "append_pair(\"shown\"",
+                "append_pair(\"token\"",
+            ] {
+                if source.contains(spelling) {
+                    carrying.push(format!("{name}: {spelling}"));
+                }
+            }
+        }
+        assert!(
+            read > 8,
+            "the scan read {read} controllers, so it is looking in the wrong place"
+        );
+        assert!(
+            carrying.is_empty(),
+            "these put a secret in the URL — stash it and redirect with the nonce: {carrying:#?}"
         );
     }
 

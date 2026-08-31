@@ -178,6 +178,10 @@ fn verb(segment: &str) -> Option<String> {
         "settings" => t("Settings").to_string(),
         "logs" => t("Logs").to_string(),
         "join" => t("Join").to_string(),
+        // A secret shown once, on a page of its own. A verb, so the
+        // trail ends here and the arrow points at the page that minted
+        // it — which is where somebody goes next either way.
+        "shown" => t("Shown once").to_string(),
         _ => return None,
     })
 }

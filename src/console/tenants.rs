@@ -54,7 +54,6 @@ use crate::views::pages::node_user_organisation_settings_page::{OrganisationTab,
 pub struct OrganisationPage {
     pub tenant: String,
     pub error: Option<String>,
-    pub invited: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Validate, Default)]
@@ -158,7 +157,6 @@ impl TenantPages {
             projects: &projects,
             charged: &charged,
             error: query.error.as_deref(),
-            invited: query.invited.as_deref(),
         };
         let body = crate::views::texts::language::scoped(account.language, || {
             crate::views::pages::node_user_organisation_page::render(&page)
@@ -413,13 +411,15 @@ impl TenantApi {
             self.state.base_url_for(Some(&invited.organisation)).await,
             invited.token
         );
-        // Shown on the organisation's own page rather than the tab that
-        // made it: it is the one thing about this organisation somebody
-        // has to act on right now, and the page they will be looking at.
+        // A page of its own, and the nonce rather than the link: an
+        // invitation is a secret, and it used to travel in the query
+        // string where the address bar, the history and every refresh
+        // could read it.
+        let nonce = self.state.reveals.stash(link);
         Ok(see_other(&format!(
-            "/organisations/{id}?{}",
+            "/organisations/{id}/shown?{}",
             form_urlencoded::Serializer::new(String::new())
-                .append_pair("invited", &link)
+                .append_pair("nonce", &nonce)
                 .finish()
         )))
     }

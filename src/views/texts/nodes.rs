@@ -122,7 +122,6 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
     ("Run containers", "Ejecutar contenedores"),
     ("Run its containers on this node", "Ejecutar sus contenedores en este nodo"),
     ("Run this node's containers over there", "Correr allí los contenedores de este nodo"),
-    ("Run this on the other node", "Ejecutar esto en el otro nodo"),
     ("SSH uses this machine's own keys and needs nothing stored. S3 needs its credentials in config.toml, which is deliberate: a key that can read every backup in the network must not be inside the thing being backed up.", "SSH usa las claves de esta máquina y no necesita guardar nada. S3 necesita sus credenciales en config.toml, y es deliberado: una clave que puede leer todos los backups de la red no debe estar dentro de lo que se respalda."),
     ("Saturday", "Sábado"),
     ("Save source", "Guardar origen"),

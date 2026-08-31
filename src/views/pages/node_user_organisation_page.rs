@@ -23,8 +23,6 @@ pub struct Organisation<'a> {
     pub projects: &'a [Project],
     pub charged: &'a Charged,
     pub error: Option<&'a str>,
-    /// The one moment an invitation exists in clear.
-    pub invited: Option<&'a str>,
 }
 
 pub fn render<'a>(page: &'a Organisation<'a>) -> impl Renderable + 'a {
@@ -44,15 +42,6 @@ pub fn render<'a>(page: &'a Organisation<'a>) -> impl Renderable + 'a {
         @if let Some(message) = page.error {
             (layout::error_note(message))
         }
-        @if let Some(link) = page.invited {
-            <section class="card stack">
-                <p class="card-label">(t("Send this link"))</p>
-                <p class="field-hint">(t("It works once and expires in seven days. The node will not \
-                     show it again — it is not stored in a form anybody can read back."))</p>
-                <pre><code>(link)</code></pre>
-            </section>
-        }
-
         <section class="card stack">
             <p class="card-label">(t("Console"))</p>
             @if let Some(domain) = &tenant.domain {

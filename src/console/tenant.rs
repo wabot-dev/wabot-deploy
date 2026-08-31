@@ -71,7 +71,6 @@ impl TenantPeoplePages {
             projects: &projects,
             account: &account,
             query_error: query.error.as_deref(),
-            query_invited: query.invited.as_deref(),
         };
         let body = crate::views::texts::language::scoped(account.language, || {
             crate::views::pages::tenant_user_people_page::render(&page)
@@ -158,10 +157,11 @@ impl TenantPeopleApi {
             self.state.base_url_for(account.tenant_id.as_deref()).await,
             invited.token
         );
+        let nonce = self.state.reveals.stash(link);
         Ok(see_other(&format!(
-            "/people?{}",
+            "/people/shown?{}",
             form_urlencoded::Serializer::new(String::new())
-                .append_pair("invited", &link)
+                .append_pair("nonce", &nonce)
                 .finish()
         )))
     }

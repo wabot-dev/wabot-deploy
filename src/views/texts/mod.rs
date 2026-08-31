@@ -31,6 +31,7 @@ pub mod sentences;
 pub mod services;
 pub mod shared;
 pub mod shell;
+pub mod shown;
 pub mod updates;
 
 /// Every table, in one place so the lookup cannot forget one.
@@ -51,6 +52,7 @@ const TABLES: &[&[(&str, &str)]] = &[
     services::TABLE,
     shared::TABLE,
     shell::TABLE,
+    shown::TABLE,
     updates::TABLE,
 ];
 

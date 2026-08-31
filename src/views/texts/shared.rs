@@ -143,7 +143,6 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
     ("Running", "Corriendo"),
     ("Save", "Guardar"),
     ("Save domain", "Guardar dominio"),
-    ("Send this link", "Envía este enlace"),
     ("Served by", "Servido por"),
     ("Service", "Servicio"),
     ("Serving", "Sirviendo"),

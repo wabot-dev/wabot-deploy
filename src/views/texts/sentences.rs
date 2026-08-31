@@ -56,6 +56,25 @@ pub fn services_without_a_ceiling(count: usize) -> String {
     }
 }
 
+/// Who an invitation into an organisation is for, and what it makes
+/// them.
+///
+/// A sentence rather than a `t()` fragment plus a name: the name sits in
+/// a different place in each language, and a `format!` at the call site
+/// would fix the English word order for everybody.
+pub fn invitation_into(name: &str) -> String {
+    match current() {
+        Language::En => format!(
+            "It works once and expires in seven days. Whoever takes it chooses their own \
+             username and password, and administers {name}."
+        ),
+        Language::Es => format!(
+            "Sirve una vez y caduca en siete días. Quien lo tome elige su propio usuario y \
+             contraseña, y administra {name}."
+        ),
+    }
+}
+
 /// A name another organisation already answers on.
 pub fn name_is_taken(holder: &str) -> String {
     match current() {

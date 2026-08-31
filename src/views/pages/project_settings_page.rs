@@ -10,7 +10,6 @@ pub struct ProjectSettings<'a> {
     pub here: &'a str,
     pub members: &'a [crate::policies::access::Member],
     pub tokens: &'a [crate::entities::push_token::PushToken],
-    pub revealed: Option<&'a str>,
     pub registry_host: Option<&'a str>,
     pub query_error: Option<&'a str>,
 }
@@ -21,7 +20,6 @@ pub fn render<'a>(page: &'a ProjectSettings<'a>) -> impl Renderable + 'a {
     let here = page.here;
     let members = page.members;
     let tokens = page.tokens;
-    let revealed = page.revealed;
     let registry_host = page.registry_host;
     rsx! {
         (layout::style_tag())
@@ -47,10 +45,6 @@ pub fn render<'a>(page: &'a ProjectSettings<'a>) -> impl Renderable + 'a {
                 <p class="card-label">(t("Push tokens"))</p>
                 <span class="who">(&registry_host)("/")(&project.slug)("/…")</span>
             </div>
-            @if let Some(secret) = &revealed {
-                <p class="field-hint">(t("Shown once. Use it as the password: "))</p>
-                <pre><code>("docker login ")(&registry_host)(" -u ci -p ")(secret)</code></pre>
-            }
             @if tokens.is_empty() {
                 <p class="tile-detail">(t("None. A token is what CI authenticates with — it is nobody's \
                      password, and revoking it changes nothing else."))</p>

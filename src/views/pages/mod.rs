@@ -24,6 +24,7 @@ pub mod node_user_updates_page;
 pub mod project_page;
 pub mod project_settings_page;
 pub mod projects_page;
+pub mod revealed_page;
 pub mod service_logs_page;
 pub mod service_page;
 pub mod service_settings_page;

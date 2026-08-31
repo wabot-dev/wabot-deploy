@@ -1100,11 +1100,14 @@ impl NodeApi {
         // Through the reveal store, not the query string: the token is
         // the secret, and a query string is read by the address bar, the
         // history and every refresh.
-        let nonce = self.state.reveals.stash(token);
+        let nonce = self
+            .state
+            .reveals
+            .stash(format!("wabot-deploy join {token}"));
         Ok(super::auth::see_other(&format!(
-            "{here}?{}",
+            "/network/invite/shown?{}",
             form_urlencoded::Serializer::new(String::new())
-                .append_pair("shown", &nonce)
+                .append_pair("nonce", &nonce)
                 .finish()
         )))
     }
@@ -3224,8 +3227,14 @@ pub(crate) mod tests {
             .map(|(_, rest)| rest.split('<').next().unwrap_or_default().to_string())
             .expect("the command to run, with the token in it");
         assert!(shown.starts_with("wdj1."), "{body}");
-        assert!(body.contains("alpine"), "the list names it: {body}");
-        assert!(body.contains("10.42.0.2"), "and holds an address: {body}");
+        // **The name and the address are not here.** The token has a
+        // page of its own now, with one thing on it; the list of what
+        // has been minted stays on the page that minted them, which is
+        // where the arrow goes back to.
+        assert!(
+            body.contains("/network/invite"),
+            "no way back to the page that minted it: {body}"
+        );
 
         // A second load of the same page shows nothing: the token is
         // stored hashed, and the nonce that named it is spent. Compared

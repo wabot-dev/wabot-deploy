@@ -29,9 +29,6 @@ use crate::views::layouts::shell::{Area, Frame};
 pub struct ProjectQuery {
     pub project: String,
     pub error: Option<String>,
-    /// Names a push token this node is holding for one read. Not the
-    /// token — see `ConsoleState::reveals`.
-    pub shown: Option<String>,
 }
 
 #[injectable]
@@ -260,13 +257,6 @@ impl ProjectPages {
 
         let tokens =
             crate::repositories::tokens::of_project(&self.state.database, &project.id).await?;
-        // Spent on read. "Shown once" used to mean "in the URL until
-        // you navigate away", so a refresh put it back on the screen
-        // and the back button found it an hour later.
-        let revealed = query
-            .shown
-            .as_deref()
-            .and_then(|nonce| self.state.reveals.take(nonce));
         // The stored domain, not the file's. The registry names what it
         // receives under `settings::domain`, which prefers the row the
         // console writes — so reading the file here printed a `docker
@@ -296,7 +286,6 @@ impl ProjectPages {
             here: &here,
             members: &members,
             tokens: &tokens,
-            revealed: revealed.as_deref(),
             registry_host: Some(registry_host.as_str()),
             query_error: query.error.as_deref(),
         };
@@ -1090,11 +1079,23 @@ impl ProjectApi {
             // read by the address bar, the history and every refresh.
             // See `ConsoleState::reveals`.
             Ok(secret) => {
-                let nonce = self.state.reveals.stash(secret);
+                // **The command, not the bare secret.** What the store
+                // holds is what goes on the clipboard — the reveal page
+                // chooses the words around a value, never the value —
+                // and a push token on its own is something somebody has
+                // to remember the wrapper for.
+                let host = crate::node::settings::domain(&self.state.database, &self.state.config)
+                    .await
+                    .unwrap_or_else(|| "this node".into());
+                let nonce = self.state.reveals.stash(format!(
+                    "docker login {host} -u {} -p {secret}",
+                    field(&form, "name")
+                ));
                 Ok(see_other(&format!(
-                    "{here}?{}",
+                    "/projects/{}/shown?{}",
+                    project.slug,
                     form_urlencoded::Serializer::new(String::new())
-                        .append_pair("shown", &nonce)
+                        .append_pair("nonce", &nonce)
                         .finish()
                 )))
             }
@@ -1297,10 +1298,15 @@ mod tests {
             .send()
             .await;
         let location = response.header("location").expect("redirected").to_string();
-        assert!(location.contains("shown="), "{location}");
+        // A page of its own, named by a nonce. The secret is in neither.
+        assert!(
+            location.starts_with("/projects/shipping/shown?"),
+            "{location}"
+        );
+        assert!(location.contains("nonce="), "{location}");
 
         let nonce = location
-            .split("shown=")
+            .split("nonce=")
             .nth(1)
             .expect("a nonce")
             .to_string();
@@ -1662,11 +1668,11 @@ mod tests {
             .await;
 
         for (action, form, expected) in [
-            (
-                "tokens",
-                vec![("name", "ci")],
-                "/projects/shipping/settings",
-            ),
+            // **Except this one, and on purpose.** A minted token is
+            // the one thing somebody has to act on right now, so it
+            // gets a page with nothing else on it — and the breadcrumb
+            // is the way back to the settings that made it.
+            ("tokens", vec![("name", "ci")], "/projects/shipping/shown"),
             (
                 "people",
                 vec![("member", "nobody"), ("role", "viewer")],

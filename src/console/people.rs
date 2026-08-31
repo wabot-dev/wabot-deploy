@@ -73,7 +73,6 @@ impl PeoplePages {
             projects: &projects,
             now,
             query_error: query.error.as_deref(),
-            query_invited: query.invited.as_deref(),
         };
         let body = crate::views::texts::language::scoped(account.language, || {
             crate::views::pages::node_user_people_page::render(&page)
@@ -157,10 +156,17 @@ impl PeopleApi {
             self.state.base_url_for(None).await,
             invited.token
         );
+        // **Through the reveal store, not the query string.** An
+        // invitation link is a secret — whoever holds it becomes an
+        // account — and it used to travel in the URL, which put it in
+        // the address bar, the history and every refresh. The same
+        // exception `ConsoleState::reveals` was written for, still open
+        // on three pages until this.
+        let nonce = self.state.reveals.stash(link);
         Ok(see_other(&format!(
-            "/people?{}",
+            "/people/shown?{}",
             form_urlencoded::Serializer::new(String::new())
-                .append_pair("invited", &link)
+                .append_pair("nonce", &nonce)
                 .finish()
         )))
     }
@@ -305,11 +311,7 @@ mod tests {
         response.assert_status(StatusCode::SEE_OTHER);
 
         let location = response.header("location").expect("redirected");
-        let query = location.split_once('?').expect("carries the link").1;
-        let link = form_urlencoded::parse(query.as_bytes())
-            .find(|(key, _)| key == "invited")
-            .map(|(_, value)| value.into_owned())
-            .expect("the link");
+        let link = console.secret_at(location, cookie).await;
         link.rsplit('/').next().expect("the token").to_string()
     }
 

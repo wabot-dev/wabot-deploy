@@ -20,7 +20,6 @@ pub struct People<'a> {
     pub projects: &'a [Project],
     pub now: i64,
     pub query_error: Option<&'a str>,
-    pub query_invited: Option<&'a str>,
 }
 
 pub fn render<'a>(page: &'a People<'a>) -> impl Renderable + 'a {
@@ -34,15 +33,6 @@ pub fn render<'a>(page: &'a People<'a>) -> impl Renderable + 'a {
     <h1>(t("People"))</h1>
     @if let Some(message) = &page.query_error {
         (layout::error_note(message))
-    }
-    @if let Some(link) = &page.query_invited {
-        <section class="card stack">
-            <p class="card-label">(t("Send this link"))</p>
-            <p class="field-hint">(t("It works once and expires in seven days. The node will not \
-                 show it again — it is not stored in a form anybody can read \
-                 back."))</p>
-            <pre><code>(link)</code></pre>
-        </section>
     }
 
     <section class="stack">
