@@ -251,39 +251,3 @@ strip = "symbols"
 inherits = "release"
 lto = "thin"
 codegen-units = 4
-
-# TEMPORARY — remove before a release.
-#
-# Points the framework at the local checkout so the boosted-form work can
-# be looked at in a browser before it is published. The dependency
-# declarations above still name the published crate, which is the rule
-# (`CLAUDE.md`, "The framework is ours"); this block only redirects where
-# those versions are read from, and deleting it restores crates.io.
-
-# TEMPORARY — remove before a release.
-#
-# Points the framework at the local checkout so the boosted-form work can
-# be looked at in a browser before it is published. The dependency
-# declarations above still name the published crate, which is the rule
-# (`CLAUDE.md`, "The framework is ours"); this block only redirects where
-# those versions are read from, and deleting it restores crates.io.
-#
-# All of them, not just the one that changed: patching a single crate
-# leaves two copies of `wabot-core` in the graph, and a `Container` from
-# one is not a `Container` from the other.
-[patch.crates-io]
-wabot = { path = "../../framework/wabot-rust/crates/wabot" }
-wabot-addon-async-in-memory = { path = "../../framework/wabot-rust/crates/wabot-addon-async-in-memory" }
-wabot-addon-async-sqlite = { path = "../../framework/wabot-rust/crates/wabot-addon-async-sqlite" }
-wabot-addon-ui-hypertext = { path = "../../framework/wabot-rust/crates/wabot-addon-ui-hypertext" }
-wabot-core = { path = "../../framework/wabot-rust/crates/wabot-core" }
-wabot-feature-agent = { path = "../../framework/wabot-rust/crates/wabot-feature-agent" }
-wabot-feature-async = { path = "../../framework/wabot-rust/crates/wabot-feature-async" }
-wabot-feature-chat-bot = { path = "../../framework/wabot-rust/crates/wabot-feature-chat-bot" }
-wabot-feature-mindset = { path = "../../framework/wabot-rust/crates/wabot-feature-mindset" }
-wabot-feature-rest-controller = { path = "../../framework/wabot-rust/crates/wabot-feature-rest-controller" }
-wabot-feature-sqlite = { path = "../../framework/wabot-rust/crates/wabot-feature-sqlite" }
-wabot-feature-tool = { path = "../../framework/wabot-rust/crates/wabot-feature-tool" }
-wabot-feature-ui-controller = { path = "../../framework/wabot-rust/crates/wabot-feature-ui-controller" }
-wabot-macros = { path = "../../framework/wabot-rust/crates/wabot-macros" }
-wabot-testing = { path = "../../framework/wabot-rust/crates/wabot-testing" }

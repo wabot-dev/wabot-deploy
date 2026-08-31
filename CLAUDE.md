@@ -94,6 +94,22 @@ The checkout lives at `../../framework/wabot-rust`. Changes there need
 their own tests, a version bump and a publish before this repo can use
 them; `Cargo.toml` depends on the published crate, not a path.
 
+**Bump the crate that changed, not the workspace.** Every crate there
+reads `version.workspace = true`, and two do not:
+`wabot-feature-rest-controller` and `wabot-feature-ui-controller` carry
+their own, with a comment saying why. `[workspace.dependencies]` asks
+for `0.2.0`, which cargo reads as `>=0.2.0, <0.3.0`, so a `0.2.1` is
+picked up by the already-published `wabot` without republishing it —
+and publishing the workspace to ship one file would put twenty versions
+on crates.io identical to their predecessors.
+
+Two things to check before publishing one: `cargo package -p <crate>`
+compiles the tarball against the **published** dependencies, which is
+the only proof it will build for anybody else; and clippy over the
+workspace still fails in `wabot-core` (the `channel = "stable"` hazard
+this file describes, in the repo that has it), so ask it about the
+crate you are shipping with `--no-deps`.
+
 ## Conventions the code already follows
 
 **Tests state a claim, not the implementation.** Name them as sentences
