@@ -42,6 +42,7 @@ pub mod errand;
 pub mod join;
 pub mod keys;
 pub mod lan;
+pub mod network_rest_controller;
 pub mod overlay;
 pub mod roster;
 pub mod token;

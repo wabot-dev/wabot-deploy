@@ -94,7 +94,7 @@ pub fn placement_card<'a>(
                     <div>
                         <label for="new-on">(t("New ones on"))</label>
                         <select id="new-on" name="new-on">
-                            <option value=(crate::console::services::ANYWHERE)>(t("Wherever there is room"))</option>
+                            <option value=(crate::console::service_rest_controller::ANYWHERE)>(t("Wherever there is room"))</option>
                             @for node in nodes {
                                 @if node.is_self {
                                     <option value="" selected>(&node.name)</option>

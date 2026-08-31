@@ -34,7 +34,7 @@ bindings in a build script.
 
 ## The architecture rules
 
-Nine, written in full with their costs in
+Ten, written in full with their costs in
 [`docs/architecture-rules.md`](docs/architecture-rules.md). They are
 about **the shape of this software**. How the network of nodes is put
 together is a separate subject with its own documents — see "The
@@ -73,6 +73,10 @@ network and the databases" below.
    arrives with its shape already right. The form's own spelling stops
    there: an unticked checkbox sends nothing, and a use case that knew
    `accept-host` would be one only a browser could call.
+10. **One controller per file, named for what it is.**
+   `<Subject><Kind>Controller` in `<subject>_<kind>_controller.rs`.
+   Splitting them is what shows you what two controllers shared, and
+   every one of those turned out to be in the wrong place.
 
 Where the tree stands: every use case's two ends are DTOs and no
 controller draws — four guards read directories to keep it that way.

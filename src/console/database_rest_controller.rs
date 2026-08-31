@@ -39,7 +39,8 @@ impl DatabaseRestController {
         };
         let path = request.uri().path().to_string();
         let Some((project, service, _)) =
-            crate::console::services::locate_for(&self.state, &self.auth, &path).await?
+            crate::console::service_rest_controller::locate_for(&self.state, &self.auth, &path)
+                .await?
         else {
             return Ok(see_other("/"));
         };
@@ -124,7 +125,8 @@ impl DatabaseRestController {
         };
         let path = request.uri().path().to_string();
         let Some((project, service, _)) =
-            crate::console::services::locate_for(&self.state, &self.auth, &path).await?
+            crate::console::service_rest_controller::locate_for(&self.state, &self.auth, &path)
+                .await?
         else {
             return Ok(see_other("/"));
         };
@@ -183,7 +185,8 @@ impl DatabaseRestController {
         };
         let path = request.uri().path().to_string();
         let Some((project, service, _)) =
-            crate::console::services::locate_for(&self.state, &self.auth, &path).await?
+            crate::console::service_rest_controller::locate_for(&self.state, &self.auth, &path)
+                .await?
         else {
             return Ok(see_other("/"));
         };
@@ -263,7 +266,7 @@ impl DatabaseRestController {
             return Ok(see_other("/sign-in"));
         };
         let path = request.uri().path().to_string();
-        let Some(project_slug) = crate::console::services::project_slug(&path) else {
+        let Some(project_slug) = crate::console::auth::project_slug(&path) else {
             return Ok(see_other("/"));
         };
         let here = format!("/projects/{project_slug}/databases/new");

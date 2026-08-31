@@ -585,6 +585,55 @@ becomes an account.
 for the spellings a secret has travelled under. A fact about the
 redirect, not a list of the handlers that mint something.
 
+## 10. One controller per file, named for what it is
+
+`<Subject><Kind>Controller`, in `<subject>_<kind>_controller.rs`.
+`NodeSettingsUiController` in `node_settings_ui_controller.rs`;
+`ServiceRestController` in `service_rest_controller.rs`.
+
+There were twenty-two of them in thirteen files, most two to a file
+under names that said neither what they were nor which kind:
+`NodePages` and `NodeApi`, both in `nodes.rs`. Two controllers in one
+file is two things a stack trace names identically, and a name carrying
+neither leaves the reader to open the file to find out.
+
+### Splitting is what shows you what was shared
+
+Every single thing two controllers had in common turned out to be in the
+wrong place, and none of it was visible while they sat in one file:
+
+- `replica_cell`, `edge_cell` and three cell types were imported **out**
+  of `console/projects.rs` by three view components — the dependency
+  pointing the wrong way. They are `views::components::project_cells`.
+- `Live` and the builders that fill it are read by both halves of that
+  file, which is exactly why they belong to neither: `console::live`, so
+  the first paint and the stream cannot disagree.
+- `source_from` reads a form, so it joins the other form readers in
+  `console::auth`. `SOURCES` is what a form offers, so it is the view's.
+  `store_source` writes and three controllers reuse it — a command.
+- `project_slug` parses a path both halves parse.
+
+### What it costs
+
+A helper used by two controllers has nowhere to hide. That is the point,
+and it is also the work: each one has to be given a home that says what
+it is, and "it was next to its caller" stops being an answer.
+
+### The guard
+
+`a_controller_is_alone_in_a_file_named_for_it` walks the whole tree —
+not just the console, because the registry, the network's api and the
+health check are controllers too, each of which was in a file named for
+its module. It checks all three halves of the rule: one per file, a name
+ending `UiController` or `RestController`, and a file name that is that
+name in snake case.
+
+Four other guards named console files by name and went red the moment
+these were split. Three now read directories; the fourth, the autofill
+scan, listed eight files — so **every field that moved into
+`src/views/pages` when the controllers stopped drawing had never been
+checked at all.**
+
 ## 9. A use case takes a request and hands back a response
 
 The two ends of a use case are named shapes that live in `src/dtos`.

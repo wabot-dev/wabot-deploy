@@ -25,6 +25,7 @@ mod dtos;
 mod edge;
 mod entities;
 mod errors;
+mod health_rest_controller;
 mod ledger;
 mod network;
 mod node;

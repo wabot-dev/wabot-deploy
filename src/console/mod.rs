@@ -24,6 +24,8 @@
 pub mod assets;
 pub mod attention;
 pub mod auth;
+pub mod auth_rest_controller;
+pub mod auth_ui_controller;
 pub mod database_rest_controller;
 pub mod database_ui_controller;
 pub mod live;
@@ -34,7 +36,8 @@ pub mod people_ui_controller;
 pub mod project_rest_controller;
 pub mod project_ui_controller;
 pub mod reveal_ui_controller;
-pub mod services;
+pub mod service_rest_controller;
+pub mod service_ui_controller;
 pub mod tenant_people_rest_controller;
 pub mod tenant_people_ui_controller;
 pub mod tenant_rest_controller;
@@ -275,8 +278,8 @@ pub fn register(
     // visitor's identity handed to everybody after them.
     register_transients!(
         container,
-        auth::AuthUiController,
-        auth::AuthRestController,
+        auth_ui_controller::AuthUiController,
+        auth_rest_controller::AuthRestController,
         node_ui_controller::NodeUiController,
         node_rest_controller::NodeRestController,
         people_ui_controller::PeopleUiController,
@@ -286,8 +289,8 @@ pub fn register(
         reveal_ui_controller::RevealUiController,
         database_rest_controller::DatabaseRestController,
         database_ui_controller::DatabaseUiController,
-        services::ServiceUiController,
-        services::ServiceRestController,
+        service_ui_controller::ServiceUiController,
+        service_rest_controller::ServiceRestController,
         tenant_ui_controller::TenantUiController,
         tenant_rest_controller::TenantRestController,
         tenant_people_ui_controller::TenantPeopleUiController,
@@ -311,16 +314,16 @@ pub fn register(
 /// said "on this node" to somebody administering an organisation, and
 /// that is the mismatch this split exists for.
 fn shared(container: &Container, pages: Router, forms: Router) -> (Router, Router) {
-    let pages = auth::AuthUiController::register_ui_routes(container, pages);
+    let pages = auth_ui_controller::AuthUiController::register_ui_routes(container, pages);
     let pages = database_ui_controller::DatabaseUiController::register_ui_routes(container, pages);
     let pages = project_ui_controller::ProjectUiController::register_ui_routes(container, pages);
     let pages = reveal_ui_controller::RevealUiController::register_ui_routes(container, pages);
-    let pages = services::ServiceUiController::register_ui_routes(container, pages);
+    let pages = service_ui_controller::ServiceUiController::register_ui_routes(container, pages);
 
-    let forms = auth::AuthRestController::register_routes(container, forms);
+    let forms = auth_rest_controller::AuthRestController::register_routes(container, forms);
     let forms = database_rest_controller::DatabaseRestController::register_routes(container, forms);
     let forms = project_rest_controller::ProjectRestController::register_routes(container, forms);
-    let forms = services::ServiceRestController::register_routes(container, forms);
+    let forms = service_rest_controller::ServiceRestController::register_routes(container, forms);
     (pages, forms)
 }
 
@@ -681,6 +684,14 @@ pub(crate) mod tests {
             if !name.ends_with("_controller.rs") || name.starts_with("tenant") {
                 continue;
             }
+            // **The doors are the exception, and they have to be.** A
+            // sign-in has to know which frontier it is a sign-in to —
+            // that is what `edge::Tenancy` is stamped for, and reading
+            // it is the whole of how the session lands in the right
+            // console. Everything past the door must not.
+            if name.starts_with("auth") {
+                continue;
+            }
             node_scope.push((name, std::fs::read_to_string(&path).expect("read")));
         }
         assert!(
@@ -764,6 +775,85 @@ pub(crate) mod tests {
             carrying.is_empty(),
             "these put a secret in the URL — stash it and redirect with the nonce: {carrying:#?}"
         );
+    }
+
+    /// **One controller per file, and the file says which.**
+    ///
+    /// Twenty-two of them lived in thirteen files, most two to a file
+    /// under names that said neither what they were nor which kind —
+    /// `NodePages` and `NodeApi` in `nodes.rs`. Two controllers in one
+    /// file is two things that look like one when a stack trace names
+    /// it, and a name that carries neither leaves the reader to open
+    /// the file to find out.
+    ///
+    /// It walks the whole tree, because a controller is not the
+    /// console's alone: the registry, the network's api and the health
+    /// check are three more, each of them in a file that was named for
+    /// its module rather than for the controller inside it.
+    #[test]
+    fn a_controller_is_alone_in_a_file_named_for_it() {
+        fn snake(name: &str) -> String {
+            let mut out = String::new();
+            for (index, character) in name.char_indices() {
+                if character.is_uppercase() && index > 0 {
+                    out.push('_');
+                }
+                out.extend(character.to_lowercase());
+            }
+            out
+        }
+
+        let mut wrong: Vec<String> = Vec::new();
+        let mut found = 0;
+        let mut stack = vec![std::path::PathBuf::from("src")];
+        while let Some(directory) = stack.pop() {
+            for entry in std::fs::read_dir(&directory).expect("a directory") {
+                let path = entry.expect("entry").path();
+                if path.is_dir() {
+                    stack.push(path);
+                    continue;
+                }
+                if path.extension().is_none_or(|kind| kind != "rs") {
+                    continue;
+                }
+                let name = path.file_stem().unwrap_or_default().to_string_lossy();
+                let source = std::fs::read_to_string(&path).expect("read");
+                let mut here: Vec<&str> = Vec::new();
+                let mut lines = source.lines().peekable();
+                while let Some(line) = lines.next() {
+                    if !line.starts_with("#[ui_controller")
+                        && !line.starts_with("#[rest_controller")
+                    {
+                        continue;
+                    }
+                    let Some(next) = lines.peek() else { continue };
+                    let Some(kind) = next.strip_prefix("impl ") else {
+                        continue;
+                    };
+                    here.push(kind.split_whitespace().next().unwrap_or_default());
+                }
+                if here.is_empty() {
+                    continue;
+                }
+                found += here.len();
+                if here.len() > 1 {
+                    wrong.push(format!("{name}.rs holds {here:?}"));
+                    continue;
+                }
+                let one = here[0];
+                if !one.ends_with("UiController") && !one.ends_with("RestController") {
+                    wrong.push(format!("{one} does not say which kind it is"));
+                }
+                if snake(one) != name {
+                    wrong.push(format!("{one} is in {name}.rs, not {}.rs", snake(one)));
+                }
+            }
+        }
+        assert!(
+            found > 20,
+            "the scan found {found} controllers, so it is reading the wrong place"
+        );
+        assert!(wrong.is_empty(), "{wrong:#?}");
     }
 
     /// An organisation's own pages open, and every tab of its settings.

@@ -12,7 +12,6 @@ use std::time::Instant;
 use serde::Serialize;
 use wabot::prelude::*;
 use wabot::rest::axum::Router;
-use wabot::rest::{RestError, RestResult};
 use wabot::sqlite::SqliteDatabase;
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -25,7 +24,10 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 /// report an uptime that began at the first health check.
 pub struct NodeStatus {
     started: Instant,
-    database: Arc<SqliteDatabase>,
+    /// Read by the controller, which is one module away now — a health
+    /// check that cannot reach the database is a health check that
+    /// answers about nothing.
+    pub(crate) database: Arc<SqliteDatabase>,
 }
 
 impl NodeStatus {
@@ -36,7 +38,7 @@ impl NodeStatus {
         }
     }
 
-    fn uptime_seconds(&self) -> u64 {
+    pub(crate) fn uptime_seconds(&self) -> u64 {
         self.started.elapsed().as_secs()
     }
 }
@@ -59,54 +61,17 @@ pub struct Ready {
     pub database: &'static str,
 }
 
-#[singleton]
-pub struct HealthRestController {
-    node: Arc<NodeStatus>,
-}
-
-#[rest_controller("/")]
-impl HealthRestController {
-    /// Liveness. Touches nothing, so it stays true for exactly as long
-    /// as the process can answer at all — which is the only question
-    /// a restart policy should be asking.
-    #[get("/healthz")]
-    async fn healthz(&self) -> RestResult<Health> {
-        Ok(Health {
-            status: "ok",
-            version: VERSION,
-            uptime_seconds: self.node.uptime_seconds(),
-        })
-    }
-
-    /// Readiness. Round-trips the database, because a node that cannot
-    /// read its own state cannot serve a deployment either.
-    #[get("/readyz")]
-    async fn readyz(&self) -> RestResult<Ready> {
-        self.node.database.ping().await.map_err(|error| {
-            tracing::warn!(%error, "readiness check failed");
-            // 503, not 500: this is "not yet" or "not any more", and a
-            // load balancer should take the node out rather than
-            // conclude the request was malformed.
-            RestError::Client {
-                status: 503,
-                message: "database unavailable".into(),
-            }
-        })?;
-        Ok(Ready {
-            status: "ready",
-            database: "ok",
-        })
-    }
-}
-
 /// Nothing is discovered: a type left out here panics on resolve.
 pub fn register(container: &Container, database: Arc<SqliteDatabase>) {
     container.register_instance::<NodeStatus>(Arc::new(NodeStatus::new(database)));
-    register_singletons!(container, HealthRestController);
+    register_singletons!(
+        container,
+        crate::health_rest_controller::HealthRestController
+    );
 }
 
 pub fn routes(container: &Container) -> Router {
-    HealthRestController::register_routes(container, Router::new())
+    crate::health_rest_controller::HealthRestController::register_routes(container, Router::new())
 }
 
 #[cfg(test)]
