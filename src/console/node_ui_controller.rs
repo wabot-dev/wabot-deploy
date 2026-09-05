@@ -523,6 +523,7 @@ impl NodeUiController {
             committed: &committed,
             snapshot: &snapshot,
             reserves,
+            error: query.error.as_deref(),
         };
         // The account's language, around the render and no wider:
         // the strings are read here, and nothing awaits inside.

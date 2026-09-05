@@ -87,7 +87,15 @@ impl NodeRestController {
         if !crate::authz::node_user::manages_the_machine(&account) {
             return Ok(super::auth::see_other("/"));
         }
-        let here = &self_path(&self.state.database).await;
+        // **Back to the form.** This answered to `self_path` — the
+        // node's page in the *network* list — which has no error note
+        // and no `checked` parameter, so a refusal and a success were
+        // both dropped: the page jumped somewhere else and said
+        // nothing. `node-0.tobaw.shop` was refused correctly, for not
+        // resolving, and there was nowhere for it to say so. The form
+        // has been on the Domain tab since the node's settings grew
+        // tabs; the redirect never followed it.
+        let here = &NodeTab::Domain.path();
 
         let form = match super::auth::read_form(request).await {
             Ok(form) => form,
@@ -834,7 +842,15 @@ impl NodeRestController {
         if !crate::authz::node_user::manages_the_machine(&account) {
             return Ok(super::auth::see_other("/"));
         }
-        let here = &self_path(&self.state.database).await;
+        // **Back to the form.** This answered to `self_path` — the
+        // node's page in the *network* list — which has no error note
+        // and no `checked` parameter, so a refusal and a success were
+        // both dropped: the page jumped somewhere else and said
+        // nothing. `node-0.tobaw.shop` was refused correctly, for not
+        // resolving, and there was nowhere for it to say so. The form
+        // has been on the Domain tab since the node's settings grew
+        // tabs; the redirect never followed it.
+        let here = &NodeTab::Domain.path();
 
         let form = match super::auth::read_form(request).await {
             Ok(form) => form,
@@ -1151,23 +1167,6 @@ fn cells(snapshot: &Snapshot, busy: Option<&crate::node::cpu::Busy>) -> Cells {
     ]);
 
     Cells { cells, bars }
-}
-
-/// Where this node's own page is.
-///
-/// Looked up rather than named by a constant: the id is minted when the
-/// node is installed, so there is no path a `const` could hold. Back to
-/// the list if there is somehow no row — a redirect to a page that does
-/// not exist is worse than one to the page above it.
-async fn self_path(database: &wabot::sqlite::SqliteDatabase) -> String {
-    match network::me(database).await {
-        Ok(Some(me)) => format!("/network/{}", me.id),
-        Ok(None) => "/network".to_string(),
-        Err(error) => {
-            tracing::warn!(%error, "could not read this node's own row");
-            "/network".to_string()
-        }
-    }
 }
 
 #[cfg(test)]
@@ -2457,6 +2456,17 @@ pub(crate) mod tests {
     /// A name that does not point here cannot be accepted: asking an
     /// authority to validate it spends one of five hourly attempts to
     /// be told what a lookup says for free.
+    ///
+    /// **And the refusal has to land where the form is.** This asserted
+    /// `console.node_path` — the node's page in the network list, which
+    /// has no error note and reads no `checked` parameter — so it
+    /// passed for as long as the answer was being dropped on the floor.
+    /// A test that restates what the code does catches nothing, and
+    /// this one restated a redirect that had been wrong since before
+    /// the node's settings grew tabs.
+    ///
+    /// Reported by Jorge, trying to set `node-0.tobaw.shop`: the
+    /// refusal was correct and reached nobody.
     #[tokio::test]
     async fn a_name_that_does_not_resolve_here_is_refused() {
         let console = Console::new().await;
@@ -2475,8 +2485,8 @@ pub(crate) mod tests {
         response.assert_status(StatusCode::SEE_OTHER);
         let location = response.header("location").unwrap_or_default();
         assert!(
-            location.starts_with(&format!("{}?error=", console.node_path)),
-            "{location}"
+            location.starts_with(&format!("{}?error=", NodeTab::Domain.path())),
+            "the answer landed on {location}, away from the form that asked"
         );
 
         assert_eq!(
