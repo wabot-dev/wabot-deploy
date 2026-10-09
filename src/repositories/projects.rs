@@ -326,7 +326,7 @@ mod tests {
     async fn deleting_a_project_takes_its_services() {
         let database = database().await;
         let project = create(&database, "doomed").await.expect("created");
-        crate::commands::create_service::CreateService {
+        crate::features::services::create_service_command::CreateService {
             project_id: &project.id,
             name: "api",
             image: "docker.io/library/nginx:alpine",

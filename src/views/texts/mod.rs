@@ -22,7 +22,6 @@ pub mod attention;
 pub mod language;
 pub mod nodes;
 pub mod sentences;
-pub mod services;
 pub mod shared;
 pub mod shell;
 pub mod shown;
@@ -44,7 +43,7 @@ const TABLES: &[&[(&str, &str)]] = &[
     crate::features::organisations::texts::TABLE,
     crate::features::people::texts::TABLE,
     crate::features::projects::texts::TABLE,
-    services::TABLE,
+    crate::features::services::texts::TABLE,
     shared::TABLE,
     shell::TABLE,
     shown::TABLE,

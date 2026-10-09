@@ -1053,7 +1053,7 @@ async fn host_service(
         }
         None => {
             let env: Vec<(String, String)> = host.env.clone().into_iter().collect();
-            let made = crate::commands::create_service::CreateService {
+            let made = crate::features::services::create_service_command::CreateService {
                 project_id: &project.id,
                 name: &host.service,
                 image: &host.image,
@@ -1259,7 +1259,7 @@ async fn hold_standby(
             service
         }
         None => {
-            let made = crate::commands::create_service::CreateService {
+            let made = crate::features::services::create_service_command::CreateService {
                 project_id: &project.id,
                 name: &standby.service,
                 image: &standby.image,
@@ -2739,7 +2739,7 @@ mod tests {
                     .await
                     .expect("set image"),
                 None => {
-                    crate::commands::create_service::CreateService {
+                    crate::features::services::create_service_command::CreateService {
                         project_id: &project.id,
                         name: &host.service,
                         image: &host.image,
@@ -2777,7 +2777,7 @@ mod tests {
         assert!(!project.is_ours());
         assert_eq!(project.origin_node_id.as_deref(), Some("nd-authority"));
 
-        let made = crate::commands::create_service::CreateService {
+        let made = crate::features::services::create_service_command::CreateService {
             project_id: &project.id,
             name: "web",
             image: "hub.example/p/a:1",

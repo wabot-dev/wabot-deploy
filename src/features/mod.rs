@@ -6,6 +6,7 @@ pub mod node;
 pub mod organisations;
 pub mod people;
 pub mod projects;
+pub mod services;
 pub mod updates;
 
 #[cfg(test)]

@@ -41,8 +41,12 @@ impl DatabaseRestController {
         };
         let path = request.uri().path().to_string();
         let Some((project, service, _)) =
-            crate::console::service_rest_controller::locate_for(&self.state, &self.auth, &path)
-                .await?
+            crate::features::services::service_rest_controller::locate_for(
+                &self.state,
+                &self.auth,
+                &path,
+            )
+            .await?
         else {
             return Ok(see_other("/"));
         };
@@ -127,8 +131,12 @@ impl DatabaseRestController {
         };
         let path = request.uri().path().to_string();
         let Some((project, service, _)) =
-            crate::console::service_rest_controller::locate_for(&self.state, &self.auth, &path)
-                .await?
+            crate::features::services::service_rest_controller::locate_for(
+                &self.state,
+                &self.auth,
+                &path,
+            )
+            .await?
         else {
             return Ok(see_other("/"));
         };
@@ -187,8 +195,12 @@ impl DatabaseRestController {
         };
         let path = request.uri().path().to_string();
         let Some((project, service, _)) =
-            crate::console::service_rest_controller::locate_for(&self.state, &self.auth, &path)
-                .await?
+            crate::features::services::service_rest_controller::locate_for(
+                &self.state,
+                &self.auth,
+                &path,
+            )
+            .await?
         else {
             return Ok(see_other("/"));
         };
@@ -348,8 +360,12 @@ impl DatabaseRestController {
     async fn restore(&self, request: Request) -> RestResult<Response> {
         let path = request.uri().path().to_string();
         let Some((project, service, back)) =
-            crate::console::service_rest_controller::locate_for(&self.state, &self.auth, &path)
-                .await?
+            crate::features::services::service_rest_controller::locate_for(
+                &self.state,
+                &self.auth,
+                &path,
+            )
+            .await?
         else {
             return Ok(see_other("/?error=no+such+service"));
         };
@@ -427,7 +443,8 @@ fn settings_of(
     // tab now, and a save that lands on a redirect is a save whose
     // fragment is dropped on the way — which is the same "a save that
     // hides what it did" this function exists to prevent.
-    crate::views::pages::service_settings_page::Tab::Database.path(&project.slug, &service.slug)
+    crate::features::services::service_settings_page::Tab::Database
+        .path(&project.slug, &service.slug)
 }
 
 #[cfg(test)]

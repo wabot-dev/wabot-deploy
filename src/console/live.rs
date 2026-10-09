@@ -8,10 +8,10 @@
 //! It reads the database, so it is not a view — the cells it fills are
 //! `views::components::project_cells`, which are pure.
 
-use crate::views::components::project_cells::{
+use crate::features::services::project_cells_component::{
     edge_cell, replica_cell, EdgeCell, NameCell, ReplicaCell,
 };
-use crate::views::components::service_state::StateCell;
+use crate::features::services::service_state_component::StateCell;
 
 /// Everything on a project's pages that changes without a click.
 ///

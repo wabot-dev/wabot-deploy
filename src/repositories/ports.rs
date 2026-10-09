@@ -407,7 +407,7 @@ mod tests {
         let project = crate::repositories::projects::create(&database, "demo")
             .await
             .expect("project");
-        let service = crate::commands::create_service::CreateService {
+        let service = crate::features::services::create_service_command::CreateService {
             project_id: &project.id,
             name: "api",
             image: "docker.io/library/nginx:alpine",
@@ -471,7 +471,7 @@ mod tests {
             .expect("project");
         let mut ports = Vec::new();
         for name in ["one", "two"] {
-            let service = crate::commands::create_service::CreateService {
+            let service = crate::features::services::create_service_command::CreateService {
                 project_id: &project.id,
                 name,
                 image: "registry.example/db@sha256:abc",
@@ -528,7 +528,7 @@ mod tests {
         let project = crate::repositories::projects::create(&database, "demo")
             .await
             .expect("project");
-        let service = crate::commands::create_service::CreateService {
+        let service = crate::features::services::create_service_command::CreateService {
             project_id: &project.id,
             name: "web",
             image: "docker.io/library/nginx:alpine",
@@ -600,7 +600,7 @@ mod tests {
         let project = crate::repositories::projects::create(&database, "demo")
             .await
             .expect("project");
-        let service = crate::commands::create_service::CreateService {
+        let service = crate::features::services::create_service_command::CreateService {
             project_id: &project.id,
             name: "web",
             image: "alpine:3.23",

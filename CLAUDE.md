@@ -89,13 +89,11 @@ network and the databases" below.
    The guards read a file's kind off its name (`crate::tree`), so a file
    whose name says nothing fails.
 
-Where the tree stands: `access`, `backups`, `databases`, `network`,
-`node`, `organisations`, `people`, `projects` and `updates` are folders
-under `src/features` (145 files); services is still spread across the
-layer directories, with its 30 use cases left in `src/usecases`. Every
-use case's two ends are a request and a response and no controller
-draws, and the guards that keep it so read both layouts.
-`console/service_rest_controller.rs` is still 5,800 lines, tests
+Where the tree stands: every feature is a folder under `src/features`
+— `access`, `backups`, `databases`, `network`, `node`, `organisations`,
+`people`, `projects`, `services` and `updates`, 208 files. Every use
+case's two ends are a request and a response and no controller draws.
+`services/service_rest_controller.rs` is still 5,400 lines, tests
 included. No `cli_user_` or `remote_node_` use case exists yet.
 
 ## The framework is ours

@@ -736,15 +736,15 @@ deserialises and **validates**, agreeing on field *names* rather than
 types, with no "just convert it" variant on purpose. It round-trips
 through `serde_json::Value` — right for a request off a form, wrong for
 a hot loop. Where a response is built from an entity, write the fields
-out: `EnvApplied { service_id: applied.service.id, .. }` is where the
+out: `EnvAppliedResponse { service_id: applied.service.id, .. }` is where the
 entity stops, and the compiler is what says which field is missing.
 
 ### What it costs
 
 A shape to name, and a file for it. And two structs where one nearly
-worked: `commands::set_service_env::Applied` carries the `Service`
+worked: `set_service_env_command::Applied` carries the `Service`
 because the command's callers are in the domain, and the use case is
-what turns it into `EnvApplied`. Where a command's return has no entity
+what turns it into `EnvAppliedResponse`. Where a command's return has no entity
 in it — `NameDatabase` — the command returns the response itself and the
 duplicate does not exist.
 
@@ -854,10 +854,11 @@ listed fails by name.
 
 ### Where it stands
 
-Every feature but `services` has moved — `access`, `backups`,
-`databases`, `network`, `node`, `organisations`, `people`, `projects`
-and `updates`. Services is still in the layer directories, and the
-guards read both layouts until it is not.
+Every feature has moved — `access`, `backups`, `databases`, `network`,
+`node`, `organisations`, `people`, `projects`, `services` and
+`updates`. What is left in the layer directories is shared: the
+console's shell, the components and words more than one feature uses,
+the commands more than one feature calls, and the CLI's verbs.
 
 ### What it costs
 

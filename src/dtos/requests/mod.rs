@@ -18,7 +18,3 @@
 //! person can act on stays in the use case with its own words. A
 //! constraint written in both places is a constraint that will disagree
 //! with itself.
-
-pub mod add_service_port;
-pub mod create_service;
-pub mod set_service_resources;

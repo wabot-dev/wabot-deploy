@@ -4196,7 +4196,7 @@ mod tests {
         let project = crate::repositories::projects::create(&database, "shared")
             .await
             .expect("project");
-        let service = crate::commands::create_service::CreateService {
+        let service = crate::features::services::create_service_command::CreateService {
             project_id: &project.id,
             name: "web",
             image: "registry.example/web@sha256:abc",
@@ -4637,7 +4637,7 @@ mod tests {
         let project = crate::repositories::projects::create(&database, "shared")
             .await
             .expect("project");
-        let service = crate::commands::create_service::CreateService {
+        let service = crate::features::services::create_service_command::CreateService {
             project_id: &project.id,
             name: "web",
             image: "img@sha256:a",
@@ -4714,7 +4714,7 @@ mod tests {
         let project = crate::repositories::projects::create(&database, "shared")
             .await
             .expect("project");
-        let service = crate::commands::create_service::CreateService {
+        let service = crate::features::services::create_service_command::CreateService {
             project_id: &project.id,
             name: "web",
             image: "img@sha256:a",
@@ -4876,7 +4876,7 @@ mod tests {
         let project = crate::repositories::projects::create(&database, "theirs")
             .await
             .expect("project");
-        let service = crate::commands::create_service::CreateService {
+        let service = crate::features::services::create_service_command::CreateService {
             project_id: &project.id,
             name: "web",
             image: "registry.example/web@sha256:abc",
@@ -4922,7 +4922,7 @@ mod tests {
         let project = crate::repositories::projects::create(&database, "theirs")
             .await
             .expect("project");
-        let service = crate::commands::create_service::CreateService {
+        let service = crate::features::services::create_service_command::CreateService {
             project_id: &project.id,
             name: "web",
             image: "registry.example/web@sha256:abc",

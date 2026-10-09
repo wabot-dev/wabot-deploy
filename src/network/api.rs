@@ -928,7 +928,7 @@ mod tests {
         let project = crate::repositories::projects::create(&authority.database, "mine")
             .await
             .expect("project");
-        crate::commands::create_service::CreateService {
+        crate::features::services::create_service_command::CreateService {
             project_id: &project.id,
             name: "web",
             image: "docker.io/library/nginx:1",
@@ -1274,7 +1274,7 @@ mod tests {
         let project = crate::repositories::projects::create(&authority.database, "shop")
             .await
             .expect("project");
-        let service = crate::commands::create_service::CreateService {
+        let service = crate::features::services::create_service_command::CreateService {
             project_id: &project.id,
             name: "web",
             image: "nginx:alpine",
@@ -2446,7 +2446,7 @@ mod tests {
         let project = crate::repositories::projects::create(&authority.database, "shared")
             .await
             .expect("project");
-        let service = crate::commands::create_service::CreateService {
+        let service = crate::features::services::create_service_command::CreateService {
             project_id: &project.id,
             name: "web",
             image: "hub.example/shared/web@sha256:abc",

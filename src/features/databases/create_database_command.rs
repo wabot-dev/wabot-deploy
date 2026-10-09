@@ -36,7 +36,7 @@ impl CreateDatabase<'_> {
             ));
         }
 
-        let service = crate::commands::create_service::CreateService {
+        let service = crate::features::services::create_service_command::CreateService {
             project_id: self.project_id,
             name: self.name,
             image: &postgres::image_for(self.version),

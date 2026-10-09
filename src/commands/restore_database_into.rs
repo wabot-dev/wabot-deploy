@@ -39,7 +39,7 @@ pub async fn restore_into(
     from: &str,
     target: Option<&str>,
 ) -> PlatformResult<(Service, Database)> {
-    let service = crate::commands::create_service::CreateService {
+    let service = crate::features::services::create_service_command::CreateService {
         project_id,
         name,
         image: &postgres::image_for(&source.version),

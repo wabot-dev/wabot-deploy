@@ -26,8 +26,6 @@ pub mod attention;
 pub mod auth;
 pub mod live;
 pub mod reveal_ui_controller;
-pub mod service_rest_controller;
-pub mod service_ui_controller;
 
 use std::sync::Arc;
 
@@ -49,6 +47,7 @@ use crate::features::people::{
     tenant_people_ui_controller,
 };
 use crate::features::projects::{project_rest_controller, project_ui_controller};
+use crate::features::services::{service_rest_controller, service_ui_controller};
 use crate::features::updates::{update_rest_controller, update_ui_controller};
 
 /// What every console page reads from. Never cached: this is a status

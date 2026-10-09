@@ -3,7 +3,7 @@
 use crate::console::live::{edge_cells, name_cells, replica_cells, Live};
 use std::sync::Arc;
 
-use crate::views::components::service_state::{elsewhere_of, state_cell, where_it_runs};
+use crate::features::services::service_state_component::{elsewhere_of, state_cell, where_it_runs};
 use wabot::prelude::*;
 use wabot::rest::axum::body::Body;
 use wabot::rest::axum::extract::Request;

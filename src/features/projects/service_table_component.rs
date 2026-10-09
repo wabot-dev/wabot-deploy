@@ -5,7 +5,7 @@
 
 use hypertext::prelude::*;
 
-use crate::views::components::service_state::StateCell;
+use crate::features::services::service_state_component::StateCell;
 use crate::views::texts::language::t;
 
 /// What a service is doing, from containerd rather than from a column.
@@ -63,11 +63,11 @@ pub fn service_table(
                                         (cell.whereabouts.say())
                                     </td>
                                     <td class="state" data-state=(&service.id)>
-                                        (crate::views::components::service_state::state_badge(cell))
+                                        (crate::features::services::service_state_component::state_badge(cell))
                                     </td>
                                     <td class="row">
                                         @if allowed.may_deploy() {
-                                            (crate::views::components::service_state::deploy_controls(
+                                            (crate::features::services::service_state_component::deploy_controls(
                                                 &project.slug,
                                                 &service.slug,
                                                 cell,

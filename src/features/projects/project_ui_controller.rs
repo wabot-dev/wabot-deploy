@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use hypertext::prelude::*;
 
-use crate::views::components::service_state::{elsewhere_of, state_cell, where_it_runs};
+use crate::features::services::service_state_component::{elsewhere_of, state_cell, where_it_runs};
 use serde::Deserialize;
 use wabot::prelude::*;
 use wabot::ui::hypertext::IntoView;
