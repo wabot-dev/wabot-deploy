@@ -151,6 +151,33 @@ pub(crate) fn release_card(
     }
 }
 
+/// A release above this one that this machine cannot install. The page
+/// said this was the newest release, which a node on an architecture the
+/// release did not build for would read as nothing to do.
+fn newer_without_a_build(
+    available: &crate::infra::update::Availability,
+) -> Option<&crate::infra::update::github::Release> {
+    let current = available.current?;
+    available
+        .releases
+        .iter()
+        .filter(|release| release.version > current && !release.installable())
+        .max_by_key(|release| release.version)
+}
+
+/// Running something no release has reached — a build from a checkout.
+/// Found on a VM node running 0.21.0 beside a newest release of 0.17.0,
+/// under a sentence calling it the newest release published.
+fn ahead_of_every_release(available: &crate::infra::update::Availability) -> bool {
+    available.current.is_some_and(|current| {
+        !available.releases.is_empty()
+            && available
+                .releases
+                .iter()
+                .all(|release| release.version < current)
+    })
+}
+
 /// The parts of this page that change without anybody clicking.
 ///
 /// One island around both cards, because an update changes both: the
@@ -193,6 +220,10 @@ pub(crate) fn live_region<'a>(
                     @if let Some(release) = &available.upgrade {
                         <p>(&release.name)(t(" is available."))</p>
                         (install_form(release, "btn", "Install this release"))
+                    } @else if let Some(release) = newer_without_a_build(available) {
+                        <p class="note">(&release.name)(t(" is published, with no build for this machine."))</p>
+                    } @else if ahead_of_every_release(available) {
+                        <p class="note">(t("This build is newer than any release published."))</p>
                     } @else {
                         <p class="note">(t("This is the newest release published."))</p>
                     }
@@ -339,6 +370,58 @@ pub(crate) fn megabytes(bytes: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn release(tag: &str, built: bool) -> crate::infra::update::github::Release {
+        let asset = crate::infra::update::github::Asset {
+            name: "wabot-deploy".into(),
+            url: "https://example/asset".into(),
+            size: 1,
+        };
+        crate::infra::update::github::Release {
+            tag: tag.into(),
+            version: crate::infra::update::github::Version::parse(tag).expect("a version"),
+            name: tag.into(),
+            notes: String::new(),
+            published_at: String::new(),
+            prerelease: false,
+            html_url: String::new(),
+            binary: built.then(|| asset.clone()),
+            checksum: built.then(|| asset.clone()),
+        }
+    }
+
+    /// What the running card says when nothing can be installed, which
+    /// is three different situations and was one sentence.
+    ///
+    /// **Shipped otherwise**: a VM node running 0.21.0 beside a newest
+    /// release of 0.17.0 was told it ran the newest release published.
+    #[test]
+    fn nothing_to_install_says_which_kind_of_nothing() {
+        let availability = |current: &str, releases: Vec<crate::infra::update::github::Release>| {
+            crate::infra::update::Availability {
+                current: crate::infra::update::github::Version::parse(current),
+                upgrade: None,
+                releases,
+            }
+        };
+
+        let ahead = availability("0.21.0", vec![release("v0.17.0", true)]);
+        assert!(ahead_of_every_release(&ahead));
+        assert!(newer_without_a_build(&ahead).is_none());
+
+        let level = availability("0.17.0", vec![release("v0.17.0", true)]);
+        assert!(!ahead_of_every_release(&level));
+        assert!(newer_without_a_build(&level).is_none());
+
+        let unbuilt = availability(
+            "0.17.0",
+            vec![release("v0.18.0", false), release("v0.17.0", true)],
+        );
+        assert_eq!(
+            newer_without_a_build(&unbuilt).map(|release| release.tag.as_str()),
+            Some("v0.18.0")
+        );
+    }
 
     #[test]
     fn a_timestamp_becomes_a_day() {
