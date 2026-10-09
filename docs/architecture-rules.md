@@ -867,8 +867,10 @@ guards read both layouts until it is not.
   The service pages draw the database cards; the project page draws
   `service_state`, which will be the services feature's.
 - **A door can sit in the wrong feature, and the folder makes it
-  visible.** Restoring a database is answered by the service controller,
-  which calls the databases feature's use cases from outside it.
+  visible.** Restoring a database was answered by the service
+  controller, calling the databases feature's use cases from outside it,
+  because the form is on a database's service page. It moved to the
+  database controller on the same route, before services moved.
 - **Code beneath a feature can reach up into it.** `deploy` calls
   `qualified_name` out of `create_database_command.rs`. That dependency
   pointed the wrong way before the move; the move is what made it

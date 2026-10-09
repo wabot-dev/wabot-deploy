@@ -328,6 +328,88 @@ impl DatabaseRestController {
             project.slug, service.slug
         )))
     }
+
+    /// Restore this database into a copy beside it.
+    ///
+    /// **One database, not the node.** What arrives is a new service in
+    /// this project holding one volume out of one backup, with the
+    /// original still running and still holding its own data. Asked for
+    /// by Jorge: the window card said "any moment between these two" and
+    /// there was nothing to press.
+    ///
+    /// The deployment is queued here, because the rows alone are a
+    /// database that never starts: `restore_into` writes what to unpack
+    /// and where to stop, and the unpacking happens at the first
+    /// deployment. An operator who pressed this asked for a database, not
+    /// for a service they then have to notice and deploy.
+    #[post("/projects/:project/services/:service/restore")]
+    #[raw]
+    #[middleware(SessionMiddleware)]
+    async fn restore(&self, request: Request) -> RestResult<Response> {
+        let path = request.uri().path().to_string();
+        let Some((project, service, back)) =
+            crate::console::service_rest_controller::locate_for(&self.state, &self.auth, &path)
+                .await?
+        else {
+            return Ok(see_other("/?error=no+such+service"));
+        };
+        let form = match read_form(request).await {
+            Ok(form) => form,
+            Err(response) => return Ok(response),
+        };
+        let Some(account) = signed_in(&self.auth) else {
+            return Ok(see_other("/sign-in"));
+        };
+        let restored = match crate::authz::node_user::belongs_here(&account) {
+            true => {
+                crate::features::databases::node_user_restore_database::run(
+                    &self.state.database,
+                    &self.state.config,
+                    &account,
+                    &service,
+                    field(&form, "at"),
+                    field(&form, "into"),
+                )
+                .await
+            }
+            false => {
+                crate::features::databases::tenant_user_restore_database::run(
+                    &self.state.database,
+                    &self.state.config,
+                    &account,
+                    &service,
+                    field(&form, "at"),
+                    field(&form, "into"),
+                )
+                .await
+            }
+        };
+        let made = match restored {
+            Ok(made) => made,
+            Err(reason) => return Ok(back_with_error(&back, &reason)),
+        };
+
+        let command = crate::deploy::jobs::DeployService {
+            service_id: made.service_id.clone(),
+            release_id: None,
+        };
+        if let Err(error) = wabot::async_jobs::run_command(&self.state.container, &command).await {
+            tracing::error!(service = %made.service_id, %error, "could not queue a deployment");
+        }
+        tracing::info!(
+            from = %service.slug,
+            into = %made.slug,
+            backup = %made.from,
+            target = made.target.as_deref().unwrap_or("the end of the log"),
+            "restoring a database into a copy"
+        );
+        // To the copy, not back to the original: what somebody wants to
+        // look at next is the thing that is coming up.
+        Ok(see_other(&format!(
+            "/projects/{}/services/{}",
+            project.slug, made.slug
+        )))
+    }
 }
 
 /// Where these three forms live, and so where saving one goes back to.
@@ -712,6 +794,355 @@ mod tests {
         assert!(
             stored.env.is_empty(),
             "the node's own environment was overwritten from a form"
+        );
+    }
+
+    async fn my_api(console: &Console, cookie: &str) {
+        console
+            .harness
+            .post("/projects")
+            .header("cookie", cookie)
+            .form(&[("name", "My API")])
+            .send()
+            .await
+            .assert_status(StatusCode::SEE_OTHER);
+    }
+
+    /// The window said "any moment between these two" and there was
+    /// nowhere to go with it.
+    ///
+    /// Jorge found it on the node: the card promised a restore and the
+    /// console had no form for one — `restore` was a command, so
+    /// recovering meant an SSH session in the middle of the thing you
+    /// were recovering from. What arrives is **one database**, in a copy
+    /// beside the original.
+    #[tokio::test]
+    async fn a_database_is_restored_into_a_copy_beside_it() {
+        let console = Console::new().await;
+        let cookie = console.signed_in().await;
+        my_api(&console, &cookie).await;
+        let project = crate::repositories::projects::find(&console.database, "my-api")
+            .await
+            .expect("query")
+            .expect("made");
+        crate::features::databases::create_database_command::CreateDatabase {
+            project_id: &project.id,
+            name: "orders",
+            version: "17",
+            memory_limit: 256 * 1024 * 1024,
+        }
+        .run(&console.database)
+        .await
+        .expect("a database");
+
+        // No backup on the disk: no form, because it could only refuse.
+        let bare = console
+            .harness
+            .get("/projects/my-api/services/orders")
+            .header("cookie", &cookie)
+            .send()
+            .await
+            .body;
+        assert!(
+            !bare.contains("/services/orders/restore"),
+            "nothing to restore from, so nothing to press: {bare}"
+        );
+
+        // A backup that holds it, as `backup` would have written one.
+        let taken_at = crate::clock::now_ms() - 3_600_000;
+        let into = console
+            .data_dir
+            .join("backups")
+            .join("nodes")
+            .join("nd-test")
+            .join(taken_at.to_string());
+        std::fs::create_dir_all(into.join("volumes").join("my-api.orders"))
+            .expect("a backup directory");
+        std::fs::write(
+            into.join("volumes")
+                .join("my-api.orders")
+                .join("base.tar.gz"),
+            "not really a tarball",
+        )
+        .expect("the copy");
+        std::fs::write(
+            into.join("manifest.json"),
+            serde_json::json!({
+                "format": 1,
+                "taken_by": "wabot-deploy 0.0.0-test",
+                "taken_at": taken_at,
+                "node_id": "nd-test",
+                "node_name": "test",
+                "volumes": [{
+                    "container": "my-api.orders",
+                    "bytes": 20,
+                    "how": "Consistent",
+                }],
+                "images": [],
+            })
+            .to_string(),
+        )
+        .expect("the manifest");
+
+        let offered = console
+            .harness
+            .get("/projects/my-api/services/orders")
+            .header("cookie", &cookie)
+            .send()
+            .await
+            .body;
+        assert!(
+            offered.contains("/projects/my-api/services/orders/restore"),
+            "now there is something to restore from: {offered}"
+        );
+
+        let response = console
+            .harness
+            .post("/projects/my-api/services/orders/restore")
+            .header("cookie", &cookie)
+            .form(&[("at", ""), ("into", "orders-friday")])
+            .send()
+            .await;
+        // To the copy, which is the thing somebody wants to look at next.
+        assert_eq!(
+            response.header("location"),
+            Some("/projects/my-api/services/orders-friday")
+        );
+
+        let copy = services::all(&console.database, None)
+            .await
+            .expect("query")
+            .into_iter()
+            .find(|service| service.slug == "orders-friday")
+            .expect("the copy exists");
+        let row = crate::repositories::databases::of_service(&console.database, &copy.id)
+            .await
+            .expect("query")
+            .expect("an engine row");
+        assert_eq!(
+            row.restored_from.as_deref(),
+            Some(
+                into.join("volumes")
+                    .join("my-api.orders")
+                    .to_string_lossy()
+                    .as_ref()
+            ),
+            "it knows which backup to unpack"
+        );
+        // Empty meant "as far as the log goes", which is no target at all
+        // — not the string "", which would be refused as a moment.
+        assert_eq!(row.recovery_target, None);
+
+        // And the original is untouched: same rows, still there.
+        let original = services::all(&console.database, None)
+            .await
+            .expect("query")
+            .into_iter()
+            .find(|service| service.slug == "orders")
+            .expect("the original is still a service");
+        assert!(
+            crate::repositories::databases::of_service(&console.database, &original.id)
+                .await
+                .expect("query")
+                .is_some()
+        );
+    }
+
+    /// The backup is not on this node any more — it is at the
+    /// destination.
+    ///
+    /// Jorge asked what happens then, and the answer used to be nothing:
+    /// the search read this node's own root, and a schedule with a
+    /// destination removes the local copy the moment the transfer
+    /// succeeds. So a node that had been backing itself up all week would
+    /// be told by the machine that took them that it has no backups.
+    ///
+    /// Asked here with a **local** destination in another directory,
+    /// which is the same code path a bucket takes: `index` reads a root
+    /// this node did not write, `holds` answers from the manifest rather
+    /// than the disk — that is what makes it answerable of a bucket
+    /// without downloading anything — and the row records where the
+    /// volume comes from so the deployment can fetch it.
+    #[tokio::test]
+    async fn a_database_is_restored_from_the_destination_when_nothing_is_here() {
+        let console = Console::new().await;
+        let cookie = console.signed_in().await;
+        my_api(&console, &cookie).await;
+        let project = crate::repositories::projects::find(&console.database, "my-api")
+            .await
+            .expect("query")
+            .expect("made");
+        crate::features::databases::create_database_command::CreateDatabase {
+            project_id: &project.id,
+            name: "orders",
+            version: "17",
+            memory_limit: 256 * 1024 * 1024,
+        }
+        .run(&console.database)
+        .await
+        .expect("a database");
+
+        // A root that is not this node's own — `data_dir/backups` is
+        // where its own would be, and there is nothing there.
+        let away = console.data_dir.join("somewhere-else");
+        let taken_at = crate::clock::now_ms() - 7_200_000;
+        let backup = away
+            .join("nodes")
+            .join("nd-test")
+            .join(taken_at.to_string());
+        std::fs::create_dir_all(backup.join("volumes").join("my-api.orders"))
+            .expect("a backup directory");
+        std::fs::write(
+            backup
+                .join("volumes")
+                .join("my-api.orders")
+                .join("base.tar.gz"),
+            "not really a tarball",
+        )
+        .expect("the copy");
+        std::fs::write(
+            backup.join("manifest.json"),
+            serde_json::json!({
+                "format": 1,
+                "taken_by": "wabot-deploy 0.0.0-test",
+                "taken_at": taken_at,
+                "node_id": "nd-test",
+                "node_name": "test",
+                "volumes": [{
+                    "container": "my-api.orders",
+                    "bytes": 20,
+                    "how": "Consistent",
+                }],
+                "images": [],
+            })
+            .to_string(),
+        )
+        .expect("the manifest");
+        crate::node::backups::store(
+            &console.database,
+            &crate::node::backups::Plan {
+                destination: Some(away.display().to_string()),
+                ..crate::node::backups::Plan::default()
+            },
+        )
+        .await
+        .expect("the plan");
+
+        // The card is offered although nothing is here: asking the
+        // destination on every page render would make this page depend on
+        // somebody's network, so the search happens on submit.
+        let body = console
+            .harness
+            .get("/projects/my-api/services/orders")
+            .header("cookie", &cookie)
+            .send()
+            .await
+            .body;
+        assert!(
+            body.contains("/projects/my-api/services/orders/restore"),
+            "the form is offered: {body}"
+        );
+
+        let response = console
+            .harness
+            .post("/projects/my-api/services/orders/restore")
+            .header("cookie", &cookie)
+            .form(&[("at", ""), ("into", "orders-from-away")])
+            .send()
+            .await;
+        assert_eq!(
+            response.header("location"),
+            Some("/projects/my-api/services/orders-from-away")
+        );
+
+        let copy = services::all(&console.database, None)
+            .await
+            .expect("query")
+            .into_iter()
+            .find(|service| service.slug == "orders-from-away")
+            .expect("the copy exists");
+        let row = crate::repositories::databases::of_service(&console.database, &copy.id)
+            .await
+            .expect("query")
+            .expect("an engine row");
+        assert_eq!(
+            row.restored_from.as_deref(),
+            Some(
+                backup
+                    .join("volumes")
+                    .join("my-api.orders")
+                    .to_string_lossy()
+                    .as_ref()
+            ),
+            "the row says where the volume comes from, wherever that is"
+        );
+    }
+
+    /// A moment nothing can reach is refused, with the reason on the page
+    /// somebody typed it into.
+    ///
+    /// Replaying only goes forwards, so a backup taken after the moment
+    /// asked for already holds whatever is being undone. The refusal says
+    /// which directory it looked in — in the middle of a recovery, "you
+    /// have nothing" had better name where it looked.
+    #[tokio::test]
+    async fn a_moment_no_backup_can_reach_is_refused() {
+        let console = Console::new().await;
+        let cookie = console.signed_in().await;
+        my_api(&console, &cookie).await;
+        let project = crate::repositories::projects::find(&console.database, "my-api")
+            .await
+            .expect("query")
+            .expect("made");
+        crate::features::databases::create_database_command::CreateDatabase {
+            project_id: &project.id,
+            name: "orders",
+            version: "17",
+            memory_limit: 256 * 1024 * 1024,
+        }
+        .run(&console.database)
+        .await
+        .expect("a database");
+
+        let refused = console
+            .harness
+            .post("/projects/my-api/services/orders/restore")
+            .header("cookie", &cookie)
+            .form(&[("at", "2026-08-16 14:32"), ("into", "")])
+            .send()
+            .await;
+        let location = refused.header("location").unwrap_or_default().to_string();
+        assert!(location.contains("error="), "{location}");
+        assert!(
+            location.contains("backups"),
+            "and where it looked: {location}"
+        );
+
+        // Nothing was created for a restore that could not start.
+        assert!(
+            services::all(&console.database, None)
+                .await
+                .expect("query")
+                .iter()
+                .all(|service| service.slug != "orders-restored"),
+            "a refused restore leaves no half-made database"
+        );
+
+        // And a moment that is not one says so rather than guessing.
+        let nonsense = console
+            .harness
+            .post("/projects/my-api/services/orders/restore")
+            .header("cookie", &cookie)
+            .form(&[("at", "last tuesday"), ("into", "")])
+            .send()
+            .await;
+        assert!(
+            nonsense
+                .header("location")
+                .unwrap_or_default()
+                .contains("not+a+moment"),
+            "{:?}",
+            nonsense.header("location")
         );
     }
 }
