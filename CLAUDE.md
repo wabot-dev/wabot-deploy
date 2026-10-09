@@ -40,8 +40,9 @@ about **the shape of this software**. How the network of nodes is put
 together is a separate subject with its own documents — see "The
 network and the databases" below.
 
-1. **One use case per file, named for who does what.** Five actors:
-   `node_user_`, `tenant_user_`, `guest_`, `cli_user_`, `remote_node_`.
+1. **One use case per file, named for who does what.** Four actors:
+   `node_user_`, `tenant_user_`, `guest_`, `remote_node_`. The CLI's
+   verbs are not use cases: each is the terminal's door in `src/cli`.
    In its feature's folder, with the actor in the filename, because a
    directory carrying the actor would leave the file called
    `create_project.rs`.
@@ -102,9 +103,8 @@ folder under `src/features` — `access`, `backups`, `databases`,
 `updates`. Every use case's two ends are a request and a response, no
 controller draws, and no import points outward.
 `services/service_rest_controller.rs` is still 5,400 lines, tests
-included. No `cli_user_` or `remote_node_` use case exists yet: the CLI's
-verbs are whole in `src/cli`, and a remote node's errands are carried
-out in `infra::network::collect`.
+included. No `remote_node_` use case exists yet: a remote node's
+errands are carried out in `infra::network::collect`.
 
 ## The framework is ours
 

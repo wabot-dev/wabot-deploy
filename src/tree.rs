@@ -19,13 +19,7 @@ pub enum Kind {
     Texts,
 }
 
-const ACTORS: &[&str] = &[
-    "guest_",
-    "node_user_",
-    "tenant_user_",
-    "cli_user_",
-    "remote_node_",
-];
+const ACTORS: &[&str] = &["guest_", "node_user_", "tenant_user_", "remote_node_"];
 
 const SUFFIXES: &[(&str, Kind)] = &[
     ("_command", Kind::Command),

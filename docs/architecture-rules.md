@@ -86,7 +86,6 @@ name says which role performs it and what it does:
 tenant_user_create_project.rs
 tenant_user_update_service_replica.rs
 node_user_update_service_replica.rs
-cli_user_install_node.rs
 remote_node_host_service.rs
 ```
 
@@ -96,28 +95,26 @@ queued, whichever suits the caller.
 
 ### The actors
 
-Everything this node does is done *by somebody*, and there are four:
+Everything this node does is done *by somebody*, and there are three:
 
 | Actor | Reaches the node through | What it looks like today |
 |---|---|---|
-| **Node user** | the machine's console | `console::nodes`, `console::people`, `console::updates` |
-| **Tenant user** | an organisation's console | `console::tenant` |
-| **CLI user** | a terminal on the machine | `cli::install`, `doctor`, `join`, `passwd`, `backup` |
-| **Remote node** | errands and the control-plane API | `network::collect::carry_out`, `network::api` |
+| **Node user** | the machine's console | the `node_user_` use cases in every feature |
+| **Tenant user** | an organisation's console | the `tenant_user_` use cases |
+| **Remote node** | errands and the control-plane API | `infra::network::collect::carry_out`, `web::remote_node_rest_controller` |
 
-**The CLI subcommands are use cases too**, and treating them as a
-separate kind of thing was the mistake in the first draft of this rule.
-`wabot-deploy join` and the console's join form are one use case with two
-actors; `install` is a use case with exactly one. Naming the actor is
-what makes that visible instead of arguable.
+**The terminal is not an actor.** `wabot-deploy`'s verbs are the CLI's
+own — `src/cli`, one file each (§12) — and each reads its arguments and
+calls what it needs: a feature's use case, or the infrastructure beneath
+it. None of them is a use case, and none is named for an actor.
 
-The fourth is the one that is easy to forget and the one this codebase
+The third is the one that is easy to forget and the one this codebase
 has paid for most: a remote node asking for something is not a special
 case of a person asking, and every fault in `docs/network.md`'s phase 4-7
 list came from code that had not decided which of the two it was serving.
 
 
-**A fifth: the guest.** Somebody holding an invitation and nothing else —
+**A fourth: the guest.** Somebody holding an invitation and nothing else —
 not yet a user of anything. They are their own actor because what they
 may do is *hold a valid token*, and because passing that test is how the
 other actors are born: `guest_join_as_node_user` and
@@ -776,7 +773,7 @@ Everything one feature is made of sits in one directory under
 
 | The name | What it is |
 |---|---|
-| `node_user_…`, `tenant_user_…`, `guest_…`, `cli_user_…`, `remote_node_…` | a use case (§1) |
+| `node_user_…`, `tenant_user_…`, `guest_…`, `remote_node_…` | a use case (§1) |
 | `…_command.rs` | a command (§2) |
 | `…_request.rs`, `…_response.rs` | what a use case is asked and hands back (§9) |
 | `…_rest_controller.rs`, `…_ui_controller.rs` | a controller (§10) |
@@ -986,6 +983,3 @@ reaching the words, a domain test reaching the web).
   where it was `crate::repositories::services`.
 - **Three registry helpers are crate-visible** so the registry's door
   could leave the module it was a child of.
-- **The CLI's verbs are its room, not yet its use cases.** `cli/`
-  holds them whole; §1 says each is a `cli_user_` use case, and none
-  has been written that way yet.
