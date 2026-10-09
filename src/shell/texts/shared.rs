@@ -179,6 +179,7 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
     ("When", "Cuándo"),
     ("Withdraw", "Retirar"),
     ("another node", "otro nodo"),
+    ("created", "creado"),
     ("edited", "editado"),
     ("elsewhere", "en otro nodo"),
     ("everything else", "todo lo demás"),

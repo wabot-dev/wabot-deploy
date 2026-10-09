@@ -3041,6 +3041,74 @@ mod tests {
         "my-api".to_string()
     }
 
+    /// The values a service was made with can be restored after the
+    /// first edit.
+    ///
+    /// **Shipped otherwise**: creating a service recorded no revision, so
+    /// the first edit left a history of one — what was running — and no
+    /// way back. Found on a VM node; nothing tested restoring at all.
+    #[tokio::test]
+    async fn the_environment_a_service_was_made_with_can_be_restored() {
+        let console = Console::new().await;
+        let cookie = console.signed_in().await;
+        let slug = project(&console, &cookie).await;
+        console
+            .harness
+            .post(&format!("/projects/{slug}/services"))
+            .header("cookie", &cookie)
+            .form(&[
+                ("name", "web"),
+                ("image", "docker.io/library/nginx:alpine"),
+                ("env", "GREETING=hello"),
+            ])
+            .send()
+            .await;
+        let base = format!("/projects/{slug}/services/web");
+        console
+            .harness
+            .post(&format!("{base}/env"))
+            .header("cookie", &cookie)
+            .form(&[("env", "GREETING=bonjour")])
+            .send()
+            .await
+            .assert_status(StatusCode::SEE_OTHER);
+
+        let body = console
+            .harness
+            .get(&format!("{base}/settings/environment"))
+            .header("cookie", &cookie)
+            .send()
+            .await
+            .body;
+        let restore = body
+            .split("action=\"")
+            .skip(1)
+            .filter_map(|rest| rest.split('"').next())
+            .find(|action| action.ends_with("/revert"))
+            .unwrap_or_else(|| panic!("nothing to restore: {body}"))
+            .to_string();
+
+        console
+            .harness
+            .post(&restore)
+            .header("cookie", &cookie)
+            .send()
+            .await
+            .assert_status(StatusCode::SEE_OTHER);
+        let project = crate::infra::repositories::projects::find(&console.database, &slug)
+            .await
+            .expect("query")
+            .expect("present");
+        let service = services::in_project(&console.database, &project.id, "web")
+            .await
+            .expect("query")
+            .expect("present");
+        assert_eq!(
+            service.env.get("GREETING").map(String::as_str),
+            Some("hello")
+        );
+    }
+
     #[tokio::test]
     async fn a_service_is_created_and_listed() {
         let console = Console::new().await;

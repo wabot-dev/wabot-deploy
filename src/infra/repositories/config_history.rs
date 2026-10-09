@@ -23,38 +23,46 @@ pub async fn record(
     changed_by: Option<&str>,
     reason: &str,
 ) -> PlatformResult<()> {
-    let id = format!("cfg-{}", wabot::prelude::password::generate(12));
-    let payload = serde_json::to_string(env).unwrap_or_else(|_| "{}".into());
-    let (service, by, reason) = (
+    let (service, env, by, reason) = (
         service_id.to_string(),
+        env.clone(),
         changed_by.map(str::to_string),
         reason.to_string(),
     );
-    let keep_for = service_id.to_string();
-
     database
-        .write(move |connection| {
-            connection.execute(
-                "INSERT INTO config_revision \
-                   (\"id\", \"service_id\", \"env\", \"changed_by\", \"reason\", \"created_at\") \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-                (id, service, payload, by, reason, now_ms()),
-            )?;
-            // Pruned here rather than on a timer: this is the only
-            // place that adds one.
-            connection.execute(
-                "DELETE FROM config_revision WHERE \"service_id\" = ?1 AND \"id\" NOT IN \
-                   (SELECT \"id\" FROM config_revision WHERE \"service_id\" = ?1 \
-                    ORDER BY \"created_at\" DESC, \"rowid\" DESC LIMIT ?2)",
-                (keep_for, KEEP as i64),
-            )?;
-            Ok(())
-        })
+        .write(move |connection| insert(connection, &service, &env, by.as_deref(), &reason))
         .await?;
     Ok(())
 }
 
-/// A service's history, newest first.
+/// The same, inside a write somebody else is making — so a service and
+/// the revision describing it are one transaction.
+pub(crate) fn insert(
+    connection: &wabot::sqlite::rusqlite::Connection,
+    service_id: &str,
+    env: &BTreeMap<String, String>,
+    changed_by: Option<&str>,
+    reason: &str,
+) -> wabot::sqlite::rusqlite::Result<()> {
+    let id = format!("cfg-{}", wabot::prelude::password::generate(12));
+    let payload = serde_json::to_string(env).unwrap_or_else(|_| "{}".into());
+    connection.execute(
+        "INSERT INTO config_revision \
+           (\"id\", \"service_id\", \"env\", \"changed_by\", \"reason\", \"created_at\") \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        (id, service_id, payload, changed_by, reason, now_ms()),
+    )?;
+    // Pruned here rather than on a timer: this is the only place that
+    // adds one.
+    connection.execute(
+        "DELETE FROM config_revision WHERE \"service_id\" = ?1 AND \"id\" NOT IN \
+           (SELECT \"id\" FROM config_revision WHERE \"service_id\" = ?1 \
+            ORDER BY \"created_at\" DESC, \"rowid\" DESC LIMIT ?2)",
+        (service_id, KEEP as i64),
+    )?;
+    Ok(())
+}
+
 /// A service's history, newest first.
 pub async fn of_service(
     database: &SqliteDatabase,
@@ -146,9 +154,41 @@ mod tests {
             .expect("recorded");
 
         let history = of_service(&database, &service).await.expect("history");
-        assert_eq!(history.len(), 2);
+        assert_eq!(history.len(), 3);
         assert_eq!(history[0].env.get("LOG").map(String::as_str), Some("debug"));
         assert_eq!(history[1].env.get("LOG").map(String::as_str), Some("info"));
+        assert_eq!(history[2].reason, "create");
+    }
+
+    /// The values a service was made with are a revision too, or the
+    /// first edit is one nobody can take back.
+    ///
+    /// **Shipped otherwise**: creating a service recorded nothing, so
+    /// after one edit the history held only what was running and offered
+    /// nothing to restore. Found on a VM node.
+    #[tokio::test]
+    async fn a_service_is_made_with_its_first_revision() {
+        let database = crate::infra::db::open_in_memory().await.expect("open");
+        let project = crate::infra::repositories::projects::create(&database, "demo")
+            .await
+            .expect("project");
+        let made = services::create(
+            &database,
+            &project.id,
+            "api",
+            "nginx:alpine",
+            &[("GREETING".to_string(), "hello".to_string())],
+        )
+        .await
+        .expect("service");
+
+        let history = of_service(&database, &made.id).await.expect("history");
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0].reason, "create");
+        assert_eq!(
+            history[0].env.get("GREETING").map(String::as_str),
+            Some("hello")
+        );
     }
 
     /// A history nobody prunes is a table nobody reads.
@@ -188,7 +228,8 @@ mod tests {
         let first = of_service(&database, &service)
             .await
             .expect("history")
-            .pop()
+            .into_iter()
+            .next()
             .expect("one");
 
         record(&database, &service, &env(&[("KEY", "two")]), None, "edit")

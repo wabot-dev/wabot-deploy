@@ -421,6 +421,7 @@ pub async fn create(
 
     let row = service.clone();
     let env_json = serde_json::to_string(&row.env).unwrap_or_else(|_| "{}".into());
+    let (revision_of, revision_env) = (row.id.clone(), row.env.clone());
     database
         .write(move |connection| {
             connection.execute(
@@ -438,6 +439,13 @@ pub async fn create(
                     row.desired_state.as_str(),
                     now_ms(),
                 ),
+            )?;
+            crate::infra::repositories::config_history::insert(
+                connection,
+                &revision_of,
+                &revision_env,
+                None,
+                "create",
             )?;
             Ok(())
         })

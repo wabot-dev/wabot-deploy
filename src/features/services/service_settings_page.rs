@@ -395,7 +395,7 @@ pub fn render<'a>(page: &'a ServiceSettings<'a>) -> impl Renderable + 'a {
                         </div>
                     </form>
 
-                    @if !history.is_empty() {
+                    @if history.len() > 1 {
                         <table>
                             <tbody>
                                 @for revision in history.iter().skip(1) {
@@ -431,6 +431,8 @@ pub fn render<'a>(page: &'a ServiceSettings<'a>) -> impl Renderable + 'a {
                                                     (" · ")
                                                     @if revision.reason == "revert" {
                                                         (t("restored"))
+                                                    } @else if revision.reason == "create" {
+                                                        (t("created"))
                                                     } @else {
                                                         (t("edited"))
                                                     }
