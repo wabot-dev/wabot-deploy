@@ -90,16 +90,13 @@ network and the databases" below.
    whose name says nothing fails.
 
 Where the tree stands: `access`, `backups`, `databases`, `network`,
-`organisations`, `people`, `projects` and `updates` are folders under
-`src/features` (135 files); the node's settings and services are still
-spread across the layer directories, with 34 use cases left in
-`src/usecases`. Every
+`node`, `organisations`, `people`, `projects` and `updates` are folders
+under `src/features` (145 files); services is still spread across the
+layer directories, with its 30 use cases left in `src/usecases`. Every
 use case's two ends are a request and a response and no controller
 draws, and the guards that keep it so read both layouts.
 `console/service_rest_controller.rs` is still 5,800 lines, tests
-included. The network, this machine's settings and its backups are
-separate controllers now, split by route. No `cli_user_` or
-`remote_node_` use case exists yet.
+included. No `cli_user_` or `remote_node_` use case exists yet.
 
 ## The framework is ours
 

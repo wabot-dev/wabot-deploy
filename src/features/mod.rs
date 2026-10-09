@@ -2,6 +2,7 @@ pub mod access;
 pub mod backups;
 pub mod databases;
 pub mod network;
+pub mod node;
 pub mod organisations;
 pub mod people;
 pub mod projects;

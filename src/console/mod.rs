@@ -25,8 +25,6 @@ pub mod assets;
 pub mod attention;
 pub mod auth;
 pub mod live;
-pub mod node_rest_controller;
-pub mod node_ui_controller;
 pub mod reveal_ui_controller;
 pub mod service_rest_controller;
 pub mod service_ui_controller;
@@ -44,6 +42,7 @@ use crate::features::access::{auth_rest_controller, auth_ui_controller};
 use crate::features::backups::backup_rest_controller;
 use crate::features::databases::{database_rest_controller, database_ui_controller};
 use crate::features::network::{network_rest_controller, network_ui_controller};
+use crate::features::node::{node_rest_controller, node_ui_controller};
 use crate::features::organisations::{tenant_rest_controller, tenant_ui_controller};
 use crate::features::people::{
     people_rest_controller, people_ui_controller, tenant_people_rest_controller,

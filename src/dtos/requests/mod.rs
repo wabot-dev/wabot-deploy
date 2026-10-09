@@ -21,5 +21,4 @@
 
 pub mod add_service_port;
 pub mod create_service;
-pub mod set_capabilities;
 pub mod set_service_resources;

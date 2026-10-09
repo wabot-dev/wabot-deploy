@@ -4,7 +4,6 @@
 //! it does not decide.
 
 pub mod new_service_page;
-pub mod node_user_node_settings_page;
 pub mod revealed_page;
 pub mod service_logs_page;
 pub mod service_page;

@@ -9,9 +9,9 @@ use wabot::rest::axum::http::{header, StatusCode};
 use wabot::rest::axum::response::Response;
 use wabot::rest::RestResult;
 
-use super::auth::{signed_in, SessionMiddleware};
-use super::ConsoleState;
-use crate::views::pages::node_user_node_settings_page::NodeTab;
+use crate::console::auth::{signed_in, SessionMiddleware};
+use crate::console::ConsoleState;
+use crate::features::node::node_user_node_settings_page::NodeTab;
 
 /// The server half.
 #[injectable]
@@ -73,10 +73,10 @@ impl NodeRestController {
     #[middleware(SessionMiddleware)]
     async fn set_certificate(&self, request: Request) -> RestResult<Response> {
         let Some(account) = signed_in(&self.auth) else {
-            return Ok(super::auth::see_other("/sign-in"));
+            return Ok(crate::console::auth::see_other("/sign-in"));
         };
         if !crate::authz::node_user::manages_the_machine(&account) {
-            return Ok(super::auth::see_other("/"));
+            return Ok(crate::console::auth::see_other("/"));
         }
         // **Back to the form.** This answered to `self_path` — the
         // node's page in the *network* list — which has no error note
@@ -88,7 +88,7 @@ impl NodeRestController {
         // tabs; the redirect never followed it.
         let here = &NodeTab::Domain.path();
 
-        let form = match super::auth::read_form(request).await {
+        let form = match crate::console::auth::read_form(request).await {
             Ok(form) => form,
             Err(response) => return Ok(response),
         };
@@ -98,15 +98,15 @@ impl NodeRestController {
         // retry reads as though the domain were what was wrong.
         if form.contains_key("retry") {
             self.state.certificates.now();
-            return Ok(super::auth::see_other(here));
+            return Ok(crate::console::auth::see_other(here));
         }
 
-        let settled = crate::usecases::node_user_set_node_domain::run(
+        let settled = crate::features::node::node_user_set_node_domain::run(
             &self.state.database,
             &self.state.config,
             &self.state.deployer,
             &account,
-            super::auth::field(&form, "domain"),
+            crate::console::auth::field(&form, "domain"),
         )
         .await;
 
@@ -114,23 +114,25 @@ impl NodeRestController {
         // the new name and the public one. Asking it here is what makes
         // saving a domain reissue rather than merely record.
         match settled {
-            Ok(crate::dtos::responses::domain_settled::Settled::Named(domain)) => {
+            Ok(crate::features::node::domain_settled_response::DomainSettledResponse::Named(
+                domain,
+            )) => {
                 self.state.certificates.now();
-                Ok(super::auth::see_other(&format!(
+                Ok(crate::console::auth::see_other(&format!(
                     "{here}?{}",
                     form_urlencoded::Serializer::new(String::new())
                         .append_pair("checked", &format!("{domain} resolves here."))
                         .finish()
                 )))
             }
-            Ok(crate::dtos::responses::domain_settled::Settled::Cleared) => {
+            Ok(crate::features::node::domain_settled_response::DomainSettledResponse::Cleared) => {
                 self.state.certificates.now();
-                Ok(super::auth::back_with_error(
+                Ok(crate::console::auth::back_with_error(
                     here,
                     "the domain was cleared — this node serves its own certificate",
                 ))
             }
-            Err(reason) => Ok(super::auth::back_with_error(here, &reason)),
+            Err(reason) => Ok(crate::console::auth::back_with_error(here, &reason)),
         }
     }
 
@@ -168,29 +170,29 @@ impl NodeRestController {
         // had just changed.
         let here = &NodeTab::Resources.path();
         let Some(account) = signed_in(&self.auth) else {
-            return Ok(super::auth::see_other("/sign-in"));
+            return Ok(crate::console::auth::see_other("/sign-in"));
         };
         if !crate::authz::node_user::manages_the_machine(&account) {
-            return Ok(super::auth::see_other("/"));
+            return Ok(crate::console::auth::see_other("/"));
         }
-        let form = match super::auth::read_form(request).await {
+        let form = match crate::console::auth::read_form(request).await {
             Ok(form) => form,
             Err(response) => return Ok(response),
         };
 
-        if let Err(reason) = crate::usecases::node_user_set_reserves::run(
+        if let Err(reason) = crate::features::node::node_user_set_reserves::run(
             &self.state.database,
             &self.state.deployer,
             &account,
-            super::auth::field(&form, "memory"),
-            super::auth::field(&form, "cpu"),
+            crate::console::auth::field(&form, "memory"),
+            crate::console::auth::field(&form, "cpu"),
         )
         .await
         {
-            return Ok(super::auth::back_with_error(here, &reason));
+            return Ok(crate::console::auth::back_with_error(here, &reason));
         }
 
-        Ok(super::auth::see_other(&format!("{here}#reserves")))
+        Ok(crate::console::auth::see_other(&format!("{here}#reserves")))
     }
 
     #[post("/node/capabilities")]
@@ -199,7 +201,7 @@ impl NodeRestController {
     async fn set_capabilities(&self, request: Request) -> RestResult<Response> {
         let here = &NodeTab::Allows.path();
         let Some(account) = signed_in(&self.auth) else {
-            return Ok(super::auth::see_other("/sign-in"));
+            return Ok(crate::console::auth::see_other("/sign-in"));
         };
         // The one POST under `/node` that had no admin check, and the
         // omission was not small. `evict_ungranted` and
@@ -212,18 +214,18 @@ impl NodeRestController {
         // this was hidden and not enforced, which is the distinction
         // every island in this console is written around.
         if !crate::authz::node_user::manages_the_machine(&account) {
-            return Ok(super::auth::see_other("/"));
+            return Ok(crate::console::auth::see_other("/"));
         }
-        let form = match super::auth::read_form(request).await {
+        let form = match crate::console::auth::read_form(request).await {
             Ok(form) => form,
             Err(response) => return Ok(response),
         };
 
-        let asked = crate::dtos::requests::set_capabilities::SetCapabilities {
-            provides: super::auth::capabilities_ticked(&form, ""),
+        let asked = crate::features::node::set_capabilities_request::SetCapabilitiesRequest {
+            provides: crate::console::auth::capabilities_ticked(&form, ""),
             owns: form.contains_key("own"),
         };
-        if let Err(reason) = crate::usecases::node_user_set_capabilities::run(
+        if let Err(reason) = crate::features::node::node_user_set_capabilities::run(
             &self.state.database,
             &self.state.config,
             &self.state.deployer,
@@ -232,10 +234,10 @@ impl NodeRestController {
         )
         .await
         {
-            return Ok(super::auth::back_with_error(here, &reason));
+            return Ok(crate::console::auth::back_with_error(here, &reason));
         }
 
-        Ok(super::auth::see_other(here))
+        Ok(crate::console::auth::see_other(here))
     }
 
     /// Choose where this name's certificate comes from.
@@ -252,10 +254,10 @@ impl NodeRestController {
     #[middleware(SessionMiddleware)]
     async fn set_certificate_source(&self, request: Request) -> RestResult<Response> {
         let Some(account) = signed_in(&self.auth) else {
-            return Ok(super::auth::see_other("/sign-in"));
+            return Ok(crate::console::auth::see_other("/sign-in"));
         };
         if !crate::authz::node_user::manages_the_machine(&account) {
-            return Ok(super::auth::see_other("/"));
+            return Ok(crate::console::auth::see_other("/"));
         }
         // **Back to the form.** This answered to `self_path` — the
         // node's page in the *network* list — which has no error note
@@ -267,14 +269,14 @@ impl NodeRestController {
         // tabs; the redirect never followed it.
         let here = &NodeTab::Domain.path();
 
-        let form = match super::auth::read_form(request).await {
+        let form = match crate::console::auth::read_form(request).await {
             Ok(form) => form,
             Err(response) => return Ok(response),
         };
 
         // The node's own name, or the fallback while it has none — the
         // same key the renewal loop will look this up under.
-        let name = match crate::usecases::node_user_set_certificate_source::run(
+        let name = match crate::features::node::node_user_set_certificate_source::run(
             &self.state.database,
             &self.state.config,
             &account,
@@ -282,12 +284,12 @@ impl NodeRestController {
         .await
         {
             Ok(name) => name,
-            Err(reason) => return Ok(super::auth::back_with_error(here, &reason)),
+            Err(reason) => return Ok(crate::console::auth::back_with_error(here, &reason)),
         };
 
-        let renew_with = match super::auth::source_from(&form, &name) {
+        let renew_with = match crate::console::auth::source_from(&form, &name) {
             Ok(renew_with) => renew_with,
-            Err(reason) => return Ok(super::auth::back_with_error(here, &reason)),
+            Err(reason) => return Ok(crate::console::auth::back_with_error(here, &reason)),
         };
 
         if let Err(error) = crate::commands::store_certificate_source::run(
@@ -298,13 +300,13 @@ impl NodeRestController {
         )
         .await
         {
-            return Ok(super::auth::back_with_error(here, &error));
+            return Ok(crate::console::auth::back_with_error(here, &error));
         }
         // The loop installs it. Same reason as saving a domain: this
         // console asks, it does not issue.
         self.state.certificates.now();
 
-        Ok(super::auth::see_other(here))
+        Ok(crate::console::auth::see_other(here))
     }
 }
 
@@ -736,7 +738,7 @@ mod tests {
     /// already finished badly.
     #[test]
     fn an_attempt_in_flight_outranks_what_was_stored() {
-        let facts = super::super::CertificateFacts {
+        let facts = crate::console::CertificateFacts {
             issuer: "self-signed".into(),
             days_left: 0,
             trusted: false,

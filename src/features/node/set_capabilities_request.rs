@@ -16,7 +16,7 @@ use crate::network::capability::Capability;
 /// being a standby target while refusing the errands for the copies it
 /// already held.
 #[derive(Debug, Clone, Default, Deserialize, Serialize, Validate)]
-pub struct SetCapabilities {
+pub struct SetCapabilitiesRequest {
     #[serde(default)]
     pub provides: Vec<Capability>,
     #[serde(default)]

@@ -39,6 +39,7 @@ const TABLES: &[&[(&str, &str)]] = &[
     crate::features::backups::texts::TABLE,
     crate::features::databases::texts::TABLE,
     crate::features::network::texts::TABLE,
+    crate::features::node::texts::TABLE,
     nodes::TABLE,
     crate::features::organisations::texts::TABLE,
     crate::features::people::texts::TABLE,

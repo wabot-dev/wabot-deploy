@@ -9,7 +9,7 @@ use wabot::rest::RestResult;
 
 use crate::console::auth::{signed_in, SessionMiddleware};
 use crate::console::ConsoleState;
-use crate::views::pages::node_user_node_settings_page::NodeTab;
+use crate::features::node::node_user_node_settings_page::NodeTab;
 
 #[injectable]
 pub struct BackupRestController {

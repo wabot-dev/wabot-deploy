@@ -1,5 +1,6 @@
-//! What this machine's own settings say — its domain, its certificate,
-//! its reserves — and the cards the network's pages share with them.
+//! What the node's cards say wherever they are drawn — the certificate,
+//! the capabilities, the reserves and the release a node is asked to run
+//! — which more than one feature's pages show.
 //!
 //! Sorted by the English, which is what makes a duplicate or a stray
 //! entry something `cargo test` finds rather than something a reader
@@ -17,7 +18,6 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
     ("Back it up now", "Respaldarlo ahora"),
     ("Be kept up to date from elsewhere", "Que lo mantengan al día desde otro nodo"),
     ("Both are read now and refused if they do not match, do not cover this name, or have already expired — a bad pair installed would break every handshake, including the one serving this page. After that the node rereads them and reinstalls whatever it finds, which is how a certificate it cannot renew stays current.", "Se leen ahora los dos y se rechazan si no casan, si no cubren este nombre o si ya caducaron — un par malo instalado rompería cada handshake, incluido el que sirve esta página. Después el nodo los relee y reinstala lo que encuentre, que es como sigue al día un certificado que no puede renovar."),
-    ("Capabilities", "Capacidades"),
     ("Certificate file", "Fichero del certificado"),
     ("Cores, like 0.5, or millicores with an m. Empty means the default of a quarter core.", "Núcleos, como 0.5, o milicores con una m. Vacío es el valor por defecto, un cuarto de núcleo."),
     ("Have this node answer for its hostnames", "Que este nodo responda por sus nombres"),

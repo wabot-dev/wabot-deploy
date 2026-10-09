@@ -4,7 +4,7 @@ use crate::accounts::Account;
 use crate::authz::node_user;
 use crate::config::Config;
 use crate::deploy::Deployer;
-use crate::dtos::requests::set_capabilities::SetCapabilities;
+use crate::features::node::set_capabilities_request::SetCapabilitiesRequest;
 use crate::network::capability::{self, Capability};
 
 /// **The one POST under `/node` that had no admin check**, and the
@@ -18,7 +18,7 @@ pub async fn run(
     config: &Config,
     deployer: &Deployer,
     account: &Account,
-    asked: &SetCapabilities,
+    asked: &SetCapabilitiesRequest,
 ) -> Result<(), String> {
     if !node_user::manages_the_machine(account) {
         return Err("only an administrator of this node can do that".into());

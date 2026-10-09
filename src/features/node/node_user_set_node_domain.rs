@@ -1,6 +1,6 @@
 use wabot::sqlite::SqliteDatabase;
 
-use crate::dtos::responses::domain_settled::Settled;
+use crate::features::node::domain_settled_response::DomainSettledResponse;
 
 use crate::accounts::Account;
 use crate::authz::node_user;
@@ -13,7 +13,7 @@ pub async fn run(
     deployer: &Deployer,
     account: &Account,
     typed: &str,
-) -> Result<Settled, String> {
+) -> Result<DomainSettledResponse, String> {
     if !node_user::manages_the_machine(account) {
         return Err("only an administrator of this node can do that".into());
     }
@@ -25,7 +25,7 @@ pub async fn run(
             .await
             .map_err(|error| error.to_string())?;
         refresh(database, config, deployer, previous.as_deref(), None).await;
-        return Ok(Settled::Cleared);
+        return Ok(DomainSettledResponse::Cleared);
     }
 
     let domain = crate::values::hostname::Hostname::parse(typed)
@@ -57,7 +57,7 @@ pub async fn run(
     )
     .await;
 
-    Ok(Settled::Named(domain))
+    Ok(DomainSettledResponse::Named(domain))
 }
 
 /// The new name has to reach the console and the old one has to stop:

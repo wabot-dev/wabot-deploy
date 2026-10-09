@@ -854,9 +854,10 @@ listed fails by name.
 
 ### Where it stands
 
-`access`, `backups`, `databases`, `network`, `organisations`,
-`people`, `projects` and `updates` have moved. The other features are still in their layer directories, and the
-guards read both layouts until they are not.
+Every feature but `services` has moved — `access`, `backups`,
+`databases`, `network`, `node`, `organisations`, `people`, `projects`
+and `updates`. Services is still in the layer directories, and the
+guards read both layouts until it is not.
 
 ### What it costs
 

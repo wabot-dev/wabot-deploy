@@ -10,12 +10,12 @@ use wabot::ui::hypertext::IntoView;
 use crate::network::{self};
 use crate::policies::access;
 
-use super::auth::{signed_in, SessionMiddleware};
-use super::ConsoleState;
+use crate::console::auth::{signed_in, SessionMiddleware};
+use crate::console::ConsoleState;
+use crate::features::node::node_user_node_settings_page::{NodeTab, Panel};
 use crate::views::components::node_certificate::CertificateState;
 use crate::views::layouts::layout;
 use crate::views::layouts::shell::{Area, Frame};
-use crate::views::pages::node_user_node_settings_page::{NodeTab, Panel};
 
 #[derive(Debug, Deserialize, Validate, Default)]
 pub struct NodeSettingsPage {
@@ -113,7 +113,7 @@ impl NodeUiController {
             NodeTab::Domain => {
                 let domain =
                     crate::node::settings::domain(&self.state.database, &self.state.config).await;
-                let facts = super::certificate_facts(&self.state).await;
+                let facts = crate::console::certificate_facts(&self.state).await;
                 let policy = crate::edge::policy::for_name(
                     &self.state.database,
                     &self.state.config,
@@ -208,13 +208,13 @@ impl NodeUiController {
 
         layout::head("Node");
         let frame = Frame::new(&account, Area::Settings, &projects, None, "/node");
-        let page = crate::views::pages::node_user_node_settings_page::NodeSettings {
+        let page = crate::features::node::node_user_node_settings_page::NodeSettings {
             tab,
             panel,
             error: query.error.as_deref(),
         };
         let body = crate::views::texts::language::scoped(account.language, || {
-            crate::views::pages::node_user_node_settings_page::render(&page)
+            crate::features::node::node_user_node_settings_page::render(&page)
                 .render()
                 .into_inner()
         });
