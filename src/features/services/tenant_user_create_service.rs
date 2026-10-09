@@ -2,7 +2,6 @@ use wabot::sqlite::SqliteDatabase;
 
 use crate::authz::tenant_user;
 use crate::entities::account::Account;
-use crate::features::services::create_service_command::CreateService;
 use crate::features::services::create_service_request::CreateServiceRequest as Asked;
 use crate::features::services::service_created_response::ServiceCreatedResponse;
 use crate::repositories::access;
@@ -27,13 +26,13 @@ pub async fn run(
         return Err("you may look at this project, not change it".into());
     }
 
-    let service = CreateService {
-        project_id: &project.id,
-        name: &asked.name,
-        image: &asked.image,
+    let service = crate::repositories::services::create(
+        database,
+        &project.id,
+        &asked.name,
+        &asked.image,
         env,
-    }
-    .run(database)
+    )
     .await
     .map_err(|error| error.to_string())?;
 

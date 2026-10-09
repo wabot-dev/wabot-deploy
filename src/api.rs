@@ -14,8 +14,6 @@ use wabot::prelude::*;
 use wabot::rest::axum::Router;
 use wabot::sqlite::SqliteDatabase;
 
-pub const VERSION: &str = env!("CARGO_PKG_VERSION");
-
 /// Process-wide facts the health endpoints report.
 ///
 /// Registered with `register_instance` rather than `#[singleton]`:
@@ -93,7 +91,7 @@ mod tests {
         response.assert_ok();
         let health = response.value();
         assert_eq!(health["status"], "ok");
-        assert_eq!(health["version"], VERSION);
+        assert_eq!(health["version"], crate::update::VERSION);
         assert!(health["uptime_seconds"].is_u64());
     }
 

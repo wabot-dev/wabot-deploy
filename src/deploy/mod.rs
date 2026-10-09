@@ -26,6 +26,7 @@ pub mod logs;
 pub mod planner;
 pub mod quotas;
 pub mod routing;
+pub mod standbys;
 pub mod upstreams;
 
 use std::net::Ipv4Addr;
@@ -458,7 +459,7 @@ impl Deployer {
                 // a domain that has nothing to do with this node's.
                 let qualified = match row.is_some() {
                     true => {
-                        crate::features::databases::create_database_command::qualified_name(
+                        crate::deploy::database::qualified_name(
                             &self.database,
                             service,
                             &project.slug,
@@ -1770,7 +1771,7 @@ impl Deployer {
     /// the next boot. This one does not.
     pub async fn tear_down(&self, project: &Project, service: &Service) {
         self.tell_holders(project, service, Holding::LetGo).await;
-        if let Err(error) = crate::commands::dispatch_standbys::withdraw(
+        if let Err(error) = crate::deploy::standbys::withdraw(
             &self.database,
             service,
             self.primary_overlay(service).await.ok().flatten(),
@@ -2141,14 +2142,8 @@ impl Deployer {
             }
         };
         let domain = crate::node::settings::domain(&self.database, &self.config).await;
-        if let Err(error) = crate::commands::dispatch_standbys::dispatch(
-            &self.database,
-            service,
-            primary,
-            domain,
-            also,
-        )
-        .await
+        if let Err(error) =
+            crate::deploy::standbys::dispatch(&self.database, service, primary, domain, also).await
         {
             tracing::warn!(service = %service.slug, %error, "could not tell a node to hold a copy");
         }
@@ -3748,7 +3743,7 @@ pub async fn certificate_names(
     // they could — one function, so the certificate covers exactly what
     // `/etc/hosts` resolves. Two builders of this drifted once already and
     // the failure was a client dialling a name no certificate held.
-    let qualified = crate::features::databases::create_database_command::qualified_name(
+    let qualified = crate::deploy::database::qualified_name(
         database,
         service,
         &project.slug,
@@ -4202,13 +4197,13 @@ mod tests {
         let project = crate::repositories::projects::create(&database, "shared")
             .await
             .expect("project");
-        let service = crate::features::services::create_service_command::CreateService {
-            project_id: &project.id,
-            name: "web",
-            image: "registry.example/web@sha256:abc",
-            env: &[],
-        }
-        .run(&database)
+        let service = crate::repositories::services::create(
+            &database,
+            &project.id,
+            "web",
+            "registry.example/web@sha256:abc",
+            &[],
+        )
         .await
         .expect("service");
 
@@ -4643,13 +4638,13 @@ mod tests {
         let project = crate::repositories::projects::create(&database, "shared")
             .await
             .expect("project");
-        let service = crate::features::services::create_service_command::CreateService {
-            project_id: &project.id,
-            name: "web",
-            image: "img@sha256:a",
-            env: &[],
-        }
-        .run(&database)
+        let service = crate::repositories::services::create(
+            &database,
+            &project.id,
+            "web",
+            "img@sha256:a",
+            &[],
+        )
         .await
         .expect("service");
         services::set_memory_limit(&database, &service.id, Some(128 * mb))
@@ -4720,13 +4715,13 @@ mod tests {
         let project = crate::repositories::projects::create(&database, "shared")
             .await
             .expect("project");
-        let service = crate::features::services::create_service_command::CreateService {
-            project_id: &project.id,
-            name: "web",
-            image: "img@sha256:a",
-            env: &[],
-        }
-        .run(&database)
+        let service = crate::repositories::services::create(
+            &database,
+            &project.id,
+            "web",
+            "img@sha256:a",
+            &[],
+        )
         .await
         .expect("service");
         let deployer = Deployer::new(
@@ -4882,13 +4877,13 @@ mod tests {
         let project = crate::repositories::projects::create(&database, "theirs")
             .await
             .expect("project");
-        let service = crate::features::services::create_service_command::CreateService {
-            project_id: &project.id,
-            name: "web",
-            image: "registry.example/web@sha256:abc",
-            env: &[],
-        }
-        .run(&database)
+        let service = crate::repositories::services::create(
+            &database,
+            &project.id,
+            "web",
+            "registry.example/web@sha256:abc",
+            &[],
+        )
         .await
         .expect("service");
         services::set_origin(&database, &service.id, "nd-authority")
@@ -4928,13 +4923,13 @@ mod tests {
         let project = crate::repositories::projects::create(&database, "theirs")
             .await
             .expect("project");
-        let service = crate::features::services::create_service_command::CreateService {
-            project_id: &project.id,
-            name: "web",
-            image: "registry.example/web@sha256:abc",
-            env: &[],
-        }
-        .run(&database)
+        let service = crate::repositories::services::create(
+            &database,
+            &project.id,
+            "web",
+            "registry.example/web@sha256:abc",
+            &[],
+        )
         .await
         .expect("service");
         services::set_origin(&database, &service.id, "nd-authority")

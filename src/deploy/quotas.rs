@@ -246,13 +246,13 @@ mod tests {
             crate::repositories::projects::create_for(&database, "theirs", Some(&tenant.id))
                 .await
                 .expect("project");
-        let service = crate::features::services::create_service_command::CreateService {
-            project_id: &project.id,
-            name: "web",
-            image: "hub.example/theirs/web@sha256:a",
-            env: &[],
-        }
-        .run(&database)
+        let service = crate::repositories::services::create(
+            &database,
+            &project.id,
+            "web",
+            "hub.example/theirs/web@sha256:a",
+            &[],
+        )
         .await
         .expect("service");
         crate::repositories::tenants::set_quota(&database, &tenant.id, Some(512 * MB), None, None)
@@ -353,13 +353,13 @@ mod tests {
     #[tokio::test]
     async fn a_quota_demands_that_its_services_have_ceilings() {
         let (database, project, service) = tenant_with_a_service().await;
-        let loose = crate::features::services::create_service_command::CreateService {
-            project_id: &project.id,
-            name: "worker",
-            image: "hub.example/theirs/worker@sha256:b",
-            env: &[],
-        }
-        .run(&database)
+        let loose = crate::repositories::services::create(
+            &database,
+            &project.id,
+            "worker",
+            "hub.example/theirs/worker@sha256:b",
+            &[],
+        )
         .await
         .expect("service");
 
@@ -444,13 +444,13 @@ mod tests {
         let project = crate::repositories::projects::create(&database, "ours")
             .await
             .expect("project");
-        let service = crate::features::services::create_service_command::CreateService {
-            project_id: &project.id,
-            name: "web",
-            image: "hub.example/ours/web@sha256:a",
-            env: &[],
-        }
-        .run(&database)
+        let service = crate::repositories::services::create(
+            &database,
+            &project.id,
+            "web",
+            "hub.example/ours/web@sha256:a",
+            &[],
+        )
         .await
         .expect("service");
 

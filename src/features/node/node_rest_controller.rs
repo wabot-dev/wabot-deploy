@@ -292,7 +292,7 @@ impl NodeRestController {
             Err(reason) => return Ok(crate::console::auth::back_with_error(here, &reason)),
         };
 
-        if let Err(error) = crate::commands::store_certificate_source::run(
+        if let Err(error) = crate::edge::policy::store_source(
             &self.state.database,
             &self.state.config,
             &name,

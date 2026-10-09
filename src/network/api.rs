@@ -928,13 +928,13 @@ mod tests {
         let project = crate::repositories::projects::create(&authority.database, "mine")
             .await
             .expect("project");
-        crate::features::services::create_service_command::CreateService {
-            project_id: &project.id,
-            name: "web",
-            image: "docker.io/library/nginx:1",
-            env: &[],
-        }
-        .run(&authority.database)
+        crate::repositories::services::create(
+            &authority.database,
+            &project.id,
+            "web",
+            "docker.io/library/nginx:1",
+            &[],
+        )
         .await
         .expect("service");
 
@@ -1274,13 +1274,13 @@ mod tests {
         let project = crate::repositories::projects::create(&authority.database, "shop")
             .await
             .expect("project");
-        let service = crate::features::services::create_service_command::CreateService {
-            project_id: &project.id,
-            name: "web",
-            image: "nginx:alpine",
-            env: &[],
-        }
-        .run(&authority.database)
+        let service = crate::repositories::services::create(
+            &authority.database,
+            &project.id,
+            "web",
+            "nginx:alpine",
+            &[],
+        )
         .await
         .expect("service");
         // Being an edge for the name is what mints the secret here.
@@ -2446,13 +2446,13 @@ mod tests {
         let project = crate::repositories::projects::create(&authority.database, "shared")
             .await
             .expect("project");
-        let service = crate::features::services::create_service_command::CreateService {
-            project_id: &project.id,
-            name: "web",
-            image: "hub.example/shared/web@sha256:abc",
-            env: &[],
-        }
-        .run(&authority.database)
+        let service = crate::repositories::services::create(
+            &authority.database,
+            &project.id,
+            "web",
+            "hub.example/shared/web@sha256:abc",
+            &[],
+        )
         .await
         .expect("service");
         crate::repositories::replicas::place(

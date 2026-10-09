@@ -35,7 +35,7 @@ pub fn render<'a>(page: &'a ThisNode<'a>) -> impl Renderable + 'a {
         <div class="split">
             <div class="stack-sm">
                 <h1>(&page.node.name)</h1>
-                <p class="slug-preview">("wabot-deploy ")(crate::api::VERSION)</p>
+                <p class="slug-preview">("wabot-deploy ")(crate::update::VERSION)</p>
             </div>
         </div>
 

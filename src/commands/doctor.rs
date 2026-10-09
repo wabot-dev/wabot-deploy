@@ -25,7 +25,7 @@ const WEEKDAYS: [&str; 7] = [
 pub async fn run(config: Config, config_path: &Path) -> anyhow::Result<i32> {
     let mut problems = 0usize;
 
-    println!("wabot-deploy {}", crate::api::VERSION);
+    println!("wabot-deploy {}", crate::update::VERSION);
     println!();
 
     println!("configuration");

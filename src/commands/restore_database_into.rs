@@ -39,13 +39,13 @@ pub async fn restore_into(
     from: &str,
     target: Option<&str>,
 ) -> PlatformResult<(Service, Database)> {
-    let service = crate::features::services::create_service_command::CreateService {
+    let service = crate::repositories::services::create(
+        database,
         project_id,
         name,
-        image: &postgres::image_for(&source.version),
-        env: &[],
-    }
-    .run(database)
+        &postgres::image_for(&source.version),
+        &[],
+    )
     .await?;
     crate::repositories::services::set_kind(database, &service.id, Kind::Postgres).await?;
     crate::repositories::services::set_memory_limit(database, &service.id, Some(memory_limit))

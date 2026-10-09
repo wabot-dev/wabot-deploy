@@ -356,7 +356,7 @@ async fn dispatch(
         // obeying it starts a Postgres with no volume, no engine
         // row and no TLS — initialising into a layer thrown away at
         // the next deployment, and looking like it worked. Its own
-        // errand carries the rest, and `crate::commands::dispatch_standbys::dispatch` queues
+        // errand carries the rest, and `crate::deploy::standbys::dispatch` queues
         // it after the primary deploys, which is when the address it
         // has to carry exists.
         //

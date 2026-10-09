@@ -541,7 +541,7 @@ pub async fn ensure_self(database: &SqliteDatabase, config: &Config) -> NetworkR
         // and every `doctor` reads one column rather than branching on
         // whose row it is looking at. It cannot go stale: an update ends
         // by restarting the process, and this runs at every start.
-        version: Some(crate::api::VERSION.to_string()),
+        version: Some(crate::update::VERSION.to_string()),
         // Carried forward, never re-decided. `save` leaves this column
         // alone, so this is belt as well as braces — and the belt is the
         // one that would have been noticed, because a wanted version
@@ -1809,7 +1809,7 @@ pub(crate) mod tests {
         assert_eq!(again.wanted_version.as_deref(), Some("v9.9.9"));
         assert_eq!(
             again.version.as_deref(),
-            Some(crate::api::VERSION),
+            Some(crate::update::VERSION),
             "and it says what it is running, so no page has to branch on whose row it is"
         );
     }

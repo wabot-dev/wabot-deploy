@@ -75,7 +75,7 @@ impl Version {
 
     /// What this binary is.
     pub fn current() -> Option<Self> {
-        Self::parse(crate::api::VERSION)
+        Self::parse(crate::update::VERSION)
     }
 }
 

@@ -91,7 +91,7 @@ impl DatabaseRestController {
         if let Some(was) = named.was {
             let policy =
                 crate::edge::policy::for_name(&self.state.database, &self.state.config, &was).await;
-            if let Err(error) = crate::commands::store_certificate_source::run(
+            if let Err(error) = crate::edge::policy::store_source(
                 &self.state.database,
                 &self.state.config,
                 &named.now,
@@ -254,7 +254,7 @@ impl DatabaseRestController {
             Err(reason) => return Ok(back_with_error(&here, &reason)),
         };
 
-        if let Err(error) = crate::commands::store_certificate_source::run(
+        if let Err(error) = crate::edge::policy::store_source(
             &self.state.database,
             &self.state.config,
             &name,

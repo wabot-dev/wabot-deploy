@@ -159,7 +159,10 @@ mod tests {
             .await
             .body;
 
-        assert!(body.contains(crate::api::VERSION), "says what is running");
+        assert!(
+            body.contains(crate::update::VERSION),
+            "says what is running"
+        );
         assert!(body.contains("Updates"), "{body}");
     }
 
@@ -285,7 +288,7 @@ async fn live_cells(state: &crate::console::ConsoleState) -> LiveRun {
     let Ok(Some(run)) = crate::update::runs::latest(&state.database).await else {
         return LiveRun {
             none: true,
-            version: crate::api::VERSION,
+            version: crate::update::VERSION,
             ..Default::default()
         };
     };
@@ -303,7 +306,7 @@ async fn live_cells(state: &crate::console::ConsoleState) -> LiveRun {
         word,
         step: run.step.clone().unwrap_or_default(),
         in_flight: run.status.in_flight(),
-        version: crate::api::VERSION,
+        version: crate::update::VERSION,
         none: false,
     }
 }

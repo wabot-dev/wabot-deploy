@@ -23,7 +23,7 @@ impl HealthRestController {
     async fn healthz(&self) -> RestResult<Health> {
         Ok(Health {
             status: "ok",
-            version: VERSION,
+            version: crate::update::VERSION,
             uptime_seconds: self.node.uptime_seconds(),
         })
     }

@@ -217,13 +217,13 @@ mod tests {
         let project = crate::repositories::projects::create(&database, "demo")
             .await
             .expect("project");
-        let service = crate::features::services::create_service_command::CreateService {
-            project_id: &project.id,
-            name: "api",
-            image: "node.example/demo/api:latest",
-            env: &[],
-        }
-        .run(&database)
+        let service = crate::repositories::services::create(
+            &database,
+            &project.id,
+            "api",
+            "node.example/demo/api:latest",
+            &[],
+        )
         .await
         .expect("service");
         (database, service.id)

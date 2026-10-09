@@ -575,7 +575,7 @@ async fn report(
     wrote_config: bool,
     database: &SqliteDatabase,
 ) -> anyhow::Result<()> {
-    println!("wabot-deploy {} installed", crate::api::VERSION);
+    println!("wabot-deploy {} installed", crate::update::VERSION);
     println!();
     println!("  config    {}", config_path.display());
     if !wrote_config {

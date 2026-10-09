@@ -329,7 +329,7 @@ impl ServiceRestController {
                 if let Some(hostname) = port.hostname.as_deref() {
                     match crate::console::auth::source_from(&form, hostname) {
                         Ok(renew_with) => {
-                            if let Err(error) = crate::commands::store_certificate_source::run(
+                            if let Err(error) = crate::edge::policy::store_source(
                                 &self.state.database,
                                 &self.state.config,
                                 hostname,
@@ -1623,13 +1623,13 @@ mod tests {
         let project = crate::repositories::projects::create(&database, "shop")
             .await
             .expect("project");
-        let service = crate::features::services::create_service_command::CreateService {
-            project_id: &project.id,
-            name: "web",
-            image: "registry.example/web@sha256:abc",
-            env: &[],
-        }
-        .run(&database)
+        let service = crate::repositories::services::create(
+            &database,
+            &project.id,
+            "web",
+            "registry.example/web@sha256:abc",
+            &[],
+        )
         .await
         .expect("service");
 
@@ -1812,13 +1812,13 @@ mod tests {
             .into_iter()
             .find(|project| project.slug == "shared")
             .expect("made");
-        crate::features::services::create_service_command::CreateService {
-            project_id: &project.id,
-            name: "web",
-            image: "hub.example.com/shared/web@sha256:abc",
-            env: &[],
-        }
-        .run(&console.database)
+        crate::repositories::services::create(
+            &console.database,
+            &project.id,
+            "web",
+            "hub.example.com/shared/web@sha256:abc",
+            &[],
+        )
         .await
         .expect("service")
     }
@@ -2777,13 +2777,13 @@ mod tests {
         let project = crate::repositories::projects::create(&console.database, "shared")
             .await
             .expect("project");
-        crate::features::services::create_service_command::CreateService {
-            project_id: &project.id,
-            name: "web",
-            image: "hub.example/shared/web:latest",
-            env: &[],
-        }
-        .run(&console.database)
+        crate::repositories::services::create(
+            &console.database,
+            &project.id,
+            "web",
+            "hub.example/shared/web:latest",
+            &[],
+        )
         .await
         .expect("service");
         crate::network::save(
@@ -3417,13 +3417,13 @@ mod tests {
             .expect("query")
             .expect("made");
 
-        let ours = crate::features::services::create_service_command::CreateService {
-            project_id: &project.id,
-            name: "api",
-            image: "node.example.com/my-api/api:latest",
-            env: &[],
-        }
-        .run(&console.database)
+        let ours = crate::repositories::services::create(
+            &console.database,
+            &project.id,
+            "api",
+            "node.example.com/my-api/api:latest",
+            &[],
+        )
         .await
         .expect("service");
         assert!(matches!(
@@ -3438,13 +3438,13 @@ mod tests {
             "a node with no domain has no host to write into a reference"
         );
 
-        let pinned = crate::features::services::create_service_command::CreateService {
-            project_id: &project.id,
-            name: "pinned",
-            image: "node.example.com/my-api/pinned@sha256:abc",
-            env: &[],
-        }
-        .run(&console.database)
+        let pinned = crate::repositories::services::create(
+            &console.database,
+            &project.id,
+            "pinned",
+            "node.example.com/my-api/pinned@sha256:abc",
+            &[],
+        )
         .await
         .expect("service");
         assert!(
@@ -3495,13 +3495,13 @@ mod tests {
             .await
             .expect("query")
             .expect("made");
-        let made = crate::features::services::create_service_command::CreateService {
-            project_id: &project.id,
-            name: "api",
-            image: "node.example.com/my-api/api:latest",
-            env: &[],
-        }
-        .run(&console.database)
+        let made = crate::repositories::services::create(
+            &console.database,
+            &project.id,
+            "api",
+            "node.example.com/my-api/api:latest",
+            &[],
+        )
         .await
         .expect("service");
 
@@ -3566,13 +3566,13 @@ mod tests {
             .await
             .expect("query")
             .expect("made");
-        crate::features::services::create_service_command::CreateService {
-            project_id: &project.id,
-            name: "api",
-            image: "node.example.com/my-api/api:latest",
-            env: &[],
-        }
-        .run(&console.database)
+        crate::repositories::services::create(
+            &console.database,
+            &project.id,
+            "api",
+            "node.example.com/my-api/api:latest",
+            &[],
+        )
         .await
         .expect("service");
         let made = crate::features::databases::create_database_command::CreateDatabase {
@@ -3897,13 +3897,13 @@ mod tests {
         let project = crate::repositories::projects::create(&console.database, "Coffe Store")
             .await
             .expect("project");
-        crate::features::services::create_service_command::CreateService {
-            project_id: &project.id,
-            name: "Coffe Landing",
-            image: "docker.io/library/nginx:alpine",
-            env: &[],
-        }
-        .run(&console.database)
+        crate::repositories::services::create(
+            &console.database,
+            &project.id,
+            "Coffe Landing",
+            "docker.io/library/nginx:alpine",
+            &[],
+        )
         .await
         .expect("service");
 
@@ -3946,13 +3946,13 @@ mod tests {
         let project = crate::repositories::projects::create(&console.database, "wabot")
             .await
             .expect("project");
-        let made = crate::features::services::create_service_command::CreateService {
-            project_id: &project.id,
-            name: "nginx-2",
-            image: "node-1.tobaw.shop/wabot/nginx-2:new",
-            env: &[],
-        }
-        .run(&console.database)
+        let made = crate::repositories::services::create(
+            &console.database,
+            &project.id,
+            "nginx-2",
+            "node-1.tobaw.shop/wabot/nginx-2:new",
+            &[],
+        )
         .await
         .expect("service");
         services::set_tracking(&console.database, &made.id, Some("*"), true)
@@ -3991,13 +3991,13 @@ mod tests {
             .await
             .expect("query")
             .expect("made");
-        let made = crate::features::services::create_service_command::CreateService {
-            project_id: &project.id,
-            name: "api",
-            image: "node.example.com/my-api/api:latest",
-            env: &[],
-        }
-        .run(&console.database)
+        let made = crate::repositories::services::create(
+            &console.database,
+            &project.id,
+            "api",
+            "node.example.com/my-api/api:latest",
+            &[],
+        )
         .await
         .expect("service");
         services::set_tracking(
@@ -4068,13 +4068,13 @@ mod tests {
             .await
             .expect("query")
             .expect("made");
-        crate::features::services::create_service_command::CreateService {
-            project_id: &project.id,
-            name: "api",
-            image: "node.example.com/my-api/api:latest",
-            env: &[],
-        }
-        .run(&console.database)
+        crate::repositories::services::create(
+            &console.database,
+            &project.id,
+            "api",
+            "node.example.com/my-api/api:latest",
+            &[],
+        )
         .await
         .expect("service");
 
@@ -4159,13 +4159,13 @@ mod tests {
             .await
             .expect("query")
             .expect("made");
-        let made = crate::features::services::create_service_command::CreateService {
-            project_id: &project.id,
-            name: "api",
-            image: "node.example.com/my-api/api:latest",
-            env: &[],
-        }
-        .run(&console.database)
+        let made = crate::repositories::services::create(
+            &console.database,
+            &project.id,
+            "api",
+            "node.example.com/my-api/api:latest",
+            &[],
+        )
         .await
         .expect("service");
         crate::repositories::releases::record(
@@ -4212,13 +4212,13 @@ mod tests {
             .await
             .expect("query")
             .expect("made");
-        crate::features::services::create_service_command::CreateService {
-            project_id: &project.id,
-            name: "api",
-            image: "node.example.com/my-api/api:latest",
-            env: &[],
-        }
-        .run(&console.database)
+        crate::repositories::services::create(
+            &console.database,
+            &project.id,
+            "api",
+            "node.example.com/my-api/api:latest",
+            &[],
+        )
         .await
         .expect("service");
 

@@ -407,13 +407,13 @@ mod tests {
         let project = crate::repositories::projects::create(&database, "demo")
             .await
             .expect("project");
-        let service = crate::features::services::create_service_command::CreateService {
-            project_id: &project.id,
-            name: "api",
-            image: "docker.io/library/nginx:alpine",
-            env: &[],
-        }
-        .run(&database)
+        let service = crate::repositories::services::create(
+            &database,
+            &project.id,
+            "api",
+            "docker.io/library/nginx:alpine",
+            &[],
+        )
         .await
         .expect("service");
         let port = create(
@@ -471,13 +471,13 @@ mod tests {
             .expect("project");
         let mut ports = Vec::new();
         for name in ["one", "two"] {
-            let service = crate::features::services::create_service_command::CreateService {
-                project_id: &project.id,
+            let service = crate::repositories::services::create(
+                &database,
+                &project.id,
                 name,
-                image: "registry.example/db@sha256:abc",
-                env: &[],
-            }
-            .run(&database)
+                "registry.example/db@sha256:abc",
+                &[],
+            )
             .await
             .expect("service");
             ports.push(
@@ -528,13 +528,13 @@ mod tests {
         let project = crate::repositories::projects::create(&database, "demo")
             .await
             .expect("project");
-        let service = crate::features::services::create_service_command::CreateService {
-            project_id: &project.id,
-            name: "web",
-            image: "docker.io/library/nginx:alpine",
-            env: &[],
-        }
-        .run(&database)
+        let service = crate::repositories::services::create(
+            &database,
+            &project.id,
+            "web",
+            "docker.io/library/nginx:alpine",
+            &[],
+        )
         .await
         .expect("service");
         (database, service.id)
@@ -600,13 +600,13 @@ mod tests {
         let project = crate::repositories::projects::create(&database, "demo")
             .await
             .expect("project");
-        let service = crate::features::services::create_service_command::CreateService {
-            project_id: &project.id,
-            name: "web",
-            image: "alpine:3.23",
-            env: &[],
-        }
-        .run(&database)
+        let service = crate::repositories::services::create(
+            &database,
+            &project.id,
+            "web",
+            "alpine:3.23",
+            &[],
+        )
         .await
         .expect("service");
 

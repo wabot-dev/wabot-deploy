@@ -172,7 +172,7 @@ pub(crate) fn live_region<'a>(
                 <div class="stack-sm">
                     <p class="card-label">(t("Running"))</p>
                     <p class="mono" data-run="version">
-                        ("wabot-deploy ")(crate::api::VERSION)
+                        ("wabot-deploy ")(crate::update::VERSION)
                     </p>
                 </div>
                 <form method="post" action="/updates/check">

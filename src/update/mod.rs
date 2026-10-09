@@ -29,6 +29,8 @@ pub mod jobs;
 pub mod notes;
 pub mod runs;
 
+pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -141,7 +143,7 @@ pub fn shared() -> Arc<Catalogue> {
 /// an instruction it already satisfies. GitHub's tags carry a `v` and
 /// `CARGO_PKG_VERSION` does not.
 pub fn at_release(tag: &str) -> bool {
-    is_release(tag, crate::api::VERSION)
+    is_release(tag, crate::update::VERSION)
 }
 
 /// Whether `tag` names the release `version` is.
@@ -448,7 +450,7 @@ pub async fn settle_after_restart(database: &SqliteDatabase) {
         return;
     }
 
-    let running = crate::api::VERSION;
+    let running = crate::update::VERSION;
     let (status, detail) = match running == run.to_version {
         true => (
             Status::Done,
@@ -543,7 +545,7 @@ mod tests {
     #[tokio::test]
     async fn a_restart_into_the_expected_version_settles_as_done() {
         let database = crate::db::open_in_memory().await.expect("open");
-        let run = runs::start(&database, "0.0.1", crate::api::VERSION, "vx", None)
+        let run = runs::start(&database, "0.0.1", crate::update::VERSION, "vx", None)
             .await
             .expect("start");
         runs::finish(&database, &run.id, Status::Restarting, None)
@@ -575,7 +577,7 @@ mod tests {
                 .detail
                 .as_deref()
                 .unwrap_or_default()
-                .contains(crate::api::VERSION),
+                .contains(crate::update::VERSION),
             "{settled:?}"
         );
     }

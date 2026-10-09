@@ -629,7 +629,7 @@ async fn report_for(
         // What this node is running, so a console elsewhere can say which
         // machine is behind — and so an instruction to catch up has
         // something to be compared against.
-        version: Some(crate::api::VERSION.to_string()),
+        version: Some(crate::update::VERSION.to_string()),
         // And how the last update went, which is the one thing the errand
         // path cannot carry: it was settled before the install began.
         // Empty is "nothing wrong", which clears whatever was there.
@@ -1064,13 +1064,13 @@ async fn host_service(
         }
         None => {
             let env: Vec<(String, String)> = host.env.clone().into_iter().collect();
-            let made = crate::features::services::create_service_command::CreateService {
-                project_id: &project.id,
-                name: &host.service,
-                image: &host.image,
-                env: &env,
-            }
-            .run(database)
+            let made = crate::repositories::services::create(
+                database,
+                &project.id,
+                &host.service,
+                &host.image,
+                &env,
+            )
             .await
             .map_err(|error| error.to_string())?;
             // Marked before anything else touches it. A service that
@@ -1270,13 +1270,13 @@ async fn hold_standby(
             service
         }
         None => {
-            let made = crate::features::services::create_service_command::CreateService {
-                project_id: &project.id,
-                name: &standby.service,
-                image: &standby.image,
-                env: &[],
-            }
-            .run(database)
+            let made = crate::repositories::services::create(
+                database,
+                &project.id,
+                &standby.service,
+                &standby.image,
+                &[],
+            )
             .await
             .map_err(|error| error.to_string())?;
             services::set_origin(database, &made.id, authority)
@@ -2750,13 +2750,13 @@ mod tests {
                     .await
                     .expect("set image"),
                 None => {
-                    crate::features::services::create_service_command::CreateService {
-                        project_id: &project.id,
-                        name: &host.service,
-                        image: &host.image,
-                        env: &[],
-                    }
-                    .run(&database)
+                    crate::repositories::services::create(
+                        &database,
+                        &project.id,
+                        &host.service,
+                        &host.image,
+                        &[],
+                    )
                     .await
                     .expect("create");
                 }
@@ -2788,13 +2788,13 @@ mod tests {
         assert!(!project.is_ours());
         assert_eq!(project.origin_node_id.as_deref(), Some("nd-authority"));
 
-        let made = crate::features::services::create_service_command::CreateService {
-            project_id: &project.id,
-            name: "web",
-            image: "hub.example/p/a:1",
-            env: &[],
-        }
-        .run(&database)
+        let made = crate::repositories::services::create(
+            &database,
+            &project.id,
+            "web",
+            "hub.example/p/a:1",
+            &[],
+        )
         .await
         .expect("service");
         services::set_origin(&database, &made.id, "nd-authority")

@@ -1286,13 +1286,13 @@ mod tests {
         let project = crate::repositories::projects::create(&database, "shop")
             .await
             .expect("project");
-        let service = crate::features::services::create_service_command::CreateService {
-            project_id: &project.id,
-            name: "web",
-            image: "nginx:alpine",
-            env: &[],
-        }
-        .run(&database)
+        let service = crate::repositories::services::create(
+            &database,
+            &project.id,
+            "web",
+            "nginx:alpine",
+            &[],
+        )
         .await
         .expect("service");
 
@@ -1428,13 +1428,13 @@ mod tests {
         let project = crate::repositories::projects::create(&database, "demo")
             .await
             .expect("project");
-        let service = crate::features::services::create_service_command::CreateService {
-            project_id: &project.id,
-            name: "web",
-            image: "alpine:3.23",
-            env: &[],
-        }
-        .run(&database)
+        let service = crate::repositories::services::create(
+            &database,
+            &project.id,
+            "web",
+            "alpine:3.23",
+            &[],
+        )
         .await
         .expect("service");
         crate::repositories::ports::create(

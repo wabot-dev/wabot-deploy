@@ -63,7 +63,7 @@ pub fn render<'a>(page: &'a Network<'a>) -> impl Renderable + 'a {
                     </div>
                     <p class="tile-detail">
                         @if node.is_self {
-                            ("wabot-deploy ")(crate::api::VERSION)(t(" · this node"))
+                            ("wabot-deploy ")(crate::update::VERSION)(t(" · this node"))
                             @if let Some(address) = &node.overlay_ip {
                                 (" · ")(address)
                             }

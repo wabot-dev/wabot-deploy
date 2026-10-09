@@ -193,13 +193,13 @@ mod tests {
         let project = crate::repositories::projects::create(&database, "demo")
             .await
             .expect("project");
-        let service = crate::features::services::create_service_command::CreateService {
-            project_id: &project.id,
-            name: "db",
-            image: "postgres:17-alpine",
-            env: &[],
-        }
-        .run(&database)
+        let service = crate::repositories::services::create(
+            &database,
+            &project.id,
+            "db",
+            "postgres:17-alpine",
+            &[],
+        )
         .await
         .expect("service");
         (database, service.id)

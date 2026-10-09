@@ -570,6 +570,22 @@ fn slot_of(container_id: &str) -> u32 {
         .unwrap_or(1)
 }
 
+pub async fn qualified_name(
+    database: &wabot::sqlite::SqliteDatabase,
+    service: &crate::entities::service::Service,
+    project_slug: &str,
+    suffix: Option<&str>,
+) -> crate::errors::PlatformResult<Option<String>> {
+    if let Some(chosen) = crate::repositories::ports::of_service(database, &service.id)
+        .await?
+        .into_iter()
+        .find_map(|port| port.hostname)
+    {
+        return Ok(Some(chosen));
+    }
+    Ok(suffix.map(|domain| format!("{}.{project_slug}.{domain}", service.slug)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

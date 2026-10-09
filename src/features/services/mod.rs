@@ -2,7 +2,6 @@ pub mod add_service_port_command;
 pub mod add_service_port_request;
 pub mod choose_env_revision_command;
 pub mod choose_release_command;
-pub mod create_service_command;
 pub mod create_service_request;
 pub mod delete_service_command;
 pub mod delete_service_port_command;

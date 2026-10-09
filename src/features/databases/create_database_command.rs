@@ -36,13 +36,13 @@ impl CreateDatabase<'_> {
             ));
         }
 
-        let service = crate::features::services::create_service_command::CreateService {
-            project_id: self.project_id,
-            name: self.name,
-            image: &postgres::image_for(self.version),
-            env: &[],
-        }
-        .run(database)
+        let service = crate::repositories::services::create(
+            database,
+            self.project_id,
+            self.name,
+            &postgres::image_for(self.version),
+            &[],
+        )
         .await?;
 
         // Marked before anything else reads it. A service that was a plain
@@ -147,20 +147,4 @@ impl CreateDatabase<'_> {
         );
         Ok((service, row))
     }
-}
-
-pub async fn qualified_name(
-    database: &SqliteDatabase,
-    service: &Service,
-    project_slug: &str,
-    suffix: Option<&str>,
-) -> PlatformResult<Option<String>> {
-    if let Some(chosen) = crate::repositories::ports::of_service(database, &service.id)
-        .await?
-        .into_iter()
-        .find_map(|port| port.hostname)
-    {
-        return Ok(Some(chosen));
-    }
-    Ok(suffix.map(|domain| format!("{}.{project_slug}.{domain}", service.slug)))
 }

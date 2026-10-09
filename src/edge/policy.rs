@@ -272,6 +272,23 @@ pub async fn clear(database: &SqliteDatabase, name: &str) -> SqliteResult<()> {
         .await
 }
 
+/// Store it — **forgetting** rather than writing the default.
+///
+/// A stored default would go stale the day `acme.disabled` changed, and
+/// then say the opposite of what the node does.
+pub async fn store_source(
+    database: &wabot::sqlite::SqliteDatabase,
+    config: &crate::config::Config,
+    name: &str,
+    renew_with: &RenewWith,
+) -> Result<(), String> {
+    let stored = match renew_with == &RenewWith::default_for(config) {
+        true => clear(database, name).await,
+        false => set(database, name, renew_with).await,
+    };
+    stored.map_err(|error| error.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

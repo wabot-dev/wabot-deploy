@@ -165,7 +165,7 @@ pub async fn run(config: Config) -> anyhow::Result<i32> {
     tracing::info!(
         %https,
         %http,
-        version = crate::api::VERSION,
+        version = crate::update::VERSION,
         certificates = resolver.names().join(", "),
         "starting"
     );

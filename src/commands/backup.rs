@@ -293,7 +293,7 @@ pub async fn once(
     let images = keep_images(database, &root).await;
     let manifest = Manifest {
         format: FORMAT,
-        taken_by: format!("wabot-deploy {}", crate::api::VERSION),
+        taken_by: format!("wabot-deploy {}", crate::update::VERSION),
         taken_at: crate::clock::now_ms(),
         node_id: me.as_ref().map(|node| node.id.clone()),
         node_name: me.as_ref().map(|node| node.name.clone()),
