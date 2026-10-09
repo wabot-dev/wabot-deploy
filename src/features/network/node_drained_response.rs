@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 
 /// What draining a node moved, or that it was put back into service.
 #[derive(Debug, Clone, Deserialize, Serialize)]
-pub enum Drained {
+pub enum NodeDrainedResponse {
     BackInService,
     /// Draining is **convergent, not atomic**: a node that is not
     /// answering keeps its containers until it collects the errand with

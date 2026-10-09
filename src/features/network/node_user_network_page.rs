@@ -1,9 +1,9 @@
 use hypertext::prelude::*;
 
+use crate::features::network::{node_enrolment_component, node_usage_component};
 use crate::network::capability::Capability;
 use crate::network::token::JoinToken;
 use crate::network::{Authority, Node};
-use crate::views::components::{node_enrolment, node_usage};
 use crate::views::layouts::layout;
 use crate::views::texts::language::t;
 
@@ -39,7 +39,7 @@ pub fn render<'a>(page: &'a Network<'a>) -> impl Renderable + 'a {
         }
 
         @if let Some((token, terms)) = page.reviewing {
-            (node_enrolment::review_card(token, terms))
+            (node_enrolment_component::review_card(token, terms))
         }
 
         <div class="grid">
@@ -68,7 +68,7 @@ pub fn render<'a>(page: &'a Network<'a>) -> impl Renderable + 'a {
                                 (" · ")(address)
                             }
                         } @else {
-                            (node_usage::reach(node))
+                            (node_usage_component::reach(node))
                         }
                     </p>
                 </a>
@@ -90,7 +90,7 @@ pub fn render<'a>(page: &'a Network<'a>) -> impl Renderable + 'a {
                     </thead>
                     <tbody>
                         @for authority in page.authorities {
-                            (node_enrolment::authority_row(
+                            (node_enrolment_component::authority_row(
                                 authority, page.nodes, page.held(&authority.node_id)))
                         }
                     </tbody>

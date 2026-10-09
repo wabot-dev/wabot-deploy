@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 /// **The terms are read before they are agreed to**, so spending one
 /// has two outcomes and the first of them writes nothing.
 #[derive(Debug, Clone, Deserialize, Serialize)]
-pub enum Spent {
+pub enum JoinTokenSpentResponse {
     /// The terms were read but nothing agreed to yet. The token comes
     /// back so the console can show what it asks for **before** it is
     /// spent, which is the whole point of the order.

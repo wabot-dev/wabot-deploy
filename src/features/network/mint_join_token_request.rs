@@ -11,7 +11,7 @@ use crate::network::capability::Capability;
 /// capability is a grant the joiner must write, an offered one is a
 /// grant this node writes at the callback.
 #[derive(Debug, Clone, Default, Deserialize, Serialize, Validate)]
-pub struct MintJoinToken {
+pub struct MintJoinTokenRequest {
     /// A note, so the nodes page names the machine rather than an id.
     #[max_length(60)]
     #[serde(default)]

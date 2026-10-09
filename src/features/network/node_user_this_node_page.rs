@@ -1,10 +1,10 @@
 use hypertext::prelude::*;
 
 use crate::deploy::Committed;
+use crate::features::network::node_usage_component;
 use crate::network::Node;
 use crate::node::disk::Breakdown;
 use crate::node::memory::Snapshot;
-use crate::views::components::node_usage;
 use crate::views::layouts::layout;
 
 /// This machine's own row on the network page.
@@ -44,11 +44,11 @@ pub fn render<'a>(page: &'a ThisNode<'a>) -> impl Renderable + 'a {
         // DOM. It used to be an inline `<script>`, which a boosted
         // navigation never runs — arriving here by clicking a link left
         // the page a snapshot with no sign that it was one.
-        (node_usage::live_cards(&page.node.id, page.disk, page.committed, page.snapshot, page.reserves))
+        (node_usage_component::live_cards(&page.node.id, page.disk, page.committed, page.snapshot, page.reserves))
 
         // Outside the island: none of it streams, and a card inside the
         // host would be replaced by an update that has nothing to say
         // about it.
-        (node_usage::network_card(page.node))
+        (node_usage_component::network_card(page.node))
     }
 }

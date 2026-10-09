@@ -6,6 +6,4 @@
 pub mod backup_plan_saved;
 pub mod domain_settled;
 pub mod env_applied;
-pub mod join_token_spent;
-pub mod node_drained;
 pub mod service_created;

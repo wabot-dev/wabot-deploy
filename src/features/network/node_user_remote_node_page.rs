@@ -1,9 +1,10 @@
 use hypertext::prelude::*;
 
+use crate::features::network::{node_errands_component, node_usage_component};
 use crate::network::capability::Capability;
 use crate::network::errand::Record;
 use crate::network::Node;
-use crate::views::components::{node_capabilities, node_errands, node_settings_cards, node_usage};
+use crate::views::components::{node_capabilities, node_settings_cards};
 use crate::views::layouts::layout;
 use crate::views::texts::language::t;
 
@@ -35,22 +36,22 @@ pub fn render<'a>(page: &'a RemoteNode<'a>) -> impl Renderable + 'a {
         <div class="split">
             <div class="stack-sm">
                 <h1>(&node.name)</h1>
-                <p class="slug-preview">(t("joined · "))(node_usage::reach(node))</p>
+                <p class="slug-preview">(t("joined · "))(node_usage_component::reach(node))</p>
             </div>
         </div>
         @if let Some(message) = page.error {
             (layout::error_note(message))
         }
-        (node_usage::network_card(node))
+        (node_usage_component::network_card(node))
 
         // What was asked of this node and how it went. It stays: the
         // form above it — "run a service there" — is what went, and this
         // is the record of every instruction, including the ones the
         // service page now sends.
-        (node_usage::usage_card(node, node.last_seen_at.map(layout::when)))
+        (node_usage_component::usage_card(node, node.last_seen_at.map(layout::when)))
         (node_settings_cards::manage_card(node, page.releases, page.catalogue_failed))
         (node_capabilities::grants_card(node, page.granted))
-        (node_errands::errands_card(&node.id, page.orders))
+        (node_errands_component::errands_card(&node.id, page.orders))
 
         <section class="card stack">
             <p class="card-label">(t("Take it out of service"))</p>

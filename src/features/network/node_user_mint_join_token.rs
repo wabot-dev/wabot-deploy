@@ -3,7 +3,7 @@ use wabot::sqlite::SqliteDatabase;
 use crate::accounts::Account;
 use crate::authz::node_user;
 use crate::config::Config;
-use crate::dtos::requests::mint_join_token::MintJoinToken;
+use crate::features::network::mint_join_token_request::MintJoinTokenRequest;
 use crate::network;
 use crate::network::capability::Capability;
 
@@ -16,7 +16,7 @@ pub async fn run(
     database: &SqliteDatabase,
     config: &Config,
     account: &Account,
-    asked: &MintJoinToken,
+    asked: &MintJoinTokenRequest,
 ) -> Result<String, String> {
     if !node_user::manages_the_machine(account) {
         return Err("only an administrator of this node can do that".into());

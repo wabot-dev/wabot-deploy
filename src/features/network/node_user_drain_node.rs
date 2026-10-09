@@ -1,6 +1,6 @@
 use wabot::sqlite::SqliteDatabase;
 
-use crate::dtos::responses::node_drained::Drained;
+use crate::features::network::node_drained_response::NodeDrainedResponse;
 
 use crate::accounts::Account;
 use crate::authz::node_user;
@@ -13,7 +13,7 @@ pub async fn run(
     account: &Account,
     node: &str,
     draining: bool,
-) -> Result<Drained, String> {
+) -> Result<NodeDrainedResponse, String> {
     if !node_user::manages_the_machine(account) {
         return Err("only an administrator of this node can do that".into());
     }
@@ -25,11 +25,11 @@ pub async fn run(
                 tracing::warn!(%error, "could not put it back in service");
                 "that could not be saved".to_string()
             })?;
-        return Ok(Drained::BackInService);
+        return Ok(NodeDrainedResponse::BackInService);
     }
 
     let drained = deployer.drain(node).await;
-    Ok(Drained::Moved {
+    Ok(NodeDrainedResponse::Moved {
         moved: drained.moved,
         refused: drained.refused,
     })

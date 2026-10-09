@@ -31,7 +31,7 @@ fn row(
             @if let Some(share) = share {
                 <div class="meter">
                     <span class="meter-part meter-containers"
-                          style=(crate::views::components::node_usage::bar_width(f64::from(share)))></span>
+                          style=(crate::features::network::node_usage_component::bar_width(f64::from(share)))></span>
                 </div>
             }
         </div>

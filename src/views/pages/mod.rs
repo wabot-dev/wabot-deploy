@@ -4,12 +4,7 @@
 //! it does not decide.
 
 pub mod new_service_page;
-pub mod node_user_invite_node_page;
-pub mod node_user_join_network_page;
-pub mod node_user_network_page;
 pub mod node_user_node_settings_page;
-pub mod node_user_remote_node_page;
-pub mod node_user_this_node_page;
 pub mod revealed_page;
 pub mod service_logs_page;
 pub mod service_page;

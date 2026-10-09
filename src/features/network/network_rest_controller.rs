@@ -17,8 +17,8 @@ use wabot::rest::RestResult;
 use crate::network::{self};
 use crate::node::memory::{self, Snapshot};
 
-use super::auth::{signed_in, SessionMiddleware};
-use super::ConsoleState;
+use crate::console::auth::{signed_in, SessionMiddleware};
+use crate::console::ConsoleState;
 use crate::views::components::node_certificate::{CertificateCells, CertificateState};
 
 #[injectable]
@@ -41,16 +41,16 @@ impl NetworkRestController {
     #[middleware(SessionMiddleware)]
     async fn enrol(&self, request: Request) -> RestResult<Response> {
         let Some(account) = signed_in(&self.auth) else {
-            return Ok(super::auth::see_other("/sign-in"));
+            return Ok(crate::console::auth::see_other("/sign-in"));
         };
         // Enrolling a node is not a project-level decision: it grants
         // whoever holds the token a place on this node's network.
         if !crate::authz::node_user::manages_the_machine(&account) {
-            return Ok(super::auth::see_other("/"));
+            return Ok(crate::console::auth::see_other("/"));
         }
         let here = "/network/invite";
 
-        let form = match super::auth::read_form(request).await {
+        let form = match crate::console::auth::read_form(request).await {
             Ok(form) => form,
             Err(response) => return Ok(response),
         };
@@ -59,12 +59,12 @@ impl NetworkRestController {
         // nodes shows. This is a note on a token that has not been spent
         // yet, for the operator who minted three of them this afternoon
         // — so it is bounded, and it is not required.
-        let asked = crate::dtos::requests::mint_join_token::MintJoinToken {
-            name: super::auth::field(&form, "name").to_string(),
-            requires: super::auth::capabilities_ticked(&form, "require-"),
-            offers: super::auth::capabilities_ticked(&form, "offer-"),
+        let asked = crate::features::network::mint_join_token_request::MintJoinTokenRequest {
+            name: crate::console::auth::field(&form, "name").to_string(),
+            requires: crate::console::auth::capabilities_ticked(&form, "require-"),
+            offers: crate::console::auth::capabilities_ticked(&form, "offer-"),
         };
-        let token = match crate::usecases::node_user_mint_join_token::run(
+        let token = match crate::features::network::node_user_mint_join_token::run(
             &self.state.database,
             &self.state.config,
             &account,
@@ -73,14 +73,14 @@ impl NetworkRestController {
         .await
         {
             Ok(token) => token,
-            Err(reason) => return Ok(super::auth::back_with_error(here, &reason)),
+            Err(reason) => return Ok(crate::console::auth::back_with_error(here, &reason)),
         };
 
         // Through the reveal store, not the query string: the token is
         // the secret, and a query string is read by the address bar, the
         // history and every refresh.
         let nonce = self.state.reveals.stash(token);
-        Ok(super::auth::see_other(&format!(
+        Ok(crate::console::auth::see_other(&format!(
             "/network/invite/shown?{}",
             form_urlencoded::Serializer::new(String::new())
                 .append_pair("nonce", &nonce)
@@ -106,22 +106,22 @@ impl NetworkRestController {
     #[middleware(SessionMiddleware)]
     async fn join(&self, request: Request) -> RestResult<Response> {
         let Some(account) = signed_in(&self.auth) else {
-            return Ok(super::auth::see_other("/sign-in"));
+            return Ok(crate::console::auth::see_other("/sign-in"));
         };
         // Granting another node authority over this one is the largest
         // thing anybody can do from this console.
         if !crate::authz::node_user::manages_the_machine(&account) {
-            return Ok(super::auth::see_other("/"));
+            return Ok(crate::console::auth::see_other("/"));
         }
         let here = "/network/join";
 
-        let form = match super::auth::read_form(request).await {
+        let form = match crate::console::auth::read_form(request).await {
             Ok(form) => form,
             Err(response) => return Ok(response),
         };
-        use crate::dtos::responses::join_token_spent::Spent;
-        let asked = crate::dtos::requests::spend_join_token::SpendJoinToken {
-            token: super::auth::field(&form, "token").to_string(),
+        use crate::features::network::join_token_spent_response::JoinTokenSpentResponse;
+        let asked = crate::features::network::spend_join_token_request::SpendJoinTokenRequest {
+            token: crate::console::auth::field(&form, "token").to_string(),
             agreed: form.contains_key("agreed"),
             // The form's spelling stops here. A checkbox arrives only
             // when ticked, so presence is the answer.
@@ -130,7 +130,7 @@ impl NetworkRestController {
                 .filter(|capability| form.contains_key(&format!("accept-{}", capability.name())))
                 .collect(),
         };
-        match crate::usecases::node_user_spend_join_token::run(
+        match crate::features::network::node_user_spend_join_token::run(
             &self.state.database,
             &self.state.config,
             &account,
@@ -138,22 +138,24 @@ impl NetworkRestController {
         )
         .await
         {
-            Ok(Spent::Review(token)) => {
+            Ok(JoinTokenSpentResponse::Review(token)) => {
                 let nonce = self.state.reveals.stash(token);
-                Ok(super::auth::see_other(&format!(
+                Ok(crate::console::auth::see_other(&format!(
                     "{here}?{}",
                     form_urlencoded::Serializer::new(String::new())
                         .append_pair("review", &nonce)
                         .finish()
                 )))
             }
-            Ok(Spent::Joined(authority)) => Ok(super::auth::see_other(&format!(
-                "{here}?{}",
-                form_urlencoded::Serializer::new(String::new())
-                    .append_pair("joined", &authority)
-                    .finish()
-            ))),
-            Err(reason) => Ok(super::auth::back_with_error(here, &reason)),
+            Ok(JoinTokenSpentResponse::Joined(authority)) => {
+                Ok(crate::console::auth::see_other(&format!(
+                    "{here}?{}",
+                    form_urlencoded::Serializer::new(String::new())
+                        .append_pair("joined", &authority)
+                        .finish()
+                )))
+            }
+            Err(reason) => Ok(crate::console::auth::back_with_error(here, &reason)),
         }
     }
 
@@ -163,25 +165,28 @@ impl NetworkRestController {
     #[middleware(SessionMiddleware)]
     async fn withdraw(&self, request: Request) -> RestResult<Response> {
         let Some(account) = signed_in(&self.auth) else {
-            return Ok(super::auth::see_other("/sign-in"));
+            return Ok(crate::console::auth::see_other("/sign-in"));
         };
         if !crate::authz::node_user::manages_the_machine(&account) {
-            return Ok(super::auth::see_other("/"));
+            return Ok(crate::console::auth::see_other("/"));
         }
 
         let path = request.uri().path().to_string();
-        if let Some(id) = super::auth::segments(&path).get(2) {
-            if let Err(reason) = crate::usecases::node_user_withdraw_enrolment::run(
+        if let Some(id) = crate::console::auth::segments(&path).get(2) {
+            if let Err(reason) = crate::features::network::node_user_withdraw_enrolment::run(
                 &self.state.database,
                 &account,
                 id,
             )
             .await
             {
-                return Ok(super::auth::back_with_error("/network/invite", &reason));
+                return Ok(crate::console::auth::back_with_error(
+                    "/network/invite",
+                    &reason,
+                ));
             }
         }
-        Ok(super::auth::see_other("/network/invite"))
+        Ok(crate::console::auth::see_other("/network/invite"))
     }
 
     /// Take a node out of service, or put it back.
@@ -200,41 +205,41 @@ impl NetworkRestController {
     #[middleware(SessionMiddleware)]
     async fn drain_node(&self, request: Request) -> RestResult<Response> {
         let Some(account) = signed_in(&self.auth) else {
-            return Ok(super::auth::see_other("/sign-in"));
+            return Ok(crate::console::auth::see_other("/sign-in"));
         };
         if !crate::authz::node_user::manages_the_machine(&account) {
-            return Ok(super::auth::see_other("/"));
+            return Ok(crate::console::auth::see_other("/"));
         }
 
         let path = request.uri().path().to_string();
-        let Some(id) = super::auth::segments(&path).get(1).cloned() else {
-            return Ok(super::auth::see_other("/network"));
+        let Some(id) = crate::console::auth::segments(&path).get(1).cloned() else {
+            return Ok(crate::console::auth::see_other("/network"));
         };
-        let form = match super::auth::read_form(request).await {
+        let form = match crate::console::auth::read_form(request).await {
             Ok(form) => form,
             Err(response) => return Ok(response),
         };
         let here = format!("/network/{id}");
 
-        use crate::dtos::responses::node_drained::Drained;
-        match crate::usecases::node_user_drain_node::run(
+        use crate::features::network::node_drained_response::NodeDrainedResponse;
+        match crate::features::network::node_user_drain_node::run(
             &self.state.database,
             &self.state.deployer,
             &account,
             id,
-            super::auth::field(&form, "draining") == "on",
+            crate::console::auth::field(&form, "draining") == "on",
         )
         .await
         {
-            Ok(Drained::BackInService) => Ok(super::auth::see_other(&here)),
-            Ok(Drained::Moved { moved, refused }) if !refused.is_empty() => {
-                Ok(super::auth::back_with_error(
+            Ok(NodeDrainedResponse::BackInService) => Ok(crate::console::auth::see_other(&here)),
+            Ok(NodeDrainedResponse::Moved { moved, refused }) if !refused.is_empty() => {
+                Ok(crate::console::auth::back_with_error(
                     &here,
                     &crate::views::texts::sentences::copies_moved(moved, &refused),
                 ))
             }
-            Ok(Drained::Moved { .. }) => Ok(super::auth::see_other(&here)),
-            Err(reason) => Ok(super::auth::back_with_error(&here, &reason)),
+            Ok(NodeDrainedResponse::Moved { .. }) => Ok(crate::console::auth::see_other(&here)),
+            Err(reason) => Ok(crate::console::auth::back_with_error(&here, &reason)),
         }
     }
 
@@ -243,22 +248,25 @@ impl NetworkRestController {
     #[middleware(SessionMiddleware)]
     async fn forget_node(&self, request: Request) -> RestResult<Response> {
         let Some(account) = signed_in(&self.auth) else {
-            return Ok(super::auth::see_other("/sign-in"));
+            return Ok(crate::console::auth::see_other("/sign-in"));
         };
         if !crate::authz::node_user::manages_the_machine(&account) {
-            return Ok(super::auth::see_other("/"));
+            return Ok(crate::console::auth::see_other("/"));
         }
 
         let path = request.uri().path().to_string();
-        if let Some(id) = super::auth::segments(&path).get(2) {
-            if let Err(reason) =
-                crate::usecases::node_user_forget_node::run(&self.state.database, &account, id)
-                    .await
+        if let Some(id) = crate::console::auth::segments(&path).get(2) {
+            if let Err(reason) = crate::features::network::node_user_forget_node::run(
+                &self.state.database,
+                &account,
+                id,
+            )
+            .await
             {
-                return Ok(super::auth::back_with_error("/network", &reason));
+                return Ok(crate::console::auth::back_with_error("/network", &reason));
             }
         }
-        Ok(super::auth::see_other("/network"))
+        Ok(crate::console::auth::see_other("/network"))
     }
 
     /// Stop taking instructions from a node.
@@ -271,22 +279,25 @@ impl NetworkRestController {
     #[middleware(SessionMiddleware)]
     async fn revoke_authority(&self, request: Request) -> RestResult<Response> {
         let Some(account) = signed_in(&self.auth) else {
-            return Ok(super::auth::see_other("/sign-in"));
+            return Ok(crate::console::auth::see_other("/sign-in"));
         };
         if !crate::authz::node_user::manages_the_machine(&account) {
-            return Ok(super::auth::see_other("/"));
+            return Ok(crate::console::auth::see_other("/"));
         }
 
         let path = request.uri().path().to_string();
-        if let Some(id) = super::auth::segments(&path).get(2) {
-            if let Err(reason) =
-                crate::usecases::node_user_revoke_authority::run(&self.state.database, &account, id)
-                    .await
+        if let Some(id) = crate::console::auth::segments(&path).get(2) {
+            if let Err(reason) = crate::features::network::node_user_revoke_authority::run(
+                &self.state.database,
+                &account,
+                id,
+            )
+            .await
             {
-                return Ok(super::auth::back_with_error("/network", &reason));
+                return Ok(crate::console::auth::back_with_error("/network", &reason));
             }
         }
-        Ok(super::auth::see_other("/network"))
+        Ok(crate::console::auth::see_other("/network"))
     }
 
     /// What this node agrees to do for one other node.
@@ -301,30 +312,37 @@ impl NetworkRestController {
     #[middleware(SessionMiddleware)]
     async fn set_grants(&self, request: Request) -> RestResult<Response> {
         let Some(account) = signed_in(&self.auth) else {
-            return Ok(super::auth::see_other("/sign-in"));
+            return Ok(crate::console::auth::see_other("/sign-in"));
         };
         if !crate::authz::node_user::manages_the_machine(&account) {
-            return Ok(super::auth::see_other("/"));
+            return Ok(crate::console::auth::see_other("/"));
         }
         let path = request.uri().path().to_string();
-        let Some(id) = super::auth::segments(&path).get(1).map(|id| id.to_string()) else {
-            return Ok(super::auth::see_other("/network"));
+        let Some(id) = crate::console::auth::segments(&path)
+            .get(1)
+            .map(|id| id.to_string())
+        else {
+            return Ok(crate::console::auth::see_other("/network"));
         };
-        let form = match super::auth::read_form(request).await {
+        let form = match crate::console::auth::read_form(request).await {
             Ok(form) => form,
             Err(response) => return Ok(response),
         };
 
         let here = format!("/network/{id}");
-        let asked = crate::dtos::requests::set_grants::SetGrants {
+        let asked = crate::features::network::set_grants_request::SetGrantsRequest {
             node: id.to_string(),
-            agreed: super::auth::capabilities_ticked(&form, ""),
+            agreed: crate::console::auth::capabilities_ticked(&form, ""),
         };
-        match crate::usecases::node_user_set_grants::run(&self.state.database, &account, &asked)
-            .await
+        match crate::features::network::node_user_set_grants::run(
+            &self.state.database,
+            &account,
+            &asked,
+        )
+        .await
         {
-            Ok(()) => Ok(super::auth::see_other(&here)),
-            Err(reason) => Ok(super::auth::back_with_error(&here, &reason)),
+            Ok(()) => Ok(crate::console::auth::see_other(&here)),
+            Err(reason) => Ok(crate::console::auth::back_with_error(&here, &reason)),
         }
     }
 
@@ -340,30 +358,33 @@ impl NetworkRestController {
     #[middleware(SessionMiddleware)]
     async fn set_wanted_version(&self, request: Request) -> RestResult<Response> {
         let Some(account) = signed_in(&self.auth) else {
-            return Ok(super::auth::see_other("/sign-in"));
+            return Ok(crate::console::auth::see_other("/sign-in"));
         };
         if !crate::authz::node_user::manages_the_machine(&account) {
-            return Ok(super::auth::see_other("/"));
+            return Ok(crate::console::auth::see_other("/"));
         }
         let path = request.uri().path().to_string();
-        let Some(id) = super::auth::segments(&path).get(1).map(|id| id.to_string()) else {
-            return Ok(super::auth::see_other("/network"));
+        let Some(id) = crate::console::auth::segments(&path)
+            .get(1)
+            .map(|id| id.to_string())
+        else {
+            return Ok(crate::console::auth::see_other("/network"));
         };
-        let form = match super::auth::read_form(request).await {
+        let form = match crate::console::auth::read_form(request).await {
             Ok(form) => form,
             Err(response) => return Ok(response),
         };
         let here = format!("/network/{id}");
-        match crate::usecases::node_user_set_wanted_version::run(
+        match crate::features::network::node_user_set_wanted_version::run(
             &self.state.database,
             &account,
             &id,
-            super::auth::field(&form, "version"),
+            crate::console::auth::field(&form, "version"),
         )
         .await
         {
-            Ok(()) => Ok(super::auth::see_other(&here)),
-            Err(reason) => Ok(super::auth::back_with_error(&here, &reason)),
+            Ok(()) => Ok(crate::console::auth::see_other(&here)),
+            Err(reason) => Ok(crate::console::auth::back_with_error(&here, &reason)),
         }
     }
 
@@ -379,21 +400,24 @@ impl NetworkRestController {
     #[middleware(SessionMiddleware)]
     async fn ask_node_once(&self, request: Request) -> RestResult<Response> {
         let Some(account) = signed_in(&self.auth) else {
-            return Ok(super::auth::see_other("/sign-in"));
+            return Ok(crate::console::auth::see_other("/sign-in"));
         };
         if !crate::authz::node_user::manages_the_machine(&account) {
-            return Ok(super::auth::see_other("/"));
+            return Ok(crate::console::auth::see_other("/"));
         }
         let path = request.uri().path().to_string();
-        let Some(id) = super::auth::segments(&path).get(1).map(|id| id.to_string()) else {
-            return Ok(super::auth::see_other("/network"));
+        let Some(id) = crate::console::auth::segments(&path)
+            .get(1)
+            .map(|id| id.to_string())
+        else {
+            return Ok(crate::console::auth::see_other("/network"));
         };
-        let form = match super::auth::read_form(request).await {
+        let form = match crate::console::auth::read_form(request).await {
             Ok(form) => form,
             Err(response) => return Ok(response),
         };
         let here = format!("/network/{id}");
-        let action = match super::auth::field(&form, "action") {
+        let action = match crate::console::auth::field(&form, "action") {
             "restart" => network::errand::Action::Restart,
             "back-up" => network::errand::Action::BackUp,
             // Not `Action::Unknown`: that is what a *newer node's* word
@@ -401,10 +425,13 @@ impl NetworkRestController {
             // console asking for something it has no name for.
             other => {
                 tracing::warn!(action = %other, "no such thing to ask a node for");
-                return Ok(super::auth::back_with_error(&here, "no such action"));
+                return Ok(crate::console::auth::back_with_error(
+                    &here,
+                    "no such action",
+                ));
             }
         };
-        match crate::usecases::node_user_ask_node_once::run(
+        match crate::features::network::node_user_ask_node_once::run(
             &self.state.database,
             &account,
             &id,
@@ -412,8 +439,8 @@ impl NetworkRestController {
         )
         .await
         {
-            Ok(()) => Ok(super::auth::see_other(&here)),
-            Err(reason) => Ok(super::auth::back_with_error(&here, &reason)),
+            Ok(()) => Ok(crate::console::auth::see_other(&here)),
+            Err(reason) => Ok(crate::console::auth::back_with_error(&here, &reason)),
         }
     }
 
@@ -444,7 +471,7 @@ impl NetworkRestController {
         }
 
         let path = request.uri().path().to_string();
-        let id = super::auth::segments(&path)
+        let id = crate::console::auth::segments(&path)
             .get(1)
             .map(|id| id.to_string())
             .unwrap_or_default();
@@ -492,7 +519,7 @@ impl NetworkRestController {
                     .as_ref()
                     .and_then(|before| crate::node::cpu::between(before, &now));
                 before = Some(now);
-                let facts = super::certificate_facts(&state).await;
+                let facts = crate::console::certificate_facts(&state).await;
                 let domain =
                     crate::node::settings::domain(&state.database, &state.config).await;
                 let certificate = CertificateState::read(
@@ -675,19 +702,19 @@ fn cells(snapshot: &Snapshot, busy: Option<&crate::node::cpu::Busy>) -> Cells {
     let bars = BTreeMap::from([
         (
             "node".to_string(),
-            crate::views::components::node_usage::percent(snapshot, snapshot.node),
+            crate::features::network::node_usage_component::percent(snapshot, snapshot.node),
         ),
         (
             "runtime".to_string(),
-            crate::views::components::node_usage::percent(snapshot, runtime),
+            crate::features::network::node_usage_component::percent(snapshot, runtime),
         ),
         (
             "containers".to_string(),
-            crate::views::components::node_usage::percent(snapshot, containers),
+            crate::features::network::node_usage_component::percent(snapshot, containers),
         ),
         (
             "rest".to_string(),
-            crate::views::components::node_usage::percent(snapshot, snapshot.rest()),
+            crate::features::network::node_usage_component::percent(snapshot, snapshot.rest()),
         ),
     ]);
 
@@ -722,7 +749,7 @@ mod tests {
     #[test]
     fn every_streamed_cell_has_a_place_on_the_page() {
         let snapshot = snapshot();
-        let rendered = crate::views::components::node_usage::memory_card(
+        let rendered = crate::features::network::node_usage_component::memory_card(
             &snapshot,
             &Default::default(),
             (None, None),
@@ -771,7 +798,7 @@ mod tests {
 
         // And the first paint still needs the whole declaration, because
         // there it is the attribute.
-        assert!(crate::views::components::node_usage::memory_card(
+        assert!(crate::features::network::node_usage_component::memory_card(
             &snapshot,
             &Default::default(),
             (None, None)
@@ -794,36 +821,46 @@ mod tests {
     /// So this reads the source instead of one card's output. One place to
     /// be right is worth nothing unless everything goes through it, and a
     /// third card is exactly how this happened a second time.
+    ///
+    /// **It read nothing for months.** It scanned the controllers, and the
+    /// meters had moved into the views when the controllers stopped
+    /// drawing: no file it read had a `style` attribute in it, and with no
+    /// floor that passed. The organisation's quota card wrote its own
+    /// width the whole time, and was found by a move, not by this.
     #[test]
     fn every_meter_width_is_a_declaration() {
-        // Both halves of what was one file, and every other controller
-        // with them: a `style` attribute is a `style` attribute wherever
-        // it is written, and naming the file this used to live in is
-        // what made it silent the moment that file was split.
-        let source: String = crate::tree::rust_files(&["src/console", "src/features"])
-            .iter()
-            .filter_map(|path| std::fs::read_to_string(path).ok())
-            .collect::<Vec<_>>()
-            .join("\n");
         // Assembled rather than written out, or this scan finds its own
         // predicate and reports the line it is reading from.
         let needle = concat!("style", "=(");
+        let mut written = 0;
         let mut wrong = Vec::new();
-        for (number, line) in source.lines().enumerate() {
-            if line.trim_start().starts_with("//") || !line.contains(needle) {
-                continue;
-            }
-            let through = [
-                "crate::views::components::node_usage::width(",
-                "crate::views::components::node_usage::bar_width(",
-            ];
-            if !through.iter().any(|call| line.contains(call)) {
-                wrong.push(number + 1);
+        for path in crate::tree::rust_files(&["src/console", "src/views", "src/features"]) {
+            // The helpers' own file calls them by their short names.
+            let home = path
+                .file_stem()
+                .is_some_and(|stem| stem == "node_usage_component");
+            let source = std::fs::read_to_string(&path).expect("read");
+            for (number, line) in source.lines().enumerate() {
+                if line.trim_start().starts_with("//") || !line.contains(needle) {
+                    continue;
+                }
+                written += 1;
+                let through = ["width(", "bar_width("].iter().any(|call| {
+                    line.contains(&format!("node_usage_component::{call}"))
+                        || (home && line.contains(&format!("({call}")))
+                });
+                if !through {
+                    wrong.push(format!("{}:{}", path.display(), number + 1));
+                }
             }
         }
         assert!(
+            written > 5,
+            "the scan found {written} style attributes, so it is reading the wrong place"
+        );
+        assert!(
             wrong.is_empty(),
-            "these write a style attribute without going through bar_width: {wrong:?}"
+            "these write a style attribute without going through bar_width: {wrong:#?}"
         );
     }
 
@@ -832,12 +869,12 @@ mod tests {
     #[test]
     fn a_meter_width_is_a_declaration_and_not_a_bare_value() {
         assert_eq!(
-            crate::views::components::node_usage::bar_width(7.5),
+            crate::features::network::node_usage_component::bar_width(7.5),
             "width:7.5000%"
         );
         // Zero is still sized, rather than left for whatever was there.
         assert_eq!(
-            crate::views::components::node_usage::bar_width(0.0),
+            crate::features::network::node_usage_component::bar_width(0.0),
             "width:0.0000%"
         );
     }
@@ -847,7 +884,7 @@ mod tests {
     #[test]
     fn the_first_paint_and_the_stream_agree() {
         let snapshot = snapshot();
-        let rendered = crate::views::components::node_usage::memory_card(
+        let rendered = crate::features::network::node_usage_component::memory_card(
             &snapshot,
             &Default::default(),
             (None, None),
@@ -1548,7 +1585,7 @@ mod tests {
                 public_key: Some("0hEr0DzTvMDTRfPPmYFCVCQ1cA0nnUnP+2fFqZBBBGQ=".into()),
                 overlay_ip: Some("10.42.0.9".into()),
                 is_self: false,
-                last_seen_at: Some(super::super::now_ms()),
+                last_seen_at: Some(crate::console::now_ms()),
                 allows: Vec::new(),
                 ca_pem: None,
             },

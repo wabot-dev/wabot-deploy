@@ -1,7 +1,7 @@
 use hypertext::prelude::*;
 
+use crate::features::network::node_enrolment_component;
 use crate::network::token::JoinToken;
-use crate::views::components::node_enrolment;
 use crate::views::layouts::layout;
 use crate::views::texts::language::t;
 
@@ -22,8 +22,8 @@ pub fn render<'a>(page: &'a JoinNetwork<'a>) -> impl Renderable + 'a {
             (layout::error_note(message))
         }
         @if let Some((token, terms)) = page.reviewing {
-            (node_enrolment::review_card(token, terms))
+            (node_enrolment_component::review_card(token, terms))
         }
-        (node_enrolment::join_card(page.joined))
+        (node_enrolment_component::join_card(page.joined))
     }
 }

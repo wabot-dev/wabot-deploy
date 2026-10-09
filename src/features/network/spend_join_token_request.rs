@@ -16,7 +16,7 @@ use crate::network::capability::Capability;
 /// `accept-<name>` keys: a use case that had to know that spelling would
 /// be a use case only a browser can call.
 #[derive(Debug, Clone, Default, Deserialize, Serialize, Validate)]
-pub struct SpendJoinToken {
+pub struct SpendJoinTokenRequest {
     #[serde(default)]
     pub token: String,
     #[serde(default)]

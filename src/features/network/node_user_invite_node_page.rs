@@ -1,8 +1,8 @@
 use hypertext::prelude::*;
 
+use crate::features::network::node_enrolment_component;
 use crate::network::enrolment::Enrolment;
 use crate::network::Node;
-use crate::views::components::node_enrolment;
 use crate::views::layouts::layout;
 use crate::views::texts::language::t;
 
@@ -21,7 +21,7 @@ pub fn render<'a>(page: &'a InviteNode<'a>) -> impl Renderable + 'a {
         @if let Some(message) = page.error {
             (layout::error_note(message))
         }
-        (node_enrolment::enrol_card(page.may_enrol))
-        (node_enrolment::minted_card(page.enrolments, page.nodes, page.now))
+        (node_enrolment_component::enrol_card(page.may_enrol))
+        (node_enrolment_component::minted_card(page.enrolments, page.nodes, page.now))
     }
 }

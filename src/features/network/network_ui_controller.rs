@@ -10,8 +10,8 @@ use wabot::ui::hypertext::IntoView;
 use crate::network::{self};
 use crate::policies::access;
 
-use super::auth::{signed_in, SessionMiddleware};
-use super::ConsoleState;
+use crate::console::auth::{signed_in, SessionMiddleware};
+use crate::console::ConsoleState;
 use crate::views::layouts::layout;
 use crate::views::layouts::shell::{Area, Frame};
 
@@ -105,7 +105,7 @@ impl NetworkUiController {
         let frame = Frame::new(&account, Area::Network, &projects, None, "/network");
         // The account's language, around the render and no wider:
         // the strings are read here, and nothing awaits inside.
-        let page = crate::views::pages::node_user_network_page::Network {
+        let page = crate::features::network::node_user_network_page::Network {
             nodes: &nodes,
             authorities: &authorities,
             agreed: &agreed,
@@ -113,7 +113,7 @@ impl NetworkUiController {
             error: query.error.as_deref(),
         };
         let body = crate::views::texts::language::scoped(account.language, || {
-            crate::views::pages::node_user_network_page::render(&page)
+            crate::features::network::node_user_network_page::render(&page)
                 .render()
                 .into_inner()
         });
@@ -141,11 +141,11 @@ impl NetworkUiController {
         let enrolments = network::enrolment::all(&self.state.database).await?;
         let projects = access::projects_for(&self.state.database, &account).await?;
         let may_enrol = nodes.iter().any(|node| node.is_self && node.may_be_edge());
-        let now = super::now_ms();
+        let now = crate::console::now_ms();
 
         layout::head("Invite a node");
         let frame = Frame::new(&account, Area::Network, &projects, None, "/network/invite");
-        let page = crate::views::pages::node_user_invite_node_page::InviteNode {
+        let page = crate::features::network::node_user_invite_node_page::InviteNode {
             nodes: &nodes,
             enrolments: &enrolments,
             may_enrol,
@@ -153,7 +153,7 @@ impl NetworkUiController {
             error: query.error.as_deref(),
         };
         let body = crate::views::texts::language::scoped(account.language, || {
-            crate::views::pages::node_user_invite_node_page::render(&page)
+            crate::features::network::node_user_invite_node_page::render(&page)
                 .render()
                 .into_inner()
         });
@@ -190,13 +190,13 @@ impl NetworkUiController {
 
         layout::head("Join a network");
         let frame = Frame::new(&account, Area::Network, &projects, None, "/network/join");
-        let page = crate::views::pages::node_user_join_network_page::JoinNetwork {
+        let page = crate::features::network::node_user_join_network_page::JoinNetwork {
             reviewing: reviewing.as_ref(),
             joined: query.joined.as_deref(),
             error: query.error.as_deref(),
         };
         let body = crate::views::texts::language::scoped(account.language, || {
-            crate::views::pages::node_user_join_network_page::render(&page)
+            crate::features::network::node_user_join_network_page::render(&page)
                 .render()
                 .into_inner()
         });
@@ -277,7 +277,7 @@ impl NetworkUiController {
             };
             layout::head(&node.name);
             let frame = Frame::new(&account, Area::Network, &projects, None, path);
-            let page = crate::views::pages::node_user_remote_node_page::RemoteNode {
+            let page = crate::features::network::node_user_remote_node_page::RemoteNode {
                 node: &node,
                 orders: &orders,
                 granted: &granted,
@@ -288,7 +288,7 @@ impl NetworkUiController {
             // The account's language, around the render and no wider:
             // the strings are read here, and nothing awaits inside.
             let body = crate::views::texts::language::scoped(account.language, || {
-                crate::views::pages::node_user_remote_node_page::render(&page)
+                crate::features::network::node_user_remote_node_page::render(&page)
                     .render()
                     .into_inner()
             });
@@ -318,7 +318,7 @@ impl NetworkUiController {
 
         layout::head(&node.name);
         let frame = Frame::new(&account, Area::Network, &projects, None, path);
-        let page = crate::views::pages::node_user_this_node_page::ThisNode {
+        let page = crate::features::network::node_user_this_node_page::ThisNode {
             node: &node,
             disk: &disk,
             committed: &committed,
@@ -329,7 +329,7 @@ impl NetworkUiController {
         // The account's language, around the render and no wider:
         // the strings are read here, and nothing awaits inside.
         let body = crate::views::texts::language::scoped(account.language, || {
-            crate::views::pages::node_user_this_node_page::render(&page)
+            crate::features::network::node_user_this_node_page::render(&page)
                 .render()
                 .into_inner()
         });

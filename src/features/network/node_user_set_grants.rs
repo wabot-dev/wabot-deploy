@@ -2,7 +2,7 @@ use wabot::sqlite::SqliteDatabase;
 
 use crate::accounts::Account;
 use crate::authz::node_user;
-use crate::dtos::requests::set_grants::SetGrants;
+use crate::features::network::set_grants_request::SetGrantsRequest;
 use crate::network::capability;
 
 /// What **this** node agreed to do, for that one. It lives on the machine
@@ -11,7 +11,7 @@ use crate::network::capability;
 pub async fn run(
     database: &SqliteDatabase,
     account: &Account,
-    asked: &SetGrants,
+    asked: &SetGrantsRequest,
 ) -> Result<(), String> {
     if !node_user::manages_the_machine(account) {
         return Err("only an administrator of this node can do that".into());

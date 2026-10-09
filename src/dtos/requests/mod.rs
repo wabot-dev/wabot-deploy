@@ -21,10 +21,7 @@
 
 pub mod add_service_port;
 pub mod create_service;
-pub mod mint_join_token;
 pub mod set_backup_plan;
 pub mod set_bucket_credentials;
 pub mod set_capabilities;
-pub mod set_grants;
 pub mod set_service_resources;
-pub mod spend_join_token;
