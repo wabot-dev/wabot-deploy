@@ -96,15 +96,22 @@ fn main() -> std::process::ExitCode {
 }
 
 fn init_tracing(filter: &str) {
+    use std::io::IsTerminal;
     use tracing_subscriber::EnvFilter;
 
     let filter = EnvFilter::try_new(filter).unwrap_or_else(|_| EnvFilter::new("info"));
-    tracing_subscriber::fmt()
+    let output = tracing_subscriber::fmt()
         .with_env_filter(filter)
-        // systemd's journal timestamps every line already, and a
-        // duplicate is just noise in `journalctl`.
-        .without_time()
-        .init();
+        .with_ansi(std::io::stdout().is_terminal());
+    // systemd's journal stamps every line, and says it is listening with
+    // `JOURNAL_STREAM`. OpenRC appends to a file that stamps nothing, so
+    // every Alpine node logged with no time at all, and colour codes in
+    // the file — found on a VM node, unable to tell whether a backup ran
+    // before or after the restart that broke it.
+    match std::env::var_os("JOURNAL_STREAM").is_some() {
+        true => output.without_time().init(),
+        false => output.init(),
+    }
 }
 
 /// `WABOT_DEPLOY_WORKERS`, or two.
