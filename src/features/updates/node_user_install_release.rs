@@ -5,7 +5,7 @@ use wabot::sqlite::SqliteDatabase;
 use crate::accounts::Account;
 use crate::authz::node_user;
 use crate::config::Config;
-use crate::dtos::responses::release_started::ReleaseStarted;
+use crate::features::updates::release_started_response::ReleaseStartedResponse;
 use crate::update::runs;
 use crate::update::Catalogue;
 
@@ -19,7 +19,7 @@ pub async fn run(
     catalogue: &Arc<Catalogue>,
     account: &Account,
     tag: &str,
-) -> Result<ReleaseStarted, String> {
+) -> Result<ReleaseStartedResponse, String> {
     if !node_user::manages_the_machine(account) {
         return Err("only an administrator of this node can do that".into());
     }
@@ -66,7 +66,7 @@ pub async fn run(
         Some(account.id.clone()),
     );
 
-    Ok(ReleaseStarted {
+    Ok(ReleaseStartedResponse {
         tag: release.tag.clone(),
     })
 }

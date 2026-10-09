@@ -849,9 +849,9 @@ listed fails by name.
 
 ### Where it stands
 
-`databases`, `projects`, `people` and `organisations` have moved. The
-other features are still in their layer directories, and the guards read
-both layouts until they are not.
+`databases`, `organisations`, `people`, `projects` and `updates` have
+moved. The other features are still in their layer directories, and the
+guards read both layouts until they are not.
 
 ### What it costs
 

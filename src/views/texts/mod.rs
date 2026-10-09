@@ -27,7 +27,6 @@ pub mod services;
 pub mod shared;
 pub mod shell;
 pub mod shown;
-pub mod updates;
 
 /// Every table, in one place so the lookup cannot forget one.
 ///
@@ -47,7 +46,7 @@ const TABLES: &[&[(&str, &str)]] = &[
     shared::TABLE,
     shell::TABLE,
     shown::TABLE,
-    updates::TABLE,
+    crate::features::updates::texts::TABLE,
 ];
 
 /// The Spanish for one English string.

@@ -7,6 +7,6 @@ use serde::{Deserialize, Serialize};
 /// install ends by replacing this process. What happened is on the run
 /// row, which is the thing that survives it.
 #[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct ReleaseStarted {
+pub struct ReleaseStartedResponse {
     pub tag: String,
 }

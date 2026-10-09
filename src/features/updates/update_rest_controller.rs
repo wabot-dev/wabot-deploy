@@ -9,8 +9,8 @@ use wabot::rest::RestResult;
 
 use crate::update::runs::Status;
 
-use super::auth::{signed_in, SessionMiddleware};
-use super::ConsoleState;
+use crate::console::auth::{signed_in, SessionMiddleware};
+use crate::console::ConsoleState;
 
 /// The server half.
 #[injectable]
@@ -75,17 +75,20 @@ impl UpdateRestController {
     #[middleware(SessionMiddleware)]
     async fn check(&self, _request: Request) -> RestResult<Response> {
         let Some(account) = signed_in(&self.auth) else {
-            return Ok(super::auth::see_other("/sign-in"));
+            return Ok(crate::console::auth::see_other("/sign-in"));
         };
         if !crate::authz::node_user::manages_the_machine(&account) {
-            return Ok(super::auth::see_other("/"));
+            return Ok(crate::console::auth::see_other("/"));
         }
 
-        match crate::usecases::node_user_check_for_updates::run(&self.state.catalogue, &account)
-            .await
+        match crate::features::updates::node_user_check_for_updates::run(
+            &self.state.catalogue,
+            &account,
+        )
+        .await
         {
-            Ok(()) => Ok(super::auth::see_other("/updates")),
-            Err(reason) => Ok(super::auth::back_with_error("/updates", &reason)),
+            Ok(()) => Ok(crate::console::auth::see_other("/updates")),
+            Err(reason) => Ok(crate::console::auth::back_with_error("/updates", &reason)),
         }
     }
 
@@ -96,32 +99,32 @@ impl UpdateRestController {
     #[middleware(SessionMiddleware)]
     async fn install(&self, request: Request) -> RestResult<Response> {
         let Some(account) = signed_in(&self.auth) else {
-            return Ok(super::auth::see_other("/sign-in"));
+            return Ok(crate::console::auth::see_other("/sign-in"));
         };
         if !crate::authz::node_user::manages_the_machine(&account) {
-            return Ok(super::auth::see_other("/"));
+            return Ok(crate::console::auth::see_other("/"));
         }
-        let form = match super::auth::read_form(request).await {
+        let form = match crate::console::auth::read_form(request).await {
             Ok(form) => form,
             Err(response) => return Ok(response),
         };
 
-        let started = match crate::usecases::node_user_install_release::run(
+        let started = match crate::features::updates::node_user_install_release::run(
             &self.state.database,
             &self.state.config,
             &self.state.catalogue,
             &account,
-            super::auth::field(&form, "tag"),
+            crate::console::auth::field(&form, "tag"),
         )
         .await
         {
             Ok(started) => started,
-            Err(reason) => return Ok(super::auth::back_with_error("/updates", &reason)),
+            Err(reason) => return Ok(crate::console::auth::back_with_error("/updates", &reason)),
         };
 
-        Ok(super::auth::see_other(&format!(
+        Ok(crate::console::auth::see_other(&format!(
             "/updates?{}",
-            super::auth::encode(
+            crate::console::auth::encode(
                 "started",
                 &format!(
                     "Installing {}. The node restarts when it is ready — this page \
@@ -278,7 +281,7 @@ struct LiveRun {
     none: bool,
 }
 
-async fn live_cells(state: &super::ConsoleState) -> LiveRun {
+async fn live_cells(state: &crate::console::ConsoleState) -> LiveRun {
     let Ok(Some(run)) = crate::update::runs::latest(&state.database).await else {
         return LiveRun {
             none: true,

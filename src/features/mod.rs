@@ -2,6 +2,7 @@ pub mod databases;
 pub mod organisations;
 pub mod people;
 pub mod projects;
+pub mod updates;
 
 #[cfg(test)]
 mod tests {

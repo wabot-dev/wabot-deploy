@@ -10,8 +10,8 @@ use wabot::ui::hypertext::IntoView;
 use crate::policies::access;
 use crate::update::runs::{self};
 
-use super::auth::{signed_in, SessionMiddleware};
-use super::ConsoleState;
+use crate::console::auth::{signed_in, SessionMiddleware};
+use crate::console::ConsoleState;
 use crate::views::layouts::layout;
 use crate::views::layouts::shell::{Area, Frame};
 
@@ -68,7 +68,7 @@ impl UpdateUiController {
         let frame = Frame::new(&account, Area::Settings, &projects, None, "/updates");
         // The account's language, around the render and no wider:
         // the strings are read here, and nothing awaits inside.
-        let page = crate::views::pages::node_user_updates_page::Updates {
+        let page = crate::features::updates::node_user_updates_page::Updates {
             history: &history,
             latest: latest.as_ref(),
             available: &available,
@@ -76,7 +76,7 @@ impl UpdateUiController {
             query_started: query.started.as_deref(),
         };
         let body = crate::views::texts::language::scoped(account.language, || {
-            crate::views::pages::node_user_updates_page::render(&page)
+            crate::features::updates::node_user_updates_page::render(&page)
                 .render()
                 .into_inner()
         });
@@ -101,7 +101,7 @@ impl UpdateUiController {
             Err(error) => {
                 let back = format!(
                     "/updates?{}",
-                    super::auth::encode("error", &error.to_string())
+                    crate::console::auth::encode("error", &error.to_string())
                 );
                 return Ok(Redirect::found(back).into());
             }
@@ -117,13 +117,13 @@ impl UpdateUiController {
         let frame = Frame::new(&account, Area::Settings, &projects, None, "/updates");
         // The account's language, around the render and no wider:
         // the strings are read here, and nothing awaits inside.
-        let page = crate::views::pages::node_user_release_page::ReleaseView {
+        let page = crate::features::updates::node_user_release_page::ReleaseView {
             release: &release,
             current,
             query_error: query.error.as_deref(),
         };
         let body = crate::views::texts::language::scoped(account.language, || {
-            crate::views::pages::node_user_release_page::render(&page)
+            crate::features::updates::node_user_release_page::render(&page)
                 .render()
                 .into_inner()
         });
