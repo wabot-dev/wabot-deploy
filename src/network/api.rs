@@ -821,12 +821,15 @@ pub fn register(container: &Container, config: crate::config::Config) {
     container.register_instance::<crate::config::Config>(Arc::new(config));
     register_transients!(
         container,
-        super::network_rest_controller::NetworkRestController
+        super::remote_node_rest_controller::RemoteNodeRestController
     );
 }
 
 pub fn routes(container: &Container) -> Router {
-    super::network_rest_controller::NetworkRestController::register_routes(container, Router::new())
+    super::remote_node_rest_controller::RemoteNodeRestController::register_routes(
+        container,
+        Router::new(),
+    )
 }
 
 #[cfg(test)]

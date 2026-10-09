@@ -18,7 +18,7 @@ use wabot::rest::RestResult;
 use wabot::sqlite::SqliteDatabase;
 
 #[injectable]
-pub struct NetworkRestController {
+pub struct RemoteNodeRestController {
     database: Arc<SqliteDatabase>,
     /// For the overlay: a node that just joined is a peer, and the
     /// interface has to be told before anything can reach it.
@@ -35,7 +35,7 @@ pub struct NetworkRestController {
 }
 
 #[rest_controller("/api/network")]
-impl NetworkRestController {
+impl RemoteNodeRestController {
     /// Come and ask me: an authority saying an errand is waiting.
     ///
     /// The one endpoint here that is called *by* an authority rather than

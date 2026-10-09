@@ -95,9 +95,10 @@ Where the tree stands: `access`, `databases`, `organisations`,
 directories, with 47 use cases left in `src/usecases`. Every
 use case's two ends are a request and a response and no controller
 draws, and the guards that keep it so read both layouts.
-`console/service_rest_controller.rs` is still 5,800 lines of handlers
-and `console/node_rest_controller.rs` 3,100. No `cli_user_` or
-`remote_node_` use case exists yet.
+`console/service_rest_controller.rs` is still 5,800 lines, tests
+included. The network and this machine's settings are separate
+controllers now, split by route; backups still posts to the node's. No
+`cli_user_` or `remote_node_` use case exists yet.
 
 ## The framework is ours
 

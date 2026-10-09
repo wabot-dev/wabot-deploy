@@ -25,6 +25,8 @@ pub mod assets;
 pub mod attention;
 pub mod auth;
 pub mod live;
+pub mod network_rest_controller;
+pub mod network_ui_controller;
 pub mod node_rest_controller;
 pub mod node_ui_controller;
 pub mod reveal_ui_controller;
@@ -275,6 +277,8 @@ pub fn register(
         container,
         auth_ui_controller::AuthUiController,
         auth_rest_controller::AuthRestController,
+        network_ui_controller::NetworkUiController,
+        network_rest_controller::NetworkRestController,
         node_ui_controller::NodeUiController,
         node_rest_controller::NodeRestController,
         people_ui_controller::PeopleUiController,
@@ -327,11 +331,13 @@ fn shared(container: &Container, pages: Router, forms: Router) -> (Router, Route
 pub fn routes(container: &Container) -> Router {
     let (pages, forms) = shared(container, wabot::ui::ui_router(), Router::new());
 
+    let pages = network_ui_controller::NetworkUiController::register_ui_routes(container, pages);
     let pages = node_ui_controller::NodeUiController::register_ui_routes(container, pages);
     let pages = people_ui_controller::PeopleUiController::register_ui_routes(container, pages);
     let pages = tenant_ui_controller::TenantUiController::register_ui_routes(container, pages);
     let pages = update_ui_controller::UpdateUiController::register_ui_routes(container, pages);
 
+    let forms = network_rest_controller::NetworkRestController::register_routes(container, forms);
     let forms = node_rest_controller::NodeRestController::register_routes(container, forms);
     let forms = people_rest_controller::PeopleRestController::register_routes(container, forms);
     let forms = tenant_rest_controller::TenantRestController::register_routes(container, forms);
