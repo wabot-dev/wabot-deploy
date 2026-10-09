@@ -483,6 +483,40 @@ pub async fn load(database: &SqliteDatabase, domain: &str) -> CertResult<Option<
         .await?)
 }
 
+/// Whether nothing more is coming for this name.
+///
+/// A public authority or a file has answered, or the local authority's
+/// certificate — which covers every name with nothing issued for it — is
+/// the answer, because nothing will ask anybody else: ACME is off, or the
+/// name's own policy says not to.
+///
+/// One answer for the badge that says a certificate is on the way. The
+/// two settings pages counted a self-signed certificate as still coming,
+/// so with ACME off the badge never cleared; the stream that updates them
+/// counted any row as arrived, so with it on the badge cleared before the
+/// real one came. Found on a VM node.
+pub async fn settled(
+    database: &SqliteDatabase,
+    config: &crate::infra::config::Config,
+    name: &str,
+) -> bool {
+    if load(database, name)
+        .await
+        .ok()
+        .flatten()
+        .is_some_and(|certificate| certificate.issuer != "self-signed")
+    {
+        return true;
+    }
+    config.acme.disabled
+        || !matches!(
+            crate::infra::edge::policy::for_name(database, config, name)
+                .await
+                .renew_with,
+            crate::infra::edge::policy::RenewWith::Acme
+        )
+}
+
 pub async fn load_all(database: &SqliteDatabase) -> CertResult<Vec<StoredCert>> {
     Ok(database
         .read(|connection| {
@@ -761,6 +795,60 @@ fn now_ms() -> i64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as i64)
         .unwrap_or_default()
+}
+
+#[tokio::test]
+async fn a_name_is_settled_when_nothing_else_is_coming_for_it() {
+    let database = crate::infra::db::open_in_memory().await.expect("open");
+    let mut config = crate::infra::config::Config::default();
+    let name = "app.example";
+
+    config.acme.disabled = true;
+    assert!(
+        settled(&database, &config, name).await,
+        "ACME off: the local authority is the answer"
+    );
+
+    config.acme.disabled = false;
+    assert!(
+        !settled(&database, &config, name).await,
+        "an authority will be asked, and has not answered"
+    );
+
+    crate::infra::edge::policy::set(
+        &database,
+        name,
+        &crate::infra::edge::policy::RenewWith::SelfSigned,
+    )
+    .await
+    .expect("policy");
+    assert!(
+        settled(&database, &config, name).await,
+        "this name asks nobody"
+    );
+
+    crate::infra::edge::policy::set(
+        &database,
+        name,
+        &crate::infra::edge::policy::RenewWith::Acme,
+    )
+    .await
+    .expect("policy");
+    save(
+        &database,
+        &StoredCert {
+            domain: name.into(),
+            names: vec![name.into()],
+            cert_pem: String::new(),
+            key_pem: String::new(),
+            issuer: "https://acme-v02.api.letsencrypt.org/directory".into(),
+            not_after: i64::MAX,
+            source: Source::Acme,
+        },
+    )
+    .await
+    .expect("saved");
+    assert!(settled(&database, &config, name).await, "it arrived");
 }
 
 #[cfg(test)]

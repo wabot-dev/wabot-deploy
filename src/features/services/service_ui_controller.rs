@@ -177,11 +177,12 @@ impl ServiceUiController {
         let mut secured = std::collections::BTreeSet::new();
         for port in &ports {
             if let Some(hostname) = &port.hostname {
-                if crate::infra::edge::certs::load(&self.state.database, hostname)
-                    .await
-                    .ok()
-                    .flatten()
-                    .is_some_and(|certificate| certificate.issuer != "self-signed")
+                if crate::infra::edge::certs::settled(
+                    &self.state.database,
+                    &self.state.config,
+                    hostname,
+                )
+                .await
                 {
                     secured.insert(hostname.clone());
                 }
@@ -936,11 +937,12 @@ impl ServiceUiController {
                     let Some(hostname) = &port.hostname else {
                         continue;
                     };
-                    if crate::infra::edge::certs::load(&self.state.database, hostname)
-                        .await
-                        .ok()
-                        .flatten()
-                        .is_some_and(|certificate| certificate.issuer != "self-signed")
+                    if crate::infra::edge::certs::settled(
+                        &self.state.database,
+                        &self.state.config,
+                        hostname,
+                    )
+                    .await
                     {
                         secured.insert(hostname.clone());
                     }
