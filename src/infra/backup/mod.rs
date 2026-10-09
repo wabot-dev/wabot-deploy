@@ -265,7 +265,7 @@ pub async fn once(
     volumes.extend(engines.copied);
     // Into the *root*, not this backup's directory: blobs are the part
     // every node shares, and one node's copy of a layer is every node's.
-    let images = keep_images(database, &root).await;
+    let images = keep_images(database, config, &root).await;
     let manifest = Manifest {
         format: FORMAT,
         taken_by: format!("wabot-deploy {}", crate::infra::update::VERSION),
@@ -1138,9 +1138,17 @@ async fn copy_volumes(
 ///
 /// Blobs go to the shared store under their digest, so a network of
 /// nodes running the same base image keeps it once.
-async fn keep_images(database: &wabot::sqlite::SqliteDatabase, root: &Path) -> Vec<Kept> {
-    let Some(domain) = crate::infra::node::settings::domain(database, &Config::default()).await
-    else {
+async fn keep_images(
+    database: &wabot::sqlite::SqliteDatabase,
+    config: &Config,
+    root: &Path,
+) -> Vec<Kept> {
+    // The node's config, not a default one: the file is where a domain
+    // given to `install` lives until the console writes one, and asked of
+    // a default this was no domain at all — so a node never renamed in the
+    // console kept none of the images only it holds, and said public ones
+    // come back with a pull. Found on a VM node.
+    let Some(domain) = crate::infra::node::settings::domain(database, config).await else {
         // With no name of its own this node has no registry anybody
         // pushed to, so there is nothing here that a pull cannot get.
         return Vec::new();
