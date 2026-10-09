@@ -405,10 +405,12 @@ impl ProjectRestController {
                 // chooses the words around a value, never the value —
                 // and a push token on its own is something somebody has
                 // to remember the wrapper for.
-                let host =
+                let host = crate::infra::node::authority(
                     crate::infra::node::settings::domain(&self.state.database, &self.state.config)
                         .await
-                        .unwrap_or_else(|| "this node".into());
+                        .as_deref(),
+                    self.state.config.edge.https_port,
+                );
                 let nonce = self.state.reveals.stash(format!(
                     "docker login {host} -u {} -p {secret}",
                     field(&form, "name")
@@ -640,6 +642,14 @@ mod tests {
             .await
             .body;
         assert!(first.contains("docker login"), "shown once: {first}");
+        assert!(
+            !first.contains("docker login this node"),
+            "a command somebody pastes names an address, not a phrase: {first}"
+        );
+        assert!(
+            !first.contains("No projects yet"),
+            "the picker on the page for a token into a project said there were none: {first}"
+        );
         assert!(
             !first.contains(&nonce),
             "what travelled is not what was shown"

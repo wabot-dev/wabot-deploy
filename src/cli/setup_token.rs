@@ -58,15 +58,10 @@ pub fn print(config: &Config, token: &str) {
 /// The port is only spelled out when it is not 443: a URL with `:443` on
 /// it is one somebody will copy into a browser and wonder about.
 fn url(config: &Config) -> String {
-    let host = config.node.domain.clone().unwrap_or_else(|| {
-        crate::infra::deploy::dns::outbound_address()
-            .map(|address| address.to_string())
-            .unwrap_or_else(|| "localhost".into())
-    });
-    match config.edge.https_port {
-        443 => format!("https://{host}"),
-        port => format!("https://{host}:{port}"),
-    }
+    format!(
+        "https://{}",
+        crate::infra::node::authority(config.node.domain.as_deref(), config.edge.https_port)
+    )
 }
 
 #[cfg(test)]

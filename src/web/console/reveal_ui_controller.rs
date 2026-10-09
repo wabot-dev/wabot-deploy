@@ -66,22 +66,31 @@ impl RevealUiController {
     /// to "where was I", and the arrow's destination is the breadcrumb's
     /// to compute, so `back` is written to agree with it rather than
     /// chosen freely.
-    fn show(
+    #[allow(clippy::too_many_arguments)]
+    async fn show(
         &self,
         account: &crate::domain::entities::account::Account,
         nonce: Option<&str>,
         here: &str,
         back: &str,
         area: Area,
+        project: Option<&str>,
         what: impl FnOnce() -> WhatKind,
-    ) -> ViewOutcome {
+    ) -> UiResult<ViewOutcome> {
+        // Read before the secret is taken: a lookup that failed after it
+        // would spend the only showing on an error page. And read at all,
+        // because the frame drew an empty picker saying there were no
+        // projects, on the page for a token into one of them.
+        let projects =
+            crate::infra::repositories::access::projects_for(&self.state.database, account).await?;
         let Some(secret) = nonce.and_then(|nonce| self.state.reveals.take(nonce)) else {
-            return Redirect::found(back.to_string()).into();
+            return Ok(Redirect::found(back.to_string()).into());
         };
         let kind = what();
+        let current = project.and_then(|slug| projects.iter().find(|one| one.slug == slug));
 
         layout::head("Shown once");
-        let frame = Frame::new(account, area, &[], None, here.to_string());
+        let frame = Frame::new(account, area, &projects, current, here.to_string());
         let page = Revealed {
             what: kind.borrow(),
             secret: &secret,
@@ -91,7 +100,7 @@ impl RevealUiController {
                 .render()
                 .into_inner()
         });
-        frame.render(body).into_view().into()
+        Ok(frame.render(body).into_view().into())
     }
 }
 
@@ -127,14 +136,16 @@ impl RevealUiController {
         if !crate::domain::authz::node_user::manages_the_machine(&account) {
             return Ok(Redirect::found("/").into());
         }
-        Ok(self.show(
+        self.show(
             &account,
             query.nonce.as_deref(),
             "/network/invite/shown",
             "/network/invite",
             Area::Network,
+            None,
             || WhatKind::JoinToken,
-        ))
+        )
+        .await
     }
 
     /// A link into an organisation, from the node's own console.
@@ -154,14 +165,16 @@ impl RevealUiController {
         else {
             return Ok(Redirect::found("/organisations").into());
         };
-        Ok(self.show(
+        self.show(
             &account,
             query.nonce.as_deref(),
             &here,
             &back,
             Area::Settings,
+            None,
             || WhatKind::InvitationInto(tenant.name),
-        ))
+        )
+        .await
     }
 
     /// A link into whichever console this is.
@@ -171,14 +184,16 @@ impl RevealUiController {
         let Some(account) = signed_in(&self.auth) else {
             return Ok(Redirect::found("/sign-in").into());
         };
-        Ok(self.show(
+        self.show(
             &account,
             query.nonce.as_deref(),
             "/people/shown",
             "/people",
             Area::Settings,
+            None,
             || WhatKind::Invitation,
-        ))
+        )
+        .await
     }
 
     /// A registry credential for one project.
@@ -193,13 +208,15 @@ impl RevealUiController {
         // project. This is the value that agrees with it.
         let back = format!("/projects/{}", query.id);
         let here = format!("{back}/shown");
-        Ok(self.show(
+        self.show(
             &account,
             query.nonce.as_deref(),
             &here,
             &back,
             Area::Projects,
+            Some(&query.id),
             || WhatKind::PushToken,
-        ))
+        )
+        .await
     }
 }

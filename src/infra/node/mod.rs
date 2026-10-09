@@ -46,9 +46,46 @@ pub fn name(domain: Option<&str>) -> String {
         .unwrap_or_else(|| "this node".into())
 }
 
+/// Where this node answers, as `host` or `host:port`, from wherever the
+/// person reading is: the domain, else the address this machine reaches
+/// the world from, and `localhost` only for a machine with no route at all.
+/// See `setup_token::url` for why it is not `localhost` first.
+///
+/// One answer for every sentence that tells somebody where to point
+/// something. The push token's `docker login` said `this node` instead,
+/// which is a command no terminal can run — found on a VM node.
+pub fn authority(domain: Option<&str>, https_port: u16) -> String {
+    let host = match domain {
+        Some(domain) => domain.to_string(),
+        None => match crate::infra::deploy::dns::outbound_address() {
+            Some(std::net::IpAddr::V6(address)) => format!("[{address}]"),
+            Some(address) => address.to_string(),
+            None => "localhost".into(),
+        },
+    };
+    match https_port {
+        443 => host,
+        port => format!("{host}:{port}"),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_node_is_reached_at_its_domain_with_the_port_only_when_it_is_not_443() {
+        assert_eq!(authority(Some("node.example"), 443), "node.example");
+        assert_eq!(authority(Some("node.example"), 8443), "node.example:8443");
+    }
+
+    /// A node with no domain is still somewhere a terminal can name.
+    #[test]
+    fn a_node_with_no_domain_is_reached_at_an_address() {
+        let reached = authority(None, 443);
+        assert!(!reached.contains(' '), "{reached}");
+        assert!(!reached.is_empty());
+    }
 
     #[test]
     fn a_node_with_a_domain_is_named_by_it() {

@@ -258,10 +258,12 @@ impl ProjectUiController {
         // console writes — so reading the file here printed a `docker
         // login` for whatever the node was called at install time, for
         // as long as nobody had edited the file to match.
-        let registry_host =
+        let registry_host = crate::infra::node::authority(
             crate::infra::node::settings::domain(&self.state.database, &self.state.config)
                 .await
-                .unwrap_or_else(|| "this node".into());
+                .as_deref(),
+            self.state.config.edge.https_port,
+        );
 
         let members = access::members(&self.state.database, &project.id).await?;
         let all_projects = access::projects_for(&self.state.database, &account).await?;
