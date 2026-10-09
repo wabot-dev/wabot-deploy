@@ -474,6 +474,14 @@ mod tests {
             crate::infra::network::capability::owns(&console.database).await,
             "and nothing was written"
         );
+        assert!(
+            network::capability::provides(
+                &console.database,
+                crate::domain::values::capability::Capability::Store
+            )
+            .await,
+            "not even the boxes beside it, which the refusal said nothing about"
+        );
 
         // With nothing of its own left, the same click is accepted.
         let projects = crate::infra::repositories::projects::all(&console.database)
@@ -487,6 +495,40 @@ mod tests {
         let saved = save!();
         assert!(!saved.contains("error="), "{saved}");
         assert!(!crate::infra::network::capability::owns(&console.database).await);
+    }
+
+    /// A node with no domain draws `edge` disabled, which sends nothing,
+    /// and a save of the other boxes must not read that as off.
+    ///
+    /// **Shipped**: found on a VM node, where saving the form once made
+    /// the node private for good — it stayed private after it was given a
+    /// name, and nobody had chosen that.
+    #[tokio::test]
+    async fn a_box_the_form_could_not_offer_keeps_its_value() {
+        let console = Console::new().await;
+        let cookie = console.signed_in().await;
+        let edge = crate::domain::values::capability::Capability::Edge;
+        let save = || async {
+            console
+                .harness
+                .post("/node/capabilities")
+                .header("cookie", &cookie)
+                .form(&[("host", "1"), ("manage", "1"), ("own", "1")])
+                .send()
+                .await
+        };
+
+        save().await.assert_status(StatusCode::SEE_OTHER);
+        assert!(network::capability::provides(&console.database, edge).await);
+
+        crate::infra::node::settings::set_domain(&console.database, Some("node.example.com"))
+            .await
+            .expect("a domain");
+        save().await.assert_status(StatusCode::SEE_OTHER);
+        assert!(
+            !network::capability::provides(&console.database, edge).await,
+            "with a name, the box is drawn and an unticked one means off"
+        );
     }
 
     /// This node's settings are tabs, like a service's.
@@ -813,6 +855,15 @@ mod tests {
             location.starts_with(&format!("{}?error=", NodeTab::Domain.path())),
             "the answer landed on {location}, away from the form that asked"
         );
+        // Found on a VM node: the sentence was the one for a network with
+        // no resolvable name, and it told somebody typing a domain to go
+        // and give the node a domain.
+        let said: String =
+            form_urlencoded::parse(location.split('?').nth(1).unwrap_or_default().as_bytes())
+                .find(|(key, _)| key == "error")
+                .map(|(_, value)| value.into_owned())
+                .unwrap_or_default();
+        assert!(said.contains("nowhere.invalid does not resolve"), "{said}");
 
         assert_eq!(
             crate::infra::node::settings::domain(&console.database, &Config::default()).await,

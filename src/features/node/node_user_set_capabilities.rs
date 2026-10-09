@@ -25,20 +25,12 @@ pub async fn run(
         return Err("only an administrator of this node can do that".into());
     }
 
-    for capability in Capability::ALL {
-        let wanted = asked.provides.contains(&capability);
-        capability::set_provides(database, capability, wanted)
-            .await
-            .map_err(|error| {
-                tracing::warn!(%error, capability = capability.name(), "could not save it");
-                "that could not be saved".to_string()
-            })?;
-    }
-
-    // Whether this node originates anything is not one of them — see
+    // Whether this node originates anything is not a capability — see
     // `capability::owns`.
     //
-    // **Refused while it still owns something.** A node that stopped
+    // **Refused while it still owns something**, and before anything is
+    // written: a refusal that had already saved the boxes turned `store`
+    // off while telling somebody nothing had changed. A node that stopped
     // being an owner with projects still in it would leave every one of
     // them in a state nothing can act on: not editable, because this node
     // no longer originates; not evictable, because they are its own. The
@@ -55,6 +47,26 @@ pub async fn run(
         .count();
     if !owns && mine > 0 {
         return Err(crate::shell::texts::sentences::still_owns_projects(mine));
+    }
+
+    // A node with no domain draws `edge` disabled, and a disabled box
+    // sends nothing — so absence there is the form being unable to say,
+    // not somebody saying off. Read as off, saving `store` once made the
+    // node private for good, and it stayed private after it had a name.
+    let addressed = crate::infra::node::settings::domain(database, config)
+        .await
+        .is_some();
+    for capability in Capability::ALL {
+        if capability.needs_endpoint() && !addressed {
+            continue;
+        }
+        let wanted = asked.provides.contains(&capability);
+        capability::set_provides(database, capability, wanted)
+            .await
+            .map_err(|error| {
+                tracing::warn!(%error, capability = capability.name(), "could not save it");
+                "that could not be saved".to_string()
+            })?;
     }
     capability::set_owns(database, owns)
         .await

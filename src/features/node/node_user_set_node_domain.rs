@@ -5,6 +5,7 @@ use crate::features::node::domain_settled_response::DomainSettledResponse;
 use crate::domain::authz::node_user;
 use crate::domain::entities::account::Account;
 use crate::infra::config::Config;
+use crate::infra::deploy::dns::Resolution;
 use crate::infra::deploy::Deployer;
 
 pub async fn run(
@@ -33,7 +34,13 @@ pub async fn run(
         .to_string();
     // Resolved against itself: the node has no other way to know where
     // it is reachable, and "does this name arrive here" is the question.
-    let outcome = crate::infra::deploy::dns::resolves_here(&domain, &domain).await;
+    // So a name that resolves nowhere is also the reference that resolves
+    // nowhere, and the sentence for that one told somebody typing a
+    // domain to go and give the node a domain.
+    let outcome = match crate::infra::deploy::dns::resolves_here(&domain, &domain).await {
+        Resolution::NoReference => Resolution::Missing,
+        outcome => outcome,
+    };
     if !outcome.ok() {
         return Err(outcome.explain(&domain));
     }

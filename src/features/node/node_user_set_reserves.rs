@@ -92,6 +92,17 @@ fn reserve_refusal(
             say(wanted)
         ));
     }
+    // Found on a VM node with nothing deployed: 64 GB of a 2 GB machine
+    // passed both checks above, and the page then read the CPU left as
+    // "no ceiling", which is what zero means on a service. A total of
+    // zero is a machine that could not be read, not one with nothing.
+    if total > 0 && wanted >= total {
+        return Some(format!(
+            "this machine has {} — reserving {} would leave nothing for services",
+            say(total),
+            say(wanted)
+        ));
+    }
     let left = total.saturating_sub(wanted);
     match left < committed {
         true => Some(format!(
@@ -138,5 +149,13 @@ mod tests {
         );
         // Exactly what is in use is enough: the floor is "not less than".
         assert_eq!(reserve_refusal(1024 * mb, 161 * mb, 0, 161 * mb, say), None);
+
+        // More than the machine, with nothing promised yet: refused, and so
+        // is all of it, which leaves services nothing.
+        let refusal = reserve_refusal(1024 * mb, 161 * mb, 0, 64 * 1024 * mb, say)
+            .expect("64 GB of a 1 GB machine");
+        assert!(refusal.contains("1024 MB"), "{refusal}");
+        assert!(reserve_refusal(1024 * mb, 161 * mb, 0, 1024 * mb, say).is_some());
+        assert_eq!(reserve_refusal(0, 0, 0, 512 * mb, say), None, "unmeasured");
     }
 }
