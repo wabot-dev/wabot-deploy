@@ -18,7 +18,7 @@ use crate::features::services::{
 };
 use crate::infra::backup::Window;
 use crate::infra::network::Node;
-use crate::web::views::layouts::layout;
+use crate::shell::layouts::layout;
 
 /// The seven things that only exist together.
 ///

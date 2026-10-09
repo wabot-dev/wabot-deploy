@@ -1,7 +1,7 @@
 //! Every project this account can see.
 
-use crate::web::views::layouts::layout;
-use crate::web::views::texts::language::t;
+use crate::features::projects::texts::t;
+use crate::shell::layouts::layout;
 use hypertext::prelude::*;
 
 pub struct Projects<'a> {

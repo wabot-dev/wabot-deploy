@@ -6,7 +6,7 @@ use crate::domain::entities::tenant::Tenant;
 use crate::domain::policies::presets;
 use crate::features::organisations::texts::t;
 use crate::infra::deploy::quotas::Charged;
-use crate::web::views::texts::sentences;
+use crate::shell::texts::sentences;
 
 /// One resource: the ceiling, what is spoken for, and the bar between.
 ///

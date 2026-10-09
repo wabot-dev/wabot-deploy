@@ -2,7 +2,7 @@ use hypertext::prelude::*;
 
 use crate::domain::entities::tenant::Tenant;
 use crate::features::organisations::texts::t;
-use crate::web::views::layouts::layout;
+use crate::shell::layouts::layout;
 
 /// One tile per organisation, and nothing to fill in on any of them.
 ///

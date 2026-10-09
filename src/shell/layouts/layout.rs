@@ -6,8 +6,8 @@
 use hypertext::prelude::*;
 use hypertext::Raw;
 
-use crate::web::console::assets;
-use crate::web::views::texts::language::t;
+use crate::shell::assets;
+use crate::shell::texts::language::t;
 
 /// Declare the head every console page needs.
 ///
@@ -94,7 +94,7 @@ pub fn typed(at_ms: i64) -> String {
 /// the node keeps. Absolute dates are for release notes, which come
 /// with their own.
 pub fn when(at_ms: i64) -> String {
-    let seconds = (crate::web::console::now_ms() - at_ms) / 1000;
+    let seconds = (crate::shell::state::now_ms() - at_ms) / 1000;
     match seconds {
         // Clock skew, or a row written in the same tick.
         s if s < 0 => "just now".into(),
@@ -964,7 +964,7 @@ pub fn style_tag() -> impl Renderable {
     // request.
     rsx! {
         <style>(Raw::dangerously_create(CSS))</style>
-        <style>(Raw::dangerously_create(crate::web::views::layouts::shell::CSS))</style>
+        <style>(Raw::dangerously_create(crate::shell::layouts::shell::CSS))</style>
     }
 }
 
@@ -987,7 +987,7 @@ mod tests {
     fn no_page_offers_a_way_back_the_breadcrumb_already_is() {
         let mut found = Vec::new();
         let mut ghosts = 0;
-        for path in crate::tree::rust_files(&["src/web", "src/features"]) {
+        for path in crate::tree::rust_files(&["src/shell", "src/web", "src/features"]) {
             let name = path.file_name().unwrap_or_default().to_string_lossy();
             let source = std::fs::read_to_string(&path).expect("read");
             for (number, line) in source.lines().enumerate() {
@@ -1108,7 +1108,7 @@ mod tests {
     /// claim can be made at all.
     #[test]
     fn the_copy_button_has_a_name_and_not_only_a_glyph() {
-        let script = include_str!("../../../../assets/console.js");
+        let script = include_str!("../../../assets/console.js");
         let island = script
             .split("wabot.island('copy'")
             .nth(1)
@@ -1156,7 +1156,7 @@ mod tests {
 
     #[test]
     fn the_two_dark_palettes_agree() {
-        let sheet = include_str!("../../../../assets/wabot.css");
+        let sheet = include_str!("../../../assets/wabot.css");
         let chosen = tokens(sheet, "[data-theme='dark'] {");
         let followed = tokens(sheet, ".app-shell:not([data-theme='light']) {");
         assert!(!chosen.is_empty(), "the explicit dark block was not found");
@@ -1222,7 +1222,7 @@ mod tests {
     /// without touching this test.
     #[test]
     fn a_classed_submit_is_not_the_primary_button() {
-        let sheet = include_str!("../../../../assets/wabot.css");
+        let sheet = include_str!("../../../assets/wabot.css");
         for rule in sheet.split('}') {
             let Some((selectors, body)) = rule.split_once('{') else {
                 continue;
@@ -1271,7 +1271,7 @@ mod tests {
         for (name, sheet) in [
             (
                 "assets/wabot.css",
-                include_str!("../../../../assets/wabot.css"),
+                include_str!("../../../assets/wabot.css"),
             ),
             ("layout.rs", super::CSS),
         ] {
@@ -1319,12 +1319,7 @@ mod tests {
     fn an_icon_only_button_is_spelled_one_way() {
         let mut read = 0;
         let mut wrong: Vec<String> = Vec::new();
-        for path in crate::tree::rust_files(&[
-            "src/web/views/components",
-            "src/web/views/pages",
-            "src/web/views/layouts",
-            "src/features",
-        ]) {
+        for path in crate::tree::rust_files(&["src/shell", "src/web", "src/features"]) {
             read += 1;
             for line in std::fs::read_to_string(&path).expect("read").lines() {
                 let Some(rest) = line.split_once("class=\"") else {
@@ -1422,18 +1417,16 @@ mod tests {
     fn a_copyable_block_sits_in_a_row() {
         let mut loose: Vec<String> = Vec::new();
         let mut found = 0;
-        for path in crate::tree::rust_files(&[
-            "src/web/views/components",
-            "src/web/views/pages",
-            "src/features",
-        ]) {
+        for path in crate::tree::rust_files(&["src/shell", "src/web", "src/features"]) {
             let name = path.file_name().unwrap_or_default().to_string_lossy();
             let source = std::fs::read_to_string(&path).expect("read");
             // Per block rather than per file: a file with two and a
             // wrapper for one of them would pass a file-wide check.
+            // Assembled, or the scan finds its own predicate now that it
+            // reads the layouts this test lives in.
             for (index, _) in source
-                .match_indices("data-copy\n")
-                .chain(source.match_indices("data-copy "))
+                .match_indices(concat!("data-", "copy\n"))
+                .chain(source.match_indices(concat!("data-", "copy ")))
             {
                 found += 1;
                 // The markup, not the prose. The first version of

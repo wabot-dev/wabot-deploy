@@ -10,10 +10,10 @@ use wabot::ui::hypertext::IntoView;
 use crate::infra::network::{self};
 use crate::infra::repositories::access;
 
-use crate::web::console::auth::{signed_in, SessionMiddleware};
-use crate::web::console::ConsoleState;
-use crate::web::views::layouts::layout;
-use crate::web::views::layouts::shell::{Area, Frame};
+use crate::shell::auth::{signed_in, SessionMiddleware};
+use crate::shell::layouts::layout;
+use crate::shell::layouts::shell::{Area, Frame};
+use crate::shell::state::ConsoleState;
 
 #[derive(Debug, Deserialize, Validate)]
 pub struct NodePage {
@@ -113,7 +113,7 @@ impl NetworkUiController {
             reviewing: reviewing.as_ref(),
             error: query.error.as_deref(),
         };
-        let body = crate::web::views::texts::language::scoped(account.language, || {
+        let body = crate::shell::texts::language::scoped(account.language, || {
             crate::features::network::node_user_network_page::render(&page)
                 .render()
                 .into_inner()
@@ -142,7 +142,7 @@ impl NetworkUiController {
         let enrolments = network::enrolment::all(&self.state.database).await?;
         let projects = access::projects_for(&self.state.database, &account).await?;
         let may_enrol = nodes.iter().any(|node| node.is_self && node.may_be_edge());
-        let now = crate::web::console::now_ms();
+        let now = crate::shell::state::now_ms();
 
         layout::head("Invite a node");
         let frame = Frame::new(&account, Area::Network, &projects, None, "/network/invite");
@@ -153,7 +153,7 @@ impl NetworkUiController {
             now,
             error: query.error.as_deref(),
         };
-        let body = crate::web::views::texts::language::scoped(account.language, || {
+        let body = crate::shell::texts::language::scoped(account.language, || {
             crate::features::network::node_user_invite_node_page::render(&page)
                 .render()
                 .into_inner()
@@ -196,7 +196,7 @@ impl NetworkUiController {
             joined: query.joined.as_deref(),
             error: query.error.as_deref(),
         };
-        let body = crate::web::views::texts::language::scoped(account.language, || {
+        let body = crate::shell::texts::language::scoped(account.language, || {
             crate::features::network::node_user_join_network_page::render(&page)
                 .render()
                 .into_inner()
@@ -288,7 +288,7 @@ impl NetworkUiController {
             };
             // The account's language, around the render and no wider:
             // the strings are read here, and nothing awaits inside.
-            let body = crate::web::views::texts::language::scoped(account.language, || {
+            let body = crate::shell::texts::language::scoped(account.language, || {
                 crate::features::network::node_user_remote_node_page::render(&page)
                     .render()
                     .into_inner()
@@ -329,7 +329,7 @@ impl NetworkUiController {
         };
         // The account's language, around the render and no wider:
         // the strings are read here, and nothing awaits inside.
-        let body = crate::web::views::texts::language::scoped(account.language, || {
+        let body = crate::shell::texts::language::scoped(account.language, || {
             crate::features::network::node_user_this_node_page::render(&page)
                 .render()
                 .into_inner()

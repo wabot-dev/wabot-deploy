@@ -47,16 +47,16 @@ pub fn deploy_controls<'a>(
 ) -> impl Renderable + 'a {
     rsx! {
         <form method="post" data-action="deploy"
-              class=(crate::web::views::components::action_button::shown(cell.action == "deploy"))
+              class=(crate::shell::components::action_button::shown(cell.action == "deploy"))
               action=(format!("/projects/{project_slug}/services/{service_slug}/deploy"))>
             <input type="hidden" name="from" value=(from)>
-            (crate::web::views::components::action_button::action_button("Deploy", crate::web::views::components::action_button::PLAY, cell.busy))
+            (crate::shell::components::action_button::action_button("Deploy", crate::shell::components::action_button::PLAY, cell.busy))
         </form>
         <form method="post" data-action="stop"
-              class=(crate::web::views::components::action_button::shown(cell.action == "stop"))
+              class=(crate::shell::components::action_button::shown(cell.action == "stop"))
               action=(format!("/projects/{project_slug}/services/{service_slug}/stop"))>
             <input type="hidden" name="from" value=(from)>
-            (crate::web::views::components::action_button::action_button("Stop", crate::web::views::components::action_button::STOP, cell.busy))
+            (crate::shell::components::action_button::action_button("Stop", crate::shell::components::action_button::STOP, cell.busy))
         </form>
     }
 }
@@ -350,14 +350,14 @@ mod tests {
     #[test]
     fn the_count_of_copies_is_read_in_the_accounts_language() {
         let three = Whereabouts { total: 3, away: 2 };
-        let spanish = crate::web::views::texts::language::scoped(
+        let spanish = crate::shell::texts::language::scoped(
             crate::domain::values::language::Language::Es,
             || three.say(),
         );
         assert_eq!(spanish, "3 réplicas · 2 en otro nodo");
 
         assert_eq!(
-            crate::web::views::texts::language::scoped(
+            crate::shell::texts::language::scoped(
                 crate::domain::values::language::Language::Es,
                 || { Whereabouts { total: 1, away: 1 }.say() }
             ),
@@ -365,7 +365,7 @@ mod tests {
         );
         // Singular, and the plural is not "1 replicas".
         assert_eq!(
-            crate::web::views::texts::language::scoped(
+            crate::shell::texts::language::scoped(
                 crate::domain::values::language::Language::Es,
                 || { Whereabouts { total: 1, away: 0 }.say() }
             ),
@@ -410,11 +410,8 @@ mod tests {
 
         for cell in &placed {
             assert!(
-                crate::web::views::texts::lookup(
-                    &cell.word,
-                    crate::features::services::texts::TABLE
-                )
-                .is_some(),
+                crate::shell::texts::lookup(&cell.word, crate::features::services::texts::TABLE)
+                    .is_some(),
                 "no Spanish for the state word {:?}",
                 cell.word
             );
@@ -470,11 +467,8 @@ mod tests {
         ];
         for cell in &copies {
             assert!(
-                crate::web::views::texts::lookup(
-                    &cell.word,
-                    crate::features::services::texts::TABLE
-                )
-                .is_some(),
+                crate::shell::texts::lookup(&cell.word, crate::features::services::texts::TABLE)
+                    .is_some(),
                 "no Spanish for the replica word {:?}",
                 cell.word
             );

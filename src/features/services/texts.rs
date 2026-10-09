@@ -135,9 +135,9 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
 ];
 
 pub fn t(english: &'static str) -> &'static str {
-    crate::web::views::texts::language::translated(english, TABLE)
+    crate::shell::texts::language::translated(english, TABLE)
 }
 
 pub fn word(text: &str) -> &str {
-    crate::web::views::texts::language::word_in(text, TABLE)
+    crate::shell::texts::language::word_in(text, TABLE)
 }

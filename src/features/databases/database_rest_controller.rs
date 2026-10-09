@@ -7,10 +7,10 @@ use wabot::rest::axum::extract::Request;
 use wabot::rest::axum::response::Response;
 use wabot::rest::RestResult;
 
-use crate::web::console::auth::{
+use crate::shell::auth::{
     back_with_error, field, read_form, see_other, signed_in, SessionMiddleware,
 };
-use crate::web::console::ConsoleState;
+use crate::shell::state::ConsoleState;
 
 #[injectable]
 pub struct DatabaseRestController {
@@ -225,7 +225,7 @@ impl DatabaseRestController {
         let Some(first) = names.first().cloned() else {
             return Ok(back_with_error(&here, "this database has no name yet"));
         };
-        let renew_with = match crate::web::console::auth::source_from(&form, &first) {
+        let renew_with = match crate::shell::auth::source_from(&form, &first) {
             Ok(renew_with) => renew_with,
             Err(reason) => return Ok(back_with_error(&here, &reason)),
         };
@@ -285,7 +285,7 @@ impl DatabaseRestController {
             return Ok(see_other("/sign-in"));
         };
         let path = request.uri().path().to_string();
-        let Some(project_slug) = crate::web::console::auth::project_slug(&path) else {
+        let Some(project_slug) = crate::shell::auth::project_slug(&path) else {
             return Ok(see_other("/"));
         };
         let here = format!("/projects/{project_slug}/databases/new");

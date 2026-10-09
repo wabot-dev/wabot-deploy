@@ -14,8 +14,8 @@ use crate::features::services::{
 use crate::infra::edge::policy::Policy;
 use crate::infra::network::errand::Record;
 use crate::infra::network::Node;
-use crate::web::views::components::node_certificate::{source_word, CertificateCells};
-use crate::web::views::layouts::layout;
+use crate::shell::components::node_certificate::{source_word, CertificateCells};
+use crate::shell::layouts::layout;
 
 /// Which tab of a service's settings a page is showing.
 ///

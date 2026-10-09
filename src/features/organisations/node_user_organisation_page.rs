@@ -6,7 +6,7 @@ use crate::domain::entities::tenant::Tenant;
 use crate::features::organisations::organisation_quota_component::quota_card;
 use crate::features::organisations::texts::t;
 use crate::infra::deploy::quotas::Charged;
-use crate::web::views::layouts::layout;
+use crate::shell::layouts::layout;
 
 /// One organisation, as the node's operator sees it.
 ///

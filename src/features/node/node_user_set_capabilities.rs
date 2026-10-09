@@ -54,9 +54,7 @@ pub async fn run(
         .filter(|project| project.is_ours())
         .count();
     if !owns && mine > 0 {
-        return Err(crate::web::views::texts::sentences::still_owns_projects(
-            mine,
-        ));
+        return Err(crate::shell::texts::sentences::still_owns_projects(mine));
     }
     capability::set_owns(database, owns)
         .await

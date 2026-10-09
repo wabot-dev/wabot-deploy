@@ -18,10 +18,10 @@ use crate::infra::repositories::ports;
 use crate::infra::repositories::releases;
 use crate::infra::repositories::services;
 
-use crate::web::console::auth::{signed_in, SessionMiddleware};
-use crate::web::console::ConsoleState;
-use crate::web::views::layouts::layout;
-use crate::web::views::layouts::shell::{Area, Frame};
+use crate::shell::auth::{signed_in, SessionMiddleware};
+use crate::shell::layouts::layout;
+use crate::shell::layouts::shell::{Area, Frame};
+use crate::shell::state::ConsoleState;
 
 #[derive(Debug, Deserialize, Validate)]
 pub struct ServiceForm {
@@ -133,7 +133,7 @@ impl ServiceUiController {
             back: &back,
             query_error: query.error.as_deref(),
         };
-        let body = crate::web::views::texts::language::scoped(account.language, || {
+        let body = crate::shell::texts::language::scoped(account.language, || {
             crate::features::services::new_service_page::render(&page)
                 .render()
                 .into_inner()
@@ -469,7 +469,7 @@ impl ServiceUiController {
         };
         // The account's language, around the render and no wider:
         // the strings are read here, and nothing awaits inside.
-        let body = crate::web::views::texts::language::scoped(account.language, || {
+        let body = crate::shell::texts::language::scoped(account.language, || {
             crate::features::services::service_page::render(&page)
                 .render()
                 .into_inner()
@@ -742,7 +742,7 @@ impl ServiceUiController {
             at,
             window: &window,
         };
-        let body = crate::web::views::texts::language::scoped(account.language, || {
+        let body = crate::shell::texts::language::scoped(account.language, || {
             crate::features::services::service_logs_page::render(&logs)
                 .render()
                 .into_inner()
@@ -759,10 +759,10 @@ impl ServiceUiController {
                     "service": service_for_island,
                     "slot": slot,
                     "from": from,
-                    "following": crate::web::views::texts::language::scoped(account.language, || {
+                    "following": crate::shell::texts::language::scoped(account.language, || {
                         t("Following").to_string()
                     }),
-                    "reconnecting": crate::web::views::texts::language::scoped(account.language, || {
+                    "reconnecting": crate::shell::texts::language::scoped(account.language, || {
                         t("Reconnecting…").to_string()
                     }),
                 }),
@@ -863,7 +863,7 @@ impl ServiceUiController {
                 let certificate = match names.first() {
                     Some(name) => {
                         let facts =
-                            crate::web::console::certificate_facts_for(&self.state, name).await;
+                            crate::shell::state::certificate_facts_for(&self.state, name).await;
                         let policy = crate::infra::edge::policy::for_name(
                             &self.state.database,
                             &self.state.config,
@@ -871,19 +871,18 @@ impl ServiceUiController {
                         )
                         .await;
                         let state =
-                            crate::web::views::components::node_certificate::CertificateState::read(
+                            crate::shell::components::node_certificate::CertificateState::read(
                                 &facts,
                                 Some(name),
                                 policy.last_error.clone(),
                                 self.state.certificates.phase(),
                                 self.state.config.acme.disabled,
                             );
-                        let cells =
-                            crate::web::views::components::node_certificate::certificate_cells(
-                                &state,
-                                &facts,
-                                Some(name),
-                            );
+                        let cells = crate::shell::components::node_certificate::certificate_cells(
+                            &state,
+                            &facts,
+                            Some(name),
+                        );
                         Some((policy, cells))
                     }
                     None => None,
@@ -946,25 +945,24 @@ impl ServiceUiController {
                         secured.insert(hostname.clone());
                     }
                     let facts =
-                        crate::web::console::certificate_facts_for(&self.state, hostname).await;
+                        crate::shell::state::certificate_facts_for(&self.state, hostname).await;
                     let policy = crate::infra::edge::policy::for_name(
                         &self.state.database,
                         &self.state.config,
                         hostname,
                     )
                     .await;
-                    let state =
-                        crate::web::views::components::node_certificate::CertificateState::read(
-                            &facts,
-                            Some(hostname),
-                            // A name's own failure only. The node-wide reason
-                            // belongs to the node's domain, and reading it here
-                            // would blame this name for that one.
-                            None,
-                            self.state.certificates.phase(),
-                            self.state.config.acme.disabled,
-                        );
-                    let cells = crate::web::views::components::node_certificate::certificate_cells(
+                    let state = crate::shell::components::node_certificate::CertificateState::read(
+                        &facts,
+                        Some(hostname),
+                        // A name's own failure only. The node-wide reason
+                        // belongs to the node's domain, and reading it here
+                        // would blame this name for that one.
+                        None,
+                        self.state.certificates.phase(),
+                        self.state.config.acme.disabled,
+                    );
+                    let cells = crate::shell::components::node_certificate::certificate_cells(
                         &state,
                         &facts,
                         Some(hostname),
@@ -1051,7 +1049,7 @@ impl ServiceUiController {
             error: query.error.as_deref(),
             checked: query.checked.as_deref(),
         };
-        let body = crate::web::views::texts::language::scoped(account.language, || {
+        let body = crate::shell::texts::language::scoped(account.language, || {
             crate::features::services::service_settings_page::render(&page)
                 .render()
                 .into_inner()

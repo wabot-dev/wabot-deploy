@@ -11,11 +11,11 @@ use crate::infra::network::{self};
 use crate::infra::repositories::access;
 
 use crate::features::node::node_user_node_settings_page::{NodeTab, Panel};
-use crate::web::console::auth::{signed_in, SessionMiddleware};
-use crate::web::console::ConsoleState;
-use crate::web::views::components::node_certificate::CertificateState;
-use crate::web::views::layouts::layout;
-use crate::web::views::layouts::shell::{Area, Frame};
+use crate::shell::auth::{signed_in, SessionMiddleware};
+use crate::shell::components::node_certificate::CertificateState;
+use crate::shell::layouts::layout;
+use crate::shell::layouts::shell::{Area, Frame};
+use crate::shell::state::ConsoleState;
 
 #[derive(Debug, Deserialize, Validate, Default)]
 pub struct NodeSettingsPage {
@@ -114,7 +114,7 @@ impl NodeUiController {
                 let domain =
                     crate::infra::node::settings::domain(&self.state.database, &self.state.config)
                         .await;
-                let facts = crate::web::console::certificate_facts(&self.state).await;
+                let facts = crate::shell::state::certificate_facts(&self.state).await;
                 let policy = crate::infra::edge::policy::for_name(
                     &self.state.database,
                     &self.state.config,
@@ -136,7 +136,7 @@ impl NodeUiController {
                     self.state.certificates.phase(),
                     self.state.config.acme.disabled,
                 );
-                let cells = crate::web::views::components::node_certificate::certificate_cells(
+                let cells = crate::shell::components::node_certificate::certificate_cells(
                     &state,
                     &facts,
                     domain.as_deref(),
@@ -217,7 +217,7 @@ impl NodeUiController {
             panel,
             error: query.error.as_deref(),
         };
-        let body = crate::web::views::texts::language::scoped(account.language, || {
+        let body = crate::shell::texts::language::scoped(account.language, || {
             crate::features::node::node_user_node_settings_page::render(&page)
                 .render()
                 .into_inner()

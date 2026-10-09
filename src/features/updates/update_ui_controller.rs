@@ -10,10 +10,10 @@ use wabot::ui::hypertext::IntoView;
 use crate::infra::repositories::access;
 use crate::infra::update::runs::{self};
 
-use crate::web::console::auth::{signed_in, SessionMiddleware};
-use crate::web::console::ConsoleState;
-use crate::web::views::layouts::layout;
-use crate::web::views::layouts::shell::{Area, Frame};
+use crate::shell::auth::{signed_in, SessionMiddleware};
+use crate::shell::layouts::layout;
+use crate::shell::layouts::shell::{Area, Frame};
+use crate::shell::state::ConsoleState;
 
 #[derive(Debug, Deserialize, Validate)]
 pub struct UpdatesPage {
@@ -75,7 +75,7 @@ impl UpdateUiController {
             query_error: query.error.as_deref(),
             query_started: query.started.as_deref(),
         };
-        let body = crate::web::views::texts::language::scoped(account.language, || {
+        let body = crate::shell::texts::language::scoped(account.language, || {
             crate::features::updates::node_user_updates_page::render(&page)
                 .render()
                 .into_inner()
@@ -101,7 +101,7 @@ impl UpdateUiController {
             Err(error) => {
                 let back = format!(
                     "/updates?{}",
-                    crate::web::console::auth::encode("error", &error.to_string())
+                    crate::shell::auth::encode("error", &error.to_string())
                 );
                 return Ok(Redirect::found(back).into());
             }
@@ -123,7 +123,7 @@ impl UpdateUiController {
             current,
             query_error: query.error.as_deref(),
         };
-        let body = crate::web::views::texts::language::scoped(account.language, || {
+        let body = crate::shell::texts::language::scoped(account.language, || {
             crate::features::updates::node_user_release_page::render(&page)
                 .render()
                 .into_inner()

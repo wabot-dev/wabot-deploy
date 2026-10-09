@@ -4,7 +4,7 @@ use crate::features::network::node_enrolment_component;
 use crate::features::network::texts::t;
 use crate::infra::network::enrolment::Enrolment;
 use crate::infra::network::Node;
-use crate::web::views::layouts::layout;
+use crate::shell::layouts::layout;
 
 pub struct InviteNode<'a> {
     pub nodes: &'a [Node],

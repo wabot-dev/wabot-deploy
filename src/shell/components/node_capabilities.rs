@@ -2,7 +2,7 @@
 //! another one.
 
 use crate::infra::network;
-use crate::web::views::texts::language::t;
+use crate::shell::texts::language::t;
 use hypertext::prelude::*;
 
 /// What this node has agreed that node may ask of it.

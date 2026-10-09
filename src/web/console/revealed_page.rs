@@ -1,8 +1,8 @@
 use hypertext::prelude::*;
 
-use crate::web::views::layouts::layout;
-use crate::web::views::texts::language::t;
-use crate::web::views::texts::sentences;
+use crate::shell::layouts::layout;
+use crate::shell::texts::language::t;
+use crate::shell::texts::sentences;
 
 /// A secret, shown once, on a page of its own.
 ///

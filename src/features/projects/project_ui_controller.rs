@@ -12,10 +12,10 @@ use wabot::ui::hypertext::IntoView;
 use crate::infra::repositories::access;
 use crate::infra::repositories::services;
 
-use crate::web::console::auth::{signed_in, PageQuery, SessionMiddleware};
-use crate::web::console::ConsoleState;
-use crate::web::views::layouts::layout;
-use crate::web::views::layouts::shell::{Area, Frame};
+use crate::shell::auth::{signed_in, PageQuery, SessionMiddleware};
+use crate::shell::layouts::layout;
+use crate::shell::layouts::shell::{Area, Frame};
+use crate::shell::state::ConsoleState;
 
 #[derive(Debug, Deserialize, Validate)]
 pub struct ProjectQuery {
@@ -37,7 +37,7 @@ impl ProjectUiController {
     async fn index(&self, query: PageQuery) -> UiResult<ViewOutcome> {
         let Some(account) = signed_in(&self.auth) else {
             return Ok(Redirect::found(
-                crate::web::console::auth::signed_out_destination(&self.state).await,
+                crate::shell::auth::signed_out_destination(&self.state).await,
             )
             .into());
         };
@@ -75,7 +75,7 @@ impl ProjectUiController {
             concerns: &concerns,
             query_error: query.error.as_deref(),
         };
-        let body = crate::web::views::texts::language::scoped(account.language, || {
+        let body = crate::shell::texts::language::scoped(account.language, || {
             crate::features::projects::projects_page::render(&page)
                 .render()
                 .into_inner()
@@ -106,7 +106,7 @@ impl ProjectUiController {
         let page = crate::features::projects::new_project_page::NewProject {
             query_error: query.error.as_deref(),
         };
-        let body = crate::web::views::texts::language::scoped(account.language, || {
+        let body = crate::shell::texts::language::scoped(account.language, || {
             crate::features::projects::new_project_page::render(&page)
                 .render()
                 .into_inner()
@@ -196,7 +196,7 @@ impl ProjectUiController {
             new_database: &new_database,
             query_error: query.error.as_deref(),
         };
-        let body = crate::web::views::texts::language::scoped(account.language, || {
+        let body = crate::shell::texts::language::scoped(account.language, || {
             crate::features::projects::project_page::render(&page)
                 .render()
                 .into_inner()
@@ -286,7 +286,7 @@ impl ProjectUiController {
             registry_host: Some(registry_host.as_str()),
             query_error: query.error.as_deref(),
         };
-        let body = crate::web::views::texts::language::scoped(account.language, || {
+        let body = crate::shell::texts::language::scoped(account.language, || {
             crate::features::projects::project_settings_page::render(&page)
                 .render()
                 .into_inner()

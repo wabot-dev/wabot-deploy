@@ -14,11 +14,11 @@ use wabot::rest::RestResult;
 use crate::domain::values::roles::{NodeRole, ProjectRole};
 use crate::infra::accounts::sessions;
 
-use crate::web::console::auth::{
+use crate::shell::auth::{
     back_with_error, field, read_form, see_other, see_other_with_cookie, signed_in,
     SessionMiddleware,
 };
-use crate::web::console::ConsoleState;
+use crate::shell::state::ConsoleState;
 
 /// The forms behind those pages.
 #[injectable]
@@ -95,7 +95,7 @@ impl PeopleRestController {
         }
 
         let path = request.uri().path().to_string();
-        let Some(id) = crate::web::console::auth::segments(&path).get(2).cloned() else {
+        let Some(id) = crate::shell::auth::segments(&path).get(2).cloned() else {
             return Ok(see_other("/people"));
         };
 
@@ -122,7 +122,7 @@ impl PeopleRestController {
             return Ok(see_other("/"));
         }
         let path = request.uri().path().to_string();
-        let Some(id) = crate::web::console::auth::segments(&path)
+        let Some(id) = crate::shell::auth::segments(&path)
             .get(1)
             .map(|id| id.to_string())
         else {
@@ -161,7 +161,7 @@ impl PeopleRestController {
             return Ok(see_other("/"));
         }
         let path = request.uri().path().to_string();
-        let Some(id) = crate::web::console::auth::segments(&path)
+        let Some(id) = crate::shell::auth::segments(&path)
             .get(1)
             .map(|id| id.to_string())
         else {
@@ -185,7 +185,7 @@ impl PeopleRestController {
     #[raw]
     async fn join(&self, request: Request) -> RestResult<Response> {
         let path = request.uri().path().to_string();
-        let Some(token) = crate::web::console::auth::segments(&path)
+        let Some(token) = crate::shell::auth::segments(&path)
             .get(1)
             .map(|id| id.to_string())
         else {
@@ -230,7 +230,7 @@ pub(crate) fn joining(
 ) -> JoinRequest {
     JoinRequest {
         token: token.to_string(),
-        username: crate::web::console::auth::field(form, "username").to_string(),
+        username: crate::shell::auth::field(form, "username").to_string(),
         // Not trimmed: the spaces are part of it, and removing them
         // silently produces a password nobody can type back.
         password: form.get("password").cloned().unwrap_or_default(),

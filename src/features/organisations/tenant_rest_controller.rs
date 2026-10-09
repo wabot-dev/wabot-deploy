@@ -22,10 +22,10 @@ use wabot::rest::RestResult;
 
 use crate::features::organisations::node_user_organisation_settings_page::OrganisationTab;
 use crate::infra::repositories::tenants;
-use crate::web::console::auth::{
+use crate::shell::auth::{
     back_with_error, field, read_form, see_other, signed_in, SessionMiddleware,
 };
-use crate::web::console::ConsoleState;
+use crate::shell::state::ConsoleState;
 
 #[injectable]
 pub struct TenantRestController {
@@ -90,7 +90,7 @@ impl TenantRestController {
             Err(response) => return Ok(*response),
         };
         let path = request.uri().path().to_string();
-        let Some(id) = crate::web::console::auth::segments(&path).get(1).cloned() else {
+        let Some(id) = crate::shell::auth::segments(&path).get(1).cloned() else {
             return Ok(see_other("/organisations"));
         };
         let here = OrganisationTab::Domain.path(id);
@@ -123,7 +123,7 @@ impl TenantRestController {
             Err(response) => return Ok(*response),
         };
         let path = request.uri().path().to_string();
-        let Some(id) = crate::web::console::auth::segments(&path).get(1).cloned() else {
+        let Some(id) = crate::shell::auth::segments(&path).get(1).cloned() else {
             return Ok(see_other("/organisations"));
         };
         let here = OrganisationTab::Quota.path(id);
@@ -156,7 +156,7 @@ impl TenantRestController {
             Err(response) => return Ok(*response),
         };
         let path = request.uri().path().to_string();
-        let Some(id) = crate::web::console::auth::segments(&path).get(1).cloned() else {
+        let Some(id) = crate::shell::auth::segments(&path).get(1).cloned() else {
             return Ok(see_other("/organisations"));
         };
         let here = OrganisationTab::Owner.path(id);
@@ -208,7 +208,7 @@ impl TenantRestController {
             Err(response) => return Ok(*response),
         };
         let path = request.uri().path().to_string();
-        let segments = crate::web::console::auth::segments(&path);
+        let segments = crate::shell::auth::segments(&path);
         let (Some(tenant), Some(person)) = (segments.get(1), segments.get(3)) else {
             return Ok(see_other("/organisations"));
         };
@@ -235,7 +235,7 @@ impl TenantRestController {
             Err(response) => return Ok(*response),
         };
         let path = request.uri().path().to_string();
-        let Some(id) = crate::web::console::auth::segments(&path).get(1).cloned() else {
+        let Some(id) = crate::shell::auth::segments(&path).get(1).cloned() else {
             return Ok(see_other("/organisations"));
         };
         let here = OrganisationTab::Danger.path(id);

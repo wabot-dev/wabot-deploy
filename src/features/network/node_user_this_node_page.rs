@@ -5,7 +5,7 @@ use crate::infra::deploy::Committed;
 use crate::infra::network::Node;
 use crate::infra::node::disk::Breakdown;
 use crate::infra::node::memory::Snapshot;
-use crate::web::views::layouts::layout;
+use crate::shell::layouts::layout;
 
 /// This machine's own row on the network page.
 ///

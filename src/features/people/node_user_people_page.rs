@@ -11,7 +11,7 @@ use crate::domain::entities::project::Project;
 use crate::domain::values::roles::ProjectRole;
 use crate::features::people::texts::t;
 use crate::infra::accounts::invitations::Invitation;
-use crate::web::views::layouts::layout;
+use crate::shell::layouts::layout;
 
 pub struct People<'a> {
     pub account: &'a Account,

@@ -87,9 +87,7 @@ impl fmt::Display for Check {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mark = match self.outcome {
             Outcome::Pass => "ok  ",
-            Outcome::Fail(Severity::Blocking) => {
-                "crate::web::views::components::action_button::STOP"
-            }
+            Outcome::Fail(Severity::Blocking) => "crate::shell::components::action_button::STOP",
             Outcome::Fail(Severity::Advisory) => "warn",
             Outcome::Unknown => "?   ",
         };
@@ -450,7 +448,7 @@ mod tests {
         assert!(Check::pass("x", "fine").to_string().starts_with("ok"));
         assert!(Check::blocking("x", "no")
             .to_string()
-            .starts_with("crate::web::views::components::action_button::STOP"));
+            .starts_with("crate::shell::components::action_button::STOP"));
         assert!(Check::advisory("x", "hm").to_string().starts_with("warn"));
         assert!(Check::unknown("x", "?").to_string().starts_with("?"));
     }

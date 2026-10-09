@@ -21,7 +21,7 @@ macro_rules! asset {
     ($path:literal, $type:literal) => {
         EmbeddedAsset {
             path: $path,
-            bytes: include_bytes!(concat!("../../../assets/", $path)),
+            bytes: include_bytes!(concat!("../../assets/", $path)),
             content_type: $type,
             // A hash of the assets, from `build.rs`. It used to be the
             // crate version, which does not move when the assets do —

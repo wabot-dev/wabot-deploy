@@ -60,7 +60,7 @@ impl Live {
 }
 
 pub async fn replica_cells(
-    state: &crate::web::console::ConsoleState,
+    state: &crate::shell::state::ConsoleState,
     project: &crate::domain::entities::project::Project,
     // What each container here is using, from two readings of the stream.
     // `None` on the first tick, which is why the cell is empty rather than
@@ -136,7 +136,7 @@ pub async fn replica_cells(
 /// it came back — so the honest reading of a ticked box was "somebody
 /// asked for this once".
 pub async fn edge_cells(
-    state: &crate::web::console::ConsoleState,
+    state: &crate::shell::state::ConsoleState,
     project: &crate::domain::entities::project::Project,
 ) -> std::collections::BTreeMap<String, EdgeCell> {
     let mut cells = std::collections::BTreeMap::new();
@@ -187,7 +187,7 @@ pub async fn edge_cells(
 /// somebody stares at after adding a hostname was the one thing that
 /// never changed on its own.
 pub async fn name_cells(
-    state: &crate::web::console::ConsoleState,
+    state: &crate::shell::state::ConsoleState,
     project: &crate::domain::entities::project::Project,
 ) -> std::collections::BTreeMap<String, NameCell> {
     let mut cells = std::collections::BTreeMap::new();

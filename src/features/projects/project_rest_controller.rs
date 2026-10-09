@@ -15,10 +15,10 @@ use crate::domain::values::roles::ProjectRole;
 use crate::infra::repositories::access;
 use crate::infra::repositories::services;
 
-use crate::web::console::auth::{
+use crate::shell::auth::{
     back_with_error, field, read_form, see_other, signed_in, SessionMiddleware,
 };
-use crate::web::console::ConsoleState;
+use crate::shell::state::ConsoleState;
 
 impl ProjectRestController {
     /// The project this request is about, what the caller may do with
@@ -42,7 +42,7 @@ impl ProjectRestController {
         let Some(account) = signed_in(&self.auth) else {
             return Ok(None);
         };
-        let segments = crate::web::console::auth::segments(path);
+        let segments = crate::shell::auth::segments(path);
         let Some(slug) = segments.get(1) else {
             return Ok(None);
         };
@@ -127,7 +127,7 @@ impl ProjectRestController {
                 .body(Body::empty())
                 .expect("a constant response is well-formed"));
         };
-        let Some(slug) = crate::web::console::auth::segments(&path)
+        let Some(slug) = crate::shell::auth::segments(&path)
             .get(1)
             .map(|s| s.to_string())
         else {
@@ -202,7 +202,7 @@ impl ProjectRestController {
                 // back to English two seconds later, which is the same
                 // "decided in two places" failure as the words themselves,
                 // one layer down.
-                crate::web::views::texts::language::scoped(account.language, || {
+                crate::shell::texts::language::scoped(account.language, || {
                     live.translate();
                     String::new()
                 });

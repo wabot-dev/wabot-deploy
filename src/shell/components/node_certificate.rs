@@ -1,6 +1,6 @@
 //! Where a name's certificate comes from, and what is installed.
 
-use crate::web::views::texts::language::t;
+use crate::shell::texts::language::t;
 use hypertext::prelude::*;
 
 /// The three answers, in the order somebody is likeliest to want them.
@@ -42,7 +42,7 @@ pub enum CertificateState {
 }
 impl CertificateState {
     pub fn read(
-        facts: &crate::web::dtos::certificate_facts::CertificateFacts,
+        facts: &crate::shell::dtos::certificate_facts::CertificateFacts,
         domain: Option<&str>,
         last_error: Option<String>,
         phase: crate::infra::edge::acme::Phase,
@@ -165,7 +165,7 @@ pub struct CertificateCells {
 
 pub fn certificate_cells(
     state: &CertificateState,
-    facts: &crate::web::dtos::certificate_facts::CertificateFacts,
+    facts: &crate::shell::dtos::certificate_facts::CertificateFacts,
     domain: Option<&str>,
 ) -> CertificateCells {
     let (word, badge, dot) = state.badge();

@@ -7,13 +7,13 @@
 //! every controller in this console reads them.
 
 use crate::infra::accounts::{self};
-use crate::web::console::ConsoleState;
-use crate::web::views::layouts::layout;
+use crate::shell::layouts::layout;
+use crate::shell::state::ConsoleState;
 use std::sync::Arc;
 use wabot::prelude::*;
 use wabot::ui::hypertext::IntoView;
 
-use crate::web::console::auth::*;
+use crate::shell::auth::*;
 
 // ---------- pages --------------------------------------------------------
 

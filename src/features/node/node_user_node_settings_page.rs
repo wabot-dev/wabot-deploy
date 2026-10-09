@@ -8,9 +8,9 @@ use crate::infra::backup::s3::Credentials;
 use crate::infra::backup::Manifest;
 use crate::infra::edge::policy::Policy;
 use crate::infra::node::memory::Snapshot;
-use crate::web::views::components::node_certificate::{CertificateCells, CertificateState};
-use crate::web::views::components::{node_capabilities, node_certificate, node_settings_cards};
-use crate::web::views::layouts::layout;
+use crate::shell::components::node_certificate::{CertificateCells, CertificateState};
+use crate::shell::components::{node_capabilities, node_certificate, node_settings_cards};
+use crate::shell::layouts::layout;
 
 /// The four things this machine can be told about itself.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

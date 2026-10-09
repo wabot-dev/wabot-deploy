@@ -2,7 +2,7 @@
 //! account rather than to a page.
 
 use crate::infra::accounts::sessions;
-use crate::web::console::ConsoleState;
+use crate::shell::state::ConsoleState;
 use std::sync::Arc;
 use wabot::prelude::*;
 use wabot::rest::axum::body::Body;
@@ -11,7 +11,7 @@ use wabot::rest::axum::http::{header, StatusCode};
 use wabot::rest::axum::response::Response;
 use wabot::rest::RestResult;
 
-use crate::web::console::auth::*;
+use crate::shell::auth::*;
 
 // ---------- form submissions ---------------------------------------------
 

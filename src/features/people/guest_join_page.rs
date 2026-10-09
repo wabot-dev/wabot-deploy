@@ -2,8 +2,8 @@ use hypertext::prelude::*;
 
 use crate::features::people::texts::t;
 use crate::infra::accounts::invitations::Invitation;
-use crate::web::views::components::mark::mark;
-use crate::web::views::layouts::layout;
+use crate::shell::components::mark::mark;
+use crate::shell::layouts::layout;
 
 pub struct Join<'a> {
     pub heading: &'a str,

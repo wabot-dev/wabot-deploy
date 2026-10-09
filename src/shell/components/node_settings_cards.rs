@@ -2,8 +2,8 @@
 
 use crate::infra::network;
 use crate::infra::node::memory::Snapshot;
-use crate::web::views::layouts::layout;
-use crate::web::views::texts::language::t;
+use crate::shell::layouts::layout;
+use crate::shell::texts::language::t;
 use hypertext::prelude::*;
 
 /// What this machine keeps for itself, and what is left for services.

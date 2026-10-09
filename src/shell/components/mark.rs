@@ -7,7 +7,7 @@ pub fn mark(heading: &str) -> impl Renderable + '_ {
     rsx! {
         <header class="mark">
             <img
-                src=(format!("{}/wabot-logo.png", crate::web::console::assets::MOUNT))
+                src=(format!("{}/wabot-logo.png", crate::shell::assets::MOUNT))
                 alt="Wabot" width="36" height="36">
             <div class="stack-sm">
                 <h1>(heading)</h1>

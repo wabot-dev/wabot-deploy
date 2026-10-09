@@ -4,7 +4,7 @@ use crate::domain::entities::account::Account;
 use crate::domain::entities::tenant::Tenant;
 use crate::domain::policies::presets;
 use crate::features::organisations::texts::t;
-use crate::web::views::layouts::layout;
+use crate::shell::layouts::layout;
 
 /// The four things the node's operator decides about an organisation.
 ///

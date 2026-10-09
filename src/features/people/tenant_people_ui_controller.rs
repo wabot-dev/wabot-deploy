@@ -13,10 +13,10 @@ use wabot::ui::hypertext::IntoView;
 use crate::features::people::texts::t;
 use crate::infra::accounts::{self, invitations};
 use crate::infra::repositories::access;
-use crate::web::console::auth::{signed_in, JoinPage, PageQuery, SessionMiddleware};
-use crate::web::console::ConsoleState;
-use crate::web::views::layouts::layout;
-use crate::web::views::layouts::shell::{Area, Frame};
+use crate::shell::auth::{signed_in, JoinPage, PageQuery, SessionMiddleware};
+use crate::shell::layouts::layout;
+use crate::shell::layouts::shell::{Area, Frame};
+use crate::shell::state::ConsoleState;
 
 #[injectable]
 pub struct TenantPeopleUiController {
@@ -66,7 +66,7 @@ impl TenantPeopleUiController {
             account: &account,
             query_error: query.error.as_deref(),
         };
-        let body = crate::web::views::texts::language::scoped(account.language, || {
+        let body = crate::shell::texts::language::scoped(account.language, || {
             crate::features::people::tenant_user_people_page::render(&page)
                 .render()
                 .into_inner()

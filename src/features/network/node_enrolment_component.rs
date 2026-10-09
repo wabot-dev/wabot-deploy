@@ -43,8 +43,8 @@ pub fn review_card<'a>(
                             <input type="checkbox" name=(format!("accept-{}", capability.name()))
                                    value="1" checked>
                             <span>
-                                <strong>(crate::web::views::components::node_capabilities::asking(*capability))</strong>
-                                <span class="tile-detail">(crate::web::views::components::node_capabilities::why(*capability))</span>
+                                <strong>(crate::shell::components::node_capabilities::asking(*capability))</strong>
+                                <span class="tile-detail">(crate::shell::components::node_capabilities::why(*capability))</span>
                             </span>
                         </label>
                     }
@@ -60,7 +60,7 @@ pub fn review_card<'a>(
                 } @else {
                     <ul class="notes">
                         @for capability in &offers {
-                            <li>(crate::web::views::components::node_capabilities::offering(*capability))</li>
+                            <li>(crate::shell::components::node_capabilities::offering(*capability))</li>
                         }
                     </ul>
                 }
@@ -115,7 +115,7 @@ pub fn enrol_card(may_enrol: bool) -> impl Renderable {
                             // this list is what *this* node wants to be
                             // allowed to do over there. Swapping them
                             // reads plausibly and says the opposite.
-                            <span>(t(crate::web::views::components::node_capabilities::offering(capability)))</span>
+                            <span>(t(crate::shell::components::node_capabilities::offering(capability)))</span>
                         </label>
                     }
 
@@ -124,7 +124,7 @@ pub fn enrol_card(may_enrol: bool) -> impl Renderable {
                         <label class="capability">
                             <input type="checkbox" name=(format!("offer-{}", capability.name()))
                                    value="1">
-                            <span>(t(crate::web::views::components::node_capabilities::asking(capability)))</span>
+                            <span>(t(crate::shell::components::node_capabilities::asking(capability)))</span>
                         </label>
                     }
                     <p class="field-hint">(t("Both lists travel inside the token and are shown on the \

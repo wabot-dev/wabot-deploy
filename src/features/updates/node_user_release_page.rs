@@ -3,7 +3,7 @@ use hypertext::prelude::*;
 use super::node_user_updates_page::{day_of, install_form, rendered_notes, state_line};
 use crate::features::updates::texts::t;
 use crate::infra::update::github::{Release, Version};
-use crate::web::views::layouts::layout;
+use crate::shell::layouts::layout;
 
 pub struct ReleaseView<'a> {
     pub release: &'a Release,

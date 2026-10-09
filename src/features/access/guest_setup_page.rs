@@ -3,8 +3,8 @@
 use hypertext::prelude::*;
 
 use crate::features::access::texts::t;
-use crate::web::views::components::mark::mark;
-use crate::web::views::layouts::layout;
+use crate::shell::components::mark::mark;
+use crate::shell::layouts::layout;
 
 pub struct Setup<'a> {
     pub has_token: bool,

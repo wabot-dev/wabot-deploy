@@ -141,7 +141,7 @@ mod tests {
     /// still renders — in English.
     #[test]
     fn every_table_there_is_one_the_guards_read() {
-        let shared: BTreeSet<String> = fs::read_dir("src/web/views/texts")
+        let shared: BTreeSet<String> = fs::read_dir("src/shell/texts")
             .expect("read the directory")
             .filter_map(|entry| {
                 let path = entry.expect("entry").path();
@@ -173,6 +173,49 @@ mod tests {
         );
     }
 
+    /// **A feature asks for its words with its own `t`.** The shell's `t`
+    /// looks only in the shared tables, so a feature's page that called it
+    /// would draw every word of its own in English, while every check of
+    /// the tables still passed — which is how the projects list went out
+    /// when the words moved into the features: the one file the rewrite
+    /// missed, found later by hand. This reads every feature file but the
+    /// feature's own `texts.rs` for the shell's two doors into the tables.
+    #[test]
+    fn a_feature_asks_for_its_words_by_its_own_t() {
+        let mut read = 0;
+        let mut wrong = Vec::new();
+        for path in crate::tree::rust_files(&["src/features"]) {
+            let in_a_feature = path.parent() != Some(std::path::Path::new("src/features"));
+            if !in_a_feature || crate::tree::kind_of(&path) == Some(crate::tree::Kind::Texts) {
+                continue;
+            }
+            read += 1;
+            let source = fs::read_to_string(&path).expect("read");
+            let code = crate::tree::production(&crate::tree::code_only(&source));
+            for target in crate::tree::crate_paths(&code) {
+                let into_the_tables =
+                    target.starts_with(&["shell".into(), "texts".into(), "language".into()])
+                        && matches!(target.get(3).map(String::as_str), Some("t" | "word"));
+                if into_the_tables {
+                    wrong.push(format!("{}: crate::{}", path.display(), target.join("::")));
+                }
+            }
+            for call in ["language::t(", "language::word("] {
+                if code.contains(call) {
+                    wrong.push(format!("{}: {call}", path.display()));
+                }
+            }
+        }
+        assert!(
+            read > 150,
+            "the scan read {read} feature files, so it is reading the wrong place"
+        );
+        assert!(
+            wrong.is_empty(),
+            "these ask the shell for a feature's words, which it does not hold: {wrong:#?}"
+        );
+    }
+
     /// Every file that draws something, read off the disk.
     ///
     /// A directory rather than a list: the old scan named its thirteen
@@ -180,19 +223,17 @@ mod tests {
     /// *a guard that names its inputs* wearing a hat. This one cannot
     /// miss a file that exists.
     fn drawn() -> Vec<(std::path::PathBuf, String)> {
-        let sources: Vec<(std::path::PathBuf, String)> = crate::tree::rust_files(&[
-            "src/web/console",
-            "src/web/views/components",
-            "src/web/views/layouts",
-            "src/web/views/pages",
-            "src/features",
-        ])
-        .into_iter()
-        .map(|path| {
-            let source = std::fs::read_to_string(&path).expect("read");
-            (path, source)
-        })
-        .collect();
+        let sources: Vec<(std::path::PathBuf, String)> =
+            crate::tree::rust_files(&["src/shell", "src/web", "src/features"])
+                .into_iter()
+                // The tables and the lookup are what the scan checks against, and
+                // their docs quote `t("…")` as an example, untranslated on purpose.
+                .filter(|path| !path.starts_with("src/shell/texts"))
+                .map(|path| {
+                    let source = std::fs::read_to_string(&path).expect("read");
+                    (path, source)
+                })
+                .collect();
         assert!(
             sources.len() > 15,
             "the scan found {} files, so it is reading the wrong place",
@@ -384,17 +425,17 @@ mod tests {
         let mut missing = Vec::new();
         for capability in Capability::ALL {
             for word in [
-                crate::web::views::components::node_capabilities::asking(capability),
-                crate::web::views::components::node_capabilities::why(capability),
-                crate::web::views::components::node_capabilities::offering(capability),
+                crate::shell::components::node_capabilities::asking(capability),
+                crate::shell::components::node_capabilities::why(capability),
+                crate::shell::components::node_capabilities::offering(capability),
                 // And what the same capability is called on this node's
                 // own page, which is a different sentence: there it is
                 // what another node may ask, here it is what this one
                 // does at all. Left out of the first version of this,
                 // which is the mistake this test exists to catch.
-                crate::web::views::components::node_capabilities::doing(capability),
-                crate::web::views::components::node_capabilities::doing_why(capability, true),
-                crate::web::views::components::node_capabilities::doing_why(capability, false),
+                crate::shell::components::node_capabilities::doing(capability),
+                crate::shell::components::node_capabilities::doing_why(capability, true),
+                crate::shell::components::node_capabilities::doing_why(capability, false),
             ] {
                 if lookup(word, &[]).is_none() {
                     missing.push(word.to_string());

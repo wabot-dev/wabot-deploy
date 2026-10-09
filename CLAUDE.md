@@ -89,14 +89,15 @@ network and the databases" below.
    somebody arrives with is where the thing they are changing lives.
    The guards read a file's kind off its name (`crate::tree`), so a file
    whose name says nothing fails.
-12. **Five rooms, and every import points inward.** `domain` imports
-   nothing else; `infra` imports `domain`; `features` and `web` import
-   both and each other; `cli` imports anything. Inside a feature, a use
+12. **Six rooms, and every import points inward.** `domain` ←
+   `infra` ← `shell` ← `features` ← `web` ← `cli`: each imports only
+   what is beneath it, so a feature never imports the web, and the
+   shell — what doors are built with — knows no feature. Inside a feature, a use
    case, command, request or response never imports a door or the shell
    — except the words. `tree::every_import_points_inward` reads every
    file and allows no exceptions.
 
-Where the tree stands: `src/` is the five rooms of rule 12 and nothing
+Where the tree stands: `src/` is the six rooms of rule 12 and nothing
 else but `main.rs` and the test-only `tree.rs`. Every feature is a
 folder under `src/features` — `access`, `backups`, `databases`,
 `network`, `node`, `organisations`, `people`, `projects`, `services` and
@@ -279,7 +280,7 @@ So: what a token **is** goes in `assets/wabot.css`, beside the value it
 replaces, under a `CORRECTED` comment saying what was wrong and what it
 measured. Page CSS — the shell, the meter, the cards, the button states
 rule 8 defines, anything this console invented — stays in
-`src/web/views/layouts/layout.rs`. The split is the thing, not the file's
+`src/shell/layouts/layout.rs`. The split is the thing, not the file's
 provenance.
 
 Two tests read the stylesheet directly rather than a copy of it:

@@ -8,10 +8,10 @@ use wabot::rest::axum::response::Response;
 use wabot::rest::RestResult;
 
 use crate::domain::values::roles::{NodeRole, ProjectRole};
-use crate::web::console::auth::{
+use crate::shell::auth::{
     back_with_error, field, read_form, see_other, signed_in, SessionMiddleware,
 };
-use crate::web::console::ConsoleState;
+use crate::shell::state::ConsoleState;
 
 #[injectable]
 pub struct TenantPeopleRestController {
@@ -74,7 +74,7 @@ impl TenantPeopleRestController {
             return Ok(see_other("/sign-in"));
         };
         let path = request.uri().path().to_string();
-        let Some(id) = crate::web::console::auth::segments(&path).get(1).cloned() else {
+        let Some(id) = crate::shell::auth::segments(&path).get(1).cloned() else {
             return Ok(see_other("/people"));
         };
         let form = match read_form(request).await {
@@ -107,7 +107,7 @@ impl TenantPeopleRestController {
             return Ok(see_other("/sign-in"));
         };
         let path = request.uri().path().to_string();
-        let Some(id) = crate::web::console::auth::segments(&path).get(1).cloned() else {
+        let Some(id) = crate::shell::auth::segments(&path).get(1).cloned() else {
             return Ok(see_other("/people"));
         };
 
@@ -131,7 +131,7 @@ impl TenantPeopleRestController {
             return Ok(see_other("/sign-in"));
         };
         let path = request.uri().path().to_string();
-        let Some(id) = crate::web::console::auth::segments(&path).get(2).cloned() else {
+        let Some(id) = crate::shell::auth::segments(&path).get(2).cloned() else {
             return Ok(see_other("/people"));
         };
 
@@ -151,7 +151,7 @@ impl TenantPeopleRestController {
     #[raw]
     async fn join(&self, request: Request) -> RestResult<Response> {
         let path = request.uri().path().to_string();
-        let Some(token) = crate::web::console::auth::segments(&path)
+        let Some(token) = crate::shell::auth::segments(&path)
             .get(1)
             .map(|id| id.to_string())
         else {
@@ -186,7 +186,7 @@ impl TenantPeopleRestController {
         };
 
         match crate::infra::accounts::sessions::create(&self.state.database, &account).await {
-            Ok(token) => Ok(crate::web::console::auth::see_other_with_cookie(
+            Ok(token) => Ok(crate::shell::auth::see_other_with_cookie(
                 "/",
                 crate::infra::accounts::sessions::set_cookie(&token),
             )),

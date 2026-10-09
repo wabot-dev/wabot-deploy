@@ -19,8 +19,8 @@ use crate::domain::entities::account::Account;
 use crate::domain::entities::project::Project;
 use crate::domain::values::theme::Theme;
 
-use crate::web::console::assets;
-use crate::web::views::texts::language::t;
+use crate::shell::assets;
+use crate::shell::texts::language::t;
 
 impl Theme {
     /// What to put in `data-theme`. Empty for `System`: no attribute
@@ -224,15 +224,13 @@ impl Frame {
         // here — each view scopes its own, because that is where its
         // strings are read. See `language::scoped`.
         let language = self.language;
-        let top = crate::web::views::texts::language::scoped(language, || {
-            self.topbar().render().into_inner()
-        });
-        let side = crate::web::views::texts::language::scoped(language, || {
+        let top =
+            crate::shell::texts::language::scoped(language, || self.topbar().render().into_inner());
+        let side = crate::shell::texts::language::scoped(language, || {
             self.sidebar().render().into_inner()
         });
-        let crumbs = crate::web::views::texts::language::scoped(language, || {
-            self.crumbs().render().into_inner()
-        });
+        let crumbs =
+            crate::shell::texts::language::scoped(language, || self.crumbs().render().into_inner());
         rsx! {
             <div class="app-shell" data-theme=(self.theme.attribute())>
                 (hypertext::Raw::dangerously_create(&top))

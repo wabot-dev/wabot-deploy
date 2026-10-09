@@ -29,10 +29,10 @@ use crate::features::organisations::node_user_organisation_settings_page::{
 };
 use crate::infra::repositories::access;
 use crate::infra::repositories::tenants;
-use crate::web::console::auth::{signed_in, PageQuery, SessionMiddleware};
-use crate::web::console::ConsoleState;
-use crate::web::views::layouts::layout;
-use crate::web::views::layouts::shell::{Area, Frame};
+use crate::shell::auth::{signed_in, PageQuery, SessionMiddleware};
+use crate::shell::layouts::layout;
+use crate::shell::layouts::shell::{Area, Frame};
+use crate::shell::state::ConsoleState;
 
 #[derive(Debug, Deserialize, Validate, Default)]
 pub struct OrganisationPage {
@@ -98,7 +98,7 @@ impl TenantUiController {
             cards: &cards,
             error: query.error.as_deref(),
         };
-        let body = crate::web::views::texts::language::scoped(account.language, || {
+        let body = crate::shell::texts::language::scoped(account.language, || {
             crate::features::organisations::node_user_organisations_page::render(&page)
                 .render()
                 .into_inner()
@@ -144,7 +144,7 @@ impl TenantUiController {
             charged: &charged,
             error: query.error.as_deref(),
         };
-        let body = crate::web::views::texts::language::scoped(account.language, || {
+        let body = crate::shell::texts::language::scoped(account.language, || {
             crate::features::organisations::node_user_organisation_page::render(&page)
                 .render()
                 .into_inner()
@@ -216,7 +216,7 @@ impl TenantUiController {
                 panel,
                 error: query.error.as_deref(),
             };
-        let body = crate::web::views::texts::language::scoped(account.language, || {
+        let body = crate::shell::texts::language::scoped(account.language, || {
             crate::features::organisations::node_user_organisation_settings_page::render(&page)
                 .render()
                 .into_inner()

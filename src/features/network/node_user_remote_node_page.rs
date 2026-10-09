@@ -5,8 +5,8 @@ use crate::features::network::texts::t;
 use crate::features::network::{node_errands_component, node_usage_component};
 use crate::infra::network::errand::Record;
 use crate::infra::network::Node;
-use crate::web::views::components::{node_capabilities, node_settings_cards};
-use crate::web::views::layouts::layout;
+use crate::shell::components::{node_capabilities, node_settings_cards};
+use crate::shell::layouts::layout;
 
 /// A node that is **not** this one.
 ///

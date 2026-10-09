@@ -203,17 +203,17 @@ pub fn crate_paths(code: &str) -> Vec<Vec<String>> {
 mod tests {
     use super::*;
 
-    const ROOMS: &[&str] = &["domain", "infra", "features", "web", "cli"];
+    const ROOMS: &[&str] = &["domain", "infra", "shell", "features", "web", "cli"];
 
-    /// What a room may import, inmost first. `features` and `web` see each
-    /// other on purpose: a feature's doors draw with the shell, and the
-    /// shell's router mounts every feature's doors.
+    /// What a room may import: everything beneath it, and nothing above.
     fn may_import(room: &str) -> &'static [&'static str] {
         match room {
             "domain" => &["domain"],
             "infra" => &["domain", "infra"],
-            "features" | "web" => &["domain", "infra", "features", "web"],
-            _ => &["domain", "infra", "features", "web", "cli"],
+            "shell" => &["domain", "infra", "shell"],
+            "features" => &["domain", "infra", "shell", "features"],
+            "web" => &["domain", "infra", "shell", "features", "web"],
+            _ => &["domain", "infra", "shell", "features", "web", "cli"],
         }
     }
 
@@ -221,7 +221,9 @@ mod tests {
     ///
     /// Every production `crate::` path in every file, against the room the
     /// file is in: the domain imports nothing but itself, infrastructure
-    /// imports the domain, and the doors import what is beneath them. And
+    /// imports the domain, the shell imports both, a feature imports the
+    /// shell and never the web, and the web — the router and the doors no
+    /// feature owns — imports everything but the CLI. And
     /// inside a feature, the code a door calls — a use case, a command, a
     /// request or a response — never imports a door, a page, a component
     /// or the shell, with one exception that is part of the rule rather
@@ -232,7 +234,10 @@ mod tests {
     /// imports pointing outward: an entity returning the network's
     /// `Capability`, accounts storing two types that lived in the views,
     /// three calls from beneath a feature into one, and five reads of the
-    /// version out of the HTTP surface. None is excused here.
+    /// version out of the HTTP surface. None is excused here. And when the
+    /// shell was still part of the web, every feature's door imported it;
+    /// moving it beneath them is what made "a feature never imports the
+    /// web" a rule this can hold.
     #[test]
     fn every_import_points_inward() {
         let mut files = 0;
@@ -273,7 +278,7 @@ mod tests {
                 if !calls_down {
                     continue;
                 }
-                let words = target.starts_with(&["web".into(), "views".into(), "texts".into()]);
+                let words = target.starts_with(&["shell".into(), "texts".into()]);
                 let a_door = theirs == "features"
                     && target.get(2).is_some_and(|module| {
                         matches!(
@@ -281,7 +286,7 @@ mod tests {
                             Some(Kind::Controller | Kind::Page | Kind::Component)
                         )
                     });
-                if (theirs == "web" && !words) || a_door {
+                if (theirs == "shell" && !words) || a_door {
                     let kind = kind.map(|kind| format!("{kind:?}")).unwrap_or_default();
                     outward.push(format!(
                         "{}: {spelled} (a {kind} reaching a door)",

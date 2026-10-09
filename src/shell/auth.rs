@@ -38,7 +38,7 @@ use wabot::rest::{Middleware, RestResult};
 use crate::domain::entities::account::Account;
 use crate::infra::accounts::{self, sessions};
 
-use super::ConsoleState;
+use crate::shell::state::ConsoleState;
 
 /// Reads the session cookie and records who it names.
 ///

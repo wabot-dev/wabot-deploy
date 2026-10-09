@@ -95,8 +95,8 @@ pub fn restore_card<'a>(
     // archive cannot answer — so it is the placeholder rather than a
     // guess at what they want.
     let latest = match window {
-        Window::Between { to, .. } => crate::web::views::layouts::layout::typed(*to),
-        Window::OnlyTheBackup { at } => crate::web::views::layouts::layout::typed(*at),
+        Window::Between { to, .. } => crate::shell::layouts::layout::typed(*to),
+        Window::OnlyTheBackup { at } => crate::shell::layouts::layout::typed(*at),
         _ => String::new(),
     };
 
@@ -341,15 +341,15 @@ pub fn window_card<'a>(
                 }
                 Window::OnlyTheBackup { at } => {
                     <p class="field-hint">
-                        (t("A backup from "))<span class="mono">(crate::web::views::layouts::layout::exactly(*at))</span>
+                        (t("A backup from "))<span class="mono">(crate::shell::layouts::layout::exactly(*at))</span>
                         (t(", and no log after it yet. A minute of writes is what produces the \
                              first segment."))
                     </p>
                 }
                 Window::Between { from, to, gap } => {
                     <p class="field-hint">
-                        (t("Any moment between "))<span class="mono">(crate::web::views::layouts::layout::exactly(*from))</span>
-                        (t(" and "))<span class="mono">(crate::web::views::layouts::layout::exactly(*to))</span>
+                        (t("Any moment between "))<span class="mono">(crate::shell::layouts::layout::exactly(*from))</span>
+                        (t(" and "))<span class="mono">(crate::shell::layouts::layout::exactly(*to))</span>
                     </p>
                     // The end of the window is the hole, not the newest
                     // segment: recovery stops there, and everything
@@ -498,7 +498,7 @@ pub fn certificate_card<'a>(
     // is a page saying what was *asked for* and never what happened —
     // which is what sent Jorge to `doctor` to find out whether his
     // certificate had been issued.
-    cells: &'a crate::web::views::components::node_certificate::CertificateCells,
+    cells: &'a crate::shell::components::node_certificate::CertificateCells,
 ) -> impl Renderable + 'a {
     let signs_here = matches!(
         policy.renew_with,
@@ -525,7 +525,7 @@ pub fn certificate_card<'a>(
                 <p class="failure">(&cells.failure)</p>
             }
 
-            (crate::web::views::components::node_certificate::certificate_source_form(action, policy))
+            (crate::shell::components::node_certificate::certificate_source_form(action, policy))
             @if signs_here {
                 <p class="field-hint">(t("This node signs it, so a client has to be given the \
                      authority before it can verify anything. A container gets it at \

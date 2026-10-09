@@ -183,9 +183,9 @@ what is missing. Read-only; safe on a live node.
 
 ## Layout
 
-Five rooms, and dependencies point inward: `domain` imports nothing
-else, `infra` imports `domain`, and the doors — `features`, `web`,
-`cli` — import what is beneath them. See
+Six rooms, and dependencies point inward — `domain` ← `infra` ←
+`shell` ← `features` ← `web` ← `cli` — each importing only what is
+beneath it. See
 [rules 11 and 12](docs/architecture-rules.md).
 
 | | |
@@ -198,7 +198,8 @@ else, `infra` imports `domain`, and the doors — `features`, `web`,
 | &nbsp;&nbsp;`runtime/`, `bootstrap/` | the containerd client; preflight, containerd + crun + CNI, the systemd unit |
 | &nbsp;&nbsp;`edge/`, `registry/` | TLS, certificates, ACME, host routing, the reverse proxy; the OCI store over containerd's content |
 | &nbsp;&nbsp;`network/`, `node/`, `update/`, `backup/` | the nodes it knows and the errands between them; this machine; the self-update; taking and restoring backups |
-| `src/web/` | the console's shell — router, session, layout, the pieces and words more than one feature uses — and the doors no feature owns: health, the control plane, the registry |
+| `src/shell/` | what every feature's doors are built with: the console's state, the session and form readers, the layout, the pieces and words more than one feature uses |
+| `src/web/` | the router that mounts every feature, and the doors no feature owns: health, the control plane, the registry, the page a secret is shown on once |
 | `src/cli/` | the verbs: `install`, `serve`, `doctor`, `join`, `setup-token`, `passwd`, `backup`, `restore`, `restore-node`, `clean`, `log-writer`, `containerd` |
 | `migrations/` | embedded with `include_str!`, so the binary stands alone |
 | `assets/` | the design system, vendored — a node must not need a CDN |

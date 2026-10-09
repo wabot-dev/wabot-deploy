@@ -208,12 +208,7 @@ mod tests {
         let wanted = format!("{PREFIX_BYTES} bytes on every line");
         let mut read = 0;
         let mut found = false;
-        for path in crate::tree::rust_files(&[
-            "src/web/views/pages",
-            "src/web/views/components",
-            "src/web/console",
-            "src/features",
-        ]) {
+        for path in crate::tree::rust_files(&["src/shell", "src/web", "src/features"]) {
             read += 1;
             found |= std::fs::read_to_string(&path)
                 .expect("read")

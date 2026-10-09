@@ -13,10 +13,10 @@ use wabot::rest::RestResult;
 use crate::infra::repositories::access;
 use crate::infra::repositories::services;
 
-use crate::web::console::auth::{
+use crate::shell::auth::{
     back_with_error, field, read_form, see_other, signed_in, SessionMiddleware,
 };
-use crate::web::console::ConsoleState;
+use crate::shell::state::ConsoleState;
 
 /// The value the placement form sends for "let the node decide".
 ///
@@ -74,7 +74,7 @@ impl ServiceRestController {
         };
 
         let path = request.uri().path().to_string();
-        let segments = crate::web::console::auth::segments(&path);
+        let segments = crate::shell::auth::segments(&path);
         let (Some(project_slug), Some(service_slug)) = (segments.get(1), segments.get(3)) else {
             return empty(StatusCode::NOT_FOUND);
         };
@@ -171,7 +171,7 @@ impl ServiceRestController {
         // typed request because `#[raw]` hands over the whole thing —
         // the trade for being able to answer with a 303.
         let path = request.uri().path().to_string();
-        let Some(slug) = crate::web::console::auth::project_slug(&path) else {
+        let Some(slug) = crate::shell::auth::project_slug(&path) else {
             return Ok(see_other("/?error=no+such+project"));
         };
         let Some((project, _)) = access::find_project(&self.state.database, &account, slug).await?
@@ -328,7 +328,7 @@ impl ServiceRestController {
                 // the message says so — losing the port would be worse
                 // than a certificate that needs a second visit.
                 if let Some(hostname) = port.hostname.as_deref() {
-                    match crate::web::console::auth::source_from(&form, hostname) {
+                    match crate::shell::auth::source_from(&form, hostname) {
                         Ok(renew_with) => {
                             if let Err(error) = crate::infra::edge::policy::store_source(
                                 &self.state.database,
@@ -388,7 +388,7 @@ impl ServiceRestController {
     #[middleware(SessionMiddleware)]
     async fn delete_port(&self, request: Request) -> RestResult<Response> {
         let path = request.uri().path().to_string();
-        let segments = crate::web::console::auth::segments(&path);
+        let segments = crate::shell::auth::segments(&path);
         let Some((project, service, _)) = self.locate(&path).await? else {
             return Ok(see_other("/?error=no+such+service"));
         };
@@ -444,7 +444,7 @@ impl ServiceRestController {
     #[middleware(SessionMiddleware)]
     async fn deploy_release(&self, request: Request) -> RestResult<Response> {
         let path = request.uri().path().to_string();
-        let segments = crate::web::console::auth::segments(&path);
+        let segments = crate::shell::auth::segments(&path);
         let Some((project, service, back)) = self.locate(&path).await? else {
             return Ok(see_other("/?error=no+such+service"));
         };
@@ -820,7 +820,7 @@ impl ServiceRestController {
     #[middleware(SessionMiddleware)]
     async fn revert_env(&self, request: Request) -> RestResult<Response> {
         let path = request.uri().path().to_string();
-        let segments = crate::web::console::auth::segments(&path);
+        let segments = crate::shell::auth::segments(&path);
         let Some((project, service, _)) = self.locate(&path).await? else {
             return Ok(see_other("/?error=no+such+service"));
         };
@@ -1395,7 +1395,7 @@ fn checked(form: &std::collections::HashMap<String, String>, name: &str) -> bool
 /// `#[raw]` hands over the whole request and no extracted parameters,
 /// so both slugs come out of the URI here.
 fn service_path(path: &str) -> Option<(&str, &str)> {
-    match crate::web::console::auth::segments(path).as_slice() {
+    match crate::shell::auth::segments(path).as_slice() {
         // The service's own page, and every action under it — the
         // trailing parts differ (`deploy`, `ports`, `ports/<id>/delete`)
         // and none of them change which service is meant.

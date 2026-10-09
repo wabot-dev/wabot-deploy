@@ -14,6 +14,7 @@ mod cli;
 mod domain;
 mod features;
 mod infra;
+mod shell;
 #[cfg(test)]
 mod tree;
 mod web;

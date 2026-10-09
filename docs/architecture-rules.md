@@ -48,7 +48,7 @@ service's rules are.
 
 ### Where each one goes
 
-Five rooms, and every file is in exactly one. §12 says which way each
+Six rooms, and every file is in exactly one. §12 says which way each
 may look.
 
 | Room | What lives there |
@@ -56,7 +56,8 @@ may look.
 | `src/domain` | entities, values, the pure policies, `authz`, errors — what the business *is*, talking to nothing |
 | `src/infra` | repositories, and everything else that talks to something: the database, containerd, the kernel and systemd, other nodes, GitHub, the disk — and the deploy loop that drives them |
 | `src/features` | one folder per feature: its use cases, commands, requests, responses, controllers, pages, components and words (§11) |
-| `src/web` | the console's shell — router, session, layout, the components and words more than one feature uses, the shapes more than one carries — and the HTTP doors no feature owns: health, the control plane, the registry |
+| `src/shell` | what every feature's doors are built with: the console's state, the session and the form readers, the assets, the layout, the components and words more than one feature uses, the shapes more than one carries |
+| `src/web` | the router that mounts every feature's doors, and the HTTP doors no feature owns: health, the control plane, the registry, the page a secret is shown on once |
 | `src/cli` | the terminal's door: the arguments, and one file per verb |
 
 `platform` was a name for five of these at once, which is why the rules
@@ -667,7 +668,7 @@ checked at all.**
 The two ends of a use case are named shapes: a `_request.rs` and a
 `_response.rs` in its feature's folder, each holding a type named for
 its file — `CreateDatabaseRequest` in `create_database_request.rs`
-(§11). `src/web/dtos` holds only the shapes more than one feature
+(§11). `src/shell/dtos` holds only the shapes more than one feature
 carries. Never a form, never an argument list that grew, never an
 entity coming back out.
 
@@ -842,7 +843,7 @@ What every feature reads: entities, values, policies, repositories, the
 runtime, the edge. And the console's shell — the router, the session,
 the layout, the language, and the pieces that show nothing of any
 feature's (`mark`, the logo a page without a header opens with;
-`action_button`) — stays in `src/web`.
+`action_button`) — stays in `src/shell`.
 
 **Any other component goes with the feature whose thing it shows, and
 the pages that draw it say which better than its name does.** `service_table` and `people_card`
@@ -855,7 +856,7 @@ its own.
 
 **A component two features draw stays out of both.** `node_capabilities`
 and `node_settings_cards` are drawn by the network's pages and by this
-machine's settings, so they stay in `src/web/views/components` — and the
+machine's settings, so they stay in `src/shell/components` — and the
 day one feature stops drawing one, it moves to the other.
 
 **A use case is placed by the same question.** Joining by invitation is
@@ -865,10 +866,16 @@ people controllers, so the two joins and the page they post from live
 in `people`. Signing in and claiming the node are not about anybody's
 invitation, and stay out of it.
 
-A feature's words are its own `texts.rs`, and `views::texts::TABLES`
-lists each one by its path. `the_lookup_searches_every_table_there_is`
-finds them by walking `src/features`, so a feature whose table is not
-listed fails by name.
+**A feature's words are its own `texts.rs`, and so is the function that
+finds them.** Each carries a `t()` — and a `word()` where it renders a
+word chosen before the render — that looks in the feature's table and
+then in the shared ones the shell holds. So the shell lists no feature,
+and a string a feature asks for has to be in *its* table or a shared
+one: `every_string_the_console_asks_for_is_translated` checks each file
+against its own feature's table, `a_feature_asks_for_its_words_by_its_own_t`
+refuses a feature file that calls the shell's `t`, and
+`every_table_there_is_one_the_guards_read` compares the tables the
+guards know with the ones on the disk.
 
 ### Where it stands
 
@@ -896,27 +903,29 @@ the commands more than one feature calls, and the CLI's verbs.
   services' `CreateService`. Both dependencies pointed the wrong way
   before the move; after it they were a path anybody could read, and
   §12 is what fixed them and keeps them fixed.
-- **The shell keeps directories of its own.** `src/web/console` and
-  `src/web/views` hold what no single feature owns, so a guard that
-  reads everything that draws lists them beside `src/features`.
+- **The shell is a room of its own.** `src/shell` holds what no single
+  feature owns, so a guard that reads everything that draws reads it
+  beside `src/web` and `src/features`.
 
-## 12. Five rooms, and every import points inward
+## 12. Six rooms, and every import points inward
 
-`src/` is five folders — the table in §0 says what each holds — and a
+`src/` is six folders — the table in §0 says what each holds — and a
 file may import only what is beneath it:
 
 ```
-domain  ←  infra  ←  features ⇄ web  ←  cli
+domain  ←  infra  ←  shell  ←  features  ←  web  ←  cli
 ```
 
 - **`domain` imports nothing but itself.** No database, no file, no
   clock: entities, values, the pure policies, `authz`, errors.
 - **`infra` imports `domain` and itself.**
-- **`features` and `web` import both, and each other.** A feature's
-  doors draw with the shell — the layout, the session middleware, the
-  shared components — and the shell's router mounts every feature's
-  doors, and its lookup lists every feature's words. They are one ring,
-  not two.
+- **`shell` imports both.** It is what a door is built with, and it
+  knows no feature.
+- **`features` import the shell, and never the web.** A feature's
+  doors draw with the shell; nothing in a feature knows how it is
+  mounted.
+- **`web` imports everything but the CLI.** It is the router that mounts
+  every feature, and the doors no feature owns.
 - **`cli` imports anything.** With `main.rs`, it is where the program is
   put together.
 - **Inside a feature, the code a door calls never imports a door.** A
@@ -924,6 +933,36 @@ domain  ←  infra  ←  features ⇄ web  ←  cli
   page or component, and nothing of the shell but its words — a refusal
   with a number in it is a sentence somebody reads, and `sentences` is
   where that sentence is built.
+
+### Why the shell is a room
+
+The first version of this rule had five rooms and the shell inside
+`web`, so `features` and `web` imported each other: a feature's doors
+needed the layout and the session, and the shell's router and word
+lookup needed every feature. Jorge's rule was that a feature never
+imports the web, and four pieces of the web stood in the way, each
+because it held something one feature owned:
+
+- `console::attention` gathered what needs somebody and linked to the
+  node's settings — it is `node_user_see_what_needs_attention`, a use
+  case like any other, and its card is the node's.
+- `console::live` built a project's page cells — it is
+  `projects::live_component`.
+- `auth::joining` read the join form into people's request — it is in
+  the people controller, which is where reading a form belongs.
+- The word lookup listed every feature's table — each feature finds its
+  own words now (§11).
+
+What was left — the state, the session, the layout, the shared pieces,
+the words — knows no feature, and is `src/shell`.
+
+**The move found a page drawing in the wrong language.** The projects
+list called the shell's `t` after the features got their own, so every
+word of its own rendered in English on a Spanish console, and every
+check of the tables still passed: they asked whether a word was
+translated, not whether the page asked the table that held it.
+`a_feature_asks_for_its_words_by_its_own_t` is the check that was
+missing.
 
 ### What was in the way
 
@@ -962,16 +1001,15 @@ three hundred files, a thousand imports — and it was watched to fail on
 four planted faults (the domain reaching infrastructure, infrastructure
 reaching a feature's controller, a use case reaching a page, a use case
 reaching the console) and to pass two that are allowed (a use case
-reaching the words, a domain test reaching the web).
+reaching the words, a domain test reaching the web) — and, when the
+shell became a room, on a feature reaching the web and the shell
+reaching a feature.
 
 ### What it does not see
 
 - **A relative path out of a room.** It reads `crate::` paths; a
   `super::super::` that climbed from one room into another would slip
   past. None does today.
-- **Whether `features` and `web` lean on each other the right way.**
-  They share a ring, so a shell that reached into one feature's internals
-  would pass.
 - **What a room's code means.** `infra` holds the network and the deploy
   loop whole, and `network::collect::carry_out` — the remote node's use
   cases, by §1 — is infrastructure by location. It imports only what is

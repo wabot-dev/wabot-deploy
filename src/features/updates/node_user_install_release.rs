@@ -41,7 +41,7 @@ pub async fn run(
         ));
     }
     if crate::infra::update::github::Version::current() == Some(release.version) {
-        return Err(crate::web::views::texts::sentences::already_running(
+        return Err(crate::shell::texts::sentences::already_running(
             &release.tag,
         ));
     }

@@ -46,9 +46,7 @@ pub async fn run(
         // right.
         if let Ok(Some(held)) = tenants::by_domain(database, &wanted).await {
             if held.id != tenant.id {
-                return Err(crate::web::views::texts::sentences::name_is_taken(
-                    &held.name,
-                ));
+                return Err(crate::shell::texts::sentences::name_is_taken(&held.name));
             }
         }
     }

@@ -380,7 +380,7 @@ impl RemoteNodeRestController {
         let path = request.uri().path().to_string();
         // Four segments in, not two: this controller is mounted under
         // `/api/network`, so the path is `/api/network/errands/<id>/done`.
-        let Some(id) = crate::web::console::auth::segments(&path)
+        let Some(id) = crate::shell::auth::segments(&path)
             .get(3)
             .map(|id| id.to_string())
         else {

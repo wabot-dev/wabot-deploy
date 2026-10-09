@@ -29,11 +29,11 @@ use serde::Deserialize;
 use wabot::prelude::*;
 use wabot::ui::hypertext::IntoView;
 
-use super::auth::{signed_in, SessionMiddleware};
-use super::ConsoleState;
-use crate::web::views::layouts::layout;
-use crate::web::views::layouts::shell::{Area, Frame};
-use crate::web::views::pages::revealed_page::{Revealed, What};
+use crate::shell::auth::{signed_in, SessionMiddleware};
+use crate::shell::layouts::layout;
+use crate::shell::layouts::shell::{Area, Frame};
+use crate::shell::state::ConsoleState;
+use crate::web::console::revealed_page::{Revealed, What};
 
 #[derive(Debug, Deserialize, Validate, Default)]
 pub struct ShownPage {
@@ -86,8 +86,8 @@ impl RevealUiController {
             what: kind.borrow(),
             secret: &secret,
         };
-        let body = crate::web::views::texts::language::scoped(account.language, || {
-            crate::web::views::pages::revealed_page::render(&page)
+        let body = crate::shell::texts::language::scoped(account.language, || {
+            crate::web::console::revealed_page::render(&page)
                 .render()
                 .into_inner()
         });

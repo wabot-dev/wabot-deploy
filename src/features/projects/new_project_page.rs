@@ -1,7 +1,7 @@
 //! The form that makes a project.
 
 use crate::features::projects::texts::t;
-use crate::web::views::layouts::layout;
+use crate::shell::layouts::layout;
 use hypertext::prelude::*;
 
 pub struct NewProject<'a> {
