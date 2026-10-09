@@ -14,7 +14,7 @@ use crate::infra::repositories::access;
 use crate::infra::repositories::services;
 
 use crate::shell::auth::{
-    back_with_error, field, read_form, see_other, signed_in, SessionMiddleware,
+    back_with_error, field, local_path, read_form, see_other, signed_in, SessionMiddleware,
 };
 use crate::shell::state::ConsoleState;
 
@@ -1479,11 +1479,9 @@ async fn returning_to(request: Request, fallback: &str) -> String {
         Ok(form) => form,
         Err(_) => return fallback.to_string(),
     };
-    let from = field(&form, "from");
-    match from.starts_with('/') && !from.starts_with("//") {
-        true => from.to_string(),
-        false => fallback.to_string(),
-    }
+    local_path(field(&form, "from"))
+        .unwrap_or(fallback)
+        .to_string()
 }
 
 #[cfg(test)]

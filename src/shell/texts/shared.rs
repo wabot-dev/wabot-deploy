@@ -67,6 +67,7 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
     ("From outside the node", "Desde fuera del nodo"),
     ("From outside the node, neither resolves — and there is no edge to choose: an edge terminates TLS and proxies HTTP, while Postgres speaks its own protocol with TLS inside the server. The domain is the node's, inherited by every database it owns.", "Desde fuera del nodo no resuelve ninguno — y no hay edge que elegir: un edge termina TLS y proxya HTTP, mientras Postgres habla su propio protocolo con TLS dentro del servidor. El dominio es el del nodo, heredado por toda base que posea."),
     ("General", "General"),
+    ("Go", "Ir"),
     ("Have it answer for this node's hostnames", "Que responda por los nombres de este nodo"),
     ("Holds", "Ocupa"),
     ("How many", "Cuántas"),

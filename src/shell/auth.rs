@@ -127,6 +127,21 @@ pub async fn read_form(request: Request) -> Result<HashMap<String, String>, Resp
         .collect())
 }
 
+/// A path a form says to go back to, if it is one of this console's.
+///
+/// `//host/` and `/\host/` start with a slash and are another site:
+/// a browser reads both as a scheme-relative URL. The theme and language
+/// switches checked only the slash, which made `from=//evil.example/` a
+/// redirect anywhere — found on a VM node.
+pub fn local_path(from: &str) -> Option<&str> {
+    let mut chars = from.chars();
+    match (chars.next(), chars.next()) {
+        (Some('/'), Some('/' | '\\')) => None,
+        (Some('/'), _) => Some(from),
+        _ => None,
+    }
+}
+
 /// A field, trimmed, or the empty string.
 pub fn field<'a>(form: &'a HashMap<String, String>, name: &str) -> &'a str {
     form.get(name).map(|value| value.trim()).unwrap_or_default()

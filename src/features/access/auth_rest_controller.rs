@@ -114,7 +114,7 @@ impl AuthRestController {
         // Referer: this console decides where its own links go, and a
         // header a client controls is not that.
         let back = field(&form, "from");
-        Ok(see_other(if back.starts_with('/') { back } else { "/" }))
+        Ok(see_other(local_path(back).unwrap_or("/")))
     }
 
     /// Which language they read in. The theme's twin, and deliberately
@@ -140,7 +140,7 @@ impl AuthRestController {
         }
 
         let back = field(&form, "from");
-        Ok(see_other(if back.starts_with('/') { back } else { "/" }))
+        Ok(see_other(local_path(back).unwrap_or("/")))
     }
 
     #[post("/sign-out")]
@@ -265,6 +265,35 @@ mod tests {
             .send()
             .await;
         assert_eq!(after.header("location"), Some("/sign-in"));
+    }
+
+    /// The theme and the language go back where the form says, and only
+    /// to a page of this console.
+    ///
+    /// **Shipped**: the check was "starts with a slash", and `//host/` is
+    /// a scheme-relative URL, so either switch redirected anywhere. Found
+    /// on a VM node.
+    #[tokio::test]
+    async fn a_switch_goes_back_only_to_this_console() {
+        let console = Console::new().await;
+        let cookie = console.signed_in().await;
+        for path in ["/theme", "/language"] {
+            for (from, to) in [
+                ("/projects", "/projects"),
+                ("//evil.example/", "/"),
+                ("/\\evil.example/", "/"),
+                ("https://evil.example/", "/"),
+            ] {
+                let response = console
+                    .harness
+                    .post(path)
+                    .header("cookie", &cookie)
+                    .form(&[("from", from), ("theme", "dark"), ("language", "en")])
+                    .send()
+                    .await;
+                assert_eq!(response.header("location"), Some(to), "{path} from {from}");
+            }
+        }
     }
 
     /// A wrong username and a wrong password must be indistinguishable,
