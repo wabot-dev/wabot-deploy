@@ -4,8 +4,8 @@ use crate::accounts::Account;
 use crate::authz::node_user;
 use crate::commands::s3::Credentials;
 use crate::config::Config;
-use crate::dtos::requests::set_bucket_credentials::SetBucketCredentials;
-use crate::usecases::node_user_set_backup_plan::bucket_refusal;
+use crate::features::backups::node_user_set_backup_plan::bucket_refusal;
+use crate::features::backups::set_bucket_credentials_request::SetBucketCredentialsRequest;
 
 /// The credential lands in the **config file, never the database** — a
 /// database is what a backup copies, and a backup carrying the key to
@@ -14,7 +14,7 @@ pub async fn run(
     database: &SqliteDatabase,
     config: &Config,
     account: &Account,
-    asked: &SetBucketCredentials,
+    asked: &SetBucketCredentialsRequest,
 ) -> Result<(), String> {
     if !node_user::manages_the_machine(account) {
         return Err("only an administrator of this node can do that".into());

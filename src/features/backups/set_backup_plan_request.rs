@@ -17,7 +17,7 @@ use wabot::prelude::*;
 /// so the controller is the only place that can tell "unticked" from
 /// "not on this form".
 #[derive(Debug, Clone, Default, Deserialize, Serialize, Validate)]
-pub struct SetBackupPlan {
+pub struct SetBackupPlanRequest {
     /// Empty means no destination, which is a plan that measures and
     /// keeps nothing rather than a missing field.
     #[serde(default)]

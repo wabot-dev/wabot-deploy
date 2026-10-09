@@ -1,4 +1,5 @@
 pub mod access;
+pub mod backups;
 pub mod databases;
 pub mod network;
 pub mod organisations;

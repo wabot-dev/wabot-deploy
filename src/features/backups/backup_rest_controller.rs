@@ -7,8 +7,8 @@ use wabot::rest::axum::extract::Request;
 use wabot::rest::axum::response::Response;
 use wabot::rest::RestResult;
 
-use super::auth::{signed_in, SessionMiddleware};
-use super::ConsoleState;
+use crate::console::auth::{signed_in, SessionMiddleware};
+use crate::console::ConsoleState;
 use crate::views::pages::node_user_node_settings_page::NodeTab;
 
 #[injectable]
@@ -58,29 +58,29 @@ impl BackupRestController {
     async fn set_backups(&self, request: Request) -> RestResult<Response> {
         let here = &NodeTab::Backup.path();
         let Some(account) = signed_in(&self.auth) else {
-            return Ok(super::auth::see_other("/sign-in"));
+            return Ok(crate::console::auth::see_other("/sign-in"));
         };
         if !crate::authz::node_user::manages_the_machine(&account) {
-            return Ok(super::auth::see_other("/"));
+            return Ok(crate::console::auth::see_other("/"));
         }
-        let form = match super::auth::read_form(request).await {
+        let form = match crate::console::auth::read_form(request).await {
             Ok(form) => form,
             Err(response) => return Ok(response),
         };
 
-        let asked = crate::dtos::requests::set_backup_plan::SetBackupPlan {
-            destination: super::auth::field(&form, "destination").to_string(),
-            cadence: super::auth::field(&form, "cadence").to_string(),
-            hour: super::auth::field(&form, "hour").to_string(),
-            weekday: super::auth::field(&form, "weekday").to_string(),
-            keep_days: super::auth::field(&form, "keep_days").to_string(),
+        let asked = crate::features::backups::set_backup_plan_request::SetBackupPlanRequest {
+            destination: crate::console::auth::field(&form, "destination").to_string(),
+            cadence: crate::console::auth::field(&form, "cadence").to_string(),
+            hour: crate::console::auth::field(&form, "hour").to_string(),
+            weekday: crate::console::auth::field(&form, "weekday").to_string(),
+            keep_days: crate::console::auth::field(&form, "keep_days").to_string(),
             // Presence, not value: an unticked checkbox sends nothing at
             // all, so this is the last place that can tell it from a
             // form that never carried the field.
             archiving: form.contains_key("archiving"),
         };
 
-        let saved = crate::usecases::node_user_set_backup_plan::run(
+        let saved = crate::features::backups::node_user_set_backup_plan::run(
             &self.state.database,
             &self.state.config,
             &account,
@@ -95,9 +95,9 @@ impl BackupRestController {
                 if saved.archiving_changed {
                     self.redeploy_databases().await;
                 }
-                Ok(super::auth::see_other(here))
+                Ok(crate::console::auth::see_other(here))
             }
-            Err(reason) => Ok(super::auth::back_with_error(here, &reason)),
+            Err(reason) => Ok(crate::console::auth::back_with_error(here, &reason)),
         }
     }
 
@@ -121,22 +121,24 @@ impl BackupRestController {
     async fn set_bucket_credentials(&self, request: Request) -> RestResult<Response> {
         let here = &NodeTab::Backup.path();
         let Some(account) = signed_in(&self.auth) else {
-            return Ok(super::auth::see_other("/sign-in"));
+            return Ok(crate::console::auth::see_other("/sign-in"));
         };
         if !crate::authz::node_user::manages_the_machine(&account) {
-            return Ok(super::auth::see_other("/"));
+            return Ok(crate::console::auth::see_other("/"));
         }
-        let form = match super::auth::read_form(request).await {
+        let form = match crate::console::auth::read_form(request).await {
             Ok(form) => form,
             Err(response) => return Ok(response),
         };
-        let asked = crate::dtos::requests::set_bucket_credentials::SetBucketCredentials {
-            access_key_id: super::auth::field(&form, "access_key_id").to_string(),
-            secret_access_key: super::auth::field(&form, "secret_access_key").to_string(),
-            region: super::auth::field(&form, "region").to_string(),
-            endpoint: super::auth::field(&form, "endpoint").to_string(),
-        };
-        match crate::usecases::node_user_set_bucket_credentials::run(
+        let asked =
+            crate::features::backups::set_bucket_credentials_request::SetBucketCredentialsRequest {
+                access_key_id: crate::console::auth::field(&form, "access_key_id").to_string(),
+                secret_access_key: crate::console::auth::field(&form, "secret_access_key")
+                    .to_string(),
+                region: crate::console::auth::field(&form, "region").to_string(),
+                endpoint: crate::console::auth::field(&form, "endpoint").to_string(),
+            };
+        match crate::features::backups::node_user_set_bucket_credentials::run(
             &self.state.database,
             &self.state.config,
             &account,
@@ -144,8 +146,8 @@ impl BackupRestController {
         )
         .await
         {
-            Ok(()) => Ok(super::auth::see_other(here)),
-            Err(reason) => Ok(super::auth::back_with_error(here, &reason)),
+            Ok(()) => Ok(crate::console::auth::see_other(here)),
+            Err(reason) => Ok(crate::console::auth::back_with_error(here, &reason)),
         }
     }
 
@@ -156,21 +158,21 @@ impl BackupRestController {
     async fn forget_bucket_credentials(&self, _request: Request) -> RestResult<Response> {
         let here = &NodeTab::Backup.path();
         let Some(account) = signed_in(&self.auth) else {
-            return Ok(super::auth::see_other("/sign-in"));
+            return Ok(crate::console::auth::see_other("/sign-in"));
         };
         if !crate::authz::node_user::manages_the_machine(&account) {
-            return Ok(super::auth::see_other("/"));
+            return Ok(crate::console::auth::see_other("/"));
         }
-        if let Err(reason) = crate::usecases::node_user_forget_bucket_credentials::run(
+        if let Err(reason) = crate::features::backups::node_user_forget_bucket_credentials::run(
             &self.state.database,
             &self.state.config,
             &account,
         )
         .await
         {
-            return Ok(super::auth::back_with_error(here, &reason));
+            return Ok(crate::console::auth::back_with_error(here, &reason));
         }
-        Ok(super::auth::see_other(here))
+        Ok(crate::console::auth::see_other(here))
     }
 
     /// Take one now.
@@ -186,24 +188,24 @@ impl BackupRestController {
     async fn back_up_now(&self, _request: Request) -> RestResult<Response> {
         let here = &NodeTab::Backup.path();
         let Some(account) = signed_in(&self.auth) else {
-            return Ok(super::auth::see_other("/sign-in"));
+            return Ok(crate::console::auth::see_other("/sign-in"));
         };
         if !crate::authz::node_user::manages_the_machine(&account) {
-            return Ok(super::auth::see_other("/"));
+            return Ok(crate::console::auth::see_other("/"));
         }
         // Refused rather than queued. Two of these is two copies of every
         // database at once on a machine with one core, and a second click
         // on a button that has not answered yet is the ordinary way to
         // ask for that.
-        match crate::usecases::node_user_back_up_now::run(
+        match crate::features::backups::node_user_back_up_now::run(
             &self.state.database,
             &self.state.config,
             &account,
         )
         .await
         {
-            Ok(()) => Ok(super::auth::see_other(here)),
-            Err(reason) => Ok(super::auth::back_with_error(here, &reason)),
+            Ok(()) => Ok(crate::console::auth::see_other(here)),
+            Err(reason) => Ok(crate::console::auth::back_with_error(here, &reason)),
         }
     }
 }

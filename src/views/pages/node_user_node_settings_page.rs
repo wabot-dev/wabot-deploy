@@ -3,13 +3,12 @@ use hypertext::prelude::*;
 use crate::commands::backup::Manifest;
 use crate::commands::s3::Credentials;
 use crate::edge::policy::Policy;
+use crate::features::backups::node_backup_component;
 use crate::network::capability::Capability;
 use crate::node::backups::{Attempt, Plan};
 use crate::node::memory::Snapshot;
 use crate::views::components::node_certificate::{CertificateCells, CertificateState};
-use crate::views::components::{
-    node_backup, node_capabilities, node_certificate, node_settings_cards,
-};
+use crate::views::components::{node_capabilities, node_certificate, node_settings_cards};
 use crate::views::layouts::layout;
 use crate::views::texts::language::t;
 
@@ -178,9 +177,9 @@ pub fn render<'a>(page: &'a NodeSettings<'a>) -> impl Renderable + 'a {
                 plan, attempt, taken, s3, archiving, default_destination, config_path,
                 self_id, running,
             } => {
-                (node_backup::backup_card(plan, *archiving, default_destination))
-                (node_backup::bucket_card(s3.as_ref(), config_path, plan))
-                (node_backup::backup_state_card(plan, attempt, taken, self_id, *running))
+                (node_backup_component::backup_card(plan, *archiving, default_destination))
+                (node_backup_component::bucket_card(s3.as_ref(), config_path, plan))
+                (node_backup_component::backup_state_card(plan, attempt, taken, self_id, *running))
             }
         }
     }

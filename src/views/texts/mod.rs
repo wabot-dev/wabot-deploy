@@ -36,6 +36,7 @@ pub mod shown;
 const TABLES: &[&[(&str, &str)]] = &[
     attention::TABLE,
     crate::features::access::texts::TABLE,
+    crate::features::backups::texts::TABLE,
     crate::features::databases::texts::TABLE,
     crate::features::network::texts::TABLE,
     nodes::TABLE,

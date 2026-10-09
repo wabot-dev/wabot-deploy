@@ -4,16 +4,16 @@ use crate::accounts::Account;
 use crate::authz::node_user;
 use crate::commands::destination::Destination;
 use crate::config::Config;
-use crate::dtos::requests::set_backup_plan::SetBackupPlan;
-use crate::dtos::responses::backup_plan_saved::BackupPlanSaved;
+use crate::features::backups::backup_plan_saved_response::BackupPlanSavedResponse;
+use crate::features::backups::set_backup_plan_request::SetBackupPlanRequest;
 use crate::node::backups::{self, Cadence, Plan};
 
 pub async fn run(
     database: &SqliteDatabase,
     config: &Config,
     account: &Account,
-    asked: &SetBackupPlan,
-) -> Result<BackupPlanSaved, String> {
+    asked: &SetBackupPlanRequest,
+) -> Result<BackupPlanSavedResponse, String> {
     if !node_user::manages_the_machine(account) {
         return Err("only an administrator of this node can do that".into());
     }
@@ -85,7 +85,7 @@ pub async fn run(
         }
     };
 
-    Ok(BackupPlanSaved { archiving_changed })
+    Ok(BackupPlanSavedResponse { archiving_changed })
 }
 
 /// Ask the bucket, and say what it said — or `None` if there is nothing

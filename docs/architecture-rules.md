@@ -854,8 +854,8 @@ listed fails by name.
 
 ### Where it stands
 
-`access`, `databases`, `network`, `organisations`, `people`,
-`projects` and `updates` have moved. The other features are still in their layer directories, and the
+`access`, `backups`, `databases`, `network`, `organisations`,
+`people`, `projects` and `updates` have moved. The other features are still in their layer directories, and the
 guards read both layouts until they are not.
 
 ### What it costs

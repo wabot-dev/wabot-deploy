@@ -7,7 +7,7 @@ use wabot::prelude::*;
 /// what a backup copies, and a backup carrying the key to its own bucket
 /// is a key in every copy.
 #[derive(Debug, Clone, Default, Deserialize, Serialize, Validate)]
-pub struct SetBucketCredentials {
+pub struct SetBucketCredentialsRequest {
     #[serde(default)]
     pub access_key_id: String,
     /// Empty keeps what is stored: a page that showed the secret back to

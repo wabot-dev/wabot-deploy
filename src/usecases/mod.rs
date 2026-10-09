@@ -6,16 +6,12 @@
 pub mod fixtures;
 
 pub mod node_user_add_service_port;
-pub mod node_user_back_up_now;
 pub mod node_user_create_service;
 pub mod node_user_delete_service;
 pub mod node_user_delete_service_port;
 pub mod node_user_deploy_release;
 pub mod node_user_evict_service;
-pub mod node_user_forget_bucket_credentials;
 pub mod node_user_revert_service_env;
-pub mod node_user_set_backup_plan;
-pub mod node_user_set_bucket_credentials;
 pub mod node_user_set_capabilities;
 pub mod node_user_set_certificate_source;
 pub mod node_user_set_node_domain;
