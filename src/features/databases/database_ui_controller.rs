@@ -9,7 +9,7 @@ use wabot::ui::hypertext::IntoView;
 
 use crate::console::auth::{signed_in, SessionMiddleware};
 use crate::console::ConsoleState;
-use crate::policies::access;
+use crate::repositories::access;
 use crate::views::layouts::layout;
 use crate::views::layouts::shell::{Area, Frame};
 

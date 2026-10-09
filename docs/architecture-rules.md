@@ -62,10 +62,18 @@ ended up wherever the first caller needed them. It is being taken apart.
 
 A **policy** is the one that is easy to mistake for a repository because
 it lives near the data. `presets` is a ladder of sizes; `postgres` is the
-arithmetic a memory ceiling implies for the engine; `quotas` is a sum
-that decides whether something fits. None of them stores anything, none
-of them is about one entity, and all of them are pure — which is what
-makes them the easiest things in this tree to test.
+arithmetic a memory ceiling implies for the engine; `wal` is how long the
+log is kept. None of them stores anything, none of them is about one
+entity, and all of them are pure — which is what makes them the easiest
+things in this tree to test.
+
+**And one that reads a row is not a policy, whatever it decides.** Four
+lived here that did: `access`, which reads and writes the membership
+table, and `project_domain`, which reads a tenant, are repositories;
+`quotas`, which sums what an organisation has taken and asks
+`deploy::fits`, and `upstreams`, which picks a name's targets from the
+network's nodes, are the deploy path's. The test is the definition above
+— no storage — and the name of a module is not.
 
 ## 1. One use case per file, named for who does what
 
@@ -302,7 +310,7 @@ places — which is what these rules exist to stop.
 **Four places that can disagree.** That is the real price and it is the
 reason the previous draft of this argued the other way. It is paid by
 keeping the *data* single: an actor's module may not read a role or a
-grant table directly and re-decide it — it composes `platform::access`
+grant table directly and re-decide it — it composes `repositories::access`
 and `network::capability`, which stay the one implementation. A
 question per actor; an answer computed once.
 

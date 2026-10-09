@@ -7,7 +7,7 @@ use wabot::prelude::*;
 use wabot::ui::hypertext::IntoView;
 
 use crate::accounts::{self, invitations};
-use crate::policies::access;
+use crate::repositories::access;
 
 use crate::console::auth::{signed_in, JoinPage, PageQuery, SessionMiddleware};
 use crate::console::ConsoleState;

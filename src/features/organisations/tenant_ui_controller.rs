@@ -28,7 +28,7 @@ use crate::console::ConsoleState;
 use crate::features::organisations::node_user_organisation_settings_page::{
     OrganisationTab, Panel,
 };
-use crate::policies::access;
+use crate::repositories::access;
 use crate::repositories::tenants;
 use crate::values::roles::NodeRole;
 use crate::views::layouts::layout;
@@ -125,7 +125,7 @@ impl TenantUiController {
             .await
             .unwrap_or_default();
         let owners = owners_of(&self.state, &tenant.id).await;
-        let charged = crate::policies::quotas::charged(&self.state.database, &tenant.id)
+        let charged = crate::deploy::quotas::charged(&self.state.database, &tenant.id)
             .await
             .unwrap_or_default();
 

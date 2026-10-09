@@ -8,7 +8,7 @@ pub struct ProjectSettings<'a> {
     pub project: &'a crate::entities::project::Project,
     pub allowed: crate::values::roles::Access,
     pub here: &'a str,
-    pub members: &'a [crate::policies::access::Member],
+    pub members: &'a [crate::repositories::access::Member],
     pub tokens: &'a [crate::entities::push_token::PushToken],
     pub registry_host: Option<&'a str>,
     pub query_error: Option<&'a str>,

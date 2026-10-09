@@ -68,7 +68,7 @@ pub struct Charged {
 /// cost 768 MB, which is what they actually cost. Evicted copies do not
 /// count — the node holding one threw it off, and nothing is running.
 pub async fn charged(database: &SqliteDatabase, tenant_id: &str) -> PlatformResult<Charged> {
-    let projects = crate::policies::access::of_tenant(database, tenant_id).await?;
+    let projects = crate::repositories::access::of_tenant(database, tenant_id).await?;
     let mut charged = Charged::default();
     for project in projects {
         for service in crate::repositories::services::all(database, Some(&project.id)).await? {
@@ -217,7 +217,7 @@ async fn limitless(
     let Some(tenant_id) = &project.tenant_id else {
         return Ok(None);
     };
-    for project in crate::policies::access::of_tenant(database, tenant_id).await? {
+    for project in crate::repositories::access::of_tenant(database, tenant_id).await? {
         for service in crate::repositories::services::all(database, Some(&project.id)).await? {
             if service.id != changing.id && service.memory_limit.is_none() {
                 return Ok(Some(service.slug));

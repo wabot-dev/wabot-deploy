@@ -24,7 +24,9 @@ pub mod hosts;
 pub mod jobs;
 pub mod logs;
 pub mod planner;
+pub mod quotas;
 pub mod routing;
+pub mod upstreams;
 
 use std::net::Ipv4Addr;
 use std::path::PathBuf;
@@ -421,7 +423,7 @@ impl Deployer {
             // of whose project this is rather than of the machine — and
             // the copy on another node has to resolve the same name this
             // one does.
-            let domain = crate::policies::project_domain::domain_for(
+            let domain = crate::repositories::project_domain::domain_for(
                 &self.database,
                 &project,
                 domain.as_deref(),
@@ -2440,7 +2442,7 @@ impl Deployer {
             tracing::warn!(service = %service.slug, "could not work out who answers for its names");
             return;
         };
-        let upstreams = crate::policies::upstreams::upstreams(&placements, &nodes);
+        let upstreams = crate::deploy::upstreams::upstreams(&placements, &nodes);
         let me = nodes.iter().find(|node| node.is_self).map(|node| &*node.id);
         let mine = crate::edge::certs::ca_certificate_pem(&self.database)
             .await
@@ -3734,8 +3736,12 @@ pub async fn certificate_names(
         // certificate held.
         _ => {
             let node_domain = crate::node::settings::domain(database, config).await;
-            crate::policies::project_domain::domain_for(database, project, node_domain.as_deref())
-                .await
+            crate::repositories::project_domain::domain_for(
+                database,
+                project,
+                node_domain.as_deref(),
+            )
+            .await
         }
     };
     // The name the operator chose, or the one every database had before

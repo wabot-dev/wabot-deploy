@@ -3,10 +3,10 @@ use std::collections::BTreeSet;
 use wabot::sqlite::SqliteDatabase;
 
 use crate::config::Config;
+use crate::deploy::quotas;
 use crate::deploy::Deployer;
 use crate::entities::project::Project;
 use crate::entities::service::Service;
-use crate::policies::quotas;
 use crate::repositories::replicas;
 use wabot::prelude::Container;
 

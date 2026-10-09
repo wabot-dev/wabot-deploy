@@ -109,7 +109,7 @@ impl ProjectRole {
 
 /// What one person may do about one project.
 ///
-/// Built by the layer that knows both — see `crate::policies::access` — and
+/// Built by the layer that knows both — see `crate::repositories::access` — and
 /// handed to a handler that only has to ask.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Access {

@@ -2,8 +2,9 @@
 
 use hypertext::prelude::*;
 
+use crate::deploy::quotas::Charged;
 use crate::entities::tenant::Tenant;
-use crate::policies::{presets, quotas::Charged};
+use crate::policies::presets;
 use crate::views::texts::language::t;
 use crate::views::texts::sentences;
 

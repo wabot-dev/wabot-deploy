@@ -8,7 +8,7 @@ use wabot::prelude::*;
 use wabot::ui::hypertext::IntoView;
 
 use crate::network::{self};
-use crate::policies::access;
+use crate::repositories::access;
 
 use crate::console::auth::{signed_in, SessionMiddleware};
 use crate::console::ConsoleState;

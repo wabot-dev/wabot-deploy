@@ -7,7 +7,7 @@ use serde::Deserialize;
 use wabot::prelude::*;
 use wabot::ui::hypertext::IntoView;
 
-use crate::policies::access;
+use crate::repositories::access;
 use crate::update::runs::{self};
 
 use crate::console::auth::{signed_in, SessionMiddleware};

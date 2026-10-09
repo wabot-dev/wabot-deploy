@@ -11,7 +11,7 @@ use wabot::prelude::*;
 use wabot::ui::hypertext::IntoView;
 
 use crate::deploy::dns;
-use crate::policies::access;
+use crate::repositories::access;
 use crate::repositories::config_history;
 use crate::repositories::ports;
 use crate::repositories::releases;
@@ -946,7 +946,7 @@ impl ServiceUiController {
                     );
                     certificates.push((port.id.clone(), hostname.clone(), cells, policy));
                 }
-                let suffix = crate::policies::project_domain::domain_for(
+                let suffix = crate::repositories::project_domain::domain_for(
                     &self.state.database,
                     &project,
                     domain.as_deref(),

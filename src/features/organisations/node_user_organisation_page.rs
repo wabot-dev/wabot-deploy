@@ -1,10 +1,10 @@
 use hypertext::prelude::*;
 
+use crate::deploy::quotas::Charged;
 use crate::entities::account::Account;
 use crate::entities::project::Project;
 use crate::entities::tenant::Tenant;
 use crate::features::organisations::organisation_quota_component::quota_card;
-use crate::policies::quotas::Charged;
 use crate::views::layouts::layout;
 use crate::views::texts::language::t;
 

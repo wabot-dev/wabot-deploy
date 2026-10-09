@@ -259,7 +259,7 @@ pub async fn accept(
     }
 
     if let (Some(project_id), Some(role)) = (&invitation.project_id, invitation.project_role) {
-        crate::policies::access::grant(database, &account.id, project_id, role)
+        crate::repositories::access::grant(database, &account.id, project_id, role)
             .await
             .map_err(|error| AccountError::Refused(error.to_string()))?;
     }
@@ -327,7 +327,7 @@ fn decode(row: &wabot::sqlite::rusqlite::Row<'_>) -> wabot::sqlite::rusqlite::Re
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::policies::access;
+    use crate::repositories::access;
 
     async fn node() -> (SqliteDatabase, Account) {
         let database = crate::db::open_in_memory().await.expect("open");

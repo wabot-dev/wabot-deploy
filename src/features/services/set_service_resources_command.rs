@@ -3,9 +3,9 @@ use wabot::sqlite::SqliteDatabase;
 use crate::deploy::Deployer;
 use crate::entities::project::Project;
 
+use crate::deploy::quotas;
 use crate::entities::service::Service;
 use crate::policies::presets;
-use crate::policies::quotas;
 use crate::repositories::replicas;
 use crate::repositories::services;
 

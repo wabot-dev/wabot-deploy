@@ -13,7 +13,7 @@ use wabot::ui::hypertext::IntoView;
 use crate::accounts::{self, invitations};
 use crate::console::auth::{signed_in, JoinPage, PageQuery, SessionMiddleware};
 use crate::console::ConsoleState;
-use crate::policies::access;
+use crate::repositories::access;
 use crate::views::layouts::layout;
 use crate::views::layouts::shell::{Area, Frame};
 use crate::views::texts::language::t;

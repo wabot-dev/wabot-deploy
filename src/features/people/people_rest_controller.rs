@@ -224,7 +224,7 @@ impl PeopleRestController {
 mod tests {
     use crate::accounts::{self, invitations};
     use crate::console::tests::Console;
-    use crate::policies::access;
+    use crate::repositories::access;
     use wabot::rest::axum::http::StatusCode;
 
     /// Create an invitation the way the console does, and pull the

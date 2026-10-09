@@ -177,7 +177,7 @@ pub async fn set_quota(
 /// `capability::owns` uses to refuse being turned off while the node
 /// still owns projects, and for the same reason.
 pub async fn delete(database: &SqliteDatabase, id: &str) -> PlatformResult<()> {
-    let held = crate::policies::access::of_tenant(database, id)
+    let held = crate::repositories::access::of_tenant(database, id)
         .await?
         .len();
     if held > 0 {
