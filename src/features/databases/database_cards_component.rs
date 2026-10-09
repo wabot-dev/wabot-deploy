@@ -583,9 +583,9 @@ pub fn published_card<'a>(
                      another database's. It survives a redeployment and changes only if you \
                      turn this off and on again."))</p>
             } @else {
-                <p class="field-hint">(t("The name already resolves from outside and nothing \
-                     answers there. Publishing opens a port on every interface of this node \
-                     and maps it to the primary."))</p>
+                <p class="field-hint">(t("Nothing outside this node can reach it until it is \
+                     published. Publishing opens a port on every interface of this node and \
+                     maps it to the primary."))</p>
             }
 
             <form method="post" action=(action)>
@@ -691,8 +691,8 @@ pub fn connection_block(strings: &Strings, published: Option<u16>) -> impl Rende
                     </p>
                 } @else {
                     <p class="field-hint">(t("These reach it from inside the project, on any \
-                         node holding a copy — the long name resolves in the world's DNS too, \
-                         and nothing answers there until a port is published below."))</p>
+                         node holding a copy. From outside, nothing answers until a port is \
+                         published below."))</p>
                 }
             </div>
         </details>
