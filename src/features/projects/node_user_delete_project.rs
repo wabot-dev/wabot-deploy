@@ -2,10 +2,10 @@ use wabot::sqlite::SqliteDatabase;
 
 use crate::accounts::roles::Access;
 use crate::accounts::Account;
-use crate::authz::tenant_user;
-use crate::commands::delete_project::DeleteProject;
+use crate::authz::node_user;
 use crate::deploy::Deployer;
 use crate::entities::project::Project;
+use crate::features::projects::delete_project_command::DeleteProject;
 
 pub async fn run(
     database: &SqliteDatabase,
@@ -15,7 +15,7 @@ pub async fn run(
     allowed: &Access,
     confirm: &str,
 ) -> Result<(), String> {
-    if !tenant_user::belongs_here(account) {
+    if !node_user::belongs_here(account) {
         return Err("that is not this console's to delete".into());
     }
 

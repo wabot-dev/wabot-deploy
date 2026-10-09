@@ -31,8 +31,6 @@ pub mod node_rest_controller;
 pub mod node_ui_controller;
 pub mod people_rest_controller;
 pub mod people_ui_controller;
-pub mod project_rest_controller;
-pub mod project_ui_controller;
 pub mod reveal_ui_controller;
 pub mod service_rest_controller;
 pub mod service_ui_controller;
@@ -53,6 +51,7 @@ use wabot::ui::embedded_assets;
 use crate::config::Config;
 use crate::edge::certs;
 use crate::features::databases::{database_rest_controller, database_ui_controller};
+use crate::features::projects::{project_rest_controller, project_ui_controller};
 
 /// What every console page reads from. Never cached: this is a status
 /// console, and a cached status is the thing it exists not to be.

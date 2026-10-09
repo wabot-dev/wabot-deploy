@@ -3,27 +3,27 @@ use wabot::sqlite::SqliteDatabase;
 use crate::accounts::roles::Access;
 use crate::accounts::Account;
 use crate::authz::tenant_user;
-use crate::commands::remove_project_member::RemoveProjectMember;
 use crate::entities::project::Project;
+use crate::features::projects::revoke_project_token_command::RevokeProjectToken;
 
 pub async fn run(
     database: &SqliteDatabase,
     account: &Account,
     project: &Project,
     allowed: &Access,
-    person: &str,
+    token: &str,
 ) -> Result<(), String> {
     if !tenant_user::belongs_here(account) {
-        return Err("that is not this console's to change".into());
+        return Err("that is not this console's to revoke".into());
     }
 
-    if !allowed.may_administer() {
-        return Err("only an owner can change who is here".into());
+    if !allowed.may_deploy() {
+        return Err("you may look at this project, not push to it".into());
     }
 
-    RemoveProjectMember {
+    RevokeProjectToken {
         project_id: &project.id,
-        account_id: person,
+        token_id: token,
     }
     .run(database)
     .await

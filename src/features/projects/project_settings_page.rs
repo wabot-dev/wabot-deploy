@@ -38,7 +38,7 @@ pub fn render<'a>(page: &'a ProjectSettings<'a>) -> impl Renderable + 'a {
             (layout::error_note(message))
         }
 
-        (crate::views::components::people_card::people_card(here, members, allowed))
+        (crate::features::projects::people_card_component::people_card(here, members, allowed))
 
         <section class="card stack">
             <div class="split">

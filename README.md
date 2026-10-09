@@ -186,19 +186,21 @@ what is missing. Read-only; safe on a live node.
 | | |
 | --- | --- |
 | `src/cli.rs`, `src/commands/` | the verbs: `install`, `serve`, `doctor`, `join`, `setup-token`, `containerd` |
+| `src/features/` | one folder per feature — its use cases, commands, requests, responses, controllers, pages and words ([rule 11](docs/architecture-rules.md)) |
+| `src/usecases/`, `src/dtos/` | the same kinds, for the features that have not moved into a folder yet; their commands are still in `src/commands/` |
+| `src/entities/`, `src/values/`, `src/policies/`, `src/repositories/` | what every feature reads: the models, their rules, their rows |
 | `src/config.rs`, `src/db.rs`, `src/ledger.rs` | configuration, migrations, which install steps have run |
 | `src/api.rs` | `/healthz`, `/readyz` and the control-plane surface |
 | `src/edge/` | TLS, certificates, ACME, host routing, the reverse proxy |
 | `src/bootstrap/` | preflight, containerd + crun + CNI, the systemd unit |
 | `src/runtime/` | the containerd client: images, snapshots, specs, containers |
 | `src/registry/` | the OCI Distribution API over containerd's content store |
-| `src/platform/` | projects, services, ports, releases, access, tokens |
 | `src/accounts/` | accounts, sessions, invitations, roles |
 | `src/deploy/` | deploying a service, DNS checks, route synchronisation |
 | `src/node/` | what this machine is: memory, settings |
 | `src/network/` | the nodes it knows, who may configure it, enrolment |
 | `src/update/` | the release catalogue and the self-update |
-| `src/console/` | the web console |
+| `src/console/`, `src/views/` | the web console's shell — router, sessions, layout, shared pieces — and the pages not yet in a feature |
 | `migrations/` | embedded with `include_str!`, so the binary stands alone |
 | `assets/` | the design system, vendored — a node must not need a CDN |
 

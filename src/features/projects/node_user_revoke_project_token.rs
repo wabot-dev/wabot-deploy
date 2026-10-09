@@ -2,9 +2,9 @@ use wabot::sqlite::SqliteDatabase;
 
 use crate::accounts::roles::Access;
 use crate::accounts::Account;
-use crate::authz::tenant_user;
-use crate::commands::revoke_project_token::RevokeProjectToken;
+use crate::authz::node_user;
 use crate::entities::project::Project;
+use crate::features::projects::revoke_project_token_command::RevokeProjectToken;
 
 pub async fn run(
     database: &SqliteDatabase,
@@ -13,7 +13,7 @@ pub async fn run(
     allowed: &Access,
     token: &str,
 ) -> Result<(), String> {
-    if !tenant_user::belongs_here(account) {
+    if !node_user::belongs_here(account) {
         return Err("that is not this console's to revoke".into());
     }
 

@@ -48,8 +48,15 @@ service's rules are.
 
 ### Where each one goes
 
-`src/console` controllers, `src/views`, `src/usecases`, `src/commands`,
-`src/entities`, `src/repositories`, `src/values`, `src/policies`. `platform` was a name for five of these at once, which is why the rules
+A feature's controllers, pages, components, use cases, commands,
+requests and responses go in its own folder under `src/features`, each
+named for what it is — §11. What every feature reads stays a layer of
+its own: `src/entities`, `src/repositories`, `src/values`,
+`src/policies`, and the console's shell in `src/console` and
+`src/views`. `src/usecases`, `src/commands` and `src/dtos` still hold
+what has not moved into a feature yet.
+
+`platform` was a name for five of these at once, which is why the rules
 ended up wherever the first caller needed them. It is being taken apart.
 
 A **policy** is the one that is easy to mistake for a repository because
@@ -117,18 +124,23 @@ router. It holds both now, and
 `an_invitation_link_finds_a_door_in_either_console` is the test that
 fails when one of them loses a door.
 
-### Flat, with the actor in the filename
+### In its feature's folder, with the actor in the filename
 
-`src/usecases/` holds them all, unnested. The actor is a prefix rather
-than a directory, for two reasons:
+A use case lives beside the command, the request, the controller and
+the page it is made of —
+`src/features/databases/tenant_user_restore_database.rs` — and the actor
+stays a prefix rather than a directory:
 
 - **A filename travels.** It is what a stack trace prints, what a grep
   returns, what a review shows. A directory that carries the actor
   leaves the filename saying `create_project.rs`, which is the thing this
-  rule exists to stop.
-- **Sorting groups them anyway.** `cli_user_*`, `node_user_*`,
-  `remote_node_*`, `tenant_user_*` — the listing is the grouping, without
-  a path that repeats what the name already says.
+  rule exists to stop. A directory that carries the *feature* takes
+  nothing away: the file still says who and what.
+
+They were all in `src/usecases/` first, flat, on the argument that
+sorting groups them anyway. It did — by actor, which is the grouping
+nobody arrives with. Changing how a database is restored meant knowing
+which eight directories to open; §11 is what replaced it.
 
 ### What this fixes
 
@@ -636,9 +648,12 @@ checked at all.**
 
 ## 9. A use case takes a request and hands back a response
 
-The two ends of a use case are named shapes that live in `src/dtos`.
-Never a form, never an argument list that grew, never an entity coming
-back out.
+The two ends of a use case are named shapes: a `_request.rs` and a
+`_response.rs` in its feature's folder, each holding a type named for
+its file — `CreateDatabaseRequest` in `create_database_request.rs`
+(§11). `src/dtos` holds the ones whose feature has not moved yet, and
+the shapes more than one feature carries. Never a form, never an
+argument list that grew, never an entity coming back out.
 
 ```
 form ──▶ Controller ──▶ Request ──▶ UseCase ──▶ Response ──▶ Controller ──▶ View
@@ -698,7 +713,7 @@ compiled.
 
 ### The guard
 
-Three, and all three read the directory rather than a list — *a guard
+Four, and all four read directories rather than a list — *a guard
 that names its inputs is right until somebody adds an input*, which has
 cost this project five times:
 
@@ -706,9 +721,13 @@ cost this project five times:
 - `no_use_case_reads_a_form` — `HashMap`, `read_form`, `axum`,
   `form_urlencoded`
 - `every_dto_written_is_a_dto_the_tree_knows_about`
+- `a_request_or_a_response_is_named_for_its_file`
 
-The first two carry a floor (`read > 50`), because a scan pointed at the
-wrong place finds nothing wrong and passes.
+The first two walk all of `src` and know a use case by its actor prefix,
+not by its directory: they read `src/usecases` until the first feature
+moved, and would have stopped reading every use case that left it. They
+carry a floor (`read > 50`), because a scan pointed at the wrong place
+finds nothing wrong and passes.
 
 ### Mapping
 
@@ -728,3 +747,118 @@ because the command's callers are in the domain, and the use case is
 what turns it into `EnvApplied`. Where a command's return has no entity
 in it — `NameDatabase` — the command returns the response itself and the
 duplicate does not exist.
+
+## 11. A feature is a folder
+
+Everything one feature is made of sits in one directory under
+`src/features`, and the filename says what each file is:
+
+| The name | What it is |
+|---|---|
+| `node_user_…`, `tenant_user_…`, `guest_…`, `cli_user_…`, `remote_node_…` | a use case (§1) |
+| `…_command.rs` | a command (§2) |
+| `…_request.rs`, `…_response.rs` | what a use case is asked and hands back (§9) |
+| `…_rest_controller.rs`, `…_ui_controller.rs` | a controller (§10) |
+| `…_page.rs` | a page (§5) |
+| `…_component.rs` | a piece a page is drawn from, kept in a file of its own |
+| `texts.rs` | the feature's words, in both languages |
+
+```
+src/features/databases/
+  create_database_command.rs        node_user_create_database.rs
+  create_database_request.rs        node_user_restore_database.rs
+  database_cards_component.rs       restore_database_command.rs
+  database_rest_controller.rs       tenant_user_create_database.rs
+  new_database_page.rs              texts.rs   …
+```
+
+### Why
+
+Measured before the first move: the databases feature was twenty-two
+files in eight directories — `usecases`, `commands`, `dtos/requests`,
+`dtos/responses`, `console`, `views/pages`, `views/components`,
+`views/texts`. Every one of those directories was right about what its
+files were, and none of them said which feature a file served. A layer
+directory answers *what kind of thing is this*; the question somebody
+arrives with is *where is the thing I am changing*.
+
+The layers did not go anywhere. A file is still exactly one kind — the
+controller does not draw, the use case does not read a form — and that
+is carried by its name now instead of its directory. Sorted, a folder
+reads as the feature's table of contents: the verbs group
+(`create_database_command`, `create_database_request`), and the actors
+group (`node_user_…`, `tenant_user_…`).
+
+### The kind is in the name because the guards read names
+
+A directory holding every kind cannot tell a guard what a file is.
+Thirteen guards knew what they were reading by where it lived —
+`src/usecases` meant a use case, `src/console` a controller,
+`src/views/pages` something drawn — and every one of them would have
+stopped reading a database file the moment it moved, and stayed green.
+`crate::tree` walks directories and reads the kind off the name, and
+each of those guards reads `src/features` as well. Before the first move
+was called done, eleven of them were seen red on a fault planted inside
+a feature folder; of the other two, one shares its scan with a guard
+that was, and one asserts that a sentence exists somewhere, which
+reading more files cannot break.
+
+Two guards hold the folder itself to it:
+`every_file_in_a_feature_says_what_it_is`, because a file with no kind
+in its name is one every guard reads as nothing, and
+`every_file_in_a_feature_is_compiled`, because a file its `mod.rs` does
+not declare compiles nowhere and drifts with the suite green.
+
+### A request is named for its file
+
+`create_database_request.rs` holds `CreateDatabaseRequest`, the way
+§10 names a controller for its file; a response is the same. The
+command beside it is still `CreateDatabase`, because §2 names a command
+for the job — and that is exactly why the request needed the suffix:
+both were `CreateDatabase`, and a use case importing the two could only
+be read by their paths. `a_request_or_a_response_is_named_for_its_file`.
+
+### What stays outside
+
+What every feature reads: entities, values, policies, repositories, the
+runtime, the edge. And the console's shell — the router, the session,
+the layout, the language, and the pieces that show nothing of any
+feature's (`mark`, the logo a page without a header opens with;
+`action_button`) — stays in `src/console` and `src/views`.
+
+**Any other component goes with the feature whose thing it shows, and
+the pages that draw it say which better than its name does.** `service_table` and `people_card`
+are drawn only by project pages and show a project, so they are the
+projects feature's; `project_cells` is drawn only by service pages and
+shows a replica, so it is not. `attention_card` is drawn only by the
+projects page too, but because that page is the console's home: what it
+shows is the node's, so it stays out until attention has a folder of
+its own.
+
+A feature's words are its own `texts.rs`, and `views::texts::TABLES`
+lists each one by its path. `the_lookup_searches_every_table_there_is`
+finds them by walking `src/features`, so a feature whose table is not
+listed fails by name.
+
+### Where it stands
+
+`databases` and `projects` have moved. The other features are still in
+their layer directories, and the guards read both layouts until they
+are not.
+
+### What it costs
+
+- **Longer paths.**
+  `crate::features::databases::create_database_command::CreateDatabase`.
+- **A page that draws another feature's piece imports across folders.**
+  The service pages draw the database cards; the project page draws
+  `service_state`, which will be the services feature's.
+- **A door can sit in the wrong feature, and the folder makes it
+  visible.** Restoring a database is answered by the service controller,
+  which calls the databases feature's use cases from outside it.
+- **Code beneath a feature can reach up into it.** `deploy` calls
+  `qualified_name` out of `create_database_command.rs`. That dependency
+  pointed the wrong way before the move; the move is what made it
+  readable.
+- **Two layouts at once**, until the rest move — and a guard written in
+  the meantime has to read both.

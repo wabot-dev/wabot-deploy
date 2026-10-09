@@ -2,8 +2,8 @@ use wabot::sqlite::SqliteDatabase;
 
 use crate::accounts::Account;
 use crate::authz::tenant_user;
-use crate::commands::create_project::CreateProject;
 use crate::entities::project::Project;
+use crate::features::projects::create_project_command::CreateProject;
 
 pub async fn run(
     database: &SqliteDatabase,

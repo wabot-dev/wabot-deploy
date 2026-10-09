@@ -42,7 +42,7 @@ pub fn people_card<'a>(
                                 <td>(&member.username)</td>
                                 <td>
                                     <span class="badge">(member.role.label())</span>
-                                    <span class="tile-detail">(crate::views::components::people_card::role_means(member.role))</span>
+                                    <span class="tile-detail">(crate::features::projects::people_card_component::role_means(member.role))</span>
                                 </td>
                                 <td class="row-actions">
                                     @if allowed.may_administer() {

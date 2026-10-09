@@ -3,9 +3,9 @@ use wabot::sqlite::SqliteDatabase;
 use crate::accounts::roles::Access;
 use crate::accounts::roles::ProjectRole;
 use crate::accounts::Account;
-use crate::authz::node_user;
-use crate::commands::add_project_member::AddProjectMember;
+use crate::authz::tenant_user;
 use crate::entities::project::Project;
+use crate::features::projects::add_project_member_command::AddProjectMember;
 
 pub async fn run(
     database: &SqliteDatabase,
@@ -15,7 +15,7 @@ pub async fn run(
     username: &str,
     role: ProjectRole,
 ) -> Result<(), String> {
-    if !node_user::belongs_here(account) {
+    if !tenant_user::belongs_here(account) {
         return Err("that is not this console's to change".into());
     }
 

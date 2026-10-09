@@ -9,6 +9,10 @@
 //! - the shared ones here, for shapes more than one request or response
 //!   carries.
 //!
+//! A feature with a folder under `src/features` keeps its own beside the
+//! use case, as `…_request.rs` and `…_response.rs`; what is here belongs
+//! to the features that have not moved yet, or to more than one.
+//!
 //! **The same DTO crosses both boundaries.** A controller reads a form
 //! into a request and hands that request to the use case; the response
 //! comes back and the controller renders it. One shape for "what was

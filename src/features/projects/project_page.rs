@@ -58,7 +58,7 @@ pub fn render<'a>(page: &'a ProjectView<'a>) -> impl Renderable + 'a {
                     <p>(t("No services yet."))</p>
                 </section>
             } @else {
-                (crate::views::components::service_table::service_table(project, rows, allowed))
+                (crate::features::projects::service_table_component::service_table(project, rows, allowed))
             }
 
     }

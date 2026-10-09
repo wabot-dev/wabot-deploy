@@ -1,4 +1,5 @@
 pub mod databases;
+pub mod projects;
 
 #[cfg(test)]
 mod tests {

@@ -12,8 +12,8 @@ use wabot::ui::hypertext::IntoView;
 use crate::policies::access;
 use crate::repositories::services;
 
-use super::auth::{signed_in, PageQuery, SessionMiddleware};
-use super::ConsoleState;
+use crate::console::auth::{signed_in, PageQuery, SessionMiddleware};
+use crate::console::ConsoleState;
 use crate::views::layouts::layout;
 use crate::views::layouts::shell::{Area, Frame};
 
@@ -36,9 +36,10 @@ impl ProjectUiController {
     #[middleware(SessionMiddleware)]
     async fn index(&self, query: PageQuery) -> UiResult<ViewOutcome> {
         let Some(account) = signed_in(&self.auth) else {
-            return Ok(
-                Redirect::found(super::auth::signed_out_destination(&self.state).await).into(),
-            );
+            return Ok(Redirect::found(
+                crate::console::auth::signed_out_destination(&self.state).await,
+            )
+            .into());
         };
 
         // The filter is the query, not the page: a list built from
@@ -51,7 +52,7 @@ impl ProjectUiController {
         // being told about another's certificates, and every source here
         // is node-wide.
         let concerns = match account.is_admin() {
-            true => super::attention::gather(&self.state)
+            true => crate::console::attention::gather(&self.state)
                 .await
                 .unwrap_or_default(),
             false => Vec::new(),
@@ -66,14 +67,14 @@ impl ProjectUiController {
         let frame = Frame::new(&account, Area::Projects, &projects, None, "/");
         // The account's language, around the render and no wider:
         // the strings are read here, and nothing awaits inside.
-        let page = crate::views::pages::projects_page::Projects {
+        let page = crate::features::projects::projects_page::Projects {
             projects: &projects,
             owns,
             concerns: &concerns,
             query_error: query.error.as_deref(),
         };
         let body = crate::views::texts::language::scoped(account.language, || {
-            crate::views::pages::projects_page::render(&page)
+            crate::features::projects::projects_page::render(&page)
                 .render()
                 .into_inner()
         });
@@ -100,11 +101,11 @@ impl ProjectUiController {
         let frame = Frame::new(&account, Area::Projects, &projects, None, "/projects/new");
         // The account's language, around the render and no wider:
         // the strings are read here, and nothing awaits inside.
-        let page = crate::views::pages::new_project_page::NewProject {
+        let page = crate::features::projects::new_project_page::NewProject {
             query_error: query.error.as_deref(),
         };
         let body = crate::views::texts::language::scoped(account.language, || {
-            crate::views::pages::new_project_page::render(&page)
+            crate::features::projects::new_project_page::render(&page)
                 .render()
                 .into_inner()
         });
@@ -185,7 +186,7 @@ impl ProjectUiController {
         .allowing(allowed);
         // The account's language, around the render and no wider:
         // the strings are read here, and nothing awaits inside.
-        let page = crate::views::pages::project_page::ProjectView {
+        let page = crate::features::projects::project_page::ProjectView {
             project: &project,
             allowed,
             rows: &rows,
@@ -194,7 +195,7 @@ impl ProjectUiController {
             query_error: query.error.as_deref(),
         };
         let body = crate::views::texts::language::scoped(account.language, || {
-            crate::views::pages::project_page::render(&page)
+            crate::features::projects::project_page::render(&page)
                 .render()
                 .into_inner()
         });
@@ -272,7 +273,7 @@ impl ProjectUiController {
         layout::head(&format!("{} settings", project.name));
         // The account's language, around the render and no wider:
         // the strings are read here, and nothing awaits inside.
-        let page = crate::views::pages::project_settings_page::ProjectSettings {
+        let page = crate::features::projects::project_settings_page::ProjectSettings {
             project: &project,
             allowed,
             here: &here,
@@ -282,7 +283,7 @@ impl ProjectUiController {
             query_error: query.error.as_deref(),
         };
         let body = crate::views::texts::language::scoped(account.language, || {
-            crate::views::pages::project_settings_page::render(&page)
+            crate::features::projects::project_settings_page::render(&page)
                 .render()
                 .into_inner()
         });

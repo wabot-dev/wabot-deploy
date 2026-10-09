@@ -1,6 +1,6 @@
 //! What a project's forms post to.
 
-use super::live::{edge_cells, name_cells, replica_cells, Live};
+use crate::console::live::{edge_cells, name_cells, replica_cells, Live};
 use std::sync::Arc;
 
 use crate::views::components::service_state::{elsewhere_of, state_cell, where_it_runs};
@@ -15,8 +15,10 @@ use crate::accounts::roles::ProjectRole;
 use crate::policies::access;
 use crate::repositories::services;
 
-use super::auth::{back_with_error, field, read_form, see_other, signed_in, SessionMiddleware};
-use super::ConsoleState;
+use crate::console::auth::{
+    back_with_error, field, read_form, see_other, signed_in, SessionMiddleware,
+};
+use crate::console::ConsoleState;
 
 impl ProjectRestController {
     /// The project this request is about, what the caller may do with
@@ -40,7 +42,7 @@ impl ProjectRestController {
         let Some(account) = signed_in(&self.auth) else {
             return Ok(None);
         };
-        let segments = super::auth::segments(path);
+        let segments = crate::console::auth::segments(path);
         let Some(slug) = segments.get(1) else {
             return Ok(None);
         };
@@ -81,11 +83,15 @@ impl ProjectRestController {
 
         let made = match crate::authz::node_user::belongs_here(&account) {
             true => {
-                crate::usecases::node_user_create_project::run(&self.state.database, &account, name)
-                    .await
+                crate::features::projects::node_user_create_project::run(
+                    &self.state.database,
+                    &account,
+                    name,
+                )
+                .await
             }
             false => {
-                crate::usecases::tenant_user_create_project::run(
+                crate::features::projects::tenant_user_create_project::run(
                     &self.state.database,
                     &account,
                     name,
@@ -121,7 +127,10 @@ impl ProjectRestController {
                 .body(Body::empty())
                 .expect("a constant response is well-formed"));
         };
-        let Some(slug) = super::auth::segments(&path).get(1).map(|s| s.to_string()) else {
+        let Some(slug) = crate::console::auth::segments(&path)
+            .get(1)
+            .map(|s| s.to_string())
+        else {
             return Ok(Response::builder()
                 .status(StatusCode::NOT_FOUND)
                 .body(Body::empty())
@@ -238,7 +247,7 @@ impl ProjectRestController {
 
         let added = match crate::authz::node_user::belongs_here(&account) {
             true => {
-                crate::usecases::node_user_add_project_member::run(
+                crate::features::projects::node_user_add_project_member::run(
                     &self.state.database,
                     &account,
                     &project,
@@ -249,7 +258,7 @@ impl ProjectRestController {
                 .await
             }
             false => {
-                crate::usecases::tenant_user_add_project_member::run(
+                crate::features::projects::tenant_user_add_project_member::run(
                     &self.state.database,
                     &account,
                     &project,
@@ -287,7 +296,7 @@ impl ProjectRestController {
 
         let removed = match crate::authz::node_user::belongs_here(&account) {
             true => {
-                crate::usecases::node_user_remove_project_member::run(
+                crate::features::projects::node_user_remove_project_member::run(
                     &self.state.database,
                     &account,
                     &project,
@@ -297,7 +306,7 @@ impl ProjectRestController {
                 .await
             }
             false => {
-                crate::usecases::tenant_user_remove_project_member::run(
+                crate::features::projects::tenant_user_remove_project_member::run(
                     &self.state.database,
                     &account,
                     &project,
@@ -364,7 +373,7 @@ impl ProjectRestController {
 
         let minted = match crate::authz::node_user::belongs_here(&account) {
             true => {
-                crate::usecases::node_user_create_project_token::run(
+                crate::features::projects::node_user_create_project_token::run(
                     &self.state.database,
                     &account,
                     &project,
@@ -374,7 +383,7 @@ impl ProjectRestController {
                 .await
             }
             false => {
-                crate::usecases::tenant_user_create_project_token::run(
+                crate::features::projects::tenant_user_create_project_token::run(
                     &self.state.database,
                     &account,
                     &project,
@@ -435,7 +444,7 @@ impl ProjectRestController {
 
         let revoked = match crate::authz::node_user::belongs_here(&account) {
             true => {
-                crate::usecases::node_user_revoke_project_token::run(
+                crate::features::projects::node_user_revoke_project_token::run(
                     &self.state.database,
                     &account,
                     &project,
@@ -445,7 +454,7 @@ impl ProjectRestController {
                 .await
             }
             false => {
-                crate::usecases::tenant_user_revoke_project_token::run(
+                crate::features::projects::tenant_user_revoke_project_token::run(
                     &self.state.database,
                     &account,
                     &project,
@@ -497,7 +506,7 @@ impl ProjectRestController {
 
         let deleted = match crate::authz::node_user::belongs_here(&account) {
             true => {
-                crate::usecases::node_user_delete_project::run(
+                crate::features::projects::node_user_delete_project::run(
                     &self.state.database,
                     &self.state.deployer,
                     &account,
@@ -508,7 +517,7 @@ impl ProjectRestController {
                 .await
             }
             false => {
-                crate::usecases::tenant_user_delete_project::run(
+                crate::features::projects::tenant_user_delete_project::run(
                     &self.state.database,
                     &self.state.deployer,
                     &account,

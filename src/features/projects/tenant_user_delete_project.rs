@@ -1,33 +1,29 @@
 use wabot::sqlite::SqliteDatabase;
 
 use crate::accounts::roles::Access;
-use crate::accounts::roles::ProjectRole;
 use crate::accounts::Account;
 use crate::authz::tenant_user;
-use crate::commands::add_project_member::AddProjectMember;
+use crate::deploy::Deployer;
 use crate::entities::project::Project;
+use crate::features::projects::delete_project_command::DeleteProject;
 
 pub async fn run(
     database: &SqliteDatabase,
+    deployer: &Deployer,
     account: &Account,
     project: &Project,
     allowed: &Access,
-    username: &str,
-    role: ProjectRole,
+    confirm: &str,
 ) -> Result<(), String> {
     if !tenant_user::belongs_here(account) {
-        return Err("that is not this console's to change".into());
+        return Err("that is not this console's to delete".into());
     }
 
     if !allowed.may_administer() {
-        return Err("only an owner can change who is here".into());
+        return Err("only an owner can delete this project".into());
     }
 
-    AddProjectMember {
-        project_id: &project.id,
-        username,
-        role,
-    }
-    .run(database)
-    .await
+    DeleteProject { project, confirm }
+        .run(database, deployer)
+        .await
 }

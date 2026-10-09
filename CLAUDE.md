@@ -34,7 +34,7 @@ bindings in a build script.
 
 ## The architecture rules
 
-Ten, written in full with their costs in
+Eleven, written in full with their costs in
 [`docs/architecture-rules.md`](docs/architecture-rules.md). They are
 about **the shape of this software**. How the network of nodes is put
 together is a separate subject with its own documents — see "The
@@ -42,8 +42,9 @@ network and the databases" below.
 
 1. **One use case per file, named for who does what.** Five actors:
    `node_user_`, `tenant_user_`, `guest_`, `cli_user_`, `remote_node_`.
-   Flat, with the actor in the filename, because a directory carrying
-   the actor leaves the file called `create_project.rs`.
+   In its feature's folder, with the actor in the filename, because a
+   directory carrying the actor would leave the file called
+   `create_project.rs`.
 2. **A command has one body and two doors** — synchronous is calling
    `run`, asynchronous is a `#[command_handler]` calling the same `run`.
    **One synchronous caller means there is no command**: the body goes
@@ -53,7 +54,7 @@ network and the databases" below.
    theirs; the command trusts.
 4. **A command returns success or a reason, and nothing else.**
 5. **Controllers are thin; a page is a file.** A controller reads the
-   form, calls the use case, redirects. `src/pages/` renders.
+   form, calls the use case, redirects. A `…_page.rs` renders.
 6. **Zero comments** unless the comment explains *why it was done this
    way*. This supersedes the older habit of matching a file's comment
    density: new code carries none, and a file being refactored loses the
@@ -68,20 +69,33 @@ network and the databases" below.
    over the label, not after it — and an **icon-only button gets no
    mark at all**, because it has no label for one to replace.
    Enhancement only — see "The console works without JavaScript".
-9. **A use case takes a request and hands back a response.** Both live
-   in `src/dtos`, and the controller is what builds the request — so it
-   arrives with its shape already right. The form's own spelling stops
+9. **A use case takes a request and hands back a response.** Both sit
+   beside it in its feature, named for their files —
+   `CreateDatabaseRequest` in `create_database_request.rs` — and the
+   controller is what builds the request, so it arrives with its shape
+   already right. The form's own spelling stops
    there: an unticked checkbox sends nothing, and a use case that knew
    `accept-host` would be one only a browser could call.
 10. **One controller per file, named for what it is.**
    `<Subject><Kind>Controller` in `<subject>_<kind>_controller.rs`.
    Splitting them is what shows you what two controllers shared, and
    every one of those turned out to be in the wrong place.
+11. **A feature is a folder.** `src/features/<feature>/` holds its use
+   cases, commands, requests, responses, controllers, pages, components
+   and `texts.rs`, and the filename says which: an actor prefix, or
+   `_command`, `_request`, `_response`, `_controller`, `_page`,
+   `_component`. A layer directory says what a file is; the question
+   somebody arrives with is where the thing they are changing lives.
+   The guards read a file's kind off its name (`crate::tree`), so a file
+   whose name says nothing fails.
 
-Where the tree stands: every use case's two ends are DTOs and no
-controller draws — four guards read directories to keep it that way.
-`src/views/pages/` holds 24 files; `console/services.rs` is still 6,800
-lines of handlers and `console/nodes.rs` 3,700. No `cli_user_` or
+Where the tree stands: `databases` and `projects` are folders under
+`src/features` (49 files); every other feature is still spread across
+the layer directories, with 67 use cases left in `src/usecases`. Every
+use case's two ends are a request and a response and no controller
+draws, and the guards that keep it so read both layouts.
+`console/service_rest_controller.rs` is still 5,800 lines of handlers
+and `console/node_rest_controller.rs` 3,100. No `cli_user_` or
 `remote_node_` use case exists yet.
 
 ## The framework is ours
