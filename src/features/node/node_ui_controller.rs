@@ -153,7 +153,7 @@ impl NodeUiController {
                 let domain =
                     crate::node::settings::domain(&self.state.database, &self.state.config).await;
                 let mut provides = Vec::new();
-                for capability in network::capability::Capability::ALL {
+                for capability in crate::values::capability::Capability::ALL {
                     let on = network::capability::provides(&self.state.database, capability).await;
                     provides.push((capability, on));
                 }

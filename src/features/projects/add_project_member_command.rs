@@ -1,7 +1,7 @@
 use wabot::sqlite::SqliteDatabase;
 
-use crate::accounts::roles::ProjectRole;
 use crate::policies::access;
+use crate::values::roles::ProjectRole;
 
 pub struct AddProjectMember<'a> {
     pub project_id: &'a str,

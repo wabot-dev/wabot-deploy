@@ -11,9 +11,9 @@ use wabot::rest::axum::http::{header, StatusCode};
 use wabot::rest::axum::response::Response;
 use wabot::rest::RestResult;
 
-use crate::accounts::roles::ProjectRole;
 use crate::policies::access;
 use crate::repositories::services;
+use crate::values::roles::ProjectRole;
 
 use crate::console::auth::{
     back_with_error, field, read_form, see_other, signed_in, SessionMiddleware,
@@ -35,7 +35,7 @@ impl ProjectRestController {
     ) -> RestResult<
         Option<(
             crate::entities::project::Project,
-            crate::accounts::roles::Access,
+            crate::values::roles::Access,
             Vec<&'a str>,
         )>,
     > {

@@ -533,7 +533,7 @@ pub(crate) async fn note_reachability(
     // one is a node that has revoked everything, which is a thing it is
     // entitled to do and this side has to hear.
     let allows = match allows {
-        Some(list) => super::capability::parse_list(list),
+        Some(list) => crate::values::capability::parse_list(list),
         None => node.allows.clone(),
     };
 
@@ -866,8 +866,8 @@ mod tests {
             "alpine",
             &address,
             &admin,
-            &crate::network::capability::Capability::ALL,
-            &crate::network::capability::Capability::ALL,
+            &crate::values::capability::Capability::ALL,
+            &crate::values::capability::Capability::ALL,
         )
         .await
         .expect("minted");
@@ -1972,11 +1972,11 @@ mod tests {
             (
                 "host,edge",
                 vec![
-                    crate::network::capability::Capability::Host,
-                    crate::network::capability::Capability::Edge,
+                    crate::values::capability::Capability::Host,
+                    crate::values::capability::Capability::Edge,
                 ],
             ),
-            ("edge", vec![crate::network::capability::Capability::Edge]),
+            ("edge", vec![crate::values::capability::Capability::Edge]),
             ("", Vec::new()),
         ] {
             authority

@@ -2,10 +2,10 @@ use wabot::sqlite::SqliteDatabase;
 
 use crate::features::node::domain_settled_response::DomainSettledResponse;
 
-use crate::accounts::Account;
 use crate::authz::node_user;
 use crate::config::Config;
 use crate::deploy::Deployer;
+use crate::entities::account::Account;
 
 pub async fn run(
     database: &SqliteDatabase,

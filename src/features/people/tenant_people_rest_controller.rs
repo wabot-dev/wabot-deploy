@@ -7,11 +7,11 @@ use wabot::rest::axum::extract::Request;
 use wabot::rest::axum::response::Response;
 use wabot::rest::RestResult;
 
-use crate::accounts::roles::{NodeRole, ProjectRole};
 use crate::console::auth::{
     back_with_error, field, read_form, see_other, signed_in, SessionMiddleware,
 };
 use crate::console::ConsoleState;
+use crate::values::roles::{NodeRole, ProjectRole};
 
 #[injectable]
 pub struct TenantPeopleRestController {

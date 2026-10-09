@@ -113,10 +113,10 @@ impl Kind {
     /// other was offered, chosen, written as a row, and then skipped in
     /// silence — a copy the console showed as placed that was never sent
     /// anywhere.
-    pub fn placement_capability(self) -> crate::network::capability::Capability {
+    pub fn placement_capability(self) -> crate::values::capability::Capability {
         match self.is_managed() {
-            true => crate::network::capability::Capability::Store,
-            false => crate::network::capability::Capability::Host,
+            true => crate::values::capability::Capability::Store,
+            false => crate::values::capability::Capability::Host,
         }
     }
 }

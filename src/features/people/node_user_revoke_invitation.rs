@@ -1,7 +1,8 @@
 use wabot::sqlite::SqliteDatabase;
 
-use crate::accounts::{invitations, Account};
+use crate::accounts::invitations;
 use crate::authz::node_user;
+use crate::entities::account::Account;
 
 /// The machine's operator withdraws any invitation the node holds, an
 /// organisation's included: they mint its first one from the
@@ -31,10 +32,10 @@ pub async fn run(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::accounts::roles::{NodeRole, ProjectRole};
     use crate::features::fixtures::organisation;
     use crate::features::people::invite_person_request::InvitePersonRequest;
     use crate::features::people::tenant_user_invite_person;
+    use crate::values::roles::{NodeRole, ProjectRole};
 
     #[tokio::test]
     async fn the_operator_withdraws_an_organisations_invitation() {

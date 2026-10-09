@@ -1,5 +1,5 @@
-use crate::accounts::Account;
 use crate::authz::node_user;
+use crate::entities::account::Account;
 use crate::features::services::set_service_placement_command::{On, SetServicePlacement};
 
 pub async fn run(

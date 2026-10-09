@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use wabot::prelude::*;
 
-use crate::network::capability::Capability;
+use crate::values::capability::Capability;
 
 /// What this node is willing to be asked for, and whether it owns
 /// anything of its own.

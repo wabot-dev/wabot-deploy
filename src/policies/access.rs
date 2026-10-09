@@ -9,8 +9,8 @@ use serde::Serialize;
 use wabot::sqlite::rusqlite::OptionalExtension;
 use wabot::sqlite::SqliteDatabase;
 
-use crate::accounts::roles::{Access, NodeRole, ProjectRole};
-use crate::accounts::Account;
+use crate::entities::account::Account;
+use crate::values::roles::{Access, NodeRole, ProjectRole};
 
 use crate::clock::now_ms;
 use crate::entities::project::Project;

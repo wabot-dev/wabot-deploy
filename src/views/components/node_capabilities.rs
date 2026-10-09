@@ -14,7 +14,7 @@ use hypertext::prelude::*;
 /// So both are here, and only one of them is a form.
 pub fn grants_card<'a>(
     node: &'a network::Node,
-    granted: &'a [(network::capability::Capability, bool)],
+    granted: &'a [(crate::values::capability::Capability, bool)],
 ) -> impl Renderable + 'a {
     rsx! {
         <section class="stack">
@@ -63,32 +63,34 @@ pub fn grants_card<'a>(
 }
 
 /// What holding this capability lets the other node do here.
-pub fn asking(capability: network::capability::Capability) -> &'static str {
+pub fn asking(capability: crate::values::capability::Capability) -> &'static str {
     match capability {
-        network::capability::Capability::Host => "Run its containers on this node",
-        network::capability::Capability::Edge => "Have this node answer for its hostnames",
-        network::capability::Capability::Store => "Keep a copy of its data on this node",
-        network::capability::Capability::Manage => "Keep this node up to date, and restart it",
+        crate::values::capability::Capability::Host => "Run its containers on this node",
+        crate::values::capability::Capability::Edge => "Have this node answer for its hostnames",
+        crate::values::capability::Capability::Store => "Keep a copy of its data on this node",
+        crate::values::capability::Capability::Manage => {
+            "Keep this node up to date, and restart it"
+        }
     }
 }
 
-pub fn why(capability: network::capability::Capability) -> &'static str {
+pub fn why(capability: crate::values::capability::Capability) -> &'static str {
     match capability {
-        network::capability::Capability::Host => {
+        crate::values::capability::Capability::Host => {
             "It can place replicas of its services here and pull the images \
              for them. It cannot touch anything else on this node."
         }
-        network::capability::Capability::Edge => {
+        crate::values::capability::Capability::Edge => {
             "It can ask this node to terminate TLS for one of its names and \
              proxy to wherever that service runs."
         }
-        network::capability::Capability::Store => {
+        crate::values::capability::Capability::Store => {
             "It can place a read-only copy of one of its databases here, and \
              that copy is every row of it — on this node's disk, taking this \
              node's space. Running somebody's container is not the same \
              favour, which is why this is asked for separately."
         }
-        network::capability::Capability::Manage => {
+        crate::values::capability::Capability::Manage => {
             "It can install a release of this project here, restart the service \
              and ask for a backup. It creates nothing, reads no data and touches \
              no account — but it decides which binary this node runs."
@@ -96,12 +98,14 @@ pub fn why(capability: network::capability::Capability) -> &'static str {
     }
 }
 
-pub fn offering(capability: network::capability::Capability) -> &'static str {
+pub fn offering(capability: crate::values::capability::Capability) -> &'static str {
     match capability {
-        network::capability::Capability::Host => "Run this node's containers over there",
-        network::capability::Capability::Edge => "Answer for this node's hostnames",
-        network::capability::Capability::Store => "Keep a copy of this node's data over there",
-        network::capability::Capability::Manage => "Update and restart that node from here",
+        crate::values::capability::Capability::Host => "Run this node's containers over there",
+        crate::values::capability::Capability::Edge => "Answer for this node's hostnames",
+        crate::values::capability::Capability::Store => {
+            "Keep a copy of this node's data over there"
+        }
+        crate::values::capability::Capability::Manage => "Update and restart that node from here",
     }
 }
 
@@ -112,37 +116,40 @@ pub fn offering(capability: network::capability::Capability) -> &'static str {
 /// here it is "what this node does at all". Exhaustive, so a capability
 /// added later cannot reach the form without words — which is how `store`
 /// came to have no checkbox on a form that wrote its setting anyway.
-pub fn doing(capability: network::capability::Capability) -> &'static str {
+pub fn doing(capability: crate::values::capability::Capability) -> &'static str {
     match capability {
-        network::capability::Capability::Host => "Run containers",
-        network::capability::Capability::Edge => "Answer for hostnames",
-        network::capability::Capability::Store => "Keep copies of other nodes' data",
-        network::capability::Capability::Manage => "Be kept up to date from elsewhere",
+        crate::values::capability::Capability::Host => "Run containers",
+        crate::values::capability::Capability::Edge => "Answer for hostnames",
+        crate::values::capability::Capability::Store => "Keep copies of other nodes' data",
+        crate::values::capability::Capability::Manage => "Be kept up to date from elsewhere",
     }
 }
 
 /// And what turning it off costs. `reachable` is only read by `Edge`,
 /// which is the one capability an address decides.
-pub fn doing_why(capability: network::capability::Capability, reachable: bool) -> &'static str {
+pub fn doing_why(
+    capability: crate::values::capability::Capability,
+    reachable: bool,
+) -> &'static str {
     match capability {
-        network::capability::Capability::Host => {
+        crate::values::capability::Capability::Host => {
             "Replicas can be placed here — its own services included. A \
              small node can own projects and run none of them."
         }
-        network::capability::Capability::Edge if reachable => {
+        crate::values::capability::Capability::Edge if reachable => {
             "It terminates TLS for names, its own and other nodes'. Turning \
              this off makes it a private node — that is all private has ever \
              meant."
         }
-        network::capability::Capability::Edge => {
+        crate::values::capability::Capability::Edge => {
             "Needs a domain that resolves here. Without an address the world \
              can dial, this node is private whatever it would prefer."
         }
-        network::capability::Capability::Store => {
+        crate::values::capability::Capability::Store => {
             "A standby of somebody's database lives on this node's disk and \
              grows with it. Running a container is not the same favour."
         }
-        network::capability::Capability::Manage => {
+        crate::values::capability::Capability::Manage => {
             "A node that has been granted this can install a release here, \
              restart the service and ask for a backup. Turning it off \
              withdraws that from every node at once."
@@ -160,7 +167,7 @@ pub fn doing_why(capability: network::capability::Capability, reachable: bool) -
 /// capability with no checkbox has to be impossible rather than
 /// noticed, which is what a loop and an exhaustive `match` make it.
 pub fn capabilities_card(
-    provides: &[(network::capability::Capability, bool)],
+    provides: &[(crate::values::capability::Capability, bool)],
     reachable: bool,
     owns: bool,
     owned: usize,

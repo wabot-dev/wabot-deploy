@@ -36,30 +36,9 @@
 //! pasted into a terminal, and a terminal does not speak Spanish. The
 //! sentence *around* a command is translated; the command is not.
 
-use serde::{Deserialize, Serialize};
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum Language {
-    En,
-    Es,
-}
+use crate::values::language::Language;
 
 impl Language {
-    pub fn parse(value: &str) -> Self {
-        match value {
-            "es" => Self::Es,
-            _ => Self::En,
-        }
-    }
-
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::En => "en",
-            Self::Es => "es",
-        }
-    }
-
     /// What the toggle says it is. Two letters, because the control is
     /// the width of the theme's and a language name would not fit —
     /// and because `ES` and `EN` are what somebody is scanning for.

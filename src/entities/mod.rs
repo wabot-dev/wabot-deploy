@@ -4,6 +4,7 @@
 //! `Service`, not in a free function beside the queries — see
 //! `docs/architecture-rules.md` §0.
 
+pub mod account;
 pub mod config_revision;
 pub mod database;
 pub mod port;

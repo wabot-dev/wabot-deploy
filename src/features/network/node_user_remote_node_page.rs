@@ -1,9 +1,9 @@
 use hypertext::prelude::*;
 
 use crate::features::network::{node_errands_component, node_usage_component};
-use crate::network::capability::Capability;
 use crate::network::errand::Record;
 use crate::network::Node;
+use crate::values::capability::Capability;
 use crate::views::components::{node_capabilities, node_settings_cards};
 use crate::views::layouts::layout;
 use crate::views::texts::language::t;

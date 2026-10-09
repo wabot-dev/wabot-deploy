@@ -1,9 +1,9 @@
 use hypertext::prelude::*;
 
 use crate::features::network::{node_enrolment_component, node_usage_component};
-use crate::network::capability::Capability;
 use crate::network::token::JoinToken;
 use crate::network::{Authority, Node};
+use crate::values::capability::Capability;
 use crate::views::layouts::layout;
 use crate::views::texts::language::t;
 

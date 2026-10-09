@@ -382,7 +382,7 @@ mod tests {
             .await
             .body;
 
-        for capability in network::capability::Capability::ALL {
+        for capability in crate::values::capability::Capability::ALL {
             assert!(
                 body.contains(&format!("name=\"{}\"", capability.name())),
                 "{} has no checkbox, and saving this form would turn it off: {body}",
@@ -425,7 +425,7 @@ mod tests {
         response.assert_status(StatusCode::SEE_OTHER);
         assert_eq!(response.header("location"), Some("/"));
 
-        for capability in network::capability::Capability::ALL {
+        for capability in crate::values::capability::Capability::ALL {
             assert!(
                 network::capability::provides(&console.database, capability).await,
                 "a member turned {} off for the whole node",

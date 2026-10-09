@@ -38,7 +38,7 @@ impl TenantRestController {
     /// Boxed, because a `Response` is 128 bytes and every handler here
     /// returns this on its happy path too — the compiler sizes a
     /// `Result` by its larger arm.
-    fn operator(&self) -> Result<crate::accounts::Account, Box<Response>> {
+    fn operator(&self) -> Result<crate::entities::account::Account, Box<Response>> {
         match signed_in(&self.auth) {
             None => Err(Box::new(see_other("/sign-in"))),
             Some(account) => match crate::authz::node_user::shares_the_machine_out(&account) {

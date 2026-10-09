@@ -1,6 +1,6 @@
 use hypertext::prelude::*;
 
-use crate::accounts::Account;
+use crate::entities::account::Account;
 use crate::entities::tenant::Tenant;
 use crate::policies::presets;
 use crate::views::layouts::layout;

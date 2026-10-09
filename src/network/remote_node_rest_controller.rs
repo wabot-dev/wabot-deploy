@@ -751,8 +751,8 @@ impl RemoteNodeRestController {
                 // An older node sends nothing and is read as both — the
                 // terms every join was made under before there were any.
                 allows: match &arriving.accepted {
-                    Some(names) => super::capability::parse_list(&names.join(",")),
-                    None => super::capability::Capability::ALL.to_vec(),
+                    Some(names) => crate::values::capability::parse_list(&names.join(",")),
+                    None => crate::values::capability::Capability::ALL.to_vec(),
                 },
                 // What it will present when this node dials it back over
                 // the overlay. Kept from the row when a re-join says

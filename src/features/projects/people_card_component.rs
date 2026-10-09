@@ -2,8 +2,8 @@
 
 use hypertext::prelude::*;
 
-use crate::accounts::roles::ProjectRole;
 use crate::policies::access;
+use crate::values::roles::ProjectRole;
 use crate::views::texts::language::t;
 
 /// Who is in this project, and how to change that.
@@ -19,7 +19,7 @@ use crate::views::texts::language::t;
 pub fn people_card<'a>(
     here: &'a str,
     members: &'a [access::Member],
-    allowed: crate::accounts::roles::Access,
+    allowed: crate::values::roles::Access,
 ) -> impl Renderable + 'a {
     rsx! {
         <section class="card stack">

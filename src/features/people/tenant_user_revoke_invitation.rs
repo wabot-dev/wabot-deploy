@@ -1,7 +1,8 @@
 use wabot::sqlite::SqliteDatabase;
 
-use crate::accounts::{invitations, Account};
+use crate::accounts::invitations;
 use crate::authz::tenant_user;
+use crate::entities::account::Account;
 
 pub async fn run(
     database: &SqliteDatabase,
@@ -30,10 +31,10 @@ pub async fn run(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::accounts::roles::{NodeRole, ProjectRole};
     use crate::features::fixtures::{organisation, Organisation};
     use crate::features::people::invite_person_request::InvitePersonRequest;
     use crate::features::people::tenant_user_invite_person;
+    use crate::values::roles::{NodeRole, ProjectRole};
 
     async fn invited_by(here: &Organisation, account: &Account) -> String {
         tenant_user_invite_person::run(

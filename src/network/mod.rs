@@ -185,7 +185,7 @@ pub struct Node {
     /// here. The decision lives on that machine, in its own
     /// `node_grant`, and it travels on the report it already sends. See
     /// migration `0026`.
-    pub allows: Vec<capability::Capability>,
+    pub allows: Vec<crate::values::capability::Capability>,
     /// How full that machine is, as it last reported: memory used of
     /// total, then disk free of total.
     ///
@@ -257,7 +257,7 @@ impl Node {
     /// would publish a name that resolves to nothing.
     ///
     /// For this node's own row the kind already carries its answer to
-    /// [`capability::Capability::Edge`], and for any other node it
+    /// [`crate::values::capability::Capability::Edge`], and for any other node it
     /// carries what that node reported about itself — so a node that
     /// declines to be an edge stops being offered as one everywhere,
     /// from the one place it decided.
@@ -276,7 +276,7 @@ impl Node {
 /// edge picker walked into. This node asks itself through the setting,
 /// because it needs no grant to instruct itself.
 ///
-/// **Whether an address is required is [`capability::Capability::needs_endpoint`]
+/// **Whether an address is required is [`crate::values::capability::Capability::needs_endpoint`]
 /// rather than a branch here**, so a capability added later cannot
 /// arrive without an answer — which is exactly what that method was
 /// written for.
@@ -291,7 +291,7 @@ impl Node {
 /// sent anywhere.
 pub async fn candidates_for(
     database: &SqliteDatabase,
-    capability: capability::Capability,
+    capability: crate::values::capability::Capability,
 ) -> NetworkResult<Vec<Node>> {
     // Read once rather than per row: it is one settings row and the
     // answer cannot differ between two nodes in the same list.
@@ -309,7 +309,7 @@ pub async fn candidates_for(
 
 /// The nodes that could answer for a hostname.
 pub async fn edge_candidates(database: &SqliteDatabase) -> NetworkResult<Vec<Node>> {
-    candidates_for(database, capability::Capability::Edge).await
+    candidates_for(database, crate::values::capability::Capability::Edge).await
 }
 
 fn read(row: &Row<'_>) -> wabot::sqlite::rusqlite::Result<Node> {
@@ -322,7 +322,9 @@ fn read(row: &Row<'_>) -> wabot::sqlite::rusqlite::Result<Node> {
         overlay_ip: row.get(5)?,
         is_self: row.get::<_, i64>(6)? != 0,
         last_seen_at: row.get(7)?,
-        allows: capability::parse_list(&row.get::<_, Option<String>>(8)?.unwrap_or_default()),
+        allows: crate::values::capability::parse_list(
+            &row.get::<_, Option<String>>(8)?.unwrap_or_default(),
+        ),
         ca_pem: row.get(9)?,
         // All four or none. A row with some of them is a node that
         // reported before the columns existed and cannot have any, so
@@ -520,7 +522,7 @@ pub async fn ensure_self(database: &SqliteDatabase, config: &Config) -> NetworkR
     // operator who turned the capability off has made this node private
     // as surely as one who cleared the domain — see `capability`.
     let kind = match endpoint.is_some()
-        && capability::provides(database, capability::Capability::Edge).await
+        && capability::provides(database, crate::values::capability::Capability::Edge).await
     {
         true => Kind::Public,
         false => Kind::Private,
@@ -756,7 +758,7 @@ pub async fn save(database: &SqliteDatabase, node: &Node) -> NetworkResult<()> {
                     i64::from(node.is_self),
                     now_ms(),
                     node.last_seen_at,
-                    capability::to_list(&node.allows),
+                    crate::values::capability::to_list(&node.allows),
                     node.ca_pem,
                     // Bound as four values rather than a struct, and every
                     // one of them named in the INSERT above. A parameter
@@ -1417,7 +1419,7 @@ pub async fn honour_offers(database: &SqliteDatabase) -> NetworkResult<usize> {
         // which is what makes the withdrawal hold against any path that
         // grants blindly.
         let withdrawn = capability::withdrawn_from(database, &node_id).await;
-        let missing: Vec<capability::Capability> = offers
+        let missing: Vec<crate::values::capability::Capability> = offers
             .into_iter()
             .filter(|offered| !granted.contains(offered) && !withdrawn.contains(offered))
             .collect();
@@ -1456,7 +1458,7 @@ pub async fn release_ungranted(database: &SqliteDatabase) -> NetworkResult<Vec<S
         // without anybody revoking anything.
         if capability::granted_to(database, &authority)
             .await
-            .contains(&capability::Capability::Edge)
+            .contains(&crate::values::capability::Capability::Edge)
         {
             continue;
         }
@@ -1500,8 +1502,8 @@ pub(crate) mod tests {
             "somebody",
             "10.42.0.7",
             &admin,
-            &[capability::Capability::Host],
-            &[capability::Capability::Edge],
+            &[crate::values::capability::Capability::Host],
+            &[crate::values::capability::Capability::Edge],
         )
         .await
         .expect("minted");
@@ -1516,7 +1518,7 @@ pub(crate) mod tests {
         assert_eq!(honour_offers(&database).await.expect("pass"), 1);
         assert_eq!(
             capability::granted_to(&database, "nd-joined001").await,
-            vec![capability::Capability::Edge]
+            vec![crate::values::capability::Capability::Edge]
         );
 
         // Convergent: the same pass again writes nothing, and it never
@@ -1559,7 +1561,7 @@ pub(crate) mod tests {
             crate::node::settings::set_domain(&database, Some(name))
                 .await
                 .expect("domain");
-            capability::set_provides(&database, capability::Capability::Edge, true)
+            capability::set_provides(&database, crate::values::capability::Capability::Edge, true)
                 .await
                 .expect("edge");
             let me = ensure_self(&database, &config).await.expect("self");
@@ -1623,31 +1625,35 @@ pub(crate) mod tests {
         let database = database().await;
 
         let mut runs = node("nd-runs", Kind::Private, None);
-        runs.allows = vec![capability::Capability::Host];
+        runs.allows = vec![crate::values::capability::Capability::Host];
         save(&database, &runs).await.expect("row");
 
         let mut keeps = node("nd-keeps", Kind::Private, None);
-        keeps.allows = vec![capability::Capability::Store];
+        keeps.allows = vec![crate::values::capability::Capability::Store];
         save(&database, &keeps).await.expect("row");
 
         let ids =
             |nodes: Vec<Node>| -> Vec<String> { nodes.into_iter().map(|node| node.id).collect() };
 
         assert_eq!(
-            ids(candidates_for(&database, capability::Capability::Host)
-                .await
-                .expect("host")),
+            ids(
+                candidates_for(&database, crate::values::capability::Capability::Host)
+                    .await
+                    .expect("host")
+            ),
             vec!["nd-runs".to_string()],
         );
         assert_eq!(
-            ids(candidates_for(&database, capability::Capability::Store)
-                .await
-                .expect("store")),
+            ids(
+                candidates_for(&database, crate::values::capability::Capability::Store)
+                    .await
+                    .expect("store")
+            ),
             vec!["nd-keeps".to_string()],
             "a node that runs containers has not agreed to keep data",
         );
         assert!(
-            candidates_for(&database, capability::Capability::Manage)
+            candidates_for(&database, crate::values::capability::Capability::Manage)
                 .await
                 .expect("manage")
                 .is_empty(),
@@ -1668,17 +1674,17 @@ pub(crate) mod tests {
         let database = database().await;
 
         let mut private = node("nd-private", Kind::Private, None);
-        private.allows = capability::Capability::ALL.to_vec();
+        private.allows = crate::values::capability::Capability::ALL.to_vec();
         save(&database, &private).await.expect("row");
 
         assert!(
-            candidates_for(&database, capability::Capability::Edge)
+            candidates_for(&database, crate::values::capability::Capability::Edge)
                 .await
                 .expect("edge")
                 .is_empty(),
             "nothing the world can dial",
         );
-        for capability in capability::Capability::ALL
+        for capability in crate::values::capability::Capability::ALL
             .into_iter()
             .filter(|capability| !capability.needs_endpoint())
         {
@@ -1714,7 +1720,7 @@ pub(crate) mod tests {
         );
 
         assert_eq!(
-            candidates_for(&database, capability::Capability::Host)
+            candidates_for(&database, crate::values::capability::Capability::Host)
                 .await
                 .expect("host")
                 .len(),
@@ -1722,11 +1728,15 @@ pub(crate) mod tests {
             "unset means yes, so this node hosts for itself",
         );
 
-        capability::set_provides(&database, capability::Capability::Host, false)
-            .await
-            .expect("switched off");
+        capability::set_provides(
+            &database,
+            crate::values::capability::Capability::Host,
+            false,
+        )
+        .await
+        .expect("switched off");
         assert!(
-            candidates_for(&database, capability::Capability::Host)
+            candidates_for(&database, crate::values::capability::Capability::Host)
                 .await
                 .expect("host")
                 .is_empty(),
@@ -2152,12 +2162,20 @@ pub(crate) mod tests {
     async fn a_name_held_for_a_node_this_one_no_longer_serves_is_let_go_of() {
         let database = database().await;
 
-        capability::grant(&database, "pub-1", &[capability::Capability::Edge])
-            .await
-            .expect("grant");
-        capability::grant(&database, "pub-2", &[capability::Capability::Edge])
-            .await
-            .expect("grant");
+        capability::grant(
+            &database,
+            "pub-1",
+            &[crate::values::capability::Capability::Edge],
+        )
+        .await
+        .expect("grant");
+        capability::grant(
+            &database,
+            "pub-2",
+            &[crate::values::capability::Capability::Edge],
+        )
+        .await
+        .expect("grant");
         for (name, authority) in [("gone.example", "pub-1"), ("kept.example", "pub-2")] {
             claim(&database, name, Some(authority))
                 .await

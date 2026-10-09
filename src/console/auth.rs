@@ -35,7 +35,8 @@ use wabot::rest::axum::http::{header, StatusCode};
 use wabot::rest::axum::response::Response;
 use wabot::rest::{Middleware, RestResult};
 
-use crate::accounts::{self, sessions, Account};
+use crate::accounts::{self, sessions};
+use crate::entities::account::Account;
 
 use super::ConsoleState;
 
@@ -173,8 +174,8 @@ pub fn encode(key: &str, value: &str) -> String {
 pub fn capabilities_ticked(
     form: &HashMap<String, String>,
     prefix: &str,
-) -> Vec<crate::network::capability::Capability> {
-    crate::network::capability::Capability::ALL
+) -> Vec<crate::values::capability::Capability> {
+    crate::values::capability::Capability::ALL
         .into_iter()
         .filter(|capability| form.contains_key(&format!("{prefix}{}", capability.name())))
         .collect()

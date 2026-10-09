@@ -23,7 +23,6 @@ use serde::Deserialize;
 use wabot::prelude::*;
 use wabot::ui::hypertext::IntoView;
 
-use crate::accounts::roles::NodeRole;
 use crate::console::auth::{signed_in, PageQuery, SessionMiddleware};
 use crate::console::ConsoleState;
 use crate::features::organisations::node_user_organisation_settings_page::{
@@ -31,6 +30,7 @@ use crate::features::organisations::node_user_organisation_settings_page::{
 };
 use crate::policies::access;
 use crate::repositories::tenants;
+use crate::values::roles::NodeRole;
 use crate::views::layouts::layout;
 use crate::views::layouts::shell::{Area, Frame};
 
@@ -231,7 +231,10 @@ impl TenantUiController {
 /// A function rather than a repository call spelled three times, because
 /// what "answers for it" means is a decision — `NodeRole::Admin` inside
 /// the frontier — and three copies of it is three places to disagree.
-async fn owners_of(state: &ConsoleState, tenant_id: &str) -> Vec<crate::accounts::Account> {
+async fn owners_of(
+    state: &ConsoleState,
+    tenant_id: &str,
+) -> Vec<crate::entities::account::Account> {
     crate::accounts::of_scope(&state.database, Some(tenant_id))
         .await
         .unwrap_or_default()

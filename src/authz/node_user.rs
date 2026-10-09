@@ -1,4 +1,4 @@
-use crate::accounts::Account;
+use crate::entities::account::Account;
 
 /// Of the machine's own frontier rather than an organisation's.
 ///

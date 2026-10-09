@@ -1,6 +1,7 @@
 use wabot::sqlite::SqliteDatabase;
 
-use crate::accounts::{invitations, Account};
+use crate::accounts::invitations;
+use crate::entities::account::Account;
 use crate::features::people::join_request::JoinRequest;
 
 pub async fn run(database: &SqliteDatabase, asked: &JoinRequest) -> Result<Account, String> {
@@ -34,10 +35,10 @@ pub async fn run(database: &SqliteDatabase, asked: &JoinRequest) -> Result<Accou
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::accounts::roles::{NodeRole, ProjectRole};
     use crate::features::fixtures::organisation;
     use crate::features::people::invite_person_request::InvitePersonRequest;
     use crate::features::people::{node_user_invite_person, tenant_user_invite_person};
+    use crate::values::roles::{NodeRole, ProjectRole};
 
     /// The link an organisation's invitation carries points at that
     /// organisation's own address. Before there was a door there it

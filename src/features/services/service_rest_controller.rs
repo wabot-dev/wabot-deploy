@@ -2402,7 +2402,7 @@ mod tests {
                     overlay_ip: Some(format!("10.42.0.{}", memory % 200)),
                     is_self: false,
                     last_seen_at: None,
-                    allows: vec![crate::network::capability::Capability::Host],
+                    allows: vec![crate::values::capability::Capability::Host],
                     ca_pem: None,
                 },
             )
@@ -2500,7 +2500,7 @@ mod tests {
                     overlay_ip: Some(format!("10.42.0.{}", id.len())),
                     is_self: false,
                     last_seen_at: None,
-                    allows: vec![crate::network::capability::Capability::Host],
+                    allows: vec![crate::values::capability::Capability::Host],
                     ca_pem: None,
                 },
             )
@@ -2647,7 +2647,7 @@ mod tests {
         .expect("ceiling");
         crate::network::capability::set_provides(
             &console.database,
-            crate::network::capability::Capability::Host,
+            crate::values::capability::Capability::Host,
             false,
         )
         .await
@@ -2706,7 +2706,7 @@ mod tests {
                 overlay_ip: Some("10.42.0.9".into()),
                 is_self: false,
                 last_seen_at: None,
-                allows: vec![crate::network::capability::Capability::Host],
+                allows: vec![crate::values::capability::Capability::Host],
                 ca_pem: None,
             },
         )
@@ -4442,7 +4442,7 @@ mod tests {
                 overlay_ip: Some("10.42.0.9".into()),
                 is_self: false,
                 last_seen_at: None,
-                allows: vec![crate::network::capability::Capability::Edge],
+                allows: vec![crate::values::capability::Capability::Edge],
                 ca_pem: Some(
                     "-----BEGIN CERTIFICATE-----\nnot real\n-----END CERTIFICATE-----\n".into(),
                 ),
@@ -4540,7 +4540,7 @@ mod tests {
                     overlay_ip: Some(format!("10.42.0.{}", id.len())),
                     is_self: false,
                     last_seen_at: None,
-                    allows: vec![crate::network::capability::Capability::Edge],
+                    allows: vec![crate::values::capability::Capability::Edge],
                     ca_pem: Some(
                         "-----BEGIN CERTIFICATE-----\nnot real\n-----END CERTIFICATE-----\n".into(),
                     ),
@@ -4659,7 +4659,7 @@ mod tests {
                 overlay_ip: Some("10.42.0.9".into()),
                 is_self: false,
                 last_seen_at: None,
-                allows: vec![crate::network::capability::Capability::Edge],
+                allows: vec![crate::values::capability::Capability::Edge],
                 ca_pem: None,
             },
         )
@@ -4908,7 +4908,7 @@ mod tests {
             &console.database,
             &watcher.id,
             &project.id,
-            crate::accounts::roles::ProjectRole::Viewer,
+            crate::values::roles::ProjectRole::Viewer,
         )
         .await
         .expect("granted");

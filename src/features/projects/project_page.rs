@@ -6,7 +6,7 @@ use hypertext::prelude::*;
 
 pub struct ProjectView<'a> {
     pub project: &'a crate::entities::project::Project,
-    pub allowed: crate::accounts::roles::Access,
+    pub allowed: crate::values::roles::Access,
     pub rows: &'a [(
         crate::entities::service::Service,
         crate::features::services::service_state_component::StateCell,

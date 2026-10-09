@@ -1,8 +1,8 @@
 use wabot::sqlite::SqliteDatabase;
 
-use crate::accounts::Account;
 use crate::authz::node_user;
 use crate::config::Config;
+use crate::entities::account::Account;
 use crate::features::network::join_token_spent_response::JoinTokenSpentResponse;
 use crate::features::network::spend_join_token_request::SpendJoinTokenRequest;
 use crate::network;

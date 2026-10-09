@@ -343,7 +343,7 @@ mod tests {
     /// deal better than a check that quietly stops covering things.
     #[test]
     fn the_words_that_reach_t_through_a_variable_are_translated_too() {
-        use crate::network::capability::Capability;
+        use crate::values::capability::Capability;
 
         let mut missing = Vec::new();
         for capability in Capability::ALL {

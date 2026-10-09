@@ -1,5 +1,5 @@
-use crate::accounts::Account;
 use crate::authz::node_user;
+use crate::entities::account::Account;
 use crate::update::Catalogue;
 
 pub async fn run(catalogue: &Catalogue, account: &Account) -> Result<(), String> {

@@ -258,10 +258,17 @@ Each kind of user has its own authorisation, and it is small: a handful
 of questions asked by name.
 
 ```
-authz::node_user::may_manage_the_machine(account)
-authz::tenant_user::may_deploy(account, project)
-authz::remote_node::may_host(authority)
+authz::node_user::manages_the_machine(account)
+authz::node_user::belongs_here(account)
+authz::tenant_user::administers(account)
 ```
+
+**Questions about a role, with no target, and so no database.** The
+first draft of `tenant_user` also carried `may_deploy(account, project)`,
+reading the membership table to answer it. It was never called: every
+use case that needed it looked the project up in its own frontier and
+asked the `Access` it got back, which is the next section's rule. It is
+gone, and `authz` is pure.
 
 **What is shared is the data, not the questions.** `ProjectRole`,
 `membership` and the grant tables are one source of truth read by all

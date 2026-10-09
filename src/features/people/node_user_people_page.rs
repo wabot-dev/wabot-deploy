@@ -7,9 +7,9 @@
 use hypertext::prelude::*;
 
 use crate::accounts::invitations::Invitation;
-use crate::accounts::roles::ProjectRole;
-use crate::accounts::Account;
+use crate::entities::account::Account;
 use crate::entities::project::Project;
+use crate::values::roles::ProjectRole;
 use crate::views::layouts::layout;
 use crate::views::texts::language::t;
 

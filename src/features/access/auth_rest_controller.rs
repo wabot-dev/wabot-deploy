@@ -103,7 +103,7 @@ impl AuthRestController {
             Err(response) => return Ok(response),
         };
 
-        let theme = crate::views::layouts::shell::Theme::parse(field(&form, "theme"));
+        let theme = crate::values::theme::Theme::parse(field(&form, "theme"));
         if let Err(error) =
             crate::accounts::set_theme(&self.state.database, &account.id, theme).await
         {
@@ -132,7 +132,7 @@ impl AuthRestController {
             Err(response) => return Ok(response),
         };
 
-        let language = crate::views::texts::language::Language::parse(field(&form, "language"));
+        let language = crate::values::language::Language::parse(field(&form, "language"));
         if let Err(error) =
             crate::accounts::set_language(&self.state.database, &account.id, language).await
         {

@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use wabot::prelude::*;
 
-use crate::network::capability::Capability;
+use crate::values::capability::Capability;
 
 /// Mint a token another node can enrol with.
 ///

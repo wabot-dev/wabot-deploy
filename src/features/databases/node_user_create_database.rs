@@ -1,7 +1,7 @@
 use wabot::sqlite::SqliteDatabase;
 
-use crate::accounts::Account;
 use crate::authz::node_user;
+use crate::entities::account::Account;
 use crate::entities::project::Project;
 use crate::entities::service::Service;
 use crate::features::databases::create_database_request::CreateDatabaseRequest;

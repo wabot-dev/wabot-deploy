@@ -363,7 +363,7 @@ mod tests {
                     overlay_ip: Some(address.into()),
                     is_self: false,
                     last_seen_at: None,
-                    allows: vec![super::super::capability::Capability::Host],
+                    allows: vec![crate::values::capability::Capability::Host],
                     ca_pem: Some("anchor".into()),
                 },
             )
@@ -378,8 +378,8 @@ mod tests {
             "member",
             "10.42.0.7",
             &admin,
-            &super::super::capability::Capability::ALL,
-            &super::super::capability::Capability::ALL,
+            &crate::values::capability::Capability::ALL,
+            &crate::values::capability::Capability::ALL,
         )
         .await
         .expect("minted");

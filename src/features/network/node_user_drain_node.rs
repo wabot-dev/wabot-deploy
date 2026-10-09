@@ -2,9 +2,9 @@ use wabot::sqlite::SqliteDatabase;
 
 use crate::features::network::node_drained_response::NodeDrainedResponse;
 
-use crate::accounts::Account;
 use crate::authz::node_user;
 use crate::deploy::Deployer;
+use crate::entities::account::Account;
 use crate::network;
 
 pub async fn run(

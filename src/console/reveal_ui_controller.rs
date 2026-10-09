@@ -68,7 +68,7 @@ impl RevealUiController {
     /// chosen freely.
     fn show(
         &self,
-        account: &crate::accounts::Account,
+        account: &crate::entities::account::Account,
         nonce: Option<&str>,
         here: &str,
         back: &str,

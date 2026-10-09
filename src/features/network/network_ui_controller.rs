@@ -79,7 +79,7 @@ impl NetworkUiController {
         // point of the terms screen: a row saying only "takes
         // instructions from" would hide the difference between a node
         // that may do everything here and one that may do nothing.
-        let mut agreed: Vec<(String, Vec<network::capability::Capability>)> = Vec::new();
+        let mut agreed: Vec<(String, Vec<crate::values::capability::Capability>)> = Vec::new();
         for authority in &authorities {
             agreed.push((
                 authority.node_id.clone(),
@@ -236,8 +236,8 @@ impl NetworkUiController {
             // capability, so the form cannot be missing one — the same
             // rule the capabilities card follows, for the same reason.
             let held = network::capability::granted_to(&self.state.database, &node.id).await;
-            let granted: Vec<(network::capability::Capability, bool)> =
-                network::capability::Capability::ALL
+            let granted: Vec<(crate::values::capability::Capability, bool)> =
+                crate::values::capability::Capability::ALL
                     .into_iter()
                     .map(|capability| (capability, held.contains(&capability)))
                     .collect();
@@ -252,7 +252,7 @@ impl NetworkUiController {
             // GitHub being unreachable is one of the ways that happens.
             let may_manage = node
                 .allows
-                .contains(&network::capability::Capability::Manage);
+                .contains(&crate::values::capability::Capability::Manage);
             let (releases, catalogue_failed) = match may_manage {
                 false => (Vec::new(), false),
                 true => match self.state.catalogue.releases().await {

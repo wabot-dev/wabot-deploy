@@ -2192,8 +2192,8 @@ impl Deployer {
             // Holding somebody's data and running somebody's container
             // are different favours, and each is withdrawn on its own.
             let needed = match service.kind.is_managed() {
-                true => crate::network::capability::Capability::Store,
-                false => crate::network::capability::Capability::Host,
+                true => crate::values::capability::Capability::Store,
+                false => crate::values::capability::Capability::Host,
             };
             // Read through what this node provides *now*, so a switch
             // turned off withdraws what was granted of it — the switch is
@@ -4221,7 +4221,7 @@ mod tests {
                 overlay_ip: Some("10.42.0.9".into()),
                 public_key: None,
                 endpoint: None,
-                allows: vec![crate::network::capability::Capability::Host],
+                allows: vec![crate::values::capability::Capability::Host],
                 ca_pem: None,
                 last_seen_at: None,
                 is_self: false,
@@ -4372,7 +4372,7 @@ mod tests {
                 overlay_ip: Some("10.42.0.9".into()),
                 public_key: None,
                 endpoint: None,
-                allows: vec![crate::network::capability::Capability::Store],
+                allows: vec![crate::values::capability::Capability::Store],
                 ca_pem: None,
                 last_seen_at: None,
                 is_self: false,
@@ -4942,7 +4942,7 @@ mod tests {
         crate::network::capability::grant(
             &database,
             "nd-authority",
-            &[crate::network::capability::Capability::Host],
+            &[crate::values::capability::Capability::Host],
         )
         .await
         .expect("grant");

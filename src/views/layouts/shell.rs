@@ -15,45 +15,14 @@
 
 use hypertext::prelude::*;
 
-use crate::accounts::Account;
+use crate::entities::account::Account;
 use crate::entities::project::Project;
+use crate::values::theme::Theme;
 
 use crate::console::assets;
 use crate::views::texts::language::t;
 
-/// Which theme to paint in.
-///
-/// Stored on the account, so the attribute is in the first byte of
-/// HTML the browser sees. A theme applied by script runs after the page
-/// paints, and the flash of the wrong one is worse than not offering
-/// the choice at all.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum Theme {
-    /// Follow the operating system. The default, and the only answer
-    /// that keeps up when somebody's machine switches at sunset.
-    System,
-    Light,
-    Dark,
-}
-
 impl Theme {
-    pub fn parse(value: &str) -> Self {
-        match value {
-            "light" => Self::Light,
-            "dark" => Self::Dark,
-            _ => Self::System,
-        }
-    }
-
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::System => "system",
-            Self::Light => "light",
-            Self::Dark => "dark",
-        }
-    }
-
     /// What to put in `data-theme`. Empty for `System`: no attribute
     /// means the media query decides, which is the whole point.
     fn attribute(self) -> &'static str {
@@ -164,7 +133,7 @@ pub struct Frame {
     /// offering an action they will be refused is the nav lying.
     pub deploy: bool,
     pub theme: Theme,
-    pub language: crate::views::texts::language::Language,
+    pub language: crate::values::language::Language,
 }
 
 /// The last segment of a path when it names an action rather than a
@@ -237,7 +206,7 @@ impl Frame {
     }
 
     /// What the person may do in the project this page is about.
-    pub fn allowing(mut self, access: crate::accounts::roles::Access) -> Self {
+    pub fn allowing(mut self, access: crate::values::roles::Access) -> Self {
         self.deploy = access.may_deploy();
         self
     }
@@ -880,8 +849,8 @@ mod tests {
             id: "a".into(),
             username: "someone".into(),
             tenant_id: None,
-            role: crate::accounts::roles::NodeRole::Admin,
-            language: crate::views::texts::language::Language::En,
+            role: crate::values::roles::NodeRole::Admin,
+            language: crate::values::language::Language::En,
         };
         let frame = Frame::new(&account, Area::Settings, &[], None, "/people");
         let html = frame.render(String::new()).render().into_inner();
@@ -911,8 +880,8 @@ mod tests {
             id: "a".into(),
             username: "someone".into(),
             tenant_id: None,
-            role: crate::accounts::roles::NodeRole::Admin,
-            language: crate::views::texts::language::Language::En,
+            role: crate::values::roles::NodeRole::Admin,
+            language: crate::values::language::Language::En,
         };
         let project = Project {
             id: "prj-1".into(),
@@ -1024,8 +993,8 @@ mod tests {
             id: "a".into(),
             username: "someone".into(),
             tenant_id: None,
-            role: crate::accounts::roles::NodeRole::Admin,
-            language: crate::views::texts::language::Language::En,
+            role: crate::values::roles::NodeRole::Admin,
+            language: crate::values::language::Language::En,
         };
         let frame = Frame::new(&account, Area::Projects, &[], None, "/");
         assert_eq!(frame.trail().len(), 1);
@@ -1053,8 +1022,8 @@ mod tests {
             id: "a".into(),
             username: "someone".into(),
             tenant_id: None,
-            role: crate::accounts::roles::NodeRole::Admin,
-            language: crate::views::texts::language::Language::En,
+            role: crate::values::roles::NodeRole::Admin,
+            language: crate::values::language::Language::En,
         };
         let frame = Frame::new(&account, Area::Projects, &[], None, "/projects/db-test");
         let html = frame.render(String::new()).render().into_inner();

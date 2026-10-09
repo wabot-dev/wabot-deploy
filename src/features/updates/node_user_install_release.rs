@@ -2,9 +2,9 @@ use std::sync::Arc;
 
 use wabot::sqlite::SqliteDatabase;
 
-use crate::accounts::Account;
 use crate::authz::node_user;
 use crate::config::Config;
+use crate::entities::account::Account;
 use crate::features::updates::release_started_response::ReleaseStartedResponse;
 use crate::update::runs;
 use crate::update::Catalogue;

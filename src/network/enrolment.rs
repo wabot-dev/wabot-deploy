@@ -50,7 +50,7 @@ pub struct Enrolment {
     /// token itself, and a second spelling of a capability list on the
     /// wire is a second thing to keep in step.
     #[serde(skip)]
-    pub offers: Vec<super::capability::Capability>,
+    pub offers: Vec<crate::values::capability::Capability>,
 }
 
 impl Enrolment {
@@ -77,8 +77,8 @@ pub async fn create(
     name: &str,
     overlay_ip: &str,
     created_by: &str,
-    requires: &[super::capability::Capability],
-    offers: &[super::capability::Capability],
+    requires: &[crate::values::capability::Capability],
+    offers: &[crate::values::capability::Capability],
 ) -> NetworkResult<(Enrolment, String)> {
     let secret = wabot::prelude::password::generate(40);
     let enrolment = Enrolment {
@@ -96,8 +96,8 @@ pub async fn create(
     let hash = sha256_hex(&secret);
     let creator = created_by.to_string();
     let (requires, offers) = (
-        super::capability::to_list(requires),
-        super::capability::to_list(offers),
+        crate::values::capability::to_list(requires),
+        crate::values::capability::to_list(offers),
     );
     database
         .write(move |connection| {
@@ -233,7 +233,7 @@ fn decode(row: &Row<'_>) -> wabot::sqlite::rusqlite::Result<Enrolment> {
         expires_at: row.get(4)?,
         used_at: row.get(5)?,
         used_by: row.get(6)?,
-        offers: super::capability::parse_list(
+        offers: crate::values::capability::parse_list(
             &row.get::<_, Option<String>>(7)?.unwrap_or_default(),
         ),
     })
@@ -255,8 +255,8 @@ mod tests {
             "alpine",
             "10.42.0.2",
             admin,
-            &crate::network::capability::Capability::ALL,
-            &crate::network::capability::Capability::ALL,
+            &crate::values::capability::Capability::ALL,
+            &crate::values::capability::Capability::ALL,
         )
         .await
         .expect("minted")
@@ -421,8 +421,8 @@ mod tests {
             "another",
             "10.42.0.3",
             &admin,
-            &crate::network::capability::Capability::ALL,
-            &crate::network::capability::Capability::ALL,
+            &crate::values::capability::Capability::ALL,
+            &crate::values::capability::Capability::ALL,
         )
         .await
         .expect("minted");

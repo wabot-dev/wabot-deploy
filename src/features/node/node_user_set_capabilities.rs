@@ -1,11 +1,12 @@
 use wabot::sqlite::SqliteDatabase;
 
-use crate::accounts::Account;
 use crate::authz::node_user;
 use crate::config::Config;
 use crate::deploy::Deployer;
+use crate::entities::account::Account;
 use crate::features::node::set_capabilities_request::SetCapabilitiesRequest;
-use crate::network::capability::{self, Capability};
+use crate::network::capability;
+use crate::values::capability::Capability;
 
 /// **The one POST under `/node` that had no admin check**, and the
 /// omission was not small: `evict_ungranted` and `release_ungranted` run

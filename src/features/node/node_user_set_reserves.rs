@@ -1,8 +1,8 @@
 use wabot::sqlite::SqliteDatabase;
 
-use crate::accounts::Account;
 use crate::authz::node_user;
 use crate::deploy::Deployer;
+use crate::entities::account::Account;
 use crate::policies::presets;
 
 /// **The floor is a measurement, not a constant.** A reserve under what

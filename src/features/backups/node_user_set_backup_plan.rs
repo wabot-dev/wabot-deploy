@@ -1,9 +1,9 @@
 use wabot::sqlite::SqliteDatabase;
 
-use crate::accounts::Account;
 use crate::authz::node_user;
 use crate::commands::destination::Destination;
 use crate::config::Config;
+use crate::entities::account::Account;
 use crate::features::backups::backup_plan_saved_response::BackupPlanSavedResponse;
 use crate::features::backups::set_backup_plan_request::SetBackupPlanRequest;
 use crate::node::backups::{self, Cadence, Plan};

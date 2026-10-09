@@ -106,7 +106,7 @@ pub fn enrol_card(may_enrol: bool) -> impl Renderable {
                     // complete and the only screen that could request it
                     // did not know it existed.
                     <p class="tile-detail">(t("Ask that node to let this one:"))</p>
-                    @for capability in network::capability::Capability::ALL {
+                    @for capability in crate::values::capability::Capability::ALL {
                         <label class="capability">
                             <input type="checkbox" name=(format!("require-{}", capability.name()))
                                    value="1" checked>
@@ -120,7 +120,7 @@ pub fn enrol_card(may_enrol: bool) -> impl Renderable {
                     }
 
                     <p class="tile-detail">(t("And offer it, in return:"))</p>
-                    @for capability in network::capability::Capability::ALL {
+                    @for capability in crate::values::capability::Capability::ALL {
                         <label class="capability">
                             <input type="checkbox" name=(format!("offer-{}", capability.name()))
                                    value="1">
@@ -291,7 +291,7 @@ pub fn enrolment_row<'a>(
 pub fn authority_row<'a>(
     authority: &'a network::Authority,
     nodes: &'a [network::Node],
-    held: &'a [network::capability::Capability],
+    held: &'a [crate::values::capability::Capability],
 ) -> impl Renderable + 'a {
     let name = nodes
         .iter()

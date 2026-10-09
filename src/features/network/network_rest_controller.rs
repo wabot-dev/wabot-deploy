@@ -125,7 +125,7 @@ impl NetworkRestController {
             agreed: form.contains_key("agreed"),
             // The form's spelling stops here. A checkbox arrives only
             // when ticked, so presence is the answer.
-            accepted: crate::network::capability::Capability::ALL
+            accepted: crate::values::capability::Capability::ALL
                 .into_iter()
                 .filter(|capability| form.contains_key(&format!("accept-{}", capability.name())))
                 .collect(),

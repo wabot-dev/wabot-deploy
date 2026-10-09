@@ -349,25 +349,23 @@ mod tests {
     #[test]
     fn the_count_of_copies_is_read_in_the_accounts_language() {
         let three = Whereabouts { total: 3, away: 2 };
-        let spanish = crate::views::texts::language::scoped(
-            crate::views::texts::language::Language::Es,
-            || three.say(),
-        );
+        let spanish =
+            crate::views::texts::language::scoped(crate::values::language::Language::Es, || {
+                three.say()
+            });
         assert_eq!(spanish, "3 réplicas · 2 en otro nodo");
 
         assert_eq!(
-            crate::views::texts::language::scoped(
-                crate::views::texts::language::Language::Es,
-                || { Whereabouts { total: 1, away: 1 }.say() }
-            ),
+            crate::views::texts::language::scoped(crate::values::language::Language::Es, || {
+                Whereabouts { total: 1, away: 1 }.say()
+            }),
             "1 en otro nodo"
         );
         // Singular, and the plural is not "1 replicas".
         assert_eq!(
-            crate::views::texts::language::scoped(
-                crate::views::texts::language::Language::Es,
-                || { Whereabouts { total: 1, away: 0 }.say() }
-            ),
+            crate::views::texts::language::scoped(crate::values::language::Language::Es, || {
+                Whereabouts { total: 1, away: 0 }.say()
+            }),
             "1 réplica"
         );
     }

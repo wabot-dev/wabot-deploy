@@ -1,11 +1,11 @@
 use wabot::sqlite::SqliteDatabase;
 
-use crate::accounts::Account;
 use crate::authz::node_user;
 use crate::config::Config;
+use crate::entities::account::Account;
 use crate::features::network::mint_join_token_request::MintJoinTokenRequest;
 use crate::network;
-use crate::network::capability::Capability;
+use crate::values::capability::Capability;
 
 /// **A join states its terms, and the joiner reads them first.** The
 /// token carries what this node *requires* and what it *offers*, per

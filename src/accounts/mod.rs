@@ -23,11 +23,10 @@
 //! that session out now" is worth more than saving a local read.
 
 pub mod invitations;
-pub mod roles;
 pub mod sessions;
 
 use crate::clock::now_ms;
-use serde::{Deserialize, Serialize};
+use crate::entities::account::Account;
 use wabot::sqlite::rusqlite::OptionalExtension;
 use wabot::sqlite::SqliteDatabase;
 
@@ -71,76 +70,6 @@ impl From<AccountError> for wabot::rest::RestError {
                 wabot::rest::RestError::Internal("account operation failed".into())
             }
         }
-    }
-}
-
-/// Serializable because this is also what travels through `Auth`: the
-/// console's claims are the account, and a second struct of the same
-/// shape is a second place for it to drift.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Account {
-    pub id: String,
-    pub username: String,
-    /// What they are on the node. Travels in the session claims, so a
-    /// handler knows without a second query — and a role changed while
-    /// somebody is signed in takes effect on their next request, since
-    /// the middleware reads the row every time.
-    pub role: roles::NodeRole,
-    /// Which theme they read in. Travels with the account so the
-    /// choice follows the person rather than the browser.
-    pub theme: crate::views::layouts::shell::Theme,
-    /// Which language they read in. Beside the theme and for the same
-    /// reason: a preference that does not follow somebody between
-    /// machines is one they set again on each.
-    pub language: crate::views::texts::language::Language,
-    /// Which tenant they belong to. `None` is this node's own operator.
-    ///
-    /// **A scope, not a role.** `role` says how much somebody may do and
-    /// this says over what, and keeping them apart is what lets
-    /// `is_admin` gain one clause instead of forty-three call sites
-    /// gaining a third case to remember. See migration `0054`.
-    ///
-    /// It travels in the session claims like the role, so the frontier
-    /// is known before any handler runs, and a person moved between
-    /// scopes is moved on their next click.
-    pub tenant_id: Option<String>,
-}
-
-impl Account {
-    /// Whether they administer **this machine** — the network page, the
-    /// node's settings, updates, and every project on it.
-    ///
-    /// **A tenant's administrator is not one of these**, and the clause
-    /// saying so lives here rather than at the checks, because there are
-    /// forty-three of those and the one that forgot would be a customer
-    /// with the node's own settings page. `role` means "administrator of
-    /// my own scope"; this asks whether that scope is the machine.
-    pub fn is_admin(&self) -> bool {
-        self.role == roles::NodeRole::Admin && self.tenant_id.is_none()
-    }
-
-    /// Whether they administer whatever scope they are in.
-    ///
-    /// What a tenant's people page and quota card ask. Distinct from
-    /// [`is_admin`](Self::is_admin) by exactly one thing, and the two
-    /// must never be spelled the same way at a call site.
-    pub fn administers_scope(&self) -> bool {
-        self.role == roles::NodeRole::Admin
-    }
-
-    /// Whether this account belongs to the scope a request arrived in.
-    ///
-    /// **The `Host` decides the scope before anything reads a session**,
-    /// so this is the check that keeps the two in agreement: a tenant's
-    /// cookie presented on the node's own hostname is a valid session
-    /// for the wrong frontier. Nothing else it could reach would be
-    /// theirs — `access::of` narrows by membership either way — but the
-    /// `Host` stops being the boundary the moment one identity can be
-    /// used across two, and a boundary that holds only because every
-    /// query remembered to narrow is the thirty-comparisons problem
-    /// `roles.rs` exists to avoid.
-    pub fn belongs_to(&self, scope: Option<&str>) -> bool {
-        self.tenant_id.as_deref() == scope
     }
 }
 
@@ -239,7 +168,14 @@ pub async fn create_admin(
 
     // The machine's own operator, always: setup is how a node gets its
     // first person, and a node is not an organisation.
-    let account = insert(database, username, password, roles::NodeRole::Admin, None).await?;
+    let account = insert(
+        database,
+        username,
+        password,
+        crate::values::roles::NodeRole::Admin,
+        None,
+    )
+    .await?;
     tracing::info!(username = %account.username, "administrator created");
     Ok(account)
 }
@@ -258,7 +194,7 @@ pub async fn create_in(
     database: &SqliteDatabase,
     username: &str,
     password: &str,
-    role: roles::NodeRole,
+    role: crate::values::roles::NodeRole,
     tenant_id: Option<&str>,
 ) -> AccountResult<Account> {
     let username = username.trim();
@@ -274,12 +210,12 @@ async fn insert(
     database: &SqliteDatabase,
     username: &str,
     password: &str,
-    role: roles::NodeRole,
+    role: crate::values::roles::NodeRole,
     tenant_id: Option<&str>,
 ) -> AccountResult<Account> {
     let account = Account {
-        theme: crate::views::layouts::shell::Theme::System,
-        language: crate::views::texts::language::Language::En,
+        theme: crate::values::theme::Theme::System,
+        language: crate::values::language::Language::En,
         id: format!("acc-{}", wabot::prelude::password::generate(16)),
         username: username.to_string(),
         // Whose frontier they are in. It arrives on the invitation and
@@ -369,12 +305,12 @@ pub async fn of_scope(
 pub async fn set_role(
     database: &SqliteDatabase,
     account_id: &str,
-    role: roles::NodeRole,
+    role: crate::values::roles::NodeRole,
 ) -> AccountResult<()> {
     // The last administrator cannot demote themselves. A node with no
     // administrator has nobody who can create one, and the way back is
     // editing the database by hand.
-    if role != roles::NodeRole::Admin && administrators(database).await? <= 1 {
+    if role != crate::values::roles::NodeRole::Admin && administrators(database).await? <= 1 {
         let is_admin = all(database)
             .await?
             .into_iter()
@@ -436,9 +372,9 @@ fn decode(row: &wabot::sqlite::rusqlite::Row<'_>) -> wabot::sqlite::rusqlite::Re
     Ok(Account {
         id: row.get(0)?,
         username: row.get(1)?,
-        role: roles::NodeRole::parse(&row.get::<_, String>(2)?),
-        theme: crate::views::layouts::shell::Theme::parse(&row.get::<_, String>(3)?),
-        language: crate::views::texts::language::Language::parse(&row.get::<_, String>(4)?),
+        role: crate::values::roles::NodeRole::parse(&row.get::<_, String>(2)?),
+        theme: crate::values::theme::Theme::parse(&row.get::<_, String>(3)?),
+        language: crate::values::language::Language::parse(&row.get::<_, String>(4)?),
         tenant_id: row.get(5)?,
     })
 }
@@ -447,7 +383,7 @@ fn decode(row: &wabot::sqlite::rusqlite::Row<'_>) -> wabot::sqlite::rusqlite::Re
 pub async fn set_theme(
     database: &SqliteDatabase,
     id: &str,
-    theme: crate::views::layouts::shell::Theme,
+    theme: crate::values::theme::Theme,
 ) -> AccountResult<()> {
     let (id, theme) = (id.to_string(), theme.as_str().to_string());
     database
@@ -466,7 +402,7 @@ pub async fn set_theme(
 pub async fn set_language(
     database: &SqliteDatabase,
     id: &str,
-    language: crate::views::texts::language::Language,
+    language: crate::values::language::Language,
 ) -> AccountResult<()> {
     let (id, language) = (id.to_string(), language.as_str().to_string());
     database
@@ -606,12 +542,12 @@ pub async fn authenticate(
         .await?;
 
     Ok(Some(Account {
-        theme: crate::views::layouts::shell::Theme::parse(&theme),
-        language: crate::views::texts::language::Language::parse(&language),
+        theme: crate::values::theme::Theme::parse(&theme),
+        language: crate::values::language::Language::parse(&language),
         id,
         username,
         tenant_id,
-        role: roles::NodeRole::parse(&role),
+        role: crate::values::roles::NodeRole::parse(&role),
     }))
 }
 
@@ -761,7 +697,7 @@ mod tests {
                 &database,
                 "jorge",
                 "a long passphrase here",
-                roles::NodeRole::Member,
+                crate::values::roles::NodeRole::Member,
                 scope,
             )
             .await
@@ -773,7 +709,7 @@ mod tests {
             &database,
             "jorge",
             "another long passphrase",
-            roles::NodeRole::Member,
+            crate::values::roles::NodeRole::Member,
             Some(&acme.id),
         )
         .await
@@ -786,7 +722,7 @@ mod tests {
             &database,
             "jorge",
             "another long passphrase",
-            roles::NodeRole::Member,
+            crate::values::roles::NodeRole::Member,
             None,
         )
         .await
@@ -811,7 +747,7 @@ mod tests {
             &database,
             "jorge",
             "the node one here",
-            roles::NodeRole::Admin,
+            crate::values::roles::NodeRole::Admin,
             None,
         )
         .await
@@ -820,7 +756,7 @@ mod tests {
             &database,
             "jorge",
             "the organisation one",
-            roles::NodeRole::Admin,
+            crate::values::roles::NodeRole::Admin,
             Some(&acme.id),
         )
         .await

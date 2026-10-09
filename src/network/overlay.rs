@@ -192,8 +192,8 @@ mod tests {
             "alpine",
             &first,
             &admin,
-            &crate::network::capability::Capability::ALL,
-            &crate::network::capability::Capability::ALL,
+            &crate::values::capability::Capability::ALL,
+            &crate::values::capability::Capability::ALL,
         )
         .await
         .expect("minted");

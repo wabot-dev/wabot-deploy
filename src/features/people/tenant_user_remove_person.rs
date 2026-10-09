@@ -1,7 +1,8 @@
 use wabot::sqlite::SqliteDatabase;
 
-use crate::accounts::{self, Account};
+use crate::accounts;
 use crate::authz::tenant_user;
+use crate::entities::account::Account;
 
 pub async fn run(database: &SqliteDatabase, account: &Account, person: &str) -> Result<(), String> {
     if !tenant_user::administers(account) {

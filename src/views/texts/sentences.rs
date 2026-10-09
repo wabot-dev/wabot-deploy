@@ -10,7 +10,8 @@
 //! one `match` — so a translation that forgets the number is a compile
 //! error rather than a page with a hole in it.
 
-use super::language::{current, Language};
+use super::language::current;
+use crate::values::language::Language;
 
 /// What a drain did, and what it could not do.
 pub fn copies_moved(moved: usize, refused: &[String]) -> String {

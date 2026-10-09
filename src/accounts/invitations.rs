@@ -23,9 +23,9 @@ use serde::Serialize;
 use wabot::sqlite::rusqlite::OptionalExtension;
 use wabot::sqlite::SqliteDatabase;
 
-use super::roles::{NodeRole, ProjectRole};
 use super::{sha256_hex, Account, AccountError, AccountResult};
 use crate::clock::now_ms;
+use crate::values::roles::{NodeRole, ProjectRole};
 
 /// How long a link is worth anything.
 ///

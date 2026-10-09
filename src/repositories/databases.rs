@@ -296,7 +296,7 @@ mod tests {
                 overlay_ip: Some("10.42.0.9".into()),
                 public_key: None,
                 endpoint: None,
-                allows: vec![crate::network::capability::Capability::Store],
+                allows: vec![crate::values::capability::Capability::Store],
                 last_seen_at: None,
                 is_self: false,
                 ca_pem: None,

@@ -64,7 +64,7 @@ pub async fn join(
     database: &SqliteDatabase,
     config: &Config,
     token: &str,
-    accepting: Option<&[super::capability::Capability]>,
+    accepting: Option<&[crate::values::capability::Capability]>,
 ) -> Result<Joined, JoinError> {
     let token = JoinToken::decode(token)?;
 
@@ -73,7 +73,7 @@ pub async fn join(
     // nobody to show a screen to and running the command *is* the
     // consent. The console passes what somebody ticked, which can be
     // less and can be nothing at all.
-    let agreed: Vec<super::capability::Capability> = match accepting {
+    let agreed: Vec<crate::values::capability::Capability> = match accepting {
         Some(chosen) => token
             .requires()
             .into_iter()

@@ -2,9 +2,9 @@ use std::sync::Arc;
 
 use wabot::sqlite::SqliteDatabase;
 
-use crate::accounts::Account;
 use crate::authz::node_user;
 use crate::config::Config;
+use crate::entities::account::Account;
 
 pub async fn run(
     database: &Arc<SqliteDatabase>,

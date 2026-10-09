@@ -71,12 +71,12 @@ pub struct JoinToken {
 
 impl JoinToken {
     /// What this token asks for, in capabilities this version knows.
-    pub fn requires(&self) -> Vec<super::capability::Capability> {
+    pub fn requires(&self) -> Vec<crate::values::capability::Capability> {
         Self::read(&self.requires)
     }
 
     /// What it hands over.
-    pub fn offers(&self) -> Vec<super::capability::Capability> {
+    pub fn offers(&self) -> Vec<crate::values::capability::Capability> {
         Self::read(&self.offers)
     }
 
@@ -84,10 +84,10 @@ impl JoinToken {
     /// existed granted everything. An *empty* list is empty — somebody
     /// chose that, and reading their "nothing" as "everything" would be
     /// the one mistake this whole phase exists to prevent.
-    fn read(field: &Option<Vec<String>>) -> Vec<super::capability::Capability> {
+    fn read(field: &Option<Vec<String>>) -> Vec<crate::values::capability::Capability> {
         match field {
-            None => super::capability::Capability::ALL.to_vec(),
-            Some(names) => super::capability::parse_list(&names.join(",")),
+            None => crate::values::capability::Capability::ALL.to_vec(),
+            Some(names) => crate::values::capability::parse_list(&names.join(",")),
         }
     }
 }
@@ -169,7 +169,7 @@ mod tests {
             offers: None,
             ..token()
         };
-        let all = crate::network::capability::Capability::ALL.len();
+        let all = crate::values::capability::Capability::ALL.len();
         assert_eq!(old.requires().len(), all);
         assert_eq!(old.offers().len(), all);
 
@@ -195,7 +195,7 @@ mod tests {
 
         assert_eq!(
             ahead.requires(),
-            vec![crate::network::capability::Capability::Host]
+            vec![crate::values::capability::Capability::Host]
         );
     }
 

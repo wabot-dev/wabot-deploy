@@ -86,7 +86,7 @@ pub fn manage_card<'a>(
 ) -> impl Renderable + 'a {
     let may_manage = node
         .allows
-        .contains(&network::capability::Capability::Manage);
+        .contains(&crate::values::capability::Capability::Manage);
     let behind = node.wanted_version.as_deref().is_some_and(|wanted| {
         node.version
             .as_deref()

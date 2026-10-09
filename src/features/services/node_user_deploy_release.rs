@@ -1,7 +1,7 @@
 use wabot::sqlite::SqliteDatabase;
 
-use crate::accounts::Account;
 use crate::authz::node_user;
+use crate::entities::account::Account;
 use crate::entities::release::Release;
 use crate::entities::service::Service;
 use crate::features::services::choose_release_command::ChooseRelease;

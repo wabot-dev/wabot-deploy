@@ -27,7 +27,7 @@ pub fn service_table(
     // Carried alongside rather than read off the service: it belongs to
     // a replica now, and a service is several of them.
     rows: &[(crate::entities::service::Service, StateCell, Option<String>)],
-    allowed: crate::accounts::roles::Access,
+    allowed: crate::values::roles::Access,
 ) -> impl Renderable {
     let inner = rsx! {
                     <table>

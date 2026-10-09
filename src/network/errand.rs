@@ -455,22 +455,22 @@ impl Record {
 pub fn consent_for(
     kind: Kind,
     payload: &serde_json::Value,
-) -> Option<super::capability::Capability> {
+) -> Option<crate::values::capability::Capability> {
     match kind {
-        Kind::Host => Some(super::capability::Capability::Host),
+        Kind::Host => Some(crate::values::capability::Capability::Host),
         // `Store`, not `Host`: keeping somebody's data is a different
         // favour from running somebody's container.
-        Kind::Database => Some(super::capability::Capability::Store),
+        Kind::Database => Some(crate::values::capability::Capability::Store),
         // Neither: looking after the machine is not carrying somebody's
         // work, which is why this capability exists at all.
-        Kind::Manage | Kind::Command => Some(super::capability::Capability::Manage),
+        Kind::Manage | Kind::Command => Some(crate::values::capability::Capability::Manage),
         Kind::Edge => {
             let withdrawing = serde_json::from_value::<Edge>(payload.clone())
                 .map(|edge| edge.upstreams.is_empty())
                 // Unreadable is not a withdrawal: something that cannot be
                 // parsed must not slip past the check by being broken.
                 .unwrap_or(false);
-            (!withdrawing).then_some(super::capability::Capability::Edge)
+            (!withdrawing).then_some(crate::values::capability::Capability::Edge)
         }
         Kind::Unknown => None,
     }

@@ -2,10 +2,10 @@ use std::sync::Arc;
 
 use wabot::sqlite::SqliteDatabase;
 
-use crate::accounts::Account;
 use crate::authz::node_user;
 use crate::commands::backup::Restored;
 use crate::config::Config;
+use crate::entities::account::Account;
 use crate::entities::service::Service;
 use crate::features::databases::restore_database_command::RestoreDatabase;
 

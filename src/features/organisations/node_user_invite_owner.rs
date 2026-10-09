@@ -1,12 +1,12 @@
 use wabot::sqlite::SqliteDatabase;
 
 use crate::accounts::invitations;
-use crate::accounts::roles::NodeRole;
-use crate::accounts::Account;
 use crate::authz::node_user;
+use crate::entities::account::Account;
 use crate::features::organisations::invite_owner_request::InviteOwnerRequest;
 use crate::features::organisations::person_invited_into_organisation_response::PersonInvitedIntoOrganisationResponse;
 use crate::repositories::tenants;
+use crate::values::roles::NodeRole;
 
 /// The only way into an organisation, since one with nobody in it cannot
 /// invite anybody either.

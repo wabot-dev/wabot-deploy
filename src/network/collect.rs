@@ -598,8 +598,9 @@ async fn report_for(
     // same reason the endpoint does: a node that revoked something an
     // hour ago should stop being offered for it, and the alternative is
     // the other end finding out from an errand it refuses.
-    let allows =
-        super::capability::to_list(&super::capability::granted_to(database, authority).await);
+    let allows = crate::values::capability::to_list(
+        &super::capability::granted_to(database, authority).await,
+    );
 
     Ok(super::api::Report {
         replicas,
@@ -754,7 +755,12 @@ async fn carry_out(
             // `Store`, not `Host`. Keeping somebody's data is a
             // different favour from running somebody's container, and a
             // node that agreed to the second never agreed to the first.
-            allowed(database, authority, super::capability::Capability::Store).await?;
+            allowed(
+                database,
+                authority,
+                crate::values::capability::Capability::Store,
+            )
+            .await?;
             let standby: errand::Standby = serde_json::from_value(order.payload)
                 .map_err(|error| format!("that is not a database errand: {error}"))?;
             hold_standby(database, config, container, authority, standby).await
@@ -776,7 +782,12 @@ async fn carry_out(
             // last one repeats twice a day against an authority that
             // locks the account after five failures.
             if !edge.upstreams.is_empty() {
-                allowed(database, authority, super::capability::Capability::Edge).await?;
+                allowed(
+                    database,
+                    authority,
+                    crate::values::capability::Capability::Edge,
+                )
+                .await?;
             }
             serve_name(database, config, container, authority, edge).await
         }
@@ -970,7 +981,7 @@ fn obeyed_key(action: errand::Action) -> String {
 pub(crate) async fn allowed(
     database: &SqliteDatabase,
     authority: &str,
-    capability: super::capability::Capability,
+    capability: crate::values::capability::Capability,
 ) -> Result<(), String> {
     // A node needs no permission from itself. The grant table records
     // what this node agreed to do *for somebody else*, and there is no
@@ -1752,7 +1763,7 @@ mod tests {
         crate::network::capability::grant(
             &database,
             "nd-a",
-            &[super::super::capability::Capability::Host],
+            &[crate::values::capability::Capability::Host],
         )
         .await
         .expect("grant");
@@ -1809,7 +1820,7 @@ mod tests {
         crate::network::capability::grant(
             &database,
             "nd-a",
-            &[super::super::capability::Capability::Host],
+            &[crate::values::capability::Capability::Host],
         )
         .await
         .expect("grant");
@@ -1929,7 +1940,7 @@ mod tests {
         crate::network::capability::grant(
             &database,
             "nd-a",
-            &[super::super::capability::Capability::Edge],
+            &[crate::values::capability::Capability::Edge],
         )
         .await
         .expect("grant");
@@ -1971,7 +1982,7 @@ mod tests {
         crate::network::capability::grant(
             &database,
             "nd-a",
-            &[super::super::capability::Capability::Host],
+            &[crate::values::capability::Capability::Host],
         )
         .await
         .expect("grant");
@@ -2075,7 +2086,7 @@ mod tests {
         crate::network::capability::grant(
             &database,
             "nd-a",
-            &[super::super::capability::Capability::Edge],
+            &[crate::values::capability::Capability::Edge],
         )
         .await
         .expect("grant");
@@ -2365,7 +2376,7 @@ mod tests {
         crate::network::capability::grant(
             &database,
             "nd-a",
-            &[super::super::capability::Capability::Store],
+            &[crate::values::capability::Capability::Store],
         )
         .await
         .expect("grant");
@@ -2415,7 +2426,7 @@ mod tests {
         crate::network::capability::grant(
             &database,
             "nd-a",
-            &[super::super::capability::Capability::Host],
+            &[crate::values::capability::Capability::Host],
         )
         .await
         .expect("grant");
@@ -2445,7 +2456,7 @@ mod tests {
         crate::network::capability::grant(
             &database,
             "nd-authority",
-            &super::super::capability::Capability::ALL,
+            &crate::values::capability::Capability::ALL,
         )
         .await
         .expect("grant");
