@@ -101,7 +101,9 @@ mod tests {
     #[test]
     fn every_file_in_a_feature_is_compiled() {
         let mut undeclared: Vec<String> = Vec::new();
+        let mut read = 0;
         for path in rust_files(&["src/features"]) {
+            read += 1;
             let (module, listing) = if path.file_name().is_some_and(|name| name == "mod.rs") {
                 let folder = path.parent().expect("a folder");
                 if folder == Path::new("src/features") {
@@ -125,6 +127,10 @@ mod tests {
                 undeclared.push(path.display().to_string());
             }
         }
+        assert!(
+            read > 100,
+            "the scan found {read} files, so it is reading the wrong place"
+        );
         assert!(
             undeclared.is_empty(),
             "declare these in their mod.rs: {undeclared:#?}"

@@ -986,7 +986,8 @@ mod tests {
     #[test]
     fn no_page_offers_a_way_back_the_breadcrumb_already_is() {
         let mut found = Vec::new();
-        for path in crate::tree::rust_files(&["src/web/console", "src/features"]) {
+        let mut ghosts = 0;
+        for path in crate::tree::rust_files(&["src/web", "src/features"]) {
             let name = path.file_name().unwrap_or_default().to_string_lossy();
             let source = std::fs::read_to_string(&path).expect("read");
             for (number, line) in source.lines().enumerate() {
@@ -1020,11 +1021,19 @@ mod tests {
                     "Cancel",
                 ];
                 let ghost = trimmed.starts_with("<a class=\"btn btn-ghost\"");
+                ghosts += usize::from(ghost);
                 if ghost && !NOT_A_WAY_BACK.iter().any(|label| line.contains(label)) {
                     found.push(format!("{name}:{}", number + 1));
                 }
             }
         }
+        // **It read nothing for months.** It scanned the controllers, and
+        // the pages that draw these links had moved out of them; with no
+        // floor, finding no link passed. It counts the ones it sees now.
+        assert!(
+            ghosts > 2,
+            "the scan saw {ghosts} ghost links, so it is reading the wrong place"
+        );
         assert!(
             found.is_empty(),
             "these render a way back the breadcrumb already is: {found:?}"
