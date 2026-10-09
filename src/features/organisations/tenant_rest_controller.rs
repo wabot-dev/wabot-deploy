@@ -276,6 +276,91 @@ mod tests {
     use crate::web::console::tests::Console;
     use wabot::rest::axum::http::StatusCode;
 
+    /// Deleting an organisation takes its projects, its people and the
+    /// invitations into it, as the danger card says.
+    ///
+    /// **Shipped otherwise**: the delete refused while a project remained
+    /// and otherwise failed on a foreign key, with the database's own
+    /// words on the page. Found on a VM node.
+    #[tokio::test]
+    async fn deleting_an_organisation_takes_what_is_in_it() {
+        let console = Console::new().await;
+        let cookie = console.signed_in().await;
+        let created = console
+            .harness
+            .post("/organisations")
+            .header("cookie", &cookie)
+            .form(&[("name", "Acme")])
+            .send()
+            .await;
+        let id = created
+            .header("location")
+            .and_then(|to| to.split('/').nth(2))
+            .expect("the organisation's page")
+            .to_string();
+        let tenant = crate::infra::repositories::tenants::find(&console.database, &id)
+            .await
+            .expect("read")
+            .expect("there");
+        let owner = crate::infra::accounts::create_in(
+            &console.database,
+            "ana",
+            "a long passphrase here",
+            crate::domain::values::roles::NodeRole::Admin,
+            Some(&tenant.id),
+        )
+        .await
+        .expect("an owner");
+        crate::infra::repositories::projects::create_for(
+            &console.database,
+            "storefront",
+            Some(&tenant.id),
+        )
+        .await
+        .expect("a project");
+        crate::infra::accounts::invitations::create_into(
+            &console.database,
+            &owner,
+            crate::domain::values::roles::NodeRole::Member,
+            None,
+            Some(&tenant.id),
+        )
+        .await
+        .expect("an invitation");
+
+        let deleted = console
+            .harness
+            .post(&format!("/organisations/{id}/delete"))
+            .header("cookie", &cookie)
+            .form(&[("confirm", tenant.slug.as_str())])
+            .send()
+            .await;
+        let location = deleted.header("location").unwrap_or_default();
+        assert!(!location.contains("error="), "{location}");
+
+        assert!(
+            crate::infra::repositories::tenants::find(&console.database, &id)
+                .await
+                .expect("read")
+                .is_none()
+        );
+        assert!(
+            crate::infra::repositories::projects::find(&console.database, "storefront")
+                .await
+                .expect("read")
+                .is_none(),
+            "its project went with it"
+        );
+        assert!(
+            crate::infra::accounts::all(&console.database)
+                .await
+                .expect("read")
+                .iter()
+                .all(|account| account.username != "ana"),
+            "and its people"
+        );
+    }
+
     /// An organisation's name has to reach this node before it is saved.
     ///
     /// **Shipped otherwise**: nothing was asked, so a typo was stored,

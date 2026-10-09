@@ -190,7 +190,14 @@ pub async fn delete(database: &SqliteDatabase, id: &str) -> PlatformResult<()> {
     let id = id.to_string();
     database
         .write(move |connection| {
-            connection.execute("DELETE FROM tenant WHERE \"id\" = ?1", [id])?;
+            // Its people and the invitations into it go with it: both
+            // point at the row, so the delete alone failed on a foreign
+            // key — and an account scoped to a frontier that no longer
+            // exists has nowhere to sign in. Sessions and memberships
+            // cascade from the account.
+            connection.execute("DELETE FROM invitation WHERE \"tenant_id\" = ?1", [&id])?;
+            connection.execute("DELETE FROM account WHERE \"tenant_id\" = ?1", [&id])?;
+            connection.execute("DELETE FROM tenant WHERE \"id\" = ?1", [&id])?;
             Ok(())
         })
         .await?;

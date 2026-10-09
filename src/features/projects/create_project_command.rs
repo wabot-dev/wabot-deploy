@@ -24,9 +24,17 @@ impl CreateProject<'_> {
             );
         }
 
-        let project = crate::infra::repositories::projects::create(database, self.name)
-            .await
-            .map_err(|error| error.to_string())?;
+        // Inside the frontier of whoever made it. It was always the node's,
+        // so an organisation's projects escaped its quota, its count and
+        // its deletion — found on a VM node, where deleting an organisation
+        // left the project its owner had made.
+        let project = crate::infra::repositories::projects::create_for(
+            database,
+            self.name,
+            self.by.tenant_id.as_deref(),
+        )
+        .await
+        .map_err(|error| error.to_string())?;
 
         // Whoever made it owns it. Without this a member would create a
         // project and immediately not be able to see it, since the list
