@@ -975,12 +975,20 @@ impl ServiceUiController {
                     domain.as_deref(),
                 )
                 .await;
+                // The question `add_port` asks, so the form offers a
+                // hostname only when the POST could accept one. It asked
+                // whether the node had a domain, and a named node with
+                // `edge` off drew the field for a refusal.
+                let answered = !dns::references(&self.state.database, &self.state.config)
+                    .await
+                    .unwrap_or_default()
+                    .is_empty();
                 let suggestion = match &suffix {
-                    Some(suffix) => Some((
+                    Some(suffix) if answered => Some((
                         dns::suggested_hostname(&service.slug, &project.slug, suffix),
                         dns::wildcard_works(suffix).await,
                     )),
-                    None => None,
+                    _ => None,
                 };
                 Panel::Network {
                     certificates,
@@ -989,6 +997,7 @@ impl ServiceUiController {
                     add: format!("{here}/ports"),
                     suggestion,
                     may_publish: account.is_admin(),
+                    acme_off: self.state.config.acme.disabled,
                     public_nodes: crate::infra::network::edge_candidates(&self.state.database)
                         .await?,
                     serving: crate::infra::repositories::edges::of_service(

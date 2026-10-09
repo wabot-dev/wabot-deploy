@@ -31,12 +31,18 @@ impl AddServicePort<'_> {
 
                 let references = dns::references(database, config).await?;
                 if references.is_empty() {
-                    return Err(
-                        "no node on this network has a domain of its own, so there is \
-                                nothing to check that name against — give this node one on its \
-                                settings page, or join a node that has one"
+                    let named = crate::infra::node::settings::domain(database, config)
+                        .await
+                        .is_some();
+                    return Err(match named {
+                        true => "no node on this network answers for hostnames — this one has \
+                                 that turned off in its capabilities"
                             .into(),
-                    );
+                        false => "no node on this network has a domain of its own, so there is \
+                                  nothing to check that name against — give this node one on its \
+                                  settings page, or join a node that has one"
+                            .into(),
+                    });
                 }
 
                 let outcome = dns::resolves_to(&hostname, &references).await;

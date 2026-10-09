@@ -169,6 +169,9 @@ pub enum Panel {
         /// Whether the reader may publish a port on the node's own
         /// address. A courtesy — the check that counts is on the POST.
         may_publish: bool,
+        /// Whether this node asks an authority at all, which decides the
+        /// certificate a new hostname starts with.
+        acme_off: bool,
         /// The nodes that could answer for a name, those that were asked,
         /// and the instructions still waiting to be collected.
         public_nodes: Vec<Node>,
@@ -562,7 +565,7 @@ pub fn render<'a>(page: &'a ServiceSettings<'a>) -> impl Renderable + 'a {
             }
             Panel::Network {
                 ports, certificates, secured, domain, add, suggestion, may_publish,
-                public_nodes, serving, orders,
+                acme_off, public_nodes, serving, orders,
             } => {
                 <section class="stack" id="ports">
                     <p class="card-label">(t("Exposed ports"))</p>
@@ -646,7 +649,7 @@ pub fn render<'a>(page: &'a ServiceSettings<'a>) -> impl Renderable + 'a {
                     }
 
                     <p class="card-label">(t("Expose a port"))</p>
-                    (service_ports_component::port_form(add, suggestion, *may_publish))
+                    (service_ports_component::port_form(add, suggestion, *may_publish, domain.is_some(), *acme_off))
                 </section>
 
                 @if service.is_ours() && !public_nodes.is_empty()

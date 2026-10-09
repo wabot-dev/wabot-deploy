@@ -3831,9 +3831,7 @@ mod tests {
         // does not offer a source either. A first version of this asserted
         // the field and passed on the *disclosure's* copy of it — which
         // was the thing being deleted.
-        crate::infra::node::settings::set_domain(&console.database, Some("example.com"))
-            .await
-            .expect("domain");
+        named(&console, "example.com").await;
         let project = crate::infra::repositories::projects::find(&console.database, "my-api")
             .await
             .expect("query")
@@ -4950,6 +4948,17 @@ mod tests {
 
     /// A hostname declared through `ports::create` rather than the
     /// form: the form checks DNS first, and no name resolves to a test.
+    /// Give the node a domain the way the console does: the setting, and
+    /// the node's own row that every "who answers for a name" reads.
+    async fn named(console: &Console, domain: &str) {
+        crate::infra::node::settings::set_domain(&console.database, Some(domain))
+            .await
+            .expect("domain");
+        crate::infra::network::ensure_self(&console.database, &console.config)
+            .await
+            .expect("the row follows");
+    }
+
     async fn hostname_on(console: &Console, hostname: &str) -> String {
         let project = crate::infra::repositories::projects::find(&console.database, "my-api")
             .await
@@ -4987,9 +4996,7 @@ mod tests {
         let console = Console::new().await;
         let cookie = console.signed_in().await;
         let page = service(&console, &cookie).await;
-        crate::infra::node::settings::set_domain(&console.database, Some("example.com"))
-            .await
-            .expect("domain");
+        named(&console, "example.com").await;
         let port_id = hostname_on(&console, "api.example.com").await;
 
         let body = console
@@ -5025,9 +5032,7 @@ mod tests {
         // Without a domain the node offers no hostname field at all —
         // it cannot check that a name points here, so there is nothing
         // to type. That branch is a different test.
-        crate::infra::node::settings::set_domain(&console.database, Some("node.example.com"))
-            .await
-            .expect("domain");
+        named(&console, "node.example.com").await;
 
         let body = console
             .harness
@@ -5253,6 +5258,57 @@ mod tests {
                 .is_empty(),
             "a hostname was accepted with no node domain"
         );
+    }
+
+    /// A node with a name that does not answer for names offers no
+    /// hostname, and says which switch is off.
+    ///
+    /// **Shipped otherwise**: the form asked whether the node had a
+    /// domain, the POST asked whether any node would answer for one, and
+    /// the refusal told somebody whose node was named to go and name it.
+    /// Found on a VM node with `edge` off.
+    #[tokio::test]
+    async fn a_named_node_that_does_not_answer_for_names_says_so() {
+        let console = Console::new().await;
+        let cookie = console.signed_in().await;
+        let page = service(&console, &cookie).await;
+        crate::infra::node::settings::set_domain(&console.database, Some("localhost"))
+            .await
+            .expect("a domain");
+        crate::infra::network::capability::set_provides(
+            &console.database,
+            crate::domain::values::capability::Capability::Edge,
+            false,
+        )
+        .await
+        .expect("edge off");
+        crate::infra::network::ensure_self(&console.database, &console.config)
+            .await
+            .expect("the row follows");
+
+        let body = console
+            .harness
+            .get(&format!("{page}/settings/network"))
+            .header("cookie", &cookie)
+            .send()
+            .await
+            .body;
+        assert!(body.contains("turned off in its capabilities"), "{body}");
+        assert!(!body.contains("needs a domain"), "it has one: {body}");
+
+        let refused = console
+            .harness
+            .post(&format!("{page}/ports"))
+            .header("cookie", &cookie)
+            .form(&[
+                ("container_port", "80"),
+                ("https", "1"),
+                ("hostname", "localhost"),
+            ])
+            .send()
+            .await;
+        let location = refused.header("location").unwrap_or_default();
+        assert!(location.contains("capabilities"), "{location}");
     }
 
     /// Ticking HTTPS with no hostname must not silently create a port

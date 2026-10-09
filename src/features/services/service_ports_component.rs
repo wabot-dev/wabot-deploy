@@ -44,6 +44,8 @@ pub fn port_form<'a>(
     add: &'a str,
     suggestion: &'a Option<(String, bool)>,
     admin: bool,
+    named: bool,
+    acme_off: bool,
 ) -> impl Renderable + 'a {
     wabot::ui::hypertext::island_bare(
         "fields",
@@ -103,6 +105,19 @@ pub fn port_form<'a>(
                                                data-required-when="https">
                                     </div>
                                 }
+                                None if named => {
+                                    <label class="check">
+                                        <input type="checkbox" name="https" value="1" disabled>
+                                        (t("Serve over HTTPS at a hostname"))
+                                    </label>
+                                    <p class="field-hint">(t("No node on this network answers for hostnames: \
+                                         this one has that turned off in its capabilities."))</p>
+                                    @if admin {
+                                        <a class="btn btn-secondary btn-sm" href="/node/allows">(t("Open its capabilities"))</a>
+                                    } @else {
+                                        <p class="field-hint">(t("Ask whoever runs this node to turn it on."))</p>
+                                    }
+                                }
                                 None => {
                                     <label class="check">
                                         <input type="checkbox" name="https" value="1" disabled>
@@ -130,9 +145,15 @@ pub fn port_form<'a>(
                             @if suggestion.is_some() {
                                 <div class="stack" data-when="https">
                                     <label for="renew_with">(t("Certificate"))</label>
+                                    // On a node that never asks an authority, the
+                                    // default was one that never arrives.
                                     <select id="renew_with" name="renew_with">
                                         <option value="acme">(t("Let's Encrypt"))</option>
-                                        <option value="self_signed">(t("Signed here"))</option>
+                                        @if acme_off {
+                                            <option value="self_signed" selected>(t("Signed here"))</option>
+                                        } @else {
+                                            <option value="self_signed">(t("Signed here"))</option>
+                                        }
                                         <option value="file">(t("Read from files on this node"))</option>
                                     </select>
                                     <div class="stack" data-when="renew_with=file">
@@ -271,4 +292,26 @@ pub fn reachable_at(
         return "the project only".into();
     }
     where_from.join("  ")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A new hostname starts with a certificate this node will get.
+    ///
+    /// **Shipped otherwise**: the select fell to its first option, Let's
+    /// Encrypt, on a node with ACME off — a certificate nothing would ever
+    /// order. Found on a VM node installed with `--self-signed`.
+    #[test]
+    fn a_node_that_asks_no_authority_starts_a_hostname_on_its_own() {
+        let suggestion = Some(("web.shop.node.example".to_string(), true));
+        let drawn = |acme_off| {
+            port_form("/add", &suggestion, true, true, acme_off)
+                .render()
+                .into_inner()
+        };
+        assert!(drawn(true).contains(r#"<option value="self_signed" selected>"#));
+        assert!(!drawn(false).contains(" selected>"));
+    }
 }

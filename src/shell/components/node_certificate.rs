@@ -244,11 +244,22 @@ pub fn certificate_card<'a>(
                 <input id="domain" name="domain" type="text" autocomplete="off" class="mono"
                        value=(domain.unwrap_or_default())
                        placeholder="node.example.com">
-                <p class="field-hint">(t("It must resolve to this node, and this node must be reachable on \
-                     port 80 — that is what the challenge answers on. Both are checked \
-                     before anything is requested. Saving reissues: the node takes the \
-                     new name on its own certificate straight away, then asks a public \
-                     authority for one."))</p>
+                // Found on a VM node installed with `--self-signed`: the
+                // card said no authority was asked, and this said one
+                // would be.
+                @if *state != CertificateState::Local
+                    && matches!(policy.renew_with, crate::infra::edge::policy::RenewWith::Acme)
+                {
+                    <p class="field-hint">(t("It must resolve to this node, and this node must be reachable on \
+                         port 80 — that is what the challenge answers on. Both are checked \
+                         before anything is requested. Saving reissues: the node takes the \
+                         new name on its own certificate straight away, then asks a public \
+                         authority for one."))</p>
+                } @else {
+                    <p class="field-hint">(t("It must resolve to this node, which is checked before it is \
+                         saved. Saving reissues: the node takes the new name on its own \
+                         certificate straight away."))</p>
+                }
                 <div class="actions">
                     <button type="submit">(t("Save domain"))</button>
                     @if state.may_retry() {
@@ -392,4 +403,45 @@ pub fn certificate_island<'a>(
         &serde_json::json!({ "node": node_id }),
         hypertext::Raw::dangerously_create(&inner),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::infra::edge::policy::{Policy, RenewWith};
+
+    /// The form under the card says what saving will do, and on a node
+    /// that asks no authority it does not promise one.
+    ///
+    /// **Shipped otherwise**: found on a VM node installed with
+    /// `--self-signed`, where the card said no authority was asked and
+    /// the hint beneath it said one would be.
+    #[test]
+    fn the_domain_hint_promises_an_authority_only_when_one_is_asked() {
+        let cells = CertificateCells {
+            domain: "node.example".into(),
+            issuer: "self-signed".into(),
+            renews: "—".into(),
+            word: "Local",
+            badge: "",
+            dot: "",
+            note: "",
+            failure: String::new(),
+        };
+        let drawn = |state: CertificateState, renew_with: RenewWith| {
+            let policy = Policy {
+                name: "node.example".into(),
+                renew_with,
+                last_error: None,
+            };
+            let drawn = certificate_card(&cells, &state, &policy, Some("node.example"), None)
+                .render()
+                .into_inner();
+            drawn
+        };
+        let promise = "asks a public";
+        assert!(!drawn(CertificateState::Local, RenewWith::Acme).contains(promise));
+        assert!(!drawn(CertificateState::Waiting, RenewWith::SelfSigned).contains(promise));
+        assert!(drawn(CertificateState::Waiting, RenewWith::Acme).contains(promise));
+    }
 }
