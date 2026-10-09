@@ -4,12 +4,10 @@ use crate::infra::config::Config;
 
 pub async fn run(config: Config) -> anyhow::Result<i32> {
     let database = crate::infra::db::open(&config.database_path()).await?;
+    let url = url(&database, &config).await;
 
     if crate::infra::accounts::any_account(&database).await? {
-        println!(
-            "This node already has an administrator. Sign in at {}.",
-            url(&config)
-        );
+        println!("This node already has an administrator. Sign in at {url}.");
         println!();
         println!("A setup token cannot create a second one — that is the point of it.");
         database.close().await?;
@@ -20,7 +18,7 @@ pub async fn run(config: Config) -> anyhow::Result<i32> {
     let token = crate::infra::accounts::issue_setup_token(&database).await?;
     database.close().await?;
 
-    print(&config, &token);
+    print(&url, &token);
     Ok(0)
 }
 
@@ -28,10 +26,10 @@ pub async fn run(config: Config) -> anyhow::Result<i32> {
 ///
 /// Shared with `install`, so the two never drift into telling an
 /// operator two different things.
-pub fn print(config: &Config, token: &str) {
+pub fn print(url: &str, token: &str) {
     println!();
     println!("  Create the administrator account at:");
-    println!("  {}/setup", url(config));
+    println!("  {url}/setup");
     println!();
     println!("  setup token: {token}");
     println!();
@@ -57,10 +55,24 @@ pub fn print(config: &Config, token: &str) {
 ///
 /// The port is only spelled out when it is not 443: a URL with `:443` on
 /// it is one somebody will copy into a browser and wonder about.
-fn url(config: &Config) -> String {
+///
+/// The stored domain, not the file's: the console writes the row, and a
+/// node renamed there was told to sign in at the address it had before.
+/// `passwd` printed `https://<this node>:443` under a comment saying it
+/// spoke the way this does. Found on a VM node.
+pub async fn url(database: &wabot::sqlite::SqliteDatabase, config: &Config) -> String {
+    address(
+        crate::infra::node::settings::domain(database, config)
+            .await
+            .as_deref(),
+        config.edge.https_port,
+    )
+}
+
+fn address(domain: Option<&str>, https_port: u16) -> String {
     format!(
         "https://{}",
-        crate::infra::node::authority(config.node.domain.as_deref(), config.edge.https_port)
+        crate::infra::node::authority(domain, https_port)
     )
 }
 
@@ -72,11 +84,25 @@ mod tests {
     fn the_default_port_is_not_spelled_out() {
         let mut config = Config::default();
         config.node.domain = Some("node.example".into());
-        config.edge.https_port = 443;
-        assert_eq!(url(&config), "https://node.example");
+        assert_eq!(address(Some("node.example"), 443), "https://node.example");
+        assert_eq!(
+            address(Some("node.example"), 8443),
+            "https://node.example:8443"
+        );
+    }
 
-        config.edge.https_port = 8443;
-        assert_eq!(url(&config), "https://node.example:8443");
+    /// The console's domain, not the one install wrote: a node renamed
+    /// in the console told an operator to sign in at its old name.
+    #[tokio::test]
+    async fn the_address_is_the_one_the_console_set() {
+        let database = crate::infra::db::open_in_memory().await.expect("open");
+        let mut config = Config::default();
+        config.node.domain = Some("installed.example".into());
+        config.edge.https_port = 443;
+        crate::infra::node::settings::set_domain(&database, Some("renamed.example"))
+            .await
+            .expect("a domain");
+        assert_eq!(url(&database, &config).await, "https://renamed.example");
     }
 
     /// A node with no domain still has to give somebody a URL they can
@@ -90,8 +116,7 @@ mod tests {
     /// could actually open.
     #[test]
     fn a_node_with_no_domain_names_an_address_somebody_else_can_open() {
-        let config = Config::default();
-        let printed = url(&config);
+        let printed = address(None, 443);
         assert!(printed.starts_with("https://"), "{printed}");
 
         // On a machine with a route out, that is its own address rather

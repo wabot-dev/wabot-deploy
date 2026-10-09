@@ -93,10 +93,10 @@ pub enum Command {
 
     /// Copy everything this node would need to be itself again.
     ///
-    /// The database, and every volume a managed engine does not own —
-    /// see `backup` for why those are named and skipped
-    /// rather than copied wrongly. Images are deliberately left out:
-    /// they are in a registry and come back with a pull.
+    /// The node's database, the images it is the only copy of, and every
+    /// volume something claims — a managed database's through its own
+    /// engine, because a file copy of one mid-write will not start. A
+    /// public base image is left out: it comes back with a pull.
     ///
     /// A directory, not an archive, so `rsync` and `scp -r` already
     /// understand it. Move it off the machine; a backup on the same

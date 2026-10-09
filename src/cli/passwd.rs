@@ -26,6 +26,7 @@ use crate::infra::config::Config;
 pub async fn run(config: Config, username: &str) -> anyhow::Result<i32> {
     let database = crate::infra::db::open(&config.database_path()).await?;
     let outcome = crate::infra::accounts::reset_password(&database, username).await;
+    let url = crate::cli::setup_token::url(&database, &config).await;
     database.close().await?;
 
     match outcome {
@@ -35,10 +36,7 @@ pub async fn run(config: Config, username: &str) -> anyhow::Result<i32> {
             println!();
             println!("  {password}");
             println!();
-            println!(
-                "  Sign in at {}, then change it if you want one you can",
-                url(&config)
-            );
+            println!("  Sign in at {url}, then change it if you want one you can");
             println!("  remember. Nothing else was touched.");
             println!();
             Ok(0)
@@ -49,13 +47,5 @@ pub async fn run(config: Config, username: &str) -> anyhow::Result<i32> {
             println!("{error}");
             Ok(1)
         }
-    }
-}
-
-/// Where to sign in, said the way `setup-token` says it.
-fn url(config: &Config) -> String {
-    match &config.node.domain {
-        Some(domain) => format!("https://{domain}"),
-        None => format!("https://<this node>:{}", config.edge.https_port),
     }
 }
