@@ -34,7 +34,7 @@ bindings in a build script.
 
 ## The architecture rules
 
-Eleven, written in full with their costs in
+Twelve, written in full with their costs in
 [`docs/architecture-rules.md`](docs/architecture-rules.md). They are
 about **the shape of this software**. How the network of nodes is put
 together is a separate subject with its own documents — see "The
@@ -88,13 +88,23 @@ network and the databases" below.
    somebody arrives with is where the thing they are changing lives.
    The guards read a file's kind off its name (`crate::tree`), so a file
    whose name says nothing fails.
+12. **Five rooms, and every import points inward.** `domain` imports
+   nothing else; `infra` imports `domain`; `features` and `web` import
+   both and each other; `cli` imports anything. Inside a feature, a use
+   case, command, request or response never imports a door or the shell
+   — except the words. `tree::every_import_points_inward` reads every
+   file and allows no exceptions.
 
-Where the tree stands: every feature is a folder under `src/features`
-— `access`, `backups`, `databases`, `network`, `node`, `organisations`,
-`people`, `projects`, `services` and `updates`, 208 files. Every use
-case's two ends are a request and a response and no controller draws.
+Where the tree stands: `src/` is the five rooms of rule 12 and nothing
+else but `main.rs` and the test-only `tree.rs`. Every feature is a
+folder under `src/features` — `access`, `backups`, `databases`,
+`network`, `node`, `organisations`, `people`, `projects`, `services` and
+`updates`. Every use case's two ends are a request and a response, no
+controller draws, and no import points outward.
 `services/service_rest_controller.rs` is still 5,400 lines, tests
-included. No `cli_user_` or `remote_node_` use case exists yet.
+included. No `cli_user_` or `remote_node_` use case exists yet: the CLI's
+verbs are whole in `src/cli`, and a remote node's errands are carried
+out in `infra::network::collect`.
 
 ## The framework is ours
 

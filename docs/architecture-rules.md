@@ -887,16 +887,105 @@ the commands more than one feature calls, and the CLI's verbs.
   `crate::features::databases::create_database_command::CreateDatabase`.
 - **A page that draws another feature's piece imports across folders.**
   The service pages draw the database cards; the project page draws
-  `service_state`, which will be the services feature's.
+  `service_state`, which is the services feature's.
 - **A door can sit in the wrong feature, and the folder makes it
   visible.** Restoring a database was answered by the service
   controller, calling the databases feature's use cases from outside it,
   because the form is on a database's service page. It moved to the
   database controller on the same route, before services moved.
-- **Code beneath a feature can reach up into it.** `deploy` calls
-  `qualified_name` out of `create_database_command.rs`. That dependency
-  pointed the wrong way before the move; the move is what made it
-  readable.
+- **Code beneath a feature could reach up into it, and the folder made
+  it readable.** `deploy` called `qualified_name` out of
+  `create_database_command.rs`, and a remote node's errand called
+  services' `CreateService`. Both dependencies pointed the wrong way
+  before the move; after it they were a path anybody could read, and
+  §12 is what fixed them and keeps them fixed.
 - **The shell keeps directories of its own.** `src/web/console` and
   `src/web/views` hold what no single feature owns, so a guard that
   reads everything that draws lists them beside `src/features`.
+
+## 12. Five rooms, and every import points inward
+
+`src/` is five folders — the table in §0 says what each holds — and a
+file may import only what is beneath it:
+
+```
+domain  ←  infra  ←  features ⇄ web  ←  cli
+```
+
+- **`domain` imports nothing but itself.** No database, no file, no
+  clock: entities, values, the pure policies, `authz`, errors.
+- **`infra` imports `domain` and itself.**
+- **`features` and `web` import both, and each other.** A feature's
+  doors draw with the shell — the layout, the session middleware, the
+  shared components — and the shell's router mounts every feature's
+  doors, and its lookup lists every feature's words. They are one ring,
+  not two.
+- **`cli` imports anything.** With `main.rs`, it is where the program is
+  put together.
+- **Inside a feature, the code a door calls never imports a door.** A
+  use case, a command, a request or a response imports no controller,
+  page or component, and nothing of the shell but its words — a refusal
+  with a number in it is a sentence somebody reads, and `sentences` is
+  where that sentence is built.
+
+### What was in the way
+
+Measured before any of it moved: fourteen imports in production code
+pointed outward, and every one is fixed rather than excused —
+
+- `Service` returned the network's `Capability`, so an entity depended
+  on persistence. The enum and its names are `values::capability`.
+- `accounts` stored `Theme` and `Language`, which were defined in the
+  views. Both are values; how each is drawn stays in the views as an
+  `impl` there. `Account` and its roles came out of `accounts` into the
+  domain with them.
+- Four "policies" read the database: `access` and `project_domain` are
+  repositories now, `quotas` and `upstreams` are the deploy path's.
+  `authz` lost three functions nobody called that read the membership
+  table, and is pure.
+- A remote node's errand, a backup's restore and a new database called
+  services' `CreateService`, which validated, inserted and handed the row
+  back — a repository write, so it is `repositories::services::create`.
+  `deploy` called databases' `qualified_name`; it is the deploy path's.
+- `network`, `update` and the backup machinery read `VERSION` from the
+  HTTP surface. It is `update::VERSION`.
+- Two doors lived inside infrastructure modules — the remote node's API
+  and the registry's — and the first imported the console's path parser.
+  Both are in `web`.
+
+### The guard
+
+`tree::every_import_points_inward` reads every file in `src`, takes its
+room from its directory and its kind from its name (§11), and checks
+every `crate::` path in what ships: comments and string literals are
+blanked first, so a path in prose is not an import, `#[cfg(test)]`
+items are taken out, because a test may build its world from any room,
+and a `{…}` group counts once per name in it. It carries a floor —
+three hundred files, a thousand imports — and it was watched to fail on
+four planted faults (the domain reaching infrastructure, infrastructure
+reaching a feature's controller, a use case reaching a page, a use case
+reaching the console) and to pass two that are allowed (a use case
+reaching the words, a domain test reaching the web).
+
+### What it does not see
+
+- **A relative path out of a room.** It reads `crate::` paths; a
+  `super::super::` that climbed from one room into another would slip
+  past. None does today.
+- **Whether `features` and `web` lean on each other the right way.**
+  They share a ring, so a shell that reached into one feature's internals
+  would pass.
+- **What a room's code means.** `infra` holds the network and the deploy
+  loop whole, and `network::collect::carry_out` — the remote node's use
+  cases, by §1 — is infrastructure by location. It imports only what is
+  beneath it, so the rule holds; the actor's own folder is still to come.
+
+### What it costs
+
+- **Every path names its room.** `crate::infra::repositories::services`
+  where it was `crate::repositories::services`.
+- **Three registry helpers are crate-visible** so the registry's door
+  could leave the module it was a child of.
+- **The CLI's verbs are its room, not yet its use cases.** `cli/`
+  holds them whole; §1 says each is a `cli_user_` use case, and none
+  has been written that way yet.
