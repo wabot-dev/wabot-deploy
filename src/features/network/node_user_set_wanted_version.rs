@@ -1,8 +1,8 @@
 use wabot::sqlite::SqliteDatabase;
 
-use crate::authz::node_user;
-use crate::entities::account::Account;
-use crate::network;
+use crate::domain::authz::node_user;
+use crate::domain::entities::account::Account;
+use crate::infra::network;
 
 /// "Be on this release" is desired state, so it is an ordinary errand on
 /// the pull path. A node already there settles it as satisfied; one that

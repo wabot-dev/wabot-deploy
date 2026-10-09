@@ -1,9 +1,9 @@
 use wabot::sqlite::SqliteDatabase;
 
-use crate::authz::node_user;
-use crate::deploy::Deployer;
-use crate::entities::account::Account;
-use crate::repositories::tenants;
+use crate::domain::authz::node_user;
+use crate::domain::entities::account::Account;
+use crate::infra::deploy::Deployer;
+use crate::infra::repositories::tenants;
 
 pub async fn run(
     database: &SqliteDatabase,

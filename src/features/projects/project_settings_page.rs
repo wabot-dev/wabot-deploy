@@ -1,15 +1,15 @@
 //! A project's settings: its push tokens, and deleting it.
 
-use crate::views::layouts::layout;
-use crate::views::texts::language::t;
+use crate::web::views::layouts::layout;
+use crate::web::views::texts::language::t;
 use hypertext::prelude::*;
 
 pub struct ProjectSettings<'a> {
-    pub project: &'a crate::entities::project::Project,
-    pub allowed: crate::values::roles::Access,
+    pub project: &'a crate::domain::entities::project::Project,
+    pub allowed: crate::domain::values::roles::Access,
     pub here: &'a str,
-    pub members: &'a [crate::repositories::access::Member],
-    pub tokens: &'a [crate::entities::push_token::PushToken],
+    pub members: &'a [crate::infra::repositories::access::Member],
+    pub tokens: &'a [crate::domain::entities::push_token::PushToken],
     pub registry_host: Option<&'a str>,
     pub query_error: Option<&'a str>,
 }

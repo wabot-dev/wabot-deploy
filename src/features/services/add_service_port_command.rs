@@ -1,10 +1,10 @@
 use wabot::sqlite::SqliteDatabase;
 
-use crate::config::Config;
-use crate::deploy::dns;
-use crate::entities::port::Port;
-use crate::entities::service::Service;
-use crate::repositories::ports;
+use crate::domain::entities::port::Port;
+use crate::domain::entities::service::Service;
+use crate::infra::config::Config;
+use crate::infra::deploy::dns;
+use crate::infra::repositories::ports;
 
 pub struct AddServicePort<'a> {
     pub service: &'a Service,
@@ -24,9 +24,10 @@ impl AddServicePort<'_> {
                 if self.asked.hostname.is_empty() {
                     return Err("serving over HTTPS needs a hostname".into());
                 }
-                let hostname = crate::values::hostname::Hostname::parse(&self.asked.hostname)
-                    .as_str()
-                    .to_string();
+                let hostname =
+                    crate::domain::values::hostname::Hostname::parse(&self.asked.hostname)
+                        .as_str()
+                        .to_string();
 
                 let references = dns::references(database, config).await?;
                 if references.is_empty() {

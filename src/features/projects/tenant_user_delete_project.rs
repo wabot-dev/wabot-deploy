@@ -1,11 +1,11 @@
 use wabot::sqlite::SqliteDatabase;
 
-use crate::authz::tenant_user;
-use crate::deploy::Deployer;
-use crate::entities::account::Account;
-use crate::entities::project::Project;
+use crate::domain::authz::tenant_user;
+use crate::domain::entities::account::Account;
+use crate::domain::entities::project::Project;
+use crate::domain::values::roles::Access;
 use crate::features::projects::delete_project_command::DeleteProject;
-use crate::values::roles::Access;
+use crate::infra::deploy::Deployer;
 
 pub async fn run(
     database: &SqliteDatabase,

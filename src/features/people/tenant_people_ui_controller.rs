@@ -10,13 +10,13 @@ use hypertext::prelude::*;
 use wabot::prelude::*;
 use wabot::ui::hypertext::IntoView;
 
-use crate::accounts::{self, invitations};
-use crate::console::auth::{signed_in, JoinPage, PageQuery, SessionMiddleware};
-use crate::console::ConsoleState;
-use crate::repositories::access;
-use crate::views::layouts::layout;
-use crate::views::layouts::shell::{Area, Frame};
-use crate::views::texts::language::t;
+use crate::infra::accounts::{self, invitations};
+use crate::infra::repositories::access;
+use crate::web::console::auth::{signed_in, JoinPage, PageQuery, SessionMiddleware};
+use crate::web::console::ConsoleState;
+use crate::web::views::layouts::layout;
+use crate::web::views::layouts::shell::{Area, Frame};
+use crate::web::views::texts::language::t;
 
 #[injectable]
 pub struct TenantPeopleUiController {
@@ -31,7 +31,7 @@ impl TenantPeopleUiController {
     #[middleware(SessionMiddleware)]
     async fn settings(&self) -> UiResult<ViewOutcome> {
         match signed_in(&self.auth)
-            .is_some_and(|account| crate::authz::tenant_user::administers(&account))
+            .is_some_and(|account| crate::domain::authz::tenant_user::administers(&account))
         {
             true => Ok(Redirect::found("/people").into()),
             false => Ok(Redirect::found("/").into()),
@@ -44,17 +44,17 @@ impl TenantPeopleUiController {
         let Some(account) = signed_in(&self.auth) else {
             return Ok(Redirect::found("/sign-in").into());
         };
-        if !crate::authz::tenant_user::administers(&account) {
+        if !crate::domain::authz::tenant_user::administers(&account) {
             return Ok(Redirect::found("/").into());
         }
 
         let people = accounts::of_scope(&self.state.database, account.tenant_id.as_deref()).await?;
         let all = invitations::all(&self.state.database).await?;
         let projects = access::projects_for(&self.state.database, &account).await?;
-        let live: Vec<&crate::accounts::invitations::Invitation> = all
+        let live: Vec<&crate::infra::accounts::invitations::Invitation> = all
             .iter()
             .filter(|invitation| invitation.tenant_id == account.tenant_id)
-            .filter(|invitation| invitation.live(crate::clock::now_ms()))
+            .filter(|invitation| invitation.live(crate::infra::clock::now_ms()))
             .collect();
 
         layout::head("People");
@@ -66,7 +66,7 @@ impl TenantPeopleUiController {
             account: &account,
             query_error: query.error.as_deref(),
         };
-        let body = crate::views::texts::language::scoped(account.language, || {
+        let body = crate::web::views::texts::language::scoped(account.language, || {
             crate::features::people::tenant_user_people_page::render(&page)
                 .render()
                 .into_inner()

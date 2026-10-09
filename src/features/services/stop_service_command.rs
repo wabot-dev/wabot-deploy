@@ -1,6 +1,6 @@
-use crate::deploy::Deployer;
-use crate::entities::project::Project;
-use crate::entities::service::Service;
+use crate::domain::entities::project::Project;
+use crate::domain::entities::service::Service;
+use crate::infra::deploy::Deployer;
 
 /// **A stop has to travel.** Taking the copies down here and saying
 /// nothing to the machines running the others left a service the console

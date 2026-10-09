@@ -1,14 +1,14 @@
 //! One project: what runs in it, and what needs attention.
 
-use crate::views::layouts::layout;
-use crate::views::texts::language::t;
+use crate::web::views::layouts::layout;
+use crate::web::views::texts::language::t;
 use hypertext::prelude::*;
 
 pub struct ProjectView<'a> {
-    pub project: &'a crate::entities::project::Project,
-    pub allowed: crate::values::roles::Access,
+    pub project: &'a crate::domain::entities::project::Project,
+    pub allowed: crate::domain::values::roles::Access,
     pub rows: &'a [(
-        crate::entities::service::Service,
+        crate::domain::entities::service::Service,
         crate::features::services::service_state_component::StateCell,
         Option<String>,
     )],

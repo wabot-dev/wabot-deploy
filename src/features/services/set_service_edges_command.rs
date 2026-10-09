@@ -1,9 +1,9 @@
 use wabot::sqlite::SqliteDatabase;
 
-use crate::config::Config;
-use crate::deploy::dns;
-use crate::entities::service::Service;
-use crate::repositories::edges;
+use crate::domain::entities::service::Service;
+use crate::infra::config::Config;
+use crate::infra::deploy::dns;
+use crate::infra::repositories::edges;
 
 /// Which public nodes answer for one of this service's names.
 ///

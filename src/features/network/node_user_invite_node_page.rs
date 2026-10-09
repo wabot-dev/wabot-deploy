@@ -1,10 +1,10 @@
 use hypertext::prelude::*;
 
 use crate::features::network::node_enrolment_component;
-use crate::network::enrolment::Enrolment;
-use crate::network::Node;
-use crate::views::layouts::layout;
-use crate::views::texts::language::t;
+use crate::infra::network::enrolment::Enrolment;
+use crate::infra::network::Node;
+use crate::web::views::layouts::layout;
+use crate::web::views::texts::language::t;
 
 pub struct InviteNode<'a> {
     pub nodes: &'a [Node],

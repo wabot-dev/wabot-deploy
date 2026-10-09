@@ -1,8 +1,8 @@
 use wabot::sqlite::SqliteDatabase;
 
-use crate::authz::node_user;
-use crate::config::Config;
-use crate::entities::account::Account;
+use crate::domain::authz::node_user;
+use crate::domain::entities::account::Account;
+use crate::infra::config::Config;
 
 /// Where this node's own name gets its certificate from.
 ///
@@ -17,7 +17,7 @@ pub async fn run(
         return Err("only an administrator of this node can do that".into());
     }
 
-    Ok(crate::node::settings::domain(database, config)
+    Ok(crate::infra::node::settings::domain(database, config)
         .await
-        .unwrap_or_else(|| crate::edge::certs::FALLBACK_NAME.to_string()))
+        .unwrap_or_else(|| crate::infra::edge::certs::FALLBACK_NAME.to_string()))
 }

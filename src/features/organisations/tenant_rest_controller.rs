@@ -20,12 +20,12 @@ use wabot::rest::axum::extract::Request;
 use wabot::rest::axum::response::Response;
 use wabot::rest::RestResult;
 
-use crate::console::auth::{
+use crate::features::organisations::node_user_organisation_settings_page::OrganisationTab;
+use crate::infra::repositories::tenants;
+use crate::web::console::auth::{
     back_with_error, field, read_form, see_other, signed_in, SessionMiddleware,
 };
-use crate::console::ConsoleState;
-use crate::features::organisations::node_user_organisation_settings_page::OrganisationTab;
-use crate::repositories::tenants;
+use crate::web::console::ConsoleState;
 
 #[injectable]
 pub struct TenantRestController {
@@ -38,13 +38,15 @@ impl TenantRestController {
     /// Boxed, because a `Response` is 128 bytes and every handler here
     /// returns this on its happy path too — the compiler sizes a
     /// `Result` by its larger arm.
-    fn operator(&self) -> Result<crate::entities::account::Account, Box<Response>> {
+    fn operator(&self) -> Result<crate::domain::entities::account::Account, Box<Response>> {
         match signed_in(&self.auth) {
             None => Err(Box::new(see_other("/sign-in"))),
-            Some(account) => match crate::authz::node_user::shares_the_machine_out(&account) {
-                true => Ok(account),
-                false => Err(Box::new(see_other("/"))),
-            },
+            Some(account) => {
+                match crate::domain::authz::node_user::shares_the_machine_out(&account) {
+                    true => Ok(account),
+                    false => Err(Box::new(see_other("/"))),
+                }
+            }
         }
     }
 }
@@ -88,7 +90,7 @@ impl TenantRestController {
             Err(response) => return Ok(*response),
         };
         let path = request.uri().path().to_string();
-        let Some(id) = crate::console::auth::segments(&path).get(1).cloned() else {
+        let Some(id) = crate::web::console::auth::segments(&path).get(1).cloned() else {
             return Ok(see_other("/organisations"));
         };
         let here = OrganisationTab::Domain.path(id);
@@ -121,7 +123,7 @@ impl TenantRestController {
             Err(response) => return Ok(*response),
         };
         let path = request.uri().path().to_string();
-        let Some(id) = crate::console::auth::segments(&path).get(1).cloned() else {
+        let Some(id) = crate::web::console::auth::segments(&path).get(1).cloned() else {
             return Ok(see_other("/organisations"));
         };
         let here = OrganisationTab::Quota.path(id);
@@ -154,7 +156,7 @@ impl TenantRestController {
             Err(response) => return Ok(*response),
         };
         let path = request.uri().path().to_string();
-        let Some(id) = crate::console::auth::segments(&path).get(1).cloned() else {
+        let Some(id) = crate::web::console::auth::segments(&path).get(1).cloned() else {
             return Ok(see_other("/organisations"));
         };
         let here = OrganisationTab::Owner.path(id);
@@ -206,7 +208,7 @@ impl TenantRestController {
             Err(response) => return Ok(*response),
         };
         let path = request.uri().path().to_string();
-        let segments = crate::console::auth::segments(&path);
+        let segments = crate::web::console::auth::segments(&path);
         let (Some(tenant), Some(person)) = (segments.get(1), segments.get(3)) else {
             return Ok(see_other("/organisations"));
         };
@@ -233,7 +235,7 @@ impl TenantRestController {
             Err(response) => return Ok(*response),
         };
         let path = request.uri().path().to_string();
-        let Some(id) = crate::console::auth::segments(&path).get(1).cloned() else {
+        let Some(id) = crate::web::console::auth::segments(&path).get(1).cloned() else {
             return Ok(see_other("/organisations"));
         };
         let here = OrganisationTab::Danger.path(id);

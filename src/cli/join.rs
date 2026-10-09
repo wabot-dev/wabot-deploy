@@ -10,8 +10,8 @@
 //! and not there is the check that this machine is a node at all —
 //! somebody looking at a console is already past that question.
 
-use crate::config::Config;
-use crate::network::{self, join::Joined};
+use crate::infra::config::Config;
+use crate::infra::network::{self, join::Joined};
 
 pub async fn run(config: Config, token: &str) -> anyhow::Result<i32> {
     // Not `db::open`, which would create one: joining a machine that
@@ -23,7 +23,7 @@ pub async fn run(config: Config, token: &str) -> anyhow::Result<i32> {
         println!("  run `wabot-deploy install` first, then join.");
         return Ok(1);
     }
-    let database = crate::db::open(&config.database_path()).await?;
+    let database = crate::infra::db::open(&config.database_path()).await?;
 
     // `None`: running the command is the consent. There is nobody here
     // to show terms to, and somebody typing this has the token in their
@@ -75,7 +75,7 @@ fn report(joined: &Joined) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::network::token::JoinToken;
+    use crate::infra::network::token::JoinToken;
 
     fn config_in(dir: &std::path::Path) -> Config {
         let mut config = Config::default();

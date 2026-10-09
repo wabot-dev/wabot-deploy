@@ -2,11 +2,11 @@
 
 use hypertext::prelude::*;
 
-use crate::deploy::quotas::Charged;
-use crate::entities::tenant::Tenant;
-use crate::policies::presets;
-use crate::views::texts::language::t;
-use crate::views::texts::sentences;
+use crate::domain::entities::tenant::Tenant;
+use crate::domain::policies::presets;
+use crate::infra::deploy::quotas::Charged;
+use crate::web::views::texts::language::t;
+use crate::web::views::texts::sentences;
 
 /// One resource: the ceiling, what is spoken for, and the bar between.
 ///
@@ -61,8 +61,8 @@ pub fn quota_card<'a>(tenant: &'a Tenant, charged: &'a Charged) -> impl Renderab
                  on any other that runs one. What a service may take is what counts — the \
                  ceiling is the reservation."))</p>
 
-            (row(t("Memory"), crate::node::memory::human(charged.memory),
-                 tenant.quota_memory.map(crate::node::memory::human),
+            (row(t("Memory"), crate::infra::node::memory::human(charged.memory),
+                 tenant.quota_memory.map(crate::infra::node::memory::human),
                  tenant.quota_memory.map(|limit| share(charged.memory, limit))))
             (row(t("CPU"), presets::cpu_label(charged.cpu),
                  tenant.quota_cpu.map(presets::cpu_label),

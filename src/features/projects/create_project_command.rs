@@ -1,9 +1,9 @@
 use wabot::sqlite::SqliteDatabase;
 
-use crate::entities::account::Account;
-use crate::entities::project::Project;
-use crate::repositories::access;
-use crate::values::roles::ProjectRole;
+use crate::domain::entities::account::Account;
+use crate::domain::entities::project::Project;
+use crate::domain::values::roles::ProjectRole;
+use crate::infra::repositories::access;
 
 pub struct CreateProject<'a> {
     pub name: &'a str,
@@ -12,11 +12,11 @@ pub struct CreateProject<'a> {
 
 impl CreateProject<'_> {
     pub async fn run(&self, database: &SqliteDatabase) -> Result<Project, String> {
-        // Here rather than in `crate::repositories::projects::create`: the collector calls
+        // Here rather than in `crate::infra::repositories::projects::create`: the collector calls
         // that too, for a project arriving on an errand, and a node that
         // runs other people's work is exactly the node this setting is
         // for. Refusing there would refuse the thing it exists to allow.
-        if !crate::network::capability::owns(database).await {
+        if !crate::infra::network::capability::owns(database).await {
             return Err(
                 "this node does not own projects of its own — turn that back on \
                         from its capabilities if it should"
@@ -24,7 +24,7 @@ impl CreateProject<'_> {
             );
         }
 
-        let project = crate::repositories::projects::create(database, self.name)
+        let project = crate::infra::repositories::projects::create(database, self.name)
             .await
             .map_err(|error| error.to_string())?;
 

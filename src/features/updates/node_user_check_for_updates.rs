@@ -1,6 +1,6 @@
-use crate::authz::node_user;
-use crate::entities::account::Account;
-use crate::update::Catalogue;
+use crate::domain::authz::node_user;
+use crate::domain::entities::account::Account;
+use crate::infra::update::Catalogue;
 
 pub async fn run(catalogue: &Catalogue, account: &Account) -> Result<(), String> {
     if !node_user::manages_the_machine(account) {

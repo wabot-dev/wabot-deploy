@@ -6,8 +6,8 @@
 
 use std::path::Path;
 
-use crate::config::Config;
-use crate::ledger::{self, Status, Step};
+use crate::infra::config::Config;
+use crate::infra::ledger::{self, Status, Step};
 
 /// For the one line that names a day. `doctor` is not translated — it
 /// runs on a terminal and prints what somebody pastes into an issue — so
@@ -25,7 +25,7 @@ const WEEKDAYS: [&str; 7] = [
 pub async fn run(config: Config, config_path: &Path) -> anyhow::Result<i32> {
     let mut problems = 0usize;
 
-    println!("wabot-deploy {}", crate::update::VERSION);
+    println!("wabot-deploy {}", crate::infra::update::VERSION);
     println!();
 
     println!("configuration");
@@ -71,7 +71,7 @@ pub async fn run(config: Config, config_path: &Path) -> anyhow::Result<i32> {
     // Read-only in spirit, but opening applies pending migrations —
     // which is the honest thing: a schema the daemon would upgrade on
     // start is not a difference worth reporting as a problem.
-    let database = match crate::db::open(&database_path).await {
+    let database = match crate::infra::db::open(&database_path).await {
         Ok(database) => database,
         Err(error) => {
             println!("  cannot open: {error}");
@@ -79,7 +79,7 @@ pub async fn run(config: Config, config_path: &Path) -> anyhow::Result<i32> {
         }
     };
 
-    match crate::db::status(&database).await {
+    match crate::infra::db::status(&database).await {
         Ok(migrations) => {
             let drifted: Vec<&str> = migrations
                 .iter()
@@ -109,8 +109,8 @@ pub async fn run(config: Config, config_path: &Path) -> anyhow::Result<i32> {
     // Ports are skipped when the node holds them: a running node
     // failing its own port check would be a healthy node reading as
     // broken.
-    let node_running = crate::bootstrap::service::is_active();
-    for check in crate::bootstrap::preflight::run(
+    let node_running = crate::infra::bootstrap::service::is_active();
+    for check in crate::infra::bootstrap::preflight::run(
         config.edge.https_port,
         config.edge.http_port,
         !node_running,
@@ -126,7 +126,7 @@ pub async fn run(config: Config, config_path: &Path) -> anyhow::Result<i32> {
 
     println!();
     println!("runtime");
-    let runtime = crate::bootstrap::runtime::status();
+    let runtime = crate::infra::bootstrap::runtime::status();
     println!(
         "  containerd  {}",
         runtime
@@ -141,12 +141,12 @@ pub async fn run(config: Config, config_path: &Path) -> anyhow::Result<i32> {
     println!(
         "  socket      {}",
         if runtime.socket {
-            crate::bootstrap::runtime::SOCKET.to_string()
+            crate::infra::bootstrap::runtime::SOCKET.to_string()
         } else {
-            format!("{} (absent)", crate::bootstrap::runtime::SOCKET)
+            format!("{} (absent)", crate::infra::bootstrap::runtime::SOCKET)
         }
     );
-    let missing = crate::bootstrap::runtime::missing_programs();
+    let missing = crate::infra::bootstrap::runtime::missing_programs();
     if !missing.is_empty() {
         // Not a containerd problem, and it looks like one: the
         // container starts and then fails to get an address.
@@ -186,7 +186,7 @@ pub async fn run(config: Config, config_path: &Path) -> anyhow::Result<i32> {
             // the word `volumes`, so a node with two containers and no
             // storage at all reported `volumes 2` — a report that says
             // something untrue is worse than one that says nothing.
-            let root = crate::repositories::volumes::root(&config.node.data_dir);
+            let root = crate::infra::repositories::volumes::root(&config.node.data_dir);
             let stored = std::fs::read_dir(&root)
                 .map(|entries| entries.flatten().filter(|e| e.path().is_dir()).count())
                 .unwrap_or(0);
@@ -202,7 +202,9 @@ pub async fn run(config: Config, config_path: &Path) -> anyhow::Result<i32> {
             // and for a long time this looked for one of the four — so
             // the two nobody could see accumulated a file per container
             // that ever ran here, silently.
-            for (kind, orphan) in crate::deploy::Deployer::leftovers(&config.node.data_dir, &live) {
+            for (kind, orphan) in
+                crate::infra::deploy::Deployer::leftovers(&config.node.data_dir, &live)
+            {
                 println!(
                     "  orphan      {} ({kind}, no replica claims it)",
                     orphan.display()
@@ -214,12 +216,12 @@ pub async fn run(config: Config, config_path: &Path) -> anyhow::Result<i32> {
 
     println!();
     println!("service");
-    let init = crate::bootstrap::init::Init::detect();
-    if crate::bootstrap::service::supervised() {
+    let init = crate::infra::bootstrap::init::Init::detect();
+    if crate::infra::bootstrap::service::supervised() {
         println!("  managed by  {}", init.name());
         println!(
             "  file        {}",
-            crate::bootstrap::service::unit_path().display()
+            crate::infra::bootstrap::service::unit_path().display()
         );
         println!(
             "  state       {}",
@@ -240,8 +242,8 @@ pub async fn run(config: Config, config_path: &Path) -> anyhow::Result<i32> {
     // was expected to know two paths nobody had told them. There is no
     // button for this on purpose: putting a schema back is not a file
     // operation, which is exactly why the second half is a copy.
-    let previous =
-        std::path::Path::new(crate::bootstrap::service::BINARY_PATH).with_extension("previous");
+    let previous = std::path::Path::new(crate::infra::bootstrap::service::BINARY_PATH)
+        .with_extension("previous");
     if previous.exists() {
         println!("  the way back {}", previous.display());
     }
@@ -263,15 +265,15 @@ pub async fn run(config: Config, config_path: &Path) -> anyhow::Result<i32> {
     // backups are not happening is a node one disk away from nothing.
     println!();
     println!("backups");
-    let plan = crate::backup::plan::plan(&database).await;
+    let plan = crate::infra::backup::plan::plan(&database).await;
     match plan.cadence {
-        crate::backup::plan::Cadence::Off => {
+        crate::infra::backup::plan::Cadence::Off => {
             println!("  schedule     none — `wabot-deploy backup` is the only way one is taken")
         }
-        crate::backup::plan::Cadence::Daily => {
+        crate::infra::backup::plan::Cadence::Daily => {
             println!("  schedule     every day at {:02}:00 UTC", plan.hour)
         }
-        crate::backup::plan::Cadence::Weekly => println!(
+        crate::infra::backup::plan::Cadence::Weekly => println!(
             "  schedule     every {} at {:02}:00 UTC",
             WEEKDAYS
                 .get(usize::from(plan.weekday))
@@ -299,11 +301,11 @@ pub async fn run(config: Config, config_path: &Path) -> anyhow::Result<i32> {
         ),
         None => println!("  bucket key   none — a path or ssh:// needs none"),
     }
-    let attempt = crate::backup::plan::last(&database).await;
+    let attempt = crate::infra::backup::plan::last(&database).await;
     match attempt.ok_at {
         Some(at) => println!(
             "  last good    {} ({})",
-            crate::views::layouts::layout::exactly(at),
+            crate::web::views::layouts::layout::exactly(at),
             attempt.note.as_deref().unwrap_or("no detail recorded")
         ),
         None => println!("  last good    none taken from this node"),
@@ -314,14 +316,14 @@ pub async fn run(config: Config, config_path: &Path) -> anyhow::Result<i32> {
         if let Some(at) = attempt.at {
             println!(
                 "               at {}",
-                crate::views::layouts::layout::exactly(at)
+                crate::web::views::layouts::layout::exactly(at)
             );
         }
     }
 
     println!();
     println!("certificates");
-    match crate::edge::certs::load_all(&database).await {
+    match crate::infra::edge::certs::load_all(&database).await {
         Ok(certificates) if certificates.is_empty() => {
             println!("  none yet — `serve` issues one on first start");
         }
@@ -355,8 +357,8 @@ pub async fn run(config: Config, config_path: &Path) -> anyhow::Result<i32> {
 
     // The reason a certificate is missing is recorded beside the
     // domain, so an operator sees it here rather than in the journal.
-    let domain = crate::node::settings::domain(&database, &config).await;
-    if let Some(error) = crate::node::settings::acme_error(&database).await {
+    let domain = crate::infra::node::settings::domain(&database, &config).await;
+    if let Some(error) = crate::infra::node::settings::acme_error(&database).await {
         let name = domain.as_deref().unwrap_or("this node");
         println!("  last ACME failure for {name}:");
         println!("    {error}");
@@ -386,7 +388,7 @@ pub async fn run(config: Config, config_path: &Path) -> anyhow::Result<i32> {
     // on this machine, and until there is a tunnel there is nothing to
     // ask the other node — so what an operator needs is this printed
     // back rather than a connection test that cannot exist yet.
-    match crate::network::me(&database).await {
+    match crate::infra::network::me(&database).await {
         Ok(Some(me)) => {
             println!("  this node   {} ({})", me.name, me.id);
             // Said only when the two disagree. Agreement is the usual
@@ -426,7 +428,7 @@ pub async fn run(config: Config, config_path: &Path) -> anyhow::Result<i32> {
         }
     }
 
-    match crate::network::authorities(&database).await {
+    match crate::infra::network::authorities(&database).await {
         Ok(authorities) if authorities.is_empty() => {
             println!("  takes instructions from nobody");
         }
@@ -458,11 +460,11 @@ pub async fn run(config: Config, config_path: &Path) -> anyhow::Result<i32> {
     // the number above them was not, so a node listening on something
     // other than what its file says reported the file. Now the file is
     // named only where there is no interface to ask.
-    match crate::network::tunnel::observed() {
+    match crate::infra::network::tunnel::observed() {
         Ok(interface) if interface.peers.is_empty() => {
             println!(
                 "  interface   {} on udp/{}",
-                crate::network::tunnel::INTERFACE,
+                crate::infra::network::tunnel::INTERFACE,
                 interface.port
             );
             println!("  no peers configured on it");
@@ -470,7 +472,7 @@ pub async fn run(config: Config, config_path: &Path) -> anyhow::Result<i32> {
         Ok(interface) => {
             println!(
                 "  interface   {} on udp/{}",
-                crate::network::tunnel::INTERFACE,
+                crate::infra::network::tunnel::INTERFACE,
                 interface.port
             );
             for peer in &interface.peers {
@@ -523,14 +525,14 @@ pub async fn run(config: Config, config_path: &Path) -> anyhow::Result<i32> {
             // this node would listen on, and nothing is listening.
             println!(
                 "  interface   {} would be udp/{} (from the file)",
-                crate::network::tunnel::INTERFACE,
+                crate::infra::network::tunnel::INTERFACE,
                 config.overlay.port
             );
             println!("  not up: {error}");
         }
     }
 
-    match crate::network::all(&database).await {
+    match crate::infra::network::all(&database).await {
         Ok(nodes) => {
             for node in nodes.iter().filter(|node| !node.is_self) {
                 // The relationship, not the machine — the same rule the
@@ -564,7 +566,7 @@ pub async fn run(config: Config, config_path: &Path) -> anyhow::Result<i32> {
                 // machines is on which binary.
                 let running = node.version.as_deref().unwrap_or("not reported");
                 match node.wanted_version.as_deref() {
-                    Some(wanted) if !crate::update::is_release(wanted, running) => {
+                    Some(wanted) if !crate::infra::update::is_release(wanted, running) => {
                         println!("              version   {running}, asked for {wanted}")
                     }
                     _ => println!("              version   {running}"),
@@ -586,7 +588,7 @@ pub async fn run(config: Config, config_path: &Path) -> anyhow::Result<i32> {
     // Two nodes claiming one overlay address, which the census refuses to
     // write rather than letting the unique index fail in a warning nobody
     // reads. A peer that can never work, so it counts.
-    if let Some(said) = crate::network::roster::conflicts(&database).await {
+    if let Some(said) = crate::infra::network::roster::conflicts(&database).await {
         problems += 1;
         println!("  ADDRESS CLASH {said}");
     }
@@ -596,12 +598,14 @@ pub async fn run(config: Config, config_path: &Path) -> anyhow::Result<i32> {
     // lists nothing joined, so a row with no peer and a peer with no row
     // both read as silence.
     if let (Ok(interface), Ok(Some(me))) = (
-        crate::network::tunnel::observed(),
-        crate::network::me(&database).await,
+        crate::infra::network::tunnel::observed(),
+        crate::infra::network::me(&database).await,
     ) {
-        let nodes = crate::network::all(&database).await.unwrap_or_default();
-        for paired in crate::network::tunnel::pair(&me, &nodes, &interface) {
-            use crate::network::tunnel::Path;
+        let nodes = crate::infra::network::all(&database)
+            .await
+            .unwrap_or_default();
+        for paired in crate::infra::network::tunnel::pair(&me, &nodes, &interface) {
+            use crate::infra::network::tunnel::Path;
             let said = match &paired.path {
                 Path::Session { ago, at } => match at {
                     Some(at) => format!("session {ago}s ago, via {at}"),
@@ -689,12 +693,12 @@ fn step_states(entries: &[ledger::Entry]) -> Vec<(&'static str, String, bool)> {
 /// which is the whole of phase 9. The call is a plain `GET /`: what is
 /// being tested is the handshake and the name, and any answer at all
 /// proves both.
-async fn channel_to(node: &crate::network::Node) -> String {
+async fn channel_to(node: &crate::infra::network::Node) -> String {
     if node.ca_pem.is_none() {
         return "not yet — it has not reported since this version".to_string();
     }
     let started = std::time::Instant::now();
-    match crate::network::call::to_node(node, "/", None, None).await {
+    match crate::infra::network::call::to_node(node, "/", None, None).await {
         Ok(status) => format!(
             "verified in {} ms (answered {})",
             started.elapsed().as_millis(),
@@ -769,9 +773,9 @@ fn newest_backup(directory: &std::path::Path) -> Option<(std::path::PathBuf, usi
 /// Reading it any other way would let the two disagree, and the
 /// disagreement would read as "this data belongs to nothing".
 async fn live_containers(database: &wabot::sqlite::SqliteDatabase) -> anyhow::Result<Vec<String>> {
-    crate::deploy::Deployer::claimed(database)
+    crate::infra::deploy::Deployer::claimed(database)
         .await
-        .map(|claims| crate::deploy::Claim::containers(&claims))
+        .map(|claims| crate::infra::deploy::Claim::containers(&claims))
         .ok_or_else(|| anyhow::anyhow!("could not read what this node claims"))
 }
 
@@ -923,7 +927,7 @@ mod tests {
             .await
             .expect("install");
 
-        let database = crate::db::open(&config.database_path())
+        let database = crate::infra::db::open(&config.database_path())
             .await
             .expect("open");
         ledger::record(&database, Step::Database, Status::Running, None)

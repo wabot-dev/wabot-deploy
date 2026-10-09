@@ -1,0 +1,1444 @@
+//! The console.
+//!
+//! Server-rendered with hypertext's `rsx!`. No JavaScript, no build
+//! step, no client payload: the page is HTML the node produced, which
+//! is the right shape for something that has to work on a box with no
+//! internet access and under a gigabyte of RAM.
+//!
+//! ## Why hypertext and not Maud
+//!
+//! Both compile markup to string-pushing at build time and escape
+//! interpolated values by construction. hypertext also **validates
+//! element and attribute names**, so `<dvi klass="x">` is a build
+//! error. Maud compiles it and emits the malformed HTML — checked,
+//! not assumed. For templates nobody type-checks by reading them,
+//! that difference is the whole point.
+//!
+//! ## Who may see what
+//!
+//! Every page except `/setup` and `/sign-in` needs an account. The
+//! check is per-view rather than per-router because a signed-out
+//! visitor gets a *redirect*, and a router-level guard can only
+//! reject. See [`auth`].
+
+pub mod assets;
+pub mod attention;
+pub mod auth;
+pub mod live;
+pub mod reveal_ui_controller;
+
+use std::sync::Arc;
+
+use wabot::prelude::*;
+use wabot::rest::axum::Router;
+use wabot::sqlite::SqliteDatabase;
+use wabot::ui::embedded_assets;
+
+use crate::features::access::{auth_rest_controller, auth_ui_controller};
+use crate::features::backups::backup_rest_controller;
+use crate::features::databases::{database_rest_controller, database_ui_controller};
+use crate::features::network::{network_rest_controller, network_ui_controller};
+use crate::features::node::{node_rest_controller, node_ui_controller};
+use crate::features::organisations::{tenant_rest_controller, tenant_ui_controller};
+use crate::features::people::{
+    people_rest_controller, people_ui_controller, tenant_people_rest_controller,
+    tenant_people_ui_controller,
+};
+use crate::features::projects::{project_rest_controller, project_ui_controller};
+use crate::features::services::{service_rest_controller, service_ui_controller};
+use crate::features::updates::{update_rest_controller, update_ui_controller};
+use crate::infra::config::Config;
+use crate::infra::edge::certs;
+
+/// What every console page reads from. Never cached: this is a status
+/// console, and a cached status is the thing it exists not to be.
+pub struct ConsoleState {
+    pub(crate) database: Arc<SqliteDatabase>,
+    pub(crate) config: Config,
+    pub(crate) deployer: Arc<crate::infra::deploy::Deployer>,
+    /// What releases exist, as last read from GitHub. Shared so that
+    /// the page and the update it starts agree about what they are
+    /// installing.
+    pub(crate) catalogue: Arc<crate::infra::update::Catalogue>,
+    /// Secrets waiting for the one page that will show them.
+    pub(crate) reveals: Reveals,
+    /// The certificate loop, to ask it to look now and to watch what
+    /// it is doing. Held here as well as inside the deployer because
+    /// the node page reports on it, which is not deploying.
+    pub(crate) certificates: Arc<crate::infra::edge::acme::Wake>,
+    /// For enqueuing work. `run_command` is a free function over the
+    /// container — the framework's reasoning is that an `Async`
+    /// singleton would have to hold a container that holds it — so the
+    /// container is what a caller needs. It is a cheap clonable handle.
+    pub(crate) container: Container,
+}
+
+/// A secret handed from a POST to the GET that follows it.
+///
+/// A push token exists in clear for exactly the moment it is minted,
+/// and the page that shows it is reached by redirect. It used to travel
+/// there in the query string — which put it in the address bar, in the
+/// browser's history, and back on the screen on every refresh. This
+/// console's own rule is that a query parameter is fine *because it is
+/// not secret* (see `back_with_error`), and that one was the exception
+/// nobody noticed.
+///
+/// So the redirect now carries a nonce that names the secret, and the
+/// nonce is spent when the page reads it. In memory rather than in the
+/// database because the plaintext must not outlive the process, and a
+/// restart losing an unread secret is the right failure — the token is
+/// revocable and another one costs a click.
+#[derive(Default)]
+pub(crate) struct Reveals {
+    held: std::sync::Mutex<std::collections::HashMap<String, (String, i64)>>,
+}
+
+/// How long a minted secret waits to be read. Long enough for a
+/// redirect, short enough that a browser left on the login screen does
+/// not keep one in memory all afternoon.
+const REVEAL_TTL_MS: i64 = 60_000;
+
+impl Reveals {
+    /// Hold a secret, returning the nonce that names it.
+    pub(crate) fn stash(&self, secret: String) -> String {
+        let nonce = wabot::prelude::password::generate(24);
+        let now = now_ms();
+        let mut held = self.held.lock().expect("no panic holds this lock");
+        // Swept here rather than on a timer: the only way the map
+        // grows is somebody minting a token, so the act of growing it
+        // is the right moment to drop what expired.
+        held.retain(|_, (_, at)| now - *at < REVEAL_TTL_MS);
+        held.insert(nonce.clone(), (secret, now));
+        nonce
+    }
+
+    /// Read a secret, once.
+    pub(crate) fn take(&self, nonce: &str) -> Option<String> {
+        let now = now_ms();
+        let mut held = self.held.lock().expect("no panic holds this lock");
+        held.remove(nonce)
+            .filter(|(_, at)| now - *at < REVEAL_TTL_MS)
+            .map(|(secret, _)| secret)
+    }
+}
+
+impl ConsoleState {
+    /// Where this console answers, for a link somebody has to paste
+    /// somewhere else. Built from the node's own domain, because a
+    /// link to `localhost` is one only the node can open.
+    /// Where a link should send somebody, for the frontier they belong
+    /// to.
+    ///
+    /// **An invitation into an organisation has to land on that
+    /// organisation's own name.** Sent to the node's, the person signs
+    /// up and is bounced on their first click: their account is scoped
+    /// to the organisation, the `Host` says the node, and the session
+    /// middleware refuses a session whose scope does not match the door
+    /// it was presented at. A working link that leads nowhere is worse
+    /// than a broken one, because it looks like their fault.
+    ///
+    /// Falls back to the node's own name for an organisation with no
+    /// domain yet. That link works — the account is made — and the
+    /// console they belong to does not exist until somebody gives them
+    /// one, which is a thing the page says rather than something this
+    /// can fix.
+    pub(crate) async fn base_url_for(&self, tenant_id: Option<&str>) -> String {
+        let theirs = match tenant_id {
+            Some(id) => crate::infra::repositories::tenants::find(&self.database, id)
+                .await
+                .ok()
+                .flatten()
+                .and_then(|tenant| tenant.domain),
+            None => None,
+        };
+        let host = match theirs {
+            Some(domain) => domain,
+            None => crate::infra::node::settings::domain(&self.database, &self.config)
+                .await
+                .unwrap_or_else(|| "localhost".into()),
+        };
+        match self.config.edge.https_port {
+            443 => format!("https://{host}"),
+            port => format!("https://{host}:{port}"),
+        }
+    }
+
+    pub fn new(
+        container: Container,
+        database: Arc<SqliteDatabase>,
+        config: Config,
+        routes: Arc<crate::infra::edge::routes::RouteTable>,
+        certificates: Arc<crate::infra::edge::acme::Wake>,
+    ) -> Self {
+        let deployer = Arc::new(
+            crate::infra::deploy::Deployer::new(database.clone(), &config)
+                .with_routes(routes)
+                .with_certificates(certificates.clone()),
+        );
+        Self {
+            database,
+            config,
+            deployer,
+            // The process's one catalogue, not a second of its own: the
+            // collector installs releases too, and two caches are two
+            // answers to "what is v0.7.1" and twice the calls to a host
+            // that allows sixty an hour.
+            catalogue: crate::infra::update::shared(),
+            reveals: Reveals::default(),
+            certificates,
+            container,
+        }
+    }
+}
+
+pub(crate) use crate::web::dtos::certificate_facts::CertificateFacts;
+
+pub(crate) async fn certificate_facts(state: &ConsoleState) -> CertificateFacts {
+    // The domain is not carried back out: every caller already knows it
+    // — they render the form that sets it — and two copies of a value
+    // one page shows twice is how they end up disagreeing.
+    match crate::infra::node::settings::domain(&state.database, &state.config).await {
+        Some(domain) => certificate_facts_for(state, &domain).await,
+        None => CertificateFacts::none(),
+    }
+}
+
+/// The same, for any name the node answers for.
+///
+/// A service hostname has a certificate of its own, with its own
+/// source and its own expiry — the node's domain is not a special case
+/// of anything, it is just the name that had a page first.
+pub(crate) async fn certificate_facts_for(state: &ConsoleState, name: &str) -> CertificateFacts {
+    let stored = certs::load(&state.database, name).await.ok().flatten();
+
+    match stored {
+        Some(certificate) => {
+            let issuer = short_issuer(&certificate.issuer);
+            CertificateFacts {
+                days_left: (certificate.not_after - now_ms()) / 86_400_000,
+                // Staging roots are untrusted by design, and saying so
+                // here saves somebody working out why their browser
+                // still complains.
+                //
+                // A certificate found on disk is not claimed either
+                // way: whether a browser trusts it depends on a trust
+                // store this node cannot see, and guessing would be the
+                // console asserting something it does not know.
+                trusted: issuer == "letsencrypt",
+                issuer,
+                source: certificate.source,
+            }
+        }
+        None => CertificateFacts::none(),
+    }
+}
+
+fn short_issuer(issuer: &str) -> String {
+    match issuer {
+        "self-signed" => "self-signed".into(),
+        url if url.contains("acme-staging-v02.api.letsencrypt.org") => "letsencrypt-staging".into(),
+        url if url.contains("acme-v02.api.letsencrypt.org") => "letsencrypt".into(),
+        url => url.split('/').nth(2).unwrap_or(url).into(),
+    }
+}
+
+pub(crate) fn now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or_default()
+}
+
+pub fn register(
+    container: &Container,
+    database: Arc<SqliteDatabase>,
+    config: Config,
+    routes: Arc<crate::infra::edge::routes::RouteTable>,
+    certificates: Arc<crate::infra::edge::acme::Wake>,
+) {
+    container.register_instance::<ConsoleState>(Arc::new(ConsoleState::new(
+        container.clone(),
+        database,
+        config,
+        routes,
+        certificates,
+    )));
+    // No guard addon runs here, so nothing else would register `Auth`
+    // and every controller holding one would fail to resolve.
+    Auth::register_default(container);
+
+    register_singletons!(container, auth::SessionMiddleware);
+    // Transient, all of them: each holds an `Arc<Auth>`, and a
+    // singleton controller is built once — its `Auth` would be one
+    // visitor's identity handed to everybody after them.
+    register_transients!(
+        container,
+        auth_ui_controller::AuthUiController,
+        auth_rest_controller::AuthRestController,
+        network_ui_controller::NetworkUiController,
+        network_rest_controller::NetworkRestController,
+        node_ui_controller::NodeUiController,
+        node_rest_controller::NodeRestController,
+        backup_rest_controller::BackupRestController,
+        people_ui_controller::PeopleUiController,
+        people_rest_controller::PeopleRestController,
+        project_ui_controller::ProjectUiController,
+        project_rest_controller::ProjectRestController,
+        reveal_ui_controller::RevealUiController,
+        database_rest_controller::DatabaseRestController,
+        database_ui_controller::DatabaseUiController,
+        service_ui_controller::ServiceUiController,
+        service_rest_controller::ServiceRestController,
+        tenant_ui_controller::TenantUiController,
+        tenant_rest_controller::TenantRestController,
+        tenant_people_ui_controller::TenantPeopleUiController,
+        tenant_people_rest_controller::TenantPeopleRestController,
+        update_ui_controller::UpdateUiController,
+        update_rest_controller::UpdateRestController
+    );
+}
+
+/// The pages both frontiers share, and the reason the split is not
+/// total.
+///
+/// **A project and a service read the same either way.** "Deploy",
+/// "Replicas", "Logs" mean one thing whoever is looking, and the pages
+/// that say them are the largest in this console — one of them is nine
+/// thousand lines. Duplicating those to change nothing would be two
+/// copies to keep in agreement about everything except the frontier.
+///
+/// What is *not* shared is anything whose words are about **who runs
+/// this**: the people page, the settings, the shell's navigation. Those
+/// said "on this node" to somebody administering an organisation, and
+/// that is the mismatch this split exists for.
+fn shared(container: &Container, pages: Router, forms: Router) -> (Router, Router) {
+    let pages = auth_ui_controller::AuthUiController::register_ui_routes(container, pages);
+    let pages = database_ui_controller::DatabaseUiController::register_ui_routes(container, pages);
+    let pages = project_ui_controller::ProjectUiController::register_ui_routes(container, pages);
+    let pages = reveal_ui_controller::RevealUiController::register_ui_routes(container, pages);
+    let pages = service_ui_controller::ServiceUiController::register_ui_routes(container, pages);
+
+    let forms = auth_rest_controller::AuthRestController::register_routes(container, forms);
+    let forms = database_rest_controller::DatabaseRestController::register_routes(container, forms);
+    let forms = project_rest_controller::ProjectRestController::register_routes(container, forms);
+    let forms = service_rest_controller::ServiceRestController::register_routes(container, forms);
+    (pages, forms)
+}
+
+/// The console of the machine: everything above, plus what belongs to
+/// whoever runs the node.
+pub fn routes(container: &Container) -> Router {
+    let (pages, forms) = shared(container, wabot::ui::ui_router(), Router::new());
+
+    let pages = network_ui_controller::NetworkUiController::register_ui_routes(container, pages);
+    let pages = node_ui_controller::NodeUiController::register_ui_routes(container, pages);
+    let pages = people_ui_controller::PeopleUiController::register_ui_routes(container, pages);
+    let pages = tenant_ui_controller::TenantUiController::register_ui_routes(container, pages);
+    let pages = update_ui_controller::UpdateUiController::register_ui_routes(container, pages);
+
+    let forms = network_rest_controller::NetworkRestController::register_routes(container, forms);
+    let forms = node_rest_controller::NodeRestController::register_routes(container, forms);
+    let forms = backup_rest_controller::BackupRestController::register_routes(container, forms);
+    let forms = people_rest_controller::PeopleRestController::register_routes(container, forms);
+    let forms = tenant_rest_controller::TenantRestController::register_routes(container, forms);
+    let forms = update_rest_controller::UpdateRestController::register_routes(container, forms);
+
+    pages
+        .merge(forms)
+        .merge(embedded_assets(assets::MOUNT, assets::ASSETS))
+}
+
+/// The console of one organisation.
+///
+/// ## Removing this half
+///
+/// Rehearsed rather than asserted, 2026-08-25: the two controllers were
+/// deleted and the compiler was asked what it missed. **Three files, all
+/// of them wiring, and no controller of the machine's own console:**
+///
+/// - here — two module declarations, four registrations, this function;
+/// - `cli::serve` — one argument to `edge::build`;
+/// - `edge` — the `Upstream::Tenant` variant, the router beside the
+///   control plane, and the arm that dispatches to it. The variant is a
+///   compile error at every `match`, which is the right way for that one
+///   to be found.
+///
+/// `platform::tenants`, `crate::infra::deploy::quotas` and the columns go with them
+/// and are read by nothing else. What stays behind is `tenant_id` on
+/// three rows, always NULL, which is what it meant before any of this.
+///
+/// **A second router rather than a second branch inside every
+/// handler.** The pages the machine's operator has are not registered
+/// here at all, so `/node`, `/updates` and `/organisations` do not
+/// exist in this frontier — a 404 by construction, which is a stronger
+/// thing than a redirect somebody has to remember to write.
+///
+/// What it does **not** get is a second answer to "may they": that
+/// stays in `crate::infra::repositories::access`, one function, asked by both. Two page
+/// trees is what Jorge asked for and is right; two authorisations is
+/// the thing that would drift, and the one that shows somebody a
+/// project they were removed from.
+pub fn tenant_routes(container: &Container) -> Router {
+    let (pages, forms) = shared(container, wabot::ui::ui_router(), Router::new());
+
+    let pages =
+        tenant_people_ui_controller::TenantPeopleUiController::register_ui_routes(container, pages);
+    let forms = tenant_people_rest_controller::TenantPeopleRestController::register_routes(
+        container, forms,
+    );
+
+    pages
+        .merge(forms)
+        .merge(embedded_assets(assets::MOUNT, assets::ASSETS))
+}
+
+#[cfg(test)]
+pub(crate) mod tests {
+    use super::*;
+    use wabot::async_jobs::{
+        register_async_runtime, register_cron_job_repository, register_job_repository,
+    };
+    use wabot::rest::axum::http::StatusCode;
+    use wabot::testing::RestHarness;
+
+    /// A console over an empty database, with a setup token already
+    /// issued — what `install` leaves behind.
+    pub(crate) struct Console {
+        pub harness: RestHarness,
+        /// The same router, asked the way the client runtime asks it.
+        /// `navigate` fetches a boosted-navigation fragment, which is
+        /// how every in-console link actually arrives.
+        pub ui: wabot::testing::UiHarness,
+        pub database: Arc<SqliteDatabase>,
+        pub setup_token: String,
+        /// This node's own page. The id is minted when the node is
+        /// installed, so there is no path a test can spell out.
+        pub node_path: String,
+        /// Where a container's logs would be, for a test that writes some.
+        pub data_dir: std::path::PathBuf,
+        /// The same configuration the pages hold, so a test can ask it
+        /// what the file now says — the bucket credential lives there
+        /// rather than in the database.
+        pub config: Config,
+        /// The organisation's console, which is a different router with
+        /// a different set of controllers on it. Held so a test can ask
+        /// whether a door exists there — a route registered on one
+        /// router and not the other is invisible to every test that
+        /// only ever knocks on `harness`.
+        pub tenant: RestHarness,
+        /// Held so the directory outlives the harness rather than being
+        /// swept away under it while a page is reading.
+        _scratch: tempfile::TempDir,
+    }
+
+    impl Console {
+        pub async fn new() -> Self {
+            let database = Arc::new(crate::infra::db::open_in_memory().await.expect("open"));
+            // A data directory of its own. The default is
+            // `/var/lib/wabot-deploy`, which a test must not read and
+            // certainly must not write — and a page that reads a
+            // container's log cannot be tested at all without one.
+            let scratch = tempfile::tempdir().expect("a data dir");
+            let mut config = Config::default();
+            config.node.data_dir = scratch.path().to_path_buf();
+            // A config file of its own, because one page writes to it: the
+            // Backup tab keeps the bucket credential in the file rather
+            // than in the database. Without a source path the console
+            // correctly refuses to store one, so a harness without this
+            // would test the refusal and nothing else.
+            config.source = Some(scratch.path().join("config.toml"));
+            let setup_token = crate::infra::accounts::issue_setup_token(&database)
+                .await
+                .expect("token");
+            // What `install` and every `serve` write. The nodes pages
+            // read this table, so a console without it is a console
+            // listing nothing — which is not a state a real node is
+            // ever in.
+            let me = crate::infra::network::ensure_self(&database, &config)
+                .await
+                .expect("this node");
+
+            let container = Container::new();
+            register(
+                &container,
+                database.clone(),
+                config.clone(),
+                Arc::new(crate::infra::edge::routes::RouteTable::new()),
+                Arc::new(crate::infra::edge::acme::Wake::default()),
+            );
+            // The queue, so a test exercises the path a node takes:
+            // a POST enqueues, `run_command` spawns, the handler runs.
+            // Without it `run_command` fails to resolve a repository
+            // and every deployment quietly does not happen.
+            register_job_repository(
+                &container,
+                Arc::new(wabot_addon_async_in_memory::InMemoryJobRepository::new()),
+            );
+            register_cron_job_repository(
+                &container,
+                Arc::new(wabot_addon_async_in_memory::InMemoryCronJobRepository::new()),
+            );
+            register_async_runtime(&container);
+            // The handler wants both, and `console::register` registers
+            // neither — on a node `api::register` puts the database in.
+            container.register_instance::<SqliteDatabase>(database.clone());
+            container.register_instance::<crate::infra::deploy::Deployer>(Arc::new(
+                crate::infra::deploy::Deployer::new(database.clone(), &config),
+            ));
+            register_transients!(&container, crate::infra::deploy::jobs::DeployHandler);
+            // What `run_async_workers` does with its entries, minus the
+            // workers: the executor only runs a command it knows, and
+            // `run_command`'s immediate spawn checks exactly that.
+            //
+            // And the executor keeps its *own* set of names, which is
+            // what `run_command`'s immediate spawn checks — registering
+            // with the `CommandRegistry` alone leaves the job stored
+            // and never run.
+            let commands: Arc<wabot::async_jobs::CommandRegistry> = container.resolve();
+            commands.register(crate::infra::deploy::jobs::DeployHandler::__handler_entry(
+                &container,
+            ));
+            let executor: Arc<wabot::async_jobs::JobExecutor> = container.resolve();
+            executor.add_command(crate::infra::deploy::jobs::DeployService::COMMAND_NAME);
+
+            let router = routes(&container);
+            Self {
+                tenant: RestHarness::new(tenant_routes(&container)),
+                harness: RestHarness::new(router.clone()),
+                ui: wabot::testing::UiHarness::new(router),
+                database,
+                setup_token,
+                node_path: format!("/network/{}", me.id),
+                data_dir: scratch.path().to_path_buf(),
+                config,
+                _scratch: scratch,
+            }
+        }
+
+        /// Invite somebody, accept it, and return their session cookie.
+        ///
+        /// The console's own path from "an administrator" to "a second
+        /// person with less power", which is what most of these tests
+        /// need before they can check that the second person is
+        /// refused something.
+        pub async fn joined_as(&self, admin_cookie: &str, username: &str) -> String {
+            let response = self
+                .harness
+                .post("/people/invite")
+                .header("cookie", admin_cookie)
+                .form(&[("node_role", "member")])
+                .send()
+                .await;
+            let location = response.header("location").expect("redirected");
+            let link = self.secret_at(location, admin_cookie).await;
+            let token = link.rsplit('/').next().expect("the token").to_string();
+
+            let joined = self
+                .harness
+                .post(&format!("/join/{token}"))
+                .form(&[
+                    ("username", username),
+                    ("password", "a long passphrase here"),
+                ])
+                .send()
+                .await;
+            joined
+                .header("set-cookie")
+                .expect("signed in")
+                .split(';')
+                .next()
+                .expect("a cookie has a value")
+                .to_string()
+        }
+
+        /// Complete setup and return the session cookie, in the form a
+        /// request carries it.
+        /// Follow a redirect that carries a nonce, and read the secret
+        /// off the page it names.
+        ///
+        /// **The secret is not in the URL any more**, which is the whole
+        /// point of the reveal store — so a test that read it from the
+        /// query was reading the thing this fixed. It goes through the
+        /// page instead, which is also the only way the four routes are
+        /// exercised at all.
+        pub async fn secret_at(&self, location: &str, cookie: &str) -> String {
+            let body = self
+                .harness
+                .get(location)
+                .header("cookie", cookie)
+                .send()
+                .await
+                .body;
+            // The block the copy island puts a button on. Named by its
+            // attribute rather than by position: it is the one element
+            // on that page whose text *is* the secret.
+            let opened = body
+                .split_once("data-copied-label=")
+                .and_then(|(_, rest)| rest.split_once('>'))
+                .map(|(_, rest)| rest)
+                .unwrap_or_else(|| panic!("no secret on {location}: {body}"));
+            opened
+                .split_once("</pre>")
+                .map(|(secret, _)| secret.trim().to_string())
+                .unwrap_or_else(|| panic!("the block never closes on {location}"))
+        }
+
+        pub async fn signed_in(&self) -> String {
+            let response = self
+                .harness
+                .post("/setup")
+                .form(&[
+                    ("username", "jorge"),
+                    ("password", "correct horse battery"),
+                    ("setup_token", &self.setup_token),
+                ])
+                .send()
+                .await;
+            response.assert_status(StatusCode::SEE_OTHER);
+            let cookie = response
+                .header("set-cookie")
+                .expect("setup signs the operator in");
+            cookie
+                .split(';')
+                .next()
+                .expect("a cookie has a value")
+                .to_string()
+        }
+    }
+
+    /// The console the framework assembles has to be one document, not
+    /// a document inside a document — which browsers silently repair,
+    /// so it renders *almost* right and nothing complains.
+    #[tokio::test]
+    async fn a_page_is_a_single_document() {
+        let console = Console::new().await;
+        let body = console.harness.get("/setup").send().await.body;
+
+        assert_eq!(body.matches("<html").count(), 1, "one <html>:\n{body}");
+        assert_eq!(body.matches("<body").count(), 1, "one <body>");
+        assert_eq!(body.matches("<!doctype").count(), 1, "one doctype");
+        assert_eq!(
+            body.to_lowercase().matches("<title").count(),
+            1,
+            "one <title>"
+        );
+    }
+
+    /// The two halves are separable: no node-scope controller knows what
+    /// an organisation is.
+    ///
+    /// **Asked for by Jorge, and worth having as a test rather than an
+    /// intention**: if tenancy is ever removed, `console::tenant` and
+    /// `console::tenants` are deleted, their four registrations go, and
+    /// nothing else in this console has to be read. That is only true
+    /// while the controllers that serve the machine stay ignorant of the
+    /// other half — and it stopped being true within a day the first
+    /// time, when the people page grew `administers_scope`, a scope
+    /// selector and a cross-frontier check.
+    ///
+    /// A source scan rather than a type: the coupling this catches is a
+    /// *name* being reachable, and nothing in the type system objects to
+    /// a controller mentioning one.
+    ///
+    /// Two names are allowed through and both are deliberate. `Project`
+    /// carries a `tenant_id` column, so the word appears in whatever a
+    /// controller does with a project — which is why `is_the_nodes_own`
+    /// exists, and why the check is on `platform::tenants` and
+    /// `console::tenant` rather than on the substring.
+    /// The two consoles are two routers. A door registered on one and
+    /// not the other answers 404 to everybody holding a link to it, and
+    /// no test that only knocks on the node's router can see that —
+    /// which is how an organisation's invitation link shipped pointing
+    /// at a `/join` that was not there.
+    #[tokio::test]
+    async fn an_invitation_link_finds_a_door_in_either_console() {
+        let console = Console::new().await;
+        // A token nothing minted, so the answer is a redirect carrying a
+        // refusal. What matters is that it is not the router saying the
+        // address does not exist.
+        for harness in [&console.harness, &console.tenant] {
+            harness
+                .post("/join/whatever-token")
+                .form(&[("username", "somebody"), ("password", "a long passphrase")])
+                .send()
+                .await
+                .assert_status(wabot::rest::axum::http::StatusCode::SEE_OTHER);
+        }
+    }
+
+    #[test]
+    fn the_node_console_does_not_know_what_an_organisation_is() {
+        // **Every controller that is not about sharing the machine
+        // out.** A list here would be right until somebody added a
+        // controller — and splitting the console into one file per
+        // controller added nine at once, which is when this went red.
+        // It reads the directory and takes out the two the rule is
+        // about, so a tenth is covered by existing.
+        let mut node_scope: Vec<(String, String)> = Vec::new();
+        for path in crate::tree::rust_files(&["src/web/console", "src/features"]) {
+            let name = path
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .to_string();
+            if !name.ends_with("_controller.rs") || name.starts_with("tenant") {
+                continue;
+            }
+            // **The doors are the exception, and they have to be.** A
+            // sign-in has to know which frontier it is a sign-in to —
+            // that is what `edge::Tenancy` is stamped for, and reading
+            // it is the whole of how the session lands in the right
+            // console. Everything past the door must not.
+            if name.starts_with("auth") {
+                continue;
+            }
+            node_scope.push((name, std::fs::read_to_string(&path).expect("read")));
+        }
+        assert!(
+            node_scope.len() > 8,
+            "the scan found {} controllers, so it is reading the wrong place",
+            node_scope.len()
+        );
+
+        let mut leaks = Vec::new();
+        for (name, source) in &node_scope {
+            for reach in [
+                "platform::tenants",
+                "console::tenant_people",
+                "tenant_routes",
+                "TenantPeople",
+                "administers_scope",
+                "edge::Tenancy",
+            ] {
+                // Comments may name the other half — that is how the
+                // split is explained. Code may not reach into it.
+                for line in source.lines() {
+                    let code = line.split("//").next().unwrap_or("");
+                    if code.contains(reach) {
+                        leaks.push(format!("{name}: {}", line.trim()));
+                    }
+                }
+            }
+        }
+        leaks.sort();
+        leaks.dedup();
+        assert!(
+            leaks.is_empty(),
+            "the node's console reaches into tenancy in {} place(s), so the two \
+             halves are no longer separable:\n{}",
+            leaks.len(),
+            leaks.join("\n")
+        );
+    }
+
+    /// **A secret never travels in the query string.**
+    ///
+    /// `ConsoleState::reveals` exists because a push token used to, and
+    /// it was written as if that were the only one — three invitation
+    /// links were still doing it two months later, on the node's people
+    /// page, an organisation's, and a tenant's. A query parameter is
+    /// read by the address bar, the browser's history and every
+    /// refresh.
+    ///
+    /// So this is expressed as a fact about the redirect rather than a
+    /// list of the handlers that mint something: **what a POST puts in
+    /// the URL is a nonce or a message, never a value that lets
+    /// somebody in.** It reads the controllers for the two spellings a
+    /// secret has ever travelled under.
+    #[test]
+    fn a_redirect_carries_a_nonce_and_never_a_secret() {
+        let mut carrying: Vec<String> = Vec::new();
+        let mut read = 0;
+        for path in crate::tree::rust_files(&["src/web/console", "src/features"]) {
+            read += 1;
+            let name = path.file_name().unwrap_or_default().to_string_lossy();
+            let source = std::fs::read_to_string(&path).expect("read");
+            for spelling in [
+                "append_pair(\"invited\"",
+                "append_pair(\"shown\"",
+                "append_pair(\"token\"",
+            ] {
+                if source.contains(spelling) {
+                    carrying.push(format!("{name}: {spelling}"));
+                }
+            }
+        }
+        assert!(
+            read > 8,
+            "the scan read {read} controllers, so it is looking in the wrong place"
+        );
+        assert!(
+            carrying.is_empty(),
+            "these put a secret in the URL — stash it and redirect with the nonce: {carrying:#?}"
+        );
+    }
+
+    /// **One controller per file, and the file says which.**
+    ///
+    /// Twenty-two of them lived in thirteen files, most two to a file
+    /// under names that said neither what they were nor which kind —
+    /// `NodePages` and `NodeApi` in `nodes.rs`. Two controllers in one
+    /// file is two things that look like one when a stack trace names
+    /// it, and a name that carries neither leaves the reader to open
+    /// the file to find out.
+    ///
+    /// It walks the whole tree, because a controller is not the
+    /// console's alone: the registry, the network's api and the health
+    /// check are three more, each of them in a file that was named for
+    /// its module rather than for the controller inside it.
+    #[test]
+    fn a_controller_is_alone_in_a_file_named_for_it() {
+        fn snake(name: &str) -> String {
+            let mut out = String::new();
+            for (index, character) in name.char_indices() {
+                if character.is_uppercase() && index > 0 {
+                    out.push('_');
+                }
+                out.extend(character.to_lowercase());
+            }
+            out
+        }
+
+        let mut wrong: Vec<String> = Vec::new();
+        let mut found = 0;
+        let mut stack = vec![std::path::PathBuf::from("src")];
+        while let Some(directory) = stack.pop() {
+            for entry in std::fs::read_dir(&directory).expect("a directory") {
+                let path = entry.expect("entry").path();
+                if path.is_dir() {
+                    stack.push(path);
+                    continue;
+                }
+                if path.extension().is_none_or(|kind| kind != "rs") {
+                    continue;
+                }
+                let name = path.file_stem().unwrap_or_default().to_string_lossy();
+                let source = std::fs::read_to_string(&path).expect("read");
+                let mut here: Vec<&str> = Vec::new();
+                let mut lines = source.lines().peekable();
+                while let Some(line) = lines.next() {
+                    if !line.starts_with("#[ui_controller")
+                        && !line.starts_with("#[rest_controller")
+                    {
+                        continue;
+                    }
+                    let Some(next) = lines.peek() else { continue };
+                    let Some(kind) = next.strip_prefix("impl ") else {
+                        continue;
+                    };
+                    here.push(kind.split_whitespace().next().unwrap_or_default());
+                }
+                if here.is_empty() {
+                    continue;
+                }
+                found += here.len();
+                if here.len() > 1 {
+                    wrong.push(format!("{name}.rs holds {here:?}"));
+                    continue;
+                }
+                let one = here[0];
+                if !one.ends_with("UiController") && !one.ends_with("RestController") {
+                    wrong.push(format!("{one} does not say which kind it is"));
+                }
+                if snake(one) != name {
+                    wrong.push(format!("{one} is in {name}.rs, not {}.rs", snake(one)));
+                }
+            }
+        }
+        assert!(
+            found > 20,
+            "the scan found {found} controllers, so it is reading the wrong place"
+        );
+        assert!(wrong.is_empty(), "{wrong:#?}");
+    }
+
+    /// An organisation's own pages open, and every tab of its settings.
+    ///
+    /// **A page behind a path parameter is invisible to the list above**,
+    /// which can only hold paths that need no id — so `/organisations`
+    /// was covered and the page it opens was not. This makes one, then
+    /// knocks on every door it has.
+    ///
+    /// What it catches is the failure that has no test anywhere else: a
+    /// route registered under another route's parameter answers 404, and
+    /// a 404 renders as an empty body that every assertion about content
+    /// passes straight over.
+    #[tokio::test]
+    async fn an_organisations_pages_all_open() {
+        let console = Console::new().await;
+        let cookie = console.signed_in().await;
+        let operator = crate::infra::accounts::all(&console.database)
+            .await
+            .expect("accounts")
+            .into_iter()
+            .next()
+            .expect("the operator");
+        let tenant = crate::features::organisations::node_user_create_organisation::run(
+            &console.database,
+            &operator,
+            "Acme",
+        )
+        .await
+        .expect("an organisation");
+
+        let mut paths = vec![format!("/organisations/{}", tenant.id)];
+        // Read off the enum rather than written out: a tab added
+        // tomorrow is covered without touching this.
+        for tab in crate::features::organisations::node_user_organisation_settings_page::OrganisationTab::all()
+        {
+            paths.push(tab.path(&tenant.id));
+        }
+
+        for path in &paths {
+            let body = console
+                .harness
+                .get(path)
+                .header("cookie", &cookie)
+                .send()
+                .await
+                .body;
+            assert!(
+                !body.trim().is_empty(),
+                "{path} answered nothing — a 404 or a redirect where a page belongs"
+            );
+            assert!(body.contains("<title>"), "{path} has no title");
+            assert!(
+                body.contains("Acme"),
+                "{path} does not name the organisation it is about"
+            );
+        }
+    }
+
+    /// Every page an operator can open carries a stylesheet.
+    ///
+    /// **The two tests around this one ask `/setup` and stop there**, so
+    /// a page written afterwards was never looked at: `/organisations`
+    /// shipped with no `layout::head`, rendered its nav and its content
+    /// in the browser's default serif, and the suite stayed green. Jorge
+    /// found it by opening it.
+    ///
+    /// **Two halves, and the first version of this guard only caught
+    /// one.** `wabot.css` is the design system's tokens and arrives on a
+    /// `<link>`; the shell, the cards and every layout this console
+    /// invented are two `<style>` elements each view emits into its own
+    /// body through `layout::style_tag`. Adding the `<link>` and not the
+    /// `<style>` fixed the fonts and left the page in one column with an
+    /// unstyled topbar — which is how Jorge saw it the *second* time,
+    /// after this test had already been written and passed.
+    ///
+    /// A list rather than a crawl, because the routes are declared by a
+    /// macro and there is nothing to enumerate them from — so it is the
+    /// same shape as the source list in `es.rs` and carries the same
+    /// warning: **a guard that names its inputs is right until somebody
+    /// adds an input.** What it buys anyway is that the failure is one
+    /// forgotten line here instead of one forgotten line per page.
+    #[tokio::test]
+    async fn every_page_carries_the_stylesheet() {
+        let console = Console::new().await;
+        let cookie = console.signed_in().await;
+
+        const PAGES: &[&str] = &[
+            "/",
+            "/people",
+            "/organisations",
+            "/network",
+            "/node/domain",
+            "/updates",
+        ];
+        for path in PAGES {
+            let body = console
+                .harness
+                .get(path)
+                .header("cookie", &cookie)
+                .send()
+                .await
+                .body;
+            // A redirect has no head and needs none.
+            if body.trim().is_empty() {
+                continue;
+            }
+            assert!(
+                body.contains(&format!(
+                    r#"<link rel="stylesheet" href="{}/wabot.css">"#,
+                    assets::MOUNT
+                )),
+                "{path} renders without a stylesheet — its view is missing `layout::head`"
+            );
+            assert!(body.contains("<title>"), "{path} has no title");
+            // And the console's own CSS, which is the other half and the
+            // one that actually lays the page out.
+            assert!(
+                body.contains("<style>"),
+                "{path} renders without the console's own CSS — its view is missing \
+                 `layout::style_tag`"
+            );
+        }
+    }
+
+    /// The head is assembled from what the view declared through the
+    /// scope, so a missing helper shows up as a missing tag.
+    #[tokio::test]
+    async fn the_head_carries_the_title_stylesheet_and_favicon() {
+        let console = Console::new().await;
+        let body = console.harness.get("/setup").send().await.body;
+
+        assert!(body.contains("<title>"), "{body}");
+        assert!(
+            body.contains(&format!(
+                r#"<link rel="stylesheet" href="{}/wabot.css">"#,
+                assets::MOUNT
+            )),
+            "the stylesheet is linked"
+        );
+        assert!(
+            body.contains(r#"rel="icon""#),
+            "the favicon is linked — the reason `add_link` exists"
+        );
+    }
+
+    /// The whole point of the preloads: they have to come *before* the
+    /// stylesheet, or the browser still discovers the fonts late and
+    /// the flicker stays.
+    ///
+    /// The framework's document assembly is what guarantees this —
+    /// links are emitted before stylesheets regardless of declaration
+    /// order — so this test watches an invariant the view does not
+    /// control. Worth having for exactly that reason: if that ordering
+    /// ever changes upstream, the flicker comes back silently and this
+    /// is what says so.
+    #[tokio::test]
+    async fn fonts_are_preloaded_before_the_stylesheet() {
+        let console = Console::new().await;
+        let body = console.harness.get("/setup").send().await.body;
+
+        let stylesheet = body
+            .find(r#"rel="stylesheet""#)
+            .expect("the stylesheet is linked");
+
+        for font in assets::PRELOAD_FONTS {
+            let preload = body
+                .find(&format!(r#"href="{}/{font}""#, assets::MOUNT))
+                .unwrap_or_else(|| panic!("{font} is not preloaded:\n{body}"));
+            assert!(
+                preload < stylesheet,
+                "{font} is preloaded after the stylesheet, which defeats it"
+            );
+        }
+    }
+
+    /// A font preload without `crossorigin` is discarded and the font
+    /// fetched again — a wasted request that fixes nothing. The one
+    /// mistake worth a test of its own.
+    #[tokio::test]
+    async fn font_preloads_carry_the_attributes_the_browser_needs() {
+        let console = Console::new().await;
+        let body = console.harness.get("/setup").send().await.body;
+
+        let preloads: Vec<&str> = body
+            .match_indices(r#"<link rel="preload""#)
+            .map(|(start, _)| {
+                let rest = &body[start..];
+                &rest[..rest.find('>').map(|end| end + 1).unwrap_or(rest.len())]
+            })
+            .collect();
+
+        assert_eq!(
+            preloads.len(),
+            assets::PRELOAD_FONTS.len(),
+            "one preload per declared font: {preloads:?}"
+        );
+        for preload in preloads {
+            for attribute in [
+                r#"as="font""#,
+                r#"type="font/woff2""#,
+                r#"crossorigin="anonymous""#,
+            ] {
+                assert!(
+                    preload.contains(attribute),
+                    "a font preload needs {attribute}: {preload}"
+                );
+            }
+        }
+    }
+
+    /// Every asset a page references has to be served, or the node
+    /// renders unstyled — which is exactly the failure vendoring them
+    /// was supposed to prevent.
+    #[tokio::test]
+    async fn every_referenced_asset_is_served() {
+        let console = Console::new().await;
+        let body = console.harness.get("/setup").send().await.body;
+
+        let mut checked = 0;
+        for marker in ["href=\"", "src=\""] {
+            let mut rest = body.as_str();
+            while let Some(start) = rest.find(marker) {
+                rest = &rest[start + marker.len()..];
+                let Some(end) = rest.find('"') else { break };
+                let url = &rest[..end];
+                if !url.starts_with(assets::MOUNT) {
+                    continue;
+                }
+                console
+                    .harness
+                    .get(url)
+                    .send()
+                    .await
+                    .assert_status(StatusCode::OK);
+                checked += 1;
+            }
+        }
+        assert!(checked >= 3, "the page references its assets: {checked}");
+    }
+
+    /// The theme is in the first byte the browser gets, which is the
+    /// whole reason it lives on the account rather than in a script.
+    /// A theme applied after paint is a flash of the one somebody just
+    /// turned off.
+    #[tokio::test]
+    async fn the_chosen_theme_is_server_rendered() {
+        let console = Console::new().await;
+        let cookie = console.signed_in().await;
+
+        let before = console
+            .harness
+            .get("/")
+            .header("cookie", &cookie)
+            .send()
+            .await
+            .body;
+        assert!(
+            before.contains(r#"data-theme="""#),
+            "system means no attribute, so the media query decides: {before}"
+        );
+
+        console
+            .harness
+            .post("/theme")
+            .header("cookie", &cookie)
+            .form(&[("theme", "dark"), ("from", "/")])
+            .send()
+            .await
+            .assert_status(StatusCode::SEE_OTHER);
+
+        let after = console
+            .harness
+            .get("/")
+            .header("cookie", &cookie)
+            .send()
+            .await
+            .body;
+        assert!(after.contains(r#"data-theme="dark""#), "{after}");
+        assert!(
+            !after.contains("<script>document.documentElement"),
+            "and nothing had to run to get it there"
+        );
+    }
+
+    /// `from` is a path this console put in its own form. Taking it
+    /// from the Referer would let a page elsewhere choose where a
+    /// submit lands.
+    #[tokio::test]
+    async fn the_theme_form_only_returns_to_a_path() {
+        let console = Console::new().await;
+        let cookie = console.signed_in().await;
+
+        let response = console
+            .harness
+            .post("/theme")
+            .header("cookie", &cookie)
+            .form(&[("theme", "dark"), ("from", "https://elsewhere.example/")])
+            .send()
+            .await;
+        assert_eq!(response.header("location"), Some("/"));
+    }
+
+    /// Both islands are declared where the runtime will look for them.
+    /// A host that stops being emitted takes its behaviour with it and
+    /// nothing errors — the page just quietly stops doing the thing.
+    #[tokio::test]
+    async fn the_console_declares_the_islands_it_registers() {
+        let console = Console::new().await;
+        let cookie = console.signed_in().await;
+        let ui = console.ui.with_header("cookie", cookie);
+
+        let node = ui.get(&console.node_path).await;
+        assert!(node.has_island("node-live"), "{}", node.html());
+        assert_eq!(
+            node.island_props("node-live"),
+            Some(serde_json::json!({
+                "node": console.node_path.trim_start_matches("/network/"),
+            })),
+            "the client needs the id to open the stream"
+        );
+        // The certificate form went to `/node` with the rest of what is
+        // editable, and its island with it. The meters stayed here, which
+        // is why the stream host is on both — the runtime skips a cell it
+        // cannot find, so each page carries only its half.
+        let settings = ui.get("/node/domain").await;
+        assert!(
+            settings.has_island("fields"),
+            "the certificate form: {}",
+            settings.html()
+        );
+        assert!(
+            settings.has_island("node-live"),
+            "and its cells still stream: {}",
+            settings.html()
+        );
+    }
+
+    /// A stylesheet the browser cannot parse renders an unstyled page,
+    /// which looks like a bug in the product rather than in a header.
+    #[tokio::test]
+    async fn the_stylesheet_is_served_as_css() {
+        let console = Console::new().await;
+        let response = console
+            .harness
+            .get(&format!("{}/wabot.css", assets::MOUNT))
+            .send()
+            .await;
+        response.assert_ok();
+        assert!(
+            response
+                .header("content-type")
+                .is_some_and(|value| value.starts_with("text/css")),
+            "got {:?}",
+            response.header("content-type")
+        );
+    }
+
+    /// A node serving its own authority's certificate has to say so.
+    /// The sentence outlived two homes — a splash page, then a summary
+    /// card — and what makes it worth keeping is that it names what to
+    /// do next, beside the form that does it.
+    #[tokio::test]
+    async fn a_self_signed_node_says_so_where_it_can_be_fixed() {
+        let console = Console::new().await;
+        let cookie = console.signed_in().await;
+        let body = console
+            .harness
+            .get("/node/domain")
+            .header("cookie", &cookie)
+            .send()
+            .await
+            .body;
+
+        assert!(body.contains("self-signed"), "{body}");
+        assert!(body.contains("below"), "and points at the form: {body}");
+        assert!(
+            body.contains("/node/certificate"),
+            "which is on this page: {body}"
+        );
+    }
+
+    /// The list said the node's name, version and state; the card under
+    /// it said the same three things again. Two cards agreeing is not
+    /// confirmation, it is a page that has not decided what it is for.
+    #[tokio::test]
+    async fn the_nodes_list_says_each_thing_once() {
+        let console = Console::new().await;
+        let cookie = console.signed_in().await;
+        let body = console
+            .harness
+            .get("/network")
+            .header("cookie", &cookie)
+            .send()
+            .await
+            .body;
+
+        assert_eq!(
+            body.matches("Serving").count(),
+            1,
+            "one node, said once: {body}"
+        );
+        assert!(
+            !body.contains("Certificate"),
+            "the certificate lives on the node's own page: {body}"
+        );
+    }
+
+    /// Everywhere the console can write a field: its controllers, and
+    /// the three directories that draw.
+    ///
+    /// **One scan, read by both of the tests below.** It was a list of
+    /// eight file names in each of them, which missed every field that
+    /// moved into `src/views/pages` when the controllers stopped
+    /// drawing, and would have missed the nine controllers the console
+    /// gained when it was split into one file each. A third test cannot
+    /// forget a directory now, because there is nowhere to forget it.
+    fn drawing_sources() -> Vec<(String, String)> {
+        let mut sources = Vec::new();
+        for path in crate::tree::rust_files(&[
+            "src/web/console",
+            "src/web/views/pages",
+            "src/web/views/components",
+            "src/web/views/layouts",
+            "src/features",
+        ]) {
+            let name = path
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .to_string();
+            sources.push((name, std::fs::read_to_string(&path).expect("read")));
+        }
+        assert!(
+            sources.len() > 50,
+            "the scan read {} files, so it is reading the wrong place",
+            sources.len()
+        );
+        sources
+    }
+
+    /// Every field somebody types into says what may be filled into it.
+    ///
+    /// A field that declares nothing gets the browser's guess, and the
+    /// guess is made from its name: a text input called `username` on
+    /// the project settings page had the keychain offering the operator's
+    /// own login for "who to add to this project". Reported from a real
+    /// console, with a screenshot.
+    ///
+    /// So the rule is that there is no default. Either a field names the
+    /// purpose autofill should serve — `username`, `current-password`,
+    /// `new-password`, on the four forms that are genuinely about the
+    /// person filling them in — or it says `off`. A new field cannot
+    /// quietly inherit a heuristic, because this test fails until it
+    /// chooses.
+    ///
+    /// What this **cannot** promise is that a browser obeys: `off` is a
+    /// request, and Safari and Chrome both override it for some fields.
+    /// It promises that the console asked.
+    #[test]
+    fn every_field_says_what_may_be_autofilled_into_it() {
+        let sources = drawing_sources();
+
+        let mut silent = Vec::new();
+        for (name, source) in &sources {
+            for element in fields(source) {
+                if !element.contains("autocomplete=") {
+                    silent.push(format!("{name}: {}", element.trim()));
+                }
+            }
+        }
+        assert!(
+            silent.is_empty(),
+            "{} field(s) let the browser guess:\n{}",
+            silent.len(),
+            silent.join("\n")
+        );
+    }
+
+    /// Every `<input>` and `<textarea>` a person types into.
+    ///
+    /// Hidden fields, checkboxes and radios are left out: nothing is
+    /// filled into them, and `autocomplete` has no meaning there.
+    fn fields(source: &str) -> Vec<String> {
+        // **Code, not prose.** A comment naming `<input>` is not a
+        // field, and the doc block on this very function was reported as
+        // two of them the moment the scan started reading the file it
+        // lives in.
+        let source: String = source
+            .lines()
+            .filter(|line| !line.trim_start().starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let source = source.as_str();
+        let mut found = Vec::new();
+        // Assembled rather than written out, or the scan finds its own
+        // predicate: it reads every file that draws, and this one is now
+        // among them. The same trap `every_meter_width_is_a_declaration`
+        // already names, sprung the moment the sources became a
+        // directory read.
+        for tag in [concat!("<", "input"), concat!("<", "textarea")] {
+            let mut rest = source;
+            while let Some(start) = rest.find(tag) {
+                rest = &rest[start..];
+                let Some(end) = rest.find('>') else { break };
+                let element = &rest[..=end];
+                let typed = |kind: &str| element.contains(&format!("type=\"{kind}\""));
+                if !typed("hidden") && !typed("checkbox") && !typed("radio") && !typed("submit") {
+                    found.push(element.to_string());
+                }
+                rest = &rest[end + 1..];
+            }
+        }
+        found
+    }
+
+    /// A field only *looks* like a credential where it is one.
+    ///
+    /// `autocomplete="off"` is a request, and Safari refuses it: it
+    /// decides a text field is a login from the **name, the id and the
+    /// placeholder**, not from what the field asks for. A box named
+    /// `username`, with `id="username"` and `placeholder="username"`,
+    /// had the keychain offering the operator their own account — on a
+    /// form asking which *other* person to add to a project. Turning
+    /// autofill off changed nothing; renaming the field did.
+    ///
+    /// So the rule is about the words, not the attribute: a field may
+    /// carry a credential's vocabulary only if it declares a
+    /// credential's purpose, which is the four forms that really are
+    /// about the person filling them in.
+    #[test]
+    fn only_a_real_credential_field_is_named_like_one() {
+        let sources = drawing_sources();
+        // What a browser reads as "this is a sign-in".
+        const CREDENTIAL_WORDS: &[&str] = &["username", "password", "email"];
+        // What a field says when autofill is genuinely wanted.
+        const PURPOSES: &[&str] = &[
+            r#"autocomplete="username""#,
+            r#"autocomplete="current-password""#,
+            r#"autocomplete="new-password""#,
+        ];
+
+        let mut pretending = Vec::new();
+        for (name, source) in &sources {
+            for element in fields(source) {
+                let declares = PURPOSES.iter().any(|purpose| element.contains(purpose));
+                if declares {
+                    continue;
+                }
+                for word in CREDENTIAL_WORDS {
+                    let named = [
+                        format!("name=\"{word}\""),
+                        format!("id=\"{word}\""),
+                        format!("placeholder=\"{word}\""),
+                    ];
+                    if named.iter().any(|shape| element.contains(shape)) {
+                        pretending.push(format!("{name}: {}", element.trim()));
+                        break;
+                    }
+                }
+            }
+        }
+        assert!(
+            pretending.is_empty(),
+            "{} field(s) are named like a login and are not one, so a password manager \
+             will offer to fill them whatever `autocomplete` says:\n{}",
+            pretending.len(),
+            pretending.join("\n")
+        );
+    }
+
+    /// Every `data-when` has to name a control that exists in the page
+    /// it is on. A typo in the condition is the failure mode of a
+    /// declarative island: nothing throws, the field is simply hidden
+    /// forever or shown forever, and the page looks fine.
+    pub(crate) fn conditions_name_real_controls(body: &str) {
+        let mut checked = 0;
+        for attribute in ["data-when=\"", "data-required-when=\""] {
+            for (index, _) in body.match_indices(attribute) {
+                let rest = &body[index + attribute.len()..];
+                let condition = &rest[..rest.find('"').expect("a closed attribute")];
+                let name = condition.split('=').next().expect("a name");
+                assert!(
+                    body.contains(&format!("name=\"{name}\"")),
+                    "{condition} names no control on this page"
+                );
+                checked += 1;
+            }
+        }
+        assert!(checked > 0, "no conditional fields on this page");
+    }
+}

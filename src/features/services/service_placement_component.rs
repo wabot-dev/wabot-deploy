@@ -1,13 +1,13 @@
 //! Where a service's copies run, and who answers for its names.
 
-use crate::views::texts::language::t;
+use crate::web::views::texts::language::t;
 use hypertext::prelude::*;
 
 /// What a replica's node is called, for a table that reads rather than
 /// selects.
 pub fn node_name<'a>(
-    replica: &'a crate::entities::replica::Replica,
-    nodes: &'a [crate::network::Node],
+    replica: &'a crate::domain::entities::replica::Replica,
+    nodes: &'a [crate::infra::network::Node],
 ) -> String {
     match &replica.node_id {
         Some(id) => nodes
@@ -31,10 +31,10 @@ pub fn node_name<'a>(
 /// administering a service from where it was created rather than from
 /// the machine it happens to be on.
 pub fn placement_card<'a>(
-    project: &'a crate::entities::project::Project,
-    service: &'a crate::entities::service::Service,
-    placements: &'a [crate::entities::replica::Replica],
-    nodes: &'a [crate::network::Node],
+    project: &'a crate::domain::entities::project::Project,
+    service: &'a crate::domain::entities::service::Service,
+    placements: &'a [crate::domain::entities::replica::Replica],
+    nodes: &'a [crate::infra::network::Node],
     // The copies out of the rotation, by replica id — see `Running`.
     silent: &'a [String],
     // The nodes with an instruction about this service still waiting to
@@ -72,7 +72,7 @@ pub fn placement_card<'a>(
                                 <td data-replica=(&replica.id)>
                                     (placement_state(
                                         replica,
-                                        service.desired_state == crate::entities::service::DesiredState::Stopped,
+                                        service.desired_state == crate::domain::entities::service::DesiredState::Stopped,
                                         replica
                                             .node_id
                                             .as_ref()
@@ -128,8 +128,8 @@ pub fn placement_card<'a>(
 /// placement elsewhere — the same shape the row has, so the form and
 /// the column agree without anything translating between them.
 pub fn node_option<'a>(
-    node: &'a crate::network::Node,
-    replica: &'a crate::entities::replica::Replica,
+    node: &'a crate::infra::network::Node,
+    replica: &'a crate::domain::entities::replica::Replica,
 ) -> impl Renderable + 'a {
     let value = match node.is_self {
         true => String::new(),
@@ -167,14 +167,14 @@ pub fn node_option<'a>(
 /// The same filter `edge_cells` uses, so the two cannot disagree about
 /// which errand is the current one.
 pub fn latest_for<'a>(
-    orders: &'a [crate::network::errand::Record],
+    orders: &'a [crate::infra::network::errand::Record],
     hostname: &str,
     node_id: &str,
-) -> Option<&'a crate::network::errand::Record> {
+) -> Option<&'a crate::infra::network::errand::Record> {
     orders
         .iter()
         .filter(|order| order.node_id == node_id)
-        .filter(|order| order.kind == crate::network::errand::Kind::Edge)
+        .filter(|order| order.kind == crate::infra::network::errand::Kind::Edge)
         .filter(|order| {
             order
                 .payload
@@ -186,15 +186,15 @@ pub fn latest_for<'a>(
 }
 
 pub fn served_by_form<'a>(
-    project: &'a crate::entities::project::Project,
-    service: &'a crate::entities::service::Service,
+    project: &'a crate::domain::entities::project::Project,
+    service: &'a crate::domain::entities::service::Service,
     hostname: &'a str,
-    public: &'a [crate::network::Node],
+    public: &'a [crate::infra::network::Node],
     serving: &'a [(String, String)],
     // Every instruction this node has queued, so the badge below can be
     // computed here rather than written optimistically and corrected by
     // a stream that may not reach this page.
-    orders: &'a [crate::network::errand::Record],
+    orders: &'a [crate::infra::network::errand::Record],
 ) -> impl Renderable + 'a {
     let chosen: Vec<&str> = serving
         .iter()
@@ -247,7 +247,7 @@ pub fn served_by_form<'a>(
                               false => "badge badge-info is-hidden",
                           })
                           data-edge=(format!("{}|{}", hostname, node.id))>
-                        <span class=(cell.dot)></span>(crate::views::texts::language::word(&cell.word))
+                        <span class=(cell.dot)></span>(crate::web::views::texts::language::word(&cell.word))
                     </span>
                 </label>
             }
@@ -266,7 +266,7 @@ pub fn served_by_form<'a>(
 /// running" on load and "waiting for that node" two seconds later, because
 /// the decision had been made twice and only one copy was corrected.
 pub fn placement_state<'a>(
-    replica: &'a crate::entities::replica::Replica,
+    replica: &'a crate::domain::entities::replica::Replica,
     stopped: bool,
     queued: bool,
     not_answering: bool,
@@ -279,10 +279,10 @@ pub fn placement_state<'a>(
     );
     rsx! {
         @if cell.dot.is_empty() {
-            <span class=(cell.badge)>(crate::views::texts::language::word(&cell.word))</span>
+            <span class=(cell.badge)>(crate::web::views::texts::language::word(&cell.word))</span>
         } @else {
             <span class=(cell.badge)>
-                <span class=(cell.dot)></span>(crate::views::texts::language::word(&cell.word))
+                <span class=(cell.dot)></span>(crate::web::views::texts::language::word(&cell.word))
             </span>
         }
         // The line under it: an address while it is up, a reason while it
@@ -315,9 +315,9 @@ pub fn placement_state<'a>(
 /// node to go and argue with, and a page that simply showed fewer
 /// buttons would leave them wondering what they had done wrong.
 pub fn from_elsewhere_card<'a>(
-    project: &'a crate::entities::project::Project,
-    service: &'a crate::entities::service::Service,
-    mine: &'a [crate::entities::replica::Replica],
+    project: &'a crate::domain::entities::project::Project,
+    service: &'a crate::domain::entities::service::Service,
+    mine: &'a [crate::domain::entities::replica::Replica],
     evicted: bool,
 ) -> impl Renderable + 'a {
     rsx! {
@@ -346,7 +346,7 @@ pub fn from_elsewhere_card<'a>(
                             <td data-replica=(&replica.id)>
                                 (placement_state(
                                     replica,
-                                    service.desired_state == crate::entities::service::DesiredState::Stopped,
+                                    service.desired_state == crate::domain::entities::service::DesiredState::Stopped,
                                     false,
                                     // Whoever routes this service knows
                                     // whether it answers, and for one

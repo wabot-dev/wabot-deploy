@@ -183,25 +183,23 @@ what is missing. Read-only; safe on a live node.
 
 ## Layout
 
+Five rooms, and dependencies point inward: `domain` imports nothing
+else, `infra` imports `domain`, and the doors — `features`, `web`,
+`cli` — import what is beneath them. See
+[rules 11 and 12](docs/architecture-rules.md).
+
 | | |
 | --- | --- |
-| `src/cli/` | the verbs: `install`, `serve`, `doctor`, `join`, `setup-token`, `passwd`, `backup`, `restore`, `clean`, `log-writer`, `containerd` |
-| `src/backup/` | taking a backup and restoring one: the copy, where it goes, how long it is kept, and the plan |
-| `src/features/` | one folder per feature — its use cases, commands, requests, responses, controllers, pages and words ([rule 11](docs/architecture-rules.md)) |
-| `src/dtos/` | the shapes more than one feature's requests and responses carry |
-| `src/entities/`, `src/values/`, `src/policies/`, `src/repositories/` | what every feature reads: the models, their rules, their rows |
-| `src/config.rs`, `src/db.rs`, `src/ledger.rs` | configuration, migrations, which install steps have run |
-| `src/api.rs` | `/healthz`, `/readyz` and the control-plane surface |
-| `src/edge/` | TLS, certificates, ACME, host routing, the reverse proxy |
-| `src/bootstrap/` | preflight, containerd + crun + CNI, the systemd unit |
-| `src/runtime/` | the containerd client: images, snapshots, specs, containers |
-| `src/registry/` | the OCI Distribution API over containerd's content store |
-| `src/accounts/` | accounts, sessions, invitations, roles |
-| `src/deploy/` | deploying a service, DNS checks, route synchronisation |
-| `src/node/` | what this machine is: memory, settings |
-| `src/network/` | the nodes it knows, who may configure it, enrolment |
-| `src/update/` | the release catalogue and the self-update |
-| `src/console/`, `src/views/` | the web console's shell — router, sessions, layout, shared pieces — and the pages not yet in a feature |
+| `src/features/` | one folder per feature — `access`, `backups`, `databases`, `network`, `node`, `organisations`, `people`, `projects`, `services`, `updates` — each holding its use cases, commands, requests, responses, controllers, pages and words |
+| `src/domain/` | what the business is: entities, values, the pure policies, who may do what, errors |
+| `src/infra/` | everything that talks to something: |
+| &nbsp;&nbsp;`repositories/`, `accounts/`, `db.rs`, `ledger.rs`, `config.rs` | the rows, the accounts and sessions, migrations, the install ledger, configuration |
+| &nbsp;&nbsp;`deploy/` | from a row to a running container: placement, routing, DNS checks, quotas |
+| &nbsp;&nbsp;`runtime/`, `bootstrap/` | the containerd client; preflight, containerd + crun + CNI, the systemd unit |
+| &nbsp;&nbsp;`edge/`, `registry/` | TLS, certificates, ACME, host routing, the reverse proxy; the OCI store over containerd's content |
+| &nbsp;&nbsp;`network/`, `node/`, `update/`, `backup/` | the nodes it knows and the errands between them; this machine; the self-update; taking and restoring backups |
+| `src/web/` | the console's shell — router, session, layout, the pieces and words more than one feature uses — and the doors no feature owns: health, the control plane, the registry |
+| `src/cli/` | the verbs: `install`, `serve`, `doctor`, `join`, `setup-token`, `passwd`, `backup`, `restore`, `restore-node`, `clean`, `log-writer`, `containerd` |
 | `migrations/` | embedded with `include_str!`, so the binary stands alone |
 | `assets/` | the design system, vendored — a node must not need a CDN |
 

@@ -1,8 +1,8 @@
 use wabot::sqlite::SqliteDatabase;
 
-use crate::entities::release::Release;
-use crate::entities::service::Service;
-use crate::repositories::releases;
+use crate::domain::entities::release::Release;
+use crate::domain::entities::service::Service;
+use crate::infra::repositories::releases;
 
 pub struct ChooseRelease<'a> {
     pub service: &'a Service,

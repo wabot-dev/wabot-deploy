@@ -1,10 +1,10 @@
 use wabot::sqlite::SqliteDatabase;
 
-use crate::authz::tenant_user;
-use crate::config::Config;
-use crate::entities::account::Account;
-use crate::entities::service::Service;
+use crate::domain::authz::tenant_user;
+use crate::domain::entities::account::Account;
+use crate::domain::entities::service::Service;
 use crate::features::services::set_service_edges_command::SetServiceEdges;
+use crate::infra::config::Config;
 
 pub async fn run(
     database: &SqliteDatabase,

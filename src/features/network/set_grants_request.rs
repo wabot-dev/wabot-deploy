@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use wabot::prelude::*;
 
-use crate::values::capability::Capability;
+use crate::domain::values::capability::Capability;
 
 /// What **this** node agrees to do for another one.
 ///

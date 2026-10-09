@@ -23,16 +23,16 @@ use serde::Deserialize;
 use wabot::prelude::*;
 use wabot::ui::hypertext::IntoView;
 
-use crate::console::auth::{signed_in, PageQuery, SessionMiddleware};
-use crate::console::ConsoleState;
+use crate::domain::values::roles::NodeRole;
 use crate::features::organisations::node_user_organisation_settings_page::{
     OrganisationTab, Panel,
 };
-use crate::repositories::access;
-use crate::repositories::tenants;
-use crate::values::roles::NodeRole;
-use crate::views::layouts::layout;
-use crate::views::layouts::shell::{Area, Frame};
+use crate::infra::repositories::access;
+use crate::infra::repositories::tenants;
+use crate::web::console::auth::{signed_in, PageQuery, SessionMiddleware};
+use crate::web::console::ConsoleState;
+use crate::web::views::layouts::layout;
+use crate::web::views::layouts::shell::{Area, Frame};
 
 #[derive(Debug, Deserialize, Validate, Default)]
 pub struct OrganisationPage {
@@ -64,7 +64,7 @@ impl TenantUiController {
         let Some(account) = signed_in(&self.auth) else {
             return Ok(Redirect::found("/sign-in").into());
         };
-        if !crate::authz::node_user::shares_the_machine_out(&account) {
+        if !crate::domain::authz::node_user::shares_the_machine_out(&account) {
             return Ok(Redirect::found("/").into());
         }
 
@@ -80,7 +80,7 @@ impl TenantUiController {
                 .await
                 .unwrap_or_default()
                 .len();
-            let people = crate::accounts::of_scope(&self.state.database, Some(&tenant.id))
+            let people = crate::infra::accounts::of_scope(&self.state.database, Some(&tenant.id))
                 .await
                 .unwrap_or_default()
                 .len();
@@ -98,7 +98,7 @@ impl TenantUiController {
             cards: &cards,
             error: query.error.as_deref(),
         };
-        let body = crate::views::texts::language::scoped(account.language, || {
+        let body = crate::web::views::texts::language::scoped(account.language, || {
             crate::features::organisations::node_user_organisations_page::render(&page)
                 .render()
                 .into_inner()
@@ -114,7 +114,7 @@ impl TenantUiController {
         let Some(account) = signed_in(&self.auth) else {
             return Ok(Redirect::found("/sign-in").into());
         };
-        if !crate::authz::node_user::shares_the_machine_out(&account) {
+        if !crate::domain::authz::node_user::shares_the_machine_out(&account) {
             return Ok(Redirect::found("/").into());
         }
         let Some(tenant) = tenants::find(&self.state.database, &query.tenant).await? else {
@@ -125,7 +125,7 @@ impl TenantUiController {
             .await
             .unwrap_or_default();
         let owners = owners_of(&self.state, &tenant.id).await;
-        let charged = crate::deploy::quotas::charged(&self.state.database, &tenant.id)
+        let charged = crate::infra::deploy::quotas::charged(&self.state.database, &tenant.id)
             .await
             .unwrap_or_default();
 
@@ -144,7 +144,7 @@ impl TenantUiController {
             charged: &charged,
             error: query.error.as_deref(),
         };
-        let body = crate::views::texts::language::scoped(account.language, || {
+        let body = crate::web::views::texts::language::scoped(account.language, || {
             crate::features::organisations::node_user_organisation_page::render(&page)
                 .render()
                 .into_inner()
@@ -166,7 +166,7 @@ impl TenantUiController {
         let Some(account) = signed_in(&self.auth) else {
             return Ok(Redirect::found("/sign-in").into());
         };
-        if !crate::authz::node_user::shares_the_machine_out(&account) {
+        if !crate::domain::authz::node_user::shares_the_machine_out(&account) {
             return Ok(Redirect::found("/").into());
         }
         let Some(tenant) = tenants::find(&self.state.database, &query.tenant).await? else {
@@ -194,7 +194,7 @@ impl TenantUiController {
                     .await
                     .unwrap_or_default()
                     .len(),
-                people: crate::accounts::of_scope(&self.state.database, Some(&tenant.id))
+                people: crate::infra::accounts::of_scope(&self.state.database, Some(&tenant.id))
                     .await
                     .unwrap_or_default()
                     .len(),
@@ -216,7 +216,7 @@ impl TenantUiController {
                 panel,
                 error: query.error.as_deref(),
             };
-        let body = crate::views::texts::language::scoped(account.language, || {
+        let body = crate::web::views::texts::language::scoped(account.language, || {
             crate::features::organisations::node_user_organisation_settings_page::render(&page)
                 .render()
                 .into_inner()
@@ -234,8 +234,8 @@ impl TenantUiController {
 async fn owners_of(
     state: &ConsoleState,
     tenant_id: &str,
-) -> Vec<crate::entities::account::Account> {
-    crate::accounts::of_scope(&state.database, Some(tenant_id))
+) -> Vec<crate::domain::entities::account::Account> {
+    crate::infra::accounts::of_scope(&state.database, Some(tenant_id))
         .await
         .unwrap_or_default()
         .into_iter()

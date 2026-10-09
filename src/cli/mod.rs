@@ -20,7 +20,7 @@ use std::path::PathBuf;
 
 use clap::{Parser, Subcommand};
 
-use crate::config::DEFAULT_CONFIG_PATH;
+use crate::infra::config::DEFAULT_CONFIG_PATH;
 
 #[derive(Debug, Parser)]
 #[command(

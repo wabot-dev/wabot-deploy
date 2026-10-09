@@ -1,9 +1,9 @@
 use wabot::sqlite::SqliteDatabase;
 
-use crate::authz::node_user;
-use crate::backup::destination::Destination;
-use crate::config::Config;
-use crate::entities::account::Account;
+use crate::domain::authz::node_user;
+use crate::domain::entities::account::Account;
+use crate::infra::backup::destination::Destination;
+use crate::infra::config::Config;
 
 pub async fn run(
     database: &SqliteDatabase,
@@ -19,7 +19,7 @@ pub async fn run(
 
     // Refused while the backups go to a bucket. The button is disabled
     // for the same reason, and this is the check that counts.
-    let plan = crate::backup::plan::plan(database).await;
+    let plan = crate::infra::backup::plan::plan(database).await;
     if plan
         .destination
         .as_deref()
@@ -33,7 +33,7 @@ pub async fn run(
         );
     }
 
-    crate::config::store_s3(&path, None).map_err(|error| {
+    crate::infra::config::store_s3(&path, None).map_err(|error| {
         tracing::error!(%error, "could not remove the bucket credential");
         error.to_string()
     })

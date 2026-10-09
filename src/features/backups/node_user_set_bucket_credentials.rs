@@ -1,11 +1,11 @@
 use wabot::sqlite::SqliteDatabase;
 
-use crate::authz::node_user;
-use crate::backup::s3::Credentials;
-use crate::config::Config;
-use crate::entities::account::Account;
+use crate::domain::authz::node_user;
+use crate::domain::entities::account::Account;
 use crate::features::backups::node_user_set_backup_plan::bucket_refusal;
 use crate::features::backups::set_bucket_credentials_request::SetBucketCredentialsRequest;
+use crate::infra::backup::s3::Credentials;
+use crate::infra::config::Config;
 
 /// The credential lands in the **config file, never the database** — a
 /// database is what a backup copies, and a backup carrying the key to
@@ -55,12 +55,12 @@ pub async fn run(
         endpoint: (!asked.endpoint.is_empty()).then(|| asked.endpoint.to_string()),
     };
 
-    let plan = crate::backup::plan::plan(database).await;
+    let plan = crate::infra::backup::plan::plan(database).await;
     if let Some(reason) = bucket_refusal(plan.destination.as_deref(), &credentials).await {
         return Err(reason);
     }
 
-    crate::config::store_s3(&path, Some(&credentials)).map_err(|error| {
+    crate::infra::config::store_s3(&path, Some(&credentials)).map_err(|error| {
         tracing::error!(%error, "could not store the bucket credential");
         error.to_string()
     })

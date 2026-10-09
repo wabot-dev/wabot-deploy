@@ -1,15 +1,16 @@
 use hypertext::prelude::*;
 
-use crate::update::github::Release;
-use crate::update::notes::{Block, Inline};
-use crate::update::runs::{Run, Status};
-use crate::views::layouts::layout;
-use crate::views::texts::language::t;
+use crate::infra::update::github::Release;
+use crate::infra::update::notes::{Block, Inline};
+use crate::infra::update::runs::{Run, Status};
+use crate::web::views::layouts::layout;
+use crate::web::views::texts::language::t;
 
 pub struct Updates<'a> {
     pub history: &'a [Run],
     pub latest: Option<&'a Run>,
-    pub available: &'a Result<crate::update::Availability, crate::update::UpdateError>,
+    pub available:
+        &'a Result<crate::infra::update::Availability, crate::infra::update::UpdateError>,
     pub query_error: Option<&'a str>,
     pub query_started: Option<&'a str>,
 }
@@ -85,7 +86,7 @@ pub(crate) fn install_form<'a>(
 /// Where a release stands relative to what is running.
 pub(crate) fn state_line(
     release: &Release,
-    current: Option<crate::update::github::Version>,
+    current: Option<crate::infra::update::github::Version>,
 ) -> impl Renderable + '_ {
     let installed = current == Some(release.version);
     let older = current
@@ -118,7 +119,7 @@ pub(crate) fn state_line(
 
 pub(crate) fn release_card(
     release: &Release,
-    current: Option<crate::update::github::Version>,
+    current: Option<crate::infra::update::github::Version>,
 ) -> impl Renderable + '_ {
     let installed = current == Some(release.version);
     rsx! {
@@ -163,7 +164,7 @@ pub(crate) fn release_card(
 /// which is exactly what "reload this page in a few seconds" was asking
 /// a person to do by hand.
 pub(crate) fn live_region<'a>(
-    available: &'a crate::update::UpdateResult<crate::update::Availability>,
+    available: &'a crate::infra::update::UpdateResult<crate::infra::update::Availability>,
     latest: Option<&'a Run>,
 ) -> impl Renderable + 'a {
     let inner = rsx! {
@@ -172,7 +173,7 @@ pub(crate) fn live_region<'a>(
                 <div class="stack-sm">
                     <p class="card-label">(t("Running"))</p>
                     <p class="mono" data-run="version">
-                        ("wabot-deploy ")(crate::update::VERSION)
+                        ("wabot-deploy ")(crate::infra::update::VERSION)
                     </p>
                 </div>
                 <form method="post" action="/updates/check">
@@ -283,10 +284,10 @@ pub(crate) fn status_badge(status: Status) -> impl Renderable {
     }
 }
 
-/// Release notes, rendered from the structure [`crate::update::notes`]
+/// Release notes, rendered from the structure [`crate::infra::update::notes`]
 /// parsed. Every value goes through `rsx!`, which escapes it.
 pub(crate) fn rendered_notes(markdown: &str) -> impl Renderable + '_ {
-    let blocks = crate::update::notes::parse(markdown);
+    let blocks = crate::infra::update::notes::parse(markdown);
     rsx! {
         @if blocks.is_empty() {
             <p class="note">(t("This release came with no notes."))</p>

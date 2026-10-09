@@ -6,14 +6,14 @@
 //! form, redirecting, asking who is signed in — stay in `auth`, because
 //! every controller in this console reads them.
 
-use crate::accounts::{self};
-use crate::console::ConsoleState;
-use crate::views::layouts::layout;
+use crate::infra::accounts::{self};
+use crate::web::console::ConsoleState;
+use crate::web::views::layouts::layout;
 use std::sync::Arc;
 use wabot::prelude::*;
 use wabot::ui::hypertext::IntoView;
 
-use crate::console::auth::*;
+use crate::web::console::auth::*;
 
 // ---------- pages --------------------------------------------------------
 

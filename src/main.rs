@@ -10,42 +10,20 @@
 
 use clap::Parser;
 
-mod accounts;
-mod api;
-mod authz;
-mod backup;
-mod bootstrap;
 mod cli;
-mod clock;
-mod config;
-mod console;
-mod db;
-mod deploy;
-mod dtos;
-mod edge;
-mod entities;
-mod errors;
+mod domain;
 mod features;
-mod health_rest_controller;
-mod ledger;
-mod network;
-mod node;
-mod policies;
-mod registry;
-mod repositories;
-mod runtime;
+mod infra;
 #[cfg(test)]
 mod tree;
-mod update;
-mod values;
-mod views;
+mod web;
 
 use cli::{Cli, Command};
 
 fn main() -> std::process::ExitCode {
     let cli = Cli::parse();
 
-    let config = match config::Config::load(&cli.config) {
+    let config = match infra::config::Config::load(&cli.config) {
         Ok(config) => config,
         Err(error) => {
             // Before tracing is up, because the filter comes *from*

@@ -10,12 +10,12 @@
 //! screenshot. Markup rather than script, so it works with scripting
 //! off like everything else here.
 
-use crate::policies::postgres;
-use crate::policies::presets;
-use crate::views::texts::language::t;
+use crate::domain::policies::postgres;
+use crate::domain::policies::presets;
+use crate::web::views::texts::language::t;
 use hypertext::prelude::*;
 
-use crate::entities::database::Database;
+use crate::domain::entities::database::Database;
 
 /// What each size actually gives the engine.
 ///
@@ -80,7 +80,7 @@ pub fn sizes_table() -> impl Renderable {
 pub fn restore_card<'a>(
     project_slug: &'a str,
     service_slug: &'a str,
-    window: &'a crate::backup::Window,
+    window: &'a crate::infra::backup::Window,
     default_name: &'a str,
     // Where this node sends its backups, when that is not this machine.
     // Named on the card because it is where the copy will come *from*: a
@@ -88,15 +88,15 @@ pub fn restore_card<'a>(
     // staging copy is removed the moment the transfer succeeds.
     elsewhere: Option<&'a str>,
 ) -> impl Renderable + 'a {
-    use crate::backup::Window;
+    use crate::infra::backup::Window;
 
     // The end of the window, as a moment somebody can type. It is the
     // last thing a restore can reach — later than that is a request the
     // archive cannot answer — so it is the placeholder rather than a
     // guess at what they want.
     let latest = match window {
-        Window::Between { to, .. } => crate::views::layouts::layout::typed(*to),
-        Window::OnlyTheBackup { at } => crate::views::layouts::layout::typed(*at),
+        Window::Between { to, .. } => crate::web::views::layouts::layout::typed(*to),
+        Window::OnlyTheBackup { at } => crate::web::views::layouts::layout::typed(*at),
         _ => String::new(),
     };
 
@@ -217,7 +217,7 @@ impl Strings {
         // short pair is the two-part one — chosen by shape rather than by
         // rebuilding the names here, which would be a second opinion about
         // what this database is called.
-        let pool_mark = crate::deploy::hosts::READ_ONLY;
+        let pool_mark = crate::infra::deploy::hosts::READ_ONLY;
         let is_pool = |name: &&String| {
             name.split('.')
                 .next()
@@ -276,14 +276,14 @@ impl Strings {
 }
 
 pub fn window_card<'a>(
-    window: &'a crate::backup::Window,
+    window: &'a crate::infra::backup::Window,
     // The destination, when the backups leave this machine. It changes
     // what `NoAnchor` *means*: not "there is no backup", which is what
     // this card used to say, but "there is none here" — and with a bucket
     // configured that is the ordinary, healthy state.
     elsewhere: Option<&'a str>,
 ) -> impl Renderable + 'a {
-    use crate::backup::Window;
+    use crate::infra::backup::Window;
 
     rsx! {
         <section class="card stack" id="recovery">
@@ -341,15 +341,15 @@ pub fn window_card<'a>(
                 }
                 Window::OnlyTheBackup { at } => {
                     <p class="field-hint">
-                        (t("A backup from "))<span class="mono">(crate::views::layouts::layout::exactly(*at))</span>
+                        (t("A backup from "))<span class="mono">(crate::web::views::layouts::layout::exactly(*at))</span>
                         (t(", and no log after it yet. A minute of writes is what produces the \
                              first segment."))
                     </p>
                 }
                 Window::Between { from, to, gap } => {
                     <p class="field-hint">
-                        (t("Any moment between "))<span class="mono">(crate::views::layouts::layout::exactly(*from))</span>
-                        (t(" and "))<span class="mono">(crate::views::layouts::layout::exactly(*to))</span>
+                        (t("Any moment between "))<span class="mono">(crate::web::views::layouts::layout::exactly(*from))</span>
+                        (t(" and "))<span class="mono">(crate::web::views::layouts::layout::exactly(*to))</span>
                     </p>
                     // The end of the window is the hole, not the newest
                     // segment: recovery stops there, and everything
@@ -373,7 +373,7 @@ pub fn window_card<'a>(
 
 pub fn database_card<'a>(
     row: &'a Database,
-    replicas: &'a [crate::entities::replica::Replica],
+    replicas: &'a [crate::domain::entities::replica::Replica],
     address: Option<String>,
     memory_limit: Option<u64>,
     // Every name it answers to, from `deploy::certificate_names` — the same
@@ -493,16 +493,16 @@ pub fn name_card<'a>(action: &'a str, name: &'a str, pool: &'a str) -> impl Rend
 /// hands it over rather than describing it.
 pub fn certificate_card<'a>(
     action: &'a str,
-    policy: &'a crate::edge::policy::Policy,
+    policy: &'a crate::infra::edge::policy::Policy,
     // What the node holds for this name right now. A source without a state
     // is a page saying what was *asked for* and never what happened —
     // which is what sent Jorge to `doctor` to find out whether his
     // certificate had been issued.
-    cells: &'a crate::views::components::node_certificate::CertificateCells,
+    cells: &'a crate::web::views::components::node_certificate::CertificateCells,
 ) -> impl Renderable + 'a {
     let signs_here = matches!(
         policy.renew_with,
-        crate::edge::policy::RenewWith::SelfSigned
+        crate::infra::edge::policy::RenewWith::SelfSigned
     );
     rsx! {
         <section class="card stack" id="certificate">
@@ -525,7 +525,7 @@ pub fn certificate_card<'a>(
                 <p class="failure">(&cells.failure)</p>
             }
 
-            (crate::views::components::node_certificate::certificate_source_form(action, policy))
+            (crate::web::views::components::node_certificate::certificate_source_form(action, policy))
             @if signs_here {
                 <p class="field-hint">(t("This node signs it, so a client has to be given the \
                      authority before it can verify anything. A container gets it at \

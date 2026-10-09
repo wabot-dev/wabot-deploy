@@ -1,12 +1,12 @@
 use hypertext::prelude::*;
 
+use crate::domain::values::capability::Capability;
 use crate::features::network::{node_errands_component, node_usage_component};
-use crate::network::errand::Record;
-use crate::network::Node;
-use crate::values::capability::Capability;
-use crate::views::components::{node_capabilities, node_settings_cards};
-use crate::views::layouts::layout;
-use crate::views::texts::language::t;
+use crate::infra::network::errand::Record;
+use crate::infra::network::Node;
+use crate::web::views::components::{node_capabilities, node_settings_cards};
+use crate::web::views::layouts::layout;
+use crate::web::views::texts::language::t;
 
 /// A node that is **not** this one.
 ///

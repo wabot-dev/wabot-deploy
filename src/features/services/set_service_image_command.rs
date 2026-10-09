@@ -1,5 +1,5 @@
-use crate::entities::service::Service;
-use crate::repositories::services;
+use crate::domain::entities::service::Service;
+use crate::infra::repositories::services;
 use wabot::sqlite::SqliteDatabase;
 
 pub struct SetServiceImage<'a> {

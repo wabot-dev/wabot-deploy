@@ -10,13 +10,13 @@ use wabot::rest::axum::http::{header, StatusCode};
 use wabot::rest::axum::response::Response;
 use wabot::rest::RestResult;
 
-use crate::repositories::access;
-use crate::repositories::services;
+use crate::infra::repositories::access;
+use crate::infra::repositories::services;
 
-use crate::console::auth::{
+use crate::web::console::auth::{
     back_with_error, field, read_form, see_other, signed_in, SessionMiddleware,
 };
-use crate::console::ConsoleState;
+use crate::web::console::ConsoleState;
 
 /// The value the placement form sends for "let the node decide".
 ///
@@ -74,7 +74,7 @@ impl ServiceRestController {
         };
 
         let path = request.uri().path().to_string();
-        let segments = crate::console::auth::segments(&path);
+        let segments = crate::web::console::auth::segments(&path);
         let (Some(project_slug), Some(service_slug)) = (segments.get(1), segments.get(3)) else {
             return empty(StatusCode::NOT_FOUND);
         };
@@ -112,22 +112,23 @@ impl ServiceRestController {
         // Only a copy that runs here, and only one that exists. Reading
         // a log by slot number alone would let a query string name a
         // container in another project.
-        let holds = crate::repositories::replicas::of_service(&self.state.database, &service.id)
-            .await
-            .unwrap_or_default()
-            .into_iter()
-            .any(|replica| replica.is_here() && !replica.evicted() && replica.slot == slot);
+        let holds =
+            crate::infra::repositories::replicas::of_service(&self.state.database, &service.id)
+                .await
+                .unwrap_or_default()
+                .into_iter()
+                .any(|replica| replica.is_here() && !replica.evicted() && replica.slot == slot);
         if !holds {
             return empty(StatusCode::NOT_FOUND);
         }
 
         let container =
-            crate::entities::replica::container_id_for(&project.slug, &service.slug, slot);
+            crate::domain::entities::replica::container_id_for(&project.slug, &service.slug, slot);
         let data_dir = self.state.config.node.data_dir.clone();
         let stream = async_stream::stream! {
             let mut at = from;
             loop {
-                if let Some(chunk) = crate::deploy::logs::read_from(&data_dir, &container, at) {
+                if let Some(chunk) = crate::infra::deploy::logs::read_from(&data_dir, &container, at) {
                     at = chunk.next;
                     // Nothing to say is not an event. A heartbeat is not
                     // needed either: the browser reconnects on its own,
@@ -170,7 +171,7 @@ impl ServiceRestController {
         // typed request because `#[raw]` hands over the whole thing —
         // the trade for being able to answer with a 303.
         let path = request.uri().path().to_string();
-        let Some(slug) = crate::console::auth::project_slug(&path) else {
+        let Some(slug) = crate::web::console::auth::project_slug(&path) else {
             return Ok(see_other("/?error=no+such+project"));
         };
         let Some((project, _)) = access::find_project(&self.state.database, &account, slug).await?
@@ -200,7 +201,7 @@ impl ServiceRestController {
             return Ok(back_with_error(&form_url, &reason.to_string()));
         }
 
-        let made = match crate::authz::node_user::belongs_here(&account) {
+        let made = match crate::domain::authz::node_user::belongs_here(&account) {
             true => {
                 crate::features::services::node_user_create_service::run(
                     &self.state.database,
@@ -279,7 +280,7 @@ impl ServiceRestController {
             hostname: field(&form, "hostname").to_string(),
             https: checked(&form, "https"),
         };
-        let opened = match crate::authz::node_user::belongs_here(&account) {
+        let opened = match crate::domain::authz::node_user::belongs_here(&account) {
             true => {
                 crate::features::services::node_user_add_service_port::run(
                     &self.state.database,
@@ -327,9 +328,9 @@ impl ServiceRestController {
                 // the message says so — losing the port would be worse
                 // than a certificate that needs a second visit.
                 if let Some(hostname) = port.hostname.as_deref() {
-                    match crate::console::auth::source_from(&form, hostname) {
+                    match crate::web::console::auth::source_from(&form, hostname) {
                         Ok(renew_with) => {
-                            if let Err(error) = crate::edge::policy::store_source(
+                            if let Err(error) = crate::infra::edge::policy::store_source(
                                 &self.state.database,
                                 &self.state.config,
                                 hostname,
@@ -387,7 +388,7 @@ impl ServiceRestController {
     #[middleware(SessionMiddleware)]
     async fn delete_port(&self, request: Request) -> RestResult<Response> {
         let path = request.uri().path().to_string();
-        let segments = crate::console::auth::segments(&path);
+        let segments = crate::web::console::auth::segments(&path);
         let Some((project, service, _)) = self.locate(&path).await? else {
             return Ok(see_other("/?error=no+such+service"));
         };
@@ -407,7 +408,7 @@ impl ServiceRestController {
         let Some(account) = signed_in(&self.auth) else {
             return Ok(see_other("/sign-in"));
         };
-        let removed = match crate::authz::node_user::belongs_here(&account) {
+        let removed = match crate::domain::authz::node_user::belongs_here(&account) {
             true => {
                 crate::features::services::node_user_delete_service_port::run(
                     &self.state.database,
@@ -443,7 +444,7 @@ impl ServiceRestController {
     #[middleware(SessionMiddleware)]
     async fn deploy_release(&self, request: Request) -> RestResult<Response> {
         let path = request.uri().path().to_string();
-        let segments = crate::console::auth::segments(&path);
+        let segments = crate::web::console::auth::segments(&path);
         let Some((project, service, back)) = self.locate(&path).await? else {
             return Ok(see_other("/?error=no+such+service"));
         };
@@ -457,7 +458,7 @@ impl ServiceRestController {
             return Ok(see_other(&here));
         };
 
-        let chosen = match crate::authz::node_user::belongs_here(&account) {
+        let chosen = match crate::domain::authz::node_user::belongs_here(&account) {
             true => {
                 crate::features::services::node_user_deploy_release::run(
                     &self.state.database,
@@ -519,7 +520,7 @@ impl ServiceRestController {
             Ok(form) => form,
             Err(response) => return Ok(response),
         };
-        let outcome = match crate::authz::node_user::belongs_here(&account) {
+        let outcome = match crate::domain::authz::node_user::belongs_here(&account) {
             true => {
                 crate::features::services::node_user_set_service_image::run(
                     &self.state.database,
@@ -543,7 +544,7 @@ impl ServiceRestController {
             return Ok(back_with_error(&here, &reason));
         }
 
-        let command = crate::deploy::jobs::DeployService {
+        let command = crate::infra::deploy::jobs::DeployService {
             service_id: service.id.clone(),
             release_id: None,
         };
@@ -580,7 +581,7 @@ impl ServiceRestController {
             Ok(form) => form,
             Err(response) => return Ok(response),
         };
-        let outcome = match crate::authz::node_user::belongs_here(&account) {
+        let outcome = match crate::domain::authz::node_user::belongs_here(&account) {
             true => {
                 crate::features::services::node_user_set_service_tracking::run(
                     &self.state.database,
@@ -638,7 +639,7 @@ impl ServiceRestController {
             Ok(form) => form,
             Err(response) => return Ok(response),
         };
-        let outcome = match crate::authz::node_user::belongs_here(&account) {
+        let outcome = match crate::domain::authz::node_user::belongs_here(&account) {
             true => {
                 crate::features::services::node_user_set_service_logs::run(
                     &self.state.database,
@@ -705,7 +706,7 @@ impl ServiceRestController {
                 cpu: field(&form, "cpu").to_string(),
                 disk: field(&form, "disk").to_string(),
             };
-        let changed = match crate::authz::node_user::belongs_here(&account) {
+        let changed = match crate::domain::authz::node_user::belongs_here(&account) {
             true => {
                 crate::features::services::node_user_set_service_resources::run(
                     &self.state.database,
@@ -738,7 +739,7 @@ impl ServiceRestController {
             .tell_holders_including(&project, &fresh, &Default::default())
             .await;
 
-        let command = crate::deploy::jobs::DeployService {
+        let command = crate::infra::deploy::jobs::DeployService {
             service_id: service.id.clone(),
             release_id: None,
         };
@@ -778,7 +779,7 @@ impl ServiceRestController {
             Ok(env) => env,
             Err(message) => return Ok(back_with_error(&here, &message)),
         };
-        let applied = match crate::authz::node_user::belongs_here(&account) {
+        let applied = match crate::domain::authz::node_user::belongs_here(&account) {
             true => {
                 crate::features::services::node_user_set_service_env::run(
                     &self.state.database,
@@ -819,7 +820,7 @@ impl ServiceRestController {
     #[middleware(SessionMiddleware)]
     async fn revert_env(&self, request: Request) -> RestResult<Response> {
         let path = request.uri().path().to_string();
-        let segments = crate::console::auth::segments(&path);
+        let segments = crate::web::console::auth::segments(&path);
         let Some((project, service, _)) = self.locate(&path).await? else {
             return Ok(see_other("/?error=no+such+service"));
         };
@@ -836,7 +837,7 @@ impl ServiceRestController {
             return Ok(see_other(&here));
         };
 
-        let chosen = match crate::authz::node_user::belongs_here(&account) {
+        let chosen = match crate::domain::authz::node_user::belongs_here(&account) {
             true => {
                 crate::features::services::node_user_revert_service_env::run(
                     &self.state.database,
@@ -860,7 +861,7 @@ impl ServiceRestController {
             Ok(env) => env,
             Err(reason) => return Ok(back_with_error(&here, &reason)),
         };
-        let applied = match crate::authz::node_user::belongs_here(&account) {
+        let applied = match crate::domain::authz::node_user::belongs_here(&account) {
             true => {
                 crate::features::services::node_user_set_service_env::run(
                     &self.state.database,
@@ -924,7 +925,7 @@ impl ServiceRestController {
         let Some(account) = signed_in(&self.auth) else {
             return Ok(see_other("/sign-in"));
         };
-        let stopped = match crate::authz::node_user::belongs_here(&account) {
+        let stopped = match crate::domain::authz::node_user::belongs_here(&account) {
             true => {
                 crate::features::services::node_user_stop_service::run(
                     &self.state.deployer,
@@ -973,7 +974,7 @@ impl ServiceRestController {
         let Some(account) = signed_in(&self.auth) else {
             return Ok(see_other("/sign-in"));
         };
-        let removed = match crate::authz::node_user::belongs_here(&account) {
+        let removed = match crate::domain::authz::node_user::belongs_here(&account) {
             true => {
                 crate::features::services::node_user_delete_service::run(
                     &self.state.database,
@@ -1038,7 +1039,7 @@ impl ServiceRestController {
         let Some((project_slug, service_slug)) = service_path(&path) else {
             return Ok(see_other("/"));
         };
-        let Some(project) = crate::repositories::projects::all(&self.state.database)
+        let Some(project) = crate::infra::repositories::projects::all(&self.state.database)
             .await?
             .into_iter()
             .find(|project| project.slug == project_slug)
@@ -1054,7 +1055,7 @@ impl ServiceRestController {
 
         // The inverse guard. A service of this node's own is deleted,
         // not evicted, and the two are not the same button.
-        let evicted = match crate::authz::node_user::belongs_here(&account) {
+        let evicted = match crate::domain::authz::node_user::belongs_here(&account) {
             true => {
                 crate::features::services::node_user_evict_service::run(
                     &self.state.database,
@@ -1140,7 +1141,7 @@ impl ServiceRestController {
                 on: field(&form, "new-on"),
                 by: &account.id,
             };
-        let placed = match crate::authz::node_user::belongs_here(&account) {
+        let placed = match crate::domain::authz::node_user::belongs_here(&account) {
             true => {
                 crate::features::services::node_user_set_service_placement::run(
                     on, &account, command,
@@ -1194,7 +1195,7 @@ impl ServiceRestController {
         // from the node table rather than from the form, so a field
         // naming something that is not a public node cannot put a row
         // in.
-        let public: Vec<String> = crate::network::edge_candidates(&self.state.database)
+        let public: Vec<String> = crate::infra::network::edge_candidates(&self.state.database)
             .await?
             .into_iter()
             .map(|node| node.id)
@@ -1213,7 +1214,7 @@ impl ServiceRestController {
         let Some(account) = signed_in(&self.auth) else {
             return Ok(see_other("/sign-in"));
         };
-        let routed = match crate::authz::node_user::belongs_here(&account) {
+        let routed = match crate::domain::authz::node_user::belongs_here(&account) {
             true => {
                 crate::features::services::node_user_set_service_edges::run(
                     &self.state.database,
@@ -1243,7 +1244,8 @@ impl ServiceRestController {
         };
 
         let placements =
-            crate::repositories::replicas::of_service(&self.state.database, &service.id).await?;
+            crate::infra::repositories::replicas::of_service(&self.state.database, &service.id)
+                .await?;
         if let Err(reason) =
             crate::features::services::set_service_placement_command::dispatch_edges(
                 &self.state.deployer,
@@ -1259,7 +1261,7 @@ impl ServiceRestController {
         // releases the name there rather than leaving it answering for
         // something nobody asked it to serve.
         for node_id in dropped {
-            let payload = serde_json::to_value(crate::network::errand::Edge {
+            let payload = serde_json::to_value(crate::infra::network::errand::Edge {
                 hostname: hostname.clone(),
                 upstreams: Vec::new(),
                 // Nothing to reach and nothing to reach it with: this
@@ -1270,10 +1272,10 @@ impl ServiceRestController {
                 secret: None,
             })
             .unwrap_or_default();
-            crate::network::errand::queue(
+            crate::infra::network::errand::queue(
                 &self.state.database,
                 &node_id,
-                crate::network::errand::Kind::Edge,
+                crate::infra::network::errand::Kind::Edge,
                 &payload,
             )
             .await?;
@@ -1289,9 +1291,9 @@ impl ServiceRestController {
     /// The reason a failure is not returned here: by the time one
     /// exists this request is long finished. `deploy` writes it to the
     /// service row, which is what the page reads — see
-    /// [`crate::deploy::jobs`].
+    /// [`crate::infra::deploy::jobs`].
     async fn enqueue(&self, service_id: &str, release_id: Option<&str>) {
-        let command = crate::deploy::jobs::DeployService {
+        let command = crate::infra::deploy::jobs::DeployService {
             service_id: service_id.to_string(),
             release_id: release_id.map(str::to_string),
         };
@@ -1317,8 +1319,8 @@ impl ServiceRestController {
         path: &str,
     ) -> RestResult<
         Option<(
-            crate::entities::project::Project,
-            crate::entities::service::Service,
+            crate::domain::entities::project::Project,
+            crate::domain::entities::service::Service,
             String,
         )>,
     > {
@@ -1340,8 +1342,8 @@ pub(crate) async fn locate_for(
     path: &str,
 ) -> RestResult<
     Option<(
-        crate::entities::project::Project,
-        crate::entities::service::Service,
+        crate::domain::entities::project::Project,
+        crate::domain::entities::service::Service,
         String,
     )>,
 > {
@@ -1393,7 +1395,7 @@ fn checked(form: &std::collections::HashMap<String, String>, name: &str) -> bool
 /// `#[raw]` hands over the whole request and no extracted parameters,
 /// so both slugs come out of the URI here.
 fn service_path(path: &str) -> Option<(&str, &str)> {
-    match crate::console::auth::segments(path).as_slice() {
+    match crate::web::console::auth::segments(path).as_slice() {
         // The service's own page, and every action under it — the
         // trailing parts differ (`deploy`, `ports`, `ports/<id>/delete`)
         // and none of them change which service is meant.
@@ -1487,9 +1489,9 @@ async fn returning_to(request: Request, fallback: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::console::tests::Console;
     use crate::features::services::service_push_component::Push;
-    use crate::repositories::ports;
+    use crate::infra::repositories::ports;
+    use crate::web::console::tests::Console;
     use hypertext::Renderable;
     use wabot::rest::axum::http::StatusCode;
 
@@ -1502,7 +1504,7 @@ mod tests {
     /// on this machine, in the same state, correctly said "not running".
     #[test]
     fn a_copy_that_is_not_meant_to_run_is_not_a_copy_we_are_waiting_for() {
-        let replica = crate::entities::replica::Replica {
+        let replica = crate::domain::entities::replica::Replica {
             id: "rp-1".into(),
             service_id: "svc-1".into(),
             node_id: Some("nd-far".into()),
@@ -1619,11 +1621,11 @@ mod tests {
 
     #[tokio::test]
     async fn a_service_shows_every_way_in_and_always_its_own_name() {
-        let database = crate::db::open_in_memory().await.expect("open");
-        let project = crate::repositories::projects::create(&database, "shop")
+        let database = crate::infra::db::open_in_memory().await.expect("open");
+        let project = crate::infra::repositories::projects::create(&database, "shop")
             .await
             .expect("project");
-        let service = crate::repositories::services::create(
+        let service = crate::infra::repositories::services::create(
             &database,
             &project.id,
             "web",
@@ -1645,18 +1647,23 @@ mod tests {
 
         // One port, published *and* named: two ways in, not a choice
         // between them.
-        let http = crate::repositories::ports::create(&database, &service.id, 80, true, None, &[])
-            .await
-            .expect("port");
-        crate::repositories::ports::set_hostname(&database, &http.id, Some("shop.example.com"))
-            .await
-            .expect("named");
+        let http =
+            crate::infra::repositories::ports::create(&database, &service.id, 80, true, None, &[])
+                .await
+                .expect("port");
+        crate::infra::repositories::ports::set_hostname(
+            &database,
+            &http.id,
+            Some("shop.example.com"),
+        )
+        .await
+        .expect("named");
         // And a second port, exposed to nobody.
-        crate::repositories::ports::create(&database, &service.id, 9000, false, None, &[])
+        crate::infra::repositories::ports::create(&database, &service.id, 9000, false, None, &[])
             .await
             .expect("port");
 
-        let ports = crate::repositories::ports::of_service(&database, &service.id)
+        let ports = crate::infra::repositories::ports::of_service(&database, &service.id)
             .await
             .expect("ports");
         let open = crate::features::services::service_ports_component::exposure(
@@ -1742,7 +1749,7 @@ mod tests {
     /// them one.
     #[test]
     fn what_the_page_paints_is_what_the_stream_sends() {
-        let replica = crate::entities::replica::Replica {
+        let replica = crate::domain::entities::replica::Replica {
             id: "rp-1".into(),
             service_id: "svc-1".into(),
             node_id: Some("nd-far".into()),
@@ -1769,7 +1776,7 @@ mod tests {
         // for a copy that reported one, because the question it answers
         // is about a process that is up and not replying.
         for address in [None, Some("10.42.1.5".to_string())] {
-            let replica = crate::entities::replica::Replica {
+            let replica = crate::domain::entities::replica::Replica {
                 address,
                 ..replica.clone()
             };
@@ -1798,7 +1805,10 @@ mod tests {
     }
 
     /// A project and a service to place, made the way the console does.
-    async fn placed_service(console: &Console, cookie: &str) -> crate::entities::service::Service {
+    async fn placed_service(
+        console: &Console,
+        cookie: &str,
+    ) -> crate::domain::entities::service::Service {
         console
             .harness
             .post("/projects")
@@ -1806,13 +1816,13 @@ mod tests {
             .form(&[("name", "shared")])
             .send()
             .await;
-        let project = crate::repositories::projects::all(&console.database)
+        let project = crate::infra::repositories::projects::all(&console.database)
             .await
             .expect("projects")
             .into_iter()
             .find(|project| project.slug == "shared")
             .expect("made");
-        crate::repositories::services::create(
+        crate::infra::repositories::services::create(
             &console.database,
             &project.id,
             "web",
@@ -1835,7 +1845,7 @@ mod tests {
         let console = Console::new().await;
         let cookie = console.signed_in().await;
         let service = placed_service(&console, &cookie).await;
-        crate::repositories::replicas::ensure_here(&console.database, &service.id, 1)
+        crate::infra::repositories::replicas::ensure_here(&console.database, &service.id, 1)
             .await
             .expect("a copy here");
 
@@ -1867,7 +1877,7 @@ mod tests {
         let console = Console::new().await;
         let cookie = console.signed_in().await;
         let service = placed_service(&console, &cookie).await;
-        crate::repositories::replicas::ensure_here(&console.database, &service.id, 2)
+        crate::infra::repositories::replicas::ensure_here(&console.database, &service.id, 2)
             .await
             .expect("two copies here");
 
@@ -1920,11 +1930,11 @@ mod tests {
         let service = placed_service(&console, &cookie).await;
         // The copy this service already has, sent away — which is the
         // real shape of it: a service with one copy, running elsewhere.
-        let here = crate::repositories::replicas::of_service(&console.database, &service.id)
+        let here = crate::infra::repositories::replicas::of_service(&console.database, &service.id)
             .await
             .expect("copies");
         for replica in &here {
-            crate::repositories::replicas::move_to(
+            crate::infra::repositories::replicas::move_to(
                 &console.database,
                 &replica.id,
                 Some("nd-elsewhere"),
@@ -1967,7 +1977,7 @@ mod tests {
         let console = Console::new().await;
         let cookie = console.signed_in().await;
         let service = placed_service(&console, &cookie).await;
-        crate::repositories::replicas::ensure_here(&console.database, &service.id, 1)
+        crate::infra::repositories::replicas::ensure_here(&console.database, &service.id, 1)
             .await
             .expect("a copy here");
 
@@ -2109,7 +2119,7 @@ mod tests {
         let service = placed_service(&console, &cookie).await;
 
         // #2 thrown out where it ran, #3 alive and here.
-        let two = crate::repositories::replicas::place(
+        let two = crate::infra::repositories::replicas::place(
             &console.database,
             &service.id,
             Some("nd-elsewhere1"),
@@ -2117,10 +2127,10 @@ mod tests {
         )
         .await
         .expect("placed");
-        crate::repositories::replicas::evict(&console.database, &two.id)
+        crate::infra::repositories::replicas::evict(&console.database, &two.id)
             .await
             .expect("evicted");
-        crate::repositories::replicas::place(&console.database, &service.id, None, 3)
+        crate::infra::repositories::replicas::place(&console.database, &service.id, None, 3)
             .await
             .expect("placed");
 
@@ -2134,7 +2144,7 @@ mod tests {
             .assert_status(StatusCode::SEE_OTHER);
 
         let left: Vec<u32> =
-            crate::repositories::replicas::of_service(&console.database, &service.id)
+            crate::infra::repositories::replicas::of_service(&console.database, &service.id)
                 .await
                 .expect("replicas")
                 .into_iter()
@@ -2194,9 +2204,10 @@ mod tests {
             .await
             .assert_status(StatusCode::SEE_OTHER);
 
-        let placements = crate::repositories::replicas::of_service(&console.database, &service.id)
-            .await
-            .expect("replicas");
+        let placements =
+            crate::infra::repositories::replicas::of_service(&console.database, &service.id)
+                .await
+                .expect("replicas");
         assert!(
             placements.iter().all(|replica| replica.evicted()),
             "{placements:?}"
@@ -2233,7 +2244,7 @@ mod tests {
         let location = response.header("location").unwrap_or_default();
         assert!(location.contains("error="), "{location}");
         assert!(
-            crate::repositories::replicas::of_service(&console.database, &service.id)
+            crate::infra::repositories::replicas::of_service(&console.database, &service.id)
                 .await
                 .expect("replicas")
                 .iter()
@@ -2263,7 +2274,7 @@ mod tests {
 
         assert_eq!(response.header("location"), Some("/"));
         assert!(
-            crate::repositories::replicas::of_service(&console.database, &service.id)
+            crate::infra::repositories::replicas::of_service(&console.database, &service.id)
                 .await
                 .expect("replicas")
                 .iter()
@@ -2280,9 +2291,9 @@ mod tests {
         let console = Console::new().await;
         let cookie = console.signed_in().await;
         let service = placed_service(&console, &cookie).await;
-        crate::network::save(
+        crate::infra::network::save(
             &console.database,
-            &crate::network::Node {
+            &crate::infra::network::Node {
                 update_note: None,
                 version: None,
                 wanted_version: None,
@@ -2291,7 +2302,7 @@ mod tests {
                 capacity: None,
                 id: "nd-elsewhere1".into(),
                 name: "alpine.example".into(),
-                kind: crate::network::Kind::Private,
+                kind: crate::infra::network::Kind::Private,
                 endpoint: None,
                 public_key: Some("k".into()),
                 overlay_ip: Some("10.42.0.9".into()),
@@ -2325,24 +2336,25 @@ mod tests {
             .await
             .assert_status(StatusCode::SEE_OTHER);
 
-        let placements = crate::repositories::replicas::of_service(&console.database, &service.id)
-            .await
-            .expect("replicas");
+        let placements =
+            crate::infra::repositories::replicas::of_service(&console.database, &service.id)
+                .await
+                .expect("replicas");
         assert_eq!(placements.len(), 2);
         assert!(placements[0].is_here());
         assert_eq!(placements[1].node_id.as_deref(), Some("nd-elsewhere1"));
 
         // And that node has been asked to run it.
-        let queued = crate::network::errand::all(&console.database)
+        let queued = crate::infra::network::errand::all(&console.database)
             .await
             .expect("errands");
         assert_eq!(queued.len(), 1, "{queued:?}");
         assert_eq!(queued[0].node_id, "nd-elsewhere1");
 
-        let waiting = crate::network::errand::waiting(&console.database, "nd-elsewhere1")
+        let waiting = crate::infra::network::errand::waiting(&console.database, "nd-elsewhere1")
             .await
             .expect("waiting");
-        let host: crate::network::errand::Host =
+        let host: crate::infra::network::errand::Host =
             serde_json::from_value(waiting[0].payload.clone()).expect("a host errand");
         assert_eq!(host.service, "web");
         // And with no credential, because the image names a registry
@@ -2379,15 +2391,15 @@ mod tests {
             ("nd-roomy0001", "ubuntu", 900u64),
             ("nd-tight0001", "alpine", 400u64),
         ] {
-            crate::network::save(
+            crate::infra::network::save(
                 &console.database,
-                &crate::network::Node {
+                &crate::infra::network::Node {
                     update_note: None,
                     version: None,
                     wanted_version: None,
                     usage: None,
                     draining_at: None,
-                    capacity: Some(crate::network::Capacity {
+                    capacity: Some(crate::infra::network::Capacity {
                         memory_allocatable: memory * 1024 * 1024,
                         memory_committed: 0,
                         cpu_allocatable: 4_000,
@@ -2396,13 +2408,13 @@ mod tests {
                     }),
                     id: id.into(),
                     name: name.into(),
-                    kind: crate::network::Kind::Private,
+                    kind: crate::infra::network::Kind::Private,
                     endpoint: None,
                     public_key: Some("k".into()),
                     overlay_ip: Some(format!("10.42.0.{}", memory % 200)),
                     is_self: false,
                     last_seen_at: None,
-                    allows: vec![crate::values::capability::Capability::Host],
+                    allows: vec![crate::domain::values::capability::Capability::Host],
                     ca_pem: None,
                 },
             )
@@ -2419,16 +2431,19 @@ mod tests {
             .await
             .assert_status(StatusCode::SEE_OTHER);
 
-        let placements = crate::repositories::replicas::of_service(&console.database, &service.id)
-            .await
-            .expect("replicas");
+        let placements =
+            crate::infra::repositories::replicas::of_service(&console.database, &service.id)
+                .await
+                .expect("replicas");
         assert_eq!(placements.len(), 3);
 
         // Slot 1 was already here and placed by a person; the two the
         // node added are the planner's, on the two other machines.
-        let added: Vec<&crate::entities::replica::Replica> = placements
+        let added: Vec<&crate::domain::entities::replica::Replica> = placements
             .iter()
-            .filter(|replica| replica.placed_by == Some(crate::entities::replica::Placed::Planner))
+            .filter(|replica| {
+                replica.placed_by == Some(crate::domain::entities::replica::Placed::Planner)
+            })
             .collect();
         assert_eq!(added.len(), 2, "{placements:?}");
 
@@ -2453,7 +2468,7 @@ mod tests {
         // written straight into the table would have skipped.
         for node in ["nd-roomy0001", "nd-tight0001"] {
             assert!(
-                !crate::network::errand::waiting(&console.database, node)
+                !crate::infra::network::errand::waiting(&console.database, node)
                     .await
                     .expect("waiting")
                     .is_empty(),
@@ -2477,15 +2492,15 @@ mod tests {
         let service = placed_service(&console, &cookie).await;
 
         for (id, name) in [("nd-going0001", "leaving"), ("nd-staying001", "staying")] {
-            crate::network::save(
+            crate::infra::network::save(
                 &console.database,
-                &crate::network::Node {
+                &crate::infra::network::Node {
                     update_note: None,
                     version: None,
                     wanted_version: None,
                     usage: None,
                     draining_at: None,
-                    capacity: Some(crate::network::Capacity {
+                    capacity: Some(crate::infra::network::Capacity {
                         memory_allocatable: 900 * 1024 * 1024,
                         memory_committed: 0,
                         cpu_allocatable: 4_000,
@@ -2494,13 +2509,13 @@ mod tests {
                     }),
                     id: id.into(),
                     name: name.into(),
-                    kind: crate::network::Kind::Private,
+                    kind: crate::infra::network::Kind::Private,
                     endpoint: None,
                     public_key: Some("k".into()),
                     overlay_ip: Some(format!("10.42.0.{}", id.len())),
                     is_self: false,
                     last_seen_at: None,
-                    allows: vec![crate::values::capability::Capability::Host],
+                    allows: vec![crate::domain::values::capability::Capability::Host],
                     ca_pem: None,
                 },
             )
@@ -2531,9 +2546,10 @@ mod tests {
             .await
             .assert_status(StatusCode::SEE_OTHER);
 
-        let placements = crate::repositories::replicas::of_service(&console.database, &service.id)
-            .await
-            .expect("replicas");
+        let placements =
+            crate::infra::repositories::replicas::of_service(&console.database, &service.id)
+                .await
+                .expect("replicas");
         assert_eq!(
             placements[0].node_id.as_deref(),
             Some("nd-staying001"),
@@ -2545,7 +2561,7 @@ mod tests {
         // The mark is a state, not an event: it outlives the press, so
         // nothing chooses that machine again until somebody says so.
         assert!(
-            crate::network::find(&console.database, "nd-going0001")
+            crate::infra::network::find(&console.database, "nd-going0001")
                 .await
                 .expect("query")
                 .expect("row")
@@ -2557,10 +2573,10 @@ mod tests {
         // And the machine being emptied was told it now runs none of
         // this — the instruction that is only ever built from the rows,
         // where it no longer appears.
-        let told = crate::network::errand::waiting(&console.database, "nd-going0001")
+        let told = crate::infra::network::errand::waiting(&console.database, "nd-going0001")
             .await
             .expect("waiting");
-        let last: crate::network::errand::Host =
+        let last: crate::infra::network::errand::Host =
             serde_json::from_value(told.last().expect("told").payload.clone())
                 .expect("a host errand");
         assert!(
@@ -2580,9 +2596,9 @@ mod tests {
     async fn putting_a_node_back_in_service_moves_nothing() {
         let console = Console::new().await;
         let cookie = console.signed_in().await;
-        crate::network::save(
+        crate::infra::network::save(
             &console.database,
-            &crate::network::Node {
+            &crate::infra::network::Node {
                 update_note: None,
                 version: None,
                 wanted_version: None,
@@ -2591,7 +2607,7 @@ mod tests {
                 capacity: None,
                 id: "nd-back000001".into(),
                 name: "back".into(),
-                kind: crate::network::Kind::Private,
+                kind: crate::infra::network::Kind::Private,
                 endpoint: None,
                 public_key: Some("k".into()),
                 overlay_ip: Some("10.42.0.12".into()),
@@ -2614,7 +2630,7 @@ mod tests {
             .assert_status(StatusCode::SEE_OTHER);
 
         assert_eq!(
-            crate::network::find(&console.database, "nd-back000001")
+            crate::infra::network::find(&console.database, "nd-back000001")
                 .await
                 .expect("query")
                 .expect("row")
@@ -2638,16 +2654,16 @@ mod tests {
         // A ceiling no node could hold, and no other node on the
         // network at all — so the only candidate is this one, whose
         // meters read nothing on the machine the suite runs on.
-        crate::repositories::services::set_memory_limit(
+        crate::infra::repositories::services::set_memory_limit(
             &console.database,
             &service.id,
             Some(64 * 1024 * 1024),
         )
         .await
         .expect("ceiling");
-        crate::network::capability::set_provides(
+        crate::infra::network::capability::set_provides(
             &console.database,
-            crate::values::capability::Capability::Host,
+            crate::domain::values::capability::Capability::Host,
             false,
         )
         .await
@@ -2666,7 +2682,7 @@ mod tests {
         assert!(location.contains("nowhere"), "{location}");
 
         assert_eq!(
-            crate::repositories::replicas::of_service(&console.database, &service.id)
+            crate::infra::repositories::replicas::of_service(&console.database, &service.id)
                 .await
                 .expect("replicas")
                 .len(),
@@ -2689,9 +2705,9 @@ mod tests {
         let console = Console::new().await;
         let cookie = console.signed_in().await;
         let service = placed_service(&console, &cookie).await;
-        crate::network::save(
+        crate::infra::network::save(
             &console.database,
-            &crate::network::Node {
+            &crate::infra::network::Node {
                 update_note: None,
                 version: None,
                 wanted_version: None,
@@ -2700,13 +2716,13 @@ mod tests {
                 capacity: None,
                 id: "nd-elsewhere1".into(),
                 name: "alpine.example".into(),
-                kind: crate::network::Kind::Private,
+                kind: crate::infra::network::Kind::Private,
                 endpoint: None,
                 public_key: Some("k".into()),
                 overlay_ip: Some("10.42.0.9".into()),
                 is_self: false,
                 last_seen_at: None,
-                allows: vec![crate::values::capability::Capability::Host],
+                allows: vec![crate::domain::values::capability::Capability::Host],
                 ca_pem: None,
             },
         )
@@ -2723,12 +2739,12 @@ mod tests {
             .assert_status(StatusCode::SEE_OTHER);
 
         let ceiling = |payload: &serde_json::Value| {
-            serde_json::from_value::<crate::network::errand::Host>(payload.clone())
+            serde_json::from_value::<crate::infra::network::errand::Host>(payload.clone())
                 .expect("a host errand")
                 .memory_limit
         };
         // Placed with none, because the service has none.
-        let placed = crate::network::errand::waiting(&console.database, "nd-elsewhere1")
+        let placed = crate::infra::network::errand::waiting(&console.database, "nd-elsewhere1")
             .await
             .expect("waiting");
         assert_eq!(ceiling(&placed[0].payload), None);
@@ -2743,7 +2759,7 @@ mod tests {
             .assert_status(StatusCode::SEE_OTHER);
 
         assert_eq!(
-            crate::repositories::services::find(&console.database, &service.id)
+            crate::infra::repositories::services::find(&console.database, &service.id)
                 .await
                 .expect("service")
                 .expect("row")
@@ -2752,7 +2768,7 @@ mod tests {
             "the form did not write it, so the rest of this proves nothing"
         );
 
-        let after = crate::network::errand::waiting(&console.database, "nd-elsewhere1")
+        let after = crate::infra::network::errand::waiting(&console.database, "nd-elsewhere1")
             .await
             .expect("waiting");
         let latest = after.last().expect("an instruction after the change");
@@ -2770,14 +2786,14 @@ mod tests {
     async fn an_image_in_this_nodes_registry_travels_with_a_credential() {
         let console = Console::new().await;
         let cookie = console.signed_in().await;
-        crate::node::settings::set_domain(&console.database, Some("hub.example"))
+        crate::infra::node::settings::set_domain(&console.database, Some("hub.example"))
             .await
             .expect("domain");
 
-        let project = crate::repositories::projects::create(&console.database, "shared")
+        let project = crate::infra::repositories::projects::create(&console.database, "shared")
             .await
             .expect("project");
-        crate::repositories::services::create(
+        crate::infra::repositories::services::create(
             &console.database,
             &project.id,
             "web",
@@ -2786,9 +2802,9 @@ mod tests {
         )
         .await
         .expect("service");
-        crate::network::save(
+        crate::infra::network::save(
             &console.database,
-            &crate::network::Node {
+            &crate::infra::network::Node {
                 update_note: None,
                 version: None,
                 wanted_version: None,
@@ -2797,7 +2813,7 @@ mod tests {
                 capacity: None,
                 id: "nd-elsewhere2".into(),
                 name: "alpine.example".into(),
-                kind: crate::network::Kind::Private,
+                kind: crate::infra::network::Kind::Private,
                 endpoint: None,
                 public_key: Some("k".into()),
                 overlay_ip: Some("10.42.0.9".into()),
@@ -2819,10 +2835,10 @@ mod tests {
             .await
             .assert_status(StatusCode::SEE_OTHER);
 
-        let waiting = crate::network::errand::waiting(&console.database, "nd-elsewhere2")
+        let waiting = crate::infra::network::errand::waiting(&console.database, "nd-elsewhere2")
             .await
             .expect("waiting");
-        let host: crate::network::errand::Host =
+        let host: crate::infra::network::errand::Host =
             serde_json::from_value(waiting[0].payload.clone()).expect("a host errand");
         assert!(host.secret.is_some(), "nothing to pull it with");
         assert_eq!(host.username.as_deref(), Some("errand"));
@@ -2840,9 +2856,9 @@ mod tests {
         let console = Console::new().await;
         let cookie = console.signed_in().await;
         let service = placed_service(&console, &cookie).await;
-        crate::network::save(
+        crate::infra::network::save(
             &console.database,
-            &crate::network::Node {
+            &crate::infra::network::Node {
                 update_note: None,
                 version: None,
                 wanted_version: None,
@@ -2851,7 +2867,7 @@ mod tests {
                 capacity: None,
                 id: "nd-elsewhere1".into(),
                 name: "alpine.example".into(),
-                kind: crate::network::Kind::Private,
+                kind: crate::infra::network::Kind::Private,
                 endpoint: None,
                 public_key: Some("k".into()),
                 overlay_ip: Some("10.42.0.9".into()),
@@ -2878,7 +2894,7 @@ mod tests {
                 .await
                 .assert_status(StatusCode::SEE_OTHER);
         }
-        crate::network::errand::waiting(&console.database, "nd-elsewhere1")
+        crate::infra::network::errand::waiting(&console.database, "nd-elsewhere1")
             .await
             .expect("collected");
 
@@ -2892,9 +2908,10 @@ mod tests {
             .await
             .assert_status(StatusCode::SEE_OTHER);
 
-        let placements = crate::repositories::replicas::of_service(&console.database, &service.id)
-            .await
-            .expect("replicas");
+        let placements =
+            crate::infra::repositories::replicas::of_service(&console.database, &service.id)
+                .await
+                .expect("replicas");
         assert!(placements.iter().all(|replica| replica.is_here()));
 
         // The node it left is told, and told it runs *none* of it —
@@ -2903,11 +2920,11 @@ mod tests {
         // is the instruction that stops its container. Collecting does
         // not settle an errand, so the earlier one is still pending
         // beside it; what matters is the last thing it was told.
-        let waiting = crate::network::errand::waiting(&console.database, "nd-elsewhere1")
+        let waiting = crate::infra::network::errand::waiting(&console.database, "nd-elsewhere1")
             .await
             .expect("waiting");
         let latest = waiting.last().expect("the node it left was told nothing");
-        let host: crate::network::errand::Host =
+        let host: crate::infra::network::errand::Host =
             serde_json::from_value(latest.payload.clone()).expect("a host errand");
         assert!(
             host.slots.is_empty(),
@@ -2927,7 +2944,7 @@ mod tests {
         let console = Console::new().await;
         let cookie = console.signed_in().await;
         let service = placed_service(&console, &cookie).await;
-        crate::repositories::replicas::place(
+        crate::infra::repositories::replicas::place(
             &console.database,
             &service.id,
             Some("nd-elsewhere1"),
@@ -2947,7 +2964,7 @@ mod tests {
         let location = response.header("location").unwrap_or_default();
         assert!(!location.contains("error="), "{location}");
         assert_eq!(
-            crate::repositories::replicas::of_service(&console.database, &service.id)
+            crate::infra::repositories::replicas::of_service(&console.database, &service.id)
                 .await
                 .expect("replicas")
                 .len(),
@@ -2955,12 +2972,12 @@ mod tests {
             "the row it was told to drop is still there"
         );
 
-        let latest = crate::network::errand::waiting(&console.database, "nd-elsewhere1")
+        let latest = crate::infra::network::errand::waiting(&console.database, "nd-elsewhere1")
             .await
             .expect("errands")
             .pop()
             .expect("something was queued for it");
-        let host: crate::network::errand::Host =
+        let host: crate::infra::network::errand::Host =
             serde_json::from_value(latest.payload.clone()).expect("a host errand");
         assert!(
             host.slots.is_empty(),
@@ -3009,7 +3026,7 @@ mod tests {
             .expect("there");
         assert_eq!(
             stored.desired_state,
-            crate::entities::service::DesiredState::Running,
+            crate::domain::entities::service::DesiredState::Running,
             "the intent was changed"
         );
     }
@@ -3105,14 +3122,14 @@ mod tests {
             .expect("query")
             .pop()
             .expect("one service");
-        let found = crate::repositories::projects::find(&console.database, "my-api")
+        let found = crate::infra::repositories::projects::find(&console.database, "my-api")
             .await
             .expect("query")
             .expect("present");
 
-        let deployer = crate::deploy::Deployer::new(
+        let deployer = crate::infra::deploy::Deployer::new(
             console.database.clone(),
-            &crate::config::Config::default(),
+            &crate::infra::config::Config::default(),
         );
         let _ = deployer.deploy(&found, &stored).await;
 
@@ -3121,19 +3138,20 @@ mod tests {
             .expect("query")
             .pop()
             .expect("one service");
-        let failure = crate::repositories::replicas::of_service(&console.database, &stored.id)
-            .await
-            .expect("replicas")
-            .into_iter()
-            .next()
-            .and_then(|replica| replica.last_error)
-            .expect("the reason was recorded");
+        let failure =
+            crate::infra::repositories::replicas::of_service(&console.database, &stored.id)
+                .await
+                .expect("replicas")
+                .into_iter()
+                .next()
+                .and_then(|replica| replica.last_error)
+                .expect("the reason was recorded");
         assert!(
             failure.contains("containerd"),
             "the reason names the runtime: {failure}"
         );
         assert!(
-            crate::repositories::replicas::of_service(&console.database, &stored.id)
+            crate::infra::repositories::replicas::of_service(&console.database, &stored.id)
                 .await
                 .expect("replicas")
                 .into_iter()
@@ -3184,7 +3202,7 @@ mod tests {
                 .pop()
                 .expect("one service");
             if let Some(found) =
-                crate::repositories::replicas::of_service(&console.database, &stored.id)
+                crate::infra::repositories::replicas::of_service(&console.database, &stored.id)
                     .await
                     .expect("replicas")
                     .into_iter()
@@ -3280,7 +3298,7 @@ mod tests {
             .pop()
             .expect("one service");
         assert!(
-            crate::repositories::replicas::of_service(&console.database, &stored.id)
+            crate::infra::repositories::replicas::of_service(&console.database, &stored.id)
                 .await
                 .expect("replicas")
                 .into_iter()
@@ -3390,7 +3408,7 @@ mod tests {
 
         let left = services::all(&console.database, None).await.expect("query");
         assert_eq!(left.len(), 1, "only one went");
-        let survivor = crate::repositories::projects::find(&console.database, "two")
+        let survivor = crate::infra::repositories::projects::find(&console.database, "two")
             .await
             .expect("query")
             .expect("present");
@@ -3412,12 +3430,12 @@ mod tests {
         let console = Console::new().await;
         let cookie = console.signed_in().await;
         service(&console, &cookie).await;
-        let project = crate::repositories::projects::find(&console.database, "my-api")
+        let project = crate::infra::repositories::projects::find(&console.database, "my-api")
             .await
             .expect("query")
             .expect("made");
 
-        let ours = crate::repositories::services::create(
+        let ours = crate::infra::repositories::services::create(
             &console.database,
             &project.id,
             "api",
@@ -3438,7 +3456,7 @@ mod tests {
             "a node with no domain has no host to write into a reference"
         );
 
-        let pinned = crate::repositories::services::create(
+        let pinned = crate::infra::repositories::services::create(
             &console.database,
             &project.id,
             "pinned",
@@ -3491,11 +3509,11 @@ mod tests {
         let console = Console::new().await;
         let cookie = console.signed_in().await;
         service(&console, &cookie).await;
-        let project = crate::repositories::projects::find(&console.database, "my-api")
+        let project = crate::infra::repositories::projects::find(&console.database, "my-api")
             .await
             .expect("query")
             .expect("made");
-        let made = crate::repositories::services::create(
+        let made = crate::infra::repositories::services::create(
             &console.database,
             &project.id,
             "api",
@@ -3562,11 +3580,11 @@ mod tests {
         let console = Console::new().await;
         let cookie = console.signed_in().await;
         service(&console, &cookie).await;
-        let project = crate::repositories::projects::find(&console.database, "my-api")
+        let project = crate::infra::repositories::projects::find(&console.database, "my-api")
             .await
             .expect("query")
             .expect("made");
-        crate::repositories::services::create(
+        crate::infra::repositories::services::create(
             &console.database,
             &project.id,
             "api",
@@ -3579,7 +3597,7 @@ mod tests {
             project_id: &project.id,
             name: "Orders",
             version: "17",
-            memory_limit: crate::policies::presets::LADDER[1],
+            memory_limit: crate::domain::policies::presets::LADDER[1],
         }
         .run(&console.database)
         .await
@@ -3740,7 +3758,7 @@ mod tests {
         let console = Console::new().await;
         let cookie = console.signed_in().await;
         let page = service(&console, &cookie).await;
-        let project = crate::repositories::projects::find(&console.database, "my-api")
+        let project = crate::infra::repositories::projects::find(&console.database, "my-api")
             .await
             .expect("query")
             .expect("made");
@@ -3815,10 +3833,10 @@ mod tests {
         // does not offer a source either. A first version of this asserted
         // the field and passed on the *disclosure's* copy of it — which
         // was the thing being deleted.
-        crate::node::settings::set_domain(&console.database, Some("example.com"))
+        crate::infra::node::settings::set_domain(&console.database, Some("example.com"))
             .await
             .expect("domain");
-        let project = crate::repositories::projects::find(&console.database, "my-api")
+        let project = crate::infra::repositories::projects::find(&console.database, "my-api")
             .await
             .expect("query")
             .expect("present");
@@ -3838,10 +3856,10 @@ mod tests {
         )
         .await
         .expect("port");
-        crate::edge::policy::set(
+        crate::infra::edge::policy::set(
             &console.database,
             "api.example.com",
-            &crate::edge::policy::RenewWith::SelfSigned,
+            &crate::infra::edge::policy::RenewWith::SelfSigned,
         )
         .await
         .expect("policy");
@@ -3891,13 +3909,14 @@ mod tests {
         let console = Console::new().await;
         let cookie = console.signed_in().await;
         service(&console, &cookie).await;
-        crate::node::settings::set_domain(&console.database, Some("node-1.tobaw.shop"))
+        crate::infra::node::settings::set_domain(&console.database, Some("node-1.tobaw.shop"))
             .await
             .expect("domain");
-        let project = crate::repositories::projects::create(&console.database, "Coffe Store")
-            .await
-            .expect("project");
-        crate::repositories::services::create(
+        let project =
+            crate::infra::repositories::projects::create(&console.database, "Coffe Store")
+                .await
+                .expect("project");
+        crate::infra::repositories::services::create(
             &console.database,
             &project.id,
             "Coffe Landing",
@@ -3940,13 +3959,13 @@ mod tests {
         let console = Console::new().await;
         let cookie = console.signed_in().await;
         service(&console, &cookie).await;
-        crate::node::settings::set_domain(&console.database, Some("node-1.tobaw.shop"))
+        crate::infra::node::settings::set_domain(&console.database, Some("node-1.tobaw.shop"))
             .await
             .expect("domain");
-        let project = crate::repositories::projects::create(&console.database, "wabot")
+        let project = crate::infra::repositories::projects::create(&console.database, "wabot")
             .await
             .expect("project");
-        let made = crate::repositories::services::create(
+        let made = crate::infra::repositories::services::create(
             &console.database,
             &project.id,
             "nginx-2",
@@ -3984,14 +4003,14 @@ mod tests {
         let console = Console::new().await;
         let cookie = console.signed_in().await;
         service(&console, &cookie).await;
-        crate::node::settings::set_domain(&console.database, Some("node.example.com"))
+        crate::infra::node::settings::set_domain(&console.database, Some("node.example.com"))
             .await
             .expect("domain");
-        let project = crate::repositories::projects::find(&console.database, "my-api")
+        let project = crate::infra::repositories::projects::find(&console.database, "my-api")
             .await
             .expect("query")
             .expect("made");
-        let made = crate::repositories::services::create(
+        let made = crate::infra::repositories::services::create(
             &console.database,
             &project.id,
             "api",
@@ -4003,7 +4022,7 @@ mod tests {
         services::set_tracking(
             &console.database,
             &made.id,
-            Some(crate::entities::service::EVERY_TAG),
+            Some(crate::domain::entities::service::EVERY_TAG),
             true,
         )
         .await
@@ -4064,11 +4083,11 @@ mod tests {
         let console = Console::new().await;
         let cookie = console.signed_in().await;
         service(&console, &cookie).await;
-        let project = crate::repositories::projects::find(&console.database, "my-api")
+        let project = crate::infra::repositories::projects::find(&console.database, "my-api")
             .await
             .expect("query")
             .expect("made");
-        crate::repositories::services::create(
+        crate::infra::repositories::services::create(
             &console.database,
             &project.id,
             "api",
@@ -4110,7 +4129,7 @@ mod tests {
             project_id: &project.id,
             name: "Orders",
             version: "17",
-            memory_limit: crate::policies::presets::LADDER[1],
+            memory_limit: crate::domain::policies::presets::LADDER[1],
         }
         .run(&console.database)
         .await
@@ -4155,11 +4174,11 @@ mod tests {
         let console = Console::new().await;
         let cookie = console.signed_in().await;
         service(&console, &cookie).await;
-        let project = crate::repositories::projects::find(&console.database, "my-api")
+        let project = crate::infra::repositories::projects::find(&console.database, "my-api")
             .await
             .expect("query")
             .expect("made");
-        let made = crate::repositories::services::create(
+        let made = crate::infra::repositories::services::create(
             &console.database,
             &project.id,
             "api",
@@ -4168,12 +4187,12 @@ mod tests {
         )
         .await
         .expect("service");
-        crate::repositories::releases::record(
+        crate::infra::repositories::releases::record(
             &console.database,
             &made.id,
             "node.example.com/my-api/api:new",
             "sha256:af618a130cbe1ecf7a82570bc32056e00e4c01edba81aca520bc1890fdee5009",
-            crate::entities::release::Source::Push,
+            crate::domain::entities::release::Source::Push,
         )
         .await
         .expect("release");
@@ -4205,14 +4224,14 @@ mod tests {
         let console = Console::new().await;
         let cookie = console.signed_in().await;
         service(&console, &cookie).await;
-        crate::node::settings::set_domain(&console.database, Some("node.example.com"))
+        crate::infra::node::settings::set_domain(&console.database, Some("node.example.com"))
             .await
             .expect("domain");
-        let project = crate::repositories::projects::find(&console.database, "my-api")
+        let project = crate::infra::repositories::projects::find(&console.database, "my-api")
             .await
             .expect("query")
             .expect("made");
-        crate::repositories::services::create(
+        crate::infra::repositories::services::create(
             &console.database,
             &project.id,
             "api",
@@ -4376,7 +4395,7 @@ mod tests {
             "a service that keeps nothing says nothing: {plain}"
         );
 
-        let project = crate::repositories::projects::find(&console.database, "my-api")
+        let project = crate::infra::repositories::projects::find(&console.database, "my-api")
             .await
             .expect("query")
             .expect("made");
@@ -4389,7 +4408,7 @@ mod tests {
         .run(&console.database)
         .await
         .expect("database");
-        crate::repositories::replicas::ensure_here(&console.database, &database.id, 2)
+        crate::infra::repositories::replicas::ensure_here(&console.database, &database.id, 2)
             .await
             .expect("a second copy");
 
@@ -4405,7 +4424,9 @@ mod tests {
         // names it — the path on the node is derived from the container
         // id and is not somebody's to type.
         assert!(
-            body.matches(crate::policies::postgres::DATA_MOUNT).count() >= 2,
+            body.matches(crate::domain::policies::postgres::DATA_MOUNT)
+                .count()
+                >= 2,
             "a disk for each copy: {body}"
         );
     }
@@ -4425,9 +4446,9 @@ mod tests {
         let console = Console::new().await;
         let cookie = console.signed_in().await;
         service(&console, &cookie).await;
-        crate::network::save(
+        crate::infra::network::save(
             &console.database,
-            &crate::network::Node {
+            &crate::infra::network::Node {
                 update_note: None,
                 version: None,
                 wanted_version: None,
@@ -4436,13 +4457,13 @@ mod tests {
                 capacity: None,
                 id: "nd-theedge".into(),
                 name: "edge.example".into(),
-                kind: crate::network::Kind::Public,
+                kind: crate::infra::network::Kind::Public,
                 endpoint: Some("localhost:443".into()),
                 public_key: Some("0hEr0DzTvMDTRfPPmYFCVCQ1cA0nnUnP+2fFqZBBBGQ=".into()),
                 overlay_ip: Some("10.42.0.9".into()),
                 is_self: false,
                 last_seen_at: None,
-                allows: vec![crate::values::capability::Capability::Edge],
+                allows: vec![crate::domain::values::capability::Capability::Edge],
                 ca_pem: Some(
                     "-----BEGIN CERTIFICATE-----\nnot real\n-----END CERTIFICATE-----\n".into(),
                 ),
@@ -4464,14 +4485,15 @@ mod tests {
             .send()
             .await;
 
-        let orders = crate::network::errand::all(&console.database)
+        let orders = crate::infra::network::errand::all(&console.database)
             .await
             .expect("errands");
         let told = orders
             .iter()
             .filter(|order| order.node_id == "nd-theedge")
             .filter_map(|order| {
-                serde_json::from_value::<crate::network::errand::Edge>(order.payload.clone()).ok()
+                serde_json::from_value::<crate::infra::network::errand::Edge>(order.payload.clone())
+                    .ok()
             })
             .next_back()
             .expect("the node the name points at was told");
@@ -4489,7 +4511,7 @@ mod tests {
             .send()
             .await;
         assert_eq!(
-            crate::network::errand::all(&console.database)
+            crate::infra::network::errand::all(&console.database)
                 .await
                 .expect("errands")
                 .len(),
@@ -4520,9 +4542,9 @@ mod tests {
             ("nd-first1", "first.example"),
             ("nd-second1", "second.example"),
         ] {
-            crate::network::save(
+            crate::infra::network::save(
                 &console.database,
-                &crate::network::Node {
+                &crate::infra::network::Node {
                     update_note: None,
                     version: None,
                     wanted_version: None,
@@ -4531,7 +4553,7 @@ mod tests {
                     capacity: None,
                     id: id.into(),
                     name: name.into(),
-                    kind: crate::network::Kind::Public,
+                    kind: crate::infra::network::Kind::Public,
                     // `localhost` for both: it is the one name that
                     // resolves the same everywhere, so it stands in for
                     // two machines the hostname points at.
@@ -4540,7 +4562,7 @@ mod tests {
                     overlay_ip: Some(format!("10.42.0.{}", id.len())),
                     is_self: false,
                     last_seen_at: None,
-                    allows: vec![crate::values::capability::Capability::Edge],
+                    allows: vec![crate::domain::values::capability::Capability::Edge],
                     ca_pem: Some(
                         "-----BEGIN CERTIFICATE-----\nnot real\n-----END CERTIFICATE-----\n".into(),
                     ),
@@ -4574,14 +4596,15 @@ mod tests {
             .send()
             .await;
 
-        let orders = crate::network::errand::all(&console.database)
+        let orders = crate::infra::network::errand::all(&console.database)
             .await
             .expect("errands");
         let to_first = orders
             .iter()
             .filter(|order| order.node_id == "nd-first1")
             .filter_map(|order| {
-                serde_json::from_value::<crate::network::errand::Edge>(order.payload.clone()).ok()
+                serde_json::from_value::<crate::infra::network::errand::Edge>(order.payload.clone())
+                    .ok()
             })
             .next_back()
             .expect("an edge errand for the first node");
@@ -4614,7 +4637,8 @@ mod tests {
             .iter()
             .filter(|order| order.node_id == "nd-second1")
             .filter_map(|order| {
-                serde_json::from_value::<crate::network::errand::Edge>(order.payload.clone()).ok()
+                serde_json::from_value::<crate::infra::network::errand::Edge>(order.payload.clone())
+                    .ok()
             })
             .next_back()
             .expect("an edge errand for the second node");
@@ -4638,9 +4662,9 @@ mod tests {
         let console = Console::new().await;
         let cookie = console.signed_in().await;
         let service = service(&console, &cookie).await;
-        crate::network::save(
+        crate::infra::network::save(
             &console.database,
-            &crate::network::Node {
+            &crate::infra::network::Node {
                 update_note: None,
                 version: None,
                 wanted_version: None,
@@ -4653,13 +4677,13 @@ mod tests {
                 // — both halves, or it is not somewhere a name can be
                 // sent. The endpoint is a *name*, which is what makes the
                 // lookup possible at all.
-                kind: crate::network::Kind::Public,
+                kind: crate::infra::network::Kind::Public,
                 endpoint: Some("localhost:443".into()),
                 public_key: Some("k".into()),
                 overlay_ip: Some("10.42.0.9".into()),
                 is_self: false,
                 last_seen_at: None,
-                allows: vec![crate::values::capability::Capability::Edge],
+                allows: vec![crate::domain::values::capability::Capability::Edge],
                 ca_pem: None,
             },
         )
@@ -4687,7 +4711,7 @@ mod tests {
         // And the row says *that* node answers for it. The old default —
         // always this one — would have stored a hostname shown as served
         // and served by nobody.
-        let serving = crate::repositories::edges::nodes_for(&console.database, "localhost")
+        let serving = crate::infra::repositories::edges::nodes_for(&console.database, "localhost")
             .await
             .expect("query");
         assert!(
@@ -4805,7 +4829,7 @@ mod tests {
         // different controller — against a real one, so a save that
         // works is what is being followed rather than a refusal that
         // happens to land in the same place.
-        let project = crate::repositories::projects::find(&console.database, "my-api")
+        let project = crate::infra::repositories::projects::find(&console.database, "my-api")
             .await
             .expect("query")
             .expect("made");
@@ -4822,7 +4846,7 @@ mod tests {
         // A certificate is refused outright on a node with no name of
         // its own, and a refusal returns to the top of the page — which
         // is the behaviour above, not the one under test here.
-        crate::node::settings::set_domain(&console.database, Some("node.example.com"))
+        crate::infra::node::settings::set_domain(&console.database, Some("node.example.com"))
             .await
             .expect("domain");
 
@@ -4894,13 +4918,13 @@ mod tests {
         let page = service(&console, &admin).await;
         let member = console.joined_as(&admin, "watcher").await;
 
-        let watcher = crate::accounts::all(&console.database)
+        let watcher = crate::infra::accounts::all(&console.database)
             .await
             .expect("query")
             .into_iter()
             .find(|account| account.username == "watcher")
             .expect("joined");
-        let project = crate::repositories::projects::find(&console.database, "my-api")
+        let project = crate::infra::repositories::projects::find(&console.database, "my-api")
             .await
             .expect("query")
             .expect("present");
@@ -4908,7 +4932,7 @@ mod tests {
             &console.database,
             &watcher.id,
             &project.id,
-            crate::values::roles::ProjectRole::Viewer,
+            crate::domain::values::roles::ProjectRole::Viewer,
         )
         .await
         .expect("granted");
@@ -4929,7 +4953,7 @@ mod tests {
     /// A hostname declared through `ports::create` rather than the
     /// form: the form checks DNS first, and no name resolves to a test.
     async fn hostname_on(console: &Console, hostname: &str) -> String {
-        let project = crate::repositories::projects::find(&console.database, "my-api")
+        let project = crate::infra::repositories::projects::find(&console.database, "my-api")
             .await
             .expect("query")
             .expect("present");
@@ -4965,7 +4989,7 @@ mod tests {
         let console = Console::new().await;
         let cookie = console.signed_in().await;
         let page = service(&console, &cookie).await;
-        crate::node::settings::set_domain(&console.database, Some("example.com"))
+        crate::infra::node::settings::set_domain(&console.database, Some("example.com"))
             .await
             .expect("domain");
         let port_id = hostname_on(&console, "api.example.com").await;
@@ -5003,7 +5027,7 @@ mod tests {
         // Without a domain the node offers no hostname field at all —
         // it cannot check that a name points here, so there is nothing
         // to type. That branch is a different test.
-        crate::node::settings::set_domain(&console.database, Some("node.example.com"))
+        crate::infra::node::settings::set_domain(&console.database, Some("node.example.com"))
             .await
             .expect("domain");
 
@@ -5019,7 +5043,7 @@ mod tests {
             body.contains("data-required-when=\"https\""),
             "required only with the box: {body}"
         );
-        crate::console::tests::conditions_name_real_controls(&body);
+        crate::web::console::tests::conditions_name_real_controls(&body);
     }
 
     /// The default answer: a service exposes nothing.

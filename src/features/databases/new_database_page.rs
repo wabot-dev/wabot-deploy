@@ -1,9 +1,9 @@
 //! The form that makes a managed database.
 
-use crate::policies::postgres;
-use crate::policies::presets;
-use crate::views::layouts::layout;
-use crate::views::texts::language::t;
+use crate::domain::policies::postgres;
+use crate::domain::policies::presets;
+use crate::web::views::layouts::layout;
+use crate::web::views::texts::language::t;
 use hypertext::prelude::*;
 
 use crate::features::databases::create_database_command::DEFAULT_PRESET;

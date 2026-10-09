@@ -10,8 +10,8 @@ use std::path::Path;
 use wabot::sqlite::SqliteDatabase;
 
 use crate::cli::InstallArgs;
-use crate::config::Config;
-use crate::ledger::{self, Status, Step};
+use crate::infra::config::Config;
+use crate::infra::ledger::{self, Status, Step};
 
 pub async fn run(mut config: Config, config_path: &Path, args: InstallArgs) -> anyhow::Result<i32> {
     // Flags win over the file, and are then persisted — so
@@ -48,10 +48,10 @@ pub async fn run(mut config: Config, config_path: &Path, args: InstallArgs) -> a
     // the bucket credential uses: everything else in the file, comments
     // and all, is left exactly as it was.
     if args.self_signed && !wrote_config {
-        crate::config::store_acme_disabled(config_path, true)?;
+        crate::infra::config::store_acme_disabled(config_path, true)?;
     }
 
-    let database = crate::db::open(&config.database_path()).await?;
+    let database = crate::infra::db::open(&config.database_path()).await?;
 
     // These three run unconditionally — they are cheap and idempotent,
     // and two of them have to happen *before* there is a ledger to
@@ -86,31 +86,36 @@ pub async fn run(mut config: Config, config_path: &Path, args: InstallArgs) -> a
 
     if !args.no_runtime && !args.no_system {
         step(&database, Step::Runtime, "containerd and crun", || {
-            crate::bootstrap::runtime::ensure().map_err(anyhow::Error::from)
+            crate::infra::bootstrap::runtime::ensure().map_err(anyhow::Error::from)
         })
         .await?;
     }
 
     if !args.no_system {
         step(&database, Step::Binary, "the binary", || {
-            Ok(match crate::bootstrap::service::install_binary()? {
-                true => format!("installed to {}", crate::bootstrap::service::BINARY_PATH),
+            Ok(match crate::infra::bootstrap::service::install_binary()? {
+                true => format!(
+                    "installed to {}",
+                    crate::infra::bootstrap::service::BINARY_PATH
+                ),
                 false => "already current".to_string(),
             })
         })
         .await?;
     }
 
-    let init = crate::bootstrap::init::Init::detect();
+    let init = crate::infra::bootstrap::init::Init::detect();
     if !args.no_system && init.supervises() {
         let unit_path = config_path.to_path_buf();
         let what = format!("the {} service", init.name());
         step(&database, Step::Service, &what, move || {
-            let path = crate::bootstrap::service::unit_path();
-            Ok(match crate::bootstrap::service::install_unit(&unit_path)? {
-                true => format!("written to {}", path.display()),
-                false => "already current".to_string(),
-            })
+            let path = crate::infra::bootstrap::service::unit_path();
+            Ok(
+                match crate::infra::bootstrap::service::install_unit(&unit_path)? {
+                    true => format!("written to {}", path.display()),
+                    false => "already current".to_string(),
+                },
+            )
         })
         .await?;
     } else if !args.no_system {
@@ -127,13 +132,13 @@ pub async fn run(mut config: Config, config_path: &Path, args: InstallArgs) -> a
     // `--domain` is somebody saying it now, and wins. Without the flag
     // the stored value stands: a domain changed from the console must
     // survive the next `install`, which is what an upgrade runs.
-    let previous = crate::node::settings::domain(&database, &config).await;
+    let previous = crate::infra::node::settings::domain(&database, &config).await;
     let domain = match explicit_domain {
         true => config.node.domain.clone(),
         false => previous.clone(),
     };
     if let Some(domain) = &domain {
-        crate::node::settings::set_domain(&database, Some(domain)).await?;
+        crate::infra::node::settings::set_domain(&database, Some(domain)).await?;
     }
     config.node.domain = domain.clone();
     let renamed = domain != previous;
@@ -143,7 +148,7 @@ pub async fn run(mut config: Config, config_path: &Path, args: InstallArgs) -> a
     // is derived from whether it answers to a name — see
     // `network::ensure_self`. Not fatal: a node that cannot write this
     // row still installs, and `serve` writes it on the next start.
-    if let Err(error) = crate::network::ensure_self(&database, &config).await {
+    if let Err(error) = crate::infra::network::ensure_self(&database, &config).await {
         tracing::warn!(%error, "could not record what this node is");
     }
 
@@ -152,11 +157,11 @@ pub async fn run(mut config: Config, config_path: &Path, args: InstallArgs) -> a
     // presenting a certificate for the name it stopped answering to.
     if renamed {
         if let Some(domain) = &domain {
-            crate::edge::certs::ensure_self_signed(
+            crate::infra::edge::certs::ensure_self_signed(
                 &database,
-                crate::edge::certs::FALLBACK_NAME,
+                crate::infra::edge::certs::FALLBACK_NAME,
                 &[
-                    crate::edge::certs::FALLBACK_NAME.to_string(),
+                    crate::infra::edge::certs::FALLBACK_NAME.to_string(),
                     domain.clone(),
                 ],
             )
@@ -171,10 +176,12 @@ pub async fn run(mut config: Config, config_path: &Path, args: InstallArgs) -> a
         // Asked before anything is dropped: removing the old name
         // could empty the table, and "was this node already routing"
         // is the question — not "is it routing after the removal".
-        let routing = !crate::edge::routes::load_all(&database).await?.is_empty();
+        let routing = !crate::infra::edge::routes::load_all(&database)
+            .await?
+            .is_empty();
 
         if let Some(previous) = &previous {
-            crate::edge::routes::forget_control_plane(&database, previous).await?;
+            crate::infra::edge::routes::forget_control_plane(&database, previous).await?;
         }
         // Only into a table that already had rows. An empty one means
         // every hostname reaches the control plane — which is what
@@ -182,10 +189,10 @@ pub async fn run(mut config: Config, config_path: &Path, args: InstallArgs) -> a
         // the first row here would take that away.
         if let Some(domain) = &domain {
             if routing {
-                crate::edge::routes::upsert(
+                crate::infra::edge::routes::upsert(
                     &database,
                     domain,
-                    &crate::edge::routes::Upstream::ControlPlane,
+                    &crate::infra::edge::routes::Upstream::ControlPlane,
                     None,
                 )
                 .await?;
@@ -213,7 +220,7 @@ pub async fn run(mut config: Config, config_path: &Path, args: InstallArgs) -> a
         };
 
     if !args.no_system && !args.no_start && init.supervises() {
-        use crate::bootstrap::service;
+        use crate::infra::bootstrap::service;
 
         // A rename restarts even when nothing else changed: the edge
         // reads its names and its routes at startup, so a node left
@@ -236,7 +243,7 @@ pub async fn run(mut config: Config, config_path: &Path, args: InstallArgs) -> a
                     println!(
                         "  the node is running. `{}`",
                         match init {
-                            crate::bootstrap::init::Init::OpenRc =>
+                            crate::infra::bootstrap::init::Init::OpenRc =>
                                 "rc-service wabot-deploy status",
                             _ => "systemctl status wabot-deploy",
                         }
@@ -268,7 +275,7 @@ pub async fn run(mut config: Config, config_path: &Path, args: InstallArgs) -> a
     // made a first install with a domain fail for ever: the failure
     // was fatal, so the node never started, so the next run failed the
     // same way.
-    let node_running = init.supervises() && crate::bootstrap::service::is_active();
+    let node_running = init.supervises() && crate::infra::bootstrap::service::is_active();
     let verdict = match (&domain, config.acme.disabled) {
         (Some(domain), false) => Some(
             await_certificate(
@@ -292,7 +299,7 @@ pub async fn run(mut config: Config, config_path: &Path, args: InstallArgs) -> a
                 // attempt complained about is over. Leaving the
                 // message would have the console reporting a failure
                 // that has been fixed.
-                crate::node::settings::set_acme_error(&database, None).await?;
+                crate::infra::node::settings::set_acme_error(&database, None).await?;
             }
             Verdict::WillTryLater => {}
             // **Still an exit code, and there is no flag to silence it.**
@@ -303,7 +310,7 @@ pub async fn run(mut config: Config, config_path: &Path, args: InstallArgs) -> a
             // they are different: wait, or say the node will never have
             // one.
             Verdict::Failed => {
-                let reason = crate::node::settings::acme_error(&database)
+                let reason = crate::infra::node::settings::acme_error(&database)
                     .await
                     .unwrap_or_else(|| "no certificate arrived".into());
                 println!();
@@ -414,10 +421,10 @@ const WAIT_FOR_CERTIFICATE: std::time::Duration = std::time::Duration::from_secs
 /// a staging certificate pass for a production one, and the node
 /// served it for weeks.
 async fn has_public_certificate(config: &Config, database: &SqliteDatabase, domain: &str) -> bool {
-    match crate::edge::certs::load(database, domain).await {
+    match crate::infra::edge::certs::load(database, domain).await {
         Ok(Some(stored)) => {
             stored.issuer == config.acme.directory_url()
-                && stored.not_after > crate::clock::now_ms()
+                && stored.not_after > crate::infra::clock::now_ms()
         }
         Ok(None) => false,
         Err(error) => {
@@ -433,7 +440,7 @@ async fn has_public_certificate(config: &Config, database: &SqliteDatabase, doma
 /// setup-token` issues another — failing the whole install over a
 /// token that can be re-minted would be the wrong trade.
 async fn setup_token(database: &SqliteDatabase, config: &Config) {
-    match crate::accounts::any_account(database).await {
+    match crate::infra::accounts::any_account(database).await {
         // Re-running install on a node somebody already set up must not
         // mint a token: that would be a way to take over a live node by
         // running the installer again.
@@ -443,7 +450,7 @@ async fn setup_token(database: &SqliteDatabase, config: &Config) {
         // copied out of the first run's output — converging by
         // breaking the thing it just handed them.
         Ok(false)
-            if crate::accounts::setup_token_valid(database)
+            if crate::infra::accounts::setup_token_valid(database)
                 .await
                 .unwrap_or(false) =>
         {
@@ -451,7 +458,7 @@ async fn setup_token(database: &SqliteDatabase, config: &Config) {
             println!("  a setup token from an earlier run is still valid.");
             println!("  `wabot-deploy setup-token` issues another if it is lost.");
         }
-        Ok(false) => match crate::accounts::issue_setup_token(database).await {
+        Ok(false) => match crate::infra::accounts::issue_setup_token(database).await {
             Ok(token) => crate::cli::setup_token::print(config, &token),
             Err(error) => {
                 println!();
@@ -504,7 +511,7 @@ where
 
 /// Check the machine, and say whether to continue.
 fn preflight(config: &Config, skip: bool) -> anyhow::Result<bool> {
-    use crate::bootstrap::preflight;
+    use crate::infra::bootstrap::preflight;
 
     if skip {
         println!("  preflight skipped (--skip-preflight)");
@@ -514,7 +521,7 @@ fn preflight(config: &Config, skip: bool) -> anyhow::Result<bool> {
     // Ports are checked only when this install will start the node.
     // On a machine already running one, its own ports would read as
     // taken — a healthy node failing its own preflight.
-    let check_ports = !crate::bootstrap::service::is_active();
+    let check_ports = !crate::infra::bootstrap::service::is_active();
     let checks = preflight::run(config.edge.https_port, config.edge.http_port, check_ports);
 
     println!("checking this machine");
@@ -575,7 +582,7 @@ async fn report(
     wrote_config: bool,
     database: &SqliteDatabase,
 ) -> anyhow::Result<()> {
-    println!("wabot-deploy {} installed", crate::update::VERSION);
+    println!("wabot-deploy {} installed", crate::infra::update::VERSION);
     println!();
     println!("  config    {}", config_path.display());
     if !wrote_config {
@@ -595,7 +602,7 @@ async fn report(
     println!("  local certificate authority — trust this to reach the node without warnings:");
     println!(
         "  {}",
-        crate::edge::certs::ca_certificate_path(config).display()
+        crate::infra::edge::certs::ca_certificate_path(config).display()
     );
     if let Err(error) = write_ca_bundle(config, database).await {
         println!("  (could not write it: {error})");
@@ -622,8 +629,8 @@ async fn report(
 /// something to copy carefully, and a path is something to pass to
 /// `security add-trusted-cert` or `update-ca-certificates`.
 async fn write_ca_bundle(config: &Config, database: &SqliteDatabase) -> anyhow::Result<()> {
-    let pem = crate::edge::certs::ca_certificate_pem(database).await?;
-    let path = crate::edge::certs::ca_certificate_path(config);
+    let pem = crate::infra::edge::certs::ca_certificate_pem(database).await?;
+    let path = crate::infra::edge::certs::ca_certificate_path(config);
     std::fs::write(&path, pem)?;
     Ok(())
 }
@@ -687,10 +694,10 @@ mod tests {
         .await
         .expect("install");
 
-        let database = crate::db::open(&config.database_path())
+        let database = crate::infra::db::open(&config.database_path())
             .await
             .expect("open");
-        let first = crate::network::me(&database)
+        let first = crate::infra::network::me(&database)
             .await
             .expect("query")
             .expect("a row of its own");
@@ -709,11 +716,11 @@ mod tests {
         .await
         .expect("install");
 
-        let database = crate::db::open(&config.database_path())
+        let database = crate::infra::db::open(&config.database_path())
             .await
             .expect("open");
         assert_eq!(
-            crate::network::me(&database)
+            crate::infra::network::me(&database)
                 .await
                 .expect("query")
                 .map(|me| me.id),
@@ -754,7 +761,7 @@ mod tests {
         let mut config = config_in(dir.path());
         config.acme.disabled = false;
         config.acme.directory = "https://acme-v02.api.letsencrypt.org/directory".into();
-        let database = crate::db::open_in_memory().await.expect("open");
+        let database = crate::infra::db::open_in_memory().await.expect("open");
         let none = std::time::Duration::ZERO;
 
         // Nothing running, nothing stored: the node will ask when it
@@ -777,7 +784,7 @@ mod tests {
             &database,
             "node.example.com",
             config.acme.directory_url(),
-            crate::clock::now_ms() + 30 * 86_400_000,
+            crate::infra::clock::now_ms() + 30 * 86_400_000,
         )
         .await;
         assert_eq!(
@@ -795,13 +802,13 @@ mod tests {
         let mut config = config_in(dir.path());
         config.acme.disabled = false;
         config.acme.directory = "production".into();
-        let database = crate::db::open_in_memory().await.expect("open");
+        let database = crate::infra::db::open_in_memory().await.expect("open");
 
         store_certificate(
             &database,
             "node.example.com",
             "https://acme-staging-v02.api.letsencrypt.org/directory",
-            crate::clock::now_ms() + 30 * 86_400_000,
+            crate::infra::clock::now_ms() + 30 * 86_400_000,
         )
         .await;
 
@@ -816,13 +823,13 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let mut config = config_in(dir.path());
         config.acme.disabled = false;
-        let database = crate::db::open_in_memory().await.expect("open");
+        let database = crate::infra::db::open_in_memory().await.expect("open");
 
         store_certificate(
             &database,
             "node.example.com",
             config.acme.directory_url(),
-            crate::clock::now_ms() - 1,
+            crate::infra::clock::now_ms() - 1,
         )
         .await;
 
@@ -835,16 +842,16 @@ mod tests {
         issuer: &str,
         not_after: i64,
     ) {
-        crate::edge::certs::save(
+        crate::infra::edge::certs::save(
             database,
-            &crate::edge::certs::StoredCert {
+            &crate::infra::edge::certs::StoredCert {
                 domain: domain.to_string(),
                 names: vec![domain.to_string()],
                 cert_pem: "not a certificate".into(),
                 key_pem: "not a key".into(),
                 issuer: issuer.to_string(),
                 not_after,
-                source: crate::edge::certs::Source::parse(issuer),
+                source: crate::infra::edge::certs::Source::parse(issuer),
             },
         )
         .await
@@ -873,7 +880,7 @@ mod tests {
 
         // And it survives the next start, which is the half the old flag
         // did not do at all: it changed an exit code and stored nothing.
-        let stored = crate::config::Config::load(&config_path).expect("load");
+        let stored = crate::infra::config::Config::load(&config_path).expect("load");
         assert!(stored.acme.disabled, "the file has to carry it");
     }
 
@@ -914,8 +921,8 @@ mod tests {
         .expect("install");
 
         // What the console does.
-        let database = crate::db::open(&database_path).await.expect("open");
-        crate::node::settings::set_domain(&database, Some("changed.example"))
+        let database = crate::infra::db::open(&database_path).await.expect("open");
+        crate::infra::node::settings::set_domain(&database, Some("changed.example"))
             .await
             .expect("set");
         database.close().await.expect("close");
@@ -931,8 +938,8 @@ mod tests {
         .await
         .expect("install");
 
-        let database = crate::db::open(&database_path).await.expect("open");
-        let stored = crate::node::settings::domain(&database, &config_in(dir.path())).await;
+        let database = crate::infra::db::open(&database_path).await.expect("open");
+        let stored = crate::infra::node::settings::domain(&database, &config_in(dir.path())).await;
         assert_eq!(stored.as_deref(), Some("changed.example"));
     }
 
@@ -955,11 +962,11 @@ mod tests {
         .expect("install");
 
         // A node past its first day: something has written routes.
-        let database = crate::db::open(&database_path).await.expect("open");
-        crate::edge::routes::upsert(
+        let database = crate::infra::db::open(&database_path).await.expect("open");
+        crate::infra::edge::routes::upsert(
             &database,
             "first.example",
-            &crate::edge::routes::Upstream::ControlPlane,
+            &crate::infra::edge::routes::Upstream::ControlPlane,
             None,
         )
         .await
@@ -974,8 +981,8 @@ mod tests {
         .await
         .expect("install");
 
-        let database = crate::db::open(&database_path).await.expect("open");
-        let hosts: Vec<String> = crate::edge::routes::load_all(&database)
+        let database = crate::infra::db::open(&database_path).await.expect("open");
+        let hosts: Vec<String> = crate::infra::edge::routes::load_all(&database)
             .await
             .expect("routes")
             .into_iter()
@@ -989,10 +996,11 @@ mod tests {
 
         // And a certificate exists for it, self-signed or not, so the
         // node is not presenting the old name's.
-        let stored = crate::edge::certs::load(&database, crate::edge::certs::FALLBACK_NAME)
-            .await
-            .expect("load")
-            .expect("a certificate");
+        let stored =
+            crate::infra::edge::certs::load(&database, crate::infra::edge::certs::FALLBACK_NAME)
+                .await
+                .expect("load")
+                .expect("a certificate");
         assert!(
             stored.names.iter().any(|name| name == "second.example"),
             "{:?}",
@@ -1018,8 +1026,8 @@ mod tests {
         .await
         .expect("install");
 
-        let database = crate::db::open(&database_path).await.expect("open");
-        assert!(crate::edge::routes::load_all(&database)
+        let database = crate::infra::db::open(&database_path).await.expect("open");
+        assert!(crate::infra::edge::routes::load_all(&database)
             .await
             .expect("routes")
             .is_empty());
@@ -1041,8 +1049,8 @@ mod tests {
         .await
         .expect("install");
 
-        let database = crate::db::open(&database_path).await.expect("open");
-        crate::node::settings::set_domain(&database, Some("changed.example"))
+        let database = crate::infra::db::open(&database_path).await.expect("open");
+        crate::infra::node::settings::set_domain(&database, Some("changed.example"))
             .await
             .expect("set");
         database.close().await.expect("close");
@@ -1055,8 +1063,8 @@ mod tests {
         .await
         .expect("install");
 
-        let database = crate::db::open(&database_path).await.expect("open");
-        let stored = crate::node::settings::domain(&database, &config_in(dir.path())).await;
+        let database = crate::infra::db::open(&database_path).await.expect("open");
+        let stored = crate::infra::node::settings::domain(&database, &config_in(dir.path())).await;
         assert_eq!(stored.as_deref(), Some("said.example"));
     }
 
@@ -1071,7 +1079,7 @@ mod tests {
                 .expect("install");
         }
 
-        let database = crate::db::open(&config_in(dir.path()).database_path())
+        let database = crate::infra::db::open(&config_in(dir.path()).database_path())
             .await
             .expect("open");
         // `--no-system` (what `InstallArgs::none` sets, so tests do

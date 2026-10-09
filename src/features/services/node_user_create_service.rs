@@ -1,10 +1,10 @@
 use wabot::sqlite::SqliteDatabase;
 
-use crate::authz::node_user;
-use crate::entities::account::Account;
+use crate::domain::authz::node_user;
+use crate::domain::entities::account::Account;
 use crate::features::services::create_service_request::CreateServiceRequest as Asked;
 use crate::features::services::service_created_response::ServiceCreatedResponse;
-use crate::repositories::access;
+use crate::infra::repositories::access;
 
 pub async fn run(
     database: &SqliteDatabase,
@@ -26,7 +26,7 @@ pub async fn run(
         return Err("you may look at this project, not change it".into());
     }
 
-    let service = crate::repositories::services::create(
+    let service = crate::infra::repositories::services::create(
         database,
         &project.id,
         &asked.name,

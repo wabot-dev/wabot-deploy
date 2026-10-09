@@ -11,43 +11,43 @@ use wabot::lifecycle::{ShutdownPhase, ShutdownTask};
 use wabot::prelude::{register_transients, Container};
 use wabot::ProjectRunner;
 
-use crate::config::Config;
+use crate::infra::config::Config;
 
 pub async fn run(config: Config) -> anyhow::Result<i32> {
-    let database = Arc::new(crate::db::open(&config.database_path()).await?);
+    let database = Arc::new(crate::infra::db::open(&config.database_path()).await?);
     database.ping().await?;
 
     // One route table, created before either half that uses it: the
     // edge reads it on every request and the deployer replaces it
     // whole after a deployment. Two tables would mean a deployment
     // that changes nothing until the next restart.
-    let routes = Arc::new(crate::edge::routes::RouteTable::new());
+    let routes = Arc::new(crate::infra::edge::routes::RouteTable::new());
     // How a deployment tells the certificate loop that a hostname
     // appeared. Created here because both halves need it and neither
     // owns the other.
-    let wake = Arc::new(crate::edge::acme::Wake::default());
+    let wake = Arc::new(crate::infra::edge::acme::Wake::default());
     // And how an authority tells this node an errand is waiting, rather
     // than it finding out on its next fifteen-second pass. Created here
     // for the same reason: the endpoint that rings it and the loop that
     // answers are two halves and neither owns the other.
-    let doorbell = Arc::new(crate::network::collect::Doorbell::default());
+    let doorbell = Arc::new(crate::infra::network::collect::Doorbell::default());
 
     // Whatever the last process was in the middle of. An update ends
     // by replacing that process, so the only one who can say whether
     // it worked is this one — see `update::settle_after_restart`.
-    crate::update::settle_after_restart(&database).await;
+    crate::infra::update::settle_after_restart(&database).await;
 
     // What this node is. Here as well as in `install` because an update
     // replaces the binary and restarts without running the installer,
     // so a node upgraded into a version that has this table would
     // otherwise have no row in it — and the console lists that table.
-    if let Err(error) = crate::network::ensure_self(&database, &config).await {
+    if let Err(error) = crate::infra::network::ensure_self(&database, &config).await {
         tracing::warn!(%error, "could not record what this node is");
     }
     // And the overlay it is on, if it is on one. Never fatal: a node
     // whose kernel refuses the interface still serves its console,
     // which is where somebody goes to find out why.
-    match crate::network::tunnel::ensure(&database, &config).await {
+    match crate::infra::network::tunnel::ensure(&database, &config).await {
         Ok(Some(overlay)) => tracing::info!(
             address = %overlay.address,
             port = overlay.port,
@@ -85,21 +85,21 @@ pub async fn run(config: Config) -> anyhow::Result<i32> {
     // advisory-lock variant wants a server this product exists not to
     // need.
     wabot::async_jobs::register_async_runtime(&container);
-    register_transients!(&container, crate::deploy::jobs::DeployHandler);
+    register_transients!(&container, crate::infra::deploy::jobs::DeployHandler);
     // The install job resolves the config, and nothing else put it in
     // the container: without this the worker panics building the handler
     // while the errand that queued it settles happily — the same trap
     // `deploy::jobs` documents about the database.
     container.register_instance::<Config>(Arc::new(config.clone()));
-    register_transients!(&container, crate::update::jobs::InstallHandler);
+    register_transients!(&container, crate::infra::update::jobs::InstallHandler);
 
-    crate::api::register(&container, database.clone());
+    crate::web::api::register(&container, database.clone());
     // Where a joining node announces itself. On the control plane
     // rather than beside it, so it answers on the node's own hostname
     // and certificate — the endpoint in a join token is the same
     // address the console is at.
-    crate::network::api::register(&container, config.clone());
-    crate::console::register(
+    crate::web::remote_node_rest_controller::register(&container, config.clone());
+    crate::web::console::register(
         &container,
         database.clone(),
         config.clone(),
@@ -111,34 +111,34 @@ pub async fn run(config: Config) -> anyhow::Result<i32> {
     // listener: `docker push node.example/project/app` reaches the
     // same place the console does, over the same certificate, with no
     // second port to open.
-    let registry_state = Arc::new(crate::registry::RegistryState {
+    let registry_state = Arc::new(crate::infra::registry::RegistryState {
         database: database.clone(),
         deployer: Arc::new(
-            crate::deploy::Deployer::new(database.clone(), &config)
+            crate::infra::deploy::Deployer::new(database.clone(), &config)
                 .with_routes(routes.clone())
                 .with_certificates(wake.clone()),
         ),
-        host: crate::node::settings::domain(&database, &config)
+        host: crate::infra::node::settings::domain(&database, &config)
             .await
             .unwrap_or_else(|| "localhost".into()),
     });
-    crate::registry::register(&container, registry_state);
+    crate::web::registry_rest_controller::register(&container, registry_state);
 
     // One router: the console's pages, the API's endpoints and the
     // registry answer on the same hostname, because they are the same
     // thing to whoever is looking at the node.
     // Taken before the table is moved into the edge below.
     let health_routes = routes.clone();
-    let control_plane = crate::api::routes(&container)
-        .merge(crate::network::api::routes(&container))
-        .merge(crate::console::routes(&container))
-        .merge(crate::registry::routes(&container));
+    let control_plane = crate::web::api::routes(&container)
+        .merge(crate::web::remote_node_rest_controller::routes(&container))
+        .merge(crate::web::console::routes(&container))
+        .merge(crate::web::registry_rest_controller::routes(&container));
 
     // Two routers, not one with a branch in every handler. See
     // `console::tenant`.
     let tenant_plane =
-        crate::console::tenant_routes(&container).merge(crate::api::routes(&container));
-    let (edge, resolver) = crate::edge::build(
+        crate::web::console::tenant_routes(&container).merge(crate::web::api::routes(&container));
+    let (edge, resolver) = crate::infra::edge::build(
         &database,
         control_plane,
         tenant_plane,
@@ -151,21 +151,21 @@ pub async fn run(config: Config) -> anyhow::Result<i32> {
     // table the listener reads and a deployment takes effect without a
     // restart.
     let deployer = Arc::new(
-        crate::deploy::Deployer::new(database.clone(), &config)
+        crate::infra::deploy::Deployer::new(database.clone(), &config)
             .with_routes(routes)
             .with_certificates(wake.clone()),
     );
     // The job handler resolves this one rather than building a third.
-    container.register_instance::<crate::deploy::Deployer>(deployer.clone());
+    container.register_instance::<crate::infra::deploy::Deployer>(deployer.clone());
     // The doorbell endpoint rings this; the collector loop answers it.
-    container.register_instance::<crate::network::collect::Doorbell>(doorbell.clone());
+    container.register_instance::<crate::infra::network::collect::Doorbell>(doorbell.clone());
 
     let https: SocketAddr = (bind_address(&config), config.edge.https_port).into();
     let http: SocketAddr = (bind_address(&config), config.edge.http_port).into();
     tracing::info!(
         %https,
         %http,
-        version = crate::update::VERSION,
+        version = crate::infra::update::VERSION,
         certificates = resolver.names().join(", "),
         "starting"
     );
@@ -242,7 +242,7 @@ pub async fn run(config: Config) -> anyhow::Result<i32> {
                     // some and removes others, and doing that on an
                     // executor thread stops the console answering.
                     let swept = tokio::task::spawn_blocking(move || {
-                        crate::deploy::logs::sweep(&data_dir, &budgets)
+                        crate::infra::deploy::logs::sweep(&data_dir, &budgets)
                     })
                     .await
                     .unwrap_or_default();
@@ -280,9 +280,13 @@ pub async fn run(config: Config) -> anyhow::Result<i32> {
                     // number read at startup would go on bounding the
                     // archive by whatever it was before somebody changed
                     // it — for as long as the process lived.
-                    let keep_days = crate::backup::plan::plan(&database).await.keep_days;
+                    let keep_days = crate::infra::backup::plan::plan(&database).await.keep_days;
                     let (removed, freed) = tokio::task::spawn_blocking(move || {
-                        crate::backup::sweep(&data_dir, crate::clock::now_ms(), keep_days)
+                        crate::infra::backup::sweep(
+                            &data_dir,
+                            crate::infra::clock::now_ms(),
+                            keep_days,
+                        )
                     })
                     .await
                     .unwrap_or((0, 0));
@@ -326,9 +330,10 @@ pub async fn run(config: Config) -> anyhow::Result<i32> {
                         _ = tokio::time::sleep(std::time::Duration::from_secs(300)) => {}
                     }
 
-                    let plan = crate::backup::plan::plan(&database).await;
-                    let last = crate::backup::plan::last(&database).await.at;
-                    if !crate::backup::plan::due(&plan, last, crate::clock::now_ms()) {
+                    let plan = crate::infra::backup::plan::plan(&database).await;
+                    let last = crate::infra::backup::plan::last(&database).await.at;
+                    if !crate::infra::backup::plan::due(&plan, last, crate::infra::clock::now_ms())
+                    {
                         continue;
                     }
                     tracing::info!(cadence = plan.cadence.as_str(), "a scheduled backup is due");
@@ -338,7 +343,7 @@ pub async fn run(config: Config) -> anyhow::Result<i32> {
                     // it costs at worst the service manager's stop
                     // timeout — and a backup on a small node is often
                     // seconds.
-                    match crate::backup::plan::take_now(&config, &database).await {
+                    match crate::infra::backup::plan::take_now(&config, &database).await {
                         Ok(held) => tracing::info!(%held, "scheduled backup taken"),
                         // Warned and recorded — `take_now` writes the
                         // reason on the row the console reads, because a
@@ -410,12 +415,12 @@ pub async fn run(config: Config) -> anyhow::Result<i32> {
             wabot::async_jobs::run_async_workers(
                 container.clone(),
                 vec![
-                    crate::deploy::jobs::DeployHandler::__handler_entry(&container),
+                    crate::infra::deploy::jobs::DeployHandler::__handler_entry(&container),
                     // Registered here as well as with the container:
                     // `JobExecutor` keeps its own set of command names,
                     // and a command missing from this list is stored and
                     // never run.
-                    crate::update::jobs::InstallHandler::__handler_entry(&container),
+                    crate::infra::update::jobs::InstallHandler::__handler_entry(&container),
                 ],
                 vec![],
             ),
@@ -429,13 +434,13 @@ pub async fn run(config: Config) -> anyhow::Result<i32> {
         // already been priced in by the time somebody's request arrives.
         .service_with_cancel("upstream-health", {
             let routes = health_routes.clone();
-            move |cancel| crate::edge::health::watch(routes, cancel)
+            move |cancel| crate::infra::edge::health::watch(routes, cancel)
         })
         .service_with_cancel("edge-https", move |cancel| {
-            crate::edge::serve_https(edge, resolver, https, cancel)
+            crate::infra::edge::serve_https(edge, resolver, https, cancel)
         })
         .service_with_cancel("edge-http", move |cancel| {
-            crate::edge::serve_http(https_port, http_database, http, cancel)
+            crate::infra::edge::serve_http(https_port, http_database, http, cancel)
         })
         // Errands, asked for on a timer. Beside the listeners for the
         // same reason as everything else here: a node whose authority
@@ -447,7 +452,9 @@ pub async fn run(config: Config) -> anyhow::Result<i32> {
             let container = container.clone();
             let doorbell = doorbell.clone();
             move |cancel| {
-                crate::network::collect::loop_forever(database, config, container, doorbell, cancel)
+                crate::infra::network::collect::loop_forever(
+                    database, config, container, doorbell, cancel,
+                )
             }
         })
         // Certificates are obtained *beside* the listeners, never
@@ -455,7 +462,7 @@ pub async fn run(config: Config) -> anyhow::Result<i32> {
         // to answer, so ordering issuance ahead of the listener would
         // deadlock on itself.
         .service_with_cancel("acme", move |cancel| {
-            crate::edge::acme::renewal_loop(
+            crate::infra::edge::acme::renewal_loop(
                 acme_database,
                 acme_config,
                 acme_resolver,

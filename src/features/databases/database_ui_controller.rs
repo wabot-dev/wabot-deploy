@@ -7,11 +7,11 @@ use serde::Deserialize;
 use wabot::prelude::*;
 use wabot::ui::hypertext::IntoView;
 
-use crate::console::auth::{signed_in, SessionMiddleware};
-use crate::console::ConsoleState;
-use crate::repositories::access;
-use crate::views::layouts::layout;
-use crate::views::layouts::shell::{Area, Frame};
+use crate::infra::repositories::access;
+use crate::web::console::auth::{signed_in, SessionMiddleware};
+use crate::web::console::ConsoleState;
+use crate::web::views::layouts::layout;
+use crate::web::views::layouts::shell::{Area, Frame};
 
 #[derive(Debug, Deserialize, Validate)]
 pub struct DatabaseForm {
@@ -60,7 +60,7 @@ impl DatabaseUiController {
             back: &back,
             query_error: query.error.as_deref(),
         };
-        let body = crate::views::texts::language::scoped(account.language, || {
+        let body = crate::web::views::texts::language::scoped(account.language, || {
             crate::features::databases::new_database_page::render(&page)
                 .render()
                 .into_inner()

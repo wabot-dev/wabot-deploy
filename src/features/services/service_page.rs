@@ -1,12 +1,12 @@
 use hypertext::prelude::*;
 
-use crate::backup::Window;
-use crate::entities::database::Database;
-use crate::entities::project::Project;
-use crate::entities::release::Release;
-use crate::entities::replica::Replica;
-use crate::entities::service::{DesiredState, Service, EVERY_TAG};
-use crate::entities::volume::Volume;
+use crate::domain::entities::database::Database;
+use crate::domain::entities::project::Project;
+use crate::domain::entities::release::Release;
+use crate::domain::entities::replica::Replica;
+use crate::domain::entities::service::{DesiredState, Service, EVERY_TAG};
+use crate::domain::entities::volume::Volume;
+use crate::domain::values::roles::Access;
 use crate::features::databases::database_cards_component;
 use crate::features::services::service_push_component::Push;
 use crate::features::services::service_running_component::Running;
@@ -15,10 +15,10 @@ use crate::features::services::{
     service_placement_component, service_ports_component, service_push_component,
     service_running_component, service_state_component,
 };
-use crate::network::Node;
-use crate::values::roles::Access;
-use crate::views::layouts::layout;
-use crate::views::texts::language::t;
+use crate::infra::backup::Window;
+use crate::infra::network::Node;
+use crate::web::views::layouts::layout;
+use crate::web::views::texts::language::t;
 
 /// The seven things that only exist together.
 ///

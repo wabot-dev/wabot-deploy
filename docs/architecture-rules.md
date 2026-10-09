@@ -48,18 +48,19 @@ service's rules are.
 
 ### Where each one goes
 
-A feature's controllers, pages, components, use cases, commands,
-requests and responses go in its own folder under `src/features`, each
-named for what it is — §11. What every feature reads stays a layer of
-its own: `src/entities`, `src/repositories`, `src/values`,
-`src/policies`, and the console's shell in `src/console` and
-`src/views`. `src/dtos` holds the shapes more than one feature
-carries. The terminal's verbs are `src/cli`, one file each, and the
-machinery a backup is taken and restored with is `src/backup`, which the
-CLI and the console's backups feature both call.
+Five rooms, and every file is in exactly one. §12 says which way each
+may look.
+
+| Room | What lives there |
+|---|---|
+| `src/domain` | entities, values, the pure policies, `authz`, errors — what the business *is*, talking to nothing |
+| `src/infra` | repositories, and everything else that talks to something: the database, containerd, the kernel and systemd, other nodes, GitHub, the disk — and the deploy loop that drives them |
+| `src/features` | one folder per feature: its use cases, commands, requests, responses, controllers, pages, components and words (§11) |
+| `src/web` | the console's shell — router, session, layout, the components and words more than one feature uses, the shapes more than one carries — and the HTTP doors no feature owns: health, the control plane, the registry |
+| `src/cli` | the terminal's door: the arguments, and one file per verb |
 
 `platform` was a name for five of these at once, which is why the rules
-ended up wherever the first caller needed them. It is being taken apart.
+ended up wherever the first caller needed them. It is gone.
 
 A **policy** is the one that is easy to mistake for a repository because
 it lives near the data. `presets` is a ladder of sizes; `postgres` is the
@@ -437,9 +438,10 @@ sentence, and something that keeps it true.
 
 ### The guard
 
-`authz::tests::nothing_that_writes_a_row_asks_who_is_asking` reads
-`src/accounts` and `src/platform` off the disk and fails if any of them
-imports `crate::authz`. It globs the directories rather than listing
+`authz::tests::nothing_that_writes_a_row_asks_who_is_asking` reads the
+row-writing layer off the disk — `src/infra/accounts`,
+`src/infra/repositories`, and the entities, values and policies beside
+`authz` in `src/domain` — and fails if any of them imports it. It globs the directories rather than listing
 files, because *a guard that names its inputs is right until somebody
 adds an input* — which has cost this project four times.
 
@@ -668,7 +670,7 @@ checked at all.**
 The two ends of a use case are named shapes: a `_request.rs` and a
 `_response.rs` in its feature's folder, each holding a type named for
 its file — `CreateDatabaseRequest` in `create_database_request.rs`
-(§11). `src/dtos` holds only the shapes more than one feature
+(§11). `src/web/dtos` holds only the shapes more than one feature
 carries. Never a form, never an argument list that grew, never an
 entity coming back out.
 
@@ -843,7 +845,7 @@ What every feature reads: entities, values, policies, repositories, the
 runtime, the edge. And the console's shell — the router, the session,
 the layout, the language, and the pieces that show nothing of any
 feature's (`mark`, the logo a page without a header opens with;
-`action_button`) — stays in `src/console` and `src/views`.
+`action_button`) — stays in `src/web`.
 
 **Any other component goes with the feature whose thing it shows, and
 the pages that draw it say which better than its name does.** `service_table` and `people_card`
@@ -856,7 +858,7 @@ its own.
 
 **A component two features draw stays out of both.** `node_capabilities`
 and `node_settings_cards` are drawn by the network's pages and by this
-machine's settings, so they stay in `src/views/components` — and the
+machine's settings, so they stay in `src/web/views/components` — and the
 day one feature stops drawing one, it moves to the other.
 
 **A use case is placed by the same question.** Joining by invitation is
@@ -895,6 +897,6 @@ the commands more than one feature calls, and the CLI's verbs.
   `qualified_name` out of `create_database_command.rs`. That dependency
   pointed the wrong way before the move; the move is what made it
   readable.
-- **The shell keeps directories of its own.** `src/console` and
-  `src/views` hold what no single feature owns, so a guard that reads
-  everything that draws lists them beside `src/features`.
+- **The shell keeps directories of its own.** `src/web/console` and
+  `src/web/views` hold what no single feature owns, so a guard that
+  reads everything that draws lists them beside `src/features`.

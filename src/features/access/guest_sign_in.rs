@@ -1,6 +1,6 @@
 use wabot::sqlite::SqliteDatabase;
 
-use crate::accounts::{self, sessions};
+use crate::infra::accounts::{self, sessions};
 
 /// **The frontier comes from the `Host`, not from the form.** A username
 /// belongs to a scope, so three people called `jorge` is the ordinary

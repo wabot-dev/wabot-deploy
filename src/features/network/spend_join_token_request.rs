@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use wabot::prelude::*;
 
-use crate::values::capability::Capability;
+use crate::domain::values::capability::Capability;
 
 /// Spend a join token, or read what it asks for first.
 ///

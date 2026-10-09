@@ -1,8 +1,8 @@
 use wabot::sqlite::SqliteDatabase;
 
-use crate::authz::tenant_user;
-use crate::entities::account::Account;
-use crate::entities::project::Project;
+use crate::domain::authz::tenant_user;
+use crate::domain::entities::account::Account;
+use crate::domain::entities::project::Project;
 use crate::features::projects::create_project_command::CreateProject;
 
 pub async fn run(

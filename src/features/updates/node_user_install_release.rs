@@ -2,12 +2,12 @@ use std::sync::Arc;
 
 use wabot::sqlite::SqliteDatabase;
 
-use crate::authz::node_user;
-use crate::config::Config;
-use crate::entities::account::Account;
+use crate::domain::authz::node_user;
+use crate::domain::entities::account::Account;
 use crate::features::updates::release_started_response::ReleaseStartedResponse;
-use crate::update::runs;
-use crate::update::Catalogue;
+use crate::infra::config::Config;
+use crate::infra::update::runs;
+use crate::infra::update::Catalogue;
 
 /// Everything that can be refused is refused **here**, while there is
 /// still a request to answer. What happens after this returns is
@@ -31,7 +31,7 @@ pub async fn run(
         .releases()
         .await
         .map_err(|error| error.to_string())?;
-    let Some(release) = crate::update::github::find(&releases, tag) else {
+    let Some(release) = crate::infra::update::github::find(&releases, tag) else {
         return Err(format!("no release is tagged {tag}"));
     };
     if !release.installable() {
@@ -40,8 +40,8 @@ pub async fn run(
             release.tag
         ));
     }
-    if crate::update::github::Version::current() == Some(release.version) {
-        return Err(crate::views::texts::sentences::already_running(
+    if crate::infra::update::github::Version::current() == Some(release.version) {
+        return Err(crate::web::views::texts::sentences::already_running(
             &release.tag,
         ));
     }
@@ -54,11 +54,11 @@ pub async fn run(
             existing.to_version
         ));
     }
-    if !crate::bootstrap::service::supervised() {
+    if !crate::infra::bootstrap::service::supervised() {
         return Err("nothing supervises this node, so it cannot restart itself".into());
     }
 
-    crate::update::start_in_background(
+    crate::infra::update::start_in_background(
         database.clone(),
         config.clone(),
         catalogue.clone(),

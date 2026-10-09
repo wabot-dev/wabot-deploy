@@ -1,6 +1,6 @@
 use wabot::sqlite::SqliteDatabase;
 
-use crate::accounts::{self, sessions};
+use crate::infra::accounts::{self, sessions};
 
 /// The first account on a node, made against the token `install`
 /// printed. There is nobody to authorise it because there is nobody yet.

@@ -1,21 +1,21 @@
 use hypertext::prelude::*;
 
-use crate::edge::policy::Policy;
-use crate::entities::config_revision::Revision;
-use crate::entities::port::Port;
-use crate::entities::project::Project;
-use crate::entities::replica::Replica;
-use crate::entities::service::Service;
+use crate::domain::entities::config_revision::Revision;
+use crate::domain::entities::port::Port;
+use crate::domain::entities::project::Project;
+use crate::domain::entities::replica::Replica;
+use crate::domain::entities::service::Service;
 use crate::features::databases::database_cards_component;
 use crate::features::services::service_push_component::Push;
 use crate::features::services::{
     service_placement_component, service_ports_component, service_push_component,
 };
-use crate::network::errand::Record;
-use crate::network::Node;
-use crate::views::components::node_certificate::{source_word, CertificateCells};
-use crate::views::layouts::layout;
-use crate::views::texts::language::t;
+use crate::infra::edge::policy::Policy;
+use crate::infra::network::errand::Record;
+use crate::infra::network::Node;
+use crate::web::views::components::node_certificate::{source_word, CertificateCells};
+use crate::web::views::layouts::layout;
+use crate::web::views::texts::language::t;
 
 /// Which tab of a service's settings a page is showing.
 ///
@@ -242,7 +242,7 @@ pub fn render<'a>(page: &'a ServiceSettings<'a>) -> impl Renderable + 'a {
             Panel::Database { name, actions, certificate, host_port } => {
                 @if let Some(name) = name {
                     (database_cards_component::name_card(
-                        &actions.0, name, &crate::deploy::hosts::pool_name(name)))
+                        &actions.0, name, &crate::infra::deploy::hosts::pool_name(name)))
                 }
                 @if let Some((policy, cells)) = certificate {
                     (database_cards_component::certificate_card(&actions.1, policy, cells))
@@ -356,7 +356,7 @@ pub fn render<'a>(page: &'a ServiceSettings<'a>) -> impl Renderable + 'a {
                                class="mono"
                                placeholder=(t("two rotations"))
                                value=(service.log_budget
-                                   .map(crate::policies::presets::size_field)
+                                   .map(crate::domain::policies::presets::size_field)
                                    .unwrap_or_default())>
                         <p class="field-hint">(t("Per copy, and the live log counts against it \
                              — a service with two copies on this machine writes two. Oldest \
@@ -481,14 +481,14 @@ pub fn render<'a>(page: &'a ServiceSettings<'a>) -> impl Renderable + 'a {
                         @if service.kind.is_managed() {
                             <select id="memory-size" name="memory">
                                 <option value="">(t("no ceiling"))</option>
-                                @for rung in crate::policies::presets::LADDER {
+                                @for rung in crate::domain::policies::presets::LADDER {
                                     @if Some(rung) == service.memory_limit {
                                         <option value=(rung.to_string()) selected>(
-                                            crate::policies::presets::label(rung)
+                                            crate::domain::policies::presets::label(rung)
                                         )</option>
                                     } @else {
                                         <option value=(rung.to_string())>(
-                                            crate::policies::presets::label(rung)
+                                            crate::domain::policies::presets::label(rung)
                                         )</option>
                                     }
                                 }
@@ -498,12 +498,12 @@ pub fn render<'a>(page: &'a ServiceSettings<'a>) -> impl Renderable + 'a {
                                    list="memory-sizes" autocomplete="off"
                                    placeholder=(t("no ceiling"))
                                    value=(service.memory_limit
-                                       .map(crate::policies::presets::size_field)
+                                       .map(crate::domain::policies::presets::size_field)
                                        .unwrap_or_default())>
                             <datalist id="memory-sizes">
-                                @for rung in crate::policies::presets::LADDER {
+                                @for rung in crate::domain::policies::presets::LADDER {
                                     <option value=(
-                                        crate::policies::presets::size_field(rung)
+                                        crate::domain::policies::presets::size_field(rung)
                                     )></option>
                                 }
                             </datalist>
@@ -526,12 +526,12 @@ pub fn render<'a>(page: &'a ServiceSettings<'a>) -> impl Renderable + 'a {
                                list="cpu-sizes" autocomplete="off"
                                placeholder=(t("no ceiling"))
                                value=(service.cpu_millicores
-                                   .map(crate::policies::presets::cores_field)
+                                   .map(crate::domain::policies::presets::cores_field)
                                    .unwrap_or_default())>
                         <datalist id="cpu-sizes">
-                            @for rung in crate::policies::presets::CPU_LADDER {
+                            @for rung in crate::domain::policies::presets::CPU_LADDER {
                                 <option value=(
-                                    crate::policies::presets::cores_field(rung)
+                                    crate::domain::policies::presets::cores_field(rung)
                                 )></option>
                             }
                         </datalist>
@@ -546,7 +546,7 @@ pub fn render<'a>(page: &'a ServiceSettings<'a>) -> impl Renderable + 'a {
                                autocomplete="off"
                                placeholder=(t("no ceiling"))
                                value=(service.disk_limit
-                                   .map(crate::policies::presets::label)
+                                   .map(crate::domain::policies::presets::label)
                                    .unwrap_or_default())>
                         <p class="field-hint">(t("This one reserves space; it does not enforce it. \
                              There is nothing to write it into — volumes share a filesystem, \

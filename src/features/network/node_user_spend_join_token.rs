@@ -1,11 +1,11 @@
 use wabot::sqlite::SqliteDatabase;
 
-use crate::authz::node_user;
-use crate::config::Config;
-use crate::entities::account::Account;
+use crate::domain::authz::node_user;
+use crate::domain::entities::account::Account;
 use crate::features::network::join_token_spent_response::JoinTokenSpentResponse;
 use crate::features::network::spend_join_token_request::SpendJoinTokenRequest;
-use crate::network;
+use crate::infra::config::Config;
+use crate::infra::network;
 
 pub async fn run(
     database: &SqliteDatabase,

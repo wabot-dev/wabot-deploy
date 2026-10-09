@@ -21,11 +21,11 @@
 //! table while it runs, and in whatever the terminal scrolled past. This
 //! one is printed once, and what is stored is its hash.
 
-use crate::config::Config;
+use crate::infra::config::Config;
 
 pub async fn run(config: Config, username: &str) -> anyhow::Result<i32> {
-    let database = crate::db::open(&config.database_path()).await?;
-    let outcome = crate::accounts::reset_password(&database, username).await;
+    let database = crate::infra::db::open(&config.database_path()).await?;
+    let outcome = crate::infra::accounts::reset_password(&database, username).await;
     database.close().await?;
 
     match outcome {

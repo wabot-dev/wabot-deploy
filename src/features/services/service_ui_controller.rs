@@ -10,18 +10,18 @@ use serde::Deserialize;
 use wabot::prelude::*;
 use wabot::ui::hypertext::IntoView;
 
-use crate::deploy::dns;
-use crate::repositories::access;
-use crate::repositories::config_history;
-use crate::repositories::ports;
-use crate::repositories::releases;
-use crate::repositories::services;
-use crate::views::texts::language::t;
+use crate::infra::deploy::dns;
+use crate::infra::repositories::access;
+use crate::infra::repositories::config_history;
+use crate::infra::repositories::ports;
+use crate::infra::repositories::releases;
+use crate::infra::repositories::services;
+use crate::web::views::texts::language::t;
 
-use crate::console::auth::{signed_in, SessionMiddleware};
-use crate::console::ConsoleState;
-use crate::views::layouts::layout;
-use crate::views::layouts::shell::{Area, Frame};
+use crate::web::console::auth::{signed_in, SessionMiddleware};
+use crate::web::console::ConsoleState;
+use crate::web::views::layouts::layout;
+use crate::web::views::layouts::shell::{Area, Frame};
 
 #[derive(Debug, Deserialize, Validate)]
 pub struct ServiceForm {
@@ -133,7 +133,7 @@ impl ServiceUiController {
             back: &back,
             query_error: query.error.as_deref(),
         };
-        let body = crate::views::texts::language::scoped(account.language, || {
+        let body = crate::web::views::texts::language::scoped(account.language, || {
             crate::features::services::new_service_page::render(&page)
                 .render()
                 .into_inner()
@@ -177,7 +177,7 @@ impl ServiceUiController {
         let mut secured = std::collections::BTreeSet::new();
         for port in &ports {
             if let Some(hostname) = &port.hostname {
-                if crate::edge::certs::load(&self.state.database, hostname)
+                if crate::infra::edge::certs::load(&self.state.database, hostname)
                     .await
                     .ok()
                     .flatten()
@@ -195,13 +195,15 @@ impl ServiceUiController {
         // The address and the reason live on the copy that runs here —
         // a service is *n* of them now, and this page still shows one.
         let here =
-            crate::repositories::replicas::here_for(&self.state.database, &service.id).await?;
+            crate::infra::repositories::replicas::here_for(&self.state.database, &service.id)
+                .await?;
         // Where every copy of it runs, and the nodes it could run on.
         // Both only matter when this node is the one that decides — a
         // service that arrived from elsewhere is placed from there.
         let placements =
-            crate::repositories::replicas::of_service(&self.state.database, &service.id).await?;
-        let nodes = crate::network::all(&self.state.database).await?;
+            crate::infra::repositories::replicas::of_service(&self.state.database, &service.id)
+                .await?;
+        let nodes = crate::infra::network::all(&self.state.database).await?;
         // Who could answer for a name, and who was asked to. Only a
         // node with an address the world can dial: sending a hostname
         // to one without would publish a name that resolves to nothing.
@@ -219,7 +221,7 @@ impl ServiceUiController {
         // editor, neither of which a managed database has.
         let engine = match service.kind.is_managed() {
             true => {
-                crate::repositories::databases::of_service(&self.state.database, &service.id)
+                crate::infra::repositories::databases::of_service(&self.state.database, &service.id)
                     .await?
             }
             false => None,
@@ -230,12 +232,12 @@ impl ServiceUiController {
         // reserving it.
         let reserved_address = match (&engine, here.as_ref().and_then(|r| r.reserved_host)) {
             (Some(_), Some(host)) => {
-                let index = crate::repositories::projects::ensure_network_index(
+                let index = crate::infra::repositories::projects::ensure_network_index(
                     &self.state.database,
                     &project.id,
                 )
                 .await?;
-                crate::runtime::network::ProjectNetwork::new(index)
+                crate::infra::runtime::network::ProjectNetwork::new(index)
                     .and_then(|net| net.reserved_address(host))
                     .ok()
                     .map(|address| address.to_string())
@@ -247,7 +249,7 @@ impl ServiceUiController {
         // to be collected. A copy elsewhere with no address is stopped, or
         // not yet told, or told and not yet reporting — and the page had
         // one word for all three.
-        let queued: Vec<String> = crate::network::errand::all(&self.state.database)
+        let queued: Vec<String> = crate::infra::network::errand::all(&self.state.database)
             .await?
             .into_iter()
             .filter(|record| record.done_at.is_none())
@@ -263,7 +265,7 @@ impl ServiceUiController {
         // so the page cannot name something the certificate does not cover.
         let names = match service.kind.is_managed() {
             true => {
-                crate::deploy::certificate_names(
+                crate::infra::deploy::certificate_names(
                     &self.state.database,
                     &self.state.config,
                     &project,
@@ -282,10 +284,14 @@ impl ServiceUiController {
         // settings with the name and the port.
         let signs_here = match names.first() {
             Some(name) => matches!(
-                crate::edge::policy::for_name(&self.state.database, &self.state.config, name)
-                    .await
-                    .renew_with,
-                crate::edge::policy::RenewWith::SelfSigned
+                crate::infra::edge::policy::for_name(
+                    &self.state.database,
+                    &self.state.config,
+                    name
+                )
+                .await
+                .renew_with,
+                crate::infra::edge::policy::RenewWith::SelfSigned
             ),
             None => false,
         };
@@ -300,15 +306,15 @@ impl ServiceUiController {
         // What a restore of this database could reach. Read here rather
         // than in the card so the card stays a function of its argument.
         let window = match service.kind.is_managed() {
-            true => crate::backup::window(
+            true => crate::infra::backup::window(
                 &self.state.config.node.data_dir,
                 &format!("{}.{}", project.slug, service.slug),
-                crate::backup::taken(&self.state.config.node.data_dir)
+                crate::infra::backup::taken(&self.state.config.node.data_dir)
                     .last()
                     .map(|(_, manifest)| manifest.taken_at),
-                crate::node::settings::archiving(&self.state.database).await,
+                crate::infra::node::settings::archiving(&self.state.database).await,
             ),
-            false => crate::backup::Window::NotKeeping,
+            false => crate::infra::backup::Window::NotKeeping,
         };
         // Whether any backup here holds a copy of *this* database, which
         // is what decides if there is anything to restore. The window
@@ -324,7 +330,7 @@ impl ServiceUiController {
         // the search happens when the form is submitted: `restore_one`
         // looks here first and at the destination second.
         let elsewhere = match service.kind.is_managed() {
-            true => crate::backup::plan::plan(&self.state.database)
+            true => crate::infra::backup::plan::plan(&self.state.database)
                 .await
                 .destination
                 .filter(|text| {
@@ -333,10 +339,10 @@ impl ServiceUiController {
                     // The same comparison `restore_one` makes, so the card
                     // is offered exactly when the search has a second
                     // place to look.
-                    crate::backup::destination::Destination::parse(text)
+                    crate::infra::backup::destination::Destination::parse(text)
                         .map(|destination| {
                             destination
-                                != crate::backup::destination::Destination::Local(
+                                != crate::infra::backup::destination::Destination::Local(
                                     self.state.config.node.data_dir.join("backups"),
                                 )
                         })
@@ -346,7 +352,7 @@ impl ServiceUiController {
         };
         let restorable = service.kind.is_managed()
             && (elsewhere.is_some()
-                || crate::backup::taken(&self.state.config.node.data_dir)
+                || crate::infra::backup::taken(&self.state.config.node.data_dir)
                     .iter()
                     .any(|(path, _)| {
                         path.join("volumes")
@@ -356,9 +362,10 @@ impl ServiceUiController {
                     }));
         // What this service keeps, which is a row per volume and a
         // directory per copy of it.
-        let volumes = crate::repositories::volumes::of_service(&self.state.database, &service.id)
-            .await
-            .unwrap_or_default();
+        let volumes =
+            crate::infra::repositories::volumes::of_service(&self.state.database, &service.id)
+                .await
+                .unwrap_or_default();
         // And what each copy here holds. One walk per copy, on a page
         // somebody opened — the alternative is a figure that is only ever
         // as fresh as the last report, which for a volume on this very
@@ -369,7 +376,7 @@ impl ServiceUiController {
             .map(|replica| {
                 (
                     replica.id.clone(),
-                    crate::repositories::volumes::used_by(
+                    crate::infra::repositories::volumes::used_by(
                         &self.state.config.node.data_dir,
                         &replica.container_id(&project.slug, &service.slug),
                     ),
@@ -377,7 +384,7 @@ impl ServiceUiController {
             })
             .collect();
 
-        let deploying = crate::deploy::jobs::deploying(&self.state.container)
+        let deploying = crate::infra::deploy::jobs::deploying(&self.state.container)
             .await
             .contains(&service.id);
         // Taken before the markup moves it: the island below names the
@@ -397,7 +404,8 @@ impl ServiceUiController {
         // exists only because the caller did not say what it wanted.
         let settings = Tab::Image.path(&project.slug, &service.slug);
         let logs = format!("/projects/{}/services/{}/logs", project.slug, service.slug);
-        let domain = crate::node::settings::domain(&self.state.database, &self.state.config).await;
+        let domain =
+            crate::infra::node::settings::domain(&self.state.database, &self.state.config).await;
         let exposure = crate::features::services::service_ports_component::exposure(
             &service,
             &project.slug,
@@ -436,7 +444,7 @@ impl ServiceUiController {
             logs_path: &logs,
             settings_path: &settings,
             cell: &cell,
-            observed_running: matches!(observed, crate::deploy::Observed::Running { .. }),
+            observed_running: matches!(observed, crate::infra::deploy::Observed::Running { .. }),
             here: here.as_ref(),
             exposure: &exposure,
             placements: &placements,
@@ -461,7 +469,7 @@ impl ServiceUiController {
         };
         // The account's language, around the render and no wider:
         // the strings are read here, and nothing awaits inside.
-        let body = crate::views::texts::language::scoped(account.language, || {
+        let body = crate::web::views::texts::language::scoped(account.language, || {
             crate::features::services::service_page::render(&page)
                 .render()
                 .into_inner()
@@ -516,8 +524,8 @@ impl ServiceUiController {
 
         // Every copy, read once — this used to ask twice for the same
         // rows to answer two questions about them.
-        let copies: Vec<crate::entities::replica::Replica> =
-            crate::repositories::replicas::of_service(&self.state.database, &service.id)
+        let copies: Vec<crate::domain::entities::replica::Replica> =
+            crate::infra::repositories::replicas::of_service(&self.state.database, &service.id)
                 .await?
                 .into_iter()
                 .filter(|replica| !replica.evicted())
@@ -571,14 +579,14 @@ impl ServiceUiController {
                 .map(|(_, node)| node.clone())
         });
         let container = slot.filter(|_| holder.is_none()).map(|slot| {
-            crate::entities::replica::container_id_for(&project.slug, &service.slug, slot)
+            crate::domain::entities::replica::container_id_for(&project.slug, &service.slug, slot)
         });
         // Asked for now, and the refusal is the page's to print: a node
         // with no overlay session, a copy that has written nothing, a
         // grant withdrawn since. Every one of those is a sentence
         // somebody can act on.
         let (remote_text, remote_error) = match (&holder, slot) {
-            (Some(node), Some(slot)) => match crate::network::replica_log(
+            (Some(node), Some(slot)) => match crate::infra::network::replica_log(
                 &self.state.database,
                 node,
                 &project.name,
@@ -598,16 +606,18 @@ impl ServiceUiController {
         // history — every rotated generation and the live file as one —
         // is for finding out what happened before the restart.
         let opened = match (&container, everything) {
-            (Some(container), false) => {
-                crate::deploy::logs::read_from(&self.state.config.node.data_dir, container, 0)
-            }
+            (Some(container), false) => crate::infra::deploy::logs::read_from(
+                &self.state.config.node.data_dir,
+                container,
+                0,
+            ),
             (Some(container), true) => {
-                crate::deploy::logs::history(
+                crate::infra::deploy::logs::history(
                     &self.state.config.node.data_dir,
                     container,
                     512 * 1024,
                 )
-                .map(|text| crate::deploy::logs::Chunk {
+                .map(|text| crate::infra::deploy::logs::Chunk {
                     text,
                     // Not a place to follow from: the history ends
                     // where the live file does, and a stream that
@@ -621,7 +631,11 @@ impl ServiceUiController {
                 // here too, which is the distinction the page makes
                 // below.
                 .or_else(|| {
-                    crate::deploy::logs::read_from(&self.state.config.node.data_dir, container, 0)
+                    crate::infra::deploy::logs::read_from(
+                        &self.state.config.node.data_dir,
+                        container,
+                        0,
+                    )
                 })
             }
             (None, _) => None,
@@ -645,7 +659,7 @@ impl ServiceUiController {
             .filter(|page| *page >= 1)
             .unwrap_or(1);
         let found = match (&container, &needle) {
-            (Some(container), Some(needle)) => Some(crate::deploy::logs::search(
+            (Some(container), Some(needle)) => Some(crate::infra::deploy::logs::search(
                 &self.state.config.node.data_dir,
                 container,
                 needle,
@@ -656,9 +670,12 @@ impl ServiceUiController {
         };
         let at = query.at.as_deref().and_then(|at| at.parse::<usize>().ok());
         let window = match (&container, at) {
-            (Some(container), Some(at)) => {
-                crate::deploy::logs::around(&self.state.config.node.data_dir, container, at, RADIUS)
-            }
+            (Some(container), Some(at)) => crate::infra::deploy::logs::around(
+                &self.state.config.node.data_dir,
+                container,
+                at,
+                RADIUS,
+            ),
             _ => Vec::new(),
         };
 
@@ -667,8 +684,10 @@ impl ServiceUiController {
         let has_history = container
             .as_ref()
             .map(|container| {
-                crate::deploy::logs::kept_generations(&self.state.config.node.data_dir, container)
-                    > 0
+                crate::infra::deploy::logs::kept_generations(
+                    &self.state.config.node.data_dir,
+                    container,
+                ) > 0
             })
             .unwrap_or(false);
         // Whether there is a file at all, kept apart from whether it
@@ -723,7 +742,7 @@ impl ServiceUiController {
             at,
             window: &window,
         };
-        let body = crate::views::texts::language::scoped(account.language, || {
+        let body = crate::web::views::texts::language::scoped(account.language, || {
             crate::features::services::service_logs_page::render(&logs)
                 .render()
                 .into_inner()
@@ -740,10 +759,10 @@ impl ServiceUiController {
                     "service": service_for_island,
                     "slot": slot,
                     "from": from,
-                    "following": crate::views::texts::language::scoped(account.language, || {
+                    "following": crate::web::views::texts::language::scoped(account.language, || {
                         t("Following").to_string()
                     }),
-                    "reconnecting": crate::views::texts::language::scoped(account.language, || {
+                    "reconnecting": crate::web::views::texts::language::scoped(account.language, || {
                         t("Reconnecting…").to_string()
                     }),
                 }),
@@ -834,7 +853,7 @@ impl ServiceUiController {
         // sweeps of the errand table — for a page that shows one of them.
         let panel = match tab {
             Tab::Database => {
-                let names = crate::deploy::certificate_names(
+                let names = crate::infra::deploy::certificate_names(
                     &self.state.database,
                     &self.state.config,
                     &project,
@@ -843,26 +862,28 @@ impl ServiceUiController {
                 .await;
                 let certificate = match names.first() {
                     Some(name) => {
-                        let facts = crate::console::certificate_facts_for(&self.state, name).await;
-                        let policy = crate::edge::policy::for_name(
+                        let facts =
+                            crate::web::console::certificate_facts_for(&self.state, name).await;
+                        let policy = crate::infra::edge::policy::for_name(
                             &self.state.database,
                             &self.state.config,
                             name,
                         )
                         .await;
                         let state =
-                            crate::views::components::node_certificate::CertificateState::read(
+                            crate::web::views::components::node_certificate::CertificateState::read(
                                 &facts,
                                 Some(name),
                                 policy.last_error.clone(),
                                 self.state.certificates.phase(),
                                 self.state.config.acme.disabled,
                             );
-                        let cells = crate::views::components::node_certificate::certificate_cells(
-                            &state,
-                            &facts,
-                            Some(name),
-                        );
+                        let cells =
+                            crate::web::views::components::node_certificate::certificate_cells(
+                                &state,
+                                &facts,
+                                Some(name),
+                            );
                         Some((policy, cells))
                     }
                     None => None,
@@ -880,7 +901,8 @@ impl ServiceUiController {
             }
             Tab::Image => {
                 let domain =
-                    crate::node::settings::domain(&self.state.database, &self.state.config).await;
+                    crate::infra::node::settings::domain(&self.state.database, &self.state.config)
+                        .await;
                 Panel::Image {
                     push: crate::features::services::service_push_component::push(
                         &service,
@@ -902,7 +924,8 @@ impl ServiceUiController {
             Tab::Resources => Panel::Resources,
             Tab::Network => {
                 let domain =
-                    crate::node::settings::domain(&self.state.database, &self.state.config).await;
+                    crate::infra::node::settings::domain(&self.state.database, &self.state.config)
+                        .await;
                 // Whether each HTTPS name has a certificate yet. Asked
                 // rather than assumed: the certificate arrives seconds
                 // after the route does, and a page that showed the name as
@@ -914,7 +937,7 @@ impl ServiceUiController {
                     let Some(hostname) = &port.hostname else {
                         continue;
                     };
-                    if crate::edge::certs::load(&self.state.database, hostname)
+                    if crate::infra::edge::certs::load(&self.state.database, hostname)
                         .await
                         .ok()
                         .flatten()
@@ -922,31 +945,33 @@ impl ServiceUiController {
                     {
                         secured.insert(hostname.clone());
                     }
-                    let facts = crate::console::certificate_facts_for(&self.state, hostname).await;
-                    let policy = crate::edge::policy::for_name(
+                    let facts =
+                        crate::web::console::certificate_facts_for(&self.state, hostname).await;
+                    let policy = crate::infra::edge::policy::for_name(
                         &self.state.database,
                         &self.state.config,
                         hostname,
                     )
                     .await;
-                    let state = crate::views::components::node_certificate::CertificateState::read(
-                        &facts,
-                        Some(hostname),
-                        // A name's own failure only. The node-wide reason
-                        // belongs to the node's domain, and reading it here
-                        // would blame this name for that one.
-                        None,
-                        self.state.certificates.phase(),
-                        self.state.config.acme.disabled,
-                    );
-                    let cells = crate::views::components::node_certificate::certificate_cells(
+                    let state =
+                        crate::web::views::components::node_certificate::CertificateState::read(
+                            &facts,
+                            Some(hostname),
+                            // A name's own failure only. The node-wide reason
+                            // belongs to the node's domain, and reading it here
+                            // would blame this name for that one.
+                            None,
+                            self.state.certificates.phase(),
+                            self.state.config.acme.disabled,
+                        );
+                    let cells = crate::web::views::components::node_certificate::certificate_cells(
                         &state,
                         &facts,
                         Some(hostname),
                     );
                     certificates.push((port.id.clone(), hostname.clone(), cells, policy));
                 }
-                let suffix = crate::repositories::project_domain::domain_for(
+                let suffix = crate::infra::repositories::project_domain::domain_for(
                     &self.state.database,
                     &project,
                     domain.as_deref(),
@@ -966,31 +991,32 @@ impl ServiceUiController {
                     add: format!("{here}/ports"),
                     suggestion,
                     may_publish: account.is_admin(),
-                    public_nodes: crate::network::edge_candidates(&self.state.database).await?,
-                    serving: crate::repositories::edges::of_service(
+                    public_nodes: crate::infra::network::edge_candidates(&self.state.database)
+                        .await?,
+                    serving: crate::infra::repositories::edges::of_service(
                         &self.state.database,
                         &service.id,
                     )
                     .await?,
-                    orders: crate::network::errand::all(&self.state.database)
+                    orders: crate::infra::network::errand::all(&self.state.database)
                         .await
                         .unwrap_or_default(),
                     ports: ports.clone(),
                 }
             }
             Tab::Replicas => Panel::Replicas {
-                placements: crate::repositories::replicas::of_service(
+                placements: crate::infra::repositories::replicas::of_service(
                     &self.state.database,
                     &service.id,
                 )
                 .await?,
-                nodes: crate::network::candidates_for(
+                nodes: crate::infra::network::candidates_for(
                     &self.state.database,
                     service.kind.placement_capability(),
                 )
                 .await?,
                 silent: self.state.deployer.not_answering(&service).await,
-                queued: crate::network::errand::all(&self.state.database)
+                queued: crate::infra::network::errand::all(&self.state.database)
                     .await?
                     .into_iter()
                     .filter(|record| record.done_at.is_none())
@@ -1025,7 +1051,7 @@ impl ServiceUiController {
             error: query.error.as_deref(),
             checked: query.checked.as_deref(),
         };
-        let body = crate::views::texts::language::scoped(account.language, || {
+        let body = crate::web::views::texts::language::scoped(account.language, || {
             crate::features::services::service_settings_page::render(&page)
                 .render()
                 .into_inner()

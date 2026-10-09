@@ -9,13 +9,13 @@ use serde::Deserialize;
 use wabot::prelude::*;
 use wabot::ui::hypertext::IntoView;
 
-use crate::repositories::access;
-use crate::repositories::services;
+use crate::infra::repositories::access;
+use crate::infra::repositories::services;
 
-use crate::console::auth::{signed_in, PageQuery, SessionMiddleware};
-use crate::console::ConsoleState;
-use crate::views::layouts::layout;
-use crate::views::layouts::shell::{Area, Frame};
+use crate::web::console::auth::{signed_in, PageQuery, SessionMiddleware};
+use crate::web::console::ConsoleState;
+use crate::web::views::layouts::layout;
+use crate::web::views::layouts::shell::{Area, Frame};
 
 #[derive(Debug, Deserialize, Validate)]
 pub struct ProjectQuery {
@@ -37,7 +37,7 @@ impl ProjectUiController {
     async fn index(&self, query: PageQuery) -> UiResult<ViewOutcome> {
         let Some(account) = signed_in(&self.auth) else {
             return Ok(Redirect::found(
-                crate::console::auth::signed_out_destination(&self.state).await,
+                crate::web::console::auth::signed_out_destination(&self.state).await,
             )
             .into());
         };
@@ -52,7 +52,7 @@ impl ProjectUiController {
         // being told about another's certificates, and every source here
         // is node-wide.
         let concerns = match account.is_admin() {
-            true => crate::console::attention::gather(&self.state)
+            true => crate::web::console::attention::gather(&self.state)
                 .await
                 .unwrap_or_default(),
             false => Vec::new(),
@@ -61,7 +61,7 @@ impl ProjectUiController {
         // Whether this node originates work of its own. A node that does
         // not is somewhere resources live: it runs what it was asked to
         // run and makes nothing.
-        let owns = crate::network::capability::owns(&self.state.database).await;
+        let owns = crate::infra::network::capability::owns(&self.state.database).await;
 
         layout::head("Projects");
         let frame = Frame::new(&account, Area::Projects, &projects, None, "/");
@@ -73,7 +73,7 @@ impl ProjectUiController {
             concerns: &concerns,
             query_error: query.error.as_deref(),
         };
-        let body = crate::views::texts::language::scoped(account.language, || {
+        let body = crate::web::views::texts::language::scoped(account.language, || {
             crate::features::projects::projects_page::render(&page)
                 .render()
                 .into_inner()
@@ -91,7 +91,7 @@ impl ProjectUiController {
         // A hand-typed URL, or a link kept from before the switch was
         // turned off. The list says why; a form that cannot submit does
         // not.
-        if !crate::network::capability::owns(&self.state.database).await {
+        if !crate::infra::network::capability::owns(&self.state.database).await {
             return Ok(Redirect::found("/projects").into());
         }
 
@@ -104,7 +104,7 @@ impl ProjectUiController {
         let page = crate::features::projects::new_project_page::NewProject {
             query_error: query.error.as_deref(),
         };
-        let body = crate::views::texts::language::scoped(account.language, || {
+        let body = crate::web::views::texts::language::scoped(account.language, || {
             crate::features::projects::new_project_page::render(&page)
                 .render()
                 .into_inner()
@@ -140,7 +140,7 @@ impl ProjectUiController {
         // One question for the whole page rather than one per row: the
         // answer is a set, and asking the job store per service would
         // be the same read repeated.
-        let deploying = crate::deploy::jobs::deploying(&self.state.container).await;
+        let deploying = crate::infra::deploy::jobs::deploying(&self.state.container).await;
 
         let mut rows = Vec::with_capacity(services.len());
         for service in services {
@@ -153,7 +153,7 @@ impl ProjectUiController {
             // here — a service is *n* of them now, and this row still
             // shows one.
             let placements =
-                crate::repositories::replicas::of_service(&self.state.database, &service.id)
+                crate::infra::repositories::replicas::of_service(&self.state.database, &service.id)
                     .await?;
             let here = placements
                 .iter()
@@ -194,7 +194,7 @@ impl ProjectUiController {
             new_database: &new_database,
             query_error: query.error.as_deref(),
         };
-        let body = crate::views::texts::language::scoped(account.language, || {
+        let body = crate::web::views::texts::language::scoped(account.language, || {
             crate::features::projects::project_page::render(&page)
                 .render()
                 .into_inner()
@@ -249,15 +249,17 @@ impl ProjectUiController {
         }
 
         let tokens =
-            crate::repositories::tokens::of_project(&self.state.database, &project.id).await?;
+            crate::infra::repositories::tokens::of_project(&self.state.database, &project.id)
+                .await?;
         // The stored domain, not the file's. The registry names what it
         // receives under `settings::domain`, which prefers the row the
         // console writes — so reading the file here printed a `docker
         // login` for whatever the node was called at install time, for
         // as long as nobody had edited the file to match.
-        let registry_host = crate::node::settings::domain(&self.state.database, &self.state.config)
-            .await
-            .unwrap_or_else(|| "this node".into());
+        let registry_host =
+            crate::infra::node::settings::domain(&self.state.database, &self.state.config)
+                .await
+                .unwrap_or_else(|| "this node".into());
 
         let members = access::members(&self.state.database, &project.id).await?;
         let all_projects = access::projects_for(&self.state.database, &account).await?;
@@ -282,7 +284,7 @@ impl ProjectUiController {
             registry_host: Some(registry_host.as_str()),
             query_error: query.error.as_deref(),
         };
-        let body = crate::views::texts::language::scoped(account.language, || {
+        let body = crate::web::views::texts::language::scoped(account.language, || {
             crate::features::projects::project_settings_page::render(&page)
                 .render()
                 .into_inner()

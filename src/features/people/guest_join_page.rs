@@ -1,9 +1,9 @@
 use hypertext::prelude::*;
 
-use crate::accounts::invitations::Invitation;
-use crate::views::components::mark::mark;
-use crate::views::layouts::layout;
-use crate::views::texts::language::t;
+use crate::infra::accounts::invitations::Invitation;
+use crate::web::views::components::mark::mark;
+use crate::web::views::layouts::layout;
+use crate::web::views::texts::language::t;
 
 pub struct Join<'a> {
     pub heading: &'a str,

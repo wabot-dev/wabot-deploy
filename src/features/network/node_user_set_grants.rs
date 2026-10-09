@@ -1,9 +1,9 @@
 use wabot::sqlite::SqliteDatabase;
 
-use crate::authz::node_user;
-use crate::entities::account::Account;
+use crate::domain::authz::node_user;
+use crate::domain::entities::account::Account;
 use crate::features::network::set_grants_request::SetGrantsRequest;
-use crate::network::capability;
+use crate::infra::network::capability;
 
 /// What **this** node agreed to do, for that one. It lives on the machine
 /// the decision binds, and it is what `carry_out` checks before obeying

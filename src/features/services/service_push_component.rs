@@ -1,7 +1,7 @@
 //! How an image gets here: the `docker push` this service expects, and
 //! the token it needs.
 
-use crate::views::texts::language::t;
+use crate::web::views::texts::language::t;
 use hypertext::prelude::*;
 
 /// What the releases card can say about pushing to this service.
@@ -29,7 +29,7 @@ pub enum Push {
 }
 
 pub fn push(
-    service: &crate::entities::service::Service,
+    service: &crate::domain::entities::service::Service,
     project_slug: &str,
     node_domain: Option<&str>,
 ) -> Option<Push> {
@@ -40,9 +40,10 @@ pub fn push(
         return None;
     }
 
-    let Some(reference) = crate::values::image_reference::ImageReference::parse(&service.image)
-        .ok()
-        .and_then(|r| r.parts())
+    let Some(reference) =
+        crate::domain::values::image_reference::ImageReference::parse(&service.image)
+            .ok()
+            .and_then(|r| r.parts())
     else {
         return Some(Push::Pinned);
     };
@@ -54,7 +55,7 @@ pub fn push(
     // in; it is not something anybody types after a colon, and a command
     // ending `:*` is one somebody pastes and watches fail. The example
     // shows `latest` — which the rule accepts along with everything else.
-    let tag = match tag == crate::entities::service::EVERY_TAG {
+    let tag = match tag == crate::domain::entities::service::EVERY_TAG {
         true => "latest".to_string(),
         false => tag,
     };

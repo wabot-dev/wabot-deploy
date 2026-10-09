@@ -1,11 +1,11 @@
 use hypertext::prelude::*;
 
+use crate::domain::values::capability::Capability;
 use crate::features::network::{node_enrolment_component, node_usage_component};
-use crate::network::token::JoinToken;
-use crate::network::{Authority, Node};
-use crate::values::capability::Capability;
-use crate::views::layouts::layout;
-use crate::views::texts::language::t;
+use crate::infra::network::token::JoinToken;
+use crate::infra::network::{Authority, Node};
+use crate::web::views::layouts::layout;
+use crate::web::views::texts::language::t;
 
 pub struct Network<'a> {
     pub nodes: &'a [Node],
@@ -63,7 +63,7 @@ pub fn render<'a>(page: &'a Network<'a>) -> impl Renderable + 'a {
                     </div>
                     <p class="tile-detail">
                         @if node.is_self {
-                            ("wabot-deploy ")(crate::update::VERSION)(t(" · this node"))
+                            ("wabot-deploy ")(crate::infra::update::VERSION)(t(" · this node"))
                             @if let Some(address) = &node.overlay_ip {
                                 (" · ")(address)
                             }

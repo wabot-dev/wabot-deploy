@@ -1,9 +1,9 @@
 use wabot::sqlite::SqliteDatabase;
 
-use crate::authz::node_user;
-use crate::entities::account::Account;
-use crate::network;
-use crate::network::errand::Action;
+use crate::domain::authz::node_user;
+use crate::domain::entities::account::Account;
+use crate::infra::network;
+use crate::infra::network::errand::Action;
 
 /// No deduplication and no desired state: asking twice asks twice, and
 /// each asking is its own errand with its own id.

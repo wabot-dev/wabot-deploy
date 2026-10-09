@@ -1,6 +1,6 @@
 use wabot::sqlite::SqliteDatabase;
 
-use crate::repositories::access;
+use crate::infra::repositories::access;
 
 pub struct RemoveProjectMember<'a> {
     pub project_id: &'a str,

@@ -5,7 +5,7 @@
 
 use hypertext::prelude::*;
 
-use crate::views::texts::language::t;
+use crate::web::views::texts::language::t;
 
 /// Rendered from the same [`StateCell`] the stream sends, so the first
 /// paint and every update after it come from one place. They used to be
@@ -14,7 +14,7 @@ use crate::views::texts::language::t;
 pub fn state_badge(cell: &StateCell) -> impl Renderable + '_ {
     rsx! {
         <span class=(cell.badge)>
-            <span class=(cell.dot)></span>(crate::views::texts::language::word(&cell.word))
+            <span class=(cell.dot)></span>(crate::web::views::texts::language::word(&cell.word))
         </span>
     }
 }
@@ -47,16 +47,16 @@ pub fn deploy_controls<'a>(
 ) -> impl Renderable + 'a {
     rsx! {
         <form method="post" data-action="deploy"
-              class=(crate::views::components::action_button::shown(cell.action == "deploy"))
+              class=(crate::web::views::components::action_button::shown(cell.action == "deploy"))
               action=(format!("/projects/{project_slug}/services/{service_slug}/deploy"))>
             <input type="hidden" name="from" value=(from)>
-            (crate::views::components::action_button::action_button("Deploy", crate::views::components::action_button::PLAY, cell.busy))
+            (crate::web::views::components::action_button::action_button("Deploy", crate::web::views::components::action_button::PLAY, cell.busy))
         </form>
         <form method="post" data-action="stop"
-              class=(crate::views::components::action_button::shown(cell.action == "stop"))
+              class=(crate::web::views::components::action_button::shown(cell.action == "stop"))
               action=(format!("/projects/{project_slug}/services/{service_slug}/stop"))>
             <input type="hidden" name="from" value=(from)>
-            (crate::views::components::action_button::action_button("Stop", crate::views::components::action_button::STOP, cell.busy))
+            (crate::web::views::components::action_button::action_button("Stop", crate::web::views::components::action_button::STOP, cell.busy))
         </form>
     }
 }
@@ -136,8 +136,8 @@ impl Whereabouts {
     }
 }
 
-pub fn where_it_runs(placements: &[crate::entities::replica::Replica]) -> Whereabouts {
-    let live: Vec<&crate::entities::replica::Replica> =
+pub fn where_it_runs(placements: &[crate::domain::entities::replica::Replica]) -> Whereabouts {
+    let live: Vec<&crate::domain::entities::replica::Replica> =
         placements.iter().filter(|r| !r.evicted()).collect();
 
     Whereabouts {
@@ -172,7 +172,7 @@ pub enum Elsewhere {
 /// the project's list, its stream, and the service's own page — and a
 /// badge that disagreed with itself between a first paint and the swap
 /// that followed is the failure `StateCell` exists to prevent.
-pub fn elsewhere_of(placements: &[crate::entities::replica::Replica]) -> Option<Elsewhere> {
+pub fn elsewhere_of(placements: &[crate::domain::entities::replica::Replica]) -> Option<Elsewhere> {
     let live = placements.iter().filter(|replica| !replica.evicted());
     if live.clone().any(|replica| replica.is_here()) {
         return None;
@@ -186,7 +186,7 @@ pub fn elsewhere_of(placements: &[crate::entities::replica::Replica]) -> Option<
 }
 
 pub fn state_cell(
-    observed: &crate::deploy::Observed,
+    observed: &crate::infra::deploy::Observed,
     deploying: bool,
     whereabouts: Whereabouts,
     // `None` when copies run on this node, which is the ordinary case and
@@ -208,7 +208,7 @@ pub fn state_cell(
         };
     }
     match observed {
-        crate::deploy::Observed::Running { .. } => StateCell {
+        crate::infra::deploy::Observed::Running { .. } => StateCell {
             word: "Running".into(),
             badge: "badge badge-success",
             dot: "dot dot-success",
@@ -217,7 +217,7 @@ pub fn state_cell(
             address,
             whereabouts,
         },
-        crate::deploy::Observed::Stopped { exit_code } => StateCell {
+        crate::infra::deploy::Observed::Stopped { exit_code } => StateCell {
             word: format!("Exited {exit_code}"),
             badge: "badge badge-danger",
             dot: "dot dot-danger",
@@ -231,7 +231,7 @@ pub fn state_cell(
         // action included: stopping it is what its owner can do about a
         // service running on somebody else's machine, and the instruction
         // travels now.
-        crate::deploy::Observed::Absent => match elsewhere {
+        crate::infra::deploy::Observed::Absent => match elsewhere {
             Some(Elsewhere::Running) => StateCell {
                 word: "Running elsewhere".into(),
                 badge: "badge badge-success",
@@ -260,7 +260,7 @@ pub fn state_cell(
                 whereabouts: whereabouts.clone(),
             },
         },
-        crate::deploy::Observed::Unknown(_) => StateCell {
+        crate::infra::deploy::Observed::Unknown(_) => StateCell {
             word: "Unknown".into(),
             badge: "badge badge-info",
             dot: "dot dot-info",
@@ -275,8 +275,8 @@ pub fn state_cell(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::deploy::Observed;
     use crate::features::services::project_cells_component::replica_cell;
+    use crate::infra::deploy::Observed;
 
     /// The column counts copies and never names an address.
     ///
@@ -289,24 +289,25 @@ mod tests {
     /// table, a row each.
     #[test]
     fn the_column_counts_copies_rather_than_naming_one() {
-        let replica = |slot, here: bool, address: Option<&str>| crate::entities::replica::Replica {
-            id: format!("rp-{slot}"),
-            service_id: "svc-1".into(),
-            node_id: (!here).then(|| "nd-elsewhere".to_string()),
-            slot,
-            address: address.map(str::to_string),
-            overlay_port: None,
-            last_error: None,
-            evicted_at: None,
-            reserved_host: None,
-            memory_bytes: None,
-            disk_bytes: None,
-            cpu_millicores: None,
-            following: None,
-            wal_held: None,
-            placed_by: None,
-            placed_note: None,
-        };
+        let replica =
+            |slot, here: bool, address: Option<&str>| crate::domain::entities::replica::Replica {
+                id: format!("rp-{slot}"),
+                service_id: "svc-1".into(),
+                node_id: (!here).then(|| "nd-elsewhere".to_string()),
+                slot,
+                address: address.map(str::to_string),
+                overlay_port: None,
+                last_error: None,
+                evicted_at: None,
+                reserved_host: None,
+                memory_bytes: None,
+                disk_bytes: None,
+                cpu_millicores: None,
+                following: None,
+                wal_held: None,
+                placed_by: None,
+                placed_note: None,
+            };
 
         // The ordinary case: one copy, here, with an address the page
         // no longer shows.
@@ -349,23 +350,25 @@ mod tests {
     #[test]
     fn the_count_of_copies_is_read_in_the_accounts_language() {
         let three = Whereabouts { total: 3, away: 2 };
-        let spanish =
-            crate::views::texts::language::scoped(crate::values::language::Language::Es, || {
-                three.say()
-            });
+        let spanish = crate::web::views::texts::language::scoped(
+            crate::domain::values::language::Language::Es,
+            || three.say(),
+        );
         assert_eq!(spanish, "3 réplicas · 2 en otro nodo");
 
         assert_eq!(
-            crate::views::texts::language::scoped(crate::values::language::Language::Es, || {
-                Whereabouts { total: 1, away: 1 }.say()
-            }),
+            crate::web::views::texts::language::scoped(
+                crate::domain::values::language::Language::Es,
+                || { Whereabouts { total: 1, away: 1 }.say() }
+            ),
             "1 en otro nodo"
         );
         // Singular, and the plural is not "1 replicas".
         assert_eq!(
-            crate::views::texts::language::scoped(crate::values::language::Language::Es, || {
-                Whereabouts { total: 1, away: 0 }.say()
-            }),
+            crate::web::views::texts::language::scoped(
+                crate::domain::values::language::Language::Es,
+                || { Whereabouts { total: 1, away: 0 }.say() }
+            ),
             "1 réplica"
         );
     }
@@ -407,7 +410,7 @@ mod tests {
 
         for cell in &placed {
             assert!(
-                crate::views::texts::lookup(&cell.word).is_some(),
+                crate::web::views::texts::lookup(&cell.word).is_some(),
                 "no Spanish for the state word {:?}",
                 cell.word
             );
@@ -420,7 +423,7 @@ mod tests {
         // A guard that covers one of two functions producing the same
         // kind of value is a guard that will be right until somebody
         // touches the other one.
-        let replica = |address: Option<&str>| crate::entities::replica::Replica {
+        let replica = |address: Option<&str>| crate::domain::entities::replica::Replica {
             id: "rp-1".into(),
             service_id: "svc-1".into(),
             node_id: Some("nd-far".into()),
@@ -438,16 +441,16 @@ mod tests {
             placed_by: None,
             placed_note: None,
         };
-        let failed = crate::entities::replica::Replica {
+        let failed = crate::domain::entities::replica::Replica {
             last_error: Some("it exited 1".into()),
             ..replica(None)
         };
-        let evicted = crate::entities::replica::Replica {
+        let evicted = crate::domain::entities::replica::Replica {
             evicted_at: Some(1),
             ..replica(None)
         };
 
-        let not_following = crate::entities::replica::Replica {
+        let not_following = crate::domain::entities::replica::Replica {
             following: Some(false),
             ..replica(Some("10.42.1.5"))
         };
@@ -463,7 +466,7 @@ mod tests {
         ];
         for cell in &copies {
             assert!(
-                crate::views::texts::lookup(&cell.word).is_some(),
+                crate::web::views::texts::lookup(&cell.word).is_some(),
                 "no Spanish for the replica word {:?}",
                 cell.word
             );

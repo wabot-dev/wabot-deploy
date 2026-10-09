@@ -1,7 +1,7 @@
 use wabot::sqlite::SqliteDatabase;
 
-use crate::entities::service::Service;
-use crate::repositories::ports;
+use crate::domain::entities::service::Service;
+use crate::infra::repositories::ports;
 
 pub struct DeleteServicePort<'a> {
     pub service: &'a Service,

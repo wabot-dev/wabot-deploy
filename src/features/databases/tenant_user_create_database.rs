@@ -1,11 +1,11 @@
 use wabot::sqlite::SqliteDatabase;
 
-use crate::authz::tenant_user;
-use crate::entities::account::Account;
-use crate::entities::project::Project;
-use crate::entities::service::Service;
+use crate::domain::authz::tenant_user;
+use crate::domain::entities::account::Account;
+use crate::domain::entities::project::Project;
+use crate::domain::entities::service::Service;
 use crate::features::databases::create_database_request::CreateDatabaseRequest;
-use crate::repositories::access;
+use crate::infra::repositories::access;
 
 pub async fn run(
     database: &SqliteDatabase,
@@ -29,7 +29,7 @@ pub async fn run(
     // Blank is not "no ceiling" here. An unbounded Postgres on a node
     // with one core is the node, so the form's empty answer is the
     // form's default answer.
-    let memory_limit = crate::policies::presets::parse(&asked.memory)?
+    let memory_limit = crate::domain::policies::presets::parse(&asked.memory)?
         .unwrap_or(crate::features::databases::create_database_command::DEFAULT_PRESET);
 
     let (service, _) = crate::features::databases::create_database_command::CreateDatabase {

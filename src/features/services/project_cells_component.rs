@@ -65,7 +65,7 @@ pub struct EdgeCell {
 /// The server knows this when it renders.
 /// `the_first_paint_and_the_stream_agree` is a test on the node page for
 /// exactly this shape; this card did not have it.
-pub fn edge_cell(latest: Option<&crate::network::errand::Record>) -> EdgeCell {
+pub fn edge_cell(latest: Option<&crate::infra::network::errand::Record>) -> EdgeCell {
     match latest {
         Some(order) if order.error.is_some() => EdgeCell {
             badge: "badge badge-danger",
@@ -108,7 +108,7 @@ pub fn edge_cell(latest: Option<&crate::network::errand::Record>) -> EdgeCell {
 /// So `placement_state` renders *this*, and there is nothing left to keep
 /// in step.
 pub fn replica_cell(
-    replica: &crate::entities::replica::Replica,
+    replica: &crate::domain::entities::replica::Replica,
     // Whether the service is meant to be running at all. Nobody waits for
     // news about a copy that is not, here or anywhere else.
     stopped: bool,
@@ -158,7 +158,7 @@ pub fn replica_cell(
             detail: match replica.wal_held {
                 Some(held) if held > 0 => format!(
                     "{} of write-ahead log held for it",
-                    crate::node::memory::human(held)
+                    crate::infra::node::memory::human(held)
                 ),
                 _ => String::new(),
             },

@@ -1,8 +1,8 @@
 //! Minting a join token, spending one, and the terms each states.
 
-use crate::network;
-use crate::network::enrolment::Enrolment;
-use crate::views::texts::language::t;
+use crate::infra::network;
+use crate::infra::network::enrolment::Enrolment;
+use crate::web::views::texts::language::t;
 use hypertext::prelude::*;
 
 /// The terms of a join, before it is a join.
@@ -43,8 +43,8 @@ pub fn review_card<'a>(
                             <input type="checkbox" name=(format!("accept-{}", capability.name()))
                                    value="1" checked>
                             <span>
-                                <strong>(crate::views::components::node_capabilities::asking(*capability))</strong>
-                                <span class="tile-detail">(crate::views::components::node_capabilities::why(*capability))</span>
+                                <strong>(crate::web::views::components::node_capabilities::asking(*capability))</strong>
+                                <span class="tile-detail">(crate::web::views::components::node_capabilities::why(*capability))</span>
                             </span>
                         </label>
                     }
@@ -60,7 +60,7 @@ pub fn review_card<'a>(
                 } @else {
                     <ul class="notes">
                         @for capability in &offers {
-                            <li>(crate::views::components::node_capabilities::offering(*capability))</li>
+                            <li>(crate::web::views::components::node_capabilities::offering(*capability))</li>
                         }
                     </ul>
                 }
@@ -106,7 +106,7 @@ pub fn enrol_card(may_enrol: bool) -> impl Renderable {
                     // complete and the only screen that could request it
                     // did not know it existed.
                     <p class="tile-detail">(t("Ask that node to let this one:"))</p>
-                    @for capability in crate::values::capability::Capability::ALL {
+                    @for capability in crate::domain::values::capability::Capability::ALL {
                         <label class="capability">
                             <input type="checkbox" name=(format!("require-{}", capability.name()))
                                    value="1" checked>
@@ -115,16 +115,16 @@ pub fn enrol_card(may_enrol: bool) -> impl Renderable {
                             // this list is what *this* node wants to be
                             // allowed to do over there. Swapping them
                             // reads plausibly and says the opposite.
-                            <span>(t(crate::views::components::node_capabilities::offering(capability)))</span>
+                            <span>(t(crate::web::views::components::node_capabilities::offering(capability)))</span>
                         </label>
                     }
 
                     <p class="tile-detail">(t("And offer it, in return:"))</p>
-                    @for capability in crate::values::capability::Capability::ALL {
+                    @for capability in crate::domain::values::capability::Capability::ALL {
                         <label class="capability">
                             <input type="checkbox" name=(format!("offer-{}", capability.name()))
                                    value="1">
-                            <span>(t(crate::views::components::node_capabilities::asking(capability)))</span>
+                            <span>(t(crate::web::views::components::node_capabilities::asking(capability)))</span>
                         </label>
                     }
                     <p class="field-hint">(t("Both lists travel inside the token and are shown on the \
@@ -291,7 +291,7 @@ pub fn enrolment_row<'a>(
 pub fn authority_row<'a>(
     authority: &'a network::Authority,
     nodes: &'a [network::Node],
-    held: &'a [crate::values::capability::Capability],
+    held: &'a [crate::domain::values::capability::Capability],
 ) -> impl Renderable + 'a {
     let name = nodes
         .iter()

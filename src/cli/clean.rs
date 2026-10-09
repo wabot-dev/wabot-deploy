@@ -50,7 +50,7 @@
 //! may be unchanged, because a cleanup that appears to have done nothing
 //! is one somebody will run again harder.
 
-use crate::config::Config;
+use crate::infra::config::Config;
 
 /// How many database copies from updates to keep.
 ///
@@ -62,7 +62,7 @@ use crate::config::Config;
 const KEEP_UPDATE_COPIES: usize = 3;
 
 pub async fn run(config: Config, apply: bool, volumes: bool) -> anyhow::Result<i32> {
-    let database = crate::db::open(&config.database_path()).await?;
+    let database = crate::infra::db::open(&config.database_path()).await?;
 
     match apply {
         true => println!("cleaning up"),
@@ -80,13 +80,13 @@ pub async fn run(config: Config, apply: bool, volumes: bool) -> anyhow::Result<i
     // for why there is only one of those.
     // `None` means the rows could not be read, and that is not permission
     // to decide anything is unclaimed.
-    let Some(claims) = crate::deploy::Deployer::claimed(&database).await else {
+    let Some(claims) = crate::infra::deploy::Deployer::claimed(&database).await else {
         println!("  this node's rows could not be read, so nothing here is known to be");
         println!("  unclaimed. Refusing rather than guessing — see `doctor`.");
         return Ok(1);
     };
-    let live = crate::deploy::Claim::containers(&claims);
-    for (kind, path) in crate::deploy::Deployer::leftovers(&config.node.data_dir, &live) {
+    let live = crate::infra::deploy::Claim::containers(&claims);
+    for (kind, path) in crate::infra::deploy::Deployer::leftovers(&config.node.data_dir, &live) {
         // A volume is the one kind that cannot be made again.
         if kind == "data" && !volumes {
             kept_back.push(path);
@@ -135,7 +135,7 @@ pub async fn run(config: Config, apply: bool, volumes: bool) -> anyhow::Result<i
     }
 
     // ── Images ──────────────────────────────────────────────────────
-    match crate::runtime::client::Containerd::connect().await {
+    match crate::infra::runtime::client::Containerd::connect().await {
         Err(_) => println!("  images      containerd is not answering; none examined"),
         Ok(client) => {
             let (gone, tagged) = images(&client, &database, apply, &mut removed).await;
@@ -207,12 +207,12 @@ pub async fn run(config: Config, apply: bool, volumes: bool) -> anyhow::Result<i
 ///
 /// Returns how many were removed and which tags are unreferenced.
 async fn images(
-    client: &crate::runtime::client::Containerd,
+    client: &crate::infra::runtime::client::Containerd,
     database: &wabot::sqlite::SqliteDatabase,
     apply: bool,
     removed: &mut usize,
 ) -> (usize, Vec<(String, Option<i64>)>) {
-    let Ok(held) = crate::runtime::images::all(client).await else {
+    let Ok(held) = crate::infra::runtime::images::all(client).await else {
         println!("  images      could not be listed");
         return (0, Vec::new());
     };
@@ -221,7 +221,7 @@ async fn images(
     // wanted. Read from the services rather than from what is running:
     // a service that is stopped still names the image it would start.
     let wanted: std::collections::HashSet<String> =
-        match crate::repositories::services::all(database, None).await {
+        match crate::infra::repositories::services::all(database, None).await {
             Ok(services) => services.into_iter().map(|service| service.image).collect(),
             // Unreadable rows are no grounds for deciding an image is
             // unwanted. With no list, everything is wanted — the shape
@@ -239,13 +239,13 @@ async fn images(
             // Weighed one at a time, because the manifest has to be read
             // to know: the listing's own size field is the manifest's,
             // which is kilobytes of JSON for an image of any size.
-            let size = crate::runtime::images::weight(client, &image.reference).await;
+            let size = crate::infra::runtime::images::weight(client, &image.reference).await;
             tagged.push((image.reference, size));
             continue;
         }
         match apply {
             false => println!("  image       {}", image.reference),
-            true => match crate::runtime::images::forget(client, &image.reference).await {
+            true => match crate::infra::runtime::images::forget(client, &image.reference).await {
                 Ok(()) => {
                     println!("  image       {} removed", image.reference);
                     *removed += 1;

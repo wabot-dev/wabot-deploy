@@ -1,0 +1,375 @@
+//! Opening the node's database, and the two tables it starts with.
+//!
+//! Migrations are `include_str!`ed rather than read from disk: the
+//! binary is copied to a machine and run there, and a daemon that
+//! needed a sibling `migrations/` directory would not be the single
+//! file the product claims to be.
+
+use std::path::Path;
+
+use wabot::sqlite::{Migration, MigrationRunner, SqliteConfig, SqliteDatabase, SqliteResult};
+
+/// Applied in id order, once each, checksummed. Add to the end.
+fn migrations() -> Vec<Migration> {
+    vec![
+        Migration::new("0001_node", include_str!("../../migrations/0001_node.sql")),
+        Migration::new("0002_edge", include_str!("../../migrations/0002_edge.sql")),
+        Migration::new("0003_acme", include_str!("../../migrations/0003_acme.sql")),
+        Migration::new(
+            "0004_accounts",
+            include_str!("../../migrations/0004_accounts.sql"),
+        ),
+        Migration::new(
+            "0005_projects",
+            include_str!("../../migrations/0005_projects.sql"),
+        ),
+        Migration::new(
+            "0006_network",
+            include_str!("../../migrations/0006_network.sql"),
+        ),
+        Migration::new(
+            "0007_ports",
+            include_str!("../../migrations/0007_ports.sql"),
+        ),
+        Migration::new(
+            "0008_people",
+            include_str!("../../migrations/0008_people.sql"),
+        ),
+        Migration::new(
+            "0009_registry",
+            include_str!("../../migrations/0009_registry.sql"),
+        ),
+        Migration::new(
+            "0010_registry_tags",
+            include_str!("../../migrations/0010_registry_tags.sql"),
+        ),
+        Migration::new(
+            "0011_updates",
+            include_str!("../../migrations/0011_updates.sql"),
+        ),
+        Migration::new(
+            "0012_certificate_sources",
+            include_str!("../../migrations/0012_certificate_sources.sql"),
+        ),
+        Migration::new(
+            "0013_certificate_failures",
+            include_str!("../../migrations/0013_certificate_failures.sql"),
+        ),
+        Migration::new(
+            "0014_account_theme",
+            include_str!("../../migrations/0014_account_theme.sql"),
+        ),
+        Migration::new(
+            "0015_network",
+            include_str!("../../migrations/0015_network.sql"),
+        ),
+        Migration::new(
+            "0016_enrolment",
+            include_str!("../../migrations/0016_enrolment.sql"),
+        ),
+        Migration::new(
+            "0017_errand",
+            include_str!("../../migrations/0017_errand.sql"),
+        ),
+        Migration::new(
+            "0018_authority_secret",
+            include_str!("../../migrations/0018_authority_secret.sql"),
+        ),
+        Migration::new(
+            "0019_registry_credential",
+            include_str!("../../migrations/0019_registry_credential.sql"),
+        ),
+        Migration::new(
+            "0020_replica",
+            include_str!("../../migrations/0020_replica.sql"),
+        ),
+        Migration::new(
+            "0021_origin",
+            include_str!("../../migrations/0021_origin.sql"),
+        ),
+        Migration::new(
+            "0022_overlay_port",
+            include_str!("../../migrations/0022_overlay_port.sql"),
+        ),
+        Migration::new(
+            "0023_service_edge",
+            include_str!("../../migrations/0023_service_edge.sql"),
+        ),
+        Migration::new(
+            "0024_own_names",
+            include_str!("../../migrations/0024_own_names.sql"),
+        ),
+        Migration::new(
+            "0025_grant",
+            include_str!("../../migrations/0025_grant.sql"),
+        ),
+        Migration::new(
+            "0026_allows",
+            include_str!("../../migrations/0026_allows.sql"),
+        ),
+        Migration::new(
+            "0027_account_language",
+            include_str!("../../migrations/0027_account_language.sql"),
+        ),
+        Migration::new(
+            "0028_volume",
+            include_str!("../../migrations/0028_volume.sql"),
+        ),
+        Migration::new(
+            "0029_memory",
+            include_str!("../../migrations/0029_memory.sql"),
+        ),
+        Migration::new(
+            "0030_database",
+            include_str!("../../migrations/0030_database.sql"),
+        ),
+        Migration::new(
+            "0031_remote_standby",
+            include_str!("../../migrations/0031_remote_standby.sql"),
+        ),
+        Migration::new(
+            "0032_owner_domain",
+            include_str!("../../migrations/0032_owner_domain.sql"),
+        ),
+        Migration::new(
+            "0033_node_ca",
+            include_str!("../../migrations/0033_node_ca.sql"),
+        ),
+        Migration::new(
+            "0034_replica_memory",
+            include_str!("../../migrations/0034_replica_memory.sql"),
+        ),
+        Migration::new(
+            "0035_replica_disk",
+            include_str!("../../migrations/0035_replica_disk.sql"),
+        ),
+        Migration::new(
+            "0036_replica_cpu",
+            include_str!("../../migrations/0036_replica_cpu.sql"),
+        ),
+        Migration::new(
+            "0037_errand_from",
+            include_str!("../../migrations/0037_errand_from.sql"),
+        ),
+        Migration::new(
+            "0038_cpu_limit",
+            include_str!("../../migrations/0038_cpu_limit.sql"),
+        ),
+        Migration::new(
+            "0039_following",
+            include_str!("../../migrations/0039_following.sql"),
+        ),
+        Migration::new(
+            "0040_archiving_default",
+            include_str!("../../migrations/0040_archiving_default.sql"),
+        ),
+        Migration::new(
+            "0041_restored_from",
+            include_str!("../../migrations/0041_restored_from.sql"),
+        ),
+        Migration::new(
+            "0042_log_timestamps",
+            include_str!("../../migrations/0042_log_timestamps.sql"),
+        ),
+        Migration::new(
+            "0043_node_usage",
+            include_str!("../../migrations/0043_node_usage.sql"),
+        ),
+        Migration::new(
+            "0044_log_budget",
+            include_str!("../../migrations/0044_log_budget.sql"),
+        ),
+        Migration::new(
+            "0045_edge_relay",
+            include_str!("../../migrations/0045_edge_relay.sql"),
+        ),
+        Migration::new(
+            "0046_node_lan",
+            include_str!("../../migrations/0046_node_lan.sql"),
+        ),
+        Migration::new(
+            "0047_grant_withdrawn",
+            include_str!("../../migrations/0047_grant_withdrawn.sql"),
+        ),
+        Migration::new(
+            "0048_node_version",
+            include_str!("../../migrations/0048_node_version.sql"),
+        ),
+        Migration::new(
+            "0049_dial_secret",
+            include_str!("../../migrations/0049_dial_secret.sql"),
+        ),
+        Migration::new(
+            "0050_undo_store_off",
+            include_str!("../../migrations/0050_undo_store_off.sql"),
+        ),
+        Migration::new(
+            "0051_node_capacity",
+            include_str!("../../migrations/0051_node_capacity.sql"),
+        ),
+        Migration::new(
+            "0052_placed_by",
+            include_str!("../../migrations/0052_placed_by.sql"),
+        ),
+        Migration::new(
+            "0053_draining",
+            include_str!("../../migrations/0053_draining.sql"),
+        ),
+        Migration::new(
+            "0054_tenant",
+            include_str!("../../migrations/0054_tenant.sql"),
+        ),
+        Migration::new(
+            "0055_disk_limit",
+            include_str!("../../migrations/0055_disk_limit.sql"),
+        ),
+        Migration::new(
+            "0056_invitation_scope",
+            include_str!("../../migrations/0056_invitation_scope.sql"),
+        ),
+        Migration::new(
+            "0057_username_per_scope",
+            include_str!("../../migrations/0057_username_per_scope.sql"),
+        ),
+    ]
+}
+
+/// Open `path` and bring the schema up to date.
+pub async fn open(path: &Path) -> SqliteResult<SqliteDatabase> {
+    let database = SqliteDatabase::open(SqliteConfig::at(path))?;
+    migrate(&database).await?;
+    Ok(database)
+}
+
+/// A database with no file behind it: same schema, same SQL, nothing
+/// on disk.
+///
+/// Test-only, and worth having rather than reaching for
+/// `InMemoryRepository`: this exercises the real migrations and the
+/// real SQL, so a query that renders wrongly fails here instead of on
+/// a node.
+#[cfg(test)]
+pub async fn open_in_memory() -> SqliteResult<SqliteDatabase> {
+    let database = SqliteDatabase::in_memory()?;
+    migrate(&database).await?;
+    Ok(database)
+}
+
+pub async fn migrate(database: &SqliteDatabase) -> SqliteResult<Vec<String>> {
+    let applied = runner(database).up().await?;
+    if !applied.is_empty() {
+        tracing::info!(migrations = applied.join(", "), "schema updated");
+    }
+    Ok(applied)
+}
+
+/// What is applied and what is pending — `doctor` prints it.
+pub async fn status(
+    database: &SqliteDatabase,
+) -> SqliteResult<Vec<wabot::sqlite::MigrationStatus>> {
+    runner(database).status().await
+}
+
+fn runner(database: &SqliteDatabase) -> MigrationRunner {
+    MigrationRunner::new(database.clone()).with_migrations(migrations())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Every file in `migrations/` is in the list above.
+    ///
+    /// **A guard that enumerates its inputs is right until somebody adds
+    /// an input**, and this list is the fourth place in this repository to
+    /// prove it. Writing `0042_log_timestamps.sql` and not registering it
+    /// produced no error anywhere: the column simply did not exist, and
+    /// SQLite's oldest misfeature turned the missing identifier
+    /// `"log_timestamps"` in a `SELECT` into the *string literal*
+    /// `log_timestamps` — so the query succeeded and the decoder was
+    /// handed text where it wanted a number.
+    ///
+    /// A test suite that only ran the migrations it knew about could never
+    /// have found that. This reads the directory.
+    #[test]
+    fn every_migration_on_disk_is_registered() {
+        let directory = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("migrations");
+        let mut on_disk: Vec<String> = std::fs::read_dir(&directory)
+            .expect("the migrations directory")
+            .flatten()
+            .filter_map(|entry| {
+                let name = entry.file_name().to_string_lossy().to_string();
+                name.strip_suffix(".sql").map(str::to_string)
+            })
+            .collect();
+        on_disk.sort();
+
+        let mut registered: Vec<String> = migrations()
+            .iter()
+            .map(|migration| migration.id.to_string())
+            .collect();
+        registered.sort();
+
+        assert_eq!(
+            on_disk, registered,
+            "the migrations directory and the list in this file disagree"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_schema_applies_and_is_idempotent() {
+        let database = open_in_memory().await.expect("open");
+
+        let status = status(&database).await.expect("status");
+        assert!(
+            status.iter().all(|s| s.applied && !s.drifted),
+            "every migration applied cleanly: {status:?}"
+        );
+
+        let count: i64 = database
+            .read(|c| {
+                c.query_row(
+                    "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='node_state'",
+                    [],
+                    |row| row.get(0),
+                )
+            })
+            .await
+            .expect("query");
+        assert_eq!(count, 1, "node_state is missing");
+
+        assert!(
+            migrate(&database).await.expect("migrate").is_empty(),
+            "a second run has nothing to do"
+        );
+    }
+
+    /// The path `install` takes: a real file, created along with the
+    /// directories above it, and reopened without re-migrating.
+    #[tokio::test]
+    async fn opening_a_file_creates_the_directories_and_survives_a_reopen() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("data").join("db").join("node.db");
+
+        let database = open(&path).await.expect("open");
+        crate::infra::ledger::record(
+            &database,
+            crate::infra::ledger::Step::Layout,
+            crate::infra::ledger::Status::Done,
+            None,
+        )
+        .await
+        .expect("record");
+        database.close().await.expect("close");
+
+        assert!(path.exists(), "the database file was created");
+
+        let database = open(&path).await.expect("reopen");
+        assert!(
+            crate::infra::ledger::is_done(&database, crate::infra::ledger::Step::Layout)
+                .await
+                .expect("is_done"),
+            "the row written before the close is still there"
+        );
+    }
+}

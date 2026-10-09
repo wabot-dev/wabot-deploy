@@ -7,9 +7,9 @@ use wabot::rest::axum::extract::Request;
 use wabot::rest::axum::response::Response;
 use wabot::rest::RestResult;
 
-use crate::console::auth::{signed_in, SessionMiddleware};
-use crate::console::ConsoleState;
 use crate::features::node::node_user_node_settings_page::NodeTab;
+use crate::web::console::auth::{signed_in, SessionMiddleware};
+use crate::web::console::ConsoleState;
 
 #[injectable]
 pub struct BackupRestController {
@@ -27,12 +27,13 @@ impl BackupRestController {
     /// form that waited for three databases to restart is a form that
     /// times out.
     async fn redeploy_databases(&self) {
-        let Ok(services) = crate::repositories::services::all(&self.state.database, None).await
+        let Ok(services) =
+            crate::infra::repositories::services::all(&self.state.database, None).await
         else {
             return;
         };
         for service in services.iter().filter(|service| service.kind.is_managed()) {
-            let command = crate::deploy::jobs::DeployService {
+            let command = crate::infra::deploy::jobs::DeployService {
                 service_id: service.id.clone(),
                 release_id: None,
             };
@@ -58,22 +59,22 @@ impl BackupRestController {
     async fn set_backups(&self, request: Request) -> RestResult<Response> {
         let here = &NodeTab::Backup.path();
         let Some(account) = signed_in(&self.auth) else {
-            return Ok(crate::console::auth::see_other("/sign-in"));
+            return Ok(crate::web::console::auth::see_other("/sign-in"));
         };
-        if !crate::authz::node_user::manages_the_machine(&account) {
-            return Ok(crate::console::auth::see_other("/"));
+        if !crate::domain::authz::node_user::manages_the_machine(&account) {
+            return Ok(crate::web::console::auth::see_other("/"));
         }
-        let form = match crate::console::auth::read_form(request).await {
+        let form = match crate::web::console::auth::read_form(request).await {
             Ok(form) => form,
             Err(response) => return Ok(response),
         };
 
         let asked = crate::features::backups::set_backup_plan_request::SetBackupPlanRequest {
-            destination: crate::console::auth::field(&form, "destination").to_string(),
-            cadence: crate::console::auth::field(&form, "cadence").to_string(),
-            hour: crate::console::auth::field(&form, "hour").to_string(),
-            weekday: crate::console::auth::field(&form, "weekday").to_string(),
-            keep_days: crate::console::auth::field(&form, "keep_days").to_string(),
+            destination: crate::web::console::auth::field(&form, "destination").to_string(),
+            cadence: crate::web::console::auth::field(&form, "cadence").to_string(),
+            hour: crate::web::console::auth::field(&form, "hour").to_string(),
+            weekday: crate::web::console::auth::field(&form, "weekday").to_string(),
+            keep_days: crate::web::console::auth::field(&form, "keep_days").to_string(),
             // Presence, not value: an unticked checkbox sends nothing at
             // all, so this is the last place that can tell it from a
             // form that never carried the field.
@@ -95,9 +96,9 @@ impl BackupRestController {
                 if saved.archiving_changed {
                     self.redeploy_databases().await;
                 }
-                Ok(crate::console::auth::see_other(here))
+                Ok(crate::web::console::auth::see_other(here))
             }
-            Err(reason) => Ok(crate::console::auth::back_with_error(here, &reason)),
+            Err(reason) => Ok(crate::web::console::auth::back_with_error(here, &reason)),
         }
     }
 
@@ -121,22 +122,22 @@ impl BackupRestController {
     async fn set_bucket_credentials(&self, request: Request) -> RestResult<Response> {
         let here = &NodeTab::Backup.path();
         let Some(account) = signed_in(&self.auth) else {
-            return Ok(crate::console::auth::see_other("/sign-in"));
+            return Ok(crate::web::console::auth::see_other("/sign-in"));
         };
-        if !crate::authz::node_user::manages_the_machine(&account) {
-            return Ok(crate::console::auth::see_other("/"));
+        if !crate::domain::authz::node_user::manages_the_machine(&account) {
+            return Ok(crate::web::console::auth::see_other("/"));
         }
-        let form = match crate::console::auth::read_form(request).await {
+        let form = match crate::web::console::auth::read_form(request).await {
             Ok(form) => form,
             Err(response) => return Ok(response),
         };
         let asked =
             crate::features::backups::set_bucket_credentials_request::SetBucketCredentialsRequest {
-                access_key_id: crate::console::auth::field(&form, "access_key_id").to_string(),
-                secret_access_key: crate::console::auth::field(&form, "secret_access_key")
+                access_key_id: crate::web::console::auth::field(&form, "access_key_id").to_string(),
+                secret_access_key: crate::web::console::auth::field(&form, "secret_access_key")
                     .to_string(),
-                region: crate::console::auth::field(&form, "region").to_string(),
-                endpoint: crate::console::auth::field(&form, "endpoint").to_string(),
+                region: crate::web::console::auth::field(&form, "region").to_string(),
+                endpoint: crate::web::console::auth::field(&form, "endpoint").to_string(),
             };
         match crate::features::backups::node_user_set_bucket_credentials::run(
             &self.state.database,
@@ -146,8 +147,8 @@ impl BackupRestController {
         )
         .await
         {
-            Ok(()) => Ok(crate::console::auth::see_other(here)),
-            Err(reason) => Ok(crate::console::auth::back_with_error(here, &reason)),
+            Ok(()) => Ok(crate::web::console::auth::see_other(here)),
+            Err(reason) => Ok(crate::web::console::auth::back_with_error(here, &reason)),
         }
     }
 
@@ -158,10 +159,10 @@ impl BackupRestController {
     async fn forget_bucket_credentials(&self, _request: Request) -> RestResult<Response> {
         let here = &NodeTab::Backup.path();
         let Some(account) = signed_in(&self.auth) else {
-            return Ok(crate::console::auth::see_other("/sign-in"));
+            return Ok(crate::web::console::auth::see_other("/sign-in"));
         };
-        if !crate::authz::node_user::manages_the_machine(&account) {
-            return Ok(crate::console::auth::see_other("/"));
+        if !crate::domain::authz::node_user::manages_the_machine(&account) {
+            return Ok(crate::web::console::auth::see_other("/"));
         }
         if let Err(reason) = crate::features::backups::node_user_forget_bucket_credentials::run(
             &self.state.database,
@@ -170,9 +171,9 @@ impl BackupRestController {
         )
         .await
         {
-            return Ok(crate::console::auth::back_with_error(here, &reason));
+            return Ok(crate::web::console::auth::back_with_error(here, &reason));
         }
-        Ok(crate::console::auth::see_other(here))
+        Ok(crate::web::console::auth::see_other(here))
     }
 
     /// Take one now.
@@ -188,10 +189,10 @@ impl BackupRestController {
     async fn back_up_now(&self, _request: Request) -> RestResult<Response> {
         let here = &NodeTab::Backup.path();
         let Some(account) = signed_in(&self.auth) else {
-            return Ok(crate::console::auth::see_other("/sign-in"));
+            return Ok(crate::web::console::auth::see_other("/sign-in"));
         };
-        if !crate::authz::node_user::manages_the_machine(&account) {
-            return Ok(crate::console::auth::see_other("/"));
+        if !crate::domain::authz::node_user::manages_the_machine(&account) {
+            return Ok(crate::web::console::auth::see_other("/"));
         }
         // Refused rather than queued. Two of these is two copies of every
         // database at once on a machine with one core, and a second click
@@ -204,8 +205,8 @@ impl BackupRestController {
         )
         .await
         {
-            Ok(()) => Ok(crate::console::auth::see_other(here)),
-            Err(reason) => Ok(crate::console::auth::back_with_error(here, &reason)),
+            Ok(()) => Ok(crate::web::console::auth::see_other(here)),
+            Err(reason) => Ok(crate::web::console::auth::back_with_error(here, &reason)),
         }
     }
 }
@@ -213,7 +214,7 @@ impl BackupRestController {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::console::tests::Console;
+    use crate::web::console::tests::Console;
 
     /// The tab Jorge asked for, and what had to move onto it.
     ///
@@ -248,7 +249,7 @@ mod tests {
         // what makes this page work with scripting off.
         assert!(body.contains(r#"data-island="fields""#), "{body}");
         assert!(body.contains(r#"data-when="cadence=weekly""#), "{body}");
-        crate::console::tests::conditions_name_real_controls(&body);
+        crate::web::console::tests::conditions_name_real_controls(&body);
 
         // And it is gone from where it was. A switch on two tabs is a
         // switch somebody saves twice, with two different answers.
@@ -291,9 +292,9 @@ mod tests {
             .await;
         assert_eq!(saved.header("location"), Some("/node/backup"));
 
-        let plan = crate::backup::plan::plan(&console.database).await;
+        let plan = crate::infra::backup::plan::plan(&console.database).await;
         assert_eq!(plan.destination.as_deref(), Some("/mnt/backups"));
-        assert_eq!(plan.cadence, crate::backup::plan::Cadence::Weekly);
+        assert_eq!(plan.cadence, crate::infra::backup::plan::Cadence::Weekly);
         assert_eq!(plan.hour, 4);
         assert_eq!(plan.weekday, 2);
         assert_eq!(plan.keep_days, 30);
@@ -351,8 +352,8 @@ mod tests {
             "and says where they go — the card on this tab, not an SSH session: {no_credentials}"
         );
         assert_eq!(
-            crate::backup::plan::plan(&console.database).await,
-            crate::backup::plan::Plan::default(),
+            crate::infra::backup::plan::plan(&console.database).await,
+            crate::infra::backup::plan::Plan::default(),
             "a refused form must store nothing"
         );
 
@@ -400,10 +401,10 @@ mod tests {
         // A checkbox arrives only when ticked, so its absence is the
         // answer rather than a missing field.
         save!(&[("cadence", ""), ("keep_days", "7")]);
-        assert!(!crate::node::settings::archiving(&console.database).await);
+        assert!(!crate::infra::node::settings::archiving(&console.database).await);
 
         save!(&[("cadence", ""), ("keep_days", "7"), ("archiving", "1")]);
-        assert!(crate::node::settings::archiving(&console.database).await);
+        assert!(crate::infra::node::settings::archiving(&console.database).await);
     }
 
     /// What is on the disk, and whose it is.
@@ -445,7 +446,7 @@ mod tests {
             .expect("write it");
         };
 
-        let me = crate::network::me(&console.database)
+        let me = crate::infra::network::me(&console.database)
             .await
             .expect("read")
             .expect("this node");
@@ -615,11 +616,11 @@ mod tests {
             .await;
         // The destination is written directly: saving it through the form
         // would ask the bucket, and there is no bucket in a test.
-        crate::backup::plan::store(
+        crate::infra::backup::plan::store(
             &console.database,
-            &crate::backup::plan::Plan {
+            &crate::infra::backup::plan::Plan {
                 destination: Some("s3://somebodys-bucket/nodes".into()),
-                ..crate::backup::plan::Plan::default()
+                ..crate::infra::backup::plan::Plan::default()
             },
         )
         .await
@@ -642,9 +643,12 @@ mod tests {
         assert!(console.config.s3().is_some(), "still stored");
 
         // Pointed somewhere else, it goes.
-        crate::backup::plan::store(&console.database, &crate::backup::plan::Plan::default())
-            .await
-            .expect("store the plan");
+        crate::infra::backup::plan::store(
+            &console.database,
+            &crate::infra::backup::plan::Plan::default(),
+        )
+        .await
+        .expect("store the plan");
         console
             .harness
             .post("/node/backups/credentials/forget")
@@ -663,9 +667,9 @@ mod tests {
     async fn the_last_failure_is_on_the_page() {
         let console = Console::new().await;
         let cookie = console.signed_in().await;
-        crate::backup::plan::record(
+        crate::infra::backup::plan::record(
             &console.database,
-            crate::clock::now_ms(),
+            crate::infra::clock::now_ms(),
             &Err("ssh: connect to host backups.example port 22: no route to host".into()),
         )
         .await

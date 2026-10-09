@@ -7,15 +7,15 @@ use serde::Deserialize;
 use wabot::prelude::*;
 use wabot::ui::hypertext::IntoView;
 
-use crate::network::{self};
-use crate::repositories::access;
+use crate::infra::network::{self};
+use crate::infra::repositories::access;
 
-use crate::console::auth::{signed_in, SessionMiddleware};
-use crate::console::ConsoleState;
 use crate::features::node::node_user_node_settings_page::{NodeTab, Panel};
-use crate::views::components::node_certificate::CertificateState;
-use crate::views::layouts::layout;
-use crate::views::layouts::shell::{Area, Frame};
+use crate::web::console::auth::{signed_in, SessionMiddleware};
+use crate::web::console::ConsoleState;
+use crate::web::views::components::node_certificate::CertificateState;
+use crate::web::views::layouts::layout;
+use crate::web::views::layouts::shell::{Area, Frame};
 
 #[derive(Debug, Deserialize, Validate, Default)]
 pub struct NodeSettingsPage {
@@ -51,7 +51,7 @@ impl NodeUiController {
     /// two halves separable.
     async fn settings(&self) -> UiResult<ViewOutcome> {
         match signed_in(&self.auth)
-            .is_some_and(|account| crate::authz::node_user::manages_the_machine(&account))
+            .is_some_and(|account| crate::domain::authz::node_user::manages_the_machine(&account))
         {
             true => Ok(Redirect::found("/node").into()),
             false => Ok(Redirect::found("/").into()),
@@ -86,7 +86,7 @@ impl NodeUiController {
         let Some(account) = signed_in(&self.auth) else {
             return Ok(Redirect::found("/sign-in").into());
         };
-        if !crate::authz::node_user::manages_the_machine(&account) {
+        if !crate::domain::authz::node_user::manages_the_machine(&account) {
             return Ok(Redirect::found("/").into());
         }
 
@@ -112,14 +112,15 @@ impl NodeUiController {
         let panel = match tab {
             NodeTab::Domain => {
                 let domain =
-                    crate::node::settings::domain(&self.state.database, &self.state.config).await;
-                let facts = crate::console::certificate_facts(&self.state).await;
-                let policy = crate::edge::policy::for_name(
+                    crate::infra::node::settings::domain(&self.state.database, &self.state.config)
+                        .await;
+                let facts = crate::web::console::certificate_facts(&self.state).await;
+                let policy = crate::infra::edge::policy::for_name(
                     &self.state.database,
                     &self.state.config,
                     domain
                         .as_deref()
-                        .unwrap_or(crate::edge::certs::FALLBACK_NAME),
+                        .unwrap_or(crate::infra::edge::certs::FALLBACK_NAME),
                 )
                 .await;
                 let state = CertificateState::read(
@@ -131,11 +132,11 @@ impl NodeUiController {
                     policy
                         .last_error
                         .clone()
-                        .or(crate::node::settings::acme_error(&self.state.database).await),
+                        .or(crate::infra::node::settings::acme_error(&self.state.database).await),
                     self.state.certificates.phase(),
                     self.state.config.acme.disabled,
                 );
-                let cells = crate::views::components::node_certificate::certificate_cells(
+                let cells = crate::web::views::components::node_certificate::certificate_cells(
                     &state,
                     &facts,
                     domain.as_deref(),
@@ -151,9 +152,10 @@ impl NodeUiController {
             }
             NodeTab::Allows => {
                 let domain =
-                    crate::node::settings::domain(&self.state.database, &self.state.config).await;
+                    crate::infra::node::settings::domain(&self.state.database, &self.state.config)
+                        .await;
                 let mut provides = Vec::new();
-                for capability in crate::values::capability::Capability::ALL {
+                for capability in crate::domain::values::capability::Capability::ALL {
                     let on = network::capability::provides(&self.state.database, capability).await;
                     provides.push((capability, on));
                 }
@@ -172,17 +174,17 @@ impl NodeUiController {
                 // meters.
                 snapshot: self.state.deployer.memory().await,
                 reserves: (
-                    crate::node::settings::memory_reserve(&self.state.database).await,
-                    crate::node::settings::cpu_reserve(&self.state.database).await,
+                    crate::infra::node::settings::memory_reserve(&self.state.database).await,
+                    crate::infra::node::settings::cpu_reserve(&self.state.database).await,
                 ),
-                cores: crate::node::cpu::cores(),
+                cores: crate::infra::node::cpu::cores(),
             },
             NodeTab::Backup => Panel::Backup {
-                plan: crate::backup::plan::plan(&self.state.database).await,
-                attempt: crate::backup::plan::last(&self.state.database).await,
-                taken: crate::backup::taken(&self.state.config.node.data_dir),
+                plan: crate::infra::backup::plan::plan(&self.state.database).await,
+                attempt: crate::infra::backup::plan::last(&self.state.database).await,
+                taken: crate::infra::backup::taken(&self.state.config.node.data_dir),
                 s3: self.state.config.s3(),
-                archiving: crate::node::settings::archiving(&self.state.database).await,
+                archiving: crate::infra::node::settings::archiving(&self.state.database).await,
                 default_destination: self
                     .state
                     .config
@@ -196,13 +198,15 @@ impl NodeUiController {
                     .config
                     .source
                     .clone()
-                    .unwrap_or_else(|| std::path::PathBuf::from(crate::config::DEFAULT_CONFIG_PATH))
+                    .unwrap_or_else(|| {
+                        std::path::PathBuf::from(crate::infra::config::DEFAULT_CONFIG_PATH)
+                    })
                     .display()
                     .to_string(),
                 self_id,
                 // A flag rather than a row, so the card stays a function
                 // of values — see `node::backups::in_progress`.
-                running: crate::backup::plan::in_progress(),
+                running: crate::infra::backup::plan::in_progress(),
             },
         };
 
@@ -213,7 +217,7 @@ impl NodeUiController {
             panel,
             error: query.error.as_deref(),
         };
-        let body = crate::views::texts::language::scoped(account.language, || {
+        let body = crate::web::views::texts::language::scoped(account.language, || {
             crate::features::node::node_user_node_settings_page::render(&page)
                 .render()
                 .into_inner()

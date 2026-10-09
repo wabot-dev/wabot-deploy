@@ -3,12 +3,12 @@
 
 use wabot::sqlite::SqliteDatabase;
 
-use crate::clock::now_ms;
-use crate::entities::database::{identifier, Database, Engine};
-use crate::entities::service::{Kind, Service};
-use crate::errors::{PlatformError, PlatformResult};
-use crate::policies::{postgres, presets};
-use crate::repositories::databases::REPLICATION_USER;
+use crate::domain::entities::database::{identifier, Database, Engine};
+use crate::domain::entities::service::{Kind, Service};
+use crate::domain::errors::{PlatformError, PlatformResult};
+use crate::domain::policies::{postgres, presets};
+use crate::infra::clock::now_ms;
+use crate::infra::repositories::databases::REPLICATION_USER;
 
 /// An unbounded Postgres on a node with one core is the node, so the
 /// form's empty answer is the form's default answer rather than "no
@@ -36,7 +36,7 @@ impl CreateDatabase<'_> {
             ));
         }
 
-        let service = crate::repositories::services::create(
+        let service = crate::infra::repositories::services::create(
             database,
             self.project_id,
             self.name,
@@ -49,8 +49,9 @@ impl CreateDatabase<'_> {
         // container for even a moment is one the deploy path would have
         // started without its volume — which for a database is an empty
         // one that looks like it worked.
-        crate::repositories::services::set_kind(database, &service.id, Kind::Postgres).await?;
-        crate::repositories::services::set_memory_limit(
+        crate::infra::repositories::services::set_kind(database, &service.id, Kind::Postgres)
+            .await?;
+        crate::infra::repositories::services::set_memory_limit(
             database,
             &service.id,
             Some(self.memory_limit),
@@ -59,7 +60,7 @@ impl CreateDatabase<'_> {
 
         // The volume is what makes it a database rather than a container
         // that forgets. Nothing else on the node declares one yet.
-        crate::repositories::volumes::create(
+        crate::infra::repositories::volumes::create(
             database,
             &service.id,
             postgres::VOLUME,
@@ -71,8 +72,15 @@ impl CreateDatabase<'_> {
         // container listens on to bind anything for it — an overlay port
         // for a standby elsewhere, or a host port if somebody publishes
         // it — and publishing is a separate decision somebody confirms.
-        crate::repositories::ports::create(database, &service.id, postgres::PORT, false, None, &[])
-            .await?;
+        crate::infra::repositories::ports::create(
+            database,
+            &service.id,
+            postgres::PORT,
+            false,
+            None,
+            &[],
+        )
+        .await?;
 
         let identifier = identifier(&service.slug);
         let row = Database {
@@ -127,15 +135,21 @@ impl CreateDatabase<'_> {
         // The address the connection string names. Allocated now rather
         // than at the first deployment, because the page shows it before
         // anything has started.
-        for replica in crate::repositories::replicas::of_service(database, &service.id).await? {
-            crate::repositories::replicas::reserve_host(database, self.project_id, &replica.id)
-                .await?;
+        for replica in
+            crate::infra::repositories::replicas::of_service(database, &service.id).await?
+        {
+            crate::infra::repositories::replicas::reserve_host(
+                database,
+                self.project_id,
+                &replica.id,
+            )
+            .await?;
         }
 
         // Read back: the row carries the kind and the ceiling that were
         // set after it was made, and a caller handed the `create` copy
         // would see neither.
-        let service = crate::repositories::services::find(database, &service.id)
+        let service = crate::infra::repositories::services::find(database, &service.id)
             .await?
             .ok_or_else(|| PlatformError::Refused("the service vanished as it was made".into()))?;
 

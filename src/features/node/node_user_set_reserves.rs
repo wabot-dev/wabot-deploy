@@ -1,9 +1,9 @@
 use wabot::sqlite::SqliteDatabase;
 
-use crate::authz::node_user;
-use crate::deploy::Deployer;
-use crate::entities::account::Account;
-use crate::policies::presets;
+use crate::domain::authz::node_user;
+use crate::domain::entities::account::Account;
+use crate::domain::policies::presets;
+use crate::infra::deploy::Deployer;
 
 /// **The floor is a measurement, not a constant.** A reserve under what
 /// this node's own processes are using right now — this binary,
@@ -40,7 +40,7 @@ pub async fn run(
             in_use,
             committed.memory,
             bytes,
-            crate::node::memory::human,
+            crate::infra::node::memory::human,
         ) {
             return Err(reason);
         }
@@ -51,7 +51,7 @@ pub async fn run(
         // the stream computes from two samples, and a form has one.
         // `parse_cores` already refuses below a tenth of a core.
         if let Some(reason) = reserve_refusal(
-            u64::from(crate::node::cpu::cores() * 1_000),
+            u64::from(crate::infra::node::cpu::cores() * 1_000),
             0,
             u64::from(committed.cpu),
             u64::from(millicores),
@@ -64,10 +64,10 @@ pub async fn run(
     // Logged rather than propagated: a write that fails leaves the
     // previous number in place and the page redraws it, which is a
     // truthful page rather than a 500.
-    if let Err(error) = crate::node::settings::set_memory_reserve(database, memory).await {
+    if let Err(error) = crate::infra::node::settings::set_memory_reserve(database, memory).await {
         tracing::error!(%error, "could not store the memory reserve");
     }
-    if let Err(error) = crate::node::settings::set_cpu_reserve(database, cpu).await {
+    if let Err(error) = crate::infra::node::settings::set_cpu_reserve(database, cpu).await {
         tracing::error!(%error, "could not store the CPU reserve");
     }
     // Nothing is redeployed. A reserve decides what the node will

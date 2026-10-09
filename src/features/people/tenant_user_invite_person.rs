@@ -1,11 +1,11 @@
 use wabot::sqlite::SqliteDatabase;
 
-use crate::accounts::invitations;
-use crate::authz::tenant_user;
-use crate::entities::account::Account;
+use crate::domain::authz::tenant_user;
+use crate::domain::entities::account::Account;
 use crate::features::people::invite_person_request::InvitePersonRequest;
 use crate::features::people::person_invited_response::PersonInvitedResponse;
-use crate::repositories::access;
+use crate::infra::accounts::invitations;
+use crate::infra::repositories::access;
 
 pub async fn run(
     database: &SqliteDatabase,
@@ -43,9 +43,9 @@ pub async fn run(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::accounts;
+    use crate::domain::values::roles::{NodeRole, ProjectRole};
     use crate::features::fixtures::organisation;
-    use crate::values::roles::{NodeRole, ProjectRole};
+    use crate::infra::accounts;
 
     fn asked() -> InvitePersonRequest {
         InvitePersonRequest {
@@ -92,9 +92,10 @@ mod tests {
     #[tokio::test]
     async fn a_project_outside_the_organisation_is_not_found() {
         let here = organisation().await;
-        let elsewhere = crate::repositories::projects::create(&here.database, "the nodes own")
-            .await
-            .expect("project");
+        let elsewhere =
+            crate::infra::repositories::projects::create(&here.database, "the nodes own")
+                .await
+                .expect("project");
 
         let refused = run(
             &here.database,

@@ -1,10 +1,10 @@
 use hypertext::prelude::*;
 
-use crate::entities::account::Account;
-use crate::entities::tenant::Tenant;
-use crate::policies::presets;
-use crate::views::layouts::layout;
-use crate::views::texts::language::t;
+use crate::domain::entities::account::Account;
+use crate::domain::entities::tenant::Tenant;
+use crate::domain::policies::presets;
+use crate::web::views::layouts::layout;
+use crate::web::views::texts::language::t;
 
 /// The four things the node's operator decides about an organisation.
 ///
@@ -189,7 +189,7 @@ pub fn render<'a>(page: &'a OrganisationSettings<'a>) -> impl Renderable + 'a {
                         <input id="memory" name="memory" type="text" autocomplete="off"
                                class="mono"
                                placeholder=(t("no ceiling"))
-                               value=(tenant.quota_memory.map(crate::node::memory::human).unwrap_or_default())>
+                               value=(tenant.quota_memory.map(crate::infra::node::memory::human).unwrap_or_default())>
 
                         <label for="cpu">(t("CPU"))</label>
                         // **`cores_field`, not `cpu_label`.** One is what

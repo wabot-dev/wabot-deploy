@@ -1,12 +1,12 @@
 use wabot::sqlite::SqliteDatabase;
 
-use crate::authz::tenant_user;
-use crate::config::Config;
-use crate::entities::account::Account;
-use crate::entities::project::Project;
-use crate::entities::service::Service;
+use crate::domain::authz::tenant_user;
+use crate::domain::entities::account::Account;
+use crate::domain::entities::project::Project;
+use crate::domain::entities::service::Service;
 use crate::features::databases::database_named_response::DatabaseNamedResponse;
 use crate::features::databases::name_database_command::NameDatabase;
+use crate::infra::config::Config;
 
 pub async fn run(
     database: &SqliteDatabase,

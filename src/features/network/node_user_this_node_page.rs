@@ -1,11 +1,11 @@
 use hypertext::prelude::*;
 
-use crate::deploy::Committed;
 use crate::features::network::node_usage_component;
-use crate::network::Node;
-use crate::node::disk::Breakdown;
-use crate::node::memory::Snapshot;
-use crate::views::layouts::layout;
+use crate::infra::deploy::Committed;
+use crate::infra::network::Node;
+use crate::infra::node::disk::Breakdown;
+use crate::infra::node::memory::Snapshot;
+use crate::web::views::layouts::layout;
 
 /// This machine's own row on the network page.
 ///
@@ -35,7 +35,7 @@ pub fn render<'a>(page: &'a ThisNode<'a>) -> impl Renderable + 'a {
         <div class="split">
             <div class="stack-sm">
                 <h1>(&page.node.name)</h1>
-                <p class="slug-preview">("wabot-deploy ")(crate::update::VERSION)</p>
+                <p class="slug-preview">("wabot-deploy ")(crate::infra::update::VERSION)</p>
             </div>
         </div>
 

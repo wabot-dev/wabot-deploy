@@ -2,9 +2,9 @@ use std::sync::Arc;
 
 use wabot::sqlite::SqliteDatabase;
 
-use crate::backup::Restored;
-use crate::config::Config;
-use crate::entities::service::Service;
+use crate::domain::entities::service::Service;
+use crate::infra::backup::Restored;
+use crate::infra::config::Config;
 
 /// **Into a copy, never over the original.** What this asks for is one
 /// database's volume out of one backup, unpacked beside the original,
@@ -28,7 +28,7 @@ impl RestoreDatabase<'_> {
             return Err("that service is not a managed database".into());
         }
 
-        crate::backup::restore_one(
+        crate::infra::backup::restore_one(
             config,
             database,
             &self.service.slug,

@@ -1,8 +1,8 @@
 //! What the two doors post to, and the switches that belong to an
 //! account rather than to a page.
 
-use crate::accounts::sessions;
-use crate::console::ConsoleState;
+use crate::infra::accounts::sessions;
+use crate::web::console::ConsoleState;
 use std::sync::Arc;
 use wabot::prelude::*;
 use wabot::rest::axum::body::Body;
@@ -11,7 +11,7 @@ use wabot::rest::axum::http::{header, StatusCode};
 use wabot::rest::axum::response::Response;
 use wabot::rest::RestResult;
 
-use crate::console::auth::*;
+use crate::web::console::auth::*;
 
 // ---------- form submissions ---------------------------------------------
 
@@ -59,7 +59,7 @@ impl AuthRestController {
         // find whichever came first. See migration `0057`.
         let scope = request
             .extensions()
-            .get::<crate::edge::Tenancy>()
+            .get::<crate::infra::edge::Tenancy>()
             .map(|tenancy| tenancy.0.clone());
 
         let form = match read_form(request).await {
@@ -103,9 +103,9 @@ impl AuthRestController {
             Err(response) => return Ok(response),
         };
 
-        let theme = crate::values::theme::Theme::parse(field(&form, "theme"));
+        let theme = crate::domain::values::theme::Theme::parse(field(&form, "theme"));
         if let Err(error) =
-            crate::accounts::set_theme(&self.state.database, &account.id, theme).await
+            crate::infra::accounts::set_theme(&self.state.database, &account.id, theme).await
         {
             tracing::warn!(%error, "could not store the theme");
         }
@@ -132,9 +132,9 @@ impl AuthRestController {
             Err(response) => return Ok(response),
         };
 
-        let language = crate::values::language::Language::parse(field(&form, "language"));
+        let language = crate::domain::values::language::Language::parse(field(&form, "language"));
         if let Err(error) =
-            crate::accounts::set_language(&self.state.database, &account.id, language).await
+            crate::infra::accounts::set_language(&self.state.database, &account.id, language).await
         {
             tracing::warn!(%error, "could not store the language");
         }
@@ -163,7 +163,7 @@ impl AuthRestController {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::console::tests::Console;
+    use crate::web::console::tests::Console;
     use std::collections::HashMap;
 
     // ---------- the flow over HTTP ---------------------------------------

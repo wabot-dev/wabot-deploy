@@ -1,12 +1,12 @@
 use wabot::sqlite::SqliteDatabase;
 
-use crate::authz::node_user;
-use crate::config::Config;
-use crate::deploy::Deployer;
-use crate::entities::account::Account;
+use crate::domain::authz::node_user;
+use crate::domain::entities::account::Account;
+use crate::domain::values::capability::Capability;
 use crate::features::node::set_capabilities_request::SetCapabilitiesRequest;
-use crate::network::capability;
-use crate::values::capability::Capability;
+use crate::infra::config::Config;
+use crate::infra::deploy::Deployer;
+use crate::infra::network::capability;
 
 /// **The one POST under `/node` that had no admin check**, and the
 /// omission was not small: `evict_ungranted` and `release_ungranted` run
@@ -44,7 +44,7 @@ pub async fn run(
     // no longer originates; not evictable, because they are its own. The
     // message names the count so it is a thing somebody can go and do.
     let owns = asked.owns;
-    let mine = crate::repositories::projects::all(database)
+    let mine = crate::infra::repositories::projects::all(database)
         .await
         .map_err(|error| {
             tracing::warn!(%error, "could not count this node's own projects");
@@ -54,7 +54,9 @@ pub async fn run(
         .filter(|project| project.is_ours())
         .count();
     if !owns && mine > 0 {
-        return Err(crate::views::texts::sentences::still_owns_projects(mine));
+        return Err(crate::web::views::texts::sentences::still_owns_projects(
+            mine,
+        ));
     }
     capability::set_owns(database, owns)
         .await
@@ -67,7 +69,7 @@ pub async fn run(
     // capability, and every other node learns this one's kind from the
     // endpoint it reports. Rewriting it now is what makes the change
     // travel rather than wait for a restart.
-    if let Err(error) = crate::network::ensure_self(database, config).await {
+    if let Err(error) = crate::infra::network::ensure_self(database, config).await {
         tracing::warn!(%error, "could not bring this node's own row up to date");
     }
     // And the routes: a node that has just stopped being an edge is still

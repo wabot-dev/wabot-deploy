@@ -1,7 +1,7 @@
 use wabot::sqlite::SqliteDatabase;
 
-use crate::entities::service::Service;
-use crate::repositories::config_history;
+use crate::domain::entities::service::Service;
+use crate::infra::repositories::config_history;
 
 pub struct ChooseEnvRevision<'a> {
     pub service: &'a Service,

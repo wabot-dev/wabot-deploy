@@ -6,7 +6,7 @@
 //! question — does the socket answer, is the namespace there — deserves
 //! a command instead of being inferred from a deployment that failed.
 
-use crate::runtime::client::{Containerd, RuncOptions};
+use crate::infra::runtime::client::{Containerd, RuncOptions};
 
 pub async fn run(pull: Option<String>, run: Option<String>, port: u16) -> anyhow::Result<i32> {
     let client = match Containerd::connect().await {
@@ -24,7 +24,10 @@ pub async fn run(pull: Option<String>, run: Option<String>, port: u16) -> anyhow
     println!("  version    {}", client.version().await?);
 
     client.ensure_namespace().await?;
-    println!("  namespace  {} (ready)", crate::runtime::client::NAMESPACE);
+    println!(
+        "  namespace  {} (ready)",
+        crate::infra::runtime::client::NAMESPACE
+    );
 
     // The options every container this node creates will carry. Printed
     // because "which runtime is actually going to run" is the question
@@ -32,7 +35,7 @@ pub async fn run(pull: Option<String>, run: Option<String>, port: u16) -> anyhow
     let options = RuncOptions::crun();
     println!();
     println!("runtime options, per container");
-    println!("  shim       {}", crate::runtime::client::RUNTIME);
+    println!("  shim       {}", crate::infra::runtime::client::RUNTIME);
     println!("  binary     {}", options.binary_name);
     println!(
         "  cgroups    {}",
@@ -46,7 +49,7 @@ pub async fn run(pull: Option<String>, run: Option<String>, port: u16) -> anyhow
     if let Some(reference) = pull {
         println!();
         println!("image {reference}");
-        let fetched = crate::runtime::images::ensure(&client, &reference, None).await?;
+        let fetched = crate::infra::runtime::images::ensure(&client, &reference, None).await?;
         println!(
             "  {}",
             if fetched {
@@ -58,7 +61,7 @@ pub async fn run(pull: Option<String>, run: Option<String>, port: u16) -> anyhow
 
         // What the image says about itself, which is what a container
         // built from it has to be told.
-        let config = crate::runtime::images::config(&client, &reference).await?;
+        let config = crate::infra::runtime::images::config(&client, &reference).await?;
         println!("  command    {:?}", config.command);
         println!("  env        {} variable(s)", config.env.len());
         println!(
@@ -91,13 +94,14 @@ pub async fn run(pull: Option<String>, run: Option<String>, port: u16) -> anyhow
         // A fixed id, so a run left behind by a previous failure is
         // replaced rather than accumulating.
         const ID: &str = "wabot-deploy-check";
-        let request = crate::runtime::spec::ContainerRequest {
+        let request = crate::infra::runtime::spec::ContainerRequest {
             port: Some(port),
             ..Default::default()
         };
 
         let status =
-            crate::runtime::containers::run(&client, ID, &reference, &request, None, None).await?;
+            crate::infra::runtime::containers::run(&client, ID, &reference, &request, None, None)
+                .await?;
         println!("  pid        {}", status.pid);
         println!("  status     {}", status.status);
 
@@ -105,7 +109,7 @@ pub async fn run(pull: Option<String>, run: Option<String>, port: u16) -> anyhow
         // RUNNING for a moment, so the useful question is whether it is
         // still there a beat later.
         tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-        match crate::runtime::containers::status(&client, ID).await? {
+        match crate::infra::runtime::containers::status(&client, ID).await? {
             Some(after) if after.running() => {
                 println!("  after 2s   still running");
             }
@@ -115,7 +119,7 @@ pub async fn run(pull: Option<String>, run: Option<String>, port: u16) -> anyhow
 
         // A diagnostic that left a container behind would be a
         // diagnostic nobody runs twice.
-        crate::runtime::containers::remove(&client, ID).await?;
+        crate::infra::runtime::containers::remove(&client, ID).await?;
         println!("  cleaned up");
     }
 

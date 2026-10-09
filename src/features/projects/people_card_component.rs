@@ -2,9 +2,9 @@
 
 use hypertext::prelude::*;
 
-use crate::repositories::access;
-use crate::values::roles::ProjectRole;
-use crate::views::texts::language::t;
+use crate::domain::values::roles::ProjectRole;
+use crate::infra::repositories::access;
+use crate::web::views::texts::language::t;
 
 /// Who is in this project, and how to change that.
 ///
@@ -19,7 +19,7 @@ use crate::views::texts::language::t;
 pub fn people_card<'a>(
     here: &'a str,
     members: &'a [access::Member],
-    allowed: crate::values::roles::Access,
+    allowed: crate::domain::values::roles::Access,
 ) -> impl Renderable + 'a {
     rsx! {
         <section class="card stack">

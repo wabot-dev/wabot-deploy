@@ -1,8 +1,8 @@
 use wabot::sqlite::SqliteDatabase;
 
-use crate::accounts;
-use crate::entities::account::Account;
-use crate::values::roles::NodeRole;
+use crate::domain::entities::account::Account;
+use crate::domain::values::roles::NodeRole;
+use crate::infra::accounts;
 
 pub struct Organisation {
     pub database: SqliteDatabase,
@@ -13,11 +13,11 @@ pub struct Organisation {
 }
 
 pub async fn organisation() -> Organisation {
-    let database = crate::db::open_in_memory().await.expect("open");
-    let acme = crate::repositories::tenants::create(&database, "Acme")
+    let database = crate::infra::db::open_in_memory().await.expect("open");
+    let acme = crate::infra::repositories::tenants::create(&database, "Acme")
         .await
         .expect("tenant");
-    let globex = crate::repositories::tenants::create(&database, "Globex")
+    let globex = crate::infra::repositories::tenants::create(&database, "Globex")
         .await
         .expect("tenant");
 

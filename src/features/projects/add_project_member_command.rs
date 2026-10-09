@@ -1,7 +1,7 @@
 use wabot::sqlite::SqliteDatabase;
 
-use crate::repositories::access;
-use crate::values::roles::ProjectRole;
+use crate::domain::values::roles::ProjectRole;
+use crate::infra::repositories::access;
 
 pub struct AddProjectMember<'a> {
     pub project_id: &'a str,
@@ -11,7 +11,7 @@ pub struct AddProjectMember<'a> {
 
 impl AddProjectMember<'_> {
     pub async fn run(&self, database: &SqliteDatabase) -> Result<(), String> {
-        let Some(found) = crate::accounts::all(database)
+        let Some(found) = crate::infra::accounts::all(database)
             .await
             .map_err(|error| error.to_string())?
             .into_iter()

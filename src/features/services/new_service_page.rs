@@ -1,7 +1,7 @@
 //! The form that makes a service.
 
-use crate::views::layouts::layout;
-use crate::views::texts::language::t;
+use crate::web::views::layouts::layout;
+use crate::web::views::texts::language::t;
 use hypertext::prelude::*;
 
 pub struct NewService<'a> {

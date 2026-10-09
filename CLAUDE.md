@@ -269,7 +269,7 @@ So: what a token **is** goes in `assets/wabot.css`, beside the value it
 replaces, under a `CORRECTED` comment saying what was wrong and what it
 measured. Page CSS — the shell, the meter, the cards, the button states
 rule 8 defines, anything this console invented — stays in
-`src/console/layout.rs`. The split is the thing, not the file's
+`src/web/views/layouts/layout.rs`. The split is the thing, not the file's
 provenance.
 
 Two tests read the stylesheet directly rather than a copy of it:

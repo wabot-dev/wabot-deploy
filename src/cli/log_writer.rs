@@ -209,9 +209,9 @@ mod tests {
         let mut read = 0;
         let mut found = false;
         for path in crate::tree::rust_files(&[
-            "src/views/pages",
-            "src/views/components",
-            "src/console",
+            "src/web/views/pages",
+            "src/web/views/components",
+            "src/web/console",
             "src/features",
         ]) {
             read += 1;

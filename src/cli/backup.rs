@@ -1,10 +1,10 @@
 //! `wabot-deploy backup`, `restore` and `restore-node`: the terminal's
 //! side of a backup. What a backup is, and how one is taken, is
-//! `crate::backup`.
+//! `crate::infra::backup`.
 
-use crate::backup::destination::Destination;
-use crate::backup::{copy_tree, once, restore_one, Manifest, NotRestored, FORMAT};
-use crate::config::Config;
+use crate::infra::backup::destination::Destination;
+use crate::infra::backup::{copy_tree, once, restore_one, Manifest, NotRestored, FORMAT};
+use crate::infra::config::Config;
 use std::path::{Path, PathBuf};
 
 /// The command: open the database, take one, and turn how it went into
@@ -15,15 +15,15 @@ use std::path::{Path, PathBuf};
 /// running process's own handle — and two implementations of "what a
 /// backup is" would drift the day one of them learned something.
 pub async fn run(config: Config, into: Option<String>) -> anyhow::Result<i32> {
-    let database = crate::db::open(&config.database_path()).await?;
-    let at = crate::clock::now_ms();
+    let database = crate::infra::db::open(&config.database_path()).await?;
+    let at = crate::infra::clock::now_ms();
     let outcome = once(&config, &database, into).await;
     // Recorded here as well as in `node::backups::take_now`, because a
     // backup somebody typed is a backup of this node: without this the
     // console's Backup tab said "never from here" while cron took one
     // every night, which is a page that lies about the one thing it
     // exists to answer.
-    if let Err(error) = crate::backup::plan::record(&database, at, &outcome).await {
+    if let Err(error) = crate::infra::backup::plan::record(&database, at, &outcome).await {
         tracing::warn!(%error, "could not record how the backup went");
     }
     // The command owns the handle it opened, so the command closes it.
@@ -82,11 +82,11 @@ pub async fn restore_node(
         .node
         .data_dir
         .join("backups")
-        .join(format!(".fetched-{}", crate::clock::now_ms()));
+        .join(format!(".fetched-{}", crate::infra::clock::now_ms()));
     if source.is_remote() {
         println!("fetching {}", source.display());
     }
-    let from = match crate::backup::destination::fetch(&source, &brought, &config).await {
+    let from = match crate::infra::backup::destination::fetch(&source, &brought, &config).await {
         Ok(path) => path,
         Err(reason) => {
             println!("  could not fetch it: {reason}");
@@ -121,7 +121,7 @@ pub async fn restore_node(
     println!("restoring from {}", from.display());
     println!(
         "  taken       {} by {}",
-        crate::views::layouts::layout::exactly(manifest.taken_at),
+        crate::web::views::layouts::layout::exactly(manifest.taken_at),
         manifest.taken_by
     );
     println!(
@@ -167,12 +167,12 @@ pub async fn restore_node(
     // different question — "yes, replace the rows I have" — and there
     // is no version of this somebody means. The last line of a restore
     // has always been "start the node", which assumed this all along.
-    if let Some(pid) = crate::bootstrap::service::another_instance() {
+    if let Some(pid) = crate::infra::bootstrap::service::another_instance() {
         println!();
         println!("  wabot-deploy is still running here as pid {pid}, and restoring would");
         println!("  write its database out from under it. Stop it first:");
         println!();
-        match crate::bootstrap::service::stop_command() {
+        match crate::infra::bootstrap::service::stop_command() {
             Some(command) => println!("    {command}"),
             None => println!("    (stop the wabot-deploy process however it was started)"),
         }
@@ -184,8 +184,8 @@ pub async fn restore_node(
 
     // What is here now. A node with services of its own is either not
     // the one that died or is one somebody is about to lose.
-    let existing = crate::db::open(&config.database_path()).await?;
-    let running = crate::repositories::services::all(&existing, None)
+    let existing = crate::infra::db::open(&config.database_path()).await?;
+    let running = crate::infra::repositories::services::all(&existing, None)
         .await
         .map(|services| services.len())
         .unwrap_or(0);
@@ -205,7 +205,7 @@ pub async fn restore_node(
         .node
         .data_dir
         .join("backups")
-        .join(format!("replaced-{}.db", crate::clock::now_ms()));
+        .join(format!("replaced-{}.db", crate::infra::clock::now_ms()));
     if let Some(parent) = aside.parent() {
         std::fs::create_dir_all(parent)?;
     }
@@ -248,8 +248,8 @@ pub async fn restore_node(
     // Done after the copy rather than by editing the backup, so the
     // file on disk is always exactly what was backed up.
     if identity == Identity::New {
-        let database = crate::db::open(&config.database_path()).await?;
-        crate::network::forget_self(&database).await?;
+        let database = crate::infra::db::open(&config.database_path()).await?;
+        crate::infra::network::forget_self(&database).await?;
         database.close().await?;
         println!("  identity    cleared; this node will mint a new one and must re-join");
     } else {
@@ -335,7 +335,7 @@ async fn report_names(config: &Config) {
     // nothing else will mention, so a silent return here is a node that
     // finished quietly and is unreachable — which is the failure this
     // whole report exists to prevent.
-    let database = match crate::db::open(&config.database_path()).await {
+    let database = match crate::infra::db::open(&config.database_path()).await {
         Ok(database) => database,
         Err(error) => {
             println!();
@@ -349,7 +349,7 @@ async fn report_names(config: &Config) {
     // than the hostnames it stores: it can own a service that somebody
     // else serves. The same list `acme` orders certificates for, so
     // what is checked here is exactly what will be asked of the world.
-    let names = crate::edge::acme::wanted_names(&database, config).await;
+    let names = crate::infra::edge::acme::wanted_names(&database, config).await;
     let _ = database.close().await;
 
     println!();
@@ -361,7 +361,7 @@ async fn report_names(config: &Config) {
 
     println!("  names       what has to reach this machine:");
     for name in &names {
-        let found = crate::deploy::dns::lookup(name).await;
+        let found = crate::infra::deploy::dns::lookup(name).await;
         let where_to = match found.is_empty() {
             true => "does not resolve".to_string(),
             false => found
@@ -373,7 +373,7 @@ async fn report_names(config: &Config) {
         println!("                {name} → {where_to}");
     }
 
-    match crate::deploy::dns::outbound_address() {
+    match crate::infra::deploy::dns::outbound_address() {
         Some(address) => println!("              this machine goes out from {address}"),
         None => println!("              this machine could not say which address it goes out from"),
     }
@@ -405,7 +405,8 @@ fn restore_volumes(from: &Path, config: &Config) -> usize {
 
     for entry in entries.flatten() {
         let container = entry.file_name().to_string_lossy().to_string();
-        let into = crate::repositories::volumes::root(&config.node.data_dir).join(&container);
+        let into =
+            crate::infra::repositories::volumes::root(&config.node.data_dir).join(&container);
 
         // A managed engine's backup is two tarballs, not a directory
         // tree — the deploy path unpacks those, because unpacking is
@@ -432,14 +433,14 @@ async fn restore_images(from: &Path, manifest: &Manifest, config: &Config) -> us
         .map(|path| path.to_path_buf())
         .unwrap_or_else(|| config.node.data_dir.join("backups"));
 
-    let Ok(client) = crate::runtime::client::Containerd::connect().await else {
+    let Ok(client) = crate::infra::runtime::client::Containerd::connect().await else {
         println!("  images      containerd is not answering; none restored");
         return 0;
     };
 
     let mut restored = 0;
     for kept in &manifest.images {
-        match crate::backup::blobs::put_back(&client, &root, kept).await {
+        match crate::infra::backup::blobs::put_back(&client, &root, kept).await {
             Ok(_) => restored += 1,
             Err(reason) => println!("  image       {} — NOT RESTORED: {reason}", kept.reference),
         }
@@ -465,7 +466,7 @@ pub async fn restore(
     into: Option<String>,
     from: Option<PathBuf>,
 ) -> anyhow::Result<i32> {
-    let database = crate::db::open(&config.database_path()).await?;
+    let database = crate::infra::db::open(&config.database_path()).await?;
     let outcome = restore_one(
         &config,
         &database,
@@ -511,7 +512,7 @@ pub async fn restore(
     println!(
         "  from      {} ({})",
         made.from,
-        crate::views::layouts::layout::exactly(made.taken_at)
+        crate::web::views::layouts::layout::exactly(made.taken_at)
     );
     match &made.target {
         Some(target) => println!("  up to     {target} UTC"),

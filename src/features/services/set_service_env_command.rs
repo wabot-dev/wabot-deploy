@@ -2,10 +2,10 @@ use std::collections::BTreeMap;
 
 use wabot::sqlite::SqliteDatabase;
 
-use crate::entities::service::Service;
-use crate::repositories::config_history;
-use crate::repositories::releases;
-use crate::repositories::services;
+use crate::domain::entities::service::Service;
+use crate::infra::repositories::config_history;
+use crate::infra::repositories::releases;
+use crate::infra::repositories::services;
 
 pub struct SetServiceEnv<'a> {
     pub service: &'a Service,

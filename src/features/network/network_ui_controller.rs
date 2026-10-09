@@ -7,13 +7,13 @@ use serde::Deserialize;
 use wabot::prelude::*;
 use wabot::ui::hypertext::IntoView;
 
-use crate::network::{self};
-use crate::repositories::access;
+use crate::infra::network::{self};
+use crate::infra::repositories::access;
 
-use crate::console::auth::{signed_in, SessionMiddleware};
-use crate::console::ConsoleState;
-use crate::views::layouts::layout;
-use crate::views::layouts::shell::{Area, Frame};
+use crate::web::console::auth::{signed_in, SessionMiddleware};
+use crate::web::console::ConsoleState;
+use crate::web::views::layouts::layout;
+use crate::web::views::layouts::shell::{Area, Frame};
 
 #[derive(Debug, Deserialize, Validate)]
 pub struct NodePage {
@@ -69,7 +69,7 @@ impl NetworkUiController {
         };
         // The node belongs to whoever runs it. Hiding the link is
         // courtesy; this is the boundary.
-        if !crate::authz::node_user::manages_the_machine(&account) {
+        if !crate::domain::authz::node_user::manages_the_machine(&account) {
             return Ok(Redirect::found("/").into());
         }
 
@@ -79,7 +79,8 @@ impl NetworkUiController {
         // point of the terms screen: a row saying only "takes
         // instructions from" would hide the difference between a node
         // that may do everything here and one that may do nothing.
-        let mut agreed: Vec<(String, Vec<crate::values::capability::Capability>)> = Vec::new();
+        let mut agreed: Vec<(String, Vec<crate::domain::values::capability::Capability>)> =
+            Vec::new();
         for authority in &authorities {
             agreed.push((
                 authority.node_id.clone(),
@@ -112,7 +113,7 @@ impl NetworkUiController {
             reviewing: reviewing.as_ref(),
             error: query.error.as_deref(),
         };
-        let body = crate::views::texts::language::scoped(account.language, || {
+        let body = crate::web::views::texts::language::scoped(account.language, || {
             crate::features::network::node_user_network_page::render(&page)
                 .render()
                 .into_inner()
@@ -133,7 +134,7 @@ impl NetworkUiController {
         let Some(account) = signed_in(&self.auth) else {
             return Ok(Redirect::found("/sign-in").into());
         };
-        if !crate::authz::node_user::manages_the_machine(&account) {
+        if !crate::domain::authz::node_user::manages_the_machine(&account) {
             return Ok(Redirect::found("/").into());
         }
 
@@ -141,7 +142,7 @@ impl NetworkUiController {
         let enrolments = network::enrolment::all(&self.state.database).await?;
         let projects = access::projects_for(&self.state.database, &account).await?;
         let may_enrol = nodes.iter().any(|node| node.is_self && node.may_be_edge());
-        let now = crate::console::now_ms();
+        let now = crate::web::console::now_ms();
 
         layout::head("Invite a node");
         let frame = Frame::new(&account, Area::Network, &projects, None, "/network/invite");
@@ -152,7 +153,7 @@ impl NetworkUiController {
             now,
             error: query.error.as_deref(),
         };
-        let body = crate::views::texts::language::scoped(account.language, || {
+        let body = crate::web::views::texts::language::scoped(account.language, || {
             crate::features::network::node_user_invite_node_page::render(&page)
                 .render()
                 .into_inner()
@@ -173,7 +174,7 @@ impl NetworkUiController {
         let Some(account) = signed_in(&self.auth) else {
             return Ok(Redirect::found("/sign-in").into());
         };
-        if !crate::authz::node_user::manages_the_machine(&account) {
+        if !crate::domain::authz::node_user::manages_the_machine(&account) {
             return Ok(Redirect::found("/").into());
         }
 
@@ -195,7 +196,7 @@ impl NetworkUiController {
             joined: query.joined.as_deref(),
             error: query.error.as_deref(),
         };
-        let body = crate::views::texts::language::scoped(account.language, || {
+        let body = crate::web::views::texts::language::scoped(account.language, || {
             crate::features::network::node_user_join_network_page::render(&page)
                 .render()
                 .into_inner()
@@ -210,7 +211,7 @@ impl NetworkUiController {
         let Some(account) = signed_in(&self.auth) else {
             return Ok(Redirect::found("/sign-in").into());
         };
-        if !crate::authz::node_user::manages_the_machine(&account) {
+        if !crate::domain::authz::node_user::manages_the_machine(&account) {
             return Ok(Redirect::found("/").into());
         }
         let Some(node) = network::find(&self.state.database, &query.node).await? else {
@@ -236,8 +237,8 @@ impl NetworkUiController {
             // capability, so the form cannot be missing one — the same
             // rule the capabilities card follows, for the same reason.
             let held = network::capability::granted_to(&self.state.database, &node.id).await;
-            let granted: Vec<(crate::values::capability::Capability, bool)> =
-                crate::values::capability::Capability::ALL
+            let granted: Vec<(crate::domain::values::capability::Capability, bool)> =
+                crate::domain::values::capability::Capability::ALL
                     .into_iter()
                     .map(|capability| (capability, held.contains(&capability)))
                     .collect();
@@ -252,7 +253,7 @@ impl NetworkUiController {
             // GitHub being unreachable is one of the ways that happens.
             let may_manage = node
                 .allows
-                .contains(&crate::values::capability::Capability::Manage);
+                .contains(&crate::domain::values::capability::Capability::Manage);
             let (releases, catalogue_failed) = match may_manage {
                 false => (Vec::new(), false),
                 true => match self.state.catalogue.releases().await {
@@ -287,7 +288,7 @@ impl NetworkUiController {
             };
             // The account's language, around the render and no wider:
             // the strings are read here, and nothing awaits inside.
-            let body = crate::views::texts::language::scoped(account.language, || {
+            let body = crate::web::views::texts::language::scoped(account.language, || {
                 crate::features::network::node_user_remote_node_page::render(&page)
                     .render()
                     .into_inner()
@@ -307,12 +308,12 @@ impl NetworkUiController {
         // own CPU column.
         let committed = self.state.deployer.committed().await;
         let reserves = (
-            crate::node::settings::memory_reserve(&self.state.database).await,
-            crate::node::settings::cpu_reserve(&self.state.database).await,
+            crate::infra::node::settings::memory_reserve(&self.state.database).await,
+            crate::infra::node::settings::cpu_reserve(&self.state.database).await,
         );
-        let disk = crate::node::disk::breakdown(
+        let disk = crate::infra::node::disk::breakdown(
             &self.state.config.node.data_dir,
-            std::path::Path::new(crate::node::disk::CONTAINERD_ROOT),
+            std::path::Path::new(crate::infra::node::disk::CONTAINERD_ROOT),
         );
         let path = format!("/network/{}", node.id);
 
@@ -328,7 +329,7 @@ impl NetworkUiController {
         };
         // The account's language, around the render and no wider:
         // the strings are read here, and nothing awaits inside.
-        let body = crate::views::texts::language::scoped(account.language, || {
+        let body = crate::web::views::texts::language::scoped(account.language, || {
             crate::features::network::node_user_this_node_page::render(&page)
                 .render()
                 .into_inner()

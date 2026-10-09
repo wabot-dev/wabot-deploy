@@ -1,10 +1,10 @@
 //! What the machine is using, and what it is reachable at.
 
-use crate::network;
-use crate::network::Kind;
-use crate::node::memory;
-use crate::node::memory::Snapshot;
-use crate::views::texts::language::t;
+use crate::infra::network;
+use crate::infra::network::Kind;
+use crate::infra::node::memory;
+use crate::infra::node::memory::Snapshot;
+use crate::web::views::texts::language::t;
 use hypertext::prelude::*;
 
 /// What a node is, in the one line the list has room for.
@@ -75,17 +75,17 @@ pub fn usage_card<'a>(node: &'a network::Node, seen: Option<String>) -> impl Ren
                 <dl class="kv">
                     <dt>(t("Memory"))</dt>
                     <dd class="mono">
-                        (crate::node::memory::human(usage.memory_used))(t(" of "))
-                        (crate::node::memory::human(usage.memory_total))
+                        (crate::infra::node::memory::human(usage.memory_used))(t(" of "))
+                        (crate::infra::node::memory::human(usage.memory_total))
                     </dd>
                     <dt>(t("Disk"))</dt>
                     <dd class="mono">
-                        (crate::node::memory::human(
+                        (crate::infra::node::memory::human(
                             usage.disk_total.saturating_sub(usage.disk_free)
                         ))(t(" of "))
-                        (crate::node::memory::human(usage.disk_total))
+                        (crate::infra::node::memory::human(usage.disk_total))
                         (" · ")
-                        (crate::node::memory::human(usage.disk_free))(t(" free"))
+                        (crate::infra::node::memory::human(usage.disk_free))(t(" free"))
                     </dd>
                 </dl>
                 // When, because a reading with no time on it is one
@@ -150,7 +150,7 @@ pub fn memory_card<'a>(
     // ceiling is a reservation here, so these two decide whether another
     // service fits — and an operator who cannot see them experiences
     // that rule as a form that says no.
-    committed: &'a crate::deploy::Committed,
+    committed: &'a crate::infra::deploy::Committed,
     // What the operator said this machine keeps for itself, memory then
     // CPU, or `None` each for the default. It reaches the "promised of"
     // figure, which is the whole point of the setting being editable.
@@ -219,11 +219,11 @@ pub fn memory_card<'a>(
                 <dt>(t("Promised"))</dt>
                 <dd>
                     (memory::human(committed.memory))(t(" of "))
-                    (memory::human(crate::policies::presets::allocatable_memory(snapshot.total, reserves.0)))
+                    (memory::human(crate::domain::policies::presets::allocatable_memory(snapshot.total, reserves.0)))
                     (" · ")
-                    (crate::policies::presets::cpu_label(committed.cpu))(t(" of "))
-                    (crate::policies::presets::cpu_label(
-                        crate::node::cpu::allocatable_millicores(reserves.1)
+                    (crate::domain::policies::presets::cpu_label(committed.cpu))(t(" of "))
+                    (crate::domain::policies::presets::cpu_label(
+                        crate::infra::node::cpu::allocatable_millicores(reserves.1)
                     ))
                 </dd>
             </dl>
@@ -270,7 +270,7 @@ pub fn memory_card<'a>(
 /// two seconds and this must not: each part is a directory walk, and
 /// walking containerd's tree every two seconds would put this node at
 /// the top of its own CPU column.
-pub fn disk_card(disk: &crate::node::disk::Breakdown) -> impl Renderable + '_ {
+pub fn disk_card(disk: &crate::infra::node::disk::Breakdown) -> impl Renderable + '_ {
     // Through `bar_width`, which is the only thing that writes one of
     // these. This card had its own closure emitting a bare `7.0000%` —
     // and a `style` attribute wants a *declaration*, so the browser threw
@@ -384,8 +384,8 @@ pub fn bar_width(percent: f64) -> String {
 
 pub fn live_cards<'a>(
     node_id: &'a str,
-    disk: &'a crate::node::disk::Breakdown,
-    committed: &'a crate::deploy::Committed,
+    disk: &'a crate::infra::node::disk::Breakdown,
+    committed: &'a crate::infra::deploy::Committed,
     snapshot: &'a Snapshot,
     reserves: (Option<u64>, Option<u32>),
 ) -> impl Renderable + 'a {

@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use wabot::prelude::*;
 
-use crate::values::roles::{NodeRole, ProjectRole};
+use crate::domain::values::roles::{NodeRole, ProjectRole};
 
 /// Mint a link that lets somebody in.
 ///

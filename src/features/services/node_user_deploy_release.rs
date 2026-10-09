@@ -1,9 +1,9 @@
 use wabot::sqlite::SqliteDatabase;
 
-use crate::authz::node_user;
-use crate::entities::account::Account;
-use crate::entities::release::Release;
-use crate::entities::service::Service;
+use crate::domain::authz::node_user;
+use crate::domain::entities::account::Account;
+use crate::domain::entities::release::Release;
+use crate::domain::entities::service::Service;
 use crate::features::services::choose_release_command::ChooseRelease;
 
 pub async fn run(

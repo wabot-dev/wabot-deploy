@@ -6,7 +6,7 @@
 use hypertext::prelude::*;
 
 use crate::features::services::service_state_component::StateCell;
-use crate::views::texts::language::t;
+use crate::web::views::texts::language::t;
 
 /// What a service is doing, from containerd rather than from a column.
 ///
@@ -22,12 +22,16 @@ use crate::views::texts::language::t;
 /// A reference moves freely — it is `Copy` — and the markup is
 /// rendered before the host wraps it.
 pub fn service_table(
-    project: &crate::entities::project::Project,
+    project: &crate::domain::entities::project::Project,
     // The third is why the copy running here is not, when it is not.
     // Carried alongside rather than read off the service: it belongs to
     // a replica now, and a service is several of them.
-    rows: &[(crate::entities::service::Service, StateCell, Option<String>)],
-    allowed: crate::values::roles::Access,
+    rows: &[(
+        crate::domain::entities::service::Service,
+        StateCell,
+        Option<String>,
+    )],
+    allowed: crate::domain::values::roles::Access,
 ) -> impl Renderable {
     let inner = rsx! {
                     <table>

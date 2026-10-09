@@ -1,7 +1,7 @@
 //! A service's ports: what it listens on, whether that is reachable, and
 //! the name it answers to.
 
-use crate::views::texts::language::t;
+use crate::web::views::texts::language::t;
 use hypertext::prelude::*;
 
 /// Declaring a port, as an island host.
@@ -155,9 +155,9 @@ pub fn port_form<'a>(
 }
 
 pub fn exposure(
-    service: &crate::entities::service::Service,
+    service: &crate::domain::entities::service::Service,
     project_slug: &str,
-    ports: &[crate::entities::port::Port],
+    ports: &[crate::domain::entities::port::Port],
     node_domain: Option<&str>,
 ) -> Exposure {
     let name = format!("{}.{project_slug}", service.slug);
@@ -251,7 +251,10 @@ pub fn exposure_card<'a>(exposure: &'a Exposure, running: bool) -> impl Renderab
     )
 }
 
-pub fn reachable_at(port: &crate::entities::port::Port, node_domain: Option<&str>) -> String {
+pub fn reachable_at(
+    port: &crate::domain::entities::port::Port,
+    node_domain: Option<&str>,
+) -> String {
     let mut where_from = Vec::new();
     if let Some(hostname) = &port.hostname {
         where_from.push(format!("https://{hostname}"));

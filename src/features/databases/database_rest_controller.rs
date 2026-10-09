@@ -7,10 +7,10 @@ use wabot::rest::axum::extract::Request;
 use wabot::rest::axum::response::Response;
 use wabot::rest::RestResult;
 
-use crate::console::auth::{
+use crate::web::console::auth::{
     back_with_error, field, read_form, see_other, signed_in, SessionMiddleware,
 };
-use crate::console::ConsoleState;
+use crate::web::console::ConsoleState;
 
 #[injectable]
 pub struct DatabaseRestController {
@@ -56,7 +56,7 @@ impl DatabaseRestController {
             Err(response) => return Ok(response),
         };
 
-        let renamed = match crate::authz::node_user::belongs_here(&account) {
+        let renamed = match crate::domain::authz::node_user::belongs_here(&account) {
             true => {
                 crate::features::databases::node_user_name_database::run(
                     &self.state.database,
@@ -89,9 +89,13 @@ impl DatabaseRestController {
         // policy left on the old one would be an answer nothing reads and a
         // new name quietly back on the default.
         if let Some(was) = named.was {
-            let policy =
-                crate::edge::policy::for_name(&self.state.database, &self.state.config, &was).await;
-            if let Err(error) = crate::edge::policy::store_source(
+            let policy = crate::infra::edge::policy::for_name(
+                &self.state.database,
+                &self.state.config,
+                &was,
+            )
+            .await;
+            if let Err(error) = crate::infra::edge::policy::store_source(
                 &self.state.database,
                 &self.state.config,
                 &named.now,
@@ -101,7 +105,8 @@ impl DatabaseRestController {
             {
                 return Ok(back_with_error(&here, &error));
             }
-            if let Err(error) = crate::edge::policy::clear(&self.state.database, &was).await {
+            if let Err(error) = crate::infra::edge::policy::clear(&self.state.database, &was).await
+            {
                 tracing::warn!(%was, %error, "could not forget the old name's certificate source");
             }
         }
@@ -147,7 +152,7 @@ impl DatabaseRestController {
         };
 
         let published = field(&form, "publish") == "on";
-        let done = match crate::authz::node_user::belongs_here(&account) {
+        let done = match crate::domain::authz::node_user::belongs_here(&account) {
             true => {
                 crate::features::databases::node_user_publish_database::run(
                     &self.state.database,
@@ -174,7 +179,7 @@ impl DatabaseRestController {
         // Redeployed, because a published port is an iptables rule made
         // when the container joins the network — not something that can be
         // added to one already running.
-        let command = crate::deploy::jobs::DeployService {
+        let command = crate::infra::deploy::jobs::DeployService {
             service_id: service.id.clone(),
             release_id: None,
         };
@@ -210,7 +215,7 @@ impl DatabaseRestController {
             Err(response) => return Ok(response),
         };
 
-        let names = crate::deploy::certificate_names(
+        let names = crate::infra::deploy::certificate_names(
             &self.state.database,
             &self.state.config,
             &project,
@@ -220,12 +225,12 @@ impl DatabaseRestController {
         let Some(first) = names.first().cloned() else {
             return Ok(back_with_error(&here, "this database has no name yet"));
         };
-        let renew_with = match crate::console::auth::source_from(&form, &first) {
+        let renew_with = match crate::web::console::auth::source_from(&form, &first) {
             Ok(renew_with) => renew_with,
             Err(reason) => return Ok(back_with_error(&here, &reason)),
         };
 
-        let checked = match crate::authz::node_user::belongs_here(&account) {
+        let checked = match crate::domain::authz::node_user::belongs_here(&account) {
             true => {
                 crate::features::databases::node_user_set_database_certificate::run(
                     &self.state.database,
@@ -254,7 +259,7 @@ impl DatabaseRestController {
             Err(reason) => return Ok(back_with_error(&here, &reason)),
         };
 
-        if let Err(error) = crate::edge::policy::store_source(
+        if let Err(error) = crate::infra::edge::policy::store_source(
             &self.state.database,
             &self.state.config,
             &name,
@@ -280,7 +285,7 @@ impl DatabaseRestController {
             return Ok(see_other("/sign-in"));
         };
         let path = request.uri().path().to_string();
-        let Some(project_slug) = crate::console::auth::project_slug(&path) else {
+        let Some(project_slug) = crate::web::console::auth::project_slug(&path) else {
             return Ok(see_other("/"));
         };
         let here = format!("/projects/{project_slug}/databases/new");
@@ -302,7 +307,7 @@ impl DatabaseRestController {
         if let Err(reason) = asked.validate() {
             return Ok(back_with_error(&here, &reason.to_string()));
         }
-        let made = match crate::authz::node_user::belongs_here(&account) {
+        let made = match crate::domain::authz::node_user::belongs_here(&account) {
             true => {
                 crate::features::databases::node_user_create_database::run(
                     &self.state.database,
@@ -327,7 +332,7 @@ impl DatabaseRestController {
 
         // Its own job on this node's own queue, which is the same
         // deployment the service page's button queues.
-        let command = crate::deploy::jobs::DeployService {
+        let command = crate::infra::deploy::jobs::DeployService {
             service_id: service.id.clone(),
             release_id: None,
         };
@@ -376,7 +381,7 @@ impl DatabaseRestController {
         let Some(account) = signed_in(&self.auth) else {
             return Ok(see_other("/sign-in"));
         };
-        let restored = match crate::authz::node_user::belongs_here(&account) {
+        let restored = match crate::domain::authz::node_user::belongs_here(&account) {
             true => {
                 crate::features::databases::node_user_restore_database::run(
                     &self.state.database,
@@ -405,7 +410,7 @@ impl DatabaseRestController {
             Err(reason) => return Ok(back_with_error(&back, &reason)),
         };
 
-        let command = crate::deploy::jobs::DeployService {
+        let command = crate::infra::deploy::jobs::DeployService {
             service_id: made.service_id.clone(),
             release_id: None,
         };
@@ -436,8 +441,8 @@ impl DatabaseRestController {
 /// somebody who was half-way down a settings page. A save that moves
 /// the page is a save that hides what it did.
 fn settings_of(
-    project: &crate::entities::project::Project,
-    service: &crate::entities::service::Service,
+    project: &crate::domain::entities::project::Project,
+    service: &crate::domain::entities::service::Service,
 ) -> String {
     // The tab, not the bare path: `/settings` is a redirect to the first
     // tab now, and a save that lands on a redirect is a save whose
@@ -449,9 +454,9 @@ fn settings_of(
 
 #[cfg(test)]
 mod tests {
-    use crate::console::tests::Console;
-    use crate::repositories::databases;
-    use crate::repositories::services;
+    use crate::infra::repositories::databases;
+    use crate::infra::repositories::services;
+    use crate::web::console::tests::Console;
     use hypertext::Renderable;
     use wabot::rest::axum::http::StatusCode;
 
@@ -463,11 +468,11 @@ mod tests {
     /// naming nothing, and naming nothing is what it did.
     #[tokio::test]
     async fn the_names_on_the_page_are_the_names_on_the_certificate() {
-        let database = crate::db::open_in_memory().await.expect("open");
-        crate::node::settings::set_domain(&database, Some("node.example"))
+        let database = crate::infra::db::open_in_memory().await.expect("open");
+        crate::infra::node::settings::set_domain(&database, Some("node.example"))
             .await
             .expect("domain");
-        let project = crate::repositories::projects::create(&database, "db-test")
+        let project = crate::infra::repositories::projects::create(&database, "db-test")
             .await
             .expect("project");
         let (service, row) = crate::features::databases::create_database_command::CreateDatabase {
@@ -480,9 +485,9 @@ mod tests {
         .await
         .expect("created");
 
-        let names = crate::deploy::certificate_names(
+        let names = crate::infra::deploy::certificate_names(
             &database,
-            &crate::config::Config::default(),
+            &crate::infra::config::Config::default(),
             &project,
             &service,
         )
@@ -494,7 +499,7 @@ mod tests {
             Some("orders.db-test.node.example")
         );
 
-        let replicas = crate::repositories::replicas::of_service(&database, &service.id)
+        let replicas = crate::infra::repositories::replicas::of_service(&database, &service.id)
             .await
             .expect("replicas");
         let card = crate::features::databases::database_cards_component::database_card(
@@ -560,11 +565,11 @@ mod tests {
     /// never offer none.
     #[tokio::test]
     async fn only_the_spellings_that_verify_are_offered() {
-        let database = crate::db::open_in_memory().await.expect("open");
-        crate::node::settings::set_domain(&database, Some("node.example"))
+        let database = crate::infra::db::open_in_memory().await.expect("open");
+        crate::infra::node::settings::set_domain(&database, Some("node.example"))
             .await
             .expect("domain");
-        let project = crate::repositories::projects::create(&database, "db-test")
+        let project = crate::infra::repositories::projects::create(&database, "db-test")
             .await
             .expect("project");
         let (service, row) = crate::features::databases::create_database_command::CreateDatabase {
@@ -576,14 +581,14 @@ mod tests {
         .run(&database)
         .await
         .expect("created");
-        let names = crate::deploy::certificate_names(
+        let names = crate::infra::deploy::certificate_names(
             &database,
-            &crate::config::Config::default(),
+            &crate::infra::config::Config::default(),
             &project,
             &service,
         )
         .await;
-        let replicas = crate::repositories::replicas::of_service(&database, &service.id)
+        let replicas = crate::infra::repositories::replicas::of_service(&database, &service.id)
             .await
             .expect("replicas");
         let address = Some("10.42.2.200".to_string());
@@ -650,11 +655,11 @@ mod tests {
     /// direction.
     #[tokio::test]
     async fn a_chosen_name_replaces_the_derived_one_everywhere() {
-        let database = crate::db::open_in_memory().await.expect("open");
-        crate::node::settings::set_domain(&database, Some("node.example"))
+        let database = crate::infra::db::open_in_memory().await.expect("open");
+        crate::infra::node::settings::set_domain(&database, Some("node.example"))
             .await
             .expect("domain");
-        let project = crate::repositories::projects::create(&database, "db-test")
+        let project = crate::infra::repositories::projects::create(&database, "db-test")
             .await
             .expect("project");
         let (service, _) = crate::features::databases::create_database_command::CreateDatabase {
@@ -666,26 +671,31 @@ mod tests {
         .run(&database)
         .await
         .expect("created");
-        let config = crate::config::Config::default();
+        let config = crate::infra::config::Config::default();
 
         let derived =
-            crate::deploy::certificate_names(&database, &config, &project, &service).await;
+            crate::infra::deploy::certificate_names(&database, &config, &project, &service).await;
         assert_eq!(
             derived.first().map(String::as_str),
             Some("orders.db-test.node.example"),
             "what every database had before a name could be chosen"
         );
 
-        let port = crate::repositories::ports::of_service(&database, &service.id)
+        let port = crate::infra::repositories::ports::of_service(&database, &service.id)
             .await
             .expect("ports")
             .pop()
             .expect("a database is created with one");
-        crate::repositories::ports::set_hostname(&database, &port.id, Some("db.example.com"))
-            .await
-            .expect("named");
+        crate::infra::repositories::ports::set_hostname(
+            &database,
+            &port.id,
+            Some("db.example.com"),
+        )
+        .await
+        .expect("named");
 
-        let chosen = crate::deploy::certificate_names(&database, &config, &project, &service).await;
+        let chosen =
+            crate::infra::deploy::certificate_names(&database, &config, &project, &service).await;
         assert_eq!(
             chosen.first().map(String::as_str),
             Some("db.example.com"),
@@ -706,7 +716,7 @@ mod tests {
     }
 
     async fn project(console: &Console) -> String {
-        crate::repositories::projects::create(&console.database, "shared")
+        crate::infra::repositories::projects::create(&console.database, "shared")
             .await
             .expect("project")
             .id
@@ -739,7 +749,10 @@ mod tests {
             .expect("services")
             .pop()
             .expect("one");
-        assert_eq!(service.kind, crate::entities::service::Kind::Postgres);
+        assert_eq!(
+            service.kind,
+            crate::domain::entities::service::Kind::Postgres
+        );
         assert_eq!(service.image, "docker.io/library/postgres:17-alpine");
         assert_eq!(service.memory_limit, Some(128 * 1024 * 1024));
 
@@ -838,7 +851,7 @@ mod tests {
         let console = Console::new().await;
         let cookie = console.signed_in().await;
         my_api(&console, &cookie).await;
-        let project = crate::repositories::projects::find(&console.database, "my-api")
+        let project = crate::infra::repositories::projects::find(&console.database, "my-api")
             .await
             .expect("query")
             .expect("made");
@@ -866,7 +879,7 @@ mod tests {
         );
 
         // A backup that holds it, as `backup` would have written one.
-        let taken_at = crate::clock::now_ms() - 3_600_000;
+        let taken_at = crate::infra::clock::now_ms() - 3_600_000;
         let into = console
             .data_dir
             .join("backups")
@@ -932,7 +945,7 @@ mod tests {
             .into_iter()
             .find(|service| service.slug == "orders-friday")
             .expect("the copy exists");
-        let row = crate::repositories::databases::of_service(&console.database, &copy.id)
+        let row = crate::infra::repositories::databases::of_service(&console.database, &copy.id)
             .await
             .expect("query")
             .expect("an engine row");
@@ -958,7 +971,7 @@ mod tests {
             .find(|service| service.slug == "orders")
             .expect("the original is still a service");
         assert!(
-            crate::repositories::databases::of_service(&console.database, &original.id)
+            crate::infra::repositories::databases::of_service(&console.database, &original.id)
                 .await
                 .expect("query")
                 .is_some()
@@ -985,7 +998,7 @@ mod tests {
         let console = Console::new().await;
         let cookie = console.signed_in().await;
         my_api(&console, &cookie).await;
-        let project = crate::repositories::projects::find(&console.database, "my-api")
+        let project = crate::infra::repositories::projects::find(&console.database, "my-api")
             .await
             .expect("query")
             .expect("made");
@@ -1002,7 +1015,7 @@ mod tests {
         // A root that is not this node's own — `data_dir/backups` is
         // where its own would be, and there is nothing there.
         let away = console.data_dir.join("somewhere-else");
-        let taken_at = crate::clock::now_ms() - 7_200_000;
+        let taken_at = crate::infra::clock::now_ms() - 7_200_000;
         let backup = away
             .join("nodes")
             .join("nd-test")
@@ -1035,11 +1048,11 @@ mod tests {
             .to_string(),
         )
         .expect("the manifest");
-        crate::backup::plan::store(
+        crate::infra::backup::plan::store(
             &console.database,
-            &crate::backup::plan::Plan {
+            &crate::infra::backup::plan::Plan {
                 destination: Some(away.display().to_string()),
-                ..crate::backup::plan::Plan::default()
+                ..crate::infra::backup::plan::Plan::default()
             },
         )
         .await
@@ -1078,7 +1091,7 @@ mod tests {
             .into_iter()
             .find(|service| service.slug == "orders-from-away")
             .expect("the copy exists");
-        let row = crate::repositories::databases::of_service(&console.database, &copy.id)
+        let row = crate::infra::repositories::databases::of_service(&console.database, &copy.id)
             .await
             .expect("query")
             .expect("an engine row");
@@ -1107,7 +1120,7 @@ mod tests {
         let console = Console::new().await;
         let cookie = console.signed_in().await;
         my_api(&console, &cookie).await;
-        let project = crate::repositories::projects::find(&console.database, "my-api")
+        let project = crate::infra::repositories::projects::find(&console.database, "my-api")
             .await
             .expect("query")
             .expect("made");

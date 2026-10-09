@@ -1,12 +1,12 @@
 use wabot::sqlite::SqliteDatabase;
 
-use crate::authz::node_user;
-use crate::backup::destination::Destination;
-use crate::backup::plan::{self, Cadence, Plan};
-use crate::config::Config;
-use crate::entities::account::Account;
+use crate::domain::authz::node_user;
+use crate::domain::entities::account::Account;
 use crate::features::backups::backup_plan_saved_response::BackupPlanSavedResponse;
 use crate::features::backups::set_backup_plan_request::SetBackupPlanRequest;
+use crate::infra::backup::destination::Destination;
+use crate::infra::backup::plan::{self, Cadence, Plan};
+use crate::infra::config::Config;
 
 pub async fn run(
     database: &SqliteDatabase,
@@ -41,7 +41,7 @@ pub async fn run(
     };
 
     let keep_days = match asked.keep_days.trim() {
-        "" => crate::backup::KEEP_DAYS,
+        "" => crate::infra::backup::KEEP_DAYS,
         text => match text.parse::<i64>() {
             Ok(days) if days >= plan::MIN_KEEP_DAYS => days,
             Ok(_) => {
@@ -75,15 +75,16 @@ pub async fn run(
         "that could not be saved".to_string()
     })?;
 
-    let was = crate::node::settings::archiving(database).await;
+    let was = crate::infra::node::settings::archiving(database).await;
     let wanted = asked.archiving;
-    let archiving_changed = match crate::node::settings::set_archiving(database, wanted).await {
-        Ok(()) => was != wanted,
-        Err(error) => {
-            tracing::warn!(%error, "could not save whether to keep the log");
-            false
-        }
-    };
+    let archiving_changed =
+        match crate::infra::node::settings::set_archiving(database, wanted).await {
+            Ok(()) => was != wanted,
+            Err(error) => {
+                tracing::warn!(%error, "could not save whether to keep the log");
+                false
+            }
+        };
 
     Ok(BackupPlanSavedResponse { archiving_changed })
 }
@@ -101,16 +102,16 @@ pub async fn run(
 /// long enough to be a slow bucket and short enough to be an answer.
 pub(crate) async fn bucket_refusal(
     destination: Option<&str>,
-    credentials: &crate::backup::s3::Credentials,
+    credentials: &crate::infra::backup::s3::Credentials,
 ) -> Option<String> {
-    let Some(crate::backup::destination::Destination::S3 { bucket, prefix }) =
-        destination.and_then(|text| crate::backup::destination::Destination::parse(text).ok())
+    let Some(crate::infra::backup::destination::Destination::S3 { bucket, prefix }) = destination
+        .and_then(|text| crate::infra::backup::destination::Destination::parse(text).ok())
     else {
         return None;
     };
     match tokio::time::timeout(
         std::time::Duration::from_secs(15),
-        crate::backup::s3::list(credentials, &bucket, &prefix),
+        crate::infra::backup::s3::list(credentials, &bucket, &prefix),
     )
     .await
     {

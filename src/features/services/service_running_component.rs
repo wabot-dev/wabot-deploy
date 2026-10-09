@@ -1,6 +1,6 @@
 //! What this service is doing here: its copies, and what they are using.
 
-use crate::views::texts::language::t;
+use crate::web::views::texts::language::t;
 use hypertext::prelude::*;
 
 /// What each copy is doing and what it is using, here.
@@ -31,8 +31,8 @@ pub struct Running<'a> {
 }
 
 pub fn running_card<'a>(
-    placements: &'a [crate::entities::replica::Replica],
-    nodes: &'a [crate::network::Node],
+    placements: &'a [crate::domain::entities::replica::Replica],
+    nodes: &'a [crate::infra::network::Node],
     queued: &'a [String],
     stopped: bool,
     // The ids this table is about, and what each copy here is using. One
@@ -41,7 +41,7 @@ pub fn running_card<'a>(
     // next reader would say with a sigh.
     at: &'a Running<'a>,
 ) -> impl Renderable + 'a {
-    let live: Vec<&crate::entities::replica::Replica> =
+    let live: Vec<&crate::domain::entities::replica::Replica> =
         placements.iter().filter(|r| !r.evicted()).collect();
     // This node's own, which is the figure somebody sizing this machine
     // wants — a total across the network would answer a question nobody
@@ -62,7 +62,7 @@ pub fn running_card<'a>(
                 <span class="who">
                     (format!("{} replica(s)", live.len()))
                     @if here > 0 {
-                        (" · ")(crate::node::memory::human(here))(t(" here"))
+                        (" · ")(crate::infra::node::memory::human(here))(t(" here"))
                     }
                 </span>
             </div>
@@ -123,7 +123,7 @@ pub fn running_card<'a>(
                                     at.used.get(&replica.container_id(at.project_slug, at.service_slug))
                                         .copied()
                                         .or(replica.memory_bytes)
-                                        .map(crate::node::memory::human)
+                                        .map(crate::infra::node::memory::human)
                                         .unwrap_or_else(|| "—".into())
                                 )</td>
                                 // What its volume holds. The figure that
@@ -136,7 +136,7 @@ pub fn running_card<'a>(
                                         .copied()
                                         .flatten()
                                         .or(replica.disk_bytes)
-                                        .map(crate::node::memory::human)
+                                        .map(crate::infra::node::memory::human)
                                         .unwrap_or_else(|| "—".into())
                                 )</td>
                             </tr>
@@ -168,12 +168,12 @@ pub fn running_card<'a>(
 /// figure its own node reports, and the only one that can exist here
 /// for a copy on another machine.
 pub fn disks_card<'a>(
-    volumes: &'a [crate::entities::volume::Volume],
-    placements: &'a [crate::entities::replica::Replica],
-    nodes: &'a [crate::network::Node],
+    volumes: &'a [crate::domain::entities::volume::Volume],
+    placements: &'a [crate::domain::entities::replica::Replica],
+    nodes: &'a [crate::infra::network::Node],
     at: &'a Running<'a>,
 ) -> impl Renderable + 'a {
-    let live: Vec<&crate::entities::replica::Replica> =
+    let live: Vec<&crate::domain::entities::replica::Replica> =
         placements.iter().filter(|r| !r.evicted()).collect();
     let paths = volumes
         .iter()
@@ -205,7 +205,7 @@ pub fn disks_card<'a>(
                                         .copied()
                                         .flatten()
                                         .or(replica.disk_bytes)
-                                        .map(crate::node::memory::human)
+                                        .map(crate::infra::node::memory::human)
                                         .unwrap_or_else(|| "—".into())
                                 )</td>
                             </tr>

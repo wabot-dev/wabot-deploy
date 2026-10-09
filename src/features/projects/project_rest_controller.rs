@@ -1,6 +1,6 @@
 //! What a project's forms post to.
 
-use crate::console::live::{edge_cells, name_cells, replica_cells, Live};
+use crate::web::console::live::{edge_cells, name_cells, replica_cells, Live};
 use std::sync::Arc;
 
 use crate::features::services::service_state_component::{elsewhere_of, state_cell, where_it_runs};
@@ -11,14 +11,14 @@ use wabot::rest::axum::http::{header, StatusCode};
 use wabot::rest::axum::response::Response;
 use wabot::rest::RestResult;
 
-use crate::repositories::access;
-use crate::repositories::services;
-use crate::values::roles::ProjectRole;
+use crate::domain::values::roles::ProjectRole;
+use crate::infra::repositories::access;
+use crate::infra::repositories::services;
 
-use crate::console::auth::{
+use crate::web::console::auth::{
     back_with_error, field, read_form, see_other, signed_in, SessionMiddleware,
 };
-use crate::console::ConsoleState;
+use crate::web::console::ConsoleState;
 
 impl ProjectRestController {
     /// The project this request is about, what the caller may do with
@@ -34,15 +34,15 @@ impl ProjectRestController {
         path: &'a str,
     ) -> RestResult<
         Option<(
-            crate::entities::project::Project,
-            crate::values::roles::Access,
+            crate::domain::entities::project::Project,
+            crate::domain::values::roles::Access,
             Vec<&'a str>,
         )>,
     > {
         let Some(account) = signed_in(&self.auth) else {
             return Ok(None);
         };
-        let segments = crate::console::auth::segments(path);
+        let segments = crate::web::console::auth::segments(path);
         let Some(slug) = segments.get(1) else {
             return Ok(None);
         };
@@ -81,7 +81,7 @@ impl ProjectRestController {
             return Ok(see_other("/sign-in"));
         };
 
-        let made = match crate::authz::node_user::belongs_here(&account) {
+        let made = match crate::domain::authz::node_user::belongs_here(&account) {
             true => {
                 crate::features::projects::node_user_create_project::run(
                     &self.state.database,
@@ -127,7 +127,7 @@ impl ProjectRestController {
                 .body(Body::empty())
                 .expect("a constant response is well-formed"));
         };
-        let Some(slug) = crate::console::auth::segments(&path)
+        let Some(slug) = crate::web::console::auth::segments(&path)
             .get(1)
             .map(|s| s.to_string())
         else {
@@ -153,18 +153,18 @@ impl ProjectRestController {
             // between two, and a stream is the one place that has both —
             // which is why this figure is on the table and not on the page
             // render beside memory and disk.
-            let mut before: Option<crate::node::cpu::Sample> = None;
+            let mut before: Option<crate::infra::node::cpu::Sample> = None;
             loop {
                 let mut cells = std::collections::BTreeMap::new();
                 if let Ok(services) =
                     services::all(&state.database, Some(&project.id)).await
                 {
                     let deploying =
-                        crate::deploy::jobs::deploying(&state.container).await;
+                        crate::infra::deploy::jobs::deploying(&state.container).await;
                     for service in services {
                         let observed = state.deployer.observe_service(&project, &service).await;
                         let busy = deploying.contains(&service.id);
-                        let placements = crate::repositories::replicas::of_service(
+                        let placements = crate::infra::repositories::replicas::of_service(
                             &state.database,
                             &service.id,
                         )
@@ -181,10 +181,10 @@ impl ProjectRestController {
                         );
                     }
                 }
-                let now = crate::node::cpu::sample(&state.deployer.cgroups().await);
+                let now = crate::infra::node::cpu::sample(&state.deployer.cgroups().await);
                 let busy = before
                     .as_ref()
-                    .and_then(|before| crate::node::cpu::between(before, &now));
+                    .and_then(|before| crate::infra::node::cpu::between(before, &now));
                 before = Some(now);
 
                 let mut live = Live {
@@ -202,7 +202,7 @@ impl ProjectRestController {
                 // back to English two seconds later, which is the same
                 // "decided in two places" failure as the words themselves,
                 // one layer down.
-                crate::views::texts::language::scoped(account.language, || {
+                crate::web::views::texts::language::scoped(account.language, || {
                     live.translate();
                     String::new()
                 });
@@ -245,7 +245,7 @@ impl ProjectRestController {
         let username = field(&form, "member");
         let role = ProjectRole::parse(field(&form, "role"));
 
-        let added = match crate::authz::node_user::belongs_here(&account) {
+        let added = match crate::domain::authz::node_user::belongs_here(&account) {
             true => {
                 crate::features::projects::node_user_add_project_member::run(
                     &self.state.database,
@@ -294,7 +294,7 @@ impl ProjectRestController {
             return Ok(see_other(&here));
         };
 
-        let removed = match crate::authz::node_user::belongs_here(&account) {
+        let removed = match crate::domain::authz::node_user::belongs_here(&account) {
             true => {
                 crate::features::projects::node_user_remove_project_member::run(
                     &self.state.database,
@@ -371,7 +371,7 @@ impl ProjectRestController {
             Err(response) => return Ok(response),
         };
 
-        let minted = match crate::authz::node_user::belongs_here(&account) {
+        let minted = match crate::domain::authz::node_user::belongs_here(&account) {
             true => {
                 crate::features::projects::node_user_create_project_token::run(
                     &self.state.database,
@@ -405,9 +405,10 @@ impl ProjectRestController {
                 // chooses the words around a value, never the value —
                 // and a push token on its own is something somebody has
                 // to remember the wrapper for.
-                let host = crate::node::settings::domain(&self.state.database, &self.state.config)
-                    .await
-                    .unwrap_or_else(|| "this node".into());
+                let host =
+                    crate::infra::node::settings::domain(&self.state.database, &self.state.config)
+                        .await
+                        .unwrap_or_else(|| "this node".into());
                 let nonce = self.state.reveals.stash(format!(
                     "docker login {host} -u {} -p {secret}",
                     field(&form, "name")
@@ -442,7 +443,7 @@ impl ProjectRestController {
             return Ok(see_other(&here));
         };
 
-        let revoked = match crate::authz::node_user::belongs_here(&account) {
+        let revoked = match crate::domain::authz::node_user::belongs_here(&account) {
             true => {
                 crate::features::projects::node_user_revoke_project_token::run(
                     &self.state.database,
@@ -504,7 +505,7 @@ impl ProjectRestController {
             Err(response) => return Ok(response),
         };
 
-        let deleted = match crate::authz::node_user::belongs_here(&account) {
+        let deleted = match crate::domain::authz::node_user::belongs_here(&account) {
             true => {
                 crate::features::projects::node_user_delete_project::run(
                     &self.state.database,
@@ -538,8 +539,8 @@ impl ProjectRestController {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::console::tests::Console;
-    use crate::repositories::projects;
+    use crate::infra::repositories::projects;
+    use crate::web::console::tests::Console;
     use wabot::rest::axum::http::StatusCode;
 
     /// The property the whole model rests on: a project you are not in
@@ -668,7 +669,7 @@ mod tests {
     async fn a_node_that_owns_nothing_makes_no_projects() {
         let console = Console::new().await;
         let admin = console.signed_in().await;
-        crate::network::capability::set_owns(&console.database, false)
+        crate::infra::network::capability::set_owns(&console.database, false)
             .await
             .expect("set");
 
@@ -778,17 +779,18 @@ mod tests {
             .form(&[("name", "api"), ("image", "docker.io/library/nginx:alpine")])
             .send()
             .await;
-        let service = crate::repositories::services::all(&console.database, None)
+        let service = crate::infra::repositories::services::all(&console.database, None)
             .await
             .expect("query")
             .pop()
             .expect("made");
-        let replica = crate::repositories::replicas::ensure_here(&console.database, &service.id, 1)
-            .await
-            .expect("a copy")
-            .pop()
-            .expect("one");
-        crate::repositories::replicas::set_last_error(
+        let replica =
+            crate::infra::repositories::replicas::ensure_here(&console.database, &service.id, 1)
+                .await
+                .expect("a copy")
+                .pop()
+                .expect("one");
+        crate::infra::repositories::replicas::set_last_error(
             &console.database,
             &replica.id,
             Some("it started and exited 1"),
@@ -1031,7 +1033,7 @@ mod tests {
             .await;
         let member = console.joined_as(&admin, "watcher").await;
 
-        let watcher = crate::accounts::all(&console.database)
+        let watcher = crate::infra::accounts::all(&console.database)
             .await
             .expect("query")
             .into_iter()
@@ -1116,7 +1118,7 @@ mod tests {
             .await;
         let member = console.joined_as(&admin, "deployer").await;
 
-        let person = crate::accounts::all(&console.database)
+        let person = crate::infra::accounts::all(&console.database)
             .await
             .expect("query")
             .into_iter()

@@ -1,8 +1,8 @@
 use wabot::sqlite::SqliteDatabase;
 
-use crate::accounts::invitations;
-use crate::entities::account::Account;
+use crate::domain::entities::account::Account;
 use crate::features::people::join_request::JoinRequest;
+use crate::infra::accounts::invitations;
 
 pub async fn run(
     database: &SqliteDatabase,
@@ -30,10 +30,10 @@ pub async fn run(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::values::roles::{NodeRole, ProjectRole};
     use crate::features::fixtures::organisation;
     use crate::features::people::invite_person_request::InvitePersonRequest;
     use crate::features::people::{node_user_invite_person, tenant_user_invite_person};
-    use crate::values::roles::{NodeRole, ProjectRole};
 
     async fn token_for(here: &crate::features::fixtures::Organisation, admin: bool) -> String {
         match admin {

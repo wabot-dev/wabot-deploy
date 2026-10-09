@@ -1,10 +1,10 @@
 use wabot::sqlite::SqliteDatabase;
 
-use crate::authz::node_user;
-use crate::config::Config;
-use crate::deploy::Deployer;
-use crate::entities::account::Account;
-use crate::repositories::tenants;
+use crate::domain::authz::node_user;
+use crate::domain::entities::account::Account;
+use crate::infra::config::Config;
+use crate::infra::deploy::Deployer;
+use crate::infra::repositories::tenants;
 
 pub async fn run(
     database: &SqliteDatabase,
@@ -30,7 +30,7 @@ pub async fn run(
         // Refused here as well as in `routing::sync`: the sync skipping
         // it would leave a row saved on a page that shows it and a
         // console that never answers there, which is a setting that lies.
-        if crate::node::settings::domain(database, config)
+        if crate::infra::node::settings::domain(database, config)
             .await
             .as_deref()
             == Some(wanted.as_str())
@@ -46,7 +46,9 @@ pub async fn run(
         // right.
         if let Ok(Some(held)) = tenants::by_domain(database, &wanted).await {
             if held.id != tenant.id {
-                return Err(crate::views::texts::sentences::name_is_taken(&held.name));
+                return Err(crate::web::views::texts::sentences::name_is_taken(
+                    &held.name,
+                ));
             }
         }
     }

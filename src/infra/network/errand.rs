@@ -1,0 +1,1171 @@
+//! What an authority has asked another node to do.
+//!
+//! ## The queue is on the node giving the order
+//!
+//! An errand is written here and *collected* by the node it is for.
+//! That is the whole delivery mechanism, and it is the direction that
+//! works: a private node dials out over the certificate it already
+//! trusts — the one it enrolled through — so nothing ever has to reach
+//! it. Which is the reason private nodes exist.
+//!
+//! It also means the overlay is not in this path. The overlay is a data
+//! plane: it exists so an edge can reach a *container* on another node.
+//! Orders are control plane.
+//!
+//! ## An errand is an instruction, not a job
+//!
+//! The node that collects one writes its own local job for it. So there
+//! is no distributed queue and no job routing — `deploy` still talks to
+//! this node's containerd, whichever node that turns out to be. See
+//! migration `0017`.
+//!
+//! ## Half of it is wired
+//!
+//! The authority's two endpoints hand errands over and take the answer
+//! back. What is missing is the other end — the collecting node's cron,
+//! and what a `host` errand *means* there: its own service row, its own
+//! pull, its own local deploy job. That is what the `allow`s below name.
+
+use serde::{Deserialize, Serialize};
+use wabot::sqlite::rusqlite::{OptionalExtension, Row};
+use wabot::sqlite::SqliteDatabase;
+
+use super::NetworkResult;
+use crate::infra::clock::now_ms;
+
+/// What kind of instruction this is.
+///
+/// One today. The enum exists rather than a bare string because the
+/// node reading it is running a different version than the node that
+/// wrote it as often as not — an unrecognised kind has to be a value
+/// the code can hold and refuse, not a parse failure.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Kind {
+    /// Run this service here.
+    Host,
+    /// Serve this name from here, proxying to the replicas named.
+    Edge,
+    /// Keep a read-only copy of a database here.
+    ///
+    /// A kind of its own rather than a field on [`Kind::Host`], and the
+    /// reason is what an older node would do with it: serde ignores a
+    /// field it does not know, so a `host` errand carrying database
+    /// arguments would be run as a plain container — a Postgres with no
+    /// volume, initialising into a layer that is thrown away at the next
+    /// deployment. It would look like it worked. An unknown *kind* is
+    /// refused with a reason instead, which is what that machinery is
+    /// for.
+    Database,
+    /// Be running this release.
+    ///
+    /// **Desired state, not a command**, which is what lets it travel the
+    /// ordinary way: a node already on that release settles it as
+    /// satisfied, so collecting it twice costs nothing and a node that was
+    /// off when it was queued converges when it comes back. That is also
+    /// why the version is a *tag* and not a URL — the node resolves it
+    /// itself, against the same catalogue its own console reads.
+    Manage,
+    /// Do this once: restart, or take a backup.
+    ///
+    /// The opposite of the kind above, and separated from it for that
+    /// reason rather than for tidiness. Nothing about "restart" is
+    /// convergent — asked twice it happens twice — and the node cannot
+    /// even settle it afterwards, because the restart takes the process
+    /// that would have. So it is settled *before* it is obeyed, and the
+    /// errand's own id is the idempotency key: see `carry_out`.
+    Command,
+    /// Anything this version does not know about.
+    #[serde(other)]
+    Unknown,
+}
+
+impl Kind {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Host => "host",
+            Self::Edge => "edge",
+            Self::Database => "database",
+            Self::Manage => "manage",
+            Self::Command => "command",
+            Self::Unknown => "unknown",
+        }
+    }
+
+    /// A kind from a newer node reads as [`Kind::Unknown`] rather than
+    /// as a failure. The node refuses it with a reason the operator can
+    /// act on — "that node is older than this instruction" — instead of
+    /// dropping an errand nobody can explain.
+    pub fn parse(text: &str) -> Self {
+        match text {
+            "host" => Self::Host,
+            "edge" => Self::Edge,
+            "database" => Self::Database,
+            "manage" => Self::Manage,
+            "command" => Self::Command,
+            _ => Self::Unknown,
+        }
+    }
+}
+
+/// One instruction, as both ends see it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Errand {
+    pub id: String,
+    pub kind: Kind,
+    /// The kind's own arguments, still as JSON. This module knows the
+    /// *shape* of an errand — both ends have to agree on that — and
+    /// deliberately not what to do about one. Carrying and obeying are
+    /// different jobs.
+    pub payload: serde_json::Value,
+}
+
+/// The arguments of a [`Kind::Host`] errand: run this service here.
+///
+/// Everything the far node needs and nothing it can look up, because it
+/// cannot look anything up — it has never heard of this project, this
+/// service or this registry until the errand arrives.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Host {
+    /// What to call the project there. Its own project, with its own
+    /// bridge and its own rows — nothing is shared, which is the whole
+    /// model.
+    pub project: String,
+    pub service: String,
+    /// Pinned by digest by whoever queued it. A tag would mean the two
+    /// nodes could resolve the same errand to different bytes.
+    pub image: String,
+    /// The registry host in `image`. The far node stores the credential
+    /// below against it — see `platform::registry_credentials`.
+    pub registry: String,
+    /// What to present there, when there is anything to present.
+    ///
+    /// **Absent for a registry that is not this node's own.** These
+    /// used to be required, and what went into them was a token for
+    /// *this* node's registry whatever host the image named — so
+    /// placing `docker.io/library/postgres` on another node would have
+    /// handed a wabot push token to Docker Hub. Nobody had placed a
+    /// public image elsewhere, so nobody had; a database pulls from
+    /// Docker Hub by default, so somebody would have.
+    ///
+    /// Omitted rather than sent empty. A node old enough to require
+    /// them refuses the errand and says so, which is a reason somebody
+    /// can act on — where an empty password is a pull that fails at the
+    /// registry with an authentication error about a credential nobody
+    /// meant to send.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub username: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub secret: Option<String>,
+    #[serde(default)]
+    pub env: std::collections::BTreeMap<String, String>,
+    /// What the container should listen on. `None` leaves it to the
+    /// image's own declaration.
+    #[serde(default)]
+    pub port: Option<u16>,
+    /// Which copies of the service this node is to run, by the
+    /// **service's** numbering rather than its own.
+    ///
+    /// A node given slots 2 and 3 runs slots 2 and 3, so the container
+    /// ids match on both sides and a report about "slot 3" names one
+    /// thing across the network. Defaulted for a payload written before
+    /// this field existed, which meant exactly one copy.
+    #[serde(default = "one_slot")]
+    pub slots: Vec<u32>,
+
+    /// Whether the service is meant to be running at all.
+    ///
+    /// **A stop has to travel.** Stopping a service took down the copies
+    /// on the owning node and said nothing to the machines running the
+    /// others, so a service the console showed as stopped went on serving
+    /// traffic somewhere else — found on the test nodes. The owner had no
+    /// way to say it: `slots: []` is a different instruction, meaning
+    /// "take this service off that machine", and it deletes the rows
+    /// there.
+    ///
+    /// So this is the intent and the slots are the placement. `false`
+    /// stops what that node holds and **keeps** it, which is what makes
+    /// starting the service again a matter of saying so rather than of
+    /// placing every copy a second time.
+    ///
+    /// Defaulted to running for a payload written before the field
+    /// existed: every errand ever queued asked for a deployment.
+    #[serde(default = "running")]
+    pub running: bool,
+
+    /// The ceilings the copy runs under, in bytes and in millicores.
+    ///
+    /// **These did not travel, and that was a hole rather than an
+    /// omission.** `Standby` has carried `memory_limit` since databases
+    /// existed, and this — the errand every ordinary service goes out
+    /// on — carried neither. So a copy placed on another node ran there
+    /// with no `memory.max` and no `cpu.max` at all, free to take that
+    /// machine; and because `Deployer::committed` sums the ceilings on
+    /// the rows it holds, the copy did not even count against what that
+    /// node had left to promise. The node had no idea it had promised
+    /// anything.
+    ///
+    /// `None` is no ceiling, and it means that for both readings that
+    /// can produce it: a payload written before this field existed
+    /// carried none, and an owner who cleared the ceiling means none.
+    /// The two collapse to the same correct action, which is what makes
+    /// "absent" safe to write straight through.
+    ///
+    /// A node too old to know the fields ignores them and runs the copy
+    /// the way it does today. That is a degradation somebody can see on
+    /// the placement table beside the node's version, not a silent
+    /// disagreement.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub memory_limit: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cpu_millicores: Option<u32>,
+    /// And the disk the copy reserves there.
+    ///
+    /// **A reservation the far node writes down against itself**, not a
+    /// bound it can enforce — there is nothing in a container's spec to
+    /// write it into. It travels so that node's arithmetic counts the
+    /// copy it is holding, and so the copy is charged to the same
+    /// organisation's budget wherever it runs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub disk_limit: Option<u64>,
+}
+
+fn one_slot() -> Vec<u32> {
+    vec![1]
+}
+
+fn running() -> bool {
+    true
+}
+
+/// The arguments of a [`Kind::Edge`] errand: answer for this name here.
+///
+/// The upstreams come *with* the instruction rather than being looked
+/// up: the node that placed the replicas knows where they are and
+/// whether they answered, and an edge that discovered them would be a
+/// second thing with an opinion about where a service is.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Edge {
+    pub hostname: String,
+    /// `host:port` per replica, and **one entry per replica** — a node
+    /// running two copies appears twice, which is what makes a plain
+    /// round-robin send it twice the requests.
+    ///
+    /// Each is an overlay address and a port bound to it, never a
+    /// container's own: a bridge address is not unique across nodes.
+    pub upstreams: Vec<String>,
+    /// **The other nodes that answer for this name**, so this one can
+    /// reach them.
+    ///
+    /// Two nodes enrolled by the same authority have never heard of each
+    /// other and have no WireGuard session — the overlay is a star. The
+    /// owner is the only one that knows the whole set, so the set travels,
+    /// exactly as a standby's primary peer does. What it is *for* is the
+    /// HTTP-01 challenge: a token lives in the ordering node's own table
+    /// and the authority may ask any address the name resolves to.
+    ///
+    /// Absent in an errand written by an older node, which is why it
+    /// defaults: reconciliation re-dispatches at boot and the field
+    /// arrives then.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub peers: Vec<Peer>,
+    /// What the co-edges of this name authenticate to each other with,
+    /// minted by the owner. It authorizes one thing: writing a challenge
+    /// answer for this name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub secret: Option<String>,
+}
+
+/// One co-edge of a name, and everything needed to reach it.
+///
+/// Address and key so a WireGuard session can exist at all; the authority
+/// because `call::to_node` verifies rather than merely encrypting, and a
+/// private node's certificate has no public root that would vouch for it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Peer {
+    pub node_id: String,
+    /// For a log line somebody reads. Never a decision.
+    pub name: String,
+    pub overlay_ip: String,
+    pub public_key: String,
+    pub ca_pem: String,
+}
+
+/// The arguments of a [`Kind::Database`] errand: hold a copy here.
+///
+/// Everything the far node needs and nothing it can look up. It has
+/// never heard of this database, and — unlike a `host` errand — it
+/// cannot work out the one thing that matters most from its own rows:
+/// **where the primary answers**. That address is on the sending node's
+/// overlay, and the port came out of that node's own port space.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Standby {
+    pub project: String,
+    pub service: String,
+    /// Pinned by whoever queued it, like a `host` errand's.
+    pub image: String,
+    pub registry: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub username: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub secret: Option<String>,
+
+    /// The ceiling, in bytes. Sent rather than chosen there: a copy that
+    /// ran with different settings from its primary would be a different
+    /// database wearing the same name.
+    pub memory_limit: u64,
+    pub engine: String,
+    pub version: String,
+
+    /// The credentials, in full. A standby is seeded by connecting to
+    /// the primary as the replication role, and it serves reads to
+    /// clients that authenticate as the ordinary one — so it needs both,
+    /// and both have to be the *same* as the primary's or the copy is
+    /// not the same database.
+    pub database_name: String,
+    pub admin_user: String,
+    pub admin_password: String,
+    pub replication_user: String,
+    pub replication_password: String,
+
+    /// Where the primary answers, as `host:port` — the sending node's
+    /// overlay address and a port bound to it. Never a container's own:
+    /// a bridge address names a different container on every machine,
+    /// which is the rule phase 7 already learned.
+    pub primary: String,
+    /// Which copies to hold, in the **service's** numbering. Never the
+    /// primary's slot: this errand only ever asks for standbys.
+    pub slots: Vec<u32>,
+    pub primary_slot: u32,
+    /// The **owner's** domain, so the copy answers to the database's own
+    /// qualified name rather than to one built from the holding node's.
+    ///
+    /// Without it the same database had a different long name on every
+    /// machine that held a copy, each with its own certificate — so no
+    /// single connection string reached it, which is the whole point of
+    /// a qualified name. Absent when the owner has no domain.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub qualified_domain: Option<String>,
+
+    /// Whether the database is meant to be running. The same field a
+    /// `host` errand carries and for the same reason — a stopped service
+    /// whose copies went on running was the bug — and it matters more
+    /// here: a standby left following a primary that is meant to be down
+    /// is a copy nobody is watching.
+    #[serde(default = "running")]
+    pub running: bool,
+}
+
+/// The arguments of a [`Kind::Manage`] errand: be on this release.
+///
+/// One field, and it is a **tag** rather than a URL and a checksum. The
+/// node resolves it against the catalogue its own console reads, which
+/// keeps one answer to "what is v0.7.1" per machine and means a release
+/// that published no build *that* node can install is refused there,
+/// with the reason, instead of downloading something it cannot run.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Manage {
+    /// As GitHub names it — `v0.7.1`. Compared against what the node is
+    /// running, which is how this stays convergent.
+    pub version: String,
+}
+
+/// The arguments of a [`Kind::Command`] errand: do this once.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Command {
+    pub action: Action,
+}
+
+/// The one-off things a node can be asked to do to itself.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Action {
+    /// Restart the service. Not "reboot the machine" — this replaces the
+    /// process, and containerd keeps the containers running through it.
+    Restart,
+    /// Take a backup now, wherever this node's own plan sends them.
+    BackUp,
+    /// An action a newer node knows about. A value rather than a parse
+    /// failure, for the reason [`Kind::Unknown`] is one: the node has to
+    /// be able to *read* the instruction in order to refuse it with a
+    /// sentence about versions.
+    #[serde(other)]
+    Unknown,
+}
+
+impl Action {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Restart => "restart",
+            Self::BackUp => "back-up",
+            Self::Unknown => "unknown",
+        }
+    }
+}
+
+/// An errand and what became of it, for the page that lists them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Record {
+    pub id: String,
+    pub node_id: String,
+    pub kind: Kind,
+    /// What it was about, as it was queued.
+    ///
+    /// Carried on the record because the page that lists errands has to
+    /// say *which* one: "an edge errand to that node" is not an answer
+    /// when the same node serves two of this service's names, and the
+    /// row somebody is looking at is about one of them.
+    pub payload: serde_json::Value,
+    pub created_at: i64,
+    pub taken_at: Option<i64>,
+    pub done_at: Option<i64>,
+    pub error: Option<String>,
+}
+
+/// Read by the page that will list errands, and by the tests that
+/// pin what settling means.
+#[allow(dead_code)]
+impl Record {
+    pub fn done(&self) -> bool {
+        self.done_at.is_some()
+    }
+
+    /// Whether it finished badly. A failure is an *answer* — the state
+    /// worth worrying about is one that never came back at all.
+    pub fn failed(&self) -> bool {
+        self.error.is_some()
+    }
+}
+
+/// What this instruction asks permission for, if anything.
+///
+/// One definition, because it is now asked twice: by `carry_out` before
+/// obeying, and at the door in `api::asked` — a refusal for lack of
+/// permission needs nothing but a local read, and putting it in the answer
+/// is what makes it reach the node that asked. Two copies of this map
+/// would let the door and the obeying disagree, and the disagreement would
+/// be an errand accepted and then refused, which is exactly the state this
+/// came out of.
+///
+/// **A withdrawal needs no permission.** An edge errand with no upstreams
+/// is "stop answering for this name", and consent is for taking work on,
+/// not for putting it down — a node that revoked a grant is often revoking
+/// it *because* something changed, and refusing the message that cleans up
+/// leaves a claim, a route and a certificate order behind.
+pub fn consent_for(
+    kind: Kind,
+    payload: &serde_json::Value,
+) -> Option<crate::domain::values::capability::Capability> {
+    match kind {
+        Kind::Host => Some(crate::domain::values::capability::Capability::Host),
+        // `Store`, not `Host`: keeping somebody's data is a different
+        // favour from running somebody's container.
+        Kind::Database => Some(crate::domain::values::capability::Capability::Store),
+        // Neither: looking after the machine is not carrying somebody's
+        // work, which is why this capability exists at all.
+        Kind::Manage | Kind::Command => Some(crate::domain::values::capability::Capability::Manage),
+        Kind::Edge => {
+            let withdrawing = serde_json::from_value::<Edge>(payload.clone())
+                .map(|edge| edge.upstreams.is_empty())
+                // Unreadable is not a withdrawal: something that cannot be
+                // parsed must not slip past the check by being broken.
+                .unwrap_or(false);
+            (!withdrawing).then_some(crate::domain::values::capability::Capability::Edge)
+        }
+        Kind::Unknown => None,
+    }
+}
+
+/// Ask a node to do something, once.
+///
+/// No subject and no comparison, unlike [`queue_if_changed`]: this is for
+/// an instruction that is an *event* — see `Kind::Command`. Asking twice
+/// is two errands on purpose, and what stops the same asking being obeyed
+/// twice is its id.
+pub async fn queue(
+    database: &SqliteDatabase,
+    node_id: &str,
+    kind: Kind,
+    payload: &serde_json::Value,
+) -> NetworkResult<Errand> {
+    queue_about(database, node_id, kind, None, payload).await
+}
+
+async fn queue_about(
+    database: &SqliteDatabase,
+    node_id: &str,
+    kind: Kind,
+    subject: Option<&str>,
+    payload: &serde_json::Value,
+) -> NetworkResult<Errand> {
+    let errand = Errand {
+        id: format!("er-{}", wabot::prelude::password::generate(12)),
+        kind,
+        payload: payload.clone(),
+    };
+
+    // Ring the node's doorbell — from here, not from the callers.
+    //
+    // Twice in one afternoon an instruction was correct and unsent because
+    // the *trigger* was the part left out, so a doorbell each call site had
+    // to remember would be that bug with a new name. Spawned and ignored:
+    // the errand is queued either way and the fifteen-second loop is what
+    // guarantees delivery. This only removes the waiting.
+    ring(database, node_id).await;
+
+    let (id, node, kind) = (
+        errand.id.clone(),
+        node_id.to_string(),
+        errand.kind.as_str().to_string(),
+    );
+    let (body, about) = (payload.to_string(), subject.map(str::to_string));
+    database
+        .write(move |connection| {
+            connection.execute(
+                "INSERT INTO errand \
+                   (\"id\", \"node_id\", \"kind\", \"payload\", \"subject\", \"created_at\") \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                (id, node, kind, body, about, now_ms()),
+            )?;
+            Ok(())
+        })
+        .await?;
+
+    Ok(errand)
+}
+
+/// Take an errand a node this one enrolled has handed over.
+///
+/// **The direction the model did not have.** Collection asks a node's
+/// *authorities*, so an errand addressed to an authority would never be
+/// asked for — and there was no way for a joined node to say "you do
+/// this" at all. It could only ever be told. What made that show was a
+/// service on the Alpine node whose owner ticked the Ubuntu node's box:
+/// the errand sat pending for five days and the name was served by
+/// nobody.
+///
+/// Queued, not carried out. The handler that receives one is an HTTP
+/// request that can time out and be retried, and what carrying out an
+/// errand does is write rows and start deployments — so it belongs on
+/// this node's own pass, at this node's own pace, where every other
+/// errand it obeys is already carried out. That is the same "obeying is
+/// local" this has said since phase 3.
+///
+/// Addressed to this node, with the asker recorded beside it: what
+/// obeying decides is asked of *them* — whether this node agreed to that
+/// capability for them, and whose service the rows belong to.
+pub async fn accept(
+    database: &SqliteDatabase,
+    me: &str,
+    from: &str,
+    kind: Kind,
+    payload: &serde_json::Value,
+) -> NetworkResult<Errand> {
+    let errand = Errand {
+        id: format!("er-{}", wabot::prelude::password::generate(12)),
+        kind,
+        payload: payload.clone(),
+    };
+
+    let (id, node, asker, kind) = (
+        errand.id.clone(),
+        me.to_string(),
+        from.to_string(),
+        errand.kind.as_str().to_string(),
+    );
+    let body = payload.to_string();
+    database
+        .write(move |connection| {
+            connection.execute(
+                "INSERT INTO errand \
+                   (\"id\", \"node_id\", \"from_node_id\", \"kind\", \"payload\", \"created_at\") \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                (id, node, asker, kind, body, now_ms()),
+            )?;
+            Ok(())
+        })
+        .await?;
+
+    Ok(errand)
+}
+
+/// The errands this node has to carry out itself, and who asked for
+/// each.
+///
+/// The wire [`waiting`] cannot answer this: it hands an errand to the
+/// node that dialled, which already knows who it is talking to. Here
+/// both ends are rows in one database and "who asked" is the only thing
+/// that says whether this is somebody else's service or this node's own.
+///
+/// `None` for the asker means this node queued it, which is every row
+/// written before the column existed and is exactly true of them.
+pub async fn waiting_here(
+    database: &SqliteDatabase,
+    me: &str,
+) -> NetworkResult<Vec<(Errand, Option<String>)>> {
+    let node = me.to_string();
+    type Row = (String, String, String, Option<String>);
+    let rows: Vec<Row> = database
+        .read(move |connection| {
+            let mut statement = connection.prepare(
+                "SELECT \"id\", \"kind\", \"payload\", \"from_node_id\" FROM errand \
+                 WHERE \"node_id\" = ?1 AND \"done_at\" IS NULL \
+                 ORDER BY \"created_at\"",
+            )?;
+            let rows: wabot::sqlite::rusqlite::Result<Vec<Row>> = statement
+                .query_map([node], |row| {
+                    Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+                })?
+                .collect();
+            rows
+        })
+        .await?;
+
+    Ok(rows
+        .into_iter()
+        .map(|(id, kind, payload, from)| {
+            (
+                Errand {
+                    id,
+                    kind: Kind::parse(&kind),
+                    payload: serde_json::from_str(&payload).unwrap_or(serde_json::Value::Null),
+                },
+                from,
+            )
+        })
+        .collect())
+}
+
+/// Ask a node to do something, unless it was already asked the same
+/// thing.
+///
+/// **Because a database's errands are recomputed rather than emitted.**
+/// Every other errand is queued by somebody pressing a button, once. A
+/// database's cannot be: the port its primary answers on comes out of
+/// the other node's port space and arrives home on a report, so the
+/// instruction has to be rebuilt whenever the facts settle — and a pass
+/// that rebuilt it every fifteen seconds would queue an errand every
+/// fifteen seconds.
+///
+/// `subject` is what the instruction is about, so "the same thing" is
+/// answerable: one node can hold standbys of two databases, and the most
+/// recent errand of a kind is not enough to tell them apart.
+///
+/// An unchanged payload is skipped **whatever became of the last one**,
+/// including a failure. A failure is an answer and this node's rule is
+/// that retrying is something somebody asks for; requeueing it here
+/// would be an automatic retry loop wearing a different name.
+pub async fn queue_if_changed(
+    database: &SqliteDatabase,
+    node_id: &str,
+    kind: Kind,
+    subject: &str,
+    payload: &serde_json::Value,
+) -> NetworkResult<Option<Errand>> {
+    let (node, about) = (node_id.to_string(), subject.to_string());
+    let last: Option<(String, Option<String>)> = database
+        .read(move |connection| {
+            connection
+                .query_row(
+                    "SELECT \"payload\", \"error\" FROM errand \
+                     WHERE \"node_id\" = ?1 AND \"subject\" = ?2 \
+                     ORDER BY \"created_at\" DESC, \"rowid\" DESC LIMIT 1",
+                    (node, about),
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .optional()
+        })
+        .await?;
+
+    // The tie-break is not decoration: two errands for one subject can
+    // land in the same millisecond — a retry right after a refusal does,
+    // and so does a test — and `created_at` alone then makes "the last
+    // one" whichever row the reader happened to see first. `rowid` is the
+    // order they were inserted in.
+    //
+    // **A refused instruction was not carried out, so saying it again is
+    // not repetition.** Only a *successful* or still-pending one silences
+    // this. Without that, fixing the reason for a refusal changed nothing:
+    // the payload was identical, so nothing was ever sent again, and the
+    // operator had to alter something irrelevant to force it. Found on the
+    // real network — an edge errand refused for a grant that was missing,
+    // and then nothing, because the instruction had not changed.
+    //
+    // It cannot loop: this is called when something happens — a
+    // deployment, a placement, a boot — and not on a timer, so a refusal
+    // that stays refused costs one errand per event and each one carries
+    // its reason.
+    // **And "delivered" is not "done" when the reader is an authority.**
+    // An errand for a node that *collects* is settled by that node, over
+    // the wire, with what happened — so a finished one really was carried
+    // out and saying it again is repetition. An errand *handed up* to an
+    // authority is settled the moment the call returns 200: all that means
+    // is that it arrived. What the far side then did with it never travels
+    // back, so a finished row on this side is not evidence of anything.
+    //
+    // Measured on the real network, and it was a silent dead end: the
+    // instruction was accepted, refused there for a grant that had never
+    // been written, and marked delivered here. Fixing the grant changed
+    // nothing — same payload, same "done" — so it was never sent again,
+    // through a restart and two deployments.
+    //
+    // This is bounded by events and not by a timer: `tell_edges` runs on a
+    // deployment, a placement, a boot. One duplicate per event on the far
+    // side, where carrying it out is idempotent, against an instruction
+    // that otherwise never arrives.
+    let handed_up = super::is_authorised(database, node_id).await;
+    if let Some((last, failed)) = last {
+        let refused = failed.is_some();
+        if !refused
+            && !handed_up
+            && serde_json::from_str::<serde_json::Value>(&last)
+                .ok()
+                .as_ref()
+                == Some(payload)
+        {
+            return Ok(None);
+        }
+    }
+    queue_about(database, node_id, kind, Some(subject), payload)
+        .await
+        .map(Some)
+}
+
+/// Tell a node there is something for it, if this node can reach it.
+///
+/// Quiet about everything: a node with no overlay address, no authority of
+/// this node's on file, or a tunnel that is down is a node that will find
+/// out on its next pass — which is the design, not a failure. The ring is
+/// the difference between fifteen seconds and none.
+async fn ring(database: &SqliteDatabase, node_id: &str) {
+    let (Ok(Some(node)), Ok(Some(me))) = (
+        super::find(database, node_id).await,
+        super::me(database).await,
+    ) else {
+        return;
+    };
+    if node.overlay_ip.is_none() || node.ca_pem.is_none() {
+        return;
+    }
+    // Never itself. An errand this node queued for its own row is
+    // collected by `from_here` in the same pass, and dialling the overlay
+    // to tell itself something would be a call it then refuses — this
+    // node holds no credential for itself, because nobody ever gave it
+    // one.
+    if node.id == me.id {
+        return;
+    }
+
+    // What that node knows this one by. **The doorbell is authenticated
+    // now**, which it could not be until a node had a credential for the
+    // direction that dials *in* — see migration `0049`. A node too old to
+    // have sent one is rung with nothing and refuses, which costs the
+    // fifteen seconds the loop was always allowed to take.
+    let secret = super::credential_to(database, node_id).await;
+
+    // Not awaited to completion by the caller's clock: whoever queued this
+    // is usually a request somebody is waiting on, and the ring is worth
+    // milliseconds to them and nothing at all if the far node is asleep.
+    let path = format!("/api/network/wake/{}", me.id);
+    tokio::spawn(async move {
+        match super::call::to_node(&node, &path, Some(String::new()), secret.as_deref()).await {
+            Ok(status) => tracing::debug!(node = %node.id, %status, "rang"),
+            Err(error) => tracing::debug!(node = %node.id, %error, "could not ring"),
+        }
+    });
+}
+
+/// What is waiting for a node, oldest first.
+///
+/// Handing the same errand over twice is normal and deliberate: a node
+/// that collected one and then died has to be given it again, and there
+/// is no way to tell that case from a slow one. So collecting is not
+/// what settles an errand — saying it is finished is.
+pub async fn waiting(database: &SqliteDatabase, node_id: &str) -> NetworkResult<Vec<Errand>> {
+    let node = node_id.to_string();
+    let rows: Vec<(String, String, String)> = database
+        .read(move |connection| {
+            let mut statement = connection.prepare(
+                "SELECT \"id\", \"kind\", \"payload\" FROM errand \
+                 WHERE \"node_id\" = ?1 AND \"done_at\" IS NULL \
+                 ORDER BY \"created_at\"",
+            )?;
+            let rows: wabot::sqlite::rusqlite::Result<Vec<(String, String, String)>> = statement
+                .query_map([node], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?
+                .collect();
+            rows
+        })
+        .await?;
+
+    let ids: Vec<String> = rows.iter().map(|(id, _, _)| id.clone()).collect();
+    if !ids.is_empty() {
+        mark_taken(database, &ids).await?;
+    }
+
+    Ok(rows
+        .into_iter()
+        .map(|(id, kind, payload)| Errand {
+            id,
+            kind: Kind::parse(&kind),
+            // A payload that will not parse is handed over as null
+            // rather than dropped: the node refuses it and says so,
+            // which is a reason somebody can act on. Silently skipping
+            // it would be an errand that never arrives and never fails.
+            payload: serde_json::from_str(&payload).unwrap_or(serde_json::Value::Null),
+        })
+        .collect())
+}
+
+async fn mark_taken(database: &SqliteDatabase, ids: &[String]) -> NetworkResult<()> {
+    let ids = ids.to_vec();
+    database
+        .write(move |connection| {
+            for id in ids {
+                connection.execute(
+                    "UPDATE errand SET \"taken_at\" = ?2 WHERE \"id\" = ?1",
+                    (id, now_ms()),
+                )?;
+            }
+            Ok(())
+        })
+        .await?;
+    Ok(())
+}
+
+/// Record how it went.
+///
+/// Both outcomes settle it. An errand that failed is finished — the
+/// authority knows, with the reason — and retrying is a new errand
+/// somebody asked for, not this one quietly coming back.
+///
+/// Scoped to the node it belongs to, so one node cannot settle
+/// another's errand by guessing an id.
+pub async fn settle(
+    database: &SqliteDatabase,
+    node_id: &str,
+    id: &str,
+    error: Option<&str>,
+) -> NetworkResult<bool> {
+    let (id, node, error) = (
+        id.to_string(),
+        node_id.to_string(),
+        error.map(str::to_string),
+    );
+    let settled = database
+        .write(move |connection| {
+            connection.execute(
+                "UPDATE errand SET \"done_at\" = ?3, \"error\" = ?4 \
+                 WHERE \"id\" = ?1 AND \"node_id\" = ?2 AND \"done_at\" IS NULL",
+                (id, node, now_ms(), error),
+            )
+        })
+        .await?;
+    Ok(settled > 0)
+}
+
+/// Every errand, newest first. For the page that will list them.
+#[allow(dead_code)]
+pub async fn all(database: &SqliteDatabase) -> NetworkResult<Vec<Record>> {
+    Ok(database
+        .read(|connection| {
+            let mut statement = connection.prepare(
+                "SELECT \"id\", \"node_id\", \"kind\", \"payload\", \"created_at\", \
+                 \"taken_at\", \"done_at\", \"error\" FROM errand \
+                 ORDER BY \"created_at\" DESC",
+            )?;
+            let records: wabot::sqlite::rusqlite::Result<Vec<Record>> =
+                statement.query_map([], decode)?.collect();
+            records
+        })
+        .await?)
+}
+
+#[allow(dead_code)]
+pub async fn find(database: &SqliteDatabase, id: &str) -> NetworkResult<Option<Record>> {
+    let id = id.to_string();
+    Ok(database
+        .read(move |connection| {
+            connection
+                .query_row(
+                    "SELECT \"id\", \"node_id\", \"kind\", \"payload\", \"created_at\", \
+                     \"taken_at\", \"done_at\", \"error\" FROM errand WHERE \"id\" = ?1",
+                    [id],
+                    decode,
+                )
+                .optional()
+        })
+        .await?)
+}
+
+fn decode(row: &Row<'_>) -> wabot::sqlite::rusqlite::Result<Record> {
+    Ok(Record {
+        id: row.get(0)?,
+        node_id: row.get(1)?,
+        kind: Kind::parse(&row.get::<_, String>(2)?),
+        // A payload this version cannot parse reads as null rather than
+        // failing the row: the page still has an errand to show, and
+        // "something was asked and here is how it went" is more use
+        // than an empty table.
+        payload: serde_json::from_str(&row.get::<_, String>(3)?).unwrap_or_default(),
+        created_at: row.get(4)?,
+        taken_at: row.get(5)?,
+        done_at: row.get(6)?,
+        error: row.get(7)?,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+
+    /// An instruction handed up to an authority is said again, because
+    /// "delivered" is all this side ever learns.
+    ///
+    /// **The silent dead end this came out of.** A node that *collects*
+    /// settles its errands over the wire with what happened, so a finished
+    /// one really was carried out. An errand handed *up* is settled the
+    /// moment the call returns 200 — the far side may then refuse it, and
+    /// that never travels back. On the real network it did: refused for a
+    /// grant that had never been written, marked delivered here, and never
+    /// sent again through a restart and two deployments, because the
+    /// instruction had not changed.
+    #[tokio::test]
+    async fn an_instruction_handed_to_an_authority_is_said_again() {
+        let database = crate::infra::db::open_in_memory().await.expect("open");
+        crate::infra::network::grant(&database, "nd-hub", "a-secret")
+            .await
+            .expect("this node takes orders from it");
+        let payload = serde_json::json!({ "hostname": "shop.example", "upstreams": [] });
+
+        let first = queue_if_changed(&database, "nd-hub", Kind::Edge, "edge:svc:shop", &payload)
+            .await
+            .expect("queued")
+            .expect("the first time");
+        // Handed over: the call returned 200 and that is all it means.
+        settle(&database, "nd-hub", &first.id, None)
+            .await
+            .expect("delivered");
+
+        assert!(
+            queue_if_changed(&database, "nd-hub", Kind::Edge, "edge:svc:shop", &payload)
+                .await
+                .expect("again")
+                .is_some(),
+            "delivered is not done, and what the far side did never came back"
+        );
+
+        // A node that is *not* an authority settles with what happened, so
+        // there a finished instruction is finished.
+        let theirs = queue_if_changed(&database, "nd-leaf", Kind::Edge, "edge:svc:shop", &payload)
+            .await
+            .expect("queued")
+            .expect("the first time");
+        settle(&database, "nd-leaf", &theirs.id, None)
+            .await
+            .expect("carried out");
+        assert!(
+            queue_if_changed(&database, "nd-leaf", Kind::Edge, "edge:svc:shop", &payload)
+                .await
+                .expect("again")
+                .is_none()
+        );
+    }
+
+    /// An instruction that was refused is said again; one that worked is
+    /// not.
+    ///
+    /// **Found on the real network.** An edge errand was refused because
+    /// the grant it needed had never been written; the grant was fixed,
+    /// and nothing was ever sent again — the payload was identical, so the
+    /// comparison said "already told them". The operator would have had to
+    /// change something irrelevant to force it.
+    #[tokio::test]
+    async fn a_refused_instruction_is_said_again_and_a_finished_one_is_not() {
+        let database = crate::infra::db::open_in_memory().await.expect("open");
+        let payload = serde_json::json!({ "hostname": "shop.example", "upstreams": [] });
+
+        let first = queue_if_changed(&database, "nd-far", Kind::Edge, "edge:svc:shop", &payload)
+            .await
+            .expect("queued")
+            .expect("the first time is news");
+        // Said twice while it is still pending: nothing, because it has
+        // not been answered yet.
+        assert!(
+            queue_if_changed(&database, "nd-far", Kind::Edge, "edge:svc:shop", &payload)
+                .await
+                .expect("again")
+                .is_none()
+        );
+
+        // Answered badly: the instruction did not happen, so saying it
+        // again is not repetition.
+        settle(&database, "nd-far", &first.id, Some("that node said no"))
+            .await
+            .expect("settled");
+        let retried = queue_if_changed(&database, "nd-far", Kind::Edge, "edge:svc:shop", &payload)
+            .await
+            .expect("after a refusal")
+            .expect("a refused instruction is sent again");
+
+        // And answered well: quiet, whatever else happens.
+        settle(&database, "nd-far", &retried.id, None)
+            .await
+            .expect("settled");
+        assert!(
+            queue_if_changed(&database, "nd-far", Kind::Edge, "edge:svc:shop", &payload)
+                .await
+                .expect("after it worked")
+                .is_none()
+        );
+    }
+    use super::*;
+
+    async fn database() -> SqliteDatabase {
+        crate::infra::db::open_in_memory().await.expect("open")
+    }
+
+    fn payload() -> serde_json::Value {
+        serde_json::json!({ "service": "web", "image": "hub/proj/app@sha256:abc" })
+    }
+
+    #[tokio::test]
+    async fn an_errand_waits_for_the_node_it_is_for() {
+        let database = database().await;
+        queue(&database, "nd-one", Kind::Host, &payload())
+            .await
+            .expect("queued");
+
+        let collected = waiting(&database, "nd-one").await.expect("waiting");
+        assert_eq!(collected.len(), 1);
+        assert_eq!(collected[0].kind, Kind::Host);
+        assert_eq!(collected[0].payload, payload());
+
+        assert!(
+            waiting(&database, "nd-two")
+                .await
+                .expect("waiting")
+                .is_empty(),
+            "another node collected an errand that was not for it"
+        );
+    }
+
+    /// Collecting is not what settles an errand. A node that fetched one
+    /// and then died has to be given it again, and nothing here can tell
+    /// that case from a slow one.
+    #[tokio::test]
+    async fn collecting_twice_hands_it_over_twice() {
+        let database = database().await;
+        let queued = queue(&database, "nd-one", Kind::Host, &payload())
+            .await
+            .expect("queued");
+
+        for _ in 0..3 {
+            let collected = waiting(&database, "nd-one").await.expect("waiting");
+            assert_eq!(collected.len(), 1, "it stopped being handed over");
+            assert_eq!(collected[0].id, queued.id);
+        }
+
+        // And collecting is recorded, so "asked for and never finished"
+        // is distinguishable from "never asked for".
+        let record = find(&database, &queued.id)
+            .await
+            .expect("query")
+            .expect("there");
+        assert!(record.taken_at.is_some());
+        assert!(!record.done());
+    }
+
+    /// Both outcomes settle it. A failure is an answer; the state worth
+    /// worrying about is one that never came back at all.
+    #[tokio::test]
+    async fn either_outcome_finishes_it() {
+        let database = database().await;
+        for (node, error) in [("nd-one", None), ("nd-two", Some("no such image"))] {
+            let queued = queue(&database, node, Kind::Host, &payload())
+                .await
+                .expect("queued");
+            assert!(settle(&database, node, &queued.id, error)
+                .await
+                .expect("settle"));
+
+            let record = find(&database, &queued.id)
+                .await
+                .expect("query")
+                .expect("there");
+            assert!(record.done());
+            assert_eq!(record.failed(), error.is_some());
+            assert!(waiting(&database, node).await.expect("waiting").is_empty());
+        }
+    }
+
+    /// One node must not settle another's errand by guessing an id, and
+    /// an errand already finished must not be reopened by a late
+    /// acknowledgement from a node that was retrying.
+    #[tokio::test]
+    async fn an_errand_is_settled_once_and_only_by_its_own_node() {
+        let database = database().await;
+        let queued = queue(&database, "nd-one", Kind::Host, &payload())
+            .await
+            .expect("queued");
+
+        assert!(
+            !settle(&database, "nd-two", &queued.id, None)
+                .await
+                .expect("settle"),
+            "another node settled it"
+        );
+        assert!(settle(&database, "nd-one", &queued.id, None)
+            .await
+            .expect("settle"));
+        assert!(
+            !settle(&database, "nd-one", &queued.id, Some("actually it failed"))
+                .await
+                .expect("settle"),
+            "a finished errand was reopened"
+        );
+
+        let record = find(&database, &queued.id)
+            .await
+            .expect("query")
+            .expect("there");
+        assert!(!record.failed(), "the late failure overwrote the outcome");
+    }
+
+    /// The node reading an errand is running a different version than
+    /// the node that wrote it as often as not. An instruction from the
+    /// future has to be something the code can hold and refuse.
+    #[test]
+    fn an_instruction_this_version_does_not_know_is_a_value_not_a_crash() {
+        assert_eq!(Kind::parse("host"), Kind::Host);
+        assert_eq!(Kind::parse("edge"), Kind::Edge);
+        // Something a later version might add. This example used to be
+        // `edge`, which is the point: today's unknown is tomorrow's
+        // kind, and what has to keep working is the *shape* of not
+        // knowing.
+        assert_eq!(Kind::parse("backup"), Kind::Unknown);
+        assert_eq!(Kind::parse(""), Kind::Unknown);
+
+        // And over the wire, which is where it actually arrives.
+        let from_the_future: Errand =
+            serde_json::from_str(r#"{"id":"er-1","kind":"backup","payload":{}}"#).expect("decodes");
+        assert_eq!(from_the_future.kind, Kind::Unknown);
+    }
+
+    #[tokio::test]
+    async fn the_list_says_what_became_of_each_one() {
+        let database = database().await;
+        let first = queue(&database, "nd-one", Kind::Host, &payload())
+            .await
+            .expect("queued");
+        queue(&database, "nd-one", Kind::Host, &payload())
+            .await
+            .expect("queued");
+        settle(&database, "nd-one", &first.id, Some("refused"))
+            .await
+            .expect("settle");
+
+        let all = all(&database).await.expect("list");
+        assert_eq!(all.len(), 2);
+        assert_eq!(all.iter().filter(|r| r.done()).count(), 1);
+        assert_eq!(all.iter().filter(|r| r.failed()).count(), 1);
+    }
+}

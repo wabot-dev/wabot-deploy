@@ -1,9 +1,9 @@
 use wabot::sqlite::SqliteDatabase;
 
-use crate::accounts;
-use crate::authz::node_user;
-use crate::entities::account::Account;
-use crate::values::roles::NodeRole;
+use crate::domain::authz::node_user;
+use crate::domain::entities::account::Account;
+use crate::domain::values::roles::NodeRole;
+use crate::infra::accounts;
 
 /// Take an organisation's administrator off the machine.
 ///

@@ -7,11 +7,11 @@ use wabot::rest::axum::extract::Request;
 use wabot::rest::axum::response::Response;
 use wabot::rest::RestResult;
 
-use crate::console::auth::{
+use crate::domain::values::roles::{NodeRole, ProjectRole};
+use crate::web::console::auth::{
     back_with_error, field, read_form, see_other, signed_in, SessionMiddleware,
 };
-use crate::console::ConsoleState;
-use crate::values::roles::{NodeRole, ProjectRole};
+use crate::web::console::ConsoleState;
 
 #[injectable]
 pub struct TenantPeopleRestController {
@@ -74,7 +74,7 @@ impl TenantPeopleRestController {
             return Ok(see_other("/sign-in"));
         };
         let path = request.uri().path().to_string();
-        let Some(id) = crate::console::auth::segments(&path).get(1).cloned() else {
+        let Some(id) = crate::web::console::auth::segments(&path).get(1).cloned() else {
             return Ok(see_other("/people"));
         };
         let form = match read_form(request).await {
@@ -107,7 +107,7 @@ impl TenantPeopleRestController {
             return Ok(see_other("/sign-in"));
         };
         let path = request.uri().path().to_string();
-        let Some(id) = crate::console::auth::segments(&path).get(1).cloned() else {
+        let Some(id) = crate::web::console::auth::segments(&path).get(1).cloned() else {
             return Ok(see_other("/people"));
         };
 
@@ -131,7 +131,7 @@ impl TenantPeopleRestController {
             return Ok(see_other("/sign-in"));
         };
         let path = request.uri().path().to_string();
-        let Some(id) = crate::console::auth::segments(&path).get(2).cloned() else {
+        let Some(id) = crate::web::console::auth::segments(&path).get(2).cloned() else {
             return Ok(see_other("/people"));
         };
 
@@ -151,7 +151,7 @@ impl TenantPeopleRestController {
     #[raw]
     async fn join(&self, request: Request) -> RestResult<Response> {
         let path = request.uri().path().to_string();
-        let Some(token) = crate::console::auth::segments(&path)
+        let Some(token) = crate::web::console::auth::segments(&path)
             .get(1)
             .map(|id| id.to_string())
         else {
@@ -162,7 +162,7 @@ impl TenantPeopleRestController {
         // another one is not a door into this.
         let Some(scope) = request
             .extensions()
-            .get::<crate::edge::Tenancy>()
+            .get::<crate::infra::edge::Tenancy>()
             .map(|tenancy| tenancy.0.clone())
         else {
             return Ok(see_other("/sign-in"));
@@ -177,7 +177,7 @@ impl TenantPeopleRestController {
         let account = match crate::features::people::guest_join_as_tenant_user::run(
             &self.state.database,
             &scope,
-            &crate::console::auth::joining(&token, &form),
+            &crate::web::console::auth::joining(&token, &form),
         )
         .await
         {
@@ -185,10 +185,10 @@ impl TenantPeopleRestController {
             Err(reason) => return Ok(back_with_error(&here, &reason)),
         };
 
-        match crate::accounts::sessions::create(&self.state.database, &account).await {
-            Ok(token) => Ok(crate::console::auth::see_other_with_cookie(
+        match crate::infra::accounts::sessions::create(&self.state.database, &account).await {
+            Ok(token) => Ok(crate::web::console::auth::see_other_with_cookie(
                 "/",
-                crate::accounts::sessions::set_cookie(&token),
+                crate::infra::accounts::sessions::set_cookie(&token),
             )),
             Err(error) => {
                 tracing::error!(%error, "could not start a session after joining");

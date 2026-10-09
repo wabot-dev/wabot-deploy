@@ -7,10 +7,10 @@ use wabot::rest::axum::extract::Request;
 use wabot::rest::axum::response::Response;
 use wabot::rest::RestResult;
 
-use crate::update::runs::Status;
+use crate::infra::update::runs::Status;
 
-use crate::console::auth::{signed_in, SessionMiddleware};
-use crate::console::ConsoleState;
+use crate::web::console::auth::{signed_in, SessionMiddleware};
+use crate::web::console::ConsoleState;
 
 /// The server half.
 #[injectable]
@@ -33,7 +33,7 @@ impl UpdateRestController {
         use wabot::rest::axum::http::{header, StatusCode};
 
         if !signed_in(&self.auth)
-            .is_some_and(|account| crate::authz::node_user::manages_the_machine(&account))
+            .is_some_and(|account| crate::domain::authz::node_user::manages_the_machine(&account))
         {
             // A status rather than a redirect: an `EventSource` cannot
             // follow one usefully.
@@ -75,10 +75,10 @@ impl UpdateRestController {
     #[middleware(SessionMiddleware)]
     async fn check(&self, _request: Request) -> RestResult<Response> {
         let Some(account) = signed_in(&self.auth) else {
-            return Ok(crate::console::auth::see_other("/sign-in"));
+            return Ok(crate::web::console::auth::see_other("/sign-in"));
         };
-        if !crate::authz::node_user::manages_the_machine(&account) {
-            return Ok(crate::console::auth::see_other("/"));
+        if !crate::domain::authz::node_user::manages_the_machine(&account) {
+            return Ok(crate::web::console::auth::see_other("/"));
         }
 
         match crate::features::updates::node_user_check_for_updates::run(
@@ -87,8 +87,10 @@ impl UpdateRestController {
         )
         .await
         {
-            Ok(()) => Ok(crate::console::auth::see_other("/updates")),
-            Err(reason) => Ok(crate::console::auth::back_with_error("/updates", &reason)),
+            Ok(()) => Ok(crate::web::console::auth::see_other("/updates")),
+            Err(reason) => Ok(crate::web::console::auth::back_with_error(
+                "/updates", &reason,
+            )),
         }
     }
 
@@ -99,12 +101,12 @@ impl UpdateRestController {
     #[middleware(SessionMiddleware)]
     async fn install(&self, request: Request) -> RestResult<Response> {
         let Some(account) = signed_in(&self.auth) else {
-            return Ok(crate::console::auth::see_other("/sign-in"));
+            return Ok(crate::web::console::auth::see_other("/sign-in"));
         };
-        if !crate::authz::node_user::manages_the_machine(&account) {
-            return Ok(crate::console::auth::see_other("/"));
+        if !crate::domain::authz::node_user::manages_the_machine(&account) {
+            return Ok(crate::web::console::auth::see_other("/"));
         }
-        let form = match crate::console::auth::read_form(request).await {
+        let form = match crate::web::console::auth::read_form(request).await {
             Ok(form) => form,
             Err(response) => return Ok(response),
         };
@@ -114,17 +116,21 @@ impl UpdateRestController {
             &self.state.config,
             &self.state.catalogue,
             &account,
-            crate::console::auth::field(&form, "tag"),
+            crate::web::console::auth::field(&form, "tag"),
         )
         .await
         {
             Ok(started) => started,
-            Err(reason) => return Ok(crate::console::auth::back_with_error("/updates", &reason)),
+            Err(reason) => {
+                return Ok(crate::web::console::auth::back_with_error(
+                    "/updates", &reason,
+                ))
+            }
         };
 
-        Ok(crate::console::auth::see_other(&format!(
+        Ok(crate::web::console::auth::see_other(&format!(
             "/updates?{}",
-            crate::console::auth::encode(
+            crate::web::console::auth::encode(
                 "started",
                 &format!(
                     "Installing {}. The node restarts when it is ready — this page \
@@ -139,8 +145,8 @@ impl UpdateRestController {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::console::tests::Console;
-    use crate::update::runs;
+    use crate::infra::update::runs;
+    use crate::web::console::tests::Console;
     use wabot::rest::axum::http::StatusCode;
 
     /// The page has to render on a node that cannot reach GitHub — the
@@ -160,7 +166,7 @@ mod tests {
             .body;
 
         assert!(
-            body.contains(crate::update::VERSION),
+            body.contains(crate::infra::update::VERSION),
             "says what is running"
         );
         assert!(body.contains("Updates"), "{body}");
@@ -284,11 +290,11 @@ struct LiveRun {
     none: bool,
 }
 
-async fn live_cells(state: &crate::console::ConsoleState) -> LiveRun {
-    let Ok(Some(run)) = crate::update::runs::latest(&state.database).await else {
+async fn live_cells(state: &crate::web::console::ConsoleState) -> LiveRun {
+    let Ok(Some(run)) = crate::infra::update::runs::latest(&state.database).await else {
         return LiveRun {
             none: true,
-            version: crate::update::VERSION,
+            version: crate::infra::update::VERSION,
             ..Default::default()
         };
     };
@@ -306,7 +312,7 @@ async fn live_cells(state: &crate::console::ConsoleState) -> LiveRun {
         word,
         step: run.step.clone().unwrap_or_default(),
         in_flight: run.status.in_flight(),
-        version: crate::update::VERSION,
+        version: crate::infra::update::VERSION,
         none: false,
     }
 }

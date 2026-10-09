@@ -1,10 +1,10 @@
 use wabot::sqlite::SqliteDatabase;
 
-use crate::authz::node_user;
-use crate::entities::account::Account;
-use crate::entities::project::Project;
+use crate::domain::authz::node_user;
+use crate::domain::entities::account::Account;
+use crate::domain::entities::project::Project;
+use crate::domain::values::roles::Access;
 use crate::features::projects::remove_project_member_command::RemoveProjectMember;
-use crate::values::roles::Access;
 
 pub async fn run(
     database: &SqliteDatabase,

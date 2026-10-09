@@ -1,7 +1,7 @@
 use wabot::sqlite::SqliteDatabase;
 
-use crate::entities::service::Service;
-use crate::repositories::ports;
+use crate::domain::entities::service::Service;
+use crate::infra::repositories::ports;
 
 /// The primary only. A pool answering from outside would need a port per
 /// replica and something choosing between them, which is a load balancer

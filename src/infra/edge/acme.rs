@@ -1,0 +1,1680 @@
+//! Getting a real certificate, and keeping it.
+//!
+//! ## HTTP-01, and why the challenge lives in the database
+//!
+//! The certificate authority validates by fetching
+//! `http://<domain>/.well-known/acme-challenge/<token>` and comparing
+//! what comes back. The node already owns port 80 for the HTTPS
+//! redirect, so it can answer — but an order can be in flight when the
+//! process restarts, and an in-memory answer would 404 after that and
+//! fail the order for no reason a log would explain.
+//!
+//! ## Nothing here runs inside a handshake
+//!
+//! `ResolvesServerCert::resolve` is synchronous and cannot await an
+//! issuance, so the ordering is: obtain, store, then swap the resolver.
+//! A hostname with no certificate keeps getting the local authority's
+//! one — a warning the operator can click through — rather than a
+//! failed handshake they cannot.
+//!
+//! ## The account outlives the process
+//!
+//! Registering a new account on every start would be both rude and a
+//! good way to hit a rate limit. Credentials are stored per directory
+//! URL, so staging and production accounts coexist and switching
+//! between them is a config change rather than a loss.
+
+use std::sync::Arc;
+
+use instant_acme::{
+    Account, AccountCredentials, AuthorizationStatus, ChallengeType, Identifier, NewAccount,
+    NewOrder, OrderStatus, RetryPolicy,
+};
+use wabot::sqlite::rusqlite::OptionalExtension;
+use wabot::sqlite::SqliteDatabase;
+
+use super::certs::{self, StoredCert};
+use super::policy;
+use crate::infra::config::Config;
+
+/// Renew once the certificate is inside this window of expiring.
+///
+/// Let's Encrypt issues for 90 days and starts mailing at 20 left; 30
+/// gives the renewal loop several chances to succeed — and a node
+/// whose renewal has been failing for a week still has a fortnight for
+/// somebody to notice.
+const RENEW_WITHIN_DAYS: i64 = 30;
+
+/// How long a stored challenge is worth answering.
+///
+/// An order the CA never validates leaves its challenge behind; this
+/// is what stops the table growing forever.
+const CHALLENGE_TTL_SECONDS: i64 = 3600;
+
+/// How close to expiry a certificate nothing will replace may get
+/// before the node signs for that name itself.
+///
+/// Three days rather than thirty: this is the floor, not the renewal
+/// window. Dropping to a self-signed certificate is a visible
+/// downgrade, and doing it a month early would throw away most of the
+/// time somebody had to put a real one in place.
+const FLOOR_DAYS: i64 = 3;
+
+pub const CHALLENGE_PREFIX: &str = "/.well-known/acme-challenge/";
+
+#[derive(Debug, thiserror::Error)]
+pub enum AcmeError {
+    #[error("storage: {0}")]
+    Storage(#[from] wabot::sqlite::SqliteError),
+    #[error("certificates: {0}")]
+    Certificates(#[from] certs::CertError),
+    #[error("acme: {0}")]
+    Protocol(#[from] instant_acme::Error),
+    #[error("serializing account credentials: {0}")]
+    Serde(#[from] serde_json::Error),
+    #[error("{0}")]
+    Refused(String),
+}
+
+pub type AcmeResult<T> = Result<T, AcmeError>;
+
+// ---------- the challenge responder -----------------------------------
+
+/// The answer to one HTTP-01 challenge, or `None`.
+pub async fn challenge_response(
+    database: &SqliteDatabase,
+    token: &str,
+) -> AcmeResult<Option<String>> {
+    let token = token.to_string();
+    Ok(database
+        .read(move |connection| {
+            connection
+                .query_row(
+                    "SELECT \"response\" FROM acme_challenge WHERE \"token\" = ?1",
+                    [token],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()
+        })
+        .await?)
+}
+
+pub(crate) async fn store_challenge(
+    database: &SqliteDatabase,
+    token: &str,
+    response: &str,
+    domain: &str,
+) -> AcmeResult<()> {
+    let (token, response, domain) = (token.to_string(), response.to_string(), domain.to_string());
+    let expires = now_ms() + CHALLENGE_TTL_SECONDS * 1000;
+    database
+        .write(move |connection| {
+            // Expired rows are swept here rather than on a timer: this
+            // is the only place that adds one, so it is the only place
+            // that needs to care.
+            connection.execute(
+                "DELETE FROM acme_challenge WHERE \"expires_at\" < ?1",
+                [now_ms()],
+            )?;
+            connection.execute(
+                "INSERT INTO acme_challenge (\"token\", \"response\", \"domain\", \"expires_at\") \
+                 VALUES (?1, ?2, ?3, ?4) \
+                 ON CONFLICT (\"token\") DO UPDATE SET \
+                   \"response\" = excluded.\"response\", \
+                   \"expires_at\" = excluded.\"expires_at\"",
+                (token, response, domain, expires),
+            )?;
+            Ok(())
+        })
+        .await?;
+    Ok(())
+}
+
+async fn clear_challenges(database: &SqliteDatabase, domain: &str) -> AcmeResult<()> {
+    let domain = domain.to_string();
+    database
+        .write(move |connection| {
+            connection.execute("DELETE FROM acme_challenge WHERE \"domain\" = ?1", [domain])?;
+            Ok(())
+        })
+        .await?;
+    Ok(())
+}
+
+// ---------- the account -----------------------------------------------
+
+async fn load_or_create_account(database: &SqliteDatabase, config: &Config) -> AcmeResult<Account> {
+    let directory = config.acme.directory_url().to_string();
+
+    let stored: Option<String> = database
+        .read({
+            let directory = directory.clone();
+            move |connection| {
+                connection
+                    .query_row(
+                        "SELECT \"credentials\" FROM acme_account WHERE \"directory_url\" = ?1",
+                        [directory],
+                        |row| row.get::<_, String>(0),
+                    )
+                    .optional()
+            }
+        })
+        .await?;
+
+    if let Some(json) = stored {
+        let credentials: AccountCredentials = serde_json::from_str(&json)?;
+        tracing::debug!(%directory, "reusing the stored ACME account");
+        return Ok(Account::builder()?.from_credentials(credentials).await?);
+    }
+
+    let contact: Vec<String> = config
+        .acme
+        .email
+        .iter()
+        .map(|email| format!("mailto:{email}"))
+        .collect();
+    let contact: Vec<&str> = contact.iter().map(String::as_str).collect();
+
+    let (account, credentials) = Account::builder()?
+        .create(
+            &NewAccount {
+                contact: &contact,
+                // Registering *is* the agreement; the CA has no other
+                // way to be told, and refusing to set it would just
+                // mean no account.
+                terms_of_service_agreed: true,
+                only_return_existing: false,
+            },
+            directory.clone(),
+            None,
+        )
+        .await?;
+
+    let json = serde_json::to_string(&credentials)?;
+    database
+        .write({
+            let directory = directory.clone();
+            let email = config.acme.email.clone();
+            move |connection| {
+                connection.execute(
+                    "INSERT INTO acme_account \
+                       (\"directory_url\", \"email\", \"credentials\", \"created_at\") \
+                     VALUES (?1, ?2, ?3, ?4) \
+                     ON CONFLICT (\"directory_url\") DO UPDATE SET \
+                       \"credentials\" = excluded.\"credentials\", \
+                       \"email\" = excluded.\"email\"",
+                    (directory, email, json, now_ms()),
+                )?;
+                Ok(())
+            }
+        })
+        .await?;
+
+    tracing::info!(%directory, "registered an ACME account");
+    Ok(account)
+}
+
+// ---------- issuing ----------------------------------------------------
+
+/// Obtain a certificate for `domain`, storing it on success.
+///
+/// The whole order, start to finish: authorize, answer the challenge,
+/// finalize, poll. Long-running by nature — the CA takes seconds to
+/// validate — which is why the caller runs it off the request path.
+pub async fn obtain(
+    database: &SqliteDatabase,
+    config: &Config,
+    names: &[String],
+) -> AcmeResult<StoredCert> {
+    let Some(domain) = names.first().map(String::as_str) else {
+        return Err(AcmeError::Refused("an order with no names in it".into()));
+    };
+    let account = load_or_create_account(database, config).await?;
+
+    // Every name in one order.
+    //
+    // `ensure_all` explains why this node holds one certificate per name
+    // rather than one big one, and that reasoning is about names belonging
+    // to *different services*: reissuing all of them because one moved is
+    // a failure that spreads. A database's two names are not that. The
+    // read pool's is the primary's with `-ro` in its first label, they
+    // change together by construction, and the pool has no existence
+    // apart from the database — so an order that carried only the first
+    // left the pool with a certificate that did not name it, which is
+    // every read failing `verify-full`.
+    //
+    // Each name gets its own authorization and its own token; they are
+    // stored against the first, which is the key the whole order is
+    // cleaned up and stored under.
+    let identifiers: Vec<Identifier> = names
+        .iter()
+        .map(|name| Identifier::Dns(name.clone()))
+        .collect();
+    let mut order = account.new_order(&NewOrder::new(&identifiers)).await?;
+
+    // Answer every pending authorization before telling the CA to
+    // look: `set_ready` is what starts validation, and a token the
+    // node cannot yet serve fails the order immediately.
+    let mut authorizations = order.authorizations();
+    while let Some(result) = authorizations.next().await {
+        let mut authorization = result?;
+        match authorization.status {
+            AuthorizationStatus::Pending => {}
+            // Already valid from an earlier order — the CA caches
+            // these, which is what makes a retry cheap.
+            AuthorizationStatus::Valid => continue,
+            other => {
+                return Err(AcmeError::Refused(format!(
+                    "the authority will not validate {domain}: {other:?}"
+                )))
+            }
+        }
+
+        let mut challenge = authorization
+            .challenge(ChallengeType::Http01)
+            .ok_or_else(|| {
+                AcmeError::Refused("the authority offered no http-01 challenge".into())
+            })?;
+
+        let token = challenge.token.clone();
+        let response = challenge.key_authorization().as_str().to_string();
+        store_challenge(database, &token, &response, domain).await?;
+        tracing::info!(%domain, %token, "answering an http-01 challenge");
+
+        // **Every other node that answers for these names, before the
+        // authority is told to look.** The token is served from whichever
+        // address the name resolves to, and it lives in this node's own
+        // table — so with two edges the authority has a fair chance of
+        // asking the one that has never heard of it.
+        //
+        // Refused rather than attempted when a co-edge cannot be reached:
+        // `set_ready` is what starts validation, and a validation that
+        // fails is one of five an hour against an account that locks for
+        // every name on the node. Nothing is spent by abandoning an order
+        // before it is ready.
+        if let Err(reason) = publish_to_co_edges(database, names, &token, &response).await {
+            clear_challenges(database, domain).await?;
+            return Err(AcmeError::Refused(reason));
+        }
+
+        challenge.set_ready().await?;
+    }
+
+    let status = order.poll_ready(&RetryPolicy::default()).await?;
+    if status != OrderStatus::Ready {
+        clear_challenges(database, domain).await?;
+        return Err(AcmeError::Refused(format!(
+            "the order for {domain} ended {status:?} — \
+             check that http://{domain}{CHALLENGE_PREFIX}… reaches this node"
+        )));
+    }
+
+    let key_pem = order.finalize().await?;
+    let chain_pem = order.poll_certificate(&RetryPolicy::default()).await?;
+    clear_challenges(database, domain).await?;
+
+    let stored = StoredCert {
+        domain: domain.to_string(),
+        names: names.to_vec(),
+        not_after: certs::not_after(&chain_pem)
+            // Unparseable means renew at the next pass rather than
+            // trust a number nobody read.
+            .unwrap_or_else(now_ms),
+        cert_pem: chain_pem,
+        key_pem,
+        // The directory URL itself, not a tag. Storing "acme" would
+        // make a staging certificate and a production one look alike,
+        // and then switching between them would silently keep serving
+        // the old one — see `ensure`.
+        issuer: config.acme.directory_url().to_string(),
+        source: certs::Source::Acme,
+    };
+    certs::save(database, &stored).await?;
+
+    tracing::info!(%domain, names = names.len(), "obtained a certificate");
+    Ok(stored)
+}
+
+/// Obtain a certificate if one is needed, and swap it in.
+///
+/// Returns whether anything changed. Idempotent and cheap when the
+/// certificate is current, so it is safe to call on every start and on
+/// every pass of the renewal loop.
+/// Obtain or renew every certificate this node needs.
+///
+/// That is the node's own domain plus every hostname a service serves
+/// HTTPS on. One certificate each rather than one with many names:
+/// HTTP-01 cannot issue a wildcard, and a single multi-name
+/// certificate would have to be reissued — and could fail entirely —
+/// every time one service changes hostname.
+///
+/// Returns whether anything changed. A failure on one name does not
+/// stop the others: a service with a broken DNS record must not keep
+/// the node's own certificate from renewing.
+/// Every name a public authority should answer for.
+///
+/// Read now, not at startup: an operator who fixed their DNS and set
+/// the domain from the console needs the next pass to use it, not the
+/// value this process booted with.
+///
+/// Its own function because the loop asks the same question before it
+/// says it is working — an attempt over an empty list is not an
+/// attempt, and a page that flashed "requesting" twice a day for a
+/// node with no domain would be reporting a thing that never happened.
+pub async fn wanted_names(database: &SqliteDatabase, config: &Config) -> Vec<String> {
+    let mut names: Vec<String> = crate::infra::node::settings::domain(database, config)
+        .await
+        .into_iter()
+        .collect();
+    // The names on this node's own services that it was **chosen** to
+    // answer for. Not every hostname it stores: a node can own a service
+    // exposed from somewhere else entirely, and ordering a certificate
+    // for a name that resolves to another machine is a challenge that
+    // cannot pass — repeated twice a day, against an authority that
+    // locks the account out after five failures.
+    let me = crate::infra::network::me(database).await.ok().flatten();
+    match crate::infra::repositories::edges::of_node(database, me.as_ref().map(|node| &*node.id))
+        .await
+    {
+        Ok(serving) => names.extend(serving),
+        Err(error) => tracing::warn!(%error, "could not read which names this node serves"),
+    }
+    // And every organisation's own console name.
+    //
+    // **A control-plane name, like this node's own domain**, and that is
+    // why nothing above finds it: `edges::of_node` reads the names of
+    // *services*, and an organisation's console is not one — it is this
+    // node answering for a second frontier. Without this the route
+    // exists, the node answers, and it answers with the local
+    // authority's certificate for a name that is not on it, which is a
+    // browser warning about impersonation rather than one about trust.
+    //
+    // Found on the node the first time one was given a domain.
+    match crate::infra::repositories::tenants::all(database).await {
+        Ok(tenants) => names.extend(tenants.into_iter().filter_map(|tenant| tenant.domain)),
+        Err(error) => tracing::warn!(%error, "could not read the organisations' names"),
+    }
+    // And the names this node serves for somebody else. They have no
+    // port row here — the route arrived on an errand — so reading the
+    // `port` table alone would leave the one thing this node was asked
+    // to do answering with the local authority's certificate.
+    match crate::infra::network::claimed_for_others(database).await {
+        Ok(claimed) => names.extend(claimed),
+        Err(error) => tracing::warn!(%error, "could not read the names claimed for other nodes"),
+    }
+    // Sorted, because `dedup` only removes *adjacent* repeats and the
+    // node's own domain can also be a service's hostname — which would
+    // otherwise order two certificates for one name.
+    names.sort();
+    names.dedup();
+    // **Never an address.** A public authority refuses an IP identifier
+    // outright — `Cannot issue for "192.168.1.55": Identifier type is DNS
+    // but value is an IP address` — and the DNS guard cannot catch it,
+    // because `dns::lookup` parses a literal through `ToSocketAddrs` and
+    // it "resolves here" by definition. Measured on a node whose domain
+    // *was* an address, retrying every sixty seconds and then every two
+    // minutes for as long as it was up.
+    //
+    // The name is still served: `certs::own_names` puts this machine's
+    // addresses on its own certificate, as IP SANs, which is the only kind
+    // a browser accepts for one.
+    names.retain(|name| name.parse::<std::net::IpAddr>().is_err());
+    names
+}
+
+/// Keep the local authority's certificate covering every name the node
+/// answers for, and put it in front of the listener.
+///
+/// Runs whether or not ACME is enabled, because it answers a different
+/// question. A node that has just been given a domain is still
+/// presenting a certificate for the name it had before — wrong name,
+/// not merely untrusted — and on a node where ACME is switched off
+/// that is the only certificate it will ever have.
+///
+/// `ensure_self_signed` already reissues when the name set changes, so
+/// this is idempotent: a pass that changes nothing costs one read.
+pub async fn refresh_local(
+    database: &SqliteDatabase,
+    config: &Config,
+    resolver: &certs::CertResolver,
+) -> AcmeResult<()> {
+    // The fallback, and the name another node dials over the overlay, come
+    // from `own_names` — the one definition both builders of this
+    // certificate share. Pushing the fallback here and nothing else is what
+    // dropped the internal name at this pass.
+    let names = certs::own_names(database, wanted_names(database, config).await).await;
+
+    let before = certs::load(database, certs::FALLBACK_NAME).await?;
+    let after = certs::ensure_self_signed(database, certs::FALLBACK_NAME, &names).await?;
+    if before.map(|existing| existing.names) == Some(after.names) {
+        return Ok(());
+    }
+
+    // Reloaded from storage rather than pushed in, for the same reason
+    // as `ensure`: the resolver then serves exactly what a restart
+    // would.
+    resolver.replace(&certs::load_all(database).await?)?;
+    tracing::info!(
+        names = resolver.names().join(", "),
+        "local certificate reissued"
+    );
+    Ok(())
+}
+
+/// Install whatever is on disk for `name`, if it is not already what
+/// is being served.
+///
+/// This is the whole of "renew a certificate somebody gave us". The
+/// node cannot ask for another — it has no relationship with whoever
+/// signed it — but something else can keep the files current, and this
+/// notices. Compared by content rather than by mtime: a file touched
+/// without being changed is not a reason to swap the resolver, and a
+/// file changed without its mtime moving still has to be picked up.
+async fn install_from_file(
+    database: &SqliteDatabase,
+    resolver: &certs::CertResolver,
+    name: &str,
+    cert_path: &str,
+    key_path: &str,
+) -> AcmeResult<bool> {
+    let found = certs::from_files(name, cert_path, key_path)?;
+
+    if let Some(existing) = certs::load(database, name).await? {
+        if existing.cert_pem == found.cert_pem && existing.key_pem == found.key_pem {
+            return Ok(false);
+        }
+    }
+
+    certs::save(database, &found).await?;
+    resolver.replace(&certs::load_all(database).await?)?;
+    tracing::info!(%name, %cert_path, "installed the certificate found on disk");
+    Ok(true)
+}
+
+/// A certificate about to expire that nothing else will replace.
+///
+/// An expired certificate is a hard failure — no browser offers a way
+/// past it — while a self-signed one is a warning somebody can click
+/// through. So when a name is within [`FLOOR_DAYS`] of serving nothing
+/// usable, the node signs for it rather than letting it lapse.
+///
+/// Only for sources that cannot replace themselves. ACME has its own
+/// retry with backoff and taking over from it would throw away an
+/// order that was about to succeed; a self-signed certificate is
+/// already reissued by `refresh_local`. A file source is the case this
+/// exists for: if whatever keeps those files fresh has stopped, no
+/// amount of waiting produces a new one.
+async fn hold_the_floor(
+    database: &SqliteDatabase,
+    config: &Config,
+    resolver: &certs::CertResolver,
+    name: &str,
+    policy: &policy::Policy,
+) -> AcmeResult<bool> {
+    if policy.renew_with.is_self_serve() {
+        return Ok(false);
+    }
+    let Some(existing) = certs::load(database, name).await? else {
+        // Nothing installed at all: `refresh_local` covers the node
+        // with a certificate carrying every name it answers for, so
+        // this name is already being served something.
+        return Ok(false);
+    };
+    if existing.not_after > now_ms() + FLOOR_DAYS * 86_400_000 {
+        return Ok(false);
+    }
+    if existing.source == certs::Source::SelfSigned {
+        // Already on the floor. Reissuing every pass would rewrite the
+        // row twice a day and log it each time.
+        return Ok(false);
+    }
+
+    tracing::warn!(
+        %name,
+        expires_in_days = (existing.not_after - now_ms()) / 86_400_000,
+        "the certificate on disk is about to expire and nothing is replacing it; \
+         signing for this name locally so it does not lapse"
+    );
+    certs::ensure_self_signed(database, name, &[name.to_string()]).await?;
+    resolver.replace(&certs::load_all(database).await?)?;
+    let _ = config;
+    Ok(true)
+}
+
+pub async fn ensure_all(
+    database: &SqliteDatabase,
+    config: &Config,
+    resolver: &certs::CertResolver,
+) -> AcmeResult<bool> {
+    let mut changed = false;
+    let mut failure: Option<AcmeError> = None;
+
+    for name in wanted_names(database, config).await {
+        // What to do is read per name rather than inferred from what is
+        // installed. Inferring it is what let this loop replace a
+        // certificate it had not issued — see migration `0012`.
+        let policy = policy::for_name(database, config, &name).await;
+        let outcome = match &policy.renew_with {
+            policy::RenewWith::Acme => ensure(database, config, resolver, &name).await,
+            // Handled by `refresh_local`, which covers every name the
+            // node answers for in one certificate. Reissuing here as
+            // well would be a second certificate for the same name.
+            policy::RenewWith::SelfSigned => Ok(false),
+            policy::RenewWith::File {
+                cert_path,
+                key_path,
+            } => install_from_file(database, resolver, &name, cert_path, key_path).await,
+        };
+
+        // Recorded against the name it is about. The node-wide
+        // `acme_error` stays for `doctor` and for `install`, which ask
+        // "did anything fail" rather than "what happened to this name".
+        let recorded = match &outcome {
+            Err(error) => policy::record_failure(database, &name, &error.to_string()).await,
+            Ok(_) => policy::clear_failure(database, &name).await,
+        };
+        if let Err(error) = recorded {
+            tracing::debug!(%name, %error, "could not record the certificate outcome");
+        }
+
+        match outcome {
+            Ok(true) => changed = true,
+            Ok(false) => {}
+            Err(error) => {
+                tracing::warn!(%name, %error, "could not obtain a certificate");
+                failure.get_or_insert(error);
+            }
+        }
+
+        // Whatever happened above, a name must not end up serving a
+        // certificate that has expired. See `hold_the_floor`.
+        match hold_the_floor(database, config, resolver, &name, &policy).await {
+            Ok(true) => changed = true,
+            Ok(false) => {}
+            Err(error) => tracing::warn!(%name, %error, "could not hold the expiry floor"),
+        }
+    }
+
+    if prune_unwanted(database, config, resolver).await {
+        changed = true;
+    }
+
+    match failure {
+        // Reported only after everything that could work has been
+        // tried, so one bad hostname costs the others nothing.
+        Some(error) if !changed => Err(error),
+        _ => Ok(changed),
+    }
+}
+
+/// Forget the certificates for names this node has stopped answering
+/// for.
+///
+/// Here rather than beside the other convergent passes for one reason:
+/// the resolver is here. Deleting the row without rebuilding the
+/// resolver would leave the node serving from memory a certificate it no
+/// longer stores — gone at the next restart, which is the sort of
+/// difference nobody can explain a week later.
+///
+/// **The wanted set has to be complete or this must not run.** Three
+/// sources feed it and they do not overlap: the names the edge answers
+/// for, the fallback the resolver needs for a handshake that asked for
+/// nothing, and the databases — whose names were never edge names at
+/// all, which is exactly how one came to be listed twice. A source that
+/// cannot be read is a short list, and a short list here deletes working
+/// certificates, so that case gives up instead.
+async fn prune_unwanted(
+    database: &SqliteDatabase,
+    config: &Config,
+    resolver: &certs::CertResolver,
+) -> bool {
+    let mut wanted = wanted_names(database, config).await;
+    wanted.push(certs::FALLBACK_NAME.to_string());
+    match crate::infra::deploy::database_certificate_keys(database, config).await {
+        Ok(keys) => wanted.extend(keys),
+        Err(error) => {
+            tracing::warn!(%error, "not pruning certificates: could not read the databases");
+            return false;
+        }
+    }
+
+    let gone = match certs::prune(database, &wanted).await {
+        Ok(gone) if gone.is_empty() => return false,
+        Ok(gone) => gone,
+        Err(error) => {
+            tracing::warn!(%error, "could not prune the certificate store");
+            return false;
+        }
+    };
+
+    match certs::load_all(database)
+        .await
+        .map_err(AcmeError::from)
+        .and_then(|all| resolver.replace(&all).map_err(AcmeError::from))
+    {
+        Ok(()) => tracing::info!(
+            names = gone.join(", "),
+            "forgot certificates for names this node no longer serves"
+        ),
+        Err(error) => tracing::warn!(%error, "could not reload the resolver after pruning"),
+    }
+    true
+}
+
+pub async fn ensure(
+    database: &SqliteDatabase,
+    config: &Config,
+    resolver: &certs::CertResolver,
+    domain: &str,
+) -> AcmeResult<bool> {
+    if config.acme.disabled {
+        return Ok(false);
+    }
+    let domain = domain.to_string();
+
+    let directory = config.acme.directory_url();
+    if let Some(existing) = certs::load(database, &domain).await? {
+        // The authority has to match, not merely be *an* authority.
+        //
+        // Found the hard way: a node tested against staging and then
+        // switched to production kept serving the staging certificate,
+        // because both were "acme" and it had not expired. Nothing
+        // errored, nothing logged, and every browser rejected the site.
+        // Comparing the directory URL makes the switch do what the
+        // operator asked.
+        let same_authority = existing.issuer == directory;
+        let fresh = existing.not_after > now_ms() + RENEW_WITHIN_DAYS * 86_400_000;
+        // And it has to still cover what is being asked for.
+        //
+        // A certificate can be current, from the right authority, and
+        // *wrong*: a database's read pool was added to the names after its
+        // certificate was issued, so the stored one named the primary
+        // alone and every read failed `verify-full` against a certificate
+        // that had months left. Freshness cannot see that.
+        //
+        // `ensure_self_signed` has always asked this — the local path is
+        // convergent on the name set — and the ACME path did not, which is
+        // the asymmetry that let it happen.
+        let covers = crate::infra::deploy::public_names_for(database, config, &domain)
+            .await
+            .iter()
+            .all(|name| existing.names.contains(name));
+        if same_authority && fresh && covers {
+            return Ok(false);
+        }
+        if same_authority && fresh {
+            tracing::info!(%domain, "reissuing: the stored certificate does not cover every name");
+        }
+        if !same_authority && existing.issuer != "self-signed" {
+            tracing::info!(
+                from = %existing.issuer,
+                to = %directory,
+                "the configured authority changed; reissuing"
+            );
+        }
+    }
+
+    // Does this name still point here?
+    //
+    // **Asked before anything is spent, and asked every time.** A
+    // challenge for a name that does not resolve to this node cannot
+    // pass, and the attempt is counted either way: Let's Encrypt allows
+    // five failed validations an hour per account and then locks it — for
+    // every name on the node, not just the one that moved.
+    //
+    // The form asks this when a hostname is typed. That was the only
+    // place it was asked, and a hostname is typed once while this loop
+    // runs for as long as the node does: a domain that expires, a record
+    // somebody repoints, a database whose name was chosen under a domain
+    // they later moved. Each of those became two failed orders a day
+    // against an account shared with every working name.
+    //
+    // After the freshness check above, deliberately: a certificate that
+    // does not need renewing needs no lookup, and a name whose DNS moved
+    // while its certificate is still valid is not yet a problem to
+    // report.
+    // Every name this order will carry — a database's is two, and both
+    // have to be checked or the order fails on the one nobody looked at.
+    let names = crate::infra::deploy::public_names_for(database, config, &domain).await;
+
+    if let Some(node_domain) = crate::infra::node::settings::domain(database, config).await {
+        for name in &names {
+            let resolution = crate::infra::deploy::dns::resolves_here(name, &node_domain).await;
+            match resolution {
+                // Only "here" counts, whatever else the name reaches: the
+                // challenge is served from this node's own table, so an
+                // order for a name that arrives at a different machine is
+                // one of five failures an hour against an account that
+                // locks for all of them.
+                resolution if resolution.reaches_here() => {}
+                // The node's own domain does not resolve, so there is nothing
+                // to compare against. Not a reason to refuse: the authority
+                // validates the *name being asked for*, which may resolve
+                // perfectly well while this node's own does not — and refusing
+                // on "cannot tell" would stop a renewal that would have
+                // worked.
+                crate::infra::deploy::dns::Resolution::NoReference => {
+                    tracing::debug!(%name, "ordering without a DNS check: this node's domain does not resolve")
+                }
+                elsewhere => {
+                    return Err(AcmeError::Refused(elsewhere.explain(name)));
+                }
+            }
+        }
+    }
+
+    // **A name several nodes answer for cannot be validated from here
+    // yet.** An HTTP-01 challenge is fetched from one of the addresses
+    // the name resolves to, and the token lives in *this* node's
+    // `acme_challenge` table — so with two edges the authority has a
+    // fair chance of asking the node that does not have it. Each miss is
+    // one of five failures an hour, and the lock is per account: one name
+    // on two nodes would take every other name on this node down with
+    // it.
+    //
+    // Refused rather than attempted, and named on the page. The way out
+    // is the challenge travelling to the other edges of the name, which
+    // is written up in `docs/network.md`; until then a name on several
+    // nodes is served on the local authority's certificate, which is
+    // exactly what `refresh_local` already keeps covering it.
+    if let Some(reason) = shared_with_other_nodes(database, &names).await {
+        return Err(AcmeError::Refused(reason));
+    }
+
+    obtain(database, config, &names).await?;
+    // Reloaded from storage rather than pushed in: the resolver then
+    // serves exactly what a restart would, so there is no state that
+    // exists only in this process.
+    resolver.replace(&certs::load_all(database).await?)?;
+    Ok(true)
+}
+
+/// Why a public authority cannot be asked for one of these names.
+///
+/// Its own function so it can be asked of a database directly: what it
+/// protects is an account lock, and a guard that can only be exercised by
+/// ordering a real certificate is a guard nobody tests.
+async fn shared_with_other_nodes(database: &SqliteDatabase, names: &[String]) -> Option<String> {
+    for name in names {
+        let serving = crate::infra::repositories::edges::nodes_for(database, name)
+            .await
+            .unwrap_or_default();
+        if serving.len() < 2 {
+            continue;
+        }
+        // The challenge travels now — see `publish_to_co_edges` — so
+        // several nodes answering for one name is no longer a refusal.
+        // What is still one is not knowing *who* they are: the publish
+        // reads this node's own view of the co-edges, and an empty one
+        // means it would order alone for a name the authority may ask
+        // somebody else about. That is the state an errand from an older
+        // version leaves behind, and a deployment on the owning node ends
+        // it.
+        if crate::infra::repositories::edges::peers_for(database, name)
+            .await
+            .unwrap_or_default()
+            .is_empty()
+        {
+            return Some(format!(
+                "{name} is answered for by {} nodes and this one does not know which — a public \
+                 authority would ask an address that has never heard of the challenge. Deploy \
+                 the service again from the node that owns it, which is what tells every edge \
+                 who the others are.",
+                serving.len()
+            ));
+        }
+    }
+    None
+}
+
+/// Hand the token to every other node that answers for these names.
+///
+/// **All of them, or none of it.** A co-edge that could not be reached is
+/// an address the authority may still ask, so proceeding would be spending
+/// a validation on a coin toss. The reason names the node, because the
+/// operator's next question is which one.
+///
+/// One publish per co-edge, whatever the name: the names in one order
+/// belong to one service and are answered for by the same nodes — and a
+/// token planted for a sibling name would be harmless anyway, since it
+/// proves nothing without the account key it was derived from.
+async fn publish_to_co_edges(
+    database: &SqliteDatabase,
+    names: &[String],
+    token: &str,
+    response: &str,
+) -> Result<(), String> {
+    let mut told: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    for name in names {
+        let peers = crate::infra::repositories::edges::peers_for(database, name)
+            .await
+            .map_err(|error| error.to_string())?;
+        if peers.is_empty() {
+            continue;
+        }
+        let Some(secret) = crate::infra::repositories::edges::secret_for(database, name)
+            .await
+            .map_err(|error| error.to_string())?
+        else {
+            // Told who the co-edges are and not how to prove anything to
+            // them. Said rather than silently ordering alone, which is
+            // the hazard this whole path exists to remove.
+            return Err(format!(
+                "{name} is answered for by other nodes and this one has no secret to publish \
+                 the challenge with — the node that owns the service sends it with the edge \
+                 errand, so deploying there is what fixes this"
+            ));
+        };
+
+        for node_id in peers {
+            if !told.insert(node_id.clone()) {
+                continue;
+            }
+            let node = crate::infra::network::find(database, &node_id)
+                .await
+                .map_err(|error| error.to_string())?
+                .ok_or_else(|| {
+                    format!("{name} is answered for by {node_id}, which this node has no row for")
+                })?;
+            let body = serde_json::to_string(&crate::infra::network::api::Challenge {
+                hostname: name.clone(),
+                token: token.to_string(),
+                response: response.to_string(),
+            })
+            .map_err(|error| error.to_string())?;
+
+            match crate::infra::network::call::to_node(
+                &node,
+                "/api/network/challenge",
+                Some(body),
+                Some(&secret),
+            )
+            .await
+            {
+                Ok(status) if status.is_success() => {
+                    tracing::info!(node = %node.name, %name, "the challenge was published")
+                }
+                Ok(status) => {
+                    return Err(format!(
+                        "{} would not take the challenge for {name}: it answered {status}",
+                        node.name
+                    ))
+                }
+                Err(error) => {
+                    return Err(format!(
+                        "{} could not be reached to publish the challenge for {name}: {error}",
+                        node.name
+                    ))
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// The background loop: try until it works, then keep it renewed.
+///
+/// Failure is expected here rather than exceptional — DNS propagates
+/// slowly, a firewall gets opened late — so this retries with backoff
+/// instead of giving up, and the node keeps serving throughout on the
+/// local authority's certificate.
+pub async fn renewal_loop(
+    database: Arc<SqliteDatabase>,
+    config: Config,
+    resolver: Arc<certs::CertResolver>,
+    wake: Arc<Wake>,
+    cancel: wabot::lifecycle::Cancel,
+) -> Result<(), std::convert::Infallible> {
+    if config.acme.disabled {
+        tracing::info!("ACME is disabled; serving the local authority's certificate");
+    }
+
+    // A node with no domain *yet* still runs this loop. It has nothing
+    // to ask for until somebody sets one — and when they do, from the
+    // console, this is what notices. Leaving early on "no domain at
+    // startup" made that impossible without a restart.
+
+    // Start at a minute and back off to six hours. The first attempts
+    // are the ones most likely to be waiting on DNS the operator is
+    // still setting up.
+    let mut delay = std::time::Duration::from_secs(60);
+    const MAX_DELAY: std::time::Duration = std::time::Duration::from_secs(6 * 3600);
+    // Once a certificate is in hand, checking twice a day is plenty
+    // against a 30-day window.
+    const SETTLED_DELAY: std::time::Duration = std::time::Duration::from_secs(12 * 3600);
+
+    loop {
+        // Nothing to certify is not an attempt. Marking one anyway
+        // would flash "requesting" on a page about a node that has no
+        // domain, twice a day, for a request never made.
+        let attempt = (!wanted_names(&database, &config).await.is_empty()).then(|| wake.begin());
+
+        // Before the public one, and whether or not there will be a
+        // public one. A node whose domain just changed is presenting a
+        // certificate for the name it used to have; that is true even
+        // where ACME is switched off, and it is the case somebody
+        // testing on a laptop is most likely to be looking at.
+        if let Err(error) = refresh_local(&database, &config, &resolver).await {
+            tracing::warn!(%error, "could not reissue the local certificate");
+        }
+
+        if config.acme.disabled {
+            drop(attempt);
+            tokio::select! {
+                _ = cancel.cancelled() => return Ok(()),
+                _ = wake.notified() => continue,
+            }
+        }
+
+        match ensure_all(&database, &config, &resolver).await {
+            Ok(changed) => {
+                if changed {
+                    tracing::info!(
+                        names = resolver.names().join(", "),
+                        "certificate installed without a restart"
+                    );
+                }
+                if let Err(error) =
+                    crate::infra::node::settings::set_acme_error(&database, None).await
+                {
+                    tracing::debug!(%error, "could not clear the last failure");
+                }
+                delay = SETTLED_DELAY;
+            }
+            Err(error) => {
+                tracing::warn!(%error, retry_in = ?delay, "could not obtain a certificate");
+                if let Err(error) = record_failure(&database, &error).await {
+                    tracing::debug!(%error, "could not record the failure");
+                }
+                delay = (delay * 2).min(MAX_DELAY);
+            }
+        }
+
+        // After the outcome is stored, never before: a page woken by
+        // this reads the database, and waking it first would show it
+        // the state the attempt just replaced.
+        drop(attempt);
+
+        tokio::select! {
+            _ = cancel.cancelled() => return Ok(()),
+            _ = tokio::time::sleep(delay) => {}
+            // Somebody gave a service a hostname. Waiting out the
+            // twelve-hour settled delay would leave that name without a
+            // certificate for half a day, with the route already
+            // pointing at it — the console would show it configured and
+            // no browser could open it.
+            _ = wake.notified() => {
+                tracing::info!("certificates: something changed, checking now");
+                // Back to the short delay: a name added a second ago is
+                // exactly the case where DNS might still be settling,
+                // and the backoff should start from the bottom again.
+                delay = std::time::Duration::from_secs(60);
+            }
+        }
+    }
+}
+
+/// How the rest of the node asks for a certificate check now, and how
+/// a page watching one finds out that it finished.
+///
+/// A notification rather than a direct call: issuance belongs in the
+/// loop, which owns the retries and the backoff. A console request
+/// that issued inline would either block for the round trip to the
+/// authority or invent a second retry policy beside this one.
+///
+/// The channel is the other direction, and it is why this is more than
+/// a `Notify` now. Nothing used to record that an attempt was
+/// *running* — only that one had failed — so the console could say
+/// "asked for" and "failed" but never "asking", and the page that set
+/// a domain had to tell the operator to reload in a few seconds.
+#[derive(Debug)]
+pub struct Wake {
+    notify: tokio::sync::Notify,
+    phase: tokio::sync::watch::Sender<Phase>,
+}
+
+/// Whether the loop is in the middle of an attempt.
+///
+/// Deliberately not the *outcome*: that is written to the database, and
+/// two copies of it would be two things to keep in step. This says when
+/// to go and read it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Phase {
+    Idle,
+    Working,
+}
+
+impl Default for Wake {
+    fn default() -> Self {
+        Self {
+            notify: tokio::sync::Notify::default(),
+            phase: tokio::sync::watch::channel(Phase::Idle).0,
+        }
+    }
+}
+
+impl Wake {
+    /// Ask the loop to look now. Never blocks; a wake with nothing to
+    /// do costs one cheap pass over the stored certificates.
+    pub fn now(&self) {
+        self.notify.notify_one();
+    }
+
+    async fn notified(&self) {
+        self.notify.notified().await
+    }
+
+    /// A signal every time the loop starts or stops working.
+    pub fn watch(&self) -> tokio::sync::watch::Receiver<Phase> {
+        self.phase.subscribe()
+    }
+
+    pub fn phase(&self) -> Phase {
+        *self.phase.borrow()
+    }
+
+    /// Mark an attempt as running until the returned guard is dropped.
+    ///
+    /// A guard rather than a pair of calls: an early return or a panic
+    /// between them would leave every page saying "requesting" for the
+    /// rest of the process's life, and that is a lie no restart-free
+    /// path could correct.
+    fn begin(&self) -> Attempt<'_> {
+        // `send_replace`, not `send`: with no page open there are no
+        // receivers, and `send` reports that as an error rather than
+        // storing the value the next subscriber should see.
+        self.phase.send_replace(Phase::Working);
+        Attempt(self)
+    }
+}
+
+struct Attempt<'a>(&'a Wake);
+
+impl Drop for Attempt<'_> {
+    fn drop(&mut self) {
+        self.0.phase.send_replace(Phase::Idle);
+    }
+}
+
+/// Leave the reason where `doctor` and the console can show it,
+/// without an operator reading the journal.
+///
+/// Beside the domain rather than on the certificate row, because the
+/// failure that matters most — asked for a name, got nothing — is the
+/// one where no row exists to carry it.
+async fn record_failure(database: &SqliteDatabase, error: &AcmeError) -> AcmeResult<()> {
+    crate::infra::node::settings::set_acme_error(database, Some(&error.to_string())).await?;
+    Ok(())
+}
+
+fn now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    async fn database() -> SqliteDatabase {
+        crate::infra::db::open_in_memory().await.expect("open")
+    }
+
+    #[tokio::test]
+    async fn a_challenge_is_answered_and_then_forgotten() {
+        let database = database().await;
+
+        assert_eq!(
+            challenge_response(&database, "tok").await.expect("read"),
+            None
+        );
+
+        store_challenge(&database, "tok", "tok.keyauth", "node.example.com")
+            .await
+            .expect("store");
+        assert_eq!(
+            challenge_response(&database, "tok").await.expect("read"),
+            Some("tok.keyauth".to_string())
+        );
+
+        clear_challenges(&database, "node.example.com")
+            .await
+            .expect("clear");
+        assert_eq!(
+            challenge_response(&database, "tok").await.expect("read"),
+            None,
+            "a finished order leaves nothing behind"
+        );
+    }
+
+    /// The answer has to survive a restart: an order can be in flight
+    /// when the node is upgraded, and a 404 then fails it for a reason
+    /// no log would explain.
+    #[tokio::test]
+    async fn a_challenge_survives_a_reopen() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("node.db");
+
+        let database = crate::infra::db::open(&path).await.expect("open");
+        store_challenge(&database, "tok", "answer", "node.example.com")
+            .await
+            .expect("store");
+        database.close().await.expect("close");
+
+        let database = crate::infra::db::open(&path).await.expect("reopen");
+        assert_eq!(
+            challenge_response(&database, "tok").await.expect("read"),
+            Some("answer".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn expired_challenges_are_swept() {
+        let database = database().await;
+
+        database
+            .write(|connection| {
+                connection.execute(
+                    "INSERT INTO acme_challenge \
+                       (\"token\", \"response\", \"domain\", \"expires_at\") \
+                     VALUES ('old', 'x', 'a.example.com', 1)",
+                    [],
+                )?;
+                Ok(())
+            })
+            .await
+            .expect("insert");
+
+        // Storing a new one sweeps the old.
+        store_challenge(&database, "new", "y", "b.example.com")
+            .await
+            .expect("store");
+
+        assert_eq!(
+            challenge_response(&database, "old").await.expect("read"),
+            None
+        );
+        assert!(challenge_response(&database, "new")
+            .await
+            .expect("read")
+            .is_some());
+    }
+
+    /// A node whose *domain* is an address does not ask either.
+    ///
+    /// **Measured on a real node.** Its domain was `192.168.1.55` — which
+    /// was the only way into its console from another machine on the LAN
+    /// before the proxy answered on this machine's own addresses — and the
+    /// renewal loop asked Let's Encrypt for it every sixty seconds, then
+    /// every two minutes, for as long as the node was up. The DNS guard
+    /// let it through: a literal parses through `ToSocketAddrs`, so it
+    /// "resolves here" by definition.
+    #[tokio::test]
+    async fn a_domain_that_is_an_address_is_never_asked_for() {
+        let database = database().await;
+        let mut config = Config::default();
+        config.node.domain = Some("192.168.1.55".into());
+        crate::infra::node::settings::set_domain(&database, Some("192.168.1.55"))
+            .await
+            .expect("domain");
+
+        assert!(
+            wanted_names(&database, &config).await.is_empty(),
+            "an authority refuses an IP identifier, and asking spends the attempt anyway"
+        );
+        // Where the coverage comes from instead: `own_names` puts the
+        // addresses this machine *holds* on its own certificate, as IP
+        // SANs — which is the set a browser needs and the one this node
+        // can actually answer on. An address it no longer has is one a
+        // self-signed certificate would name for nothing.
+        //
+        // And a real name still goes: the filter is about literals.
+        crate::infra::node::settings::set_domain(&database, Some("node.example"))
+            .await
+            .expect("domain");
+        config.node.domain = Some("node.example".into());
+        assert_eq!(
+            wanted_names(&database, &config).await,
+            vec!["node.example".to_string()]
+        );
+    }
+
+    /// An address is never asked of a public authority.
+    ///
+    /// **The guard that protects the account.** The node's own addresses
+    /// are on its self-signed certificate — a browser needs them to open
+    /// the console on a LAN — and an order for one would fail at the
+    /// authority, because it goes out as a DNS identifier. Worse, the DNS
+    /// check would not have stopped it: `dns::lookup` parses an address
+    /// literal through `ToSocketAddrs`, so `192.168.1.10` "resolves here"
+    /// and passes. Five such failures an hour lock the account for every
+    /// name on the node.
+    #[tokio::test]
+    async fn an_address_is_never_asked_of_an_authority() {
+        let database = database().await;
+        let mut config = Config::default();
+        config.node.domain = Some("node.example.com".into());
+        crate::infra::node::settings::set_domain(&database, Some("node.example.com"))
+            .await
+            .expect("domain");
+
+        let wanted = wanted_names(&database, &config).await;
+        for address in crate::infra::network::lan::addresses() {
+            assert!(
+                !wanted.contains(&address),
+                "{address} would be ordered from a public authority: {wanted:?}"
+            );
+        }
+        // And the local half does carry them, which is the pair that has
+        // to hold: served here, never ordered there.
+        let served = crate::infra::edge::certs::own_names(&database, wanted.clone()).await;
+        for address in crate::infra::network::lan::addresses() {
+            assert!(served.contains(&address), "{served:?}");
+        }
+    }
+
+    /// A name two nodes answer for is ordered for **only if this node
+    /// knows who the others are**.
+    ///
+    /// An HTTP-01 token lives in the ordering node's own table, so with
+    /// two edges the authority has a fair chance of asking the one that
+    /// does not have it — one of five failures an hour, against an account
+    /// whose lock takes every other name on the node with it. The
+    /// challenge travels now, and what this guards is the state where it
+    /// cannot: an edge errand from a version that carried no co-edges.
+    #[tokio::test]
+    async fn a_name_on_two_nodes_is_not_ordered_for_blind() {
+        let database = database().await;
+        let project = crate::infra::repositories::projects::create(&database, "shop")
+            .await
+            .expect("project");
+        let service = crate::infra::repositories::services::create(
+            &database,
+            &project.id,
+            "web",
+            "nginx:alpine",
+            &[],
+        )
+        .await
+        .expect("service");
+
+        // One node: nothing to refuse.
+        crate::infra::repositories::edges::set(
+            &database,
+            &service.id,
+            "shop.example.com",
+            &["nd-one".to_string()],
+        )
+        .await
+        .expect("one edge");
+        assert_eq!(
+            shared_with_other_nodes(&database, &["shop.example.com".to_string()]).await,
+            None
+        );
+
+        // Two, and this node knows both: nothing to refuse, because the
+        // token will be published to the other before the authority is
+        // told to look.
+        crate::infra::repositories::edges::set(
+            &database,
+            &service.id,
+            "shop.example.com",
+            &["nd-one".to_string(), "nd-two".to_string()],
+        )
+        .await
+        .expect("two edges");
+        assert_eq!(
+            shared_with_other_nodes(&database, &["shop.example.com".to_string()]).await,
+            None,
+            "the challenge travels, so two nodes is not a refusal"
+        );
+
+        // And the state that is still one: the name is served by two and
+        // this node knows of none. That is what an edge errand written by
+        // a version with no `peers` field leaves behind, simulated here
+        // by taking the rows away — there is no other way to be in it.
+        database
+            .write(|connection| {
+                connection.execute("DELETE FROM edge_peer", ())?;
+                Ok(())
+            })
+            .await
+            .expect("forget who they are");
+        let reason = shared_with_other_nodes(&database, &["shop.example.com".to_string()])
+            .await
+            .expect("refused");
+        assert!(reason.contains("shop.example.com"), "{reason}");
+        assert!(reason.contains("2 nodes"), "{reason}");
+        // And it says what to do about it, because a name with no
+        // certificate still has to be served.
+        assert!(reason.contains("Deploy the service again"), "{reason}");
+    }
+
+    /// A name this node serves for another one has no port row here —
+    /// the route arrived on an edge errand — so reading only the `port`
+    /// table left it answering HTTPS with the local authority's
+    /// certificate for ever, which is the one thing that node was asked
+    /// not to do.
+    #[tokio::test]
+    async fn a_name_served_for_another_node_gets_a_certificate_too() {
+        let database = database().await;
+        let mut config = Config::default();
+        config.node.domain = Some("node.example.com".into());
+
+        crate::infra::network::claim(&database, "app.example.com", Some("nd-elsewhere"))
+            .await
+            .expect("claim")
+            .expect("granted");
+
+        assert_eq!(
+            wanted_names(&database, &config).await,
+            vec![
+                "app.example.com".to_string(),
+                "node.example.com".to_string()
+            ]
+        );
+    }
+
+    /// An organisation's console name is asked for like the node's own.
+    ///
+    /// **Found on the node**, the first time one was given a domain:
+    /// `routing::sync` wrote the route, the edge answered on it, and it
+    /// answered with the local authority's certificate — which does not
+    /// carry that name. The browser calls that impersonation, not
+    /// untrusted, and it is right to.
+    ///
+    /// Nothing above finds it because every other source reads the names
+    /// of *services*: `edges::of_node` is the set this node was chosen
+    /// to serve, and an organisation's console is not a service. It is
+    /// this node answering for a second frontier, which makes it a
+    /// control-plane name like the node's own domain — the one thing
+    /// this function already knew how to want.
+    #[tokio::test]
+    async fn an_organisations_console_name_is_wanted_like_the_nodes_own() {
+        let database = database().await;
+        let mut config = Config::default();
+        config.node.domain = Some("node.example.com".into());
+
+        let tenant = crate::infra::repositories::tenants::create(&database, "Acme")
+            .await
+            .expect("tenant");
+        // Until it has a domain there is nothing to want, and a tenant
+        // with none is the ordinary case.
+        assert_eq!(
+            wanted_names(&database, &config).await,
+            vec!["node.example.com".to_string()]
+        );
+
+        crate::infra::repositories::tenants::set_domain(
+            &database,
+            &tenant.id,
+            Some("acme.example.com"),
+        )
+        .await
+        .expect("domain");
+        assert_eq!(
+            wanted_names(&database, &config).await,
+            vec![
+                "acme.example.com".to_string(),
+                "node.example.com".to_string()
+            ],
+            "the name the route already answers on was never asked for"
+        );
+    }
+
+    /// The node's own domain can also be a service's hostname, and
+    /// `dedup` only removes *adjacent* repeats — so an unsorted list
+    /// ordered two certificates for one name.
+    #[tokio::test]
+    async fn one_name_is_wanted_once_however_many_places_it_appears() {
+        let database = database().await;
+        let mut config = Config::default();
+        config.node.domain = Some("node.example.com".into());
+
+        let project = crate::infra::repositories::projects::create(&database, "demo")
+            .await
+            .expect("project");
+        let service = crate::infra::repositories::services::create(
+            &database,
+            &project.id,
+            "web",
+            "alpine:3.23",
+            &[],
+        )
+        .await
+        .expect("service");
+        crate::infra::repositories::ports::create(
+            &database,
+            &service.id,
+            80,
+            false,
+            Some("node.example.com"),
+            &[],
+        )
+        .await
+        .expect("port");
+
+        assert_eq!(
+            wanted_names(&database, &config).await,
+            vec!["node.example.com".to_string()]
+        );
+    }
+
+    /// Without a domain there is nothing a public CA could validate,
+    /// and `ensure` must say so quietly rather than erroring.
+    #[tokio::test]
+    async fn without_a_domain_nothing_is_attempted() {
+        let database = database().await;
+        let resolver = certs::CertResolver::new();
+        let config = Config::default();
+
+        assert!(!ensure_all(&database, &config, &resolver)
+            .await
+            .expect("ensure"));
+    }
+
+    #[tokio::test]
+    async fn a_disabled_acme_is_not_attempted() {
+        let database = database().await;
+        let resolver = certs::CertResolver::new();
+        let mut config = Config::default();
+        config.node.domain = Some("node.example.com".into());
+        config.acme.disabled = true;
+
+        assert!(!ensure_all(&database, &config, &resolver)
+            .await
+            .expect("ensure"));
+    }
+
+    /// A current ACME certificate must not trigger an order — that is
+    /// what keeps the renewal loop from burning a rate limit.
+    #[tokio::test]
+    async fn a_fresh_certificate_is_left_alone() {
+        let database = database().await;
+        let resolver = certs::CertResolver::new();
+        let mut config = Config::default();
+        config.node.domain = Some("node.example.com".into());
+
+        // A stored certificate from the configured authority, not
+        // close to expiring. `ensure` must return without talking to
+        // anyone — if it tried, this test would hang or fail on the
+        // network.
+        certs::save(&database, &stored_from(config.acme.directory_url(), 60))
+            .await
+            .expect("save");
+
+        assert!(!ensure_all(&database, &config, &resolver)
+            .await
+            .expect("ensure"));
+    }
+
+    fn stored_from(issuer: &str, days_left: i64) -> StoredCert {
+        StoredCert {
+            domain: "node.example.com".into(),
+            names: vec!["node.example.com".into()],
+            cert_pem: "-----BEGIN CERTIFICATE-----\nQUJD\n-----END CERTIFICATE-----\n".into(),
+            key_pem: String::new(),
+            issuer: issuer.to_string(),
+            not_after: now_ms() + days_left * 86_400_000,
+            source: certs::Source::parse(issuer),
+        }
+    }
+
+    /// The bug this test exists for, found on a real node: a node
+    /// tested against staging and then switched to production kept
+    /// serving the staging certificate, because both were tagged
+    /// "acme" and it had not expired. Nothing errored and nothing
+    /// logged; every browser rejected the site.
+    ///
+    /// `ensure` has to notice the authority changed. It cannot reach
+    /// the network here, so "noticed" is observed as an error from the
+    /// attempt rather than a silent `Ok(false)`.
+    #[tokio::test]
+    async fn switching_authority_does_not_keep_the_old_certificate() {
+        let database = database().await;
+        let resolver = certs::CertResolver::new();
+        let mut config = Config::default();
+        config.node.domain = Some("node.example.com".into());
+        config.acme.directory = "production".into();
+
+        let staging = "https://acme-staging-v02.api.letsencrypt.org/directory";
+        certs::save(&database, &stored_from(staging, 60))
+            .await
+            .expect("save");
+
+        // Production is configured and a *staging* certificate is
+        // stored, so this must try to reissue. It fails — there is no
+        // network in a test — and that failure is the evidence: the
+        // early return would have been `Ok(false)`.
+        let outcome = ensure_all(&database, &config, &resolver).await;
+        assert!(
+            outcome.is_err(),
+            "a certificate from a different authority must not be kept: {outcome:?}"
+        );
+    }
+
+    /// A certificate can be current, from the right authority, and wrong.
+    ///
+    /// A database's read pool joined the names after its certificate was
+    /// issued, so the stored one named the primary alone — and every read
+    /// failed `verify-full` against a certificate with three months left.
+    /// Freshness cannot see that, and the local path had always asked
+    /// (`ensure_self_signed` is convergent on the name set) while the ACME
+    /// path did not.
+    ///
+    /// It cannot reach the network here, so "noticed" is an error from the
+    /// attempt rather than a silent `Ok(false)` — the same evidence the
+    /// authority-switch test uses.
+    #[tokio::test]
+    async fn a_certificate_that_covers_too_little_is_reissued() {
+        let database = database().await;
+        let resolver = certs::CertResolver::new();
+        let mut config = Config::default();
+        config.node.domain = Some("localhost".into());
+        config.acme.directory = "staging".into();
+
+        // A managed database, so its key wants two names.
+        let project = crate::infra::repositories::projects::create(&database, "db-test")
+            .await
+            .expect("project");
+        let (service, _) = crate::features::databases::create_database_command::CreateDatabase {
+            project_id: &project.id,
+            name: "orders",
+            version: "17",
+            memory_limit: 256 * 1024 * 1024,
+        }
+        .run(&database)
+        .await
+        .expect("created");
+        let port = crate::infra::repositories::ports::of_service(&database, &service.id)
+            .await
+            .expect("ports")
+            .pop()
+            .expect("a database has one");
+        crate::infra::repositories::ports::set_hostname(&database, &port.id, Some("localhost"))
+            .await
+            .expect("named");
+
+        // Stored: current, right authority, and naming only the primary.
+        let mut stored = stored_from(config.acme.directory_url(), 60);
+        stored.domain = "localhost".into();
+        stored.names = vec!["localhost".into()];
+        certs::save(&database, &stored).await.expect("save");
+
+        let outcome = ensure(&database, &config, &resolver, "localhost").await;
+        assert!(
+            outcome.is_err(),
+            "a certificate missing the pool's name must not be kept: {outcome:?}"
+        );
+    }
+
+    /// An attempt is spent whether or not it could pass, so it is not
+    /// made.
+    ///
+    /// Let's Encrypt counts failed validations and locks the account at
+    /// five in an hour — for every name on the node, not only the one
+    /// that moved. This loop retries twice a day for ever, so a domain
+    /// that expired or a record somebody repointed was two burnt attempts
+    /// a day against an account shared with every working name.
+    ///
+    /// The question was already being asked, once, by the form where a
+    /// hostname is typed. A hostname is typed once; this runs for as long
+    /// as the node does.
+    #[tokio::test]
+    async fn a_name_that_does_not_point_here_is_never_ordered() {
+        let database = database().await;
+        let resolver = certs::CertResolver::new();
+        let mut config = Config::default();
+        // `localhost` resolves, so there is something to compare against;
+        // `.invalid` is reserved by RFC 2606 so that it never can.
+        config.node.domain = Some("localhost".into());
+        config.acme.directory = "staging".into();
+
+        match ensure(&database, &config, &resolver, "nothing.invalid").await {
+            // The refusal names the reason and reads like the form's,
+            // because it is the form's — one explanation of what DNS
+            // said, wherever somebody meets it.
+            Err(AcmeError::Refused(reason)) => assert!(
+                reason.contains("does not resolve"),
+                "the reason has to be the one somebody can act on: {reason}"
+            ),
+            other => panic!("it asked the authority anyway: {other:?}"),
+        }
+    }
+
+    /// The same check must not reissue on every pass when nothing
+    /// changed — that is what keeps the renewal loop off the rate
+    /// limit.
+    #[tokio::test]
+    async fn the_same_authority_is_left_alone() {
+        let database = database().await;
+        let resolver = certs::CertResolver::new();
+        let mut config = Config::default();
+        config.node.domain = Some("node.example.com".into());
+        config.acme.directory = "staging".into();
+
+        certs::save(&database, &stored_from(config.acme.directory_url(), 60))
+            .await
+            .expect("save");
+
+        assert!(!ensure_all(&database, &config, &resolver)
+            .await
+            .expect("ensure"));
+    }
+
+    #[test]
+    fn the_directory_alias_resolves() {
+        let mut config = Config::default();
+        assert!(config.acme.directory_url().contains("acme-v02"));
+        assert!(!config.acme.is_staging(), "production is the default");
+
+        config.acme.directory = "staging".into();
+        assert!(config.acme.is_staging());
+
+        config.acme.directory = "https://example.test/dir".into();
+        assert_eq!(config.acme.directory_url(), "https://example.test/dir");
+        assert!(!config.acme.is_staging());
+    }
+}

@@ -1,12 +1,12 @@
 use hypertext::prelude::*;
 
-use crate::deploy::quotas::Charged;
-use crate::entities::account::Account;
-use crate::entities::project::Project;
-use crate::entities::tenant::Tenant;
+use crate::domain::entities::account::Account;
+use crate::domain::entities::project::Project;
+use crate::domain::entities::tenant::Tenant;
 use crate::features::organisations::organisation_quota_component::quota_card;
-use crate::views::layouts::layout;
-use crate::views::texts::language::t;
+use crate::infra::deploy::quotas::Charged;
+use crate::web::views::layouts::layout;
+use crate::web::views::texts::language::t;
 
 /// One organisation, as the node's operator sees it.
 ///

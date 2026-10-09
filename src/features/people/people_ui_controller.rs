@@ -6,13 +6,13 @@ use hypertext::prelude::*;
 use wabot::prelude::*;
 use wabot::ui::hypertext::IntoView;
 
-use crate::accounts::{self, invitations};
-use crate::repositories::access;
+use crate::infra::accounts::{self, invitations};
+use crate::infra::repositories::access;
 
-use crate::console::auth::{signed_in, JoinPage, PageQuery, SessionMiddleware};
-use crate::console::ConsoleState;
-use crate::views::layouts::layout;
-use crate::views::layouts::shell::{Area, Frame};
+use crate::web::console::auth::{signed_in, JoinPage, PageQuery, SessionMiddleware};
+use crate::web::console::ConsoleState;
+use crate::web::views::layouts::layout;
+use crate::web::views::layouts::shell::{Area, Frame};
 
 #[injectable]
 pub struct PeopleUiController {
@@ -32,7 +32,7 @@ impl PeopleUiController {
         let Some(account) = signed_in(&self.auth) else {
             return Ok(Redirect::found("/sign-in").into());
         };
-        if !crate::authz::node_user::manages_the_machine(&account) {
+        if !crate::domain::authz::node_user::manages_the_machine(&account) {
             return Ok(Redirect::found("/").into());
         }
 
@@ -45,7 +45,7 @@ impl PeopleUiController {
 
         let invitations = invitations::all(&self.state.database).await?;
         let projects = access::projects_for(&self.state.database, &account).await?;
-        let now = crate::console::now_ms();
+        let now = crate::web::console::now_ms();
 
         let frame = Frame::new(&account, Area::Settings, &projects, None, "/people");
         layout::head("People");
@@ -60,7 +60,7 @@ impl PeopleUiController {
             now,
             query_error: query.error.as_deref(),
         };
-        let body = crate::views::texts::language::scoped(account.language, || {
+        let body = crate::web::views::texts::language::scoped(account.language, || {
             crate::features::people::node_user_people_page::render(&page)
                 .render()
                 .into_inner()

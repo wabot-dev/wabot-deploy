@@ -10,14 +10,14 @@ use wabot::rest::axum::extract::Request;
 use wabot::rest::axum::response::Response;
 use wabot::rest::RestResult;
 
-use crate::accounts::sessions;
-use crate::values::roles::{NodeRole, ProjectRole};
+use crate::domain::values::roles::{NodeRole, ProjectRole};
+use crate::infra::accounts::sessions;
 
-use crate::console::auth::{
+use crate::web::console::auth::{
     back_with_error, field, read_form, see_other, see_other_with_cookie, signed_in,
     SessionMiddleware,
 };
-use crate::console::ConsoleState;
+use crate::web::console::ConsoleState;
 
 /// The forms behind those pages.
 #[injectable]
@@ -35,7 +35,7 @@ impl PeopleRestController {
         let Some(account) = signed_in(&self.auth) else {
             return Ok(see_other("/sign-in"));
         };
-        if !crate::authz::node_user::manages_the_machine(&account) {
+        if !crate::domain::authz::node_user::manages_the_machine(&account) {
             return Ok(see_other("/"));
         }
         let form = match read_form(request).await {
@@ -89,12 +89,12 @@ impl PeopleRestController {
         let Some(account) = signed_in(&self.auth) else {
             return Ok(see_other("/sign-in"));
         };
-        if !crate::authz::node_user::manages_the_machine(&account) {
+        if !crate::domain::authz::node_user::manages_the_machine(&account) {
             return Ok(see_other("/"));
         }
 
         let path = request.uri().path().to_string();
-        let Some(id) = crate::console::auth::segments(&path).get(2).cloned() else {
+        let Some(id) = crate::web::console::auth::segments(&path).get(2).cloned() else {
             return Ok(see_other("/people"));
         };
 
@@ -117,11 +117,11 @@ impl PeopleRestController {
         let Some(account) = signed_in(&self.auth) else {
             return Ok(see_other("/sign-in"));
         };
-        if !crate::authz::node_user::manages_the_machine(&account) {
+        if !crate::domain::authz::node_user::manages_the_machine(&account) {
             return Ok(see_other("/"));
         }
         let path = request.uri().path().to_string();
-        let Some(id) = crate::console::auth::segments(&path)
+        let Some(id) = crate::web::console::auth::segments(&path)
             .get(1)
             .map(|id| id.to_string())
         else {
@@ -156,11 +156,11 @@ impl PeopleRestController {
         let Some(account) = signed_in(&self.auth) else {
             return Ok(see_other("/sign-in"));
         };
-        if !crate::authz::node_user::manages_the_machine(&account) {
+        if !crate::domain::authz::node_user::manages_the_machine(&account) {
             return Ok(see_other("/"));
         }
         let path = request.uri().path().to_string();
-        let Some(id) = crate::console::auth::segments(&path)
+        let Some(id) = crate::web::console::auth::segments(&path)
             .get(1)
             .map(|id| id.to_string())
         else {
@@ -184,7 +184,7 @@ impl PeopleRestController {
     #[raw]
     async fn join(&self, request: Request) -> RestResult<Response> {
         let path = request.uri().path().to_string();
-        let Some(token) = crate::console::auth::segments(&path)
+        let Some(token) = crate::web::console::auth::segments(&path)
             .get(1)
             .map(|id| id.to_string())
         else {
@@ -199,7 +199,7 @@ impl PeopleRestController {
 
         let account = match crate::features::people::guest_join_as_node_user::run(
             &self.state.database,
-            &crate::console::auth::joining(&token, &form),
+            &crate::web::console::auth::joining(&token, &form),
         )
         .await
         {
@@ -222,9 +222,9 @@ impl PeopleRestController {
 
 #[cfg(test)]
 mod tests {
-    use crate::accounts::{self, invitations};
-    use crate::console::tests::Console;
-    use crate::repositories::access;
+    use crate::infra::accounts::{self, invitations};
+    use crate::infra::repositories::access;
+    use crate::web::console::tests::Console;
     use wabot::rest::axum::http::StatusCode;
 
     /// Create an invitation the way the console does, and pull the

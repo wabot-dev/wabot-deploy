@@ -1,10 +1,10 @@
 use wabot::sqlite::SqliteDatabase;
 
-use crate::config::Config;
-use crate::entities::project::Project;
-use crate::entities::service::Service;
+use crate::domain::entities::project::Project;
+use crate::domain::entities::service::Service;
 use crate::features::databases::database_named_response::DatabaseNamedResponse;
-use crate::repositories::ports;
+use crate::infra::config::Config;
+use crate::infra::repositories::ports;
 
 pub struct NameDatabase<'a> {
     pub project: &'a Project,
@@ -18,17 +18,18 @@ impl NameDatabase<'_> {
         database: &SqliteDatabase,
         config: &Config,
     ) -> Result<DatabaseNamedResponse, String> {
-        let typed = crate::values::hostname::Hostname::parse(self.typed)
+        let typed = crate::domain::values::hostname::Hostname::parse(self.typed)
             .as_str()
             .to_string();
         if typed.is_empty() {
             return Err("a database is reached by name, so it has to have one".into());
         }
 
-        let was = crate::deploy::certificate_names(database, config, self.project, self.service)
-            .await
-            .into_iter()
-            .next();
+        let was =
+            crate::infra::deploy::certificate_names(database, config, self.project, self.service)
+                .await
+                .into_iter()
+                .next();
 
         let Some(port) = ports::of_service(database, &self.service.id)
             .await

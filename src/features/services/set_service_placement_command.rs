@@ -2,12 +2,12 @@ use std::collections::BTreeSet;
 
 use wabot::sqlite::SqliteDatabase;
 
-use crate::config::Config;
-use crate::deploy::quotas;
-use crate::deploy::Deployer;
-use crate::entities::project::Project;
-use crate::entities::service::Service;
-use crate::repositories::replicas;
+use crate::domain::entities::project::Project;
+use crate::domain::entities::service::Service;
+use crate::infra::config::Config;
+use crate::infra::deploy::quotas;
+use crate::infra::deploy::Deployer;
+use crate::infra::repositories::replicas;
 use wabot::prelude::Container;
 
 /// Where copies added by the count control go.
@@ -146,7 +146,7 @@ async fn room_on(
     service: &Service,
     node: &str,
 ) -> Result<(), String> {
-    let Some(row) = crate::network::find(database, node)
+    let Some(row) = crate::infra::network::find(database, node)
         .await
         .map_err(|error| error.to_string())?
     else {
@@ -181,7 +181,7 @@ async fn resize(
     on: &Placement,
 ) -> Result<BTreeSet<String>, String> {
     let service_id = &service.id;
-    let placements = crate::repositories::replicas::of_service(database, service_id)
+    let placements = crate::infra::repositories::replicas::of_service(database, service_id)
         .await
         .map_err(|error| error.to_string())?;
 
@@ -219,7 +219,7 @@ async fn resize(
                     .forget_replica(project, service, replica)
                     .await
                     .map_err(|error| error.to_string())?,
-                false => crate::repositories::replicas::remove(database, &replica.id)
+                false => crate::infra::repositories::replicas::remove(database, &replica.id)
                     .await
                     .map_err(|error| error.to_string())?,
             }
@@ -231,7 +231,7 @@ async fn resize(
     // `1..=wanted` would put slot 2 back and undo the removal that
     // just happened — which is exactly what it did.
     let before: std::collections::BTreeSet<String> =
-        crate::repositories::replicas::of_service(database, service_id)
+        crate::infra::repositories::replicas::of_service(database, service_id)
             .await
             .map_err(|error| error.to_string())?
             .into_iter()
@@ -240,7 +240,7 @@ async fn resize(
 
     match on {
         Placement::Named(node) => {
-            crate::repositories::replicas::ensure_count(
+            crate::infra::repositories::replicas::ensure_count(
                 database,
                 service_id,
                 wanted,
@@ -256,7 +256,7 @@ async fn resize(
             // form was submitted, which is the opposite of spreading
             // them.
             let candidates = deployer.candidates(service).await;
-            let want = crate::deploy::planner::Want {
+            let want = crate::infra::deploy::planner::Want {
                 memory: service.memory_limit,
                 cpu: service.cpu_millicores,
                 // A database's copies exist to be on different
@@ -264,17 +264,17 @@ async fn resize(
                 spread_required: service.kind.is_managed(),
             };
             let service_id_owned = service_id.clone();
-            crate::repositories::replicas::ensure_count_where(
+            crate::infra::repositories::replicas::ensure_count_where(
                 database,
                 service_id,
                 wanted,
                 |existing| {
-                    let taken: Vec<&crate::entities::replica::Replica> = existing
+                    let taken: Vec<&crate::domain::entities::replica::Replica> = existing
                         .iter()
                         .filter(|replica| replica.service_id == service_id_owned)
                         .filter(|replica| !replica.evicted())
                         .collect();
-                    let updated: Vec<crate::deploy::planner::Candidate> = candidates
+                    let updated: Vec<crate::infra::deploy::planner::Candidate> = candidates
                         .iter()
                         .cloned()
                         .map(|mut candidate| {
@@ -286,11 +286,13 @@ async fn resize(
                             candidate
                         })
                         .collect();
-                    match crate::deploy::planner::choose(&updated, want) {
-                        crate::deploy::planner::Choice::Chosen { node, why } => {
-                            Ok((node, crate::entities::replica::Placed::Planner, Some(why)))
-                        }
-                        crate::deploy::planner::Choice::Nowhere(reason) => Err(reason),
+                    match crate::infra::deploy::planner::choose(&updated, want) {
+                        crate::infra::deploy::planner::Choice::Chosen { node, why } => Ok((
+                            node,
+                            crate::domain::entities::replica::Placed::Planner,
+                            Some(why),
+                        )),
+                        crate::infra::deploy::planner::Choice::Nowhere(reason) => Err(reason),
                     }
                 },
             )
@@ -301,7 +303,7 @@ async fn resize(
 
     // Which machines are newly holding one, so the caller tells them.
     Ok(
-        crate::repositories::replicas::of_service(database, service_id)
+        crate::infra::repositories::replicas::of_service(database, service_id)
             .await
             .map_err(|error| error.to_string())?
             .into_iter()
@@ -325,7 +327,7 @@ async fn dispatch(
     touched: BTreeSet<String>,
 ) -> Result<(), String> {
     let (database, deployer, container) = (on.database, on.deployer, on.container);
-    let placements = crate::repositories::replicas::of_service(database, &service.id)
+    let placements = crate::infra::repositories::replicas::of_service(database, &service.id)
         .await
         .map_err(|error| error.to_string())?;
 
@@ -356,7 +358,7 @@ async fn dispatch(
         // obeying it starts a Postgres with no volume, no engine
         // row and no TLS — initialising into a layer thrown away at
         // the next deployment, and looking like it worked. Its own
-        // errand carries the rest, and `crate::deploy::standbys::dispatch` queues
+        // errand carries the rest, and `crate::infra::deploy::standbys::dispatch` queues
         // it after the primary deploys, which is when the address it
         // has to carry exists.
         //
@@ -408,15 +410,16 @@ async fn dispatch(
 async fn send_there(
     database: &SqliteDatabase,
     config: &Config,
-    project: &crate::entities::project::Project,
+    project: &crate::domain::entities::project::Project,
     service: &Service,
     node_id: &str,
     by: &str,
     slots: Vec<u32>,
 ) -> Result<(), String> {
-    let Some(registry) = crate::values::image_reference::ImageReference::parse(&service.image)
-        .ok()
-        .and_then(|r| r.host())
+    let Some(registry) =
+        crate::domain::values::image_reference::ImageReference::parse(&service.image)
+            .ok()
+            .and_then(|r| r.host())
     else {
         return Err(
             "that image does not name a registry, so there is nothing to pull it from".into(),
@@ -436,10 +439,10 @@ async fn send_there(
     // No credential is the honest payload for a registry that
     // serves anybody: the far node pulls anonymously, which is what
     // it would do with a credential Docker Hub does not know.
-    let mine = crate::node::settings::domain(database, config).await;
+    let mine = crate::infra::node::settings::domain(database, config).await;
     let secret = match mine.as_deref() == Some(registry.as_str()) {
         true => Some(
-            crate::repositories::tokens::create(
+            crate::infra::repositories::tokens::create(
                 database,
                 &project.id,
                 &format!("errand to {node_id}"),
@@ -452,7 +455,7 @@ async fn send_there(
         false => None,
     };
 
-    let payload = serde_json::to_value(crate::network::errand::Host {
+    let payload = serde_json::to_value(crate::infra::network::errand::Host {
         project: project.name.clone(),
         service: service.name.clone(),
         image: service.image.clone(),
@@ -468,7 +471,7 @@ async fn send_there(
         // empty when no port has a hostname: nothing would proxy to
         // that service anyway, so a port there would be one nobody
         // asked for.
-        port: crate::repositories::ports::of_service(database, &service.id)
+        port: crate::infra::repositories::ports::of_service(database, &service.id)
             .await
             .map_err(|error| error.to_string())?
             .into_iter()
@@ -488,10 +491,10 @@ async fn send_there(
     })
     .map_err(|error| error.to_string())?;
 
-    crate::network::errand::queue(
+    crate::infra::network::errand::queue(
         database,
         node_id,
-        crate::network::errand::Kind::Host,
+        crate::infra::network::errand::Kind::Host,
         &payload,
     )
     .await
@@ -527,7 +530,7 @@ async fn send_there(
 pub(crate) async fn dispatch_edges(
     deployer: &Deployer,
     service: &Service,
-    _placements: &[crate::entities::replica::Replica],
+    _placements: &[crate::domain::entities::replica::Replica],
 ) -> Result<(), String> {
     deployer.tell_edges(service).await;
     // And this node's own, whether or not it was chosen: the choice
@@ -538,7 +541,7 @@ pub(crate) async fn dispatch_edges(
 }
 
 async fn enqueue(container: &Container, service_id: &str, release_id: Option<&str>) {
-    let command = crate::deploy::jobs::DeployService {
+    let command = crate::infra::deploy::jobs::DeployService {
         service_id: service_id.to_string(),
         release_id: release_id.map(str::to_string),
     };

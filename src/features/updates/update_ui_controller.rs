@@ -7,13 +7,13 @@ use serde::Deserialize;
 use wabot::prelude::*;
 use wabot::ui::hypertext::IntoView;
 
-use crate::repositories::access;
-use crate::update::runs::{self};
+use crate::infra::repositories::access;
+use crate::infra::update::runs::{self};
 
-use crate::console::auth::{signed_in, SessionMiddleware};
-use crate::console::ConsoleState;
-use crate::views::layouts::layout;
-use crate::views::layouts::shell::{Area, Frame};
+use crate::web::console::auth::{signed_in, SessionMiddleware};
+use crate::web::console::ConsoleState;
+use crate::web::views::layouts::layout;
+use crate::web::views::layouts::shell::{Area, Frame};
 
 #[derive(Debug, Deserialize, Validate)]
 pub struct UpdatesPage {
@@ -43,7 +43,7 @@ impl UpdateUiController {
         };
         // Updating the node is the node's business, which belongs to
         // whoever runs it.
-        if !crate::authz::node_user::manages_the_machine(&account) {
+        if !crate::domain::authz::node_user::manages_the_machine(&account) {
             return Ok(Redirect::found("/").into());
         }
 
@@ -62,7 +62,7 @@ impl UpdateUiController {
         // A failure to reach GitHub is not a failure of the page: this
         // node runs fine without ever asking, and the page still has
         // to say what version it is and what happened last time.
-        let available = crate::update::availability(&self.state.catalogue).await;
+        let available = crate::infra::update::availability(&self.state.catalogue).await;
 
         layout::head("Updates");
         let frame = Frame::new(&account, Area::Settings, &projects, None, "/updates");
@@ -75,7 +75,7 @@ impl UpdateUiController {
             query_error: query.error.as_deref(),
             query_started: query.started.as_deref(),
         };
-        let body = crate::views::texts::language::scoped(account.language, || {
+        let body = crate::web::views::texts::language::scoped(account.language, || {
             crate::features::updates::node_user_updates_page::render(&page)
                 .render()
                 .into_inner()
@@ -92,7 +92,7 @@ impl UpdateUiController {
         let Some(account) = signed_in(&self.auth) else {
             return Ok(Redirect::found("/sign-in").into());
         };
-        if !crate::authz::node_user::manages_the_machine(&account) {
+        if !crate::domain::authz::node_user::manages_the_machine(&account) {
             return Ok(Redirect::found("/").into());
         }
 
@@ -101,17 +101,18 @@ impl UpdateUiController {
             Err(error) => {
                 let back = format!(
                     "/updates?{}",
-                    crate::console::auth::encode("error", &error.to_string())
+                    crate::web::console::auth::encode("error", &error.to_string())
                 );
                 return Ok(Redirect::found(back).into());
             }
         };
-        let Some(release) = crate::update::github::find(&releases, &query.tag).cloned() else {
+        let Some(release) = crate::infra::update::github::find(&releases, &query.tag).cloned()
+        else {
             return Ok(Redirect::found("/updates").into());
         };
 
         let projects = access::projects_for(&self.state.database, &account).await?;
-        let current = crate::update::github::Version::current();
+        let current = crate::infra::update::github::Version::current();
 
         layout::head(&format!("wabot-deploy {}", release.version));
         let frame = Frame::new(&account, Area::Settings, &projects, None, "/updates");
@@ -122,7 +123,7 @@ impl UpdateUiController {
             current,
             query_error: query.error.as_deref(),
         };
-        let body = crate::views::texts::language::scoped(account.language, || {
+        let body = crate::web::views::texts::language::scoped(account.language, || {
             crate::features::updates::node_user_release_page::render(&page)
                 .render()
                 .into_inner()

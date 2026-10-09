@@ -1,11 +1,11 @@
 use wabot::sqlite::SqliteDatabase;
 
-use crate::authz::node_user;
-use crate::entities::account::Account;
-use crate::entities::project::Project;
+use crate::domain::authz::node_user;
+use crate::domain::entities::account::Account;
+use crate::domain::entities::project::Project;
+use crate::domain::values::roles::Access;
+use crate::domain::values::roles::ProjectRole;
 use crate::features::projects::add_project_member_command::AddProjectMember;
-use crate::values::roles::Access;
-use crate::values::roles::ProjectRole;
 
 pub async fn run(
     database: &SqliteDatabase,

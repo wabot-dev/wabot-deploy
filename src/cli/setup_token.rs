@@ -1,11 +1,11 @@
 //! `wabot-deploy setup-token` — mint one, print it, forget it.
 
-use crate::config::Config;
+use crate::infra::config::Config;
 
 pub async fn run(config: Config) -> anyhow::Result<i32> {
-    let database = crate::db::open(&config.database_path()).await?;
+    let database = crate::infra::db::open(&config.database_path()).await?;
 
-    if crate::accounts::any_account(&database).await? {
+    if crate::infra::accounts::any_account(&database).await? {
         println!(
             "This node already has an administrator. Sign in at {}.",
             url(&config)
@@ -17,7 +17,7 @@ pub async fn run(config: Config) -> anyhow::Result<i32> {
         return Ok(0);
     }
 
-    let token = crate::accounts::issue_setup_token(&database).await?;
+    let token = crate::infra::accounts::issue_setup_token(&database).await?;
     database.close().await?;
 
     print(&config, &token);
@@ -59,7 +59,7 @@ pub fn print(config: &Config, token: &str) {
 /// it is one somebody will copy into a browser and wonder about.
 fn url(config: &Config) -> String {
     let host = config.node.domain.clone().unwrap_or_else(|| {
-        crate::deploy::dns::outbound_address()
+        crate::infra::deploy::dns::outbound_address()
             .map(|address| address.to_string())
             .unwrap_or_else(|| "localhost".into())
     });
@@ -102,7 +102,7 @@ mod tests {
         // On a machine with a route out, that is its own address rather
         // than loopback. On one without, loopback is all there is and
         // the reader is necessarily sitting at it.
-        match crate::deploy::dns::outbound_address() {
+        match crate::infra::deploy::dns::outbound_address() {
             Some(address) => assert!(printed.contains(&address.to_string()), "{printed}"),
             None => assert!(printed.contains("localhost"), "{printed}"),
         }
