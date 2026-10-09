@@ -50,7 +50,7 @@ pub async fn run(database: &SqliteDatabase, account: &Account, person: &str) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::usecases::fixtures::organisation;
+    use crate::features::fixtures::organisation;
 
     #[tokio::test]
     async fn the_operator_hands_an_organisation_to_somebody_else() {

@@ -29,7 +29,7 @@ pub async fn run(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::usecases::fixtures::organisation;
+    use crate::features::fixtures::organisation;
 
     /// The page lists `of_scope(None)`, so it never offers one of an
     /// organisation's people. Before this use case existed the POST took

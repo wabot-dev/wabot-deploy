@@ -1,17 +1,9 @@
-//! What crosses a use case's boundary.
+//! The shapes more than one feature's requests and responses carry.
 //!
-//! Three kinds, and the split is which direction they travel:
-//!
-//! - `requests` — what a use case needs to be asked.
-//! - `responses` — what it hands back. Never an entity: an entity is a
-//!   model with rules and a life, and handing one to a page makes the
-//!   page a second place those rules can be read wrong.
-//! - the shared ones here, for shapes more than one request or response
-//!   carries.
-//!
-//! A feature with a folder under `src/features` keeps its own beside the
-//! use case, as `…_request.rs` and `…_response.rs`; what is here belongs
-//! to the features that have not moved yet, or to more than one.
+//! A use case's own request and response live beside it in its feature,
+//! as `…_request.rs` and `…_response.rs`. A response is never an entity:
+//! an entity is a model with rules and a life, and handing one to a page
+//! makes the page a second place those rules can be read wrong.
 //!
 //! **The same DTO crosses both boundaries.** A controller reads a form
 //! into a request and hands that request to the use case; the response
@@ -32,8 +24,6 @@
 //! conversion there, where the compiler says which field is missing.
 
 pub mod certificate_facts;
-pub mod requests;
-pub mod responses;
 
 #[cfg(test)]
 mod tests {
@@ -42,8 +32,8 @@ mod tests {
 
     use crate::tree::{kind_of, rust_files, Kind};
 
-    /// A shape a use case takes or hands back is a DTO, and it lives
-    /// here. It was not so once: six `Asked` structs and five outcomes
+    /// A shape a use case takes or hands back is a request or a response
+    /// in a file of its own. It was not so once: six `Asked` structs and five outcomes
     /// were declared beside the `run` that used them, which is why the
     /// two consoles' create-service handlers each built their own and a
     /// use case took a `HashMap` and a closure over it — a use case only
@@ -117,29 +107,5 @@ mod tests {
             found.is_empty(),
             "the controller builds the request; these read the form itself: {found:#?}"
         );
-    }
-
-    /// Both directories are wired into the tree. A DTO nobody declared
-    /// is a file that compiles nowhere and drifts silently — which is
-    /// how `attention.rs` was written, wired and left out with the suite
-    /// green.
-    #[test]
-    fn every_dto_written_is_a_dto_the_tree_knows_about() {
-        for (directory, listing) in [
-            ("src/dtos/requests", include_str!("requests/mod.rs")),
-            ("src/dtos/responses", include_str!("responses/mod.rs")),
-        ] {
-            for entry in fs::read_dir(directory).expect("the directory is there") {
-                let path = entry.expect("entry").path();
-                let name = path.file_name().unwrap_or_default().to_string_lossy();
-                let Some(module) = name.strip_suffix(".rs").filter(|_| name != "mod.rs") else {
-                    continue;
-                };
-                assert!(
-                    listing.contains(&format!("pub mod {module};")),
-                    "{directory}/{name} is not declared in its mod.rs"
-                );
-            }
-        }
     }
 }

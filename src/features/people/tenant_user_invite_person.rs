@@ -45,7 +45,7 @@ mod tests {
     use super::*;
     use crate::accounts;
     use crate::accounts::roles::{NodeRole, ProjectRole};
-    use crate::usecases::fixtures::organisation;
+    use crate::features::fixtures::organisation;
 
     fn asked() -> InvitePersonRequest {
         InvitePersonRequest {

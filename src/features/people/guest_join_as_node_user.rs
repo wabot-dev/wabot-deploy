@@ -35,9 +35,9 @@ pub async fn run(database: &SqliteDatabase, asked: &JoinRequest) -> Result<Accou
 mod tests {
     use super::*;
     use crate::accounts::roles::{NodeRole, ProjectRole};
+    use crate::features::fixtures::organisation;
     use crate::features::people::invite_person_request::InvitePersonRequest;
     use crate::features::people::{node_user_invite_person, tenant_user_invite_person};
-    use crate::usecases::fixtures::organisation;
 
     /// The link an organisation's invitation carries points at that
     /// organisation's own address. Before there was a door there it

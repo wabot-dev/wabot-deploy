@@ -47,7 +47,7 @@ pub async fn run(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::usecases::fixtures::organisation;
+    use crate::features::fixtures::organisation;
 
     fn asked(organisation: &str) -> InviteOwnerRequest {
         InviteOwnerRequest {

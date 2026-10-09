@@ -53,8 +53,9 @@ requests and responses go in its own folder under `src/features`, each
 named for what it is — §11. What every feature reads stays a layer of
 its own: `src/entities`, `src/repositories`, `src/values`,
 `src/policies`, and the console's shell in `src/console` and
-`src/views`. `src/usecases`, `src/commands` and `src/dtos` still hold
-what has not moved into a feature yet.
+`src/views`. What is left in `src/commands` and `src/dtos` is shared
+too — a command more than one feature calls, a shape more than one
+carries — beside the CLI's verbs, which are `src/commands`' as well.
 
 `platform` was a name for five of these at once, which is why the rules
 ended up wherever the first caller needed them. It is being taken apart.
@@ -172,7 +173,7 @@ operator" appeared before the fourth use case was written, and a fixture
 copied is a fixture that drifts: the file where somebody adds a second
 project is not the file the next test reads.
 
-`usecases::fixtures` is `#[cfg(test)]` and holds it once, returning a
+`features::fixtures` is `#[cfg(test)]` and holds it once, returning a
 struct with named fields rather than a tuple so a test takes the two
 people it needs and ignores the rest. It is not a use case and it breaks
 none of this: deleting a use case still deletes everything about it, and
@@ -651,9 +652,9 @@ checked at all.**
 The two ends of a use case are named shapes: a `_request.rs` and a
 `_response.rs` in its feature's folder, each holding a type named for
 its file — `CreateDatabaseRequest` in `create_database_request.rs`
-(§11). `src/dtos` holds the ones whose feature has not moved yet, and
-the shapes more than one feature carries. Never a form, never an
-argument list that grew, never an entity coming back out.
+(§11). `src/dtos` holds only the shapes more than one feature
+carries. Never a form, never an argument list that grew, never an
+entity coming back out.
 
 ```
 form ──▶ Controller ──▶ Request ──▶ UseCase ──▶ Response ──▶ Controller ──▶ View
@@ -720,7 +721,9 @@ cost this project five times:
 - `a_use_case_declares_no_shape_of_its_own`
 - `no_use_case_reads_a_form` — `HashMap`, `read_form`, `axum`,
   `form_urlencoded`
-- `every_dto_written_is_a_dto_the_tree_knows_about`
+- `every_file_in_a_feature_is_compiled`, which replaced
+  `every_dto_written_is_a_dto_the_tree_knows_about` when the last DTO
+  left `src/dtos/requests`
 - `a_request_or_a_response_is_named_for_its_file`
 
 The first two walk all of `src` and know a use case by its actor prefix,
@@ -876,5 +879,6 @@ the commands more than one feature calls, and the CLI's verbs.
   `qualified_name` out of `create_database_command.rs`. That dependency
   pointed the wrong way before the move; the move is what made it
   readable.
-- **Two layouts at once**, until the rest move — and a guard written in
-  the meantime has to read both.
+- **The shell keeps directories of its own.** `src/console` and
+  `src/views` hold what no single feature owns, so a guard that reads
+  everything that draws lists them beside `src/features`.

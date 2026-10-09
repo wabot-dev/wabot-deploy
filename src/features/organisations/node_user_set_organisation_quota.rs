@@ -30,7 +30,7 @@ pub async fn run(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::usecases::fixtures::organisation;
+    use crate::features::fixtures::organisation;
 
     #[tokio::test]
     async fn an_empty_ceiling_lifts_the_quota() {

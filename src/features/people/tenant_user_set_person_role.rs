@@ -28,7 +28,7 @@ pub async fn run(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::usecases::fixtures::organisation;
+    use crate::features::fixtures::organisation;
 
     #[tokio::test]
     async fn an_administrator_promotes_one_of_their_own() {

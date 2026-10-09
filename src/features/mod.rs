@@ -1,6 +1,8 @@
 pub mod access;
 pub mod backups;
 pub mod databases;
+#[cfg(test)]
+pub mod fixtures;
 pub mod network;
 pub mod node;
 pub mod organisations;
@@ -25,7 +27,8 @@ mod tests {
         let mut read = 0;
         let mut silent: Vec<String> = Vec::new();
         for path in rust_files(&["src/features"]) {
-            if path.file_name().is_some_and(|name| name == "mod.rs") {
+            let in_a_feature = path.parent() != Some(Path::new("src/features"));
+            if !in_a_feature || path.file_name().is_some_and(|name| name == "mod.rs") {
                 continue;
             }
             read += 1;
@@ -112,7 +115,12 @@ mod tests {
             let declared = std::fs::read_to_string(&listing)
                 .expect("every folder has a mod.rs")
                 .lines()
-                .any(|line| line.trim() == format!("pub mod {module};"));
+                .any(|line| {
+                    let line = line.trim();
+                    let line = line.strip_prefix("pub(crate) ").unwrap_or(line);
+                    let line = line.strip_prefix("pub ").unwrap_or(line);
+                    line == format!("mod {module};")
+                });
             if !declared {
                 undeclared.push(path.display().to_string());
             }

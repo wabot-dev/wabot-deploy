@@ -185,9 +185,9 @@ what is missing. Read-only; safe on a live node.
 
 | | |
 | --- | --- |
-| `src/cli.rs`, `src/commands/` | the verbs: `install`, `serve`, `doctor`, `join`, `setup-token`, `containerd` |
+| `src/cli.rs`, `src/commands/` | the verbs: `install`, `serve`, `doctor`, `join`, `setup-token`, `containerd` — and the commands more than one feature calls |
 | `src/features/` | one folder per feature — its use cases, commands, requests, responses, controllers, pages and words ([rule 11](docs/architecture-rules.md)) |
-| `src/usecases/`, `src/dtos/` | the same kinds, for the features that have not moved into a folder yet; their commands are still in `src/commands/` |
+| `src/dtos/` | the shapes more than one feature's requests and responses carry |
 | `src/entities/`, `src/values/`, `src/policies/`, `src/repositories/` | what every feature reads: the models, their rules, their rows |
 | `src/config.rs`, `src/db.rs`, `src/ledger.rs` | configuration, migrations, which install steps have run |
 | `src/api.rs` | `/healthz`, `/readyz` and the control-plane surface |
