@@ -321,6 +321,33 @@ after five failures.
 This is not the verification step. Containerd, systemd, CNI and ACME
 still have to run on a node — see the rule below.
 
+## Testing on a node of your own
+
+```sh
+scripts/vm.sh up          # an Alpine VM under Lima, this machine's architecture
+scripts/vm.sh deploy      # build for it; `install --self-signed` the first time, replace after
+scripts/vm.sh root …      # a root shell, or one command as root
+scripts/vm.sh reset       # throw it away
+```
+
+**This is how features are tested now**: a whole node — OpenRC,
+containerd, CNI, the registry a push lands in — on
+`https://localhost:9443`, with ACME off. Run the user's actions against
+it as a browser would, with a session made through `/setup` and the
+token `install` prints; push with `skopeo` inside the VM. Names resolve
+through the VM's `/etc/hosts`, which is what a private network's DNS
+would be.
+
+It found more than twenty breaks in its first afternoon, none of them
+visible to the tests, and most were the same thing: a sentence or a form
+saying something the machine did not agree with.
+
+Two things it cannot do. The network's control plane trusts only public
+roots, so **enrolment needs a public certificate** and is with ACME on
+the list of what a real node verifies. And on an Apple machine the VM is
+aarch64, which no release builds for, so the updates page reads "no build
+here" for every one — which is true.
+
 ## Working on the node
 
 ```sh
