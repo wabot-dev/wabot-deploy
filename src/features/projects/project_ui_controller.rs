@@ -51,12 +51,14 @@ impl ProjectUiController {
         // administrator's view: a member of one project has no business
         // being told about another's certificates, and every source here
         // is node-wide.
-        let concerns = match account.is_admin() {
-            true => crate::web::console::attention::gather(&self.state)
-                .await
-                .unwrap_or_default(),
-            false => Vec::new(),
-        };
+        let concerns = crate::features::node::node_user_see_what_needs_attention::run(
+            &self.state.database,
+            &self.state.config,
+            &self.state.deployer,
+            &account,
+        )
+        .await
+        .unwrap_or_default();
 
         // Whether this node originates work of its own. A node that does
         // not is somewhere resources live: it runs what it was asked to

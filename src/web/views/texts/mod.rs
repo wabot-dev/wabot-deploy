@@ -296,7 +296,7 @@ mod tests {
     /// The words a concern is labelled with are translated too.
     ///
     /// **The scan above cannot see them.** It looks for `t("…")`, and a
-    /// `Concern`'s `what` is a bare string moved into a field and put
+    /// `ConcernResponse`'s `what` is a bare string moved into a field and put
     /// through `language::word` where the card is drawn — deliberately,
     /// because it is chosen in one place and rendered in another. So
     /// every one of those was invisible to the guard that exists to
@@ -310,7 +310,7 @@ mod tests {
     /// one — the same lesson as the source list below, one level in.
     #[test]
     fn the_words_a_concern_is_labelled_with_are_translated() {
-        let source = &read("src/web/console/attention.rs");
+        let source = &read("src/features/node/node_user_see_what_needs_attention.rs");
         let mut missing = Vec::new();
         for (index, _) in source.match_indices("what: \"") {
             let rest = &source[index + 7..];

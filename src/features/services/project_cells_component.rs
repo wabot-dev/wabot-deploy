@@ -8,7 +8,7 @@
 //! three view components — the dependency pointing the wrong way, which
 //! is what splitting that file into its two controllers made
 //! unavoidable to notice. Nothing here reads the database; what does is
-//! `console::live`.
+//! `projects::live_component`.
 
 /// One replica, as its row reads.
 #[derive(serde::Serialize)]

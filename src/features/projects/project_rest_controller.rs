@@ -1,6 +1,6 @@
 //! What a project's forms post to.
 
-use crate::web::console::live::{edge_cells, name_cells, replica_cells, Live};
+use crate::features::projects::live_component::{edge_cells, name_cells, replica_cells, Live};
 use std::sync::Arc;
 
 use crate::features::services::service_state_component::{elsewhere_of, state_cell, where_it_runs};

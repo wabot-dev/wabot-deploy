@@ -28,54 +28,16 @@
 //! available. None of these is wrong; a page that cried about them would
 //! be a page whose red dot means "read me sometimes".
 
+use std::sync::Arc;
+
+use wabot::sqlite::SqliteDatabase;
+
+use crate::domain::authz::node_user;
+use crate::domain::entities::account::Account;
 use crate::domain::errors::PlatformResult;
-
-/// How much somebody should care.
-///
-/// Two levels, not five. The question this page answers is "do I have to
-/// do something now or not", and a scale with a middle is a scale where
-/// everything ends up in the middle.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub enum Weight {
-    /// Worth knowing, nothing is failing because of it.
-    Notice,
-    /// Something is not working, and it will not fix itself.
-    Wrong,
-}
-
-impl Weight {
-    pub fn badge(&self) -> &'static str {
-        match self {
-            Self::Wrong => "badge badge-danger",
-            Self::Notice => "badge badge-warning",
-        }
-    }
-
-    pub fn dot(&self) -> &'static str {
-        match self {
-            Self::Wrong => "dot dot-danger",
-            Self::Notice => "dot dot-warning",
-        }
-    }
-}
-
-/// One thing that needs somebody.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Concern {
-    pub weight: Weight,
-    /// What it is, in the fewest words that are still true. Translated
-    /// through `language::word`, because it is chosen here and rendered
-    /// elsewhere — the same door every badge word goes through.
-    pub what: String,
-    /// Which thing: a service's name, a hostname, a node's name, a path.
-    /// Never translated — it is somebody's own string or the machine's.
-    pub which: String,
-    /// The reason, as whatever wrote it put it. Also never translated:
-    /// it is containerd's words, or an authority's, or a filesystem's.
-    pub why: String,
-    /// Where to go and do something about it.
-    pub go: String,
-}
+use crate::features::node::concern_response::{ConcernResponse, Weight};
+use crate::infra::config::Config;
+use crate::infra::deploy::Deployer;
 
 /// Read every source once.
 ///
@@ -84,7 +46,20 @@ pub struct Concern {
 ///
 /// One `Vec`, not a stream: this runs when a page is drawn, and every
 /// source is a query the node already makes elsewhere.
-pub async fn gather(state: &super::ConsoleState) -> PlatformResult<Vec<Concern>> {
+pub async fn run(
+    database: &Arc<SqliteDatabase>,
+    config: &Config,
+    deployer: &Arc<Deployer>,
+    account: &Account,
+) -> PlatformResult<Vec<ConcernResponse>> {
+    if !node_user::manages_the_machine(account) {
+        return Ok(Vec::new());
+    }
+    let state = &Sources {
+        database,
+        config,
+        deployer,
+    };
     let mut concerns = Vec::new();
 
     copies_that_failed(state, &mut concerns).await?;
@@ -106,13 +81,13 @@ pub async fn gather(state: &super::ConsoleState) -> PlatformResult<Vec<Concern>>
 /// running. The reason is the container's own last words, which
 /// `deploy::logs` keeps for exactly this.
 async fn copies_that_failed(
-    state: &super::ConsoleState,
-    concerns: &mut Vec<Concern>,
+    state: &Sources<'_>,
+    concerns: &mut Vec<ConcernResponse>,
 ) -> PlatformResult<()> {
-    let services = crate::infra::repositories::services::all(&state.database, None).await?;
-    let projects = crate::infra::repositories::projects::all(&state.database).await?;
+    let services = crate::infra::repositories::services::all(state.database, None).await?;
+    let projects = crate::infra::repositories::projects::all(state.database).await?;
 
-    for replica in crate::infra::repositories::replicas::here(&state.database).await? {
+    for replica in crate::infra::repositories::replicas::here(state.database).await? {
         let Some(reason) = &replica.last_error else {
             continue;
         };
@@ -122,7 +97,7 @@ async fn copies_that_failed(
         let Some(project) = projects.iter().find(|p| p.id == service.project_id) else {
             continue;
         };
-        concerns.push(Concern {
+        concerns.push(ConcernResponse {
             weight: Weight::Wrong,
             what: "A copy will not start".into(),
             which: format!("{} #{}", service.slug, replica.slot),
@@ -139,12 +114,11 @@ async fn copies_that_failed(
 /// nothing was reported, and the edge quietly stopped sending it
 /// traffic. Without this the only sign is a service that is slower than
 /// it should be.
-async fn copies_that_stopped_answering(state: &super::ConsoleState, concerns: &mut Vec<Concern>) {
-    let Ok(services) = crate::infra::repositories::services::all(&state.database, None).await
-    else {
+async fn copies_that_stopped_answering(state: &Sources<'_>, concerns: &mut Vec<ConcernResponse>) {
+    let Ok(services) = crate::infra::repositories::services::all(state.database, None).await else {
         return;
     };
-    let Ok(projects) = crate::infra::repositories::projects::all(&state.database).await else {
+    let Ok(projects) = crate::infra::repositories::projects::all(state.database).await else {
         return;
     };
 
@@ -156,7 +130,7 @@ async fn copies_that_stopped_answering(state: &super::ConsoleState, concerns: &m
         let Some(project) = projects.iter().find(|p| p.id == service.project_id) else {
             continue;
         };
-        concerns.push(Concern {
+        concerns.push(ConcernResponse {
             weight: Weight::Wrong,
             what: "Copies out of the rotation".into(),
             which: format!("{} · {}", service.slug, silent.len()),
@@ -181,19 +155,19 @@ async fn copies_that_stopped_answering(state: &super::ConsoleState, concerns: &m
 /// `Wrong` — nothing failed, and this may be exactly what the operator
 /// meant on a one-machine network.
 async fn a_database_with_every_copy_on_one_machine(
-    state: &super::ConsoleState,
-    concerns: &mut Vec<Concern>,
+    state: &Sources<'_>,
+    concerns: &mut Vec<ConcernResponse>,
 ) {
     let (Ok(services), Ok(projects)) = (
-        crate::infra::repositories::services::all(&state.database, None).await,
-        crate::infra::repositories::projects::all(&state.database).await,
+        crate::infra::repositories::services::all(state.database, None).await,
+        crate::infra::repositories::projects::all(state.database).await,
     ) else {
         return;
     };
 
     for service in services.iter().filter(|s| s.kind.is_managed()) {
         let Ok(copies) =
-            crate::infra::repositories::replicas::of_service(&state.database, &service.id).await
+            crate::infra::repositories::replicas::of_service(state.database, &service.id).await
         else {
             continue;
         };
@@ -212,7 +186,7 @@ async fn a_database_with_every_copy_on_one_machine(
         let Some(project) = projects.iter().find(|p| p.id == service.project_id) else {
             continue;
         };
-        concerns.push(Concern {
+        concerns.push(ConcernResponse {
             weight: Weight::Notice,
             what: "Every copy of a database on one machine".into(),
             which: format!("{} · {}", service.slug, live.len()),
@@ -232,14 +206,14 @@ async fn a_database_with_every_copy_on_one_machine(
 /// leads to — an authority that locks an account after five failed
 /// validations in an hour — is not undone by fixing the cause later.
 async fn certificates_that_would_not_issue(
-    state: &super::ConsoleState,
-    concerns: &mut Vec<Concern>,
+    state: &Sources<'_>,
+    concerns: &mut Vec<ConcernResponse>,
 ) -> PlatformResult<()> {
-    if let Some(reason) = crate::infra::node::settings::acme_error(&state.database).await {
-        concerns.push(Concern {
+    if let Some(reason) = crate::infra::node::settings::acme_error(state.database).await {
+        concerns.push(ConcernResponse {
             weight: Weight::Wrong,
             what: "A certificate would not issue".into(),
-            which: crate::infra::node::settings::domain(&state.database, &state.config)
+            which: crate::infra::node::settings::domain(state.database, state.config)
                 .await
                 .unwrap_or_else(|| "this node".into()),
             why: first_line(&reason),
@@ -247,16 +221,16 @@ async fn certificates_that_would_not_issue(
         });
     }
 
-    for port in crate::infra::repositories::ports::all(&state.database).await? {
+    for port in crate::infra::repositories::ports::all(state.database).await? {
         let Some(hostname) = &port.hostname else {
             continue;
         };
         let policy =
-            crate::infra::edge::policy::for_name(&state.database, &state.config, hostname).await;
+            crate::infra::edge::policy::for_name(state.database, state.config, hostname).await;
         let Some(reason) = &policy.last_error else {
             continue;
         };
-        concerns.push(Concern {
+        concerns.push(ConcernResponse {
             weight: Weight::Wrong,
             what: "A certificate would not issue".into(),
             which: hostname.clone(),
@@ -274,11 +248,11 @@ async fn certificates_that_would_not_issue(
 /// case that produced this: a node asked to serve a name it had never
 /// agreed to serve, refused correctly, and said so to a table nothing
 /// displayed.
-async fn errands_that_were_refused(state: &super::ConsoleState, concerns: &mut Vec<Concern>) {
-    let Ok(records) = crate::infra::network::errand::all(&state.database).await else {
+async fn errands_that_were_refused(state: &Sources<'_>, concerns: &mut Vec<ConcernResponse>) {
+    let Ok(records) = crate::infra::network::errand::all(state.database).await else {
         return;
     };
-    let nodes = crate::infra::network::all(&state.database)
+    let nodes = crate::infra::network::all(state.database)
         .await
         .unwrap_or_default();
 
@@ -291,7 +265,7 @@ async fn errands_that_were_refused(state: &super::ConsoleState, concerns: &mut V
             .find(|node| node.id == record.node_id)
             .map(|node| node.name.clone())
             .unwrap_or_else(|| record.node_id.clone());
-        concerns.push(Concern {
+        concerns.push(ConcernResponse {
             weight: Weight::Notice,
             what: "An instruction was refused".into(),
             which: name,
@@ -308,7 +282,7 @@ async fn errands_that_were_refused(state: &super::ConsoleState, concerns: &mut V
 /// cannot explain is one somebody can still recover from. What it costs
 /// is disk, slowly, which is why it belongs on a page rather than only
 /// in a command somebody runs when they already suspect something.
-async fn what_nothing_claims(state: &super::ConsoleState, concerns: &mut Vec<Concern>) {
+async fn what_nothing_claims(state: &Sources<'_>, concerns: &mut Vec<ConcernResponse>) {
     // Deliberately not the disk walk: this is a `read_dir` per kind
     // against a list of live ids, and it runs when a page is drawn.
     //
@@ -324,7 +298,7 @@ async fn what_nothing_claims(state: &super::ConsoleState, concerns: &mut Vec<Con
     // shared with `doctor` and `backup` — and `None` from it means the
     // rows could not be read, which is not grounds for calling anything
     // rubbish. Silence then, rather than a count of everything.
-    let Some(claims) = crate::infra::deploy::Deployer::claimed(&state.database).await else {
+    let Some(claims) = crate::infra::deploy::Deployer::claimed(state.database).await else {
         return;
     };
     let live = crate::infra::deploy::Claim::containers(&claims);
@@ -332,7 +306,7 @@ async fn what_nothing_claims(state: &super::ConsoleState, concerns: &mut Vec<Con
     if leftovers.is_empty() {
         return;
     }
-    concerns.push(Concern {
+    concerns.push(ConcernResponse {
         weight: Weight::Notice,
         what: "Storage nothing claims".into(),
         which: format!("{}", leftovers.len()),
@@ -342,7 +316,7 @@ async fn what_nothing_claims(state: &super::ConsoleState, concerns: &mut Vec<Con
         // link answered "see" with a page that had nothing to see —
         // reported alongside the false count, and a separate fault from
         // it.
-        go: match crate::infra::network::me(&state.database).await {
+        go: match crate::infra::network::me(state.database).await {
             Ok(Some(me)) => format!("/network/{}", me.id),
             _ => "/network".into(),
         },
@@ -361,15 +335,12 @@ async fn what_nothing_claims(state: &super::ConsoleState, concerns: &mut Vec<Con
 /// decision, not a failure: an operator whose cron already runs
 /// `wabot-deploy backup` has made it, and a card they cannot silence is a
 /// card they learn to ignore.
-async fn a_backup_that_did_not_work(state: &super::ConsoleState, concerns: &mut Vec<Concern>) {
-    let Some(reason) = crate::infra::backup::plan::last(&state.database)
-        .await
-        .error
-    else {
+async fn a_backup_that_did_not_work(state: &Sources<'_>, concerns: &mut Vec<ConcernResponse>) {
+    let Some(reason) = crate::infra::backup::plan::last(state.database).await.error else {
         return;
     };
-    let plan = crate::infra::backup::plan::plan(&state.database).await;
-    concerns.push(Concern {
+    let plan = crate::infra::backup::plan::plan(state.database).await;
+    concerns.push(ConcernResponse {
         weight: Weight::Wrong,
         what: "A backup did not work".into(),
         // Where it was going, which is the part that is usually wrong.
@@ -387,7 +358,7 @@ async fn a_backup_that_did_not_work(state: &super::ConsoleState, concerns: &mut 
         why: first_line(&reason),
         // The tab, by name rather than by string: a slug that moved would
         // otherwise leave a concern linking to a redirect.
-        go: crate::features::node::node_user_node_settings_page::NodeTab::Backup.path(),
+        go: "/node/backup".into(),
     });
 }
 
@@ -404,14 +375,14 @@ async fn a_backup_that_did_not_work(state: &super::ConsoleState, concerns: &mut 
 /// One netlink read, like the disk walk beside it, and silence when there
 /// is no interface: a node whose kernel refuses WireGuard has a console to
 /// find out why, and this must not be what breaks it.
-async fn nodes_this_one_cannot_reach(state: &super::ConsoleState, concerns: &mut Vec<Concern>) {
+async fn nodes_this_one_cannot_reach(state: &Sources<'_>, concerns: &mut Vec<ConcernResponse>) {
     let (Ok(interface), Ok(Some(me))) = (
         crate::infra::network::tunnel::observed(),
-        crate::infra::network::me(&state.database).await,
+        crate::infra::network::me(state.database).await,
     ) else {
         return;
     };
-    let Ok(nodes) = crate::infra::network::all(&state.database).await else {
+    let Ok(nodes) = crate::infra::network::all(state.database).await else {
         return;
     };
 
@@ -423,14 +394,14 @@ async fn nodes_this_one_cannot_reach(state: &super::ConsoleState, concerns: &mut
         // literal, which is what stops a wording drifting away from its
         // Spanish.
         match paired.path {
-            Path::Dialling { at } => concerns.push(Concern {
+            Path::Dialling { at } => concerns.push(ConcernResponse {
                 weight: Weight::Wrong,
                 what: "A node this one cannot reach".into(),
                 which: paired.name,
                 why: format!("configured at {at}, and it has never answered"),
                 go,
             }),
-            Path::Nowhere => concerns.push(Concern {
+            Path::Nowhere => concerns.push(ConcernResponse {
                 weight: Weight::Notice,
                 what: "No way to reach a node".into(),
                 which: paired.name,
@@ -444,8 +415,8 @@ async fn nodes_this_one_cannot_reach(state: &super::ConsoleState, concerns: &mut
     // And an address two nodes claim, which the census refuses to write
     // rather than letting the unique index fail into a log. A peer that
     // can never work.
-    if let Some(said) = crate::infra::network::roster::conflicts(&state.database).await {
-        concerns.push(Concern {
+    if let Some(said) = crate::infra::network::roster::conflicts(state.database).await {
+        concerns.push(ConcernResponse {
             weight: Weight::Wrong,
             what: "Two nodes claim one address".into(),
             which: String::new(),
@@ -463,6 +434,12 @@ async fn nodes_this_one_cannot_reach(state: &super::ConsoleState, concerns: &mut
 /// the page the entry links to.
 fn first_line(reason: &str) -> String {
     reason.lines().next().unwrap_or_default().trim().to_string()
+}
+
+struct Sources<'a> {
+    database: &'a Arc<SqliteDatabase>,
+    config: &'a Config,
+    deployer: &'a Arc<Deployer>,
 }
 
 #[cfg(test)]
@@ -500,7 +477,8 @@ mod tests {
             // listing words nobody writes passes for ever while the real
             // ones drift past it.
             assert!(
-                include_str!("attention.rs").contains(&format!("{what:?}.into()")),
+                include_str!("node_user_see_what_needs_attention.rs")
+                    .contains(&format!("{what:?}.into()")),
                 "{what:?} is guarded here and produced nowhere"
             );
         }
@@ -511,14 +489,14 @@ mod tests {
     #[test]
     fn what_is_failing_sorts_above_what_is_untidy() {
         let mut concerns = [
-            Concern {
+            ConcernResponse {
                 weight: Weight::Notice,
                 what: "Storage nothing claims".into(),
                 which: "3".into(),
                 why: String::new(),
                 go: "/network".into(),
             },
-            Concern {
+            ConcernResponse {
                 weight: Weight::Wrong,
                 what: "A copy will not start".into(),
                 which: "api #1".into(),
@@ -542,5 +520,21 @@ mod tests {
         );
         assert_eq!(first_line("  padded  "), "padded");
         assert_eq!(first_line(""), "");
+    }
+
+    /// The backup concern links to the Backup tab by its path, because a
+    /// use case may not import the page the tab belongs to. This is what
+    /// keeps the two spellings one.
+    #[test]
+    fn the_backup_concern_goes_to_the_backup_tab() {
+        let source = include_str!("node_user_see_what_needs_attention.rs");
+        let linked = format!(
+            "go: {:?}.into()",
+            crate::features::node::node_user_node_settings_page::NodeTab::Backup.path()
+        );
+        assert!(
+            source.contains(&linked),
+            "the backup concern no longer links to {linked}"
+        );
     }
 }

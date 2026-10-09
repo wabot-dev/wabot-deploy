@@ -147,7 +147,7 @@ pub fn choose(candidates: &[Candidate], want: Want) -> Choice {
         // happened in silence — measured on the nodes, 2026-08-25, when
         // draining the only other node moved the only remote standby
         // home and nothing anywhere treated it as worth reading. The
-        // note says it now, and `console::attention` asks about it.
+        // note says it now, and `node_user_see_what_needs_attention` asks about it.
         true => (usable.clone(), true),
     };
 

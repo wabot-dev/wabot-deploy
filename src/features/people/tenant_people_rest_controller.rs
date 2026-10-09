@@ -177,7 +177,7 @@ impl TenantPeopleRestController {
         let account = match crate::features::people::guest_join_as_tenant_user::run(
             &self.state.database,
             &scope,
-            &crate::web::console::auth::joining(&token, &form),
+            &crate::features::people::people_rest_controller::joining(&token, &form),
         )
         .await
         {

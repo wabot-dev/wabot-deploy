@@ -5,7 +5,7 @@
 
 use hypertext::prelude::*;
 
-use crate::web::console::attention::Concern;
+use crate::features::node::concern_response::ConcernResponse;
 use crate::web::views::texts::language::t;
 
 /// The card, or nothing at all.
@@ -20,7 +20,7 @@ use crate::web::views::texts::language::t;
 /// operator is looking at is one they can reload — where a badge that
 /// updates itself would mean a list that reorders under a cursor
 /// half-way to clicking something.
-pub fn card(concerns: &[Concern]) -> impl Renderable + '_ {
+pub fn card(concerns: &[ConcernResponse]) -> impl Renderable + '_ {
     rsx! {
         @if !concerns.is_empty() {
             <section class="stack">

@@ -1,6 +1,6 @@
 //! The words a concern is labelled with.
 //!
-//! These arrive through `Concern.what` as a bare `.into()` rather than
+//! These arrive through `ConcernResponse.what` as a bare `.into()` rather than
 //! through `t()`, which is why they have their own guard.
 //!
 //! Sorted by the English, which is what makes a duplicate or a stray

@@ -3,6 +3,7 @@
 //! The tests live here rather than beside the pages because what they
 //! drive is the POSTs: an invitation is minted, spent, and refused.
 
+use crate::features::people::join_request::JoinRequest;
 use std::sync::Arc;
 
 use wabot::prelude::*;
@@ -199,7 +200,7 @@ impl PeopleRestController {
 
         let account = match crate::features::people::guest_join_as_node_user::run(
             &self.state.database,
-            &crate::web::console::auth::joining(&token, &form),
+            &joining(&token, &form),
         )
         .await
         {
@@ -217,6 +218,22 @@ impl PeopleRestController {
                 Ok(see_other("/sign-in"))
             }
         }
+    }
+}
+
+/// The request behind both join doors, which is one form read the same
+/// way twice — the node's console and an organisation's differ in which
+/// invitations they will spend, not in what the person typed.
+pub(crate) fn joining(
+    token: &str,
+    form: &std::collections::HashMap<String, String>,
+) -> JoinRequest {
+    JoinRequest {
+        token: token.to_string(),
+        username: crate::web::console::auth::field(form, "username").to_string(),
+        // Not trimmed: the spaces are part of it, and removing them
+        // silently produces a password nobody can type back.
+        password: form.get("password").cloned().unwrap_or_default(),
     }
 }
 

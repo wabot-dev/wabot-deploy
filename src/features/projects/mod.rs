@@ -2,6 +2,7 @@ pub mod add_project_member_command;
 pub mod create_project_command;
 pub mod create_project_token_command;
 pub mod delete_project_command;
+pub mod live_component;
 pub mod new_project_page;
 pub mod node_user_add_project_member;
 pub mod node_user_create_project;

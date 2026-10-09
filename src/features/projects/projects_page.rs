@@ -7,7 +7,7 @@ use hypertext::prelude::*;
 pub struct Projects<'a> {
     pub projects: &'a [crate::domain::entities::project::Project],
     pub owns: bool,
-    pub concerns: &'a [crate::web::console::attention::Concern],
+    pub concerns: &'a [crate::features::node::concern_response::ConcernResponse],
     pub query_error: Option<&'a str>,
 }
 
@@ -33,7 +33,7 @@ pub fn render<'a>(page: &'a Projects<'a>) -> impl Renderable + 'a {
             // Above the list, and only when there is something.
             // A panel that is always there is part of the
             // wallpaper by the second week.
-            (crate::web::views::components::attention_card::card(concerns))
+            (crate::features::node::attention_card_component::card(concerns))
 
             @if projects.is_empty() {
                 // No second "Create project" here: the one in the
