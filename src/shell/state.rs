@@ -83,11 +83,11 @@ impl Reveals {
 }
 
 impl ConsoleState {
-    /// Where this console answers, for a link somebody has to paste
-    /// somewhere else. Built from the node's own domain, because a
-    /// link to `localhost` is one only the node can open.
     /// Where a link should send somebody, for the frontier they belong
-    /// to.
+    /// to: a link somebody pastes somewhere else, so never `localhost`,
+    /// which only the node can open. With no domain anywhere it is the
+    /// address `infra::node::authority` gives — the fallback was
+    /// `localhost`, and an invitation from a VM node said exactly that.
     ///
     /// **An invitation into an organisation has to land on that
     /// organisation's own name.** Sent to the node's, the person signs
@@ -111,16 +111,14 @@ impl ConsoleState {
                 .and_then(|tenant| tenant.domain),
             None => None,
         };
-        let host = match theirs {
-            Some(domain) => domain,
-            None => crate::infra::node::settings::domain(&self.database, &self.config)
-                .await
-                .unwrap_or_else(|| "localhost".into()),
+        let domain = match theirs {
+            Some(domain) => Some(domain),
+            None => crate::infra::node::settings::domain(&self.database, &self.config).await,
         };
-        match self.config.edge.https_port {
-            443 => format!("https://{host}"),
-            port => format!("https://{host}:{port}"),
-        }
+        format!(
+            "https://{}",
+            crate::infra::node::authority(domain.as_deref(), self.config.edge.https_port)
+        )
     }
 
     pub fn new(

@@ -287,6 +287,46 @@ mod tests {
         assert_eq!(people.len(), 2);
     }
 
+    /// A link somebody sends to somebody else names an address they can
+    /// open — `localhost` only where the node has no route to name.
+    ///
+    /// **Shipped**: a node with no domain invited people to
+    /// `https://localhost/join/…`. Found on a VM node.
+    #[tokio::test]
+    async fn an_invitation_link_is_one_the_invited_can_open() {
+        let console = Console::new().await;
+        let cookie = console.signed_in().await;
+        let response = console
+            .harness
+            .post("/people/invite")
+            .header("cookie", &cookie)
+            .form(&[("node_role", "member")])
+            .send()
+            .await;
+        let location = response.header("location").expect("redirected");
+        let link = console.secret_at(location, &cookie).await;
+
+        assert!(
+            !link.contains("://localhost")
+                || crate::infra::deploy::dns::outbound_address().is_none(),
+            "{link}"
+        );
+
+        crate::infra::node::settings::set_domain(&console.database, Some("node.example.com"))
+            .await
+            .expect("a domain");
+        let response = console
+            .harness
+            .post("/people/invite")
+            .header("cookie", &cookie)
+            .form(&[("node_role", "member")])
+            .send()
+            .await;
+        let location = response.header("location").expect("redirected");
+        let link = console.secret_at(location, &cookie).await;
+        assert!(link.starts_with("https://node.example.com"), "{link}");
+    }
+
     /// The page behind a used link has to say so rather than show a
     /// form that will be refused.
     #[tokio::test]
