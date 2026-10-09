@@ -1,6 +1,6 @@
 //! Where a service's copies run, and who answers for its names.
 
-use crate::web::views::texts::language::t;
+use crate::features::services::texts::t;
 use hypertext::prelude::*;
 
 /// What a replica's node is called, for a table that reads rather than
@@ -247,7 +247,7 @@ pub fn served_by_form<'a>(
                               false => "badge badge-info is-hidden",
                           })
                           data-edge=(format!("{}|{}", hostname, node.id))>
-                        <span class=(cell.dot)></span>(crate::web::views::texts::language::word(&cell.word))
+                        <span class=(cell.dot)></span>(crate::features::services::texts::word(&cell.word))
                     </span>
                 </label>
             }
@@ -279,10 +279,10 @@ pub fn placement_state<'a>(
     );
     rsx! {
         @if cell.dot.is_empty() {
-            <span class=(cell.badge)>(crate::web::views::texts::language::word(&cell.word))</span>
+            <span class=(cell.badge)>(crate::features::services::texts::word(&cell.word))</span>
         } @else {
             <span class=(cell.badge)>
-                <span class=(cell.dot)></span>(crate::web::views::texts::language::word(&cell.word))
+                <span class=(cell.dot)></span>(crate::features::services::texts::word(&cell.word))
             </span>
         }
         // The line under it: an address while it is up, a reason while it

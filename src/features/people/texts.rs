@@ -25,3 +25,11 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
     ("This is you", "Este eres tú"),
     ("You were invited as ", "Te invitaron como "),
 ];
+
+pub fn t(english: &'static str) -> &'static str {
+    crate::web::views::texts::language::translated(english, TABLE)
+}
+
+pub fn word(text: &str) -> &str {
+    crate::web::views::texts::language::word_in(text, TABLE)
+}

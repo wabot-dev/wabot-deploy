@@ -11,6 +11,7 @@ use crate::features::databases::database_cards_component;
 use crate::features::services::service_push_component::Push;
 use crate::features::services::service_running_component::Running;
 use crate::features::services::service_state_component::StateCell;
+use crate::features::services::texts::t;
 use crate::features::services::{
     service_placement_component, service_ports_component, service_push_component,
     service_running_component, service_state_component,
@@ -18,7 +19,6 @@ use crate::features::services::{
 use crate::infra::backup::Window;
 use crate::infra::network::Node;
 use crate::web::views::layouts::layout;
-use crate::web::views::texts::language::t;
 
 /// The seven things that only exist together.
 ///

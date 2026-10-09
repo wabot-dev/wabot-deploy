@@ -18,7 +18,6 @@
 //! call site fixes the English order for everybody. Those are functions
 //! here — see `sentences`.
 
-pub mod attention;
 pub mod language;
 pub mod nodes;
 pub mod sentences;
@@ -26,43 +25,27 @@ pub mod shared;
 pub mod shell;
 pub mod shown;
 
-/// Every table, in one place so the lookup cannot forget one.
-///
-/// Listed rather than discovered, and the test below is what makes that
-/// safe: it fails if a module in this directory is missing here. *A
-/// guard that names its inputs is right until somebody adds an input* —
-/// so this one reads the directory instead.
-const TABLES: &[&[(&str, &str)]] = &[
-    attention::TABLE,
-    crate::features::access::texts::TABLE,
-    crate::features::backups::texts::TABLE,
-    crate::features::databases::texts::TABLE,
-    crate::features::network::texts::TABLE,
-    crate::features::node::texts::TABLE,
-    nodes::TABLE,
-    crate::features::organisations::texts::TABLE,
-    crate::features::people::texts::TABLE,
-    crate::features::projects::texts::TABLE,
-    crate::features::services::texts::TABLE,
-    shared::TABLE,
-    shell::TABLE,
-    shown::TABLE,
-    crate::features::updates::texts::TABLE,
-];
+/// What every feature's words fall back to: the shell's, and what more
+/// than one feature says. A feature's own table is searched first, by
+/// its own `texts::t`, so nothing here has to list the features.
+const SHARED: &[&[(&str, &str)]] = &[nodes::TABLE, shared::TABLE, shell::TABLE, shown::TABLE];
 
-/// The Spanish for one English string.
+/// The Spanish for one English string: in the caller's own table, then
+/// in the shared ones.
 ///
 /// Binary search within each table rather than a `HashMap`: the tables
 /// are static and sorted, so this needs no allocation, no lazy
 /// initialisation and no hashing — and a page is a few hundred lookups,
 /// not a few million.
-pub(crate) fn lookup(english: &str) -> Option<&'static str> {
-    TABLES.iter().find_map(|table| {
-        table
-            .binary_search_by(|(key, _)| (*key).cmp(english))
-            .ok()
-            .map(|at| table[at].1)
-    })
+pub(crate) fn lookup(english: &str, own: &[(&'static str, &'static str)]) -> Option<&'static str> {
+    std::iter::once(own)
+        .chain(SHARED.iter().copied())
+        .find_map(|table| {
+            table
+                .binary_search_by(|(key, _)| (*key).cmp(english))
+                .ok()
+                .map(|at| table[at].1)
+        })
 }
 
 #[cfg(test)]
@@ -71,12 +54,63 @@ mod tests {
     use std::collections::BTreeSet;
     use std::fs;
 
+    /// Every table there is, by name: the shared ones here and each
+    /// feature's own. Listed because the guards need the values;
+    /// `every_table_there_is_one_the_guards_read` compares it with the disk.
+    fn every_table() -> Vec<(&'static str, &'static [(&'static str, &'static str)])> {
+        vec![
+            ("nodes", nodes::TABLE),
+            ("shared", shared::TABLE),
+            ("shell", shell::TABLE),
+            ("shown", shown::TABLE),
+            ("access", crate::features::access::texts::TABLE),
+            ("backups", crate::features::backups::texts::TABLE),
+            ("databases", crate::features::databases::texts::TABLE),
+            ("network", crate::features::network::texts::TABLE),
+            ("node", crate::features::node::texts::TABLE),
+            (
+                "organisations",
+                crate::features::organisations::texts::TABLE,
+            ),
+            ("people", crate::features::people::texts::TABLE),
+            ("projects", crate::features::projects::texts::TABLE),
+            ("services", crate::features::services::texts::TABLE),
+            ("updates", crate::features::updates::texts::TABLE),
+        ]
+    }
+
+    fn own_table(feature: &str) -> &'static [(&'static str, &'static str)] {
+        every_table()
+            .into_iter()
+            .find(|(name, _)| *name == feature)
+            .map(|(_, table)| table)
+            .expect("a feature with words has a table")
+    }
+
+    /// Whose words a file says: its feature's, or the shared ones.
+    fn own_table_of(path: &std::path::Path) -> &'static [(&'static str, &'static str)] {
+        match path
+            .strip_prefix("src/features")
+            .ok()
+            .and_then(|rest| rest.components().next())
+        {
+            Some(feature) if rest_is_a_folder(path) => {
+                own_table(&feature.as_os_str().to_string_lossy())
+            }
+            _ => &[],
+        }
+    }
+
+    fn rest_is_a_folder(path: &std::path::Path) -> bool {
+        path.parent() != Some(std::path::Path::new("src/features"))
+    }
+
     /// The lookup binary-searches, so an unsorted table silently stops
     /// finding things — the worst possible failure here, because the
     /// page still renders and simply reverts to English.
     #[test]
     fn every_table_is_sorted_and_has_no_duplicates() {
-        for table in TABLES {
+        for (_, table) in every_table() {
             for pair in table.windows(2) {
                 assert!(
                     pair[0].0 < pair[1].0,
@@ -94,21 +128,20 @@ mod tests {
     #[test]
     fn a_string_belongs_to_one_view() {
         let mut seen = BTreeSet::new();
-        for table in TABLES {
-            for (english, _) in *table {
+        for (_, table) in every_table() {
+            for (english, _) in table {
                 assert!(seen.insert(*english), "in two tables: {english:?}");
             }
         }
     }
 
-    /// Reads the directories rather than listing the modules, because a
-    /// guard that names its inputs is right until somebody adds an
-    /// input — which has cost this project five times. A feature keeps
-    /// its words in its own `texts.rs`, so every one of those is a table
-    /// too.
+    /// Every table on the disk is one the guards read, and every shared
+    /// one is one the lookup falls back to. A table nobody checks is one
+    /// that can fall out of order and stop finding things, and the page
+    /// still renders — in English.
     #[test]
-    fn the_lookup_searches_every_table_there_is() {
-        let mut modules: BTreeSet<String> = fs::read_dir("src/web/views/texts")
+    fn every_table_there_is_one_the_guards_read() {
+        let shared: BTreeSet<String> = fs::read_dir("src/web/views/texts")
             .expect("read the directory")
             .filter_map(|entry| {
                 let path = entry.expect("entry").path();
@@ -118,29 +151,25 @@ mod tests {
                 .then_some(name)
             })
             .collect();
+        let mut on_disk = shared.clone();
         for path in crate::tree::rust_files(&["src/features"]) {
-            if crate::tree::kind_of(&path) != Some(crate::tree::Kind::Texts) {
-                continue;
+            if crate::tree::kind_of(&path) == Some(crate::tree::Kind::Texts) {
+                let feature = path.parent().and_then(|folder| folder.file_name());
+                on_disk.insert(feature.unwrap_or_default().to_string_lossy().to_string());
             }
-            let module: Vec<String> = path
-                .with_extension("")
-                .components()
-                .skip(1)
-                .map(|part| part.as_os_str().to_string_lossy().to_string())
-                .collect();
-            modules.insert(format!("crate::{}", module.join("::")));
         }
-
-        let listed: BTreeSet<String> = fs::read_to_string("src/web/views/texts/mod.rs")
-            .expect("read this file")
-            .lines()
-            .filter_map(|line| line.trim().strip_suffix("::TABLE,"))
-            .map(str::to_string)
+        let listed: BTreeSet<String> = every_table()
+            .into_iter()
+            .map(|(name, _)| name.to_string())
             .collect();
-
         assert_eq!(
-            modules, listed,
-            "a text module the lookup never searches renders its whole view in English"
+            on_disk, listed,
+            "a table the guards do not read can drift unseen"
+        );
+        assert_eq!(
+            SHARED.len(),
+            shared.len(),
+            "a shared table the lookup does not fall back to renders in English"
         );
     }
 
@@ -150,16 +179,19 @@ mod tests {
     /// modules and needed a second test to catch a fourteenth, which is
     /// *a guard that names its inputs* wearing a hat. This one cannot
     /// miss a file that exists.
-    fn drawn() -> Vec<String> {
-        let sources: Vec<String> = crate::tree::rust_files(&[
+    fn drawn() -> Vec<(std::path::PathBuf, String)> {
+        let sources: Vec<(std::path::PathBuf, String)> = crate::tree::rust_files(&[
             "src/web/console",
             "src/web/views/components",
             "src/web/views/layouts",
             "src/web/views/pages",
             "src/features",
         ])
-        .iter()
-        .map(|path| std::fs::read_to_string(path).expect("read"))
+        .into_iter()
+        .map(|path| {
+            let source = std::fs::read_to_string(&path).expect("read");
+            (path, source)
+        })
         .collect();
         assert!(
             sources.len() > 15,
@@ -254,7 +286,10 @@ mod tests {
     }
     #[test]
     fn nothing_is_left_untranslated_by_accident() {
-        for (english, spanish) in TABLES.iter().flat_map(|table| table.iter()) {
+        for (english, spanish) in every_table()
+            .into_iter()
+            .flat_map(|(_, table)| table.iter())
+        {
             assert!(!spanish.is_empty(), "{english:?} has no Spanish");
             if english == spanish {
                 assert!(
@@ -278,9 +313,10 @@ mod tests {
     #[test]
     fn every_string_the_console_asks_for_is_translated() {
         let mut missing = Vec::new();
-        for source in drawn() {
+        for (path, source) in drawn() {
+            let own = own_table_of(&path);
             for asked in calls(&source) {
-                if lookup(&asked).is_none() {
+                if lookup(&asked, own).is_none() {
                     missing.push(asked);
                 }
             }
@@ -316,7 +352,7 @@ mod tests {
             let rest = &source[index + 7..];
             let Some(end) = rest.find('"') else { continue };
             let word = &rest[..end];
-            if lookup(word).is_none() {
+            if lookup(word, own_table("node")).is_none() {
                 missing.push(word.to_string());
             }
         }
@@ -360,7 +396,7 @@ mod tests {
                 crate::web::views::components::node_capabilities::doing_why(capability, true),
                 crate::web::views::components::node_capabilities::doing_why(capability, false),
             ] {
-                if lookup(word).is_none() {
+                if lookup(word, &[]).is_none() {
                     missing.push(word.to_string());
                 }
             }
@@ -369,7 +405,7 @@ mod tests {
     }
     #[test]
     fn a_string_that_is_there_is_found() {
-        assert_eq!(lookup("Projects"), Some("Proyectos"));
-        assert_eq!(lookup("nothing like this"), None);
+        assert_eq!(lookup("Projects", &[]), Some("Proyectos"));
+        assert_eq!(lookup("nothing like this", &[]), None);
     }
 }

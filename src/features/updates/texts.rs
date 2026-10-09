@@ -28,3 +28,7 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
     ("no build for this machine", "no hay binario para esta máquina"),
     ("older than what is running", "más vieja que la que corre"),
 ];
+
+pub fn t(english: &'static str) -> &'static str {
+    crate::web::views::texts::language::translated(english, TABLE)
+}

@@ -72,3 +72,7 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
     ("runs containers only", "solo ejecuta contenedores"),
     ("the box in the rack by the window", "la máquina del rack junto a la ventana"),
 ];
+
+pub fn t(english: &'static str) -> &'static str {
+    crate::web::views::texts::language::translated(english, TABLE)
+}

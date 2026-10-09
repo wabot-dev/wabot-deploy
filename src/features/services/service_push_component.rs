@@ -1,7 +1,7 @@
 //! How an image gets here: the `docker push` this service expects, and
 //! the token it needs.
 
-use crate::web::views::texts::language::t;
+use crate::features::services::texts::t;
 use hypertext::prelude::*;
 
 /// What the releases card can say about pushing to this service.

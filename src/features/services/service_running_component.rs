@@ -1,6 +1,6 @@
 //! What this service is doing here: its copies, and what they are using.
 
-use crate::web::views::texts::language::t;
+use crate::features::services::texts::t;
 use hypertext::prelude::*;
 
 /// What each copy is doing and what it is using, here.

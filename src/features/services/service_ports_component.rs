@@ -1,7 +1,7 @@
 //! A service's ports: what it listens on, whether that is reachable, and
 //! the name it answers to.
 
-use crate::web::views::texts::language::t;
+use crate::features::services::texts::t;
 use hypertext::prelude::*;
 
 /// Declaring a port, as an island host.

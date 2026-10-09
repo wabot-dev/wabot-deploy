@@ -59,3 +59,7 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
     ("nothing is scheduled", "no hay nada programado"),
     ("running now", "en marcha ahora"),
 ];
+
+pub fn t(english: &'static str) -> &'static str {
+    crate::web::views::texts::language::translated(english, TABLE)
+}

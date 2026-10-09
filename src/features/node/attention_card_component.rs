@@ -6,7 +6,7 @@
 use hypertext::prelude::*;
 
 use crate::features::node::concern_response::ConcernResponse;
-use crate::web::views::texts::language::t;
+use crate::features::node::texts::t;
 
 /// The card, or nothing at all.
 ///
@@ -33,7 +33,7 @@ pub fn card(concerns: &[ConcernResponse]) -> impl Renderable + '_ {
                                     <td>
                                         <span class=(concern.weight.badge())>
                                             <span class=(concern.weight.dot())></span>
-                                            (crate::web::views::texts::language::word(&concern.what))
+                                            (crate::features::node::texts::word(&concern.what))
                                         </span>
                                     </td>
                                     // Somebody's own string, or the

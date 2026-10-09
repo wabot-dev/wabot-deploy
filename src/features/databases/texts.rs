@@ -51,3 +51,7 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
     ("UTC, as the window above reads it: 2026-08-16 14:32. Empty means as far as the archived log goes, which is the most recent moment there is.", "UTC, como lo dice la ventana de arriba: 2026-08-16 14:32. Vacío significa hasta donde llegue el log archivado, que es el momento más reciente que hay."),
     ("Up to which moment", "Hasta qué momento"),
 ];
+
+pub fn t(english: &'static str) -> &'static str {
+    crate::web::views::texts::language::translated(english, TABLE)
+}

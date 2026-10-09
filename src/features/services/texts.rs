@@ -39,6 +39,7 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
     ("Environment", "Entorno"),
     ("Every container in this project resolves that name, on any node holding a copy — whether or not anything is exposed.", "Cada contenedor de este proyecto resuelve ese nombre, en cualquier nodo que sostenga una copia — se exponga algo o no."),
     ("Everything kept", "Todo lo guardado"),
+    ("Evicted there", "Expulsada allí"),
     ("Expose a port", "Exponer puerto"),
     ("Exposed ports", "Puertos expuestos"),
     ("Find", "Buscar"),
@@ -65,6 +66,7 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
     ("No values — restoring this clears the environment.", "Sin valores — restaurar esto deja el entorno vacío."),
     ("No wildcard record answers for this node, so ", "Ningún registro comodín responde por este nodo, así que "),
     ("Nodes that expose the service", "Nodos que exponen el servicio"),
+    ("Not answering", "No responde"),
     ("Not following — reload to see more", "Sin seguir — recarga para ver más"),
     ("Nothing answers at any of these while it is not running.", "Mientras no esté corriendo, en ninguna de estas responde nada."),
     ("Nothing has been pushed yet. Create a push token on the project page and push an image to this repository.", "Todavía no se ha subido nada. Crea un token de subida en la página del proyecto y sube una imagen a este repositorio."),
@@ -84,6 +86,7 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
     ("Read from the node running it — reload to ask again", "Leído del nodo que la corre — recarga para volver a pedirlo"),
     ("Reconnecting…", "Reconectando…"),
     ("Risk: the reader is between the container and its log. If it stops reading, the container blocks on its next write. It drops lines rather than stopping, which is the whole reason this is offered at all — but it is why the default is off.", "Riesgo: el lector queda entre el contenedor y su log. Si deja de leer, el contenedor se bloquea en su siguiente escritura. Descarta líneas antes que pararse, que es la razón por la que esto se ofrece — y también por la que viene apagado."),
+    ("Running elsewhere", "Corriendo en otro nodo"),
     ("Running here", "Corriendo aquí"),
     ("Save environment", "Guardar entorno"),
     ("Save image", "Guardar imagen"),
@@ -130,3 +133,11 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
     ("two rotations", "dos rotaciones"),
     ("watching every tag", "vigilando todas las etiquetas"),
 ];
+
+pub fn t(english: &'static str) -> &'static str {
+    crate::web::views::texts::language::translated(english, TABLE)
+}
+
+pub fn word(text: &str) -> &str {
+    crate::web::views::texts::language::word_in(text, TABLE)
+}

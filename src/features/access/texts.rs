@@ -12,3 +12,7 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
     ("Sign in", "Entrar"),
     ("The setup token was printed by `wabot-deploy install`. It works once, and it expires.", "El token de instalación lo imprimió `wabot-deploy install`. Funciona una vez, y caduca."),
 ];
+
+pub fn t(english: &'static str) -> &'static str {
+    crate::web::views::texts::language::translated(english, TABLE)
+}

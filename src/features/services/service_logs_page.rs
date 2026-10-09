@@ -1,9 +1,9 @@
 use hypertext::prelude::*;
 
 use crate::features::services::service_push_component::urlencode;
+use crate::features::services::texts::t;
 use crate::infra::deploy::logs::{Found, Line};
 use crate::web::views::layouts::layout;
-use crate::web::views::texts::language::t;
 
 /// How many matches one page of results holds. Here rather than in the
 /// controller: it is what decides whether the older/newer links appear,

@@ -1,7 +1,7 @@
 //! What this node has been asked to do, and what it asked of others.
 
+use crate::features::network::texts::t;
 use crate::infra::network;
-use crate::web::views::texts::language::t;
 use hypertext::prelude::*;
 
 /// One instruction, and what became of it.

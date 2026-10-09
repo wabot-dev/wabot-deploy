@@ -1,10 +1,10 @@
 //! What the machine is using, and what it is reachable at.
 
+use crate::features::network::texts::t;
 use crate::infra::network;
 use crate::infra::network::Kind;
 use crate::infra::node::memory;
 use crate::infra::node::memory::Snapshot;
-use crate::web::views::texts::language::t;
 use hypertext::prelude::*;
 
 /// What a node is, in the one line the list has room for.

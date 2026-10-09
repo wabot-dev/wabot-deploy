@@ -3,8 +3,8 @@
 use hypertext::prelude::*;
 
 use crate::domain::values::roles::ProjectRole;
+use crate::features::projects::texts::t;
 use crate::infra::repositories::access;
-use crate::web::views::texts::language::t;
 
 /// Who is in this project, and how to change that.
 ///

@@ -39,3 +39,7 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
     ("Where its people sign in, and the suffix its service names hang off.", "Dónde entra su gente, y el sufijo del que cuelgan los nombres de sus servicios."),
     ("Who this node is shared out to.", "Entre quiénes se reparte este nodo."),
 ];
+
+pub fn t(english: &'static str) -> &'static str {
+    crate::web::views::texts::language::translated(english, TABLE)
+}

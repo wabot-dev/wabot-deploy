@@ -12,7 +12,7 @@
 
 use crate::domain::policies::postgres;
 use crate::domain::policies::presets;
-use crate::web::views::texts::language::t;
+use crate::features::databases::texts::t;
 use hypertext::prelude::*;
 
 use crate::domain::entities::database::Database;

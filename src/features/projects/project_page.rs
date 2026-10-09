@@ -1,7 +1,7 @@
 //! One project: what runs in it, and what needs attention.
 
+use crate::features::projects::texts::t;
 use crate::web::views::layouts::layout;
-use crate::web::views::texts::language::t;
 use hypertext::prelude::*;
 
 pub struct ProjectView<'a> {

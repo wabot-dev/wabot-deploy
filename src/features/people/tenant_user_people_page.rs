@@ -4,9 +4,9 @@ use crate::domain::entities::account::Account;
 use crate::domain::entities::project::Project;
 use crate::domain::values::roles::NodeRole;
 use crate::domain::values::roles::ProjectRole;
+use crate::features::people::texts::t;
 use crate::infra::accounts::invitations::Invitation;
 use crate::web::views::layouts::layout;
-use crate::web::views::texts::language::t;
 
 pub struct People<'a> {
     pub people: &'a [Account],
@@ -109,7 +109,7 @@ pub fn render<'a>(page: &'a People<'a>) -> impl Renderable + 'a {
                     <label for="project_role">(t("As"))</label>
                     <select id="project_role" name="project_role">
                         @for role in ProjectRole::ALL {
-                            <option value=(role.as_str())>(crate::web::views::texts::language::word(role.label()))</option>
+                            <option value=(role.as_str())>(crate::features::people::texts::word(role.label()))</option>
                         }
                     </select>
                 }

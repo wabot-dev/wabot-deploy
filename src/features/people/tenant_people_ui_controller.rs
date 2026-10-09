@@ -10,13 +10,13 @@ use hypertext::prelude::*;
 use wabot::prelude::*;
 use wabot::ui::hypertext::IntoView;
 
+use crate::features::people::texts::t;
 use crate::infra::accounts::{self, invitations};
 use crate::infra::repositories::access;
 use crate::web::console::auth::{signed_in, JoinPage, PageQuery, SessionMiddleware};
 use crate::web::console::ConsoleState;
 use crate::web::views::layouts::layout;
 use crate::web::views::layouts::shell::{Area, Frame};
-use crate::web::views::texts::language::t;
 
 #[injectable]
 pub struct TenantPeopleUiController {

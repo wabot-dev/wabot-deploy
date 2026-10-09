@@ -9,9 +9,9 @@ use hypertext::prelude::*;
 use crate::domain::entities::account::Account;
 use crate::domain::entities::project::Project;
 use crate::domain::values::roles::ProjectRole;
+use crate::features::people::texts::t;
 use crate::infra::accounts::invitations::Invitation;
 use crate::web::views::layouts::layout;
-use crate::web::views::texts::language::t;
 
 pub struct People<'a> {
     pub account: &'a Account,

@@ -1,11 +1,11 @@
 use hypertext::prelude::*;
 
 use crate::domain::values::capability::Capability;
+use crate::features::network::texts::t;
 use crate::features::network::{node_enrolment_component, node_usage_component};
 use crate::infra::network::token::JoinToken;
 use crate::infra::network::{Authority, Node};
 use crate::web::views::layouts::layout;
-use crate::web::views::texts::language::t;
 
 pub struct Network<'a> {
     pub nodes: &'a [Node],

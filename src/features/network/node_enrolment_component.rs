@@ -1,8 +1,8 @@
 //! Minting a join token, spending one, and the terms each states.
 
+use crate::features::network::texts::t;
 use crate::infra::network;
 use crate::infra::network::enrolment::Enrolment;
-use crate::web::views::texts::language::t;
 use hypertext::prelude::*;
 
 /// The terms of a join, before it is a join.

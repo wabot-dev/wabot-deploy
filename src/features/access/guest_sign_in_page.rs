@@ -2,9 +2,9 @@
 
 use hypertext::prelude::*;
 
+use crate::features::access::texts::t;
 use crate::web::views::components::mark::mark;
 use crate::web::views::layouts::layout;
-use crate::web::views::texts::language::t;
 
 pub struct SignIn<'a> {
     pub query_error: Option<&'a str>,

@@ -104,9 +104,18 @@ pub fn current() -> Language {
 /// back unchanged — a page in mixed languages is worse than a page in
 /// one, and better than a page that panics or shows a key.
 pub fn t(english: &'static str) -> &'static str {
+    translated(english, &[])
+}
+
+/// The same, looked up in a feature's own table before the shared ones —
+/// what each feature's `texts::t` calls.
+pub fn translated(
+    english: &'static str,
+    own: &'static [(&'static str, &'static str)],
+) -> &'static str {
     match current() {
         Language::En => english,
-        Language::Es => es(english).unwrap_or(english),
+        Language::Es => super::lookup(english, own).unwrap_or(english),
     }
 }
 
@@ -123,21 +132,14 @@ pub fn t(english: &'static str) -> &'static str {
 /// `projects::state_cell`, and `a_state_word_is_a_word_somebody_reads`
 /// is what keeps them in the table, since the source scan cannot see
 /// them here.
-pub fn word(text: &str) -> &str {
+///
+/// Each feature that renders such a word calls this through its own
+/// `texts::word`, so the word is found in that feature's table first.
+pub fn word_in<'a>(text: &'a str, own: &'static [(&'static str, &'static str)]) -> &'a str {
     match current() {
         Language::En => text,
-        Language::Es => es(text).unwrap_or(text),
+        Language::Es => super::lookup(text, own).unwrap_or(text),
     }
-}
-
-/// The Spanish for one English string, when there is one.
-///
-/// A `match` rather than a map: it compiles to a jump table, needs no
-/// allocation and no lazy static, and every arm is checked to be a
-/// literal at build time. The table lives in `es.rs` because it is
-/// long and mechanical, and this module is neither.
-fn es(english: &str) -> Option<&'static str> {
-    super::lookup(english)
 }
 
 #[cfg(test)]

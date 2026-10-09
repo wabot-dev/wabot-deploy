@@ -2,6 +2,7 @@ use hypertext::prelude::*;
 
 use crate::domain::values::capability::Capability;
 use crate::features::backups::node_backup_component;
+use crate::features::node::texts::t;
 use crate::infra::backup::plan::{Attempt, Plan};
 use crate::infra::backup::s3::Credentials;
 use crate::infra::backup::Manifest;
@@ -10,7 +11,6 @@ use crate::infra::node::memory::Snapshot;
 use crate::web::views::components::node_certificate::{CertificateCells, CertificateState};
 use crate::web::views::components::{node_capabilities, node_certificate, node_settings_cards};
 use crate::web::views::layouts::layout;
-use crate::web::views::texts::language::t;
 
 /// The four things this machine can be told about itself.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -1,7 +1,7 @@
 //! Where this node's backups go, how often, and what the archive holds.
 
+use crate::features::backups::texts::t;
 use crate::web::views::layouts::layout;
-use crate::web::views::texts::language::t;
 use hypertext::prelude::*;
 
 /// Where a copy of this node goes, and when.

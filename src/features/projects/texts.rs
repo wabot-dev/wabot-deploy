@@ -10,14 +10,11 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
     ("Create token", "Crear token"),
     ("Delete project", "Borrar proyecto"),
     ("Deleting a project stops and removes every service under it, and takes everything its databases stored on this node. There is no undo.", "Borrar un proyecto para y elimina todos los servicios que tiene dentro, y se lleva todo lo que sus bases de datos guardaron en este nodo. No hay vuelta atrás."),
-    ("Evicted there", "Expulsada allí"),
     ("No services yet.", "Todavía no hay servicios."),
     ("Nobody yet. Administrators of this node reach every project without being added to it.", "Todavía nadie. Los administradores de este nodo llegan a todos los proyectos sin estar añadidos a ellos."),
     ("None. A token is what CI authenticates with — it is nobody's password, and revoking it changes nothing else.", "Ninguno. Un token es con lo que se autentica CI — no es la contraseña de nadie, y revocarlo no cambia nada más."),
-    ("Not answering", "No responde"),
     ("Person", "Persona"),
     ("Push tokens", "Tokens de subida"),
-    ("Running elsewhere", "Corriendo en otro nodo"),
     ("Shown once. Use it as the password: ", "Se muestra una vez. Úsalo como contraseña: "),
     ("Somebody who already has an account on this node — adding them here does not create one. A new person is invited from Settings, People.", "Alguien que ya tiene cuenta en este nodo — añadirla aquí no crea ninguna. A una persona nueva se la invita desde Ajustes, Personas."),
     ("The slug is derived from the name, and it is what hostnames and containerd labels are built from.", "El slug se deriva del nombre, y es con lo que se construyen los nombres de host y las etiquetas de containerd."),
@@ -25,3 +22,7 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
     ("You are: ", "Tu rol: "),
     ("never used", "sin usar"),
 ];
+
+pub fn t(english: &'static str) -> &'static str {
+    crate::web::views::texts::language::translated(english, TABLE)
+}

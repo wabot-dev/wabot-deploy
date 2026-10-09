@@ -5,7 +5,7 @@
 
 use hypertext::prelude::*;
 
-use crate::web::views::texts::language::t;
+use crate::features::services::texts::t;
 
 /// Rendered from the same [`StateCell`] the stream sends, so the first
 /// paint and every update after it come from one place. They used to be
@@ -14,7 +14,7 @@ use crate::web::views::texts::language::t;
 pub fn state_badge(cell: &StateCell) -> impl Renderable + '_ {
     rsx! {
         <span class=(cell.badge)>
-            <span class=(cell.dot)></span>(crate::web::views::texts::language::word(&cell.word))
+            <span class=(cell.dot)></span>(crate::features::services::texts::word(&cell.word))
         </span>
     }
 }
@@ -410,7 +410,11 @@ mod tests {
 
         for cell in &placed {
             assert!(
-                crate::web::views::texts::lookup(&cell.word).is_some(),
+                crate::web::views::texts::lookup(
+                    &cell.word,
+                    crate::features::services::texts::TABLE
+                )
+                .is_some(),
                 "no Spanish for the state word {:?}",
                 cell.word
             );
@@ -466,7 +470,11 @@ mod tests {
         ];
         for cell in &copies {
             assert!(
-                crate::web::views::texts::lookup(&cell.word).is_some(),
+                crate::web::views::texts::lookup(
+                    &cell.word,
+                    crate::features::services::texts::TABLE
+                )
+                .is_some(),
                 "no Spanish for the replica word {:?}",
                 cell.word
             );

@@ -7,6 +7,7 @@ use crate::domain::entities::replica::Replica;
 use crate::domain::entities::service::Service;
 use crate::features::databases::database_cards_component;
 use crate::features::services::service_push_component::Push;
+use crate::features::services::texts::t;
 use crate::features::services::{
     service_placement_component, service_ports_component, service_push_component,
 };
@@ -15,7 +16,6 @@ use crate::infra::network::errand::Record;
 use crate::infra::network::Node;
 use crate::web::views::components::node_certificate::{source_word, CertificateCells};
 use crate::web::views::layouts::layout;
-use crate::web::views::texts::language::t;
 
 /// Which tab of a service's settings a page is showing.
 ///

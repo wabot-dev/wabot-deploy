@@ -1,9 +1,9 @@
 use hypertext::prelude::*;
 
 use crate::features::network::node_enrolment_component;
+use crate::features::network::texts::t;
 use crate::infra::network::token::JoinToken;
 use crate::web::views::layouts::layout;
-use crate::web::views::texts::language::t;
 
 pub struct JoinNetwork<'a> {
     /// A token pasted a moment ago, with what it asks for. **Held for

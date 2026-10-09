@@ -10,13 +10,13 @@ use serde::Deserialize;
 use wabot::prelude::*;
 use wabot::ui::hypertext::IntoView;
 
+use crate::features::services::texts::t;
 use crate::infra::deploy::dns;
 use crate::infra::repositories::access;
 use crate::infra::repositories::config_history;
 use crate::infra::repositories::ports;
 use crate::infra::repositories::releases;
 use crate::infra::repositories::services;
-use crate::web::views::texts::language::t;
 
 use crate::web::console::auth::{signed_in, SessionMiddleware};
 use crate::web::console::ConsoleState;

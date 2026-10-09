@@ -42,7 +42,7 @@ impl Live {
     /// translated here, on the way out.
     pub fn translate(&mut self) {
         for cell in self.services.values_mut() {
-            cell.word = crate::web::views::texts::language::word(&cell.word).to_string();
+            cell.word = crate::features::services::texts::word(&cell.word).to_string();
             // The one field composed rather than looked up. Said here
             // and rendered by `say` on the page, so a count sent two
             // seconds after a page load cannot be in the other
@@ -50,11 +50,11 @@ impl Live {
             cell.address = cell.whereabouts.say();
         }
         for cell in self.replicas.values_mut() {
-            cell.word = crate::web::views::texts::language::word(&cell.word).to_string();
-            cell.detail = crate::web::views::texts::language::word(&cell.detail).to_string();
+            cell.word = crate::features::services::texts::word(&cell.word).to_string();
+            cell.detail = crate::features::services::texts::word(&cell.detail).to_string();
         }
         for cell in self.edges.values_mut() {
-            cell.word = crate::web::views::texts::language::word(&cell.word).to_string();
+            cell.word = crate::features::services::texts::word(&cell.word).to_string();
         }
     }
 }
