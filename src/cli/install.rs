@@ -608,17 +608,6 @@ async fn report(
         println!("  (could not write it: {error})");
     }
 
-    let pending: Vec<&str> = Step::ALL
-        .iter()
-        .filter(|step| !Step::IMPLEMENTED.contains(step))
-        .map(|step| step.as_str())
-        .collect();
-    if !pending.is_empty() {
-        println!();
-        println!("  not yet implemented: {}", pending.join(", "));
-        println!("  run `wabot-deploy doctor` to see the current state");
-    }
-
     let _ = ledger::all(database).await?;
     Ok(())
 }

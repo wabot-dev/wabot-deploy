@@ -18,59 +18,40 @@ use wabot::sqlite::{SqliteDatabase, SqliteResult};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Step {
-    Preflight,
     Layout,
     Config,
     Database,
     Runtime,
     Binary,
     Service,
-    Certificate,
     Start,
 }
 
 impl Step {
     pub fn as_str(self) -> &'static str {
         match self {
-            Step::Preflight => "preflight",
             Step::Layout => "layout",
             Step::Config => "config",
             Step::Database => "database",
             Step::Runtime => "runtime",
             Step::Binary => "binary",
             Step::Service => "service",
-            Step::Certificate => "certificate",
             Step::Start => "start",
         }
     }
 
-    /// What `install` runs today. The rest are declared because the
-    /// ledger is also a plan, and `doctor` listing them as pending is
-    /// more useful than pretending they do not exist.
-    ///
-    /// `Preflight` is absent on purpose: it changes nothing, so there
-    /// is no state for it to record. `Certificate` is absent because
-    /// it is attempted and allowed to fail — a node with no public
-    /// certificate is still installed.
-    pub const IMPLEMENTED: &'static [Step] = &[
-        Step::Layout,
-        Step::Config,
-        Step::Database,
-        Step::Runtime,
-        Step::Binary,
-        Step::Service,
-        Step::Start,
-    ];
-
+    /// The machine checks and the certificate are not steps: the first
+    /// changes nothing, so there is nothing to record, and the second is
+    /// the renewal loop's for as long as the node runs. Declared here as a
+    /// plan, they were printed as "not yet implemented" by every install
+    /// and every `doctor` after both had shipped.
     pub const ALL: &'static [Step] = &[
-        Step::Preflight,
         Step::Layout,
         Step::Config,
         Step::Database,
         Step::Runtime,
         Step::Binary,
         Step::Service,
-        Step::Certificate,
         Step::Start,
     ];
 }
@@ -278,12 +259,5 @@ mod tests {
         names.sort_unstable();
         names.dedup();
         assert_eq!(names.len(), total, "duplicate step name");
-    }
-
-    #[test]
-    fn every_implemented_step_is_declared() {
-        for step in Step::IMPLEMENTED {
-            assert!(Step::ALL.contains(step), "{step} missing from ALL");
-        }
     }
 }

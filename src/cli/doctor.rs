@@ -653,30 +653,25 @@ pub async fn run(config: Config, config_path: &Path) -> anyhow::Result<i32> {
 /// against the node.
 ///
 /// Pure, and separated from the printing for exactly one reason: the
-/// decisions here — an interrupted step is a problem, an unshipped one
-/// is not — are worth testing without a machine that happens to be
+/// decisions here — an interrupted step is a problem, a missing one is
+/// too — are worth testing without a machine that happens to be
 /// Linux and happens to be root.
 fn step_states(entries: &[ledger::Entry]) -> Vec<(&'static str, String, bool)> {
     Step::ALL
         .iter()
         .map(|step| {
             let entry = entries.iter().find(|entry| entry.step == step.as_str());
-            let (state, problem) = match (entry.map(|e| e.status), Step::IMPLEMENTED.contains(step))
-            {
-                (Some(Status::Done), _) => ("done".to_string(), false),
-                (Some(Status::Running), _) => ("INTERRUPTED — re-run install".to_string(), true),
-                (Some(Status::Failed), _) => (
+            let (state, problem) = match entry.map(|e| e.status) {
+                Some(Status::Done) => ("done".to_string(), false),
+                Some(Status::Running) => ("INTERRUPTED — re-run install".to_string(), true),
+                Some(Status::Failed) => (
                     match entry.and_then(|e| e.detail.clone()) {
                         Some(detail) => format!("FAILED — {detail}"),
                         None => "FAILED".to_string(),
                     },
                     true,
                 ),
-                (None, true) => ("pending — run install".to_string(), true),
-                // The step exists in the plan and its milestone has
-                // not shipped. Counting it would make a healthy node
-                // look broken.
-                (None, false) => ("not implemented yet".to_string(), false),
+                None => ("pending — run install".to_string(), true),
             };
             (step.as_str(), state, problem)
         })
@@ -844,25 +839,30 @@ mod tests {
     /// root — which the preflight section correctly refuses on a
     /// developer's laptop.
     #[test]
-    fn a_missing_implemented_step_is_a_problem_and_an_unshipped_one_is_not() {
+    fn a_missing_step_is_a_problem() {
         let states = step_states(&[]);
-
-        let problems: Vec<&str> = states
-            .iter()
-            .filter(|(_, _, problem)| *problem)
-            .map(|(step, _, _)| *step)
-            .collect();
-        let implemented: Vec<&str> = Step::IMPLEMENTED.iter().map(|step| step.as_str()).collect();
-        assert_eq!(
-            problems, implemented,
-            "nothing run: exactly the shipped steps are missing"
-        );
-
-        // And the rest say so rather than reading as broken.
+        assert_eq!(states.len(), Step::ALL.len());
         assert!(states
             .iter()
-            .filter(|(step, _, _)| !implemented.contains(step))
-            .all(|(_, state, problem)| !problem && state.contains("not implemented")));
+            .all(|(_, state, problem)| *problem && state.contains("run install")));
+    }
+
+    /// Every step the ledger lists is one `install` records.
+    ///
+    /// **Shipped otherwise**: `preflight` and `certificate` were declared
+    /// as a plan and never recorded, so every install ended by saying they
+    /// were not implemented and every `doctor` listed them that way, long
+    /// after both ran. Found on a VM node.
+    #[test]
+    fn every_step_is_one_install_records() {
+        let install = include_str!("install.rs");
+        for step in Step::ALL {
+            let variant = format!("{step:?}");
+            assert!(
+                install.contains(&format!("Step::{variant}")),
+                "{step} is listed and install never records it"
+            );
+        }
     }
 
     #[test]
@@ -900,7 +900,7 @@ mod tests {
     /// A finished install has nothing to report about its steps.
     #[test]
     fn a_complete_ledger_is_clean() {
-        let entries: Vec<ledger::Entry> = Step::IMPLEMENTED
+        let entries: Vec<ledger::Entry> = Step::ALL
             .iter()
             .map(|step| ledger::Entry {
                 step: step.as_str().to_string(),
@@ -911,7 +911,7 @@ mod tests {
             .collect();
         assert!(
             step_states(&entries).iter().all(|(_, _, problem)| !problem),
-            "a finished install is clean, and unshipped steps are not problems"
+            "a finished install is clean"
         );
     }
 
