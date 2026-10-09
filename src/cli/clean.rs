@@ -203,6 +203,36 @@ pub async fn run(config: Config, apply: bool, volumes: bool) -> anyhow::Result<i
     Ok(0)
 }
 
+/// What a row asks for, which is the only thing that makes an image
+/// wanted. Read from the rows rather than from what is running: a service
+/// that is stopped still names the image it would start.
+///
+/// **Every release asks too**, by its tag and by the digest it deploys
+/// as. Only the services' own field was read, so `--apply` removed the
+/// record of every release a service was not currently pointing at —
+/// the one a "Deploy this" button stands beside, and for an image pushed
+/// here the only copy — and the report invited removing their tags as
+/// well. Found on a VM node.
+async fn wanted(
+    database: &wabot::sqlite::SqliteDatabase,
+) -> Option<std::collections::HashSet<String>> {
+    let services = crate::infra::repositories::services::all(database, None)
+        .await
+        .ok()?;
+    let mut wanted = std::collections::HashSet::new();
+    for service in services {
+        for release in crate::infra::repositories::releases::of_service(database, &service.id)
+            .await
+            .ok()?
+        {
+            wanted.insert(release.pinned());
+            wanted.insert(release.reference);
+        }
+        wanted.insert(service.image);
+    }
+    Some(wanted)
+}
+
 /// Digest-only references nothing names, and the tagged ones to report.
 ///
 /// Returns how many were removed and which tags are unreferenced.
@@ -217,17 +247,12 @@ async fn images(
         return (0, Vec::new());
     };
 
-    // What a row asks for, which is the only thing that makes an image
-    // wanted. Read from the services rather than from what is running:
-    // a service that is stopped still names the image it would start.
-    let wanted: std::collections::HashSet<String> =
-        match crate::infra::repositories::services::all(database, None).await {
-            Ok(services) => services.into_iter().map(|service| service.image).collect(),
-            // Unreadable rows are no grounds for deciding an image is
-            // unwanted. With no list, everything is wanted — the shape
-            // `backup`'s `take` uses for the same reason.
-            Err(_) => return (0, Vec::new()),
-        };
+    // Unreadable rows are no grounds for deciding an image is unwanted.
+    // With no list, everything is wanted — the shape `backup`'s `take`
+    // uses for the same reason.
+    let Some(wanted) = wanted(database).await else {
+        return (0, Vec::new());
+    };
 
     let mut gone = 0;
     let mut tagged: Vec<(String, Option<i64>)> = Vec::new();
@@ -304,6 +329,37 @@ mod tests {
             Some("before-0.3.0-1786245106482.db"),
             "the newest by time is last"
         );
+    }
+
+    #[tokio::test]
+    async fn a_release_keeps_its_image() {
+        let database = crate::infra::db::open_in_memory().await.expect("open");
+        let project = crate::infra::repositories::projects::create(&database, "shop")
+            .await
+            .expect("project");
+        let service = crate::infra::repositories::services::create(
+            &database,
+            &project.id,
+            "web",
+            "docker.io/traefik/whoami:v1.10",
+            &[],
+        )
+        .await
+        .expect("service");
+        let release = crate::infra::repositories::releases::record(
+            &database,
+            &service.id,
+            "node.example/shop/web:v2",
+            "sha256:3c92f5bd27872da71915039e0fcaf06e810a380e7c8b40bc9a0d1543f2eed5c8",
+            crate::domain::entities::release::Source::Push,
+        )
+        .await
+        .expect("release");
+
+        let wanted = wanted(&database).await.expect("readable");
+        assert!(wanted.contains("docker.io/traefik/whoami:v1.10"));
+        assert!(wanted.contains("node.example/shop/web:v2"), "{wanted:?}");
+        assert!(wanted.contains(&release.pinned()), "{wanted:?}");
     }
 
     /// Fewer copies than the number kept must remove nothing, rather
