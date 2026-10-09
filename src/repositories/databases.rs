@@ -119,9 +119,9 @@ const COLUMNS: &str = "\"service_id\", \"engine\", \"version\", \"admin_user\", 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::commands::create_database::CreateDatabase;
     use crate::commands::dispatch_standbys::dispatch;
     use crate::entities::service::Kind;
+    use crate::features::databases::create_database_command::CreateDatabase;
     use crate::policies::postgres;
     use crate::repositories::ports;
     use crate::repositories::replicas;

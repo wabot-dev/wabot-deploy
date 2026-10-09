@@ -456,7 +456,7 @@ impl Deployer {
                 // a domain that has nothing to do with this node's.
                 let qualified = match row.is_some() {
                     true => {
-                        crate::commands::create_database::qualified_name(
+                        crate::features::databases::create_database_command::qualified_name(
                             &self.database,
                             service,
                             &project.slug,
@@ -3401,7 +3401,7 @@ impl Deployer {
 
         // An address of its own, for any copy that has not got one yet.
         //
-        // Here rather than only in `crate::commands::create_database::create`, because a copy
+        // Here rather than only in `crate::features::databases::create_database_command::create`, because a copy
         // added afterwards — from the placement form, or by an errand —
         // goes through neither. On a node, the second replica of a
         // database came up on whatever `host-local` had next and with no
@@ -3742,7 +3742,7 @@ pub async fn certificate_names(
     // they could — one function, so the certificate covers exactly what
     // `/etc/hosts` resolves. Two builders of this drifted once already and
     // the failure was a client dialling a name no certificate held.
-    let qualified = crate::commands::create_database::qualified_name(
+    let qualified = crate::features::databases::create_database_command::qualified_name(
         database,
         service,
         &project.slug,
@@ -4325,7 +4325,7 @@ mod tests {
         let project = crate::repositories::projects::create(&database, "db-test")
             .await
             .expect("project");
-        let (service, _) = crate::commands::create_database::CreateDatabase {
+        let (service, _) = crate::features::databases::create_database_command::CreateDatabase {
             project_id: &project.id,
             name: "orders",
             version: "17",

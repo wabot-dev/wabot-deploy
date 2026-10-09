@@ -20,7 +20,6 @@
 
 pub mod attention;
 pub mod auth;
-pub mod databases;
 pub mod join;
 pub mod language;
 pub mod nodes;
@@ -43,7 +42,7 @@ pub mod updates;
 const TABLES: &[&[(&str, &str)]] = &[
     attention::TABLE,
     auth::TABLE,
-    databases::TABLE,
+    crate::features::databases::texts::TABLE,
     join::TABLE,
     nodes::TABLE,
     organisations::TABLE,
@@ -107,12 +106,14 @@ mod tests {
         }
     }
 
-    /// Reads the directory rather than listing the modules, because a
+    /// Reads the directories rather than listing the modules, because a
     /// guard that names its inputs is right until somebody adds an
-    /// input — which has cost this project five times.
+    /// input — which has cost this project five times. A feature keeps
+    /// its words in its own `texts.rs`, so every one of those is a table
+    /// too.
     #[test]
     fn the_lookup_searches_every_table_there_is() {
-        let modules: BTreeSet<String> = fs::read_dir("src/views/texts")
+        let mut modules: BTreeSet<String> = fs::read_dir("src/views/texts")
             .expect("read the directory")
             .filter_map(|entry| {
                 let path = entry.expect("entry").path();
@@ -122,6 +123,18 @@ mod tests {
                 .then_some(name)
             })
             .collect();
+        for path in crate::tree::rust_files(&["src/features"]) {
+            if crate::tree::kind_of(&path) != Some(crate::tree::Kind::Texts) {
+                continue;
+            }
+            let module: Vec<String> = path
+                .with_extension("")
+                .components()
+                .skip(1)
+                .map(|part| part.as_os_str().to_string_lossy().to_string())
+                .collect();
+            modules.insert(format!("crate::{}", module.join("::")));
+        }
 
         let listed: BTreeSet<String> = fs::read_to_string("src/views/texts/mod.rs")
             .expect("read this file")
@@ -143,20 +156,16 @@ mod tests {
     /// *a guard that names its inputs* wearing a hat. This one cannot
     /// miss a file that exists.
     fn drawn() -> Vec<String> {
-        let mut sources = Vec::new();
-        for directory in [
+        let sources: Vec<String> = crate::tree::rust_files(&[
             "src/console",
             "src/views/components",
             "src/views/layouts",
             "src/views/pages",
-        ] {
-            for entry in std::fs::read_dir(directory).expect("read the directory") {
-                let path = entry.expect("entry").path();
-                if path.extension().is_some_and(|kind| kind == "rs") {
-                    sources.push(std::fs::read_to_string(&path).expect("read"));
-                }
-            }
-        }
+            "src/features",
+        ])
+        .iter()
+        .map(|path| std::fs::read_to_string(path).expect("read"))
+        .collect();
         assert!(
             sources.len() > 15,
             "the scan found {} files, so it is reading the wrong place",

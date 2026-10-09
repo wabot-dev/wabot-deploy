@@ -492,7 +492,7 @@ mod tests {
         let project = crate::repositories::projects::create(&database, "db-test")
             .await
             .expect("project");
-        let (service, _) = crate::commands::create_database::CreateDatabase {
+        let (service, _) = crate::features::databases::create_database_command::CreateDatabase {
             project_id: &project.id,
             name: "orders",
             version: "17",

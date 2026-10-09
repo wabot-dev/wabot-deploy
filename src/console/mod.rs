@@ -26,8 +26,6 @@ pub mod attention;
 pub mod auth;
 pub mod auth_rest_controller;
 pub mod auth_ui_controller;
-pub mod database_rest_controller;
-pub mod database_ui_controller;
 pub mod live;
 pub mod node_rest_controller;
 pub mod node_ui_controller;
@@ -54,6 +52,7 @@ use wabot::ui::embedded_assets;
 
 use crate::config::Config;
 use crate::edge::certs;
+use crate::features::databases::{database_rest_controller, database_ui_controller};
 
 /// What every console page reads from. Never cached: this is a status
 /// console, and a cached status is the thing it exists not to be.
@@ -674,8 +673,7 @@ pub(crate) mod tests {
         // It reads the directory and takes out the two the rule is
         // about, so a tenth is covered by existing.
         let mut node_scope: Vec<(String, String)> = Vec::new();
-        for entry in std::fs::read_dir("src/console").expect("the console is there") {
-            let path = entry.expect("entry").path();
+        for path in crate::tree::rust_files(&["src/console", "src/features"]) {
             let name = path
                 .file_name()
                 .unwrap_or_default()
@@ -749,11 +747,7 @@ pub(crate) mod tests {
     fn a_redirect_carries_a_nonce_and_never_a_secret() {
         let mut carrying: Vec<String> = Vec::new();
         let mut read = 0;
-        for entry in std::fs::read_dir("src/console").expect("the console is there") {
-            let path = entry.expect("entry").path();
-            if path.extension().is_none_or(|kind| kind != "rs") {
-                continue;
-            }
+        for path in crate::tree::rust_files(&["src/console", "src/features"]) {
             read += 1;
             let name = path.file_name().unwrap_or_default().to_string_lossy();
             let source = std::fs::read_to_string(&path).expect("read");
@@ -1273,24 +1267,19 @@ pub(crate) mod tests {
     /// forget a directory now, because there is nowhere to forget it.
     fn drawing_sources() -> Vec<(String, String)> {
         let mut sources = Vec::new();
-        for directory in [
+        for path in crate::tree::rust_files(&[
             "src/console",
             "src/views/pages",
             "src/views/components",
             "src/views/layouts",
-        ] {
-            for entry in std::fs::read_dir(directory).expect("the directory is there") {
-                let path = entry.expect("entry").path();
-                if path.extension().is_none_or(|kind| kind != "rs") {
-                    continue;
-                }
-                let name = path
-                    .file_name()
-                    .unwrap_or_default()
-                    .to_string_lossy()
-                    .to_string();
-                sources.push((name, std::fs::read_to_string(&path).expect("read")));
-            }
+            "src/features",
+        ]) {
+            let name = path
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .to_string();
+            sources.push((name, std::fs::read_to_string(&path).expect("read")));
         }
         assert!(
             sources.len() > 50,

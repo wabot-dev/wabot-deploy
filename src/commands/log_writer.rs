@@ -208,17 +208,16 @@ mod tests {
         let wanted = format!("{PREFIX_BYTES} bytes on every line");
         let mut read = 0;
         let mut found = false;
-        for directory in ["src/views/pages", "src/views/components", "src/console"] {
-            for entry in std::fs::read_dir(directory).expect("the console is there") {
-                let path = entry.expect("entry").path();
-                if path.extension().is_none_or(|kind| kind != "rs") {
-                    continue;
-                }
-                read += 1;
-                found |= std::fs::read_to_string(&path)
-                    .expect("read")
-                    .contains(&wanted);
-            }
+        for path in crate::tree::rust_files(&[
+            "src/views/pages",
+            "src/views/components",
+            "src/console",
+            "src/features",
+        ]) {
+            read += 1;
+            found |= std::fs::read_to_string(&path)
+                .expect("read")
+                .contains(&wanted);
         }
         assert!(
             read > 40,

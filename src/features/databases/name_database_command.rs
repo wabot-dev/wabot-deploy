@@ -1,9 +1,9 @@
 use wabot::sqlite::SqliteDatabase;
 
 use crate::config::Config;
-use crate::dtos::responses::database_named::DatabaseNamed;
 use crate::entities::project::Project;
 use crate::entities::service::Service;
+use crate::features::databases::database_named_response::DatabaseNamedResponse;
 use crate::repositories::ports;
 
 pub struct NameDatabase<'a> {
@@ -17,7 +17,7 @@ impl NameDatabase<'_> {
         &self,
         database: &SqliteDatabase,
         config: &Config,
-    ) -> Result<DatabaseNamed, String> {
+    ) -> Result<DatabaseNamedResponse, String> {
         let typed = crate::values::hostname::Hostname::parse(self.typed)
             .as_str()
             .to_string();
@@ -43,7 +43,7 @@ impl NameDatabase<'_> {
             .await
             .map_err(|error| error.to_string())?;
 
-        Ok(DatabaseNamed {
+        Ok(DatabaseNamedResponse {
             was: was.filter(|was| was != &typed),
             now: typed,
         })

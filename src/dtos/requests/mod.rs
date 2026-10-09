@@ -20,7 +20,6 @@
 //! with itself.
 
 pub mod add_service_port;
-pub mod create_database;
 pub mod create_service;
 pub mod invite_owner;
 pub mod invite_person;

@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 /// a rename that left the previous name routed would keep serving a
 /// certificate for a name nobody owns any more.
 #[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct DatabaseNamed {
+pub struct DatabaseNamedResponse {
     /// What it answered to before, when the rename replaced a name.
     pub was: Option<String>,
     pub now: String,

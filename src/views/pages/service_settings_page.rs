@@ -6,11 +6,12 @@ use crate::entities::port::Port;
 use crate::entities::project::Project;
 use crate::entities::replica::Replica;
 use crate::entities::service::Service;
+use crate::features::databases::database_cards_component;
 use crate::network::errand::Record;
 use crate::network::Node;
 use crate::views::components::node_certificate::{source_word, CertificateCells};
 use crate::views::components::service_push::Push;
-use crate::views::components::{database_cards, service_placement, service_ports, service_push};
+use crate::views::components::{service_placement, service_ports, service_push};
 use crate::views::layouts::layout;
 use crate::views::texts::language::t;
 
@@ -238,14 +239,14 @@ pub fn render<'a>(page: &'a ServiceSettings<'a>) -> impl Renderable + 'a {
             // the size.
             Panel::Database { name, actions, certificate, host_port } => {
                 @if let Some(name) = name {
-                    (database_cards::name_card(
+                    (database_cards_component::name_card(
                         &actions.0, name, &crate::deploy::hosts::pool_name(name)))
                 }
                 @if let Some((policy, cells)) = certificate {
-                    (database_cards::certificate_card(&actions.1, policy, cells))
+                    (database_cards_component::certificate_card(&actions.1, policy, cells))
                 }
                 @if let Some(name) = name {
-                    (database_cards::published_card(&actions.2, *host_port, name))
+                    (database_cards_component::published_card(&actions.2, *host_port, name))
                 }
             }
             Panel::Image { push, project_settings } => {

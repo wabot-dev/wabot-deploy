@@ -36,6 +36,8 @@ mod tests {
     use std::collections::BTreeSet;
     use std::fs;
 
+    use crate::tree::{kind_of, rust_files, Kind};
+
     /// A shape a use case takes or hands back is a DTO, and it lives
     /// here. It was not so once: six `Asked` structs and five outcomes
     /// were declared beside the `run` that used them, which is why the
@@ -43,21 +45,17 @@ mod tests {
     /// use case took a `HashMap` and a closure over it — a use case only
     /// a browser could call.
     ///
-    /// **It reads the directory rather than a list.** A guard that names
-    /// its inputs is right until somebody adds an input, which has cost
-    /// this project five times.
+    /// **It reads the tree rather than a list**, and knows a use case by
+    /// its name rather than its directory, so one that moved into a
+    /// feature is still read. A guard that names its inputs is right
+    /// until somebody adds an input, which has cost this project five
+    /// times.
     #[test]
     fn a_use_case_declares_no_shape_of_its_own() {
         let mut declared: BTreeSet<String> = BTreeSet::new();
         let mut read = 0;
-        for entry in fs::read_dir("src/usecases").expect("the use cases are there") {
-            let path = entry.expect("entry").path();
+        for path in use_cases() {
             let name = path.file_name().unwrap_or_default().to_string_lossy();
-            // The test fixtures build the world a use case runs in, which
-            // is not something anybody asks for or is handed back.
-            if name == "mod.rs" || name == "fixtures.rs" {
-                continue;
-            }
             let source = fs::read_to_string(&path).expect("read");
             read += 1;
             for line in source.lines() {
@@ -74,8 +72,15 @@ mod tests {
         );
         assert!(
             declared.is_empty(),
-            "these belong in src/dtos/requests or src/dtos/responses: {declared:#?}"
+            "these belong in a request or a response of their own: {declared:#?}"
         );
+    }
+
+    fn use_cases() -> Vec<std::path::PathBuf> {
+        rust_files(&["src"])
+            .into_iter()
+            .filter(|path| kind_of(path) == Some(Kind::UseCase))
+            .collect()
     }
 
     /// A use case is handed a request, not a form.
@@ -90,12 +95,8 @@ mod tests {
     fn no_use_case_reads_a_form() {
         let mut found: BTreeSet<String> = BTreeSet::new();
         let mut read = 0;
-        for entry in fs::read_dir("src/usecases").expect("the use cases are there") {
-            let path = entry.expect("entry").path();
+        for path in use_cases() {
             let name = path.file_name().unwrap_or_default().to_string_lossy();
-            if name == "mod.rs" || name == "fixtures.rs" {
-                continue;
-            }
             let source = fs::read_to_string(&path).expect("read");
             read += 1;
             for spelling in ["HashMap", "read_form", "axum", "form_urlencoded"] {

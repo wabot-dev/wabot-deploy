@@ -25,6 +25,7 @@ mod dtos;
 mod edge;
 mod entities;
 mod errors;
+mod features;
 mod health_rest_controller;
 mod ledger;
 mod network;
@@ -33,6 +34,8 @@ mod policies;
 mod registry;
 mod repositories;
 mod runtime;
+#[cfg(test)]
+mod tree;
 mod update;
 mod usecases;
 mod values;

@@ -1109,7 +1109,7 @@ impl ServiceRestController {
         };
         let restored = match crate::authz::node_user::belongs_here(&account) {
             true => {
-                crate::usecases::node_user_restore_database::run(
+                crate::features::databases::node_user_restore_database::run(
                     &self.state.database,
                     &self.state.config,
                     &account,
@@ -1120,7 +1120,7 @@ impl ServiceRestController {
                 .await
             }
             false => {
-                crate::usecases::tenant_user_restore_database::run(
+                crate::features::databases::tenant_user_restore_database::run(
                     &self.state.database,
                     &self.state.config,
                     &account,
@@ -3636,7 +3636,7 @@ mod tests {
         .run(&console.database)
         .await
         .expect("service");
-        let made = crate::commands::create_database::CreateDatabase {
+        let made = crate::features::databases::create_database_command::CreateDatabase {
             project_id: &project.id,
             name: "Orders",
             version: "17",
@@ -4167,7 +4167,7 @@ mod tests {
             "the ladder is gone rather than offered: {plain}"
         );
 
-        let made = crate::commands::create_database::CreateDatabase {
+        let made = crate::features::databases::create_database_command::CreateDatabase {
             project_id: &project.id,
             name: "Orders",
             version: "17",
@@ -4441,7 +4441,7 @@ mod tests {
             .await
             .expect("query")
             .expect("made");
-        let (database, _) = crate::commands::create_database::CreateDatabase {
+        let (database, _) = crate::features::databases::create_database_command::CreateDatabase {
             project_id: &project.id,
             name: "orders",
             version: "17",
@@ -4799,7 +4799,7 @@ mod tests {
             .await
             .expect("query")
             .expect("made");
-        crate::commands::create_database::CreateDatabase {
+        crate::features::databases::create_database_command::CreateDatabase {
             project_id: &project.id,
             name: "orders",
             version: "17",
@@ -4946,7 +4946,7 @@ mod tests {
             .await
             .expect("query")
             .expect("made");
-        crate::commands::create_database::CreateDatabase {
+        crate::features::databases::create_database_command::CreateDatabase {
             project_id: &project.id,
             name: "orders",
             version: "17",
@@ -5068,7 +5068,7 @@ mod tests {
             .await
             .expect("query")
             .expect("made");
-        crate::commands::create_database::CreateDatabase {
+        crate::features::databases::create_database_command::CreateDatabase {
             project_id: &project.id,
             name: "orders",
             version: "17",
@@ -5208,7 +5208,7 @@ mod tests {
             .await
             .expect("query")
             .expect("made");
-        crate::commands::create_database::CreateDatabase {
+        crate::features::databases::create_database_command::CreateDatabase {
             project_id: &project.id,
             name: "orders",
             version: "17",

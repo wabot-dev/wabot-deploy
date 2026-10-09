@@ -7,8 +7,8 @@ use serde::Deserialize;
 use wabot::prelude::*;
 use wabot::ui::hypertext::IntoView;
 
-use super::auth::{signed_in, SessionMiddleware};
-use super::ConsoleState;
+use crate::console::auth::{signed_in, SessionMiddleware};
+use crate::console::ConsoleState;
 use crate::policies::access;
 use crate::views::layouts::layout;
 use crate::views::layouts::shell::{Area, Frame};
@@ -55,13 +55,13 @@ impl DatabaseUiController {
         .allowing(allowed);
 
         layout::head("Create database");
-        let page = crate::views::pages::new_database_page::NewDatabase {
+        let page = crate::features::databases::new_database_page::NewDatabase {
             action: &action,
             back: &back,
             query_error: query.error.as_deref(),
         };
         let body = crate::views::texts::language::scoped(account.language, || {
-            crate::views::pages::new_database_page::render(&page)
+            crate::features::databases::new_database_page::render(&page)
                 .render()
                 .into_inner()
         });

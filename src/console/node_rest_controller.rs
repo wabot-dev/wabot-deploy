@@ -1275,14 +1275,9 @@ pub(crate) mod tests {
         // with them: a `style` attribute is a `style` attribute wherever
         // it is written, and naming the file this used to live in is
         // what made it silent the moment that file was split.
-        let source: String = std::fs::read_dir("src/console")
-            .expect("the console is there")
-            .filter_map(|entry| {
-                let path = entry.ok()?.path();
-                path.extension()
-                    .filter(|kind| *kind == "rs")
-                    .and(std::fs::read_to_string(&path).ok())
-            })
+        let source: String = crate::tree::rust_files(&["src/console", "src/features"])
+            .iter()
+            .filter_map(|path| std::fs::read_to_string(path).ok())
             .collect::<Vec<_>>()
             .join("\n");
         // Assembled rather than written out, or this scan finds its own

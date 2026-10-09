@@ -6,7 +6,7 @@ use crate::views::layouts::layout;
 use crate::views::texts::language::t;
 use hypertext::prelude::*;
 
-use crate::commands::create_database::DEFAULT_PRESET;
+use crate::features::databases::create_database_command::DEFAULT_PRESET;
 
 pub struct NewDatabase<'a> {
     pub action: &'a str,
@@ -57,7 +57,7 @@ pub fn render<'a>(page: &'a NewDatabase<'a>) -> impl Renderable + 'a {
                  settings, together. Postgres is given a quarter of it for shared buffers \
                  and told to expect half of it as cache — its defaults alone would be \
                  killed on the smaller sizes."))</p>
-            (crate::views::components::database_cards::sizes_table())
+            (crate::features::databases::database_cards_component::sizes_table())
 
             <div class="actions">
                 <button type="submit">(t("Create database"))</button>

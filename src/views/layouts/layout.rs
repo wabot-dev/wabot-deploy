@@ -986,15 +986,9 @@ mod tests {
     #[test]
     fn no_page_offers_a_way_back_the_breadcrumb_already_is() {
         let mut found = Vec::new();
-        for entry in std::fs::read_dir(concat!(env!("CARGO_MANIFEST_DIR"), "/src/console"))
-            .expect("the console's own directory")
-            .flatten()
-        {
-            let name = entry.file_name().to_string_lossy().to_string();
-            if !name.ends_with(".rs") {
-                continue;
-            }
-            let source = std::fs::read_to_string(entry.path()).expect("read");
+        for path in crate::tree::rust_files(&["src/console", "src/features"]) {
+            let name = path.file_name().unwrap_or_default().to_string_lossy();
+            let source = std::fs::read_to_string(&path).expect("read");
             for (number, line) in source.lines().enumerate() {
                 let trimmed = line.trim_start();
                 // Only what a page renders. A comment saying where a
@@ -1316,28 +1310,23 @@ mod tests {
     fn an_icon_only_button_is_spelled_one_way() {
         let mut read = 0;
         let mut wrong: Vec<String> = Vec::new();
-        for directory in [
+        for path in crate::tree::rust_files(&[
             "src/views/components",
             "src/views/pages",
             "src/views/layouts",
-        ] {
-            for entry in std::fs::read_dir(directory).expect("the views are there") {
-                let path = entry.expect("entry").path();
-                if path.extension().is_none_or(|kind| kind != "rs") {
+            "src/features",
+        ]) {
+            read += 1;
+            for line in std::fs::read_to_string(&path).expect("read").lines() {
+                let Some(rest) = line.split_once("class=\"") else {
                     continue;
-                }
-                read += 1;
-                for line in std::fs::read_to_string(&path).expect("read").lines() {
-                    let Some(rest) = line.split_once("class=\"") else {
-                        continue;
-                    };
-                    let Some((classes, _)) = rest.1.split_once('"') else {
-                        continue;
-                    };
-                    let named = classes.split_whitespace().any(|word| word == "icon");
-                    if named {
-                        wrong.push(format!("{classes:?}"));
-                    }
+                };
+                let Some((classes, _)) = rest.1.split_once('"') else {
+                    continue;
+                };
+                let named = classes.split_whitespace().any(|word| word == "icon");
+                if named {
+                    wrong.push(format!("{classes:?}"));
                 }
             }
         }
@@ -1424,30 +1413,26 @@ mod tests {
     fn a_copyable_block_sits_in_a_row() {
         let mut loose: Vec<String> = Vec::new();
         let mut found = 0;
-        for directory in ["src/views/components", "src/views/pages"] {
-            for entry in std::fs::read_dir(directory).expect("the views are there") {
-                let path = entry.expect("entry").path();
-                if path.extension().is_none_or(|kind| kind != "rs") {
-                    continue;
-                }
-                let name = path.file_name().unwrap_or_default().to_string_lossy();
-                let source = std::fs::read_to_string(&path).expect("read");
-                // Per block rather than per file: a file with two and a
-                // wrapper for one of them would pass a file-wide check.
-                for (index, _) in source
-                    .match_indices("data-copy\n")
-                    .chain(source.match_indices("data-copy "))
-                {
-                    found += 1;
-                    // The markup, not the prose. The first version of
-                    // this looked for the word and a doc comment
-                    // explaining the rule satisfied it — so breaking the
-                    // page on purpose left the guard green, which is how
-                    // it was caught.
-                    let before = &source[index.saturating_sub(400)..index];
-                    if !before.contains(r#"class="dsn-line""#) {
-                        loose.push(format!("{name} @ {index}"));
-                    }
+        for path in
+            crate::tree::rust_files(&["src/views/components", "src/views/pages", "src/features"])
+        {
+            let name = path.file_name().unwrap_or_default().to_string_lossy();
+            let source = std::fs::read_to_string(&path).expect("read");
+            // Per block rather than per file: a file with two and a
+            // wrapper for one of them would pass a file-wide check.
+            for (index, _) in source
+                .match_indices("data-copy\n")
+                .chain(source.match_indices("data-copy "))
+            {
+                found += 1;
+                // The markup, not the prose. The first version of
+                // this looked for the word and a doc comment
+                // explaining the rule satisfied it — so breaking the
+                // page on purpose left the guard green, which is how
+                // it was caught.
+                let before = &source[index.saturating_sub(400)..index];
+                if !before.contains(r#"class="dsn-line""#) {
+                    loose.push(format!("{name} @ {index}"));
                 }
             }
         }

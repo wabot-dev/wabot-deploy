@@ -1,18 +1,18 @@
 use wabot::sqlite::SqliteDatabase;
 
 use crate::accounts::Account;
-use crate::authz::node_user;
-use crate::dtos::requests::create_database::CreateDatabase;
+use crate::authz::tenant_user;
 use crate::entities::project::Project;
 use crate::entities::service::Service;
+use crate::features::databases::create_database_request::CreateDatabaseRequest;
 use crate::policies::access;
 
 pub async fn run(
     database: &SqliteDatabase,
     account: &Account,
-    asked: &CreateDatabase,
+    asked: &CreateDatabaseRequest,
 ) -> Result<(Project, Service), String> {
-    if !node_user::belongs_here(account) {
+    if !tenant_user::belongs_here(account) {
         return Err("that is not this console's to make".into());
     }
 
@@ -30,9 +30,9 @@ pub async fn run(
     // with one core is the node, so the form's empty answer is the
     // form's default answer.
     let memory_limit = crate::policies::presets::parse(&asked.memory)?
-        .unwrap_or(crate::commands::create_database::DEFAULT_PRESET);
+        .unwrap_or(crate::features::databases::create_database_command::DEFAULT_PRESET);
 
-    let (service, _) = crate::commands::create_database::CreateDatabase {
+    let (service, _) = crate::features::databases::create_database_command::CreateDatabase {
         project_id: &project.id,
         name: &asked.name,
         version: &asked.version,

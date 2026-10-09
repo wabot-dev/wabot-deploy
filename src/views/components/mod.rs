@@ -1,7 +1,6 @@
 //! Visual pieces more than one page uses.
 pub mod action_button;
 pub mod attention_card;
-pub mod database_cards;
 pub mod mark;
 pub mod node_backup;
 pub mod node_capabilities;

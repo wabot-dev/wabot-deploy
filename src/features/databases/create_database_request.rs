@@ -9,7 +9,7 @@ use wabot::prelude::*;
 /// Which presets exist is `policies::presets`, and the refusal is the
 /// command's.
 #[derive(Debug, Clone, Default, Deserialize, Serialize, Validate)]
-pub struct CreateDatabase {
+pub struct CreateDatabaseRequest {
     #[min_length(1)]
     pub project: String,
     #[min_length(1)]

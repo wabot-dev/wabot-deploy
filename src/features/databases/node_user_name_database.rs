@@ -2,11 +2,11 @@ use wabot::sqlite::SqliteDatabase;
 
 use crate::accounts::Account;
 use crate::authz::node_user;
-use crate::commands::check_database_certificate::CheckDatabaseCertificate;
 use crate::config::Config;
-use crate::edge::policy::RenewWith;
 use crate::entities::project::Project;
 use crate::entities::service::Service;
+use crate::features::databases::database_named_response::DatabaseNamedResponse;
+use crate::features::databases::name_database_command::NameDatabase;
 
 pub async fn run(
     database: &SqliteDatabase,
@@ -14,16 +14,16 @@ pub async fn run(
     account: &Account,
     project: &Project,
     service: &Service,
-    renew_with: &RenewWith,
-) -> Result<String, String> {
+    typed: &str,
+) -> Result<DatabaseNamedResponse, String> {
     if !node_user::belongs_here(account) {
-        return Err("that is not this console's to set".into());
+        return Err("that is not this console's to name".into());
     }
 
-    CheckDatabaseCertificate {
+    NameDatabase {
         project,
         service,
-        renew_with,
+        typed,
     }
     .run(database, config)
     .await

@@ -2,11 +2,11 @@ use wabot::sqlite::SqliteDatabase;
 
 use crate::accounts::Account;
 use crate::authz::tenant_user;
-use crate::commands::name_database::NameDatabase;
 use crate::config::Config;
-use crate::dtos::responses::database_named::DatabaseNamed;
 use crate::entities::project::Project;
 use crate::entities::service::Service;
+use crate::features::databases::database_named_response::DatabaseNamedResponse;
+use crate::features::databases::name_database_command::NameDatabase;
 
 pub async fn run(
     database: &SqliteDatabase,
@@ -15,7 +15,7 @@ pub async fn run(
     project: &Project,
     service: &Service,
     typed: &str,
-) -> Result<DatabaseNamed, String> {
+) -> Result<DatabaseNamedResponse, String> {
     if !tenant_user::belongs_here(account) {
         return Err("that is not this console's to name".into());
     }

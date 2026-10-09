@@ -1,9 +1,9 @@
 use wabot::sqlite::SqliteDatabase;
 
 use crate::accounts::Account;
-use crate::authz::node_user;
-use crate::commands::publish_database::PublishDatabase;
+use crate::authz::tenant_user;
 use crate::entities::service::Service;
+use crate::features::databases::publish_database_command::PublishDatabase;
 
 pub async fn run(
     database: &SqliteDatabase,
@@ -11,7 +11,7 @@ pub async fn run(
     service: &Service,
     published: bool,
 ) -> Result<(), String> {
-    if !node_user::belongs_here(account) {
+    if !tenant_user::belongs_here(account) {
         return Err("that is not this console's to publish".into());
     }
 

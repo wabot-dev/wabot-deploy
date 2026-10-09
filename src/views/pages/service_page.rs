@@ -8,12 +8,13 @@ use crate::entities::release::Release;
 use crate::entities::replica::Replica;
 use crate::entities::service::{DesiredState, Service, EVERY_TAG};
 use crate::entities::volume::Volume;
+use crate::features::databases::database_cards_component;
 use crate::network::Node;
 use crate::views::components::service_push::Push;
 use crate::views::components::service_running::Running;
 use crate::views::components::service_state::StateCell;
 use crate::views::components::{
-    database_cards, service_placement, service_ports, service_push, service_running, service_state,
+    service_placement, service_ports, service_push, service_running, service_state,
 };
 use crate::views::layouts::layout;
 use crate::views::texts::language::t;
@@ -179,16 +180,16 @@ pub fn render<'a>(page: &'a ServiceDetail<'a>) -> impl Renderable + 'a {
         </section>
 
         @if let Some(engine) = &page.engine {
-            (database_cards::database_card(
+            (database_cards_component::database_card(
                 engine.row, page.placements, engine.address.clone(),
                 service.memory_limit, engine.names, engine.signs_here, engine.host_port))
             // How far back it can be taken. Beside the database card
             // because it is a fact about this database rather than about
             // the node — even though what decides it is a switch on the
             // node's page, which is why the card says so when it is off.
-            (database_cards::window_card(engine.window, engine.elsewhere))
+            (database_cards_component::window_card(engine.window, engine.elsewhere))
             @if engine.restorable {
-                (database_cards::restore_card(
+                (database_cards_component::restore_card(
                     &project.slug, &service.slug, engine.window,
                     &format!("{}-restored", service.slug), engine.elsewhere))
             }

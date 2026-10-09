@@ -7,8 +7,10 @@ use wabot::rest::axum::extract::Request;
 use wabot::rest::axum::response::Response;
 use wabot::rest::RestResult;
 
-use super::auth::{back_with_error, field, read_form, see_other, signed_in, SessionMiddleware};
-use super::ConsoleState;
+use crate::console::auth::{
+    back_with_error, field, read_form, see_other, signed_in, SessionMiddleware,
+};
+use crate::console::ConsoleState;
 
 #[injectable]
 pub struct DatabaseRestController {
@@ -52,7 +54,7 @@ impl DatabaseRestController {
 
         let renamed = match crate::authz::node_user::belongs_here(&account) {
             true => {
-                crate::usecases::node_user_name_database::run(
+                crate::features::databases::node_user_name_database::run(
                     &self.state.database,
                     &self.state.config,
                     &account,
@@ -63,7 +65,7 @@ impl DatabaseRestController {
                 .await
             }
             false => {
-                crate::usecases::tenant_user_name_database::run(
+                crate::features::databases::tenant_user_name_database::run(
                     &self.state.database,
                     &self.state.config,
                     &account,
@@ -139,7 +141,7 @@ impl DatabaseRestController {
         let published = field(&form, "publish") == "on";
         let done = match crate::authz::node_user::belongs_here(&account) {
             true => {
-                crate::usecases::node_user_publish_database::run(
+                crate::features::databases::node_user_publish_database::run(
                     &self.state.database,
                     &account,
                     &service,
@@ -148,7 +150,7 @@ impl DatabaseRestController {
                 .await
             }
             false => {
-                crate::usecases::tenant_user_publish_database::run(
+                crate::features::databases::tenant_user_publish_database::run(
                     &self.state.database,
                     &account,
                     &service,
@@ -206,14 +208,14 @@ impl DatabaseRestController {
         let Some(first) = names.first().cloned() else {
             return Ok(back_with_error(&here, "this database has no name yet"));
         };
-        let renew_with = match super::auth::source_from(&form, &first) {
+        let renew_with = match crate::console::auth::source_from(&form, &first) {
             Ok(renew_with) => renew_with,
             Err(reason) => return Ok(back_with_error(&here, &reason)),
         };
 
         let checked = match crate::authz::node_user::belongs_here(&account) {
             true => {
-                crate::usecases::node_user_set_database_certificate::run(
+                crate::features::databases::node_user_set_database_certificate::run(
                     &self.state.database,
                     &self.state.config,
                     &account,
@@ -224,7 +226,7 @@ impl DatabaseRestController {
                 .await
             }
             false => {
-                crate::usecases::tenant_user_set_database_certificate::run(
+                crate::features::databases::tenant_user_set_database_certificate::run(
                     &self.state.database,
                     &self.state.config,
                     &account,
@@ -279,7 +281,7 @@ impl DatabaseRestController {
         // The two are the same today and will not stay that way: an
         // organisation has a quota and the machine's own frontier does
         // not.
-        let asked = crate::dtos::requests::create_database::CreateDatabase {
+        let asked = crate::features::databases::create_database_request::CreateDatabaseRequest {
             project: project_slug.to_string(),
             name: field(&form, "name").to_string(),
             version: field(&form, "version").to_string(),
@@ -290,7 +292,7 @@ impl DatabaseRestController {
         }
         let made = match crate::authz::node_user::belongs_here(&account) {
             true => {
-                crate::usecases::node_user_create_database::run(
+                crate::features::databases::node_user_create_database::run(
                     &self.state.database,
                     &account,
                     &asked,
@@ -298,7 +300,7 @@ impl DatabaseRestController {
                 .await
             }
             false => {
-                crate::usecases::tenant_user_create_database::run(
+                crate::features::databases::tenant_user_create_database::run(
                     &self.state.database,
                     &account,
                     &asked,
@@ -369,7 +371,7 @@ mod tests {
         let project = crate::repositories::projects::create(&database, "db-test")
             .await
             .expect("project");
-        let (service, row) = crate::commands::create_database::CreateDatabase {
+        let (service, row) = crate::features::databases::create_database_command::CreateDatabase {
             project_id: &project.id,
             name: "orders",
             version: "17",
@@ -387,7 +389,7 @@ mod tests {
         )
         .await;
         // The qualified name first, which is how `certificate_names` orders
-        // them and what `crate::views::components::database_cards::Strings::of` reads the four choices out of.
+        // them and what `crate::features::databases::database_cards_component::Strings::of` reads the four choices out of.
         assert_eq!(
             names.first().map(String::as_str),
             Some("orders.db-test.node.example")
@@ -396,7 +398,7 @@ mod tests {
         let replicas = crate::repositories::replicas::of_service(&database, &service.id)
             .await
             .expect("replicas");
-        let card = crate::views::components::database_cards::database_card(
+        let card = crate::features::databases::database_cards_component::database_card(
             &row,
             &replicas,
             Some("10.42.2.200".into()),
@@ -466,7 +468,7 @@ mod tests {
         let project = crate::repositories::projects::create(&database, "db-test")
             .await
             .expect("project");
-        let (service, row) = crate::commands::create_database::CreateDatabase {
+        let (service, row) = crate::features::databases::create_database_command::CreateDatabase {
             project_id: &project.id,
             name: "orders",
             version: "17",
@@ -487,7 +489,7 @@ mod tests {
             .expect("replicas");
         let address = Some("10.42.2.200".to_string());
 
-        let public = crate::views::components::database_cards::database_card(
+        let public = crate::features::databases::database_cards_component::database_card(
             &row,
             &replicas,
             address.clone(),
@@ -519,7 +521,7 @@ mod tests {
             .filter(|name| !name.ends_with("node.example"))
             .cloned()
             .collect();
-        let bare = crate::views::components::database_cards::database_card(
+        let bare = crate::features::databases::database_cards_component::database_card(
             &row,
             &replicas,
             address,
@@ -556,7 +558,7 @@ mod tests {
         let project = crate::repositories::projects::create(&database, "db-test")
             .await
             .expect("project");
-        let (service, _) = crate::commands::create_database::CreateDatabase {
+        let (service, _) = crate::features::databases::create_database_command::CreateDatabase {
             project_id: &project.id,
             name: "orders",
             version: "17",
@@ -684,7 +686,7 @@ mod tests {
         let console = Console::new().await;
         let cookie = console.signed_in().await;
         let project_id = project(&console).await;
-        let (service, _) = crate::commands::create_database::CreateDatabase {
+        let (service, _) = crate::features::databases::create_database_command::CreateDatabase {
             project_id: &project_id,
             name: "orders",
             version: "17",

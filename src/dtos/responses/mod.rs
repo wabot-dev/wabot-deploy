@@ -4,7 +4,6 @@
 //! statement of what happened, shaped for whoever asked.
 
 pub mod backup_plan_saved;
-pub mod database_named;
 pub mod domain_settled;
 pub mod env_applied;
 pub mod join_token_spent;
