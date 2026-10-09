@@ -5,6 +5,17 @@
 //! way to keep them agreeing is to give them one copy of the code that
 //! decides.
 
+pub mod backup;
+pub mod clean;
+pub mod containerd;
+pub mod doctor;
+pub mod install;
+pub mod join;
+pub mod log_writer;
+pub mod passwd;
+pub mod serve;
+pub mod setup_token;
+
 use std::path::PathBuf;
 
 use clap::{Parser, Subcommand};
@@ -83,7 +94,7 @@ pub enum Command {
     /// Copy everything this node would need to be itself again.
     ///
     /// The database, and every volume a managed engine does not own —
-    /// see `commands::backup` for why those are named and skipped
+    /// see `backup` for why those are named and skipped
     /// rather than copied wrongly. Images are deliberately left out:
     /// they are in a registry and come back with a pull.
     ///

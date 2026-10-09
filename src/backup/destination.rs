@@ -30,7 +30,7 @@
 //! ## The name being the hash is what makes the transfer cheap
 //!
 //! A shared backup root holds one copy of each image layer for the whole
-//! network — see `commands::blobs`. Sending it again per node would
+//! network — see `backup::blobs`. Sending it again per node would
 //! undo that, so the transfer has to skip what is already there.
 //!
 //! Over SSH that is `rsync --ignore-existing`, and this is the rare case
@@ -272,7 +272,7 @@ fn files_under(root: &Path) -> Vec<(PathBuf, String)> {
 /// it would be a request whose answer is always no.
 async fn send_to_s3(
     root: &Path,
-    credentials: &crate::commands::s3::Credentials,
+    credentials: &crate::backup::s3::Credentials,
     bucket: &str,
     prefix: &str,
 ) -> Result<String, String> {
@@ -282,7 +282,7 @@ async fn send_to_s3(
     };
 
     let already: std::collections::HashSet<String> =
-        crate::commands::s3::list(credentials, bucket, &at("blobs/"))
+        crate::backup::s3::list(credentials, bucket, &at("blobs/"))
             .await
             .map_err(|error| error.to_string())?
             .into_iter()
@@ -293,14 +293,14 @@ async fn send_to_s3(
         let object = at(&key);
         // The name is the hash, so a blob already there is *the* blob
         // for that digest — there is nothing to compare and no version
-        // to be stale. See `commands::blobs`.
+        // to be stale. See `backup::blobs`.
         if key.starts_with("blobs/") && already.contains(&object) {
             skipped += 1;
             continue;
         }
         let body = std::fs::read(&path).map_err(|error| format!("{}: {error}", path.display()))?;
         bytes += body.len() as u64;
-        crate::commands::s3::put(credentials, bucket, &object, body)
+        crate::backup::s3::put(credentials, bucket, &object, body)
             .await
             .map_err(|error| error.to_string())?;
         sent += 1;
@@ -444,7 +444,7 @@ pub async fn fetch_dir(
         }
         Destination::S3 { bucket, prefix } => {
             let credentials = s3_credentials(config, bucket)?;
-            let keys = crate::commands::s3::list(&credentials, bucket, &format!("{prefix}/"))
+            let keys = crate::backup::s3::list(&credentials, bucket, &format!("{prefix}/"))
                 .await
                 .map_err(|error| error.to_string())?;
             if keys.is_empty() {
@@ -458,7 +458,7 @@ pub async fn fetch_dir(
                 if landing.exists() {
                     continue;
                 }
-                let bytes = crate::commands::s3::get(&credentials, bucket, &key)
+                let bytes = crate::backup::s3::get(&credentials, bucket, &key)
                     .await
                     .map_err(|error| error.to_string())?;
                 if let Some(parent) = landing.parent() {
@@ -484,9 +484,9 @@ pub async fn fetch_dir(
 pub async fn index(
     at: &Destination,
     config: &crate::config::Config,
-) -> Result<Vec<(Destination, crate::commands::backup::Manifest)>, String> {
-    let mut found: Vec<(Destination, crate::commands::backup::Manifest)> = match at {
-        Destination::Local(root) => crate::commands::backup::taken_in(root)
+) -> Result<Vec<(Destination, crate::backup::Manifest)>, String> {
+    let mut found: Vec<(Destination, crate::backup::Manifest)> = match at {
+        Destination::Local(root) => crate::backup::taken_in(root)
             .into_iter()
             .map(|(path, manifest)| (Destination::Local(path), manifest))
             .collect(),
@@ -496,12 +496,12 @@ pub async fn index(
                 true => "nodes/".to_string(),
                 false => format!("{prefix}/nodes/"),
             };
-            let keys = crate::commands::s3::list(&credentials, bucket, &root)
+            let keys = crate::backup::s3::list(&credentials, bucket, &root)
                 .await
                 .map_err(|error| error.to_string())?;
             let mut found = Vec::new();
             for key in keys.iter().filter(|key| is_manifest(&root, key)) {
-                let bytes = crate::commands::s3::get(&credentials, bucket, key)
+                let bytes = crate::backup::s3::get(&credentials, bucket, key)
                     .await
                     .map_err(|error| error.to_string())?;
                 // A manifest this version cannot read is skipped rather
@@ -648,7 +648,7 @@ async fn fetch_remote(
         }
         Destination::S3 { bucket, prefix } => {
             let credentials = s3_credentials(config, bucket)?;
-            let keys = crate::commands::s3::list(&credentials, bucket, &format!("{prefix}/"))
+            let keys = crate::backup::s3::list(&credentials, bucket, &format!("{prefix}/"))
                 .await
                 .map_err(|error| error.to_string())?;
             if keys.is_empty() {
@@ -658,7 +658,7 @@ async fn fetch_remote(
                 let Some(relative) = under(prefix, &key) else {
                     continue;
                 };
-                let bytes = crate::commands::s3::get(&credentials, bucket, &key)
+                let bytes = crate::backup::s3::get(&credentials, bucket, &key)
                     .await
                     .map_err(|error| error.to_string())?;
                 let landing = here.join(&relative);
@@ -726,7 +726,7 @@ async fn fetch_blobs(
         // here would replace that with something vaguer.
         return Ok(());
     };
-    let Ok(manifest) = serde_json::from_str::<crate::commands::backup::Manifest>(&text) else {
+    let Ok(manifest) = serde_json::from_str::<crate::backup::Manifest>(&text) else {
         return Ok(());
     };
 
@@ -749,7 +749,7 @@ async fn fetch_blobs(
 
     let mut wanted = 0;
     for digest in &digests {
-        let Some(local) = crate::commands::blobs::path(staging, digest) else {
+        let Some(local) = crate::backup::blobs::path(staging, digest) else {
             continue;
         };
         if local.exists() {
@@ -776,7 +776,7 @@ async fn fetch_blobs(
                     true => format!("blobs/sha256/{hex}"),
                     false => format!("{root}/blobs/sha256/{hex}"),
                 };
-                let bytes = crate::commands::s3::get(&credentials, bucket, &key)
+                let bytes = crate::backup::s3::get(&credentials, bucket, &key)
                     .await
                     .map_err(|error| error.to_string())?;
                 std::fs::write(&local, bytes).map_err(|error| format!("{hex}: {error}"))?;
@@ -807,7 +807,7 @@ fn remote_root(path: &str) -> String {
 fn s3_credentials(
     config: &crate::config::Config,
     bucket: &str,
-) -> Result<crate::commands::s3::Credentials, String> {
+) -> Result<crate::backup::s3::Credentials, String> {
     config.s3().ok_or_else(|| {
         format!(
             "no credentials for s3://{bucket}. The node's Backup tab stores them, or add a \

@@ -418,7 +418,7 @@ happened:
 process sits between them, which is why it cannot stamp a line or say
 which stream it came from. `binary:///path` hands the streams to a
 program instead — `wabot-deploy log-writer`, one process per copy. The
-protocol is measured and written down in `commands::log_writer`, including
+protocol is measured and written down in `cli::log_writer`, including
 the part that is a trap: fd 3 is stdout, fd 4 is stderr, and **fd 5 is a
 readiness pipe containerd blocks on until it closes** — a logger that
 reads only 3 and 4 hangs container creation for ever, with no error

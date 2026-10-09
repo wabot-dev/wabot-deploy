@@ -13,10 +13,10 @@ use clap::Parser;
 mod accounts;
 mod api;
 mod authz;
+mod backup;
 mod bootstrap;
 mod cli;
 mod clock;
-mod commands;
 mod config;
 mod console;
 mod db;
@@ -75,15 +75,15 @@ fn main() -> std::process::ExitCode {
 
     let result = runtime.block_on(async {
         match cli.command {
-            Command::Install(args) => commands::install::run(config, &cli.config, args).await,
-            Command::Serve => commands::serve::run(config).await,
-            Command::Doctor => commands::doctor::run(config, &cli.config).await,
-            Command::Join { token } => commands::join::run(config, &token).await,
-            Command::SetupToken => commands::setup_token::run(config).await,
-            Command::Passwd { username } => commands::passwd::run(config, &username).await,
-            Command::Backup { out } => commands::backup::run(config, out).await,
-            Command::Clean { apply, volumes } => commands::clean::run(config, apply, volumes).await,
-            Command::LogWriter { path } => commands::log_writer::run(path),
+            Command::Install(args) => cli::install::run(config, &cli.config, args).await,
+            Command::Serve => cli::serve::run(config).await,
+            Command::Doctor => cli::doctor::run(config, &cli.config).await,
+            Command::Join { token } => cli::join::run(config, &token).await,
+            Command::SetupToken => cli::setup_token::run(config).await,
+            Command::Passwd { username } => cli::passwd::run(config, &username).await,
+            Command::Backup { out } => cli::backup::run(config, out).await,
+            Command::Clean { apply, volumes } => cli::clean::run(config, apply, volumes).await,
+            Command::LogWriter { path } => cli::log_writer::run(path),
             Command::RestoreNode {
                 from,
                 same_node,
@@ -91,21 +91,19 @@ fn main() -> std::process::ExitCode {
                 over_my_dead_body,
             } => {
                 let identity = match (same_node, new_node) {
-                    (true, _) => Some(commands::backup::Identity::Same),
-                    (_, true) => Some(commands::backup::Identity::New),
+                    (true, _) => Some(cli::backup::Identity::Same),
+                    (_, true) => Some(cli::backup::Identity::New),
                     _ => None,
                 };
-                commands::backup::restore_node(config, from, identity, over_my_dead_body).await
+                cli::backup::restore_node(config, from, identity, over_my_dead_body).await
             }
             Command::Restore {
                 database,
                 to,
                 into,
                 from,
-            } => commands::backup::restore(config, database, to, into, from).await,
-            Command::Containerd { pull, run, port } => {
-                commands::containerd::run(pull, run, port).await
-            }
+            } => cli::backup::restore(config, database, to, into, from).await,
+            Command::Containerd { pull, run, port } => cli::containerd::run(pull, run, port).await,
         }
     });
 

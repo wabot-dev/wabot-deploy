@@ -12,11 +12,11 @@ use hypertext::prelude::*;
 /// here too — it decides how far a restore *reaches* from whatever this
 /// takes, and it was two tabs away from the thing it depends on.
 pub fn backup_card<'a>(
-    plan: &'a crate::node::backups::Plan,
+    plan: &'a crate::backup::plan::Plan,
     archiving: bool,
     default_destination: &'a str,
 ) -> impl Renderable + 'a {
-    use crate::node::backups::Cadence;
+    use crate::backup::plan::Cadence;
 
     let destination = plan.destination.clone().unwrap_or_default();
     let keep_days = plan.keep_days.to_string();
@@ -169,9 +169,9 @@ pub fn backup_card<'a>(
 /// have" — which is what makes changing a region a one-field edit rather
 /// than a hunt for a secret nobody wrote down.
 pub fn bucket_card<'a>(
-    stored: Option<&'a crate::commands::s3::Credentials>,
+    stored: Option<&'a crate::backup::s3::Credentials>,
     config_path: &'a str,
-    plan: &'a crate::node::backups::Plan,
+    plan: &'a crate::backup::plan::Plan,
 ) -> impl Renderable + 'a {
     let key = stored.map(|c| c.access_key_id.clone()).unwrap_or_default();
     let region = stored
@@ -185,11 +185,11 @@ pub fn bucket_card<'a>(
     let in_use = plan
         .destination
         .as_deref()
-        .and_then(|text| crate::commands::destination::Destination::parse(text).ok())
+        .and_then(|text| crate::backup::destination::Destination::parse(text).ok())
         .is_some_and(|destination| {
             matches!(
                 destination,
-                crate::commands::destination::Destination::S3 { .. }
+                crate::backup::destination::Destination::S3 { .. }
             )
         });
 
@@ -287,23 +287,23 @@ pub fn bucket_card<'a>(
 /// node anywhere" and "did the last attempt work" — are the ones somebody
 /// opens this tab to ask.
 pub fn backup_state_card<'a>(
-    plan: &'a crate::node::backups::Plan,
-    attempt: &'a crate::node::backups::Attempt,
-    taken: &'a [(std::path::PathBuf, crate::commands::backup::Manifest)],
+    plan: &'a crate::backup::plan::Plan,
+    attempt: &'a crate::backup::plan::Attempt,
+    taken: &'a [(std::path::PathBuf, crate::backup::Manifest)],
     self_id: &'a str,
     running: bool,
 ) -> impl Renderable + 'a {
-    use crate::node::backups::Cadence;
+    use crate::backup::plan::Cadence;
 
-    let next = crate::node::backups::next_slot(plan, crate::clock::now_ms());
+    let next = crate::backup::plan::next_slot(plan, crate::clock::now_ms());
     // Ten, and the count says what was left out. A node kept for a year
     // with a daily backup would otherwise render a table nobody scrolls.
-    let showing: Vec<&(std::path::PathBuf, crate::commands::backup::Manifest)> =
+    let showing: Vec<&(std::path::PathBuf, crate::backup::Manifest)> =
         taken.iter().take(10).collect();
     let remote = plan
         .destination
         .as_deref()
-        .and_then(|text| crate::commands::destination::Destination::parse(text).ok())
+        .and_then(|text| crate::backup::destination::Destination::parse(text).ok())
         .is_some_and(|destination| destination.is_remote());
 
     rsx! {
@@ -407,13 +407,13 @@ pub fn backup_state_card<'a>(
 /// One backup on the disk.
 pub fn backup_row<'a>(
     path: &'a std::path::Path,
-    manifest: &'a crate::commands::backup::Manifest,
+    manifest: &'a crate::backup::Manifest,
     self_id: &'a str,
 ) -> impl Renderable + 'a {
     let crash = manifest
         .volumes
         .iter()
-        .filter(|copied| copied.how == crate::commands::backup::How::CrashConsistent)
+        .filter(|copied| copied.how == crate::backup::How::CrashConsistent)
         .count();
     // Whose it is. A shared root holds several nodes' backups — that is
     // what makes one bucket the answer for a network — so a row about

@@ -280,9 +280,9 @@ pub async fn run(config: Config) -> anyhow::Result<i32> {
                     // number read at startup would go on bounding the
                     // archive by whatever it was before somebody changed
                     // it — for as long as the process lived.
-                    let keep_days = crate::node::backups::plan(&database).await.keep_days;
+                    let keep_days = crate::backup::plan::plan(&database).await.keep_days;
                     let (removed, freed) = tokio::task::spawn_blocking(move || {
-                        crate::commands::backup::sweep(&data_dir, crate::clock::now_ms(), keep_days)
+                        crate::backup::sweep(&data_dir, crate::clock::now_ms(), keep_days)
                     })
                     .await
                     .unwrap_or((0, 0));
@@ -326,9 +326,9 @@ pub async fn run(config: Config) -> anyhow::Result<i32> {
                         _ = tokio::time::sleep(std::time::Duration::from_secs(300)) => {}
                     }
 
-                    let plan = crate::node::backups::plan(&database).await;
-                    let last = crate::node::backups::last(&database).await.at;
-                    if !crate::node::backups::due(&plan, last, crate::clock::now_ms()) {
+                    let plan = crate::backup::plan::plan(&database).await;
+                    let last = crate::backup::plan::last(&database).await.at;
+                    if !crate::backup::plan::due(&plan, last, crate::clock::now_ms()) {
                         continue;
                     }
                     tracing::info!(cadence = plan.cadence.as_str(), "a scheduled backup is due");
@@ -338,7 +338,7 @@ pub async fn run(config: Config) -> anyhow::Result<i32> {
                     // it costs at worst the service manager's stop
                     // timeout — and a backup on a small node is often
                     // seconds.
-                    match crate::node::backups::take_now(&config, &database).await {
+                    match crate::backup::plan::take_now(&config, &database).await {
                         Ok(held) => tracing::info!(%held, "scheduled backup taken"),
                         // Warned and recorded — `take_now` writes the
                         // reason on the row the console reads, because a

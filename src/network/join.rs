@@ -4,7 +4,7 @@
 //! console, and the two must do exactly the same thing — the order of
 //! the writes here is a safety property (see below), not a detail of
 //! how somebody happened to type it. So the sequence lives here and
-//! `commands::join` and the console are both thin: one prints the
+//! `cli::join` and the console are both thin: one prints the
 //! result, the other renders it.
 //!
 //! ## Order matters

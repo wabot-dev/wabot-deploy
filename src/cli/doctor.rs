@@ -263,15 +263,15 @@ pub async fn run(config: Config, config_path: &Path) -> anyhow::Result<i32> {
     // backups are not happening is a node one disk away from nothing.
     println!();
     println!("backups");
-    let plan = crate::node::backups::plan(&database).await;
+    let plan = crate::backup::plan::plan(&database).await;
     match plan.cadence {
-        crate::node::backups::Cadence::Off => {
+        crate::backup::plan::Cadence::Off => {
             println!("  schedule     none — `wabot-deploy backup` is the only way one is taken")
         }
-        crate::node::backups::Cadence::Daily => {
+        crate::backup::plan::Cadence::Daily => {
             println!("  schedule     every day at {:02}:00 UTC", plan.hour)
         }
-        crate::node::backups::Cadence::Weekly => println!(
+        crate::backup::plan::Cadence::Weekly => println!(
             "  schedule     every {} at {:02}:00 UTC",
             WEEKDAYS
                 .get(usize::from(plan.weekday))
@@ -299,7 +299,7 @@ pub async fn run(config: Config, config_path: &Path) -> anyhow::Result<i32> {
         ),
         None => println!("  bucket key   none — a path or ssh:// needs none"),
     }
-    let attempt = crate::node::backups::last(&database).await;
+    let attempt = crate::backup::plan::last(&database).await;
     match attempt.ok_at {
         Some(at) => println!(
             "  last good    {} ({})",
@@ -919,7 +919,7 @@ mod tests {
         let config_path = dir.path().join("config.toml");
         let config = config_in(dir.path());
 
-        crate::commands::install::run(config.clone(), &config_path, InstallArgs::none())
+        crate::cli::install::run(config.clone(), &config_path, InstallArgs::none())
             .await
             .expect("install");
 

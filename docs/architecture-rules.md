@@ -53,9 +53,10 @@ requests and responses go in its own folder under `src/features`, each
 named for what it is — §11. What every feature reads stays a layer of
 its own: `src/entities`, `src/repositories`, `src/values`,
 `src/policies`, and the console's shell in `src/console` and
-`src/views`. What is left in `src/commands` and `src/dtos` is shared
-too — a command more than one feature calls, a shape more than one
-carries — beside the CLI's verbs, which are `src/commands`' as well.
+`src/views`. `src/dtos` holds the shapes more than one feature
+carries. The terminal's verbs are `src/cli`, one file each, and the
+machinery a backup is taken and restored with is `src/backup`, which the
+CLI and the console's backups feature both call.
 
 `platform` was a name for five of these at once, which is why the rules
 ended up wherever the first caller needed them. It is being taken apart.
@@ -100,7 +101,7 @@ Everything this node does is done *by somebody*, and there are four:
 |---|---|---|
 | **Node user** | the machine's console | `console::nodes`, `console::people`, `console::updates` |
 | **Tenant user** | an organisation's console | `console::tenant` |
-| **CLI user** | a terminal on the machine | `commands::install`, `doctor`, `join`, `passwd`, `backup` |
+| **CLI user** | a terminal on the machine | `cli::install`, `doctor`, `join`, `passwd`, `backup` |
 | **Remote node** | errands and the control-plane API | `network::collect::carry_out`, `network::api` |
 
 **The CLI subcommands are use cases too**, and treating them as a

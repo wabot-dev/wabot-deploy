@@ -10,9 +10,9 @@
 //!
 //! So the decision is a row on the node it binds, like every other
 //! decision here, and two doors are thin over it: the form on the
-//! console's Backup tab, and the loop in [`crate::commands::serve`] that
+//! console's Backup tab, and the loop in [`crate::cli::serve`] that
 //! asks whether one is owed. Taking one is
-//! [`crate::commands::backup::once`], which is the same code the command
+//! [`crate::backup::once`], which is the same code the command
 //! runs — same rule as `network::join`.
 //!
 //! ## What is deliberately not here
@@ -26,8 +26,8 @@ use std::sync::Arc;
 
 use wabot::sqlite::{SqliteDatabase, SqliteResult};
 
-use super::settings::{read, write};
 use crate::config::Config;
+use crate::node::settings::{read, write};
 
 const DESTINATION: &str = "backup.destination";
 const CADENCE: &str = "backup.cadence";
@@ -100,7 +100,7 @@ pub struct Plan {
     /// Days from Monday, read only by a weekly plan.
     pub weekday: u8,
     /// How far back a restore can reach. The window `sweep` bounds the
-    /// archive by — see [`crate::commands::backup::keeping`], which is
+    /// archive by — see [`crate::backup::keeping`], which is
     /// where the anchor rule lives.
     pub keep_days: i64,
 }
@@ -121,7 +121,7 @@ impl Default for Plan {
             // at once is the hour to avoid rather than the one to pick.
             hour: 3,
             weekday: SUNDAY,
-            keep_days: crate::commands::backup::KEEP_DAYS,
+            keep_days: crate::backup::KEEP_DAYS,
         }
     }
 }
@@ -312,7 +312,7 @@ pub async fn take_now(config: &Config, database: &SqliteDatabase) -> Result<Stri
     };
     let plan = plan(database).await;
     let at = crate::clock::now_ms();
-    let outcome = crate::commands::backup::once(config, database, plan.destination.clone()).await;
+    let outcome = crate::backup::once(config, database, plan.destination.clone()).await;
     if let Err(error) = record(database, at, &outcome).await {
         tracing::warn!(%error, "could not record how the backup went");
     }

@@ -1,12 +1,12 @@
 use wabot::sqlite::SqliteDatabase;
 
 use crate::authz::node_user;
-use crate::commands::destination::Destination;
+use crate::backup::destination::Destination;
+use crate::backup::plan::{self, Cadence, Plan};
 use crate::config::Config;
 use crate::entities::account::Account;
 use crate::features::backups::backup_plan_saved_response::BackupPlanSavedResponse;
 use crate::features::backups::set_backup_plan_request::SetBackupPlanRequest;
-use crate::node::backups::{self, Cadence, Plan};
 
 pub async fn run(
     database: &SqliteDatabase,
@@ -41,9 +41,9 @@ pub async fn run(
     };
 
     let keep_days = match asked.keep_days.trim() {
-        "" => crate::commands::backup::KEEP_DAYS,
+        "" => crate::backup::KEEP_DAYS,
         text => match text.parse::<i64>() {
-            Ok(days) if days >= backups::MIN_KEEP_DAYS => days,
+            Ok(days) if days >= plan::MIN_KEEP_DAYS => days,
             Ok(_) => {
                 return Err(
                     "a window of no days would delete each backup as soon as it was taken".into(),
@@ -67,10 +67,10 @@ pub async fn run(
             .trim()
             .parse()
             .unwrap_or(Plan::default().weekday)
-            .min(backups::SUNDAY),
+            .min(plan::SUNDAY),
         keep_days,
     };
-    backups::store(database, &plan).await.map_err(|error| {
+    plan::store(database, &plan).await.map_err(|error| {
         tracing::error!(%error, "could not store the backup plan");
         "that could not be saved".to_string()
     })?;
@@ -101,16 +101,16 @@ pub async fn run(
 /// long enough to be a slow bucket and short enough to be an answer.
 pub(crate) async fn bucket_refusal(
     destination: Option<&str>,
-    credentials: &crate::commands::s3::Credentials,
+    credentials: &crate::backup::s3::Credentials,
 ) -> Option<String> {
-    let Some(crate::commands::destination::Destination::S3 { bucket, prefix }) =
-        destination.and_then(|text| crate::commands::destination::Destination::parse(text).ok())
+    let Some(crate::backup::destination::Destination::S3 { bucket, prefix }) =
+        destination.and_then(|text| crate::backup::destination::Destination::parse(text).ok())
     else {
         return None;
     };
     match tokio::time::timeout(
         std::time::Duration::from_secs(15),
-        crate::commands::s3::list(credentials, &bucket, &prefix),
+        crate::backup::s3::list(credentials, &bucket, &prefix),
     )
     .await
     {

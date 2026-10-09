@@ -106,7 +106,7 @@ pub struct Config {
 #[serde(deny_unknown_fields)]
 pub struct BackupConfig {
     #[serde(default)]
-    pub s3: Option<crate::commands::s3::Credentials>,
+    pub s3: Option<crate::backup::s3::Credentials>,
 }
 
 /// The private network between nodes.
@@ -380,7 +380,7 @@ impl Config {
     /// Falls back to what was loaded when there is no file to read — a
     /// default `Config`, a test, an environment-only run — so this is
     /// always the same answer the rest of the code would have given.
-    pub fn s3(&self) -> Option<crate::commands::s3::Credentials> {
+    pub fn s3(&self) -> Option<crate::backup::s3::Credentials> {
         let Some(path) = &self.source else {
             return self.backup.s3.clone();
         };
@@ -467,7 +467,7 @@ impl Config {
 /// rather than whatever the umask was at install.
 pub fn store_s3(
     path: &Path,
-    credentials: Option<&crate::commands::s3::Credentials>,
+    credentials: Option<&crate::backup::s3::Credentials>,
 ) -> ConfigResult<()> {
     let existing = match std::fs::read_to_string(path) {
         Ok(text) => text,
@@ -584,7 +584,7 @@ struct JustAcme {
 /// The comment goes with it: somebody reading this file at two in the
 /// morning needs to know that these lines are written by something, and
 /// where from.
-fn section_for(credentials: &crate::commands::s3::Credentials) -> String {
+fn section_for(credentials: &crate::backup::s3::Credentials) -> String {
     let mut section = String::from(
         "[backup.s3]
          # Written by the console's Backup tab. Editing it here works too —
@@ -726,8 +726,8 @@ mod tests {
         (dir, path)
     }
 
-    fn some_credentials() -> crate::commands::s3::Credentials {
-        crate::commands::s3::Credentials {
+    fn some_credentials() -> crate::backup::s3::Credentials {
+        crate::backup::s3::Credentials {
             access_key_id: "AKIAEXAMPLE".into(),
             secret_access_key: "a-secret/with\\slashes".into(),
             region: "us-east-1".into(),

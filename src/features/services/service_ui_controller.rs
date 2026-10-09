@@ -300,15 +300,15 @@ impl ServiceUiController {
         // What a restore of this database could reach. Read here rather
         // than in the card so the card stays a function of its argument.
         let window = match service.kind.is_managed() {
-            true => crate::commands::backup::window(
+            true => crate::backup::window(
                 &self.state.config.node.data_dir,
                 &format!("{}.{}", project.slug, service.slug),
-                crate::commands::backup::taken(&self.state.config.node.data_dir)
+                crate::backup::taken(&self.state.config.node.data_dir)
                     .last()
                     .map(|(_, manifest)| manifest.taken_at),
                 crate::node::settings::archiving(&self.state.database).await,
             ),
-            false => crate::commands::backup::Window::NotKeeping,
+            false => crate::backup::Window::NotKeeping,
         };
         // Whether any backup here holds a copy of *this* database, which
         // is what decides if there is anything to restore. The window
@@ -324,7 +324,7 @@ impl ServiceUiController {
         // the search happens when the form is submitted: `restore_one`
         // looks here first and at the destination second.
         let elsewhere = match service.kind.is_managed() {
-            true => crate::node::backups::plan(&self.state.database)
+            true => crate::backup::plan::plan(&self.state.database)
                 .await
                 .destination
                 .filter(|text| {
@@ -333,10 +333,10 @@ impl ServiceUiController {
                     // The same comparison `restore_one` makes, so the card
                     // is offered exactly when the search has a second
                     // place to look.
-                    crate::commands::destination::Destination::parse(text)
+                    crate::backup::destination::Destination::parse(text)
                         .map(|destination| {
                             destination
-                                != crate::commands::destination::Destination::Local(
+                                != crate::backup::destination::Destination::Local(
                                     self.state.config.node.data_dir.join("backups"),
                                 )
                         })
@@ -346,7 +346,7 @@ impl ServiceUiController {
         };
         let restorable = service.kind.is_managed()
             && (elsewhere.is_some()
-                || crate::commands::backup::taken(&self.state.config.node.data_dir)
+                || crate::backup::taken(&self.state.config.node.data_dir)
                     .iter()
                     .any(|(path, _)| {
                         path.join("volumes")

@@ -380,7 +380,7 @@ often, at what hour, how long it is kept, and the write-ahead log switch,
 which **moved there from Capabilities**. Point-in-time recovery is the
 *reach* of a backup — the log is replayed onto a base copy — so a switch
 two tabs away from the thing it depends on is one somebody turns on and
-gains nothing by. `node::backups` holds the plan; six things about it are
+gains nothing by. `backup::plan` holds the plan; six things about it are
 worth knowing before touching it:
 
 - **A slot, not an interval.** "Twenty-four hours since the last one"
@@ -399,7 +399,7 @@ worth knowing before touching it:
   writes a copy of every volume somewhere, and the somewhere is a
   decision. A schedule arriving with a release would fill the disk it was
   meant to protect.
-- **One implementation, two doors.** `commands::backup::once` takes the
+- **One implementation, two doors.** `backup::once` takes the
   caller's database handle: the command opens and closes its own, the
   loop in `serve` and the console's button hand over the node's. The
   `close()` had to move out of it — a checkpoint that drops the writer

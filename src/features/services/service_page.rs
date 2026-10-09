@@ -1,6 +1,6 @@
 use hypertext::prelude::*;
 
-use crate::commands::backup::Window;
+use crate::backup::Window;
 use crate::entities::database::Database;
 use crate::entities::project::Project;
 use crate::entities::release::Release;

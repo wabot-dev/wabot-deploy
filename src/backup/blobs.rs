@@ -184,7 +184,7 @@ pub async fn tree_of(
 pub async fn put_back(
     client: &crate::runtime::client::Containerd,
     root: &Path,
-    kept: &crate::commands::backup::Kept,
+    kept: &crate::backup::Kept,
 ) -> Result<usize, String> {
     let mut written = 0;
     for (digest, size) in &kept.blobs {

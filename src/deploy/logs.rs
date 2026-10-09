@@ -139,7 +139,7 @@ pub fn uri(path: &Path) -> String {
 /// `wabot-deploy log-writer <path>`.
 ///
 /// Off by default and per service — see `migrations/0042` and
-/// `commands::log_writer` for the hazard it takes on.
+/// `cli::log_writer` for the hazard it takes on.
 pub fn stamping_uri(path: &Path) -> String {
     format!(
         "binary://{}?log-writer={}",

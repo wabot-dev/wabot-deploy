@@ -185,7 +185,8 @@ what is missing. Read-only; safe on a live node.
 
 | | |
 | --- | --- |
-| `src/cli.rs`, `src/commands/` | the verbs: `install`, `serve`, `doctor`, `join`, `setup-token`, `containerd` — and the commands more than one feature calls |
+| `src/cli/` | the verbs: `install`, `serve`, `doctor`, `join`, `setup-token`, `passwd`, `backup`, `restore`, `clean`, `log-writer`, `containerd` |
+| `src/backup/` | taking a backup and restoring one: the copy, where it goes, how long it is kept, and the plan |
 | `src/features/` | one folder per feature — its use cases, commands, requests, responses, controllers, pages and words ([rule 11](docs/architecture-rules.md)) |
 | `src/dtos/` | the shapes more than one feature's requests and responses carry |
 | `src/entities/`, `src/values/`, `src/policies/`, `src/repositories/` | what every feature reads: the models, their rules, their rows |

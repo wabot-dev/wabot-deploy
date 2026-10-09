@@ -169,7 +169,7 @@ pub struct Service {
     /// Off by default, and the default matters more than usual here:
     /// turning it on puts a reader between the container and its log, and
     /// a reader that stops reading blocks the container. See
-    /// `commands::log_writer`.
+    /// `cli::log_writer`.
     pub log_timestamps: bool,
     /// How much disk this service's logs may keep, per copy.
     ///

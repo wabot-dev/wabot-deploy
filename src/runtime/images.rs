@@ -376,7 +376,7 @@ impl Held {
 /// removing either frees only what the other does not hold. These numbers
 /// do not add up to the disk and must not be presented as if they did.
 pub async fn weight(client: &Containerd, reference: &str) -> Option<i64> {
-    let blobs = crate::commands::blobs::tree_of(client, reference)
+    let blobs = crate::backup::blobs::tree_of(client, reference)
         .await
         .ok()?;
 

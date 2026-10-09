@@ -1035,11 +1035,11 @@ mod tests {
             .to_string(),
         )
         .expect("the manifest");
-        crate::node::backups::store(
+        crate::backup::plan::store(
             &console.database,
-            &crate::node::backups::Plan {
+            &crate::backup::plan::Plan {
                 destination: Some(away.display().to_string()),
-                ..crate::node::backups::Plan::default()
+                ..crate::backup::plan::Plan::default()
             },
         )
         .await

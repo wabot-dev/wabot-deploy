@@ -1,10 +1,10 @@
 use hypertext::prelude::*;
 
-use crate::commands::backup::Manifest;
-use crate::commands::s3::Credentials;
+use crate::backup::plan::{Attempt, Plan};
+use crate::backup::s3::Credentials;
+use crate::backup::Manifest;
 use crate::edge::policy::Policy;
 use crate::features::backups::node_backup_component;
-use crate::node::backups::{Attempt, Plan};
 use crate::node::memory::Snapshot;
 use crate::values::capability::Capability;
 use crate::views::components::node_certificate::{CertificateCells, CertificateState};

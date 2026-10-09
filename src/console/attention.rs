@@ -360,10 +360,10 @@ async fn what_nothing_claims(state: &super::ConsoleState, concerns: &mut Vec<Con
 /// `wabot-deploy backup` has made it, and a card they cannot silence is a
 /// card they learn to ignore.
 async fn a_backup_that_did_not_work(state: &super::ConsoleState, concerns: &mut Vec<Concern>) {
-    let Some(reason) = crate::node::backups::last(&state.database).await.error else {
+    let Some(reason) = crate::backup::plan::last(&state.database).await.error else {
         return;
     };
-    let plan = crate::node::backups::plan(&state.database).await;
+    let plan = crate::backup::plan::plan(&state.database).await;
     concerns.push(Concern {
         weight: Weight::Wrong,
         what: "A backup did not work".into(),

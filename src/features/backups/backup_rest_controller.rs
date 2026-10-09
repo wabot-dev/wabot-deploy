@@ -291,9 +291,9 @@ mod tests {
             .await;
         assert_eq!(saved.header("location"), Some("/node/backup"));
 
-        let plan = crate::node::backups::plan(&console.database).await;
+        let plan = crate::backup::plan::plan(&console.database).await;
         assert_eq!(plan.destination.as_deref(), Some("/mnt/backups"));
-        assert_eq!(plan.cadence, crate::node::backups::Cadence::Weekly);
+        assert_eq!(plan.cadence, crate::backup::plan::Cadence::Weekly);
         assert_eq!(plan.hour, 4);
         assert_eq!(plan.weekday, 2);
         assert_eq!(plan.keep_days, 30);
@@ -351,8 +351,8 @@ mod tests {
             "and says where they go — the card on this tab, not an SSH session: {no_credentials}"
         );
         assert_eq!(
-            crate::node::backups::plan(&console.database).await,
-            crate::node::backups::Plan::default(),
+            crate::backup::plan::plan(&console.database).await,
+            crate::backup::plan::Plan::default(),
             "a refused form must store nothing"
         );
 
@@ -615,11 +615,11 @@ mod tests {
             .await;
         // The destination is written directly: saving it through the form
         // would ask the bucket, and there is no bucket in a test.
-        crate::node::backups::store(
+        crate::backup::plan::store(
             &console.database,
-            &crate::node::backups::Plan {
+            &crate::backup::plan::Plan {
                 destination: Some("s3://somebodys-bucket/nodes".into()),
-                ..crate::node::backups::Plan::default()
+                ..crate::backup::plan::Plan::default()
             },
         )
         .await
@@ -642,7 +642,7 @@ mod tests {
         assert!(console.config.s3().is_some(), "still stored");
 
         // Pointed somewhere else, it goes.
-        crate::node::backups::store(&console.database, &crate::node::backups::Plan::default())
+        crate::backup::plan::store(&console.database, &crate::backup::plan::Plan::default())
             .await
             .expect("store the plan");
         console
@@ -663,7 +663,7 @@ mod tests {
     async fn the_last_failure_is_on_the_page() {
         let console = Console::new().await;
         let cookie = console.signed_in().await;
-        crate::node::backups::record(
+        crate::backup::plan::record(
             &console.database,
             crate::clock::now_ms(),
             &Err("ssh: connect to host backups.example port 22: no route to host".into()),

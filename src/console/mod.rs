@@ -357,7 +357,7 @@ pub fn routes(container: &Container) -> Router {
 /// of them wiring, and no controller of the machine's own console:**
 ///
 /// - here — two module declarations, four registrations, this function;
-/// - `commands::serve` — one argument to `edge::build`;
+/// - `cli::serve` — one argument to `edge::build`;
 /// - `edge` — the `Upstream::Tenant` variant, the router beside the
 ///   control plane, and the arm that dispatches to it. The variant is a
 ///   compile error at every `match`, which is the right way for that one

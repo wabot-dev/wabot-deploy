@@ -117,7 +117,7 @@ mod tests {
     async fn a_join_that_does_not_land_exits_nonzero() {
         let dir = tempfile::tempdir().expect("tempdir");
         let config = config_in(dir.path());
-        crate::commands::install::run(
+        crate::cli::install::run(
             config.clone(),
             &dir.path().join("config.toml"),
             crate::cli::InstallArgs::none(),

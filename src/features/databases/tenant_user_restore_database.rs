@@ -3,7 +3,7 @@ use std::sync::Arc;
 use wabot::sqlite::SqliteDatabase;
 
 use crate::authz::tenant_user;
-use crate::commands::backup::Restored;
+use crate::backup::Restored;
 use crate::config::Config;
 use crate::entities::account::Account;
 use crate::entities::service::Service;

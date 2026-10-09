@@ -919,11 +919,11 @@ async fn do_once(
             // Two at once is two copies of every database on a machine
             // with one core. The refusal travels, which is the whole
             // difference from letting it queue.
-            if crate::node::backups::in_progress() {
+            if crate::backup::plan::in_progress() {
                 return Err("a backup is already running here".into());
             }
             note_obeyed(database, action, errand_id).await?;
-            crate::node::backups::start_in_background(
+            crate::backup::plan::start_in_background(
                 config.clone(),
                 std::sync::Arc::new(database.clone()),
             );

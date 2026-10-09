@@ -58,7 +58,7 @@ pub fn sizes_table() -> impl Renderable {
 /// How far back this database can be taken, and how recent it can land.
 ///
 /// Four answers, and three of them say "not what you think" — see
-/// `commands::backup::Window`. The one worth building a card for is
+/// `backup::Window`. The one worth building a card for is
 /// `NoAnchor`: log arriving with no backup to replay it onto looks
 /// exactly like working, and recovers nothing.
 /// Go back to a moment — into a copy, never over the original.
@@ -80,7 +80,7 @@ pub fn sizes_table() -> impl Renderable {
 pub fn restore_card<'a>(
     project_slug: &'a str,
     service_slug: &'a str,
-    window: &'a crate::commands::backup::Window,
+    window: &'a crate::backup::Window,
     default_name: &'a str,
     // Where this node sends its backups, when that is not this machine.
     // Named on the card because it is where the copy will come *from*: a
@@ -88,7 +88,7 @@ pub fn restore_card<'a>(
     // staging copy is removed the moment the transfer succeeds.
     elsewhere: Option<&'a str>,
 ) -> impl Renderable + 'a {
-    use crate::commands::backup::Window;
+    use crate::backup::Window;
 
     // The end of the window, as a moment somebody can type. It is the
     // last thing a restore can reach — later than that is a request the
@@ -276,14 +276,14 @@ impl Strings {
 }
 
 pub fn window_card<'a>(
-    window: &'a crate::commands::backup::Window,
+    window: &'a crate::backup::Window,
     // The destination, when the backups leave this machine. It changes
     // what `NoAnchor` *means*: not "there is no backup", which is what
     // this card used to say, but "there is none here" — and with a bucket
     // configured that is the ordinary, healthy state.
     elsewhere: Option<&'a str>,
 ) -> impl Renderable + 'a {
-    use crate::commands::backup::Window;
+    use crate::backup::Window;
 
     rsx! {
         <section class="card stack" id="recovery">

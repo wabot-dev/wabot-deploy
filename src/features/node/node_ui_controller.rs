@@ -178,9 +178,9 @@ impl NodeUiController {
                 cores: crate::node::cpu::cores(),
             },
             NodeTab::Backup => Panel::Backup {
-                plan: crate::node::backups::plan(&self.state.database).await,
-                attempt: crate::node::backups::last(&self.state.database).await,
-                taken: crate::commands::backup::taken(&self.state.config.node.data_dir),
+                plan: crate::backup::plan::plan(&self.state.database).await,
+                attempt: crate::backup::plan::last(&self.state.database).await,
+                taken: crate::backup::taken(&self.state.config.node.data_dir),
                 s3: self.state.config.s3(),
                 archiving: crate::node::settings::archiving(&self.state.database).await,
                 default_destination: self
@@ -202,7 +202,7 @@ impl NodeUiController {
                 self_id,
                 // A flag rather than a row, so the card stays a function
                 // of values — see `node::backups::in_progress`.
-                running: crate::node::backups::in_progress(),
+                running: crate::backup::plan::in_progress(),
             },
         };
 

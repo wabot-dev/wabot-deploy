@@ -1,7 +1,7 @@
 use wabot::sqlite::SqliteDatabase;
 
 use crate::authz::node_user;
-use crate::commands::s3::Credentials;
+use crate::backup::s3::Credentials;
 use crate::config::Config;
 use crate::entities::account::Account;
 use crate::features::backups::node_user_set_backup_plan::bucket_refusal;
@@ -55,7 +55,7 @@ pub async fn run(
         endpoint: (!asked.endpoint.is_empty()).then(|| asked.endpoint.to_string()),
     };
 
-    let plan = crate::node::backups::plan(database).await;
+    let plan = crate::backup::plan::plan(database).await;
     if let Some(reason) = bucket_refusal(plan.destination.as_deref(), &credentials).await {
         return Err(reason);
     }

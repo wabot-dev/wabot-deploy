@@ -1,7 +1,7 @@
 use wabot::sqlite::SqliteDatabase;
 
 use crate::authz::node_user;
-use crate::commands::destination::Destination;
+use crate::backup::destination::Destination;
 use crate::config::Config;
 use crate::entities::account::Account;
 
@@ -19,7 +19,7 @@ pub async fn run(
 
     // Refused while the backups go to a bucket. The button is disabled
     // for the same reason, and this is the check that counts.
-    let plan = crate::node::backups::plan(database).await;
+    let plan = crate::backup::plan::plan(database).await;
     if plan
         .destination
         .as_deref()

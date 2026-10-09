@@ -452,7 +452,7 @@ async fn setup_token(database: &SqliteDatabase, config: &Config) {
             println!("  `wabot-deploy setup-token` issues another if it is lost.");
         }
         Ok(false) => match crate::accounts::issue_setup_token(database).await {
-            Ok(token) => crate::commands::setup_token::print(config, &token),
+            Ok(token) => crate::cli::setup_token::print(config, &token),
             Err(error) => {
                 println!();
                 println!("  could not issue a setup token: {error}");

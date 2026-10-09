@@ -1070,7 +1070,7 @@ impl Deployer {
         let log = logs::resume(&self.config.node.data_dir, &id).ok();
         // Which of the two schemes this container's output takes. The
         // stamping one puts a reader between the container and its file
-        // — see `commands::log_writer` — so it is per service and off
+        // — see `cli::log_writer` — so it is per service and off
         // unless somebody chose it.
         let log_uri = log.as_ref().map(|path| match service.log_timestamps {
             true => logs::stamping_uri(path),
@@ -3487,7 +3487,7 @@ impl Deployer {
                 // lands on the replica's row like every other deployment
                 // failure. `fetch_dir` is convergent, so a retry does not
                 // pay for the bytes twice.
-                let base = match crate::commands::destination::Destination::parse(from) {
+                let base = match crate::backup::destination::Destination::parse(from) {
                     Ok(remote) if remote.is_remote() => {
                         let container_id = replica.container_id(&project.slug, &service.slug);
                         let into = database::fetched_dir(&self.config.node.data_dir, &container_id);
@@ -3496,7 +3496,7 @@ impl Deployer {
                             from = %remote.display(),
                             "fetching a backup to restore from"
                         );
-                        crate::commands::destination::fetch_dir(&remote, &into, &self.config)
+                        crate::backup::destination::fetch_dir(&remote, &into, &self.config)
                             .await
                             .map_err(|reason| {
                                 DeployError::Refused(format!(

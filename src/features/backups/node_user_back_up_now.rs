@@ -14,10 +14,10 @@ pub async fn run(
     if !node_user::manages_the_machine(account) {
         return Err("only an administrator of this node can do that".into());
     }
-    if crate::node::backups::in_progress() {
+    if crate::backup::plan::in_progress() {
         return Err("a backup is already running on this node".into());
     }
 
-    crate::node::backups::start_in_background(config.clone(), database.clone());
+    crate::backup::plan::start_in_background(config.clone(), database.clone());
     Ok(())
 }
