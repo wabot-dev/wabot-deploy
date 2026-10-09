@@ -20,11 +20,9 @@
 
 pub mod attention;
 pub mod auth;
-pub mod join;
 pub mod language;
 pub mod nodes;
 pub mod organisations;
-pub mod people;
 pub mod sentences;
 pub mod services;
 pub mod shared;
@@ -42,10 +40,9 @@ const TABLES: &[&[(&str, &str)]] = &[
     attention::TABLE,
     auth::TABLE,
     crate::features::databases::texts::TABLE,
-    join::TABLE,
     nodes::TABLE,
     organisations::TABLE,
-    people::TABLE,
+    crate::features::people::texts::TABLE,
     crate::features::projects::texts::TABLE,
     services::TABLE,
     shared::TABLE,

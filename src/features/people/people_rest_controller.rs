@@ -13,11 +13,11 @@ use wabot::rest::RestResult;
 use crate::accounts::roles::{NodeRole, ProjectRole};
 use crate::accounts::sessions;
 
-use super::auth::{
+use crate::console::auth::{
     back_with_error, field, read_form, see_other, see_other_with_cookie, signed_in,
     SessionMiddleware,
 };
-use super::ConsoleState;
+use crate::console::ConsoleState;
 
 /// The forms behind those pages.
 #[injectable]
@@ -43,13 +43,13 @@ impl PeopleRestController {
             Err(response) => return Ok(response),
         };
 
-        let asked = crate::dtos::requests::invite_person::InvitePerson {
+        let asked = crate::features::people::invite_person_request::InvitePersonRequest {
             role: NodeRole::parse(field(&form, "node_role")),
             project: field(&form, "project").to_string(),
             project_role: ProjectRole::parse(field(&form, "project_role")),
         };
 
-        let invited = match crate::usecases::node_user_invite_person::run(
+        let invited = match crate::features::people::node_user_invite_person::run(
             &self.state.database,
             &account,
             &asked,
@@ -94,12 +94,16 @@ impl PeopleRestController {
         }
 
         let path = request.uri().path().to_string();
-        let Some(id) = super::auth::segments(&path).get(2).cloned() else {
+        let Some(id) = crate::console::auth::segments(&path).get(2).cloned() else {
             return Ok(see_other("/people"));
         };
 
-        match crate::usecases::node_user_revoke_invitation::run(&self.state.database, &account, id)
-            .await
+        match crate::features::people::node_user_revoke_invitation::run(
+            &self.state.database,
+            &account,
+            id,
+        )
+        .await
         {
             Ok(()) => Ok(see_other("/people")),
             Err(reason) => Ok(back_with_error("/people", &reason)),
@@ -117,7 +121,10 @@ impl PeopleRestController {
             return Ok(see_other("/"));
         }
         let path = request.uri().path().to_string();
-        let Some(id) = super::auth::segments(&path).get(1).map(|id| id.to_string()) else {
+        let Some(id) = crate::console::auth::segments(&path)
+            .get(1)
+            .map(|id| id.to_string())
+        else {
             return Ok(see_other("/people"));
         };
         let form = match read_form(request).await {
@@ -129,7 +136,7 @@ impl PeopleRestController {
             _ => NodeRole::Member,
         };
 
-        match crate::usecases::node_user_set_person_role::run(
+        match crate::features::people::node_user_set_person_role::run(
             &self.state.database,
             &account,
             &id,
@@ -153,12 +160,19 @@ impl PeopleRestController {
             return Ok(see_other("/"));
         }
         let path = request.uri().path().to_string();
-        let Some(id) = super::auth::segments(&path).get(1).map(|id| id.to_string()) else {
+        let Some(id) = crate::console::auth::segments(&path)
+            .get(1)
+            .map(|id| id.to_string())
+        else {
             return Ok(see_other("/people"));
         };
 
-        match crate::usecases::node_user_remove_person::run(&self.state.database, &account, &id)
-            .await
+        match crate::features::people::node_user_remove_person::run(
+            &self.state.database,
+            &account,
+            &id,
+        )
+        .await
         {
             Ok(()) => Ok(see_other("/people")),
             Err(reason) => Ok(back_with_error("/people", &reason)),
@@ -170,7 +184,10 @@ impl PeopleRestController {
     #[raw]
     async fn join(&self, request: Request) -> RestResult<Response> {
         let path = request.uri().path().to_string();
-        let Some(token) = super::auth::segments(&path).get(1).map(|id| id.to_string()) else {
+        let Some(token) = crate::console::auth::segments(&path)
+            .get(1)
+            .map(|id| id.to_string())
+        else {
             return Ok(see_other("/sign-in"));
         };
         let here = format!("/join/{token}");
@@ -180,9 +197,9 @@ impl PeopleRestController {
             Err(response) => return Ok(response),
         };
 
-        let account = match crate::usecases::guest_join_as_node_user::run(
+        let account = match crate::features::people::guest_join_as_node_user::run(
             &self.state.database,
-            &super::auth::joining(&token, &form),
+            &crate::console::auth::joining(&token, &form),
         )
         .await
         {

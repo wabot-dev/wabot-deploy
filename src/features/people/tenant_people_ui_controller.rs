@@ -10,9 +10,9 @@ use hypertext::prelude::*;
 use wabot::prelude::*;
 use wabot::ui::hypertext::IntoView;
 
-use super::auth::{signed_in, JoinPage, PageQuery, SessionMiddleware};
-use super::ConsoleState;
 use crate::accounts::{self, invitations};
+use crate::console::auth::{signed_in, JoinPage, PageQuery, SessionMiddleware};
+use crate::console::ConsoleState;
 use crate::policies::access;
 use crate::views::layouts::layout;
 use crate::views::layouts::shell::{Area, Frame};
@@ -59,7 +59,7 @@ impl TenantPeopleUiController {
 
         layout::head("People");
         let frame = Frame::new(&account, Area::Settings, &projects, None, "/people");
-        let page = crate::views::pages::tenant_user_people_page::People {
+        let page = crate::features::people::tenant_user_people_page::People {
             people: &people,
             live: &live,
             projects: &projects,
@@ -67,7 +67,7 @@ impl TenantPeopleUiController {
             query_error: query.error.as_deref(),
         };
         let body = crate::views::texts::language::scoped(account.language, || {
-            crate::views::pages::tenant_user_people_page::render(&page)
+            crate::features::people::tenant_user_people_page::render(&page)
                 .render()
                 .into_inner()
         });
@@ -95,13 +95,13 @@ impl TenantPeopleUiController {
             Some(name) => name.to_string(),
             None => t("Join this organisation").to_string(),
         };
-        let page = crate::views::pages::guest_join_page::Join {
+        let page = crate::features::people::guest_join_page::Join {
             heading: &heading,
             token: &token,
             invitation: invitation.as_ref(),
             error: query.error.as_deref(),
         };
-        Ok(crate::views::pages::guest_join_page::render(&page)
+        Ok(crate::features::people::guest_join_page::render(&page)
             .into_view()
             .into())
     }

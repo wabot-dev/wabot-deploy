@@ -1,4 +1,5 @@
 pub mod databases;
+pub mod people;
 pub mod projects;
 
 #[cfg(test)]

@@ -9,8 +9,8 @@ use wabot::ui::hypertext::IntoView;
 use crate::accounts::{self, invitations};
 use crate::policies::access;
 
-use super::auth::{signed_in, JoinPage, PageQuery, SessionMiddleware};
-use super::ConsoleState;
+use crate::console::auth::{signed_in, JoinPage, PageQuery, SessionMiddleware};
+use crate::console::ConsoleState;
 use crate::views::layouts::layout;
 use crate::views::layouts::shell::{Area, Frame};
 
@@ -52,7 +52,7 @@ impl PeopleUiController {
 
         // The account's language, around the render and no wider:
         // the strings are read here, and nothing awaits inside.
-        let page = crate::views::pages::node_user_people_page::People {
+        let page = crate::features::people::node_user_people_page::People {
             account: &account,
             people: &people,
             invitations: &invitations,
@@ -61,7 +61,7 @@ impl PeopleUiController {
             query_error: query.error.as_deref(),
         };
         let body = crate::views::texts::language::scoped(account.language, || {
-            crate::views::pages::node_user_people_page::render(&page)
+            crate::features::people::node_user_people_page::render(&page)
                 .render()
                 .into_inner()
         });
@@ -82,13 +82,13 @@ impl PeopleUiController {
         let invitation = invitations::look_up(&self.state.database, &query.token).await?;
 
         layout::head("Join");
-        let page = crate::views::pages::guest_join_page::Join {
+        let page = crate::features::people::guest_join_page::Join {
             heading: "Join this node",
             token: &query.token,
             invitation: invitation.as_ref(),
             error: query.error.as_deref(),
         };
-        Ok(crate::views::pages::guest_join_page::render(&page)
+        Ok(crate::features::people::guest_join_page::render(&page)
             .into_view()
             .into())
     }

@@ -4,6 +4,6 @@ use serde::{Deserialize, Serialize};
 /// is the console's to build, because which name a person should open is
 /// a question about this deployment rather than about the invitation.
 #[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct PersonInvited {
+pub struct PersonInvitedResponse {
     pub token: String,
 }

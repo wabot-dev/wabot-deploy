@@ -1,9 +1,13 @@
 use wabot::sqlite::SqliteDatabase;
 
 use crate::accounts::{invitations, Account};
-use crate::dtos::requests::join::Join;
+use crate::features::people::join_request::JoinRequest;
 
-pub async fn run(database: &SqliteDatabase, scope: &str, asked: &Join) -> Result<Account, String> {
+pub async fn run(
+    database: &SqliteDatabase,
+    scope: &str,
+    asked: &JoinRequest,
+) -> Result<Account, String> {
     let Some(invitation) = invitations::look_up(database, &asked.token)
         .await
         .map_err(|error| error.to_string())?
@@ -26,9 +30,9 @@ pub async fn run(database: &SqliteDatabase, scope: &str, asked: &Join) -> Result
 mod tests {
     use super::*;
     use crate::accounts::roles::{NodeRole, ProjectRole};
-    use crate::dtos::requests::invite_person::InvitePerson;
+    use crate::features::people::invite_person_request::InvitePersonRequest;
+    use crate::features::people::{node_user_invite_person, tenant_user_invite_person};
     use crate::usecases::fixtures::organisation;
-    use crate::usecases::{node_user_invite_person, tenant_user_invite_person};
 
     async fn token_for(here: &crate::usecases::fixtures::Organisation, admin: bool) -> String {
         match admin {
@@ -36,7 +40,7 @@ mod tests {
                 tenant_user_invite_person::run(
                     &here.database,
                     &here.admin,
-                    &InvitePerson {
+                    &InvitePersonRequest {
                         role: NodeRole::Member,
                         project: String::new(),
                         project_role: ProjectRole::Viewer,
@@ -50,7 +54,7 @@ mod tests {
                 node_user_invite_person::run(
                     &here.database,
                     &here.operator,
-                    &InvitePerson {
+                    &InvitePersonRequest {
                         role: NodeRole::Member,
                         project: String::new(),
                         project_role: ProjectRole::Viewer,
@@ -71,7 +75,7 @@ mod tests {
         let born = run(
             &here.database,
             here.admin.tenant_id.as_deref().expect("scoped"),
-            &Join {
+            &JoinRequest {
                 token: token.clone(),
                 username: "newcomer".into(),
                 password: "a long passphrase here".into(),
@@ -90,7 +94,7 @@ mod tests {
         let refused = run(
             &here.database,
             here.admin.tenant_id.as_deref().expect("scoped"),
-            &Join {
+            &JoinRequest {
                 token: token.clone(),
                 username: "newcomer".into(),
                 password: "a long passphrase here".into(),
@@ -111,7 +115,7 @@ mod tests {
         assert!(run(
             &here.database,
             here.rival.tenant_id.as_deref().expect("scoped"),
-            &Join {
+            &JoinRequest {
                 token: token.clone(),
                 username: "newcomer".into(),
                 password: "a long passphrase here".into(),

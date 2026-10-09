@@ -22,8 +22,6 @@
 pub mod add_service_port;
 pub mod create_service;
 pub mod invite_owner;
-pub mod invite_person;
-pub mod join;
 pub mod mint_join_token;
 pub mod set_backup_plan;
 pub mod set_bucket_credentials;

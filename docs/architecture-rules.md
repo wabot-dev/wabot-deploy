@@ -835,6 +835,13 @@ projects page too, but because that page is the console's home: what it
 shows is the node's, so it stays out until attention has a folder of
 its own.
 
+**A use case is placed by the same question.** Joining by invitation is
+a guest's — `guest_join_as_node_user`, `guest_join_as_tenant_user` — but
+the invitation is people's: it is made, withdrawn and spent through the
+people controllers, so the two joins and the page they post from live
+in `people`. Signing in and claiming the node are not about anybody's
+invitation, and stay out of it.
+
 A feature's words are its own `texts.rs`, and `views::texts::TABLES`
 lists each one by its path. `the_lookup_searches_every_table_there_is`
 finds them by walking `src/features`, so a feature whose table is not
@@ -842,9 +849,9 @@ listed fails by name.
 
 ### Where it stands
 
-`databases` and `projects` have moved. The other features are still in
-their layer directories, and the guards read both layouts until they
-are not.
+`databases`, `projects` and `people` have moved. The other features are
+still in their layer directories, and the guards read both layouts until
+they are not.
 
 ### What it costs
 

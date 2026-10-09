@@ -89,9 +89,9 @@ network and the databases" below.
    The guards read a file's kind off its name (`crate::tree`), so a file
    whose name says nothing fails.
 
-Where the tree stands: `databases` and `projects` are folders under
-`src/features` (49 files); every other feature is still spread across
-the layer directories, with 67 use cases left in `src/usecases`. Every
+Where the tree stands: `databases`, `projects` and `people` are folders
+under `src/features` (70 files); every other feature is still spread
+across the layer directories, with 57 use cases left in `src/usecases`. Every
 use case's two ends are a request and a response and no controller
 draws, and the guards that keep it so read both layouts.
 `console/service_rest_controller.rs` is still 5,800 lines of handlers

@@ -8,7 +8,6 @@ pub mod domain_settled;
 pub mod env_applied;
 pub mod join_token_spent;
 pub mod node_drained;
-pub mod person_invited;
 pub mod person_invited_into_organisation;
 pub mod release_started;
 pub mod service_created;

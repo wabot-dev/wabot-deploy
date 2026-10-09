@@ -3,15 +3,15 @@ use wabot::sqlite::SqliteDatabase;
 use crate::accounts::invitations;
 use crate::accounts::Account;
 use crate::authz::node_user;
-use crate::dtos::requests::invite_person::InvitePerson;
-use crate::dtos::responses::person_invited::PersonInvited;
+use crate::features::people::invite_person_request::InvitePersonRequest;
+use crate::features::people::person_invited_response::PersonInvitedResponse;
 use crate::policies::access;
 
 pub async fn run(
     database: &SqliteDatabase,
     account: &Account,
-    asked: &InvitePerson,
-) -> Result<PersonInvited, String> {
+    asked: &InvitePersonRequest,
+) -> Result<PersonInvitedResponse, String> {
     if !node_user::shares_the_machine_out(account) {
         return Err("only an administrator of this node can invite somebody".into());
     }
@@ -49,7 +49,7 @@ pub async fn run(
     .await
     .map_err(|error| error.to_string())?;
 
-    Ok(PersonInvited { token })
+    Ok(PersonInvitedResponse { token })
 }
 
 #[cfg(test)]
@@ -58,8 +58,8 @@ mod tests {
     use crate::accounts::roles::{NodeRole, ProjectRole};
     use crate::usecases::fixtures::organisation;
 
-    fn asked() -> InvitePerson {
-        InvitePerson {
+    fn asked() -> InvitePersonRequest {
+        InvitePersonRequest {
             role: NodeRole::Member,
             project: String::new(),
             project_role: ProjectRole::Viewer,

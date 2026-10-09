@@ -32,9 +32,9 @@ pub async fn run(
 mod tests {
     use super::*;
     use crate::accounts::roles::{NodeRole, ProjectRole};
-    use crate::dtos::requests::invite_person::InvitePerson;
+    use crate::features::people::invite_person_request::InvitePersonRequest;
+    use crate::features::people::tenant_user_invite_person;
     use crate::usecases::fixtures::organisation;
-    use crate::usecases::tenant_user_invite_person;
 
     #[tokio::test]
     async fn the_operator_withdraws_an_organisations_invitation() {
@@ -42,7 +42,7 @@ mod tests {
         tenant_user_invite_person::run(
             &here.database,
             &here.admin,
-            &InvitePerson {
+            &InvitePersonRequest {
                 role: NodeRole::Member,
                 project: String::new(),
                 project_role: ProjectRole::Viewer,

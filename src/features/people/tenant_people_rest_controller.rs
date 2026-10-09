@@ -7,9 +7,11 @@ use wabot::rest::axum::extract::Request;
 use wabot::rest::axum::response::Response;
 use wabot::rest::RestResult;
 
-use super::auth::{back_with_error, field, read_form, see_other, signed_in, SessionMiddleware};
-use super::ConsoleState;
 use crate::accounts::roles::{NodeRole, ProjectRole};
+use crate::console::auth::{
+    back_with_error, field, read_form, see_other, signed_in, SessionMiddleware,
+};
+use crate::console::ConsoleState;
 
 #[injectable]
 pub struct TenantPeopleRestController {
@@ -31,13 +33,13 @@ impl TenantPeopleRestController {
             Err(response) => return Ok(response),
         };
 
-        let asked = crate::dtos::requests::invite_person::InvitePerson {
+        let asked = crate::features::people::invite_person_request::InvitePersonRequest {
             role: NodeRole::parse(field(&form, "node_role")),
             project: field(&form, "project").to_string(),
             project_role: ProjectRole::parse(field(&form, "project_role")),
         };
 
-        let invited = match crate::usecases::tenant_user_invite_person::run(
+        let invited = match crate::features::people::tenant_user_invite_person::run(
             &self.state.database,
             &account,
             &asked,
@@ -72,7 +74,7 @@ impl TenantPeopleRestController {
             return Ok(see_other("/sign-in"));
         };
         let path = request.uri().path().to_string();
-        let Some(id) = super::auth::segments(&path).get(1).cloned() else {
+        let Some(id) = crate::console::auth::segments(&path).get(1).cloned() else {
             return Ok(see_other("/people"));
         };
         let form = match read_form(request).await {
@@ -84,7 +86,7 @@ impl TenantPeopleRestController {
             _ => NodeRole::Member,
         };
 
-        match crate::usecases::tenant_user_set_person_role::run(
+        match crate::features::people::tenant_user_set_person_role::run(
             &self.state.database,
             &account,
             id,
@@ -105,12 +107,16 @@ impl TenantPeopleRestController {
             return Ok(see_other("/sign-in"));
         };
         let path = request.uri().path().to_string();
-        let Some(id) = super::auth::segments(&path).get(1).cloned() else {
+        let Some(id) = crate::console::auth::segments(&path).get(1).cloned() else {
             return Ok(see_other("/people"));
         };
 
-        match crate::usecases::tenant_user_remove_person::run(&self.state.database, &account, id)
-            .await
+        match crate::features::people::tenant_user_remove_person::run(
+            &self.state.database,
+            &account,
+            id,
+        )
+        .await
         {
             Ok(()) => Ok(see_other("/people")),
             Err(reason) => Ok(back_with_error("/people", &reason)),
@@ -125,11 +131,11 @@ impl TenantPeopleRestController {
             return Ok(see_other("/sign-in"));
         };
         let path = request.uri().path().to_string();
-        let Some(id) = super::auth::segments(&path).get(2).cloned() else {
+        let Some(id) = crate::console::auth::segments(&path).get(2).cloned() else {
             return Ok(see_other("/people"));
         };
 
-        match crate::usecases::tenant_user_revoke_invitation::run(
+        match crate::features::people::tenant_user_revoke_invitation::run(
             &self.state.database,
             &account,
             id,
@@ -145,7 +151,10 @@ impl TenantPeopleRestController {
     #[raw]
     async fn join(&self, request: Request) -> RestResult<Response> {
         let path = request.uri().path().to_string();
-        let Some(token) = super::auth::segments(&path).get(1).map(|id| id.to_string()) else {
+        let Some(token) = crate::console::auth::segments(&path)
+            .get(1)
+            .map(|id| id.to_string())
+        else {
             return Ok(see_other("/sign-in"));
         };
         // Which organisation this address answers for, decided by the
@@ -165,10 +174,10 @@ impl TenantPeopleRestController {
             Err(response) => return Ok(response),
         };
 
-        let account = match crate::usecases::guest_join_as_tenant_user::run(
+        let account = match crate::features::people::guest_join_as_tenant_user::run(
             &self.state.database,
             &scope,
-            &super::auth::joining(&token, &form),
+            &crate::console::auth::joining(&token, &form),
         )
         .await
         {
@@ -177,7 +186,7 @@ impl TenantPeopleRestController {
         };
 
         match crate::accounts::sessions::create(&self.state.database, &account).await {
-            Ok(token) => Ok(super::auth::see_other_with_cookie(
+            Ok(token) => Ok(crate::console::auth::see_other_with_cookie(
                 "/",
                 crate::accounts::sessions::set_cookie(&token),
             )),

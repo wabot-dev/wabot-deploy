@@ -15,7 +15,7 @@ use crate::accounts::roles::{NodeRole, ProjectRole};
 /// including a word this version has never heard of, so a check would
 /// only be able to disagree with them.
 #[derive(Debug, Clone, Deserialize, Serialize, Validate)]
-pub struct InvitePerson {
+pub struct InvitePersonRequest {
     pub role: NodeRole,
     /// Empty means "into no project", which is a whole membership of the
     /// frontier and not a missing field.
@@ -24,7 +24,7 @@ pub struct InvitePerson {
     pub project_role: ProjectRole,
 }
 
-impl InvitePerson {
+impl InvitePersonRequest {
     /// The slug, or `None` for the empty and the blank alike — a form
     /// that submits a whitespace-only select is saying the same thing as
     /// one that submits nothing.

@@ -31,15 +31,15 @@ pub async fn run(
 mod tests {
     use super::*;
     use crate::accounts::roles::{NodeRole, ProjectRole};
-    use crate::dtos::requests::invite_person::InvitePerson;
+    use crate::features::people::invite_person_request::InvitePersonRequest;
+    use crate::features::people::tenant_user_invite_person;
     use crate::usecases::fixtures::{organisation, Organisation};
-    use crate::usecases::tenant_user_invite_person;
 
     async fn invited_by(here: &Organisation, account: &Account) -> String {
         tenant_user_invite_person::run(
             &here.database,
             account,
-            &InvitePerson {
+            &InvitePersonRequest {
                 role: NodeRole::Member,
                 project: String::new(),
                 project_role: ProjectRole::Viewer,

@@ -8,7 +8,7 @@ use wabot::prelude::*;
 /// invitee can act on, and a copy of it in this file is a second place
 /// it can drift. What this covers is that a field arrived at all.
 #[derive(Debug, Clone, Deserialize, Serialize, Validate)]
-pub struct Join {
+pub struct JoinRequest {
     #[min_length(1)]
     pub token: String,
     #[min_length(1)]

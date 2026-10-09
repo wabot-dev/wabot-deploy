@@ -134,8 +134,11 @@ pub fn field<'a>(form: &'a HashMap<String, String>, name: &str) -> &'a str {
 /// The request behind both join doors, which is one form read the same
 /// way twice — the node's console and an organisation's differ in which
 /// invitations they will spend, not in what the person typed.
-pub fn joining(token: &str, form: &HashMap<String, String>) -> crate::dtos::requests::join::Join {
-    crate::dtos::requests::join::Join {
+pub fn joining(
+    token: &str,
+    form: &HashMap<String, String>,
+) -> crate::features::people::join_request::JoinRequest {
+    crate::features::people::join_request::JoinRequest {
         token: token.to_string(),
         username: field(form, "username").to_string(),
         // Not trimmed: the spaces are part of it, and removing them
