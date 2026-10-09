@@ -1,3 +1,4 @@
+pub mod access;
 pub mod databases;
 pub mod organisations;
 pub mod people;

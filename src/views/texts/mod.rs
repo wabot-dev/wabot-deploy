@@ -19,7 +19,6 @@
 //! here — see `sentences`.
 
 pub mod attention;
-pub mod auth;
 pub mod language;
 pub mod nodes;
 pub mod sentences;
@@ -36,7 +35,7 @@ pub mod shown;
 /// so this one reads the directory instead.
 const TABLES: &[&[(&str, &str)]] = &[
     attention::TABLE,
-    auth::TABLE,
+    crate::features::access::texts::TABLE,
     crate::features::databases::texts::TABLE,
     nodes::TABLE,
     crate::features::organisations::texts::TABLE,

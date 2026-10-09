@@ -5,8 +5,6 @@
 #[cfg(test)]
 pub mod fixtures;
 
-pub mod guest_claim_the_node;
-pub mod guest_sign_in;
 pub mod node_user_add_service_port;
 pub mod node_user_ask_node_once;
 pub mod node_user_back_up_now;

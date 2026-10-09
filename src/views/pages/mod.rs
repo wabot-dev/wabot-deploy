@@ -3,8 +3,6 @@
 //! A page takes what it needs and returns markup. It does not query and
 //! it does not decide.
 
-pub mod guest_setup_page;
-pub mod guest_sign_in_page;
 pub mod new_service_page;
 pub mod node_user_invite_node_page;
 pub mod node_user_join_network_page;

@@ -1,8 +1,8 @@
 //! What the two doors post to, and the switches that belong to an
 //! account rather than to a page.
 
-use super::ConsoleState;
 use crate::accounts::sessions;
+use crate::console::ConsoleState;
 use std::sync::Arc;
 use wabot::prelude::*;
 use wabot::rest::axum::body::Body;
@@ -11,7 +11,7 @@ use wabot::rest::axum::http::{header, StatusCode};
 use wabot::rest::axum::response::Response;
 use wabot::rest::RestResult;
 
-use super::auth::*;
+use crate::console::auth::*;
 
 // ---------- form submissions ---------------------------------------------
 
@@ -36,7 +36,7 @@ impl AuthRestController {
             Err(response) => return Ok(response),
         };
 
-        match crate::usecases::guest_claim_the_node::run(
+        match crate::features::access::guest_claim_the_node::run(
             &self.state.database,
             field(&form, "setup_token"),
             field(&form, "username"),
@@ -67,7 +67,7 @@ impl AuthRestController {
             Err(response) => return Ok(response),
         };
 
-        match crate::usecases::guest_sign_in::run(
+        match crate::features::access::guest_sign_in::run(
             &self.state.database,
             field(&form, "username"),
             form.get("password").map(String::as_str).unwrap_or_default(),

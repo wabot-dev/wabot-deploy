@@ -6,14 +6,14 @@
 //! form, redirecting, asking who is signed in — stay in `auth`, because
 //! every controller in this console reads them.
 
-use super::ConsoleState;
 use crate::accounts::{self};
+use crate::console::ConsoleState;
 use crate::views::layouts::layout;
 use std::sync::Arc;
 use wabot::prelude::*;
 use wabot::ui::hypertext::IntoView;
 
-use super::auth::*;
+use crate::console::auth::*;
 
 // ---------- pages --------------------------------------------------------
 
@@ -42,11 +42,11 @@ impl AuthUiController {
         let has_token = accounts::setup_token_valid(&self.state.database).await?;
 
         layout::head("Set up");
-        let page = crate::views::pages::guest_setup_page::Setup {
+        let page = crate::features::access::guest_setup_page::Setup {
             has_token,
             query_error: query.error.as_deref(),
         };
-        Ok(crate::views::pages::guest_setup_page::render(&page)
+        Ok(crate::features::access::guest_setup_page::render(&page)
             .into_view()
             .into())
     }
@@ -65,10 +65,10 @@ impl AuthUiController {
         }
 
         layout::head("Sign in");
-        let page = crate::views::pages::guest_sign_in_page::SignIn {
+        let page = crate::features::access::guest_sign_in_page::SignIn {
             query_error: query.error.as_deref(),
         };
-        Ok(crate::views::pages::guest_sign_in_page::render(&page)
+        Ok(crate::features::access::guest_sign_in_page::render(&page)
             .into_view()
             .into())
     }
