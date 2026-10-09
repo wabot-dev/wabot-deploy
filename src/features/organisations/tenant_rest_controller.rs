@@ -20,10 +20,12 @@ use wabot::rest::axum::extract::Request;
 use wabot::rest::axum::response::Response;
 use wabot::rest::RestResult;
 
-use super::auth::{back_with_error, field, read_form, see_other, signed_in, SessionMiddleware};
-use super::ConsoleState;
+use crate::console::auth::{
+    back_with_error, field, read_form, see_other, signed_in, SessionMiddleware,
+};
+use crate::console::ConsoleState;
+use crate::features::organisations::node_user_organisation_settings_page::OrganisationTab;
 use crate::repositories::tenants;
-use crate::views::pages::node_user_organisation_settings_page::OrganisationTab;
 
 #[injectable]
 pub struct TenantRestController {
@@ -62,7 +64,7 @@ impl TenantRestController {
             Err(response) => return Ok(response),
         };
 
-        match crate::usecases::node_user_create_organisation::run(
+        match crate::features::organisations::node_user_create_organisation::run(
             &self.state.database,
             &account,
             field(&form, "name"),
@@ -86,7 +88,7 @@ impl TenantRestController {
             Err(response) => return Ok(*response),
         };
         let path = request.uri().path().to_string();
-        let Some(id) = super::auth::segments(&path).get(1).cloned() else {
+        let Some(id) = crate::console::auth::segments(&path).get(1).cloned() else {
             return Ok(see_other("/organisations"));
         };
         let here = OrganisationTab::Domain.path(id);
@@ -95,7 +97,7 @@ impl TenantRestController {
             Err(response) => return Ok(response),
         };
 
-        match crate::usecases::node_user_set_organisation_domain::run(
+        match crate::features::organisations::node_user_set_organisation_domain::run(
             &self.state.database,
             &self.state.config,
             &self.state.deployer,
@@ -119,7 +121,7 @@ impl TenantRestController {
             Err(response) => return Ok(*response),
         };
         let path = request.uri().path().to_string();
-        let Some(id) = super::auth::segments(&path).get(1).cloned() else {
+        let Some(id) = crate::console::auth::segments(&path).get(1).cloned() else {
             return Ok(see_other("/organisations"));
         };
         let here = OrganisationTab::Quota.path(id);
@@ -128,7 +130,7 @@ impl TenantRestController {
             Err(response) => return Ok(response),
         };
 
-        match crate::usecases::node_user_set_organisation_quota::run(
+        match crate::features::organisations::node_user_set_organisation_quota::run(
             &self.state.database,
             &account,
             id,
@@ -152,19 +154,19 @@ impl TenantRestController {
             Err(response) => return Ok(*response),
         };
         let path = request.uri().path().to_string();
-        let Some(id) = super::auth::segments(&path).get(1).cloned() else {
+        let Some(id) = crate::console::auth::segments(&path).get(1).cloned() else {
             return Ok(see_other("/organisations"));
         };
         let here = OrganisationTab::Owner.path(id);
 
-        let asked = crate::dtos::requests::invite_owner::InviteOwner {
+        let asked = crate::features::organisations::invite_owner_request::InviteOwnerRequest {
             organisation: id.to_string(),
         };
         if let Err(reason) = asked.validate() {
             return Ok(back_with_error(&here, &reason.to_string()));
         }
 
-        let invited = match crate::usecases::node_user_invite_owner::run(
+        let invited = match crate::features::organisations::node_user_invite_owner::run(
             &self.state.database,
             &account,
             &asked,
@@ -204,14 +206,18 @@ impl TenantRestController {
             Err(response) => return Ok(*response),
         };
         let path = request.uri().path().to_string();
-        let segments = super::auth::segments(&path);
+        let segments = crate::console::auth::segments(&path);
         let (Some(tenant), Some(person)) = (segments.get(1), segments.get(3)) else {
             return Ok(see_other("/organisations"));
         };
         let here = OrganisationTab::Owner.path(tenant);
 
-        match crate::usecases::node_user_remove_owner::run(&self.state.database, &account, person)
-            .await
+        match crate::features::organisations::node_user_remove_owner::run(
+            &self.state.database,
+            &account,
+            person,
+        )
+        .await
         {
             Ok(()) => Ok(see_other(&here)),
             Err(reason) => Ok(back_with_error(&here, &reason)),
@@ -227,7 +233,7 @@ impl TenantRestController {
             Err(response) => return Ok(*response),
         };
         let path = request.uri().path().to_string();
-        let Some(id) = super::auth::segments(&path).get(1).cloned() else {
+        let Some(id) = crate::console::auth::segments(&path).get(1).cloned() else {
             return Ok(see_other("/organisations"));
         };
         let here = OrganisationTab::Danger.path(id);
@@ -249,7 +255,7 @@ impl TenantRestController {
             ));
         }
 
-        match crate::usecases::node_user_delete_organisation::run(
+        match crate::features::organisations::node_user_delete_organisation::run(
             &self.state.database,
             &self.state.deployer,
             &account,

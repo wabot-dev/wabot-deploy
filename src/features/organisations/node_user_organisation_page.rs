@@ -3,8 +3,8 @@ use hypertext::prelude::*;
 use crate::accounts::Account;
 use crate::entities::project::Project;
 use crate::entities::tenant::Tenant;
+use crate::features::organisations::organisation_quota_component::quota_card;
 use crate::policies::quotas::Charged;
-use crate::views::components::organisation_quota::quota_card;
 use crate::views::layouts::layout;
 use crate::views::texts::language::t;
 

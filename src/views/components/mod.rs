@@ -9,7 +9,6 @@ pub mod node_enrolment;
 pub mod node_errands;
 pub mod node_settings_cards;
 pub mod node_usage;
-pub mod organisation_quota;
 pub mod project_cells;
 pub mod service_placement;
 pub mod service_ports;

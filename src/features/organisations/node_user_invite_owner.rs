@@ -4,8 +4,8 @@ use crate::accounts::invitations;
 use crate::accounts::roles::NodeRole;
 use crate::accounts::Account;
 use crate::authz::node_user;
-use crate::dtos::requests::invite_owner::InviteOwner;
-use crate::dtos::responses::person_invited_into_organisation::PersonInvitedIntoOrganisation;
+use crate::features::organisations::invite_owner_request::InviteOwnerRequest;
+use crate::features::organisations::person_invited_into_organisation_response::PersonInvitedIntoOrganisationResponse;
 use crate::repositories::tenants;
 
 /// The only way into an organisation, since one with nobody in it cannot
@@ -20,8 +20,8 @@ use crate::repositories::tenants;
 pub async fn run(
     database: &SqliteDatabase,
     account: &Account,
-    asked: &InviteOwner,
-) -> Result<PersonInvitedIntoOrganisation, String> {
+    asked: &InviteOwnerRequest,
+) -> Result<PersonInvitedIntoOrganisationResponse, String> {
     if !node_user::shares_the_machine_out(account) {
         return Err("only an administrator of this node can do that".into());
     }
@@ -38,7 +38,7 @@ pub async fn run(
             .await
             .map_err(|error| error.to_string())?;
 
-    Ok(PersonInvitedIntoOrganisation {
+    Ok(PersonInvitedIntoOrganisationResponse {
         organisation: tenant.id,
         token,
     })
@@ -49,8 +49,8 @@ mod tests {
     use super::*;
     use crate::usecases::fixtures::organisation;
 
-    fn asked(organisation: &str) -> InviteOwner {
-        InviteOwner {
+    fn asked(organisation: &str) -> InviteOwnerRequest {
+        InviteOwnerRequest {
             organisation: organisation.to_string(),
         }
     }

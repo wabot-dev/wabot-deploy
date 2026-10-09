@@ -1,4 +1,5 @@
 pub mod databases;
+pub mod organisations;
 pub mod people;
 pub mod projects;
 

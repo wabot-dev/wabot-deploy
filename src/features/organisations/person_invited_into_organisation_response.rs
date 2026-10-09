@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 /// is that organisation's own — the node's would sign them up and bounce
 /// them on their first click.
 #[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct PersonInvitedIntoOrganisation {
+pub struct PersonInvitedIntoOrganisationResponse {
     pub organisation: String,
     pub token: String,
 }

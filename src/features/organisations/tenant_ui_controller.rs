@@ -23,14 +23,16 @@ use serde::Deserialize;
 use wabot::prelude::*;
 use wabot::ui::hypertext::IntoView;
 
-use super::auth::{signed_in, PageQuery, SessionMiddleware};
-use super::ConsoleState;
 use crate::accounts::roles::NodeRole;
+use crate::console::auth::{signed_in, PageQuery, SessionMiddleware};
+use crate::console::ConsoleState;
+use crate::features::organisations::node_user_organisation_settings_page::{
+    OrganisationTab, Panel,
+};
 use crate::policies::access;
 use crate::repositories::tenants;
 use crate::views::layouts::layout;
 use crate::views::layouts::shell::{Area, Frame};
-use crate::views::pages::node_user_organisation_settings_page::{OrganisationTab, Panel};
 
 #[derive(Debug, Deserialize, Validate, Default)]
 pub struct OrganisationPage {
@@ -82,20 +84,22 @@ impl TenantUiController {
                 .await
                 .unwrap_or_default()
                 .len();
-            cards.push(crate::views::pages::node_user_organisations_page::Card {
-                tenant,
-                projects,
-                people,
-            });
+            cards.push(
+                crate::features::organisations::node_user_organisations_page::Card {
+                    tenant,
+                    projects,
+                    people,
+                },
+            );
         }
 
         let frame = Frame::new(&account, Area::Settings, &[], None, "/organisations");
-        let page = crate::views::pages::node_user_organisations_page::Organisations {
+        let page = crate::features::organisations::node_user_organisations_page::Organisations {
             cards: &cards,
             error: query.error.as_deref(),
         };
         let body = crate::views::texts::language::scoped(account.language, || {
-            crate::views::pages::node_user_organisations_page::render(&page)
+            crate::features::organisations::node_user_organisations_page::render(&page)
                 .render()
                 .into_inner()
         });
@@ -133,7 +137,7 @@ impl TenantUiController {
             None,
             format!("/organisations/{}", tenant.id),
         );
-        let page = crate::views::pages::node_user_organisation_page::Organisation {
+        let page = crate::features::organisations::node_user_organisation_page::Organisation {
             tenant: &tenant,
             owners: &owners,
             projects: &projects,
@@ -141,7 +145,7 @@ impl TenantUiController {
             error: query.error.as_deref(),
         };
         let body = crate::views::texts::language::scoped(account.language, || {
-            crate::views::pages::node_user_organisation_page::render(&page)
+            crate::features::organisations::node_user_organisation_page::render(&page)
                 .render()
                 .into_inner()
         });
@@ -206,14 +210,14 @@ impl TenantUiController {
             format!("/organisations/{}", tenant.id),
         );
         let page =
-            crate::views::pages::node_user_organisation_settings_page::OrganisationSettings {
+            crate::features::organisations::node_user_organisation_settings_page::OrganisationSettings {
                 tenant: &tenant,
                 tab,
                 panel,
                 error: query.error.as_deref(),
             };
         let body = crate::views::texts::language::scoped(account.language, || {
-            crate::views::pages::node_user_organisation_settings_page::render(&page)
+            crate::features::organisations::node_user_organisation_settings_page::render(&page)
                 .render()
                 .into_inner()
         });

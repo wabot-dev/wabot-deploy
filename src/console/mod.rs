@@ -32,8 +32,6 @@ pub mod node_ui_controller;
 pub mod reveal_ui_controller;
 pub mod service_rest_controller;
 pub mod service_ui_controller;
-pub mod tenant_rest_controller;
-pub mod tenant_ui_controller;
 pub mod update_rest_controller;
 pub mod update_ui_controller;
 
@@ -47,6 +45,7 @@ use wabot::ui::embedded_assets;
 use crate::config::Config;
 use crate::edge::certs;
 use crate::features::databases::{database_rest_controller, database_ui_controller};
+use crate::features::organisations::{tenant_rest_controller, tenant_ui_controller};
 use crate::features::people::{
     people_rest_controller, people_ui_controller, tenant_people_rest_controller,
     tenant_people_ui_controller,
@@ -870,7 +869,7 @@ pub(crate) mod tests {
             .into_iter()
             .next()
             .expect("the operator");
-        let tenant = crate::usecases::node_user_create_organisation::run(
+        let tenant = crate::features::organisations::node_user_create_organisation::run(
             &console.database,
             &operator,
             "Acme",
@@ -881,7 +880,7 @@ pub(crate) mod tests {
         let mut paths = vec![format!("/organisations/{}", tenant.id)];
         // Read off the enum rather than written out: a tab added
         // tomorrow is covered without touching this.
-        for tab in crate::views::pages::node_user_organisation_settings_page::OrganisationTab::all()
+        for tab in crate::features::organisations::node_user_organisation_settings_page::OrganisationTab::all()
         {
             paths.push(tab.path(&tenant.id));
         }

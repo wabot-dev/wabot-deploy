@@ -11,7 +11,7 @@ use wabot::prelude::*;
 /// everything after that is the organisation's own, and it has a console
 /// to do it from.
 #[derive(Debug, Clone, Default, Deserialize, Serialize, Validate)]
-pub struct InviteOwner {
+pub struct InviteOwnerRequest {
     #[min_length(1)]
     pub organisation: String,
 }

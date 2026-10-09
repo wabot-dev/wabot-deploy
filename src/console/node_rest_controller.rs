@@ -1288,7 +1288,11 @@ pub(crate) mod tests {
             if line.trim_start().starts_with("//") || !line.contains(needle) {
                 continue;
             }
-            if !line.contains("crate::views::components::node_usage::width(") {
+            let through = [
+                "crate::views::components::node_usage::width(",
+                "crate::views::components::node_usage::bar_width(",
+            ];
+            if !through.iter().any(|call| line.contains(call)) {
                 wrong.push(number + 1);
             }
         }
