@@ -3,6 +3,7 @@ use wabot::sqlite::SqliteDatabase;
 use crate::domain::authz::node_user;
 use crate::domain::entities::account::Account;
 use crate::infra::config::Config;
+use crate::infra::deploy::dns::Resolution;
 use crate::infra::deploy::Deployer;
 use crate::infra::repositories::tenants;
 
@@ -48,6 +49,20 @@ pub async fn run(
             if held.id != tenant.id {
                 return Err(crate::shell::texts::sentences::name_is_taken(&held.name));
             }
+        }
+        // This node is the organisation's console, so its name has to
+        // arrive here — the question the node's own domain and every
+        // service hostname are asked before they are saved. Not asked, a
+        // typo was saved, routed and shown, and the console never
+        // answered on it. Found on a VM node with `nowhere.invalid`.
+        let node_domain = crate::infra::node::settings::domain(database, config).await;
+        let reference = node_domain.as_deref().unwrap_or(&wanted);
+        let outcome = match crate::infra::deploy::dns::resolves_here(&wanted, reference).await {
+            Resolution::NoReference if node_domain.is_none() => Resolution::Missing,
+            outcome => outcome,
+        };
+        if !outcome.ok() {
+            return Err(outcome.explain(&wanted));
         }
     }
 

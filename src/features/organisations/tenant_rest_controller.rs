@@ -270,3 +270,64 @@ impl TenantRestController {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::web::console::tests::Console;
+    use wabot::rest::axum::http::StatusCode;
+
+    /// An organisation's name has to reach this node before it is saved.
+    ///
+    /// **Shipped otherwise**: nothing was asked, so a typo was stored,
+    /// routed and shown as the organisation's console, which never
+    /// answered on it. Found on a VM node with `nowhere.invalid`.
+    #[tokio::test]
+    async fn an_organisation_is_given_only_a_name_that_arrives_here() {
+        let console = Console::new().await;
+        let cookie = console.signed_in().await;
+        let created = console
+            .harness
+            .post("/organisations")
+            .header("cookie", &cookie)
+            .form(&[("name", "Acme")])
+            .send()
+            .await;
+        let id = created
+            .header("location")
+            .and_then(|to| to.split('/').nth(2))
+            .expect("the organisation's page")
+            .to_string();
+        let save = |domain: &'static str| {
+            let console = &console;
+            let cookie = &cookie;
+            let path = format!("/organisations/{id}/domain");
+            async move {
+                let response = console
+                    .harness
+                    .post(&path)
+                    .header("cookie", cookie)
+                    .form(&[("domain", domain)])
+                    .send()
+                    .await;
+                response.assert_status(StatusCode::SEE_OTHER);
+                response.header("location").unwrap_or_default().to_string()
+            }
+        };
+        let domain = || async {
+            crate::infra::repositories::tenants::find(&console.database, &id)
+                .await
+                .expect("read")
+                .expect("there")
+                .domain
+        };
+
+        let refused = save("nowhere.invalid").await;
+        assert!(refused.contains("error="), "{refused}");
+        assert!(refused.contains("does+not+resolve"), "{refused}");
+        assert_eq!(domain().await, None, "a refused name is not stored");
+
+        let saved = save("localhost").await;
+        assert!(!saved.contains("error="), "{saved}");
+        assert_eq!(domain().await.as_deref(), Some("localhost"));
+    }
+}
