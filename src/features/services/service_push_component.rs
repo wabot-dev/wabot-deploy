@@ -19,8 +19,10 @@ use hypertext::prelude::*;
 pub enum Push {
     /// Push here, and it becomes a release.
     To(String),
-    /// The image belongs to another registry, so a push to this node
-    /// matches no service. Carries the reference that would work.
+    /// The image belongs to another registry. A push to the service's
+    /// own repository here still lands — the registry matches it by slug —
+    /// and the service runs what was pushed from then on. Carries that
+    /// reference.
     Elsewhere(String),
     /// Pinned by digest: it names bytes, and nothing watches bytes.
     Pinned,
@@ -60,11 +62,10 @@ pub fn push(
         false => tag,
     };
 
-    // The token guard refuses a repository that is not the project's,
-    // and `release` compares names before tags — so an image from
-    // anywhere else can never be matched by a push here, whatever it is
-    // addressed to. What it would take is the service's image field
-    // naming this node.
+    // A push to `<project>/<service>` is a release for that service
+    // whatever its image field says — see `registry::manifests`. This
+    // said the opposite for seven weeks after that changed, and told
+    // somebody to edit a field the push would have set itself.
     let name = reference.name();
     match name == project_slug || name.starts_with(&format!("{project_slug}/")) {
         // The registry names a pushed image under the node's own host,
@@ -209,7 +210,7 @@ pub fn push_example(push: &Push, auto_deploy: bool, settings: &str) -> impl Rend
         false => format!("docker build -t {target} .\ndocker push {target}"),
     };
     let settings = settings.to_string();
-    let landing = matches!(push, Push::To(_));
+    let landing = matches!(push, Push::To(_) | Push::Elsewhere(_));
     let inner = rsx! {
         <details>
             <summary>(t("How to push"))</summary>
@@ -219,13 +220,9 @@ pub fn push_example(push: &Push, auto_deploy: bool, settings: &str) -> impl Rend
                 // tells somebody to push an image to "this repository",
                 // and until something changes there is none.
                 @if matches!(push, Push::Elsewhere(_)) {
-                    <p class="field-hint">(t("This service runs an image from another registry, \
-                         so nothing pushed to this node can land on it — a push is matched to a \
-                         service by the name it carries. Point the service at this reference \
-                         instead, and push that:"))</p>
-                    <p class="field-hint">
-                        <a href=(&settings)>(t("Change the image in settings"))</a>
-                    </p>
+                    <p class="field-hint">(t("This service runs an image from another registry. \
+                         A push to its own repository here lands on it all the same, and from \
+                         then on it runs what was pushed."))</p>
                 }
                 @if !commands.is_empty() {
                     <p class="field-hint">(t("From the directory with the Dockerfile, after \

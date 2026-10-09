@@ -245,7 +245,7 @@ pub fn render<'a>(page: &'a ServiceDetail<'a>) -> impl Renderable + 'a {
                     // `…/app:v2` in this registry has to say so in that
                     // field, and this badge is what makes the difference
                     // visible instead of silent.
-                    @if let Some(Push::To(_)) = page.push {
+                    @if let Some(Push::To(_) | Push::Elsewhere(_)) = page.push {
                         @let watched = service.tracked_tag().unwrap_or_else(|| "latest".into());
                         // `watching :*` is a badge nobody can read. The
                         // star is the way it is *written*, not the way it

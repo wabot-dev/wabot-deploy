@@ -3543,9 +3543,8 @@ mod tests {
             "a digest names bytes, and nothing watches it"
         );
 
-        // The reported case: created against a public image, so a push
-        // here matches no service whatever it is addressed to — and the
-        // answer is the reference that would work.
+        // Created against a public image: a push to the service's own
+        // repository here still lands, and this is that reference.
         let theirs = services::all(&console.database, Some(&project.id))
             .await
             .expect("query")
@@ -4321,8 +4320,10 @@ mod tests {
             "and something to copy it with: {body}"
         );
 
-        // And the service that cannot be pushed to says so, on the page
-        // where somebody went looking for the command.
+        // And a service on a public image says a push here lands anyway.
+        // **It said the opposite** for seven weeks after the registry
+        // began matching a service's own repository by slug — found on a
+        // VM node, where the push it called impossible deployed.
         let body = console
             .harness
             .get("/projects/my-api/services/web")
@@ -4332,8 +4333,13 @@ mod tests {
             .body;
         assert!(
             body.contains("an image from another registry"),
-            "it says why: {body}"
+            "it says what it runs: {body}"
         );
+        assert!(
+            body.contains("lands on it all the same"),
+            "and that a push here still lands: {body}"
+        );
+        assert!(body.contains("watching :latest"), "{body}");
         assert!(
             body.contains("docker push node.example.com/my-api/web:latest"),
             "and the commands for what would work: {body}"
