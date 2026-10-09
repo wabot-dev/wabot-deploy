@@ -24,6 +24,7 @@
 pub mod assets;
 pub mod attention;
 pub mod auth;
+pub mod backup_rest_controller;
 pub mod live;
 pub mod node_rest_controller;
 pub mod node_ui_controller;
@@ -280,6 +281,7 @@ pub fn register(
         network_rest_controller::NetworkRestController,
         node_ui_controller::NodeUiController,
         node_rest_controller::NodeRestController,
+        backup_rest_controller::BackupRestController,
         people_ui_controller::PeopleUiController,
         people_rest_controller::PeopleRestController,
         project_ui_controller::ProjectUiController,
@@ -338,6 +340,7 @@ pub fn routes(container: &Container) -> Router {
 
     let forms = network_rest_controller::NetworkRestController::register_routes(container, forms);
     let forms = node_rest_controller::NodeRestController::register_routes(container, forms);
+    let forms = backup_rest_controller::BackupRestController::register_routes(container, forms);
     let forms = people_rest_controller::PeopleRestController::register_routes(container, forms);
     let forms = tenant_rest_controller::TenantRestController::register_routes(container, forms);
     let forms = update_rest_controller::UpdateRestController::register_routes(container, forms);
@@ -1418,5 +1421,26 @@ pub(crate) mod tests {
             pretending.len(),
             pretending.join("\n")
         );
+    }
+
+    /// Every `data-when` has to name a control that exists in the page
+    /// it is on. A typo in the condition is the failure mode of a
+    /// declarative island: nothing throws, the field is simply hidden
+    /// forever or shown forever, and the page looks fine.
+    pub(crate) fn conditions_name_real_controls(body: &str) {
+        let mut checked = 0;
+        for attribute in ["data-when=\"", "data-required-when=\""] {
+            for (index, _) in body.match_indices(attribute) {
+                let rest = &body[index + attribute.len()..];
+                let condition = &rest[..rest.find('"').expect("a closed attribute")];
+                let name = condition.split('=').next().expect("a name");
+                assert!(
+                    body.contains(&format!("name=\"{name}\"")),
+                    "{condition} names no control on this page"
+                );
+                checked += 1;
+            }
+        }
+        assert!(checked > 0, "no conditional fields on this page");
     }
 }

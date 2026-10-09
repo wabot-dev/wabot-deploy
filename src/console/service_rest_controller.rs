@@ -5418,7 +5418,7 @@ mod tests {
             body.contains("data-required-when=\"https\""),
             "required only with the box: {body}"
         );
-        super::super::node_rest_controller::tests::conditions_name_real_controls(&body);
+        crate::console::tests::conditions_name_real_controls(&body);
     }
 
     /// The default answer: a service exposes nothing.
