@@ -519,8 +519,16 @@ pub async fn restore(
         None => println!("  up to     as far as the archived log goes"),
     }
     println!();
-    println!("  It unpacks and replays at its next deployment. The original is");
-    println!("  untouched and still serving — this is a copy beside it.");
+    // Said, because nothing here starts it: this talks to the database,
+    // not to the running node, and "at its next deployment" read as
+    // something that would happen. On a VM node the copy sat at "Not
+    // deployed" waiting for a click nobody had been asked for.
+    println!(
+        "  Nothing starts it from here: deploy {} from its page, and it",
+        made.slug
+    );
+    println!("  unpacks and replays then. The original is untouched and still");
+    println!("  serving — this is a copy beside it.");
     Ok(0)
 }
 
