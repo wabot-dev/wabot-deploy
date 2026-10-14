@@ -235,6 +235,10 @@ fn migrations() -> Vec<Migration> {
             "0058_archiving_default_for_new_nodes",
             include_str!("../../migrations/0058_archiving_default_for_new_nodes.sql"),
         ),
+        Migration::new(
+            "0059_edges_follow_their_port",
+            include_str!("../../migrations/0059_edges_follow_their_port.sql"),
+        ),
     ]
 }
 

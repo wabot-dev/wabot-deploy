@@ -4836,6 +4836,40 @@ mod tests {
     /// certificate and port to the project's list, because the locator
     /// they share answers with the project. Reported by Jorge, who saved
     /// a setting and found himself two pages away.
+    /// Who answers for a name is chosen only for a name the service has.
+    /// The row is what the renewal loop orders for, so one written from a
+    /// form field for any name at all was a certificate asked for
+    /// something nothing serves. Found on a VM node.
+    #[tokio::test]
+    async fn an_edge_is_chosen_only_for_a_name_the_service_has() {
+        let console = Console::new().await;
+        let cookie = console.signed_in().await;
+        let page = service(&console, &cookie).await;
+
+        let response = console
+            .harness
+            .post(&format!("{page}/edges"))
+            .header("cookie", &cookie)
+            .form(&[("hostname", "not-ours.example.com")])
+            .send()
+            .await;
+        assert!(
+            response
+                .header("location")
+                .unwrap_or_default()
+                .contains("error="),
+            "{:?}",
+            response.header("location")
+        );
+        assert!(crate::infra::repositories::edges::nodes_for(
+            &console.database,
+            "not-ours.example.com"
+        )
+        .await
+        .expect("query")
+        .is_empty());
+    }
+
     #[tokio::test]
     async fn saving_a_setting_stays_on_the_settings_page() {
         let console = Console::new().await;
@@ -4856,10 +4890,29 @@ mod tests {
         // to the wrong tab would otherwise pass by landing on a page whose
         // anchor happens to exist somewhere else.
 
+        // The edges card chooses who answers for a name the service
+        // already has, and a name it does not have is refused.
+        let named = services::all(&console.database, None)
+            .await
+            .expect("query")
+            .into_iter()
+            .find(|row| page.ends_with(&format!("/services/{}", row.slug)))
+            .expect("the service");
+        crate::infra::repositories::ports::create(
+            &console.database,
+            &named.id,
+            9090,
+            false,
+            Some("api.example.com"),
+            &[],
+        )
+        .await
+        .expect("a port with the name");
+
         // `on_page` is false for a card that renders only sometimes:
-        // the edges one needs a public node and a name for it to answer
-        // for, and neither exists here. Its redirect is still pinned —
-        // it is the id that cannot be looked for.
+        // the edges one needs a public node, and none exists here. Its
+        // redirect is still pinned — it is the id that cannot be looked
+        // for.
         for (action, anchor, on_page, form) in [
             ("tracking", "releases", true, vec![("track_tag", "latest")]),
             ("env", "environment", true, vec![("env", "A=1")]),

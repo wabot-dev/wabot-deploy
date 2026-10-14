@@ -21,6 +21,17 @@ impl SetServiceEdges<'_> {
         if self.hostname.is_empty() {
             return Err("that names no hostname".into());
         }
+        // An edge row is what the renewal loop orders for, so one for a
+        // name no port of this service has would be a certificate asked
+        // for a name nothing serves — on the strength of a form field.
+        let ours = crate::infra::repositories::ports::of_service(database, &self.service.id)
+            .await
+            .map_err(|error| error.to_string())?
+            .into_iter()
+            .any(|port| port.hostname.as_deref() == Some(self.hostname));
+        if !ours {
+            return Err("that is not one of this service's names".into());
+        }
 
         let references: Vec<dns::Reference> = dns::references(database)
             .await?

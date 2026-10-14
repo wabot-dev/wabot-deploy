@@ -359,7 +359,24 @@ pub async fn delete(database: &SqliteDatabase, id: &str) -> PlatformResult<()> {
     let id = id.to_string();
     database
         .write(move |connection| {
-            connection.execute("DELETE FROM port WHERE \"id\" = ?1", [id])?;
+            // Who answers for the name goes with the last port that has it,
+            // the same rule `set_hostname` follows for a rename. Left
+            // behind, the row kept `acme::wanted_names` ordering a
+            // certificate for a name nothing served. Found on a VM node.
+            connection.execute(
+                "DELETE FROM service_edge WHERE EXISTS ( \
+                   SELECT 1 FROM port AS gone \
+                   WHERE gone.\"id\" = ?1 \
+                     AND gone.\"service_id\" = service_edge.\"service_id\" \
+                     AND gone.\"hostname\" = service_edge.\"hostname\" \
+                     AND NOT EXISTS ( \
+                       SELECT 1 FROM port AS kept \
+                       WHERE kept.\"service_id\" = gone.\"service_id\" \
+                         AND kept.\"hostname\" = gone.\"hostname\" \
+                         AND kept.\"id\" != gone.\"id\"))",
+                [&id],
+            )?;
+            connection.execute("DELETE FROM port WHERE \"id\" = ?1", [&id])?;
             Ok(())
         })
         .await?;
@@ -455,6 +472,16 @@ mod tests {
                 .expect("query")
                 .is_empty(),
             "the old name stops being answered for, or it is renewed for ever"
+        );
+
+        // And deleting the port takes it the rest of the way.
+        delete(&database, &port.id).await.expect("deleted");
+        assert!(
+            crate::infra::repositories::edges::nodes_for(&database, "new.example.com")
+                .await
+                .expect("query")
+                .is_empty(),
+            "a deleted port's name is still answered for, so it is still ordered"
         );
     }
 
