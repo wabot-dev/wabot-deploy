@@ -196,6 +196,8 @@ pub fn prepare(plan: &Plan<'_>) -> std::io::Result<Preparation> {
             &plan.database.admin_user,
             &plan.database.admin_password,
             &plan.database.database_name,
+            &plan.database.version,
+            plan.limit(),
         )
         .into_iter()
         .collect(),

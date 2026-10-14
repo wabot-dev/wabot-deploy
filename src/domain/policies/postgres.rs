@@ -507,8 +507,10 @@ pub fn environment(
     admin_user: &str,
     admin_password: &str,
     database_name: &str,
+    version: &str,
+    memory_limit: u64,
 ) -> BTreeMap<String, String> {
-    [
+    let mut environment: BTreeMap<String, String> = [
         ("POSTGRES_USER", admin_user),
         ("POSTGRES_PASSWORD", admin_password),
         ("POSTGRES_DB", database_name),
@@ -516,7 +518,33 @@ pub fn environment(
     ]
     .into_iter()
     .map(|(key, value)| (key.to_string(), value.to_string()))
-    .collect()
+    .collect();
+    if let Some(arguments) = initdb_arguments(version, memory_limit) {
+        environment.insert("POSTGRES_INITDB_ARGS".to_string(), arguments);
+    }
+    environment
+}
+
+/// What `initdb` is told, when it can be told anything.
+///
+/// The server's `-c` arguments never reach `initdb`, which runs with the
+/// stock 128 MB of shared buffers — so inside the smallest ceiling it was
+/// killed in its own post-bootstrap and the database never initialised.
+/// Found on a VM node. `--set` arrived in 16; 15 has no way to say it, and
+/// [`initialises_in`] keeps it out of a ceiling it cannot start in.
+pub fn initdb_arguments(version: &str, memory_limit: u64) -> Option<String> {
+    let major: u32 = version.parse().ok()?;
+    (major >= 16).then(|| {
+        format!(
+            "--set=shared_buffers={}MB",
+            tuning(memory_limit).shared_buffers_mb
+        )
+    })
+}
+
+/// Whether `initdb` for this version fits in this ceiling.
+pub fn initialises_in(version: &str, memory_limit: u64) -> bool {
+    initdb_arguments(version, memory_limit).is_some() || memory_limit >= 128 * MB
 }
 
 /// Who may connect, from where, and how.
@@ -1151,6 +1179,27 @@ mod tests {
         // The password is never in the command: a command is in the
         // container's spec on disk and in `ctr containers info`.
         assert!(!script.contains("PGPASSWORD"), "{script}");
+    }
+
+    /// The smallest preset initialises: `initdb` is given the preset's
+    /// shared buffers where it can be, and refused where it cannot.
+    #[test]
+    fn initdb_is_given_the_presets_shared_buffers() {
+        let small = 64 * MB;
+        assert_eq!(
+            initdb_arguments("17", small).as_deref(),
+            Some("--set=shared_buffers=16MB")
+        );
+        assert_eq!(initdb_arguments("15", small), None);
+        assert!(initialises_in("16", small));
+        assert!(!initialises_in("15", small));
+        assert!(initialises_in("15", 128 * MB));
+        assert_eq!(
+            environment("u", "p", "d", "18", small)
+                .get("POSTGRES_INITDB_ARGS")
+                .map(String::as_str),
+            Some("--set=shared_buffers=16MB")
+        );
     }
 
     /// The mistake the whole table exists to prevent: `shared_buffers`

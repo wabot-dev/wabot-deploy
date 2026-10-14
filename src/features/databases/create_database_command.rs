@@ -35,6 +35,14 @@ impl CreateDatabase<'_> {
                 "that is not one of the sizes on offer".into(),
             ));
         }
+        if !postgres::initialises_in(self.version, self.memory_limit) {
+            return Err(PlatformError::Refused(format!(
+                "PostgreSQL {} cannot be initialised in {}: before 16 its initdb takes no \
+                 setting for its 128 MB of shared buffers — choose 128 MB, or a newer version",
+                self.version,
+                presets::label(self.memory_limit)
+            )));
+        }
 
         let service = crate::infra::repositories::services::create(
             database,
