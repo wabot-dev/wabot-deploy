@@ -198,16 +198,21 @@ pub async fn put_back(
                 bytes.len()
             ));
         }
-        crate::infra::runtime::content::commit(
+        let transaction = format!("restore-{digest}");
+        if let Err(error) = crate::infra::runtime::content::commit(
             client,
-            &format!("restore-{digest}"),
+            &transaction,
             digest,
             *size,
             bytes,
             Default::default(),
         )
         .await
-        .map_err(|error| format!("{digest}: {error}"))?;
+        {
+            // Not left half-written for the next attempt to trip on.
+            let _ = crate::infra::runtime::content::abort(client, &transaction).await;
+            return Err(format!("{digest}: {error}"));
+        }
         written += 1;
     }
 

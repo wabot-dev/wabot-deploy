@@ -15,7 +15,7 @@ use std::collections::HashMap;
 
 use containerd_client::services::v1::content_client::ContentClient;
 use containerd_client::services::v1::{
-    InfoRequest, ReadContentRequest, StatusRequest, WriteAction, WriteContentRequest,
+    AbortRequest, InfoRequest, ReadContentRequest, StatusRequest, WriteAction, WriteContentRequest,
 };
 use containerd_client::types::Descriptor;
 
@@ -201,21 +201,57 @@ pub async fn commit(
     ref_: &str,
     digest: &str,
     total: i64,
-    data: Vec<u8>,
+    mut data: Vec<u8>,
     labels: HashMap<String, String>,
 ) -> ClientResult<()> {
-    let request = WriteContentRequest {
-        action: WriteAction::Commit as i32,
-        r#ref: ref_.to_string(),
-        total,
-        expected: digest.to_string(),
-        offset: total - data.len() as i64,
-        data,
-        labels,
+    // From where the transaction already stands. A ref is keyed on what
+    // it carries — a digest, an upload session — so bytes already in it
+    // are these bytes.
+    let start = total - data.len() as i64;
+    let current = written_so_far(client, ref_).await?;
+    if current > start && current <= total {
+        data.drain(..(current - start) as usize);
+    }
+    let from = total - data.len() as i64;
+
+    // **In pieces, and in one stream, whatever the caller had.**
+    // containerd takes no gRPC message over 16 MB, so a blob handed over
+    // whole — a layer restored from a backup, a registry upload sent in
+    // one request — was refused with "received message larger than max"
+    // from the first layer of any real image. Found on a VM node
+    // restoring a backup: the images it had kept for being the only copy
+    // did not come back. Writing the head on one stream and committing on
+    // a second was then refused at the commit's offset, so the writes and
+    // the commit share a stream, the way containerd's own client sends
+    // them: the commit last, carrying no data, at the total.
+    let ref_owned = ref_.to_string();
+    let expected = digest.to_string();
+    let requests = async_stream::stream! {
+        let mut offset = from;
+        for piece in data.chunks(PIECE) {
+            let size = piece.len() as i64;
+            yield WriteContentRequest {
+                action: WriteAction::Write as i32,
+                r#ref: ref_owned.clone(),
+                offset,
+                data: piece.to_vec(),
+                ..Default::default()
+            };
+            offset += size;
+        }
+        yield WriteContentRequest {
+            action: WriteAction::Commit as i32,
+            r#ref: ref_owned,
+            total,
+            expected,
+            offset,
+            data: Vec::new(),
+            labels,
+        };
     };
 
     let result = ContentClient::new(client.channel())
-        .write(client.request(tokio_stream::iter(vec![request])))
+        .write(client.request(requests))
         .await;
 
     let mut stream = match result {
@@ -233,18 +269,40 @@ pub async fn commit(
         }
     };
 
-    while stream
-        .message()
-        .await
-        .map_err(|source| ClientError::Call {
-            call: "Content.Write",
-            source,
-        })?
-        .is_some()
-    {}
-
-    Ok(())
+    loop {
+        match stream.message().await {
+            Ok(Some(_)) => {}
+            Ok(None) => return Ok(()),
+            Err(status) if status.code() == tonic::Code::AlreadyExists => return Ok(()),
+            Err(source) => {
+                return Err(ClientError::Call {
+                    call: "Content.Write",
+                    source,
+                })
+            }
+        }
+    }
 }
+
+/// Throw away a transaction, so the next attempt starts from nothing.
+pub async fn abort(client: &Containerd, ref_: &str) -> ClientResult<()> {
+    match ContentClient::new(client.channel())
+        .abort(client.request(AbortRequest {
+            r#ref: ref_.to_string(),
+        }))
+        .await
+    {
+        Ok(_) => Ok(()),
+        Err(status) if status.code() == tonic::Code::NotFound => Ok(()),
+        Err(source) => Err(ClientError::Call {
+            call: "Content.Abort",
+            source,
+        }),
+    }
+}
+
+/// The most one message carries, well under containerd's 16 MB ceiling.
+const PIECE: usize = 1024 * 1024;
 
 /// The labels that keep a manifest's dependencies alive.
 ///
