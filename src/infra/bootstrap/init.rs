@@ -197,16 +197,20 @@ impl Init {
                     .ok()?;
                 (pid > 0).then_some(pid)
             }
-            // supervise-daemon keeps the supervised process's pid in
-            // the pidfile the init script names. A stale file from a
-            // process that is gone fails the `/proc` check below,
-            // which is the point of making it here.
+            // The pidfile holds **supervise-daemon's** pid, not the
+            // node's: measured on Alpine, `/proc/<pid>/exe` was
+            // `/sbin/supervise-daemon`. Read as the node, it made every
+            // `install` find the node running some other binary and
+            // restart it, against the book's 1.13. The node is its child.
+            // A stale file from a process that is gone fails the `/proc`
+            // check, which is the point of making it here.
             Self::OpenRc => {
                 let text = std::fs::read_to_string(format!("/run/{name}.pid")).ok()?;
                 let pid: u32 = text.trim().parse().ok()?;
-                Path::new(&format!("/proc/{pid}/exe"))
-                    .exists()
-                    .then_some(pid)
+                if !Path::new(&format!("/proc/{pid}/exe")).exists() {
+                    return None;
+                }
+                Some(child_of(pid).unwrap_or(pid))
             }
             Self::None => None,
         }
@@ -292,6 +296,31 @@ fn run(program: &str, args: &[&str]) -> ServiceResult<()> {
     )))
 }
 
+/// The first process whose parent is `parent`, from `/proc`.
+fn child_of(parent: u32) -> Option<u32> {
+    std::fs::read_dir("/proc")
+        .ok()?
+        .filter_map(|entry| entry.ok()?.file_name().to_str()?.parse::<u32>().ok())
+        .find(|pid| {
+            std::fs::read_to_string(format!("/proc/{pid}/stat"))
+                .ok()
+                .and_then(|stat| parent_in(&stat))
+                == Some(parent)
+        })
+}
+
+/// The parent pid in a `/proc/<pid>/stat` line. After the **last** `)`,
+/// because the command name in parentheses may hold spaces and brackets
+/// of its own.
+fn parent_in(stat: &str) -> Option<u32> {
+    stat.rsplit_once(')')?
+        .1
+        .split_whitespace()
+        .nth(1)?
+        .parse()
+        .ok()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -353,6 +382,15 @@ mod tests {
         assert!(Init::None.restart_from_within("wabot-deploy").is_err());
         assert!(!Init::None.is_active("wabot-deploy"));
         assert_eq!(Init::None.main_pid("wabot-deploy"), None);
+    }
+
+    #[test]
+    fn the_parent_is_read_after_the_command_name_whatever_it_holds() {
+        assert_eq!(
+            parent_in("27249 (wabot-deploy) S 27248 27248 27248 0 -1"),
+            Some(27248)
+        );
+        assert_eq!(parent_in("7 (a (b) c) R 1 7 7 0 -1"), Some(1));
     }
 
     /// Detection must not answer "systemd" on a machine that merely
