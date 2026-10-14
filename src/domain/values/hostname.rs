@@ -11,6 +11,11 @@ use std::fmt;
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Hostname(String);
 
+/// What somebody who typed a wildcard is told, in every form that takes a
+/// name.
+pub const WILDCARD_REFUSED: &str = "a wildcard is a pattern, not a name this node can serve — \
+     add each name you want answered";
+
 impl Hostname {
     pub fn parse(typed: &str) -> Self {
         let hostname = typed.trim().to_ascii_lowercase();
@@ -30,6 +35,16 @@ impl Hostname {
 
     pub fn is_empty(&self) -> bool {
         self.0.is_empty()
+    }
+
+    /// A pattern rather than a name. Refused by name wherever one is
+    /// typed: the edge looks a `Host` up exactly, so a route stored for
+    /// `*.example.com` matches nothing, and no authority signs a wildcard
+    /// over the HTTP challenge. It was refused only when DNS happened not
+    /// to answer for the literal — a wildcard record does. Found on a VM
+    /// node.
+    pub fn is_wildcard(&self) -> bool {
+        self.0.contains('*')
     }
 
     pub fn as_str(&self) -> &str {
@@ -65,6 +80,13 @@ mod tests {
                 "{typed}"
             );
         }
+    }
+
+    #[test]
+    fn a_star_anywhere_is_a_wildcard() {
+        assert!(Hostname::parse("*.example.com").is_wildcard());
+        assert!(Hostname::parse("api.*.example.com").is_wildcard());
+        assert!(!Hostname::parse("api.example.com").is_wildcard());
     }
 
     #[test]

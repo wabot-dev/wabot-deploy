@@ -29,9 +29,11 @@ pub async fn run(
         return Ok(DomainSettledResponse::Cleared);
     }
 
-    let domain = crate::domain::values::hostname::Hostname::parse(typed)
-        .as_str()
-        .to_string();
+    let parsed = crate::domain::values::hostname::Hostname::parse(typed);
+    if parsed.is_wildcard() {
+        return Err(crate::domain::values::hostname::WILDCARD_REFUSED.into());
+    }
+    let domain = parsed.as_str().to_string();
     // Resolved against itself: the node has no other way to know where
     // it is reachable, and "does this name arrive here" is the question.
     // So a name that resolves nowhere is also the reference that resolves
@@ -64,7 +66,12 @@ pub async fn run(
     )
     .await;
 
-    Ok(DomainSettledResponse::Named(domain))
+    let addresses = crate::infra::deploy::dns::lookup(&domain)
+        .await
+        .iter()
+        .map(ToString::to_string)
+        .collect();
+    Ok(DomainSettledResponse::Named { domain, addresses })
 }
 
 /// The new name has to reach the console and the old one has to stop:

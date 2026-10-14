@@ -23,10 +23,11 @@ impl AddServicePort<'_> {
                 if self.asked.hostname.is_empty() {
                     return Err("serving over HTTPS needs a hostname".into());
                 }
-                let hostname =
-                    crate::domain::values::hostname::Hostname::parse(&self.asked.hostname)
-                        .as_str()
-                        .to_string();
+                let parsed = crate::domain::values::hostname::Hostname::parse(&self.asked.hostname);
+                if parsed.is_wildcard() {
+                    return Err(crate::domain::values::hostname::WILDCARD_REFUSED.into());
+                }
+                let hostname = parsed.as_str().to_string();
 
                 let references = dns::references(database).await?;
                 if references.is_empty() {

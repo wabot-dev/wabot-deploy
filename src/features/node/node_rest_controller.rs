@@ -114,14 +114,18 @@ impl NodeRestController {
         // the new name and the public one. Asking it here is what makes
         // saving a domain reissue rather than merely record.
         match settled {
-            Ok(crate::features::node::domain_settled_response::DomainSettledResponse::Named(
+            Ok(crate::features::node::domain_settled_response::DomainSettledResponse::Named {
                 domain,
-            )) => {
+                addresses,
+            }) => {
                 self.state.certificates.now();
                 Ok(crate::shell::auth::see_other(&format!(
                     "{here}?{}",
                     form_urlencoded::Serializer::new(String::new())
-                        .append_pair("checked", &format!("{domain} resolves here."))
+                        .append_pair(
+                            "checked",
+                            &format!("{domain} resolves to {}.", addresses.join(", "))
+                        )
                         .finish()
                 )))
             }

@@ -26,6 +26,9 @@ pub async fn run(
     };
 
     if !wanted.is_empty() {
+        if crate::domain::values::hostname::Hostname::parse(&wanted).is_wildcard() {
+            return Err(crate::domain::values::hostname::WILDCARD_REFUSED.into());
+        }
         // Refused here as well as in `routing::sync`: the sync skipping
         // it would leave a row saved on a page that shows it and a
         // console that never answers there, which is a setting that lies.

@@ -251,14 +251,16 @@ pub fn certificate_card<'a>(
                     && matches!(policy.renew_with, crate::infra::edge::policy::RenewWith::Acme)
                 {
                     <p class="field-hint">(t("It must resolve to this node, and this node must be reachable on \
-                         port 80 — that is what the challenge answers on. Both are checked \
-                         before anything is requested. Saving reissues: the node takes the \
-                         new name on its own certificate straight away, then asks a public \
-                         authority for one."))</p>
+                         port 80 — that is what the challenge answers on. That it resolves is \
+                         checked before it is saved; whether the address is this node's, a \
+                         node behind a router cannot see from inside. Saving reissues: the \
+                         node takes the new name on its own certificate straight away, then \
+                         asks a public authority for one."))</p>
                 } @else {
-                    <p class="field-hint">(t("It must resolve to this node, which is checked before it is \
-                         saved. Saving reissues: the node takes the new name on its own \
-                         certificate straight away."))</p>
+                    <p class="field-hint">(t("It must resolve to this node. That it resolves is checked before \
+                         it is saved, and the addresses found are shown — whether they are this \
+                         node's, a node behind a router cannot see from inside. Saving reissues: \
+                         the node takes the new name on its own certificate straight away."))</p>
                 }
                 <div class="actions">
                     <button type="submit">(t("Save domain"))</button>
