@@ -208,7 +208,7 @@ impl Service {
                 "that name has nothing a hostname can be built from".into(),
             ));
         }
-        let image = ImageReference::parse(image)?;
+        let image = ImageReference::typed(image)?;
 
         Ok(Self {
             id: format!("svc-{}", wabot::prelude::password::generate(12)),

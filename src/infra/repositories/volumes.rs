@@ -199,7 +199,7 @@ mod tests {
             &database,
             &project.id,
             "db",
-            "postgres:17-alpine",
+            "docker.io/library/postgres:17-alpine",
             &[],
         )
         .await

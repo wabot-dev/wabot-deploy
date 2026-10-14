@@ -86,6 +86,10 @@ pub async fn replica_cells(
         else {
             continue;
         };
+        let replicas = state
+            .deployer
+            .as_observed(project, &service, replicas)
+            .await;
         let stopped =
             service.desired_state == crate::domain::entities::service::DesiredState::Stopped;
         // Which of its copies the edge has taken out of the rotation.

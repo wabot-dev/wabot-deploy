@@ -13,6 +13,8 @@ impl SetServiceImage<'_> {
             return Err("the node writes this for a managed database".into());
         }
 
+        crate::domain::values::image_reference::ImageReference::typed(self.image)
+            .map_err(|error| error.to_string())?;
         services::set_image(database, &self.service.id, self.image)
             .await
             .map_err(|error| error.to_string())

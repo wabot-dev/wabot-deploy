@@ -235,7 +235,7 @@ mod tests {
             &database,
             &project.id,
             "web",
-            "alpine:3.23",
+            "docker.io/library/alpine:3.23",
             &[],
         )
         .await

@@ -1287,7 +1287,7 @@ mod tests {
             &database,
             &project.id,
             "web",
-            "nginx:alpine",
+            "docker.io/library/nginx:alpine",
             &[],
         )
         .await
@@ -1436,7 +1436,7 @@ mod tests {
             &database,
             &project.id,
             "web",
-            "alpine:3.23",
+            "docker.io/library/alpine:3.23",
             &[],
         )
         .await

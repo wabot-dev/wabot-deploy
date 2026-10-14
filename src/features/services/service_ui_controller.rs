@@ -195,9 +195,16 @@ impl ServiceUiController {
         // Where every copy of it runs, and the nodes it could run on.
         // Both only matter when this node is the one that decides — a
         // service that arrived from elsewhere is placed from there.
-        let placements =
-            crate::infra::repositories::replicas::of_service(&self.state.database, &service.id)
-                .await?;
+        let placements = self
+            .state
+            .deployer
+            .as_observed(
+                &project,
+                &service,
+                crate::infra::repositories::replicas::of_service(&self.state.database, &service.id)
+                    .await?,
+            )
+            .await;
         let nodes = crate::infra::network::all(&self.state.database).await?;
         // Who could answer for a name, and who was asked to. Only a
         // node with an address the world can dial: sending a hostname

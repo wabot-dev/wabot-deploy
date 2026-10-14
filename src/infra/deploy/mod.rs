@@ -913,8 +913,20 @@ impl Deployer {
         // somebody wrote into a connection string. `None` for
         // everything else, which is every service that is not a
         // database — see `runtime::network::RESERVED_HOSTS`.
-        let wanted = replica
-            .reserved_host
+        //
+        // Read again rather than off `replica`: `prepare_engine` reserves
+        // one for a copy that had none, and the struct in hand predates
+        // that. A second copy came up on whatever `host-local` had next
+        // while `/etc/hosts` named its reservation, so the read pool's
+        // name pointed at nobody until the next deployment. Found on a VM
+        // node.
+        let reserved = match replica.reserved_host {
+            Some(host) => Some(host),
+            None => replicas::find(&self.database, &replica.id)
+                .await?
+                .and_then(|found| found.reserved_host),
+        };
+        let wanted = reserved
             .map(|host| net.reserved_address(host))
             .transpose()?;
 
@@ -975,22 +987,15 @@ impl Deployer {
         )
         .await;
 
-        // The certificate, before the server that reads it. The names
-        // it covers are the ones a client can connect to and still have
-        // `verify-full` pass: the short ones inside the project, and the
-        // qualified one that is also the public name when there is a
-        // domain.
+        // The certificate, before the server that reads it, covering
+        // every name a client can connect to and still have `verify-full`
+        // pass. From `certificate_names`, the one list `/etc/hosts` and
+        // the renewal pass also use: this built its own, without the read
+        // pool or a chosen name, so the pool's connection string failed
+        // `verify-full` and a renamed database went back to its old
+        // certificate at every deployment. Found on a VM node.
         if prepared.is_some() {
-            let mut names = vec![
-                service.slug.clone(),
-                format!("{}.{}", service.slug, project.slug),
-            ];
-            if let Some(domain) = crate::infra::node::settings::domain(&self.database).await {
-                // First, so it is the certificate's common name: it is
-                // the one a public authority can sign, and the one a
-                // client outside this node would use.
-                names.insert(0, format!("{}.{}.{domain}", service.slug, project.slug));
-            }
+            let names = self.certificate_names(project, service).await;
             self.place_certificate(&client, service, &names, &id)
                 .await?;
         }
@@ -1942,6 +1947,35 @@ impl Deployer {
         }
     }
 
+    /// The rows, with the address taken off every copy here whose task
+    /// containerd says is not running.
+    ///
+    /// The column means "while it is up", and nothing clears it when a
+    /// container exits on its own — so a copy that had exited read
+    /// `Running` with its old address beside a header saying `Exited 0`.
+    /// Found on a VM node. A copy for this page only, not a write: a
+    /// deployment between its attach and its start would otherwise lose
+    /// the address it had just recorded.
+    pub async fn as_observed(
+        &self,
+        project: &Project,
+        service: &Service,
+        mut replicas: Vec<Replica>,
+    ) -> Vec<Replica> {
+        for replica in replicas.iter_mut() {
+            if !replica.is_here() || replica.evicted() || replica.address.is_none() {
+                continue;
+            }
+            if matches!(
+                self.observe(project, service, replica).await,
+                Observed::Stopped { .. } | Observed::Absent
+            ) {
+                replica.address = None;
+            }
+        }
+        replicas
+    }
+
     /// What containerd says about the copy of this service that runs
     /// here, when one does.
     ///
@@ -2843,8 +2877,13 @@ impl Deployer {
         // What the store holds for this name, or a leaf from the node's
         // CA. `ensure_self_signed` is convergent: it reissues only when
         // the names change or expiry is near.
+        //
+        // Only ACME's and a file's are taken as they are, which is the rule
+        // `refresh_certificates` follows: ours is ours to reissue, and
+        // taking any stored row installed one whose names had changed.
+        use crate::infra::edge::certs::Source;
         let stored = match crate::infra::edge::certs::load(&self.database, primary).await {
-            Ok(Some(found)) => found,
+            Ok(Some(found)) if matches!(found.source, Source::Acme | Source::File) => found,
             _ => crate::infra::edge::certs::ensure_self_signed(&self.database, primary, names)
                 .await
                 .map_err(|error| DeployError::Refused(error.to_string()))?,
@@ -4661,7 +4700,7 @@ mod tests {
             &database,
             &project.id,
             "web",
-            "img@sha256:a",
+            "docker.io/library/img@sha256:a",
             &[],
         )
         .await
@@ -4738,7 +4777,7 @@ mod tests {
             &database,
             &project.id,
             "web",
-            "img@sha256:a",
+            "docker.io/library/img@sha256:a",
             &[],
         )
         .await

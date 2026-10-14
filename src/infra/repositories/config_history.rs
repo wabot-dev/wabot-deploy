@@ -128,7 +128,7 @@ mod tests {
             &database,
             &project.id,
             "api",
-            "nginx:alpine",
+            "docker.io/library/nginx:alpine",
             &[],
         )
         .await
@@ -176,7 +176,7 @@ mod tests {
             &database,
             &project.id,
             "api",
-            "nginx:alpine",
+            "docker.io/library/nginx:alpine",
             &[("GREETING".to_string(), "hello".to_string())],
         )
         .await

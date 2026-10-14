@@ -47,8 +47,30 @@ impl ImageReference {
         Ok(Self(image.to_string()))
     }
 
+    /// What somebody typed, which has to name its registry.
+    ///
+    /// `parse` accepts `nginx:alpine` because it also reads what is
+    /// already stored. Typed, it was accepted and then failed at the
+    /// deployment with containerd's `parse "dummy://nginx:alpine": invalid
+    /// port` on the row — under a form that says there is no implicit
+    /// registry here. Found on a VM node.
+    pub fn typed(typed: &str) -> PlatformResult<Self> {
+        let reference = Self::parse(typed)?;
+        if reference.is_empty() || reference.host().is_some() {
+            return Ok(reference);
+        }
+        let suggestion = match reference.0.contains('/') {
+            true => format!("docker.io/{}", reference.0),
+            false => format!("docker.io/library/{}", reference.0),
+        };
+        Err(PlatformError::Refused(format!(
+            "{} does not say which registry it is on — there is no implicit one here. \
+             From Docker Hub that is {suggestion}",
+            reference.0
+        )))
+    }
+
     /// A reference nothing has been pushed to yet.
-    #[allow(dead_code)]
     pub fn is_empty(&self) -> bool {
         self.0.is_empty()
     }
@@ -144,6 +166,27 @@ mod tests {
     fn a_url_is_not_an_image_reference() {
         let refused = ImageReference::parse("https://docker.io/nginx").expect_err("refused");
         assert!(refused.to_string().contains("not a URL"), "{refused}");
+    }
+
+    /// The form says there is no implicit registry, and the POST agrees.
+    #[test]
+    fn a_typed_reference_names_its_registry() {
+        let refused = ImageReference::typed("nginx:alpine").expect_err("refused");
+        assert!(
+            refused
+                .to_string()
+                .contains("docker.io/library/nginx:alpine"),
+            "{refused}"
+        );
+        let refused = ImageReference::typed("bitnami/redis").expect_err("refused");
+        assert!(
+            refused.to_string().contains("docker.io/bitnami/redis"),
+            "{refused}"
+        );
+
+        assert!(ImageReference::typed("docker.io/library/nginx:alpine").is_ok());
+        assert!(ImageReference::typed("localhost:5000/app").is_ok());
+        assert!(ImageReference::typed("").is_ok(), "waiting for a push");
     }
 
     #[test]

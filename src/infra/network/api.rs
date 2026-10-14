@@ -1275,7 +1275,7 @@ mod tests {
             &authority.database,
             &project.id,
             "web",
-            "nginx:alpine",
+            "docker.io/library/nginx:alpine",
             &[],
         )
         .await

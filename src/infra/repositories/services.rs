@@ -615,7 +615,7 @@ mod creating {
                 &database,
                 project_id,
                 "api",
-                "nginx:alpine",
+                "docker.io/library/nginx:alpine",
                 &[],
             )
             .await
@@ -626,7 +626,7 @@ mod creating {
             &database,
             &first,
             "api",
-            "nginx:alpine",
+            "docker.io/library/nginx:alpine",
             &[],
         )
         .await
@@ -661,7 +661,7 @@ mod creating {
             &database,
             &project_id,
             "api",
-            "nginx:alpine",
+            "docker.io/library/nginx:alpine",
             &[],
         )
         .await
@@ -687,7 +687,7 @@ mod creating {
             &database,
             &project_id,
             "api",
-            "nginx:alpine",
+            "docker.io/library/nginx:alpine",
             &[],
         )
         .await
@@ -726,7 +726,7 @@ mod creating {
             &database,
             &project_id,
             "My API",
-            "nginx:alpine",
+            "docker.io/library/nginx:alpine",
             &[],
         )
         .await
@@ -743,7 +743,7 @@ mod creating {
             &database,
             &project_id,
             "api",
-            "nginx:alpine",
+            "docker.io/library/nginx:alpine",
             &[],
         )
         .await
@@ -791,7 +791,7 @@ mod creating {
             &database,
             &project_id,
             "api",
-            "nginx:alpine",
+            "docker.io/library/nginx:alpine",
             &[],
         )
         .await
