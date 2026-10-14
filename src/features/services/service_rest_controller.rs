@@ -3537,6 +3537,22 @@ mod tests {
             "a digest names bytes, and nothing watches it"
         );
 
+        // Created with no image, waiting for its first push: the form
+        // promises the commands, and the card said "pinned by digest".
+        let waiting = crate::infra::repositories::services::create(
+            &console.database,
+            &project.id,
+            "waiting",
+            "",
+            &[],
+        )
+        .await
+        .expect("service");
+        assert!(matches!(
+            crate::features::services::service_push_component::push(&waiting, "my-api", Some("node.example.com")),
+            Some(Push::To(target)) if target == "node.example.com/my-api/waiting:latest"
+        ));
+
         // Created against a public image: a push to the service's own
         // repository here still lands, and this is that reference.
         let theirs = services::all(&console.database, Some(&project.id))

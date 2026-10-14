@@ -42,15 +42,25 @@ pub fn push(
         return None;
     }
 
-    let Some(reference) =
-        crate::domain::values::image_reference::ImageReference::parse(&service.image)
-            .ok()
-            .and_then(|r| r.parts())
+    let Ok(parsed) = crate::domain::values::image_reference::ImageReference::parse(&service.image)
     else {
         return Some(Push::Pinned);
     };
     let Some(host) = node_domain else {
         return Some(Push::Nameless);
+    };
+    // No image is a service waiting for its first push, and the create
+    // form promises it the commands. It got "pinned by digest" instead:
+    // `parts` has nothing to take apart in an empty reference, and that
+    // was read as a digest. Found on a VM node.
+    if parsed.is_empty() {
+        return Some(Push::To(format!(
+            "{host}/{project_slug}/{}:latest",
+            service.slug
+        )));
+    }
+    let Some(reference) = parsed.parts() else {
+        return Some(Push::Pinned);
     };
     let tag = service.tracked_tag().unwrap_or_else(|| "latest".into());
     // **A star is a rule, not a tag.** `*` matches every tag on the way
