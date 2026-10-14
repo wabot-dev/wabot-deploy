@@ -310,6 +310,76 @@ mod tests {
         );
     }
 
+    /// A node installed today keeps the log, which is the default
+    /// `archiving` describes. `0040` wrote `off` on every new database
+    /// too, so no node installed since had it on. Found on a VM node.
+    #[tokio::test]
+    async fn a_node_installed_today_keeps_the_write_ahead_log() {
+        let database = crate::infra::db::open_in_memory().await.expect("open");
+        assert!(archiving(&database).await);
+    }
+
+    /// What `0058` takes back is only what `0040` wrote on a node with
+    /// nothing to protect. A choice made in the console keeps `off`.
+    #[tokio::test]
+    async fn the_correction_leaves_a_choice_alone() {
+        const CORRECTION: &str =
+            include_str!("../../../migrations/0058_archiving_default_for_new_nodes.sql");
+        let stamp_like_0040 = |database: &SqliteDatabase| {
+            let database = database.clone();
+            async move {
+                database
+                    .write(|connection| {
+                        connection.execute(
+                            "UPDATE setting SET \"updated_at\" = 1792000000000 \
+                             WHERE \"key\" = 'wal.archiving'",
+                            [],
+                        )?;
+                        Ok(())
+                    })
+                    .await
+                    .expect("stamp");
+            }
+        };
+        let correct = |database: &SqliteDatabase| {
+            let database = database.clone();
+            async move {
+                database
+                    .write(|connection| {
+                        connection.execute_batch(CORRECTION)?;
+                        Ok(())
+                    })
+                    .await
+                    .expect("correct");
+            }
+        };
+
+        let chosen = crate::infra::db::open_in_memory().await.expect("open");
+        write(&chosen, ARCHIVING, "off").await.expect("off");
+        chosen
+            .write(|connection| {
+                connection.execute(
+                    "UPDATE setting SET \"updated_at\" = 1792000000123 \
+                     WHERE \"key\" = 'wal.archiving'",
+                    [],
+                )?;
+                Ok(())
+            })
+            .await
+            .expect("stamp");
+        correct(&chosen).await;
+        assert!(!archiving(&chosen).await, "somebody chose off");
+
+        let fresh = crate::infra::db::open_in_memory().await.expect("open");
+        write(&fresh, ARCHIVING, "off").await.expect("off");
+        stamp_like_0040(&fresh).await;
+        correct(&fresh).await;
+        assert!(
+            archiving(&fresh).await,
+            "0040's off, on a node with nothing"
+        );
+    }
+
     #[tokio::test]
     async fn a_node_with_nothing_anywhere_has_no_domain() {
         let database = crate::infra::db::open_in_memory().await.expect("open");

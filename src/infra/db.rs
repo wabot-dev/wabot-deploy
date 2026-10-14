@@ -231,6 +231,10 @@ fn migrations() -> Vec<Migration> {
             "0057_username_per_scope",
             include_str!("../../migrations/0057_username_per_scope.sql"),
         ),
+        Migration::new(
+            "0058_archiving_default_for_new_nodes",
+            include_str!("../../migrations/0058_archiving_default_for_new_nodes.sql"),
+        ),
     ]
 }
 
