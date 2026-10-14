@@ -499,7 +499,7 @@ pub(crate) fn is_private_address(domain: &str) -> bool {
 
 pub async fn ensure_self(database: &SqliteDatabase, config: &Config) -> NetworkResult<Node> {
     let existing = me(database).await?;
-    let domain = crate::infra::node::settings::domain(database, config).await;
+    let domain = crate::infra::node::settings::domain(database).await;
 
     // Derived, not stored: a node answers to a name or it does not, and
     // an operator who cleared the domain has made this node private

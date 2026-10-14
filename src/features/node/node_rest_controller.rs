@@ -240,6 +240,39 @@ impl NodeRestController {
         Ok(crate::shell::auth::see_other(here))
     }
 
+    /// Turn asking a public authority on or off, for the whole node.
+    #[post("/node/acme")]
+    #[raw]
+    #[middleware(SessionMiddleware)]
+    async fn set_acme(&self, request: Request) -> RestResult<Response> {
+        let here = &NodeTab::Domain.path();
+        let Some(account) = signed_in(&self.auth) else {
+            return Ok(crate::shell::auth::see_other("/sign-in"));
+        };
+        if !crate::domain::authz::node_user::manages_the_machine(&account) {
+            return Ok(crate::shell::auth::see_other("/"));
+        }
+        let form = match crate::shell::auth::read_form(request).await {
+            Ok(form) => form,
+            Err(response) => return Ok(response),
+        };
+
+        if let Err(reason) = crate::features::node::node_user_set_acme::run(
+            &self.state.database,
+            &account,
+            form.contains_key("acme"),
+        )
+        .await
+        {
+            return Ok(crate::shell::auth::back_with_error(here, &reason));
+        }
+        // The loop waits on this when the switch was off, so turning it on
+        // is acted on now rather than at the next restart.
+        self.state.certificates.now();
+
+        Ok(crate::shell::auth::see_other(here))
+    }
+
     /// Choose where this name's certificate comes from.
     ///
     /// The file pair is read and checked *here*, before the choice is
@@ -278,7 +311,6 @@ impl NodeRestController {
         // same key the renewal loop will look this up under.
         let name = match crate::features::node::node_user_set_certificate_source::run(
             &self.state.database,
-            &self.state.config,
             &account,
         )
         .await
@@ -292,13 +324,8 @@ impl NodeRestController {
             Err(reason) => return Ok(crate::shell::auth::back_with_error(here, &reason)),
         };
 
-        if let Err(error) = crate::infra::edge::policy::store_source(
-            &self.state.database,
-            &self.state.config,
-            &name,
-            &renew_with,
-        )
-        .await
+        if let Err(error) =
+            crate::infra::edge::policy::store_source(&self.state.database, &name, &renew_with).await
         {
             return Ok(crate::shell::auth::back_with_error(here, &error));
         }
@@ -313,7 +340,6 @@ impl NodeRestController {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::infra::config::Config;
     use crate::infra::network;
     use crate::shell::components::node_certificate::CertificateState;
     use crate::web::console::tests::Console;
@@ -866,7 +892,7 @@ mod tests {
         assert!(said.contains("nowhere.invalid does not resolve"), "{said}");
 
         assert_eq!(
-            crate::infra::node::settings::domain(&console.database, &Config::default()).await,
+            crate::infra::node::settings::domain(&console.database).await,
             None,
             "a refused name must not be stored"
         );
@@ -893,13 +919,112 @@ mod tests {
             .assert_status(StatusCode::SEE_OTHER);
 
         assert_eq!(
-            crate::infra::node::settings::domain(&console.database, &Config::default()).await,
+            crate::infra::node::settings::domain(&console.database).await,
             None
         );
     }
 
     /// Changing what the whole node answers to is not something a
     /// member of one project gets to do.
+    /// The switch is the console's, and with it off nothing on the page
+    /// offers an authority. It was a line in `config.toml`: the page
+    /// offered Let's Encrypt, saved it, and read back "this node's own
+    /// authority", because the file overruled the row. Found on a VM node.
+    #[tokio::test]
+    async fn with_acme_off_the_page_offers_no_authority_and_the_switch_turns_it_on() {
+        let console = Console::new().await;
+        let cookie = console.signed_in().await;
+        crate::infra::node::settings::set_acme_enabled(&console.database, false)
+            .await
+            .expect("off");
+
+        let body = console
+            .harness
+            .get("/node/domain")
+            .header("cookie", &cookie)
+            .send()
+            .await
+            .body;
+        assert!(!body.contains("value=\"acme\""), "{body}");
+        assert!(body.contains("action=\"/node/acme\""), "{body}");
+
+        let response = console
+            .harness
+            .post("/node/acme")
+            .header("cookie", &cookie)
+            .form(&[("acme", "1")])
+            .send()
+            .await;
+        response.assert_status(StatusCode::SEE_OTHER);
+        assert!(crate::infra::node::settings::acme_enabled(&console.database).await);
+
+        let body = console
+            .harness
+            .get("/node/domain")
+            .header("cookie", &cookie)
+            .send()
+            .await
+            .body;
+        assert!(body.contains("value=\"acme\""), "{body}");
+
+        // An unticked box sends nothing, and nothing is off.
+        console
+            .harness
+            .post("/node/acme")
+            .header("cookie", &cookie)
+            .form::<&str, &str>(&[])
+            .send()
+            .await;
+        assert!(!crate::infra::node::settings::acme_enabled(&console.database).await);
+    }
+
+    /// A source the renewal loop will never act on is refused on the
+    /// POST, which is the check that counts — hiding the option is a
+    /// courtesy to a browser.
+    #[tokio::test]
+    async fn an_authority_cannot_be_chosen_while_the_node_asks_none() {
+        let console = Console::new().await;
+        let cookie = console.signed_in().await;
+        crate::infra::node::settings::set_acme_enabled(&console.database, false)
+            .await
+            .expect("off");
+
+        let response = console
+            .harness
+            .post("/node/certificate/source")
+            .header("cookie", &cookie)
+            .form(&[("renew_with", "acme")])
+            .send()
+            .await;
+        assert!(
+            response
+                .header("location")
+                .unwrap_or_default()
+                .contains("error="),
+            "{:?}",
+            response.header("location")
+        );
+    }
+
+    #[tokio::test]
+    async fn only_an_admin_may_switch_acme() {
+        let console = Console::new().await;
+        let admin = console.signed_in().await;
+        let member = console.joined_as(&admin, "member").await;
+        crate::infra::node::settings::set_acme_enabled(&console.database, false)
+            .await
+            .expect("off");
+
+        console
+            .harness
+            .post("/node/acme")
+            .header("cookie", &member)
+            .form(&[("acme", "1")])
+            .send()
+            .await;
+        assert!(!crate::infra::node::settings::acme_enabled(&console.database).await);
+    }
+
     #[tokio::test]
     async fn only_an_admin_may_change_it() {
         let console = Console::new().await;
@@ -921,7 +1046,7 @@ mod tests {
         response.assert_status(StatusCode::SEE_OTHER);
         assert_eq!(response.header("location"), Some("/"));
         assert_eq!(
-            crate::infra::node::settings::domain(&console.database, &Config::default())
+            crate::infra::node::settings::domain(&console.database)
                 .await
                 .as_deref(),
             Some("was.example"),

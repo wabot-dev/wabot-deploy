@@ -68,7 +68,6 @@ pub async fn build(
     database: &SqliteDatabase,
     control_plane: Router,
     tenant_plane: Router,
-    config: &crate::infra::config::Config,
     table: Arc<RouteTable>,
 ) -> anyhow::Result<(EdgeState, Arc<CertResolver>)> {
     // Every name this node can be reached by before ACME. `localhost`
@@ -76,7 +75,7 @@ pub async fn build(
     // From the database, not the file: a domain set from the console
     // has to be the one this node presents a certificate for after a
     // restart, or the change lasts exactly until the next boot.
-    let domain: Vec<String> = crate::infra::node::settings::domain(database, config)
+    let domain: Vec<String> = crate::infra::node::settings::domain(database)
         .await
         .into_iter()
         .collect();

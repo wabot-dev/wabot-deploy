@@ -518,20 +518,18 @@ impl NetworkRestController {
                 before = Some(now);
                 let facts = crate::shell::state::certificate_facts(&state).await;
                 let domain =
-                    crate::infra::node::settings::domain(&state.database, &state.config).await;
+                    crate::infra::node::settings::domain(&state.database).await;
                 let certificate = CertificateState::read(
                     &facts,
                     domain.as_deref(),
                     crate::infra::edge::policy::for_name(
                         &state.database,
-                        &state.config,
-                        domain.as_deref().unwrap_or(crate::infra::edge::certs::FALLBACK_NAME),
-                    )
+                        domain.as_deref().unwrap_or(crate::infra::edge::certs::FALLBACK_NAME))
                     .await
                     .last_error
                     .or(crate::infra::node::settings::acme_error(&state.database).await),
                     state.certificates.phase(),
-                    state.config.acme.disabled,
+                    !crate::infra::node::settings::acme_enabled(&state.database).await,
                 );
                 let payload = serde_json::to_string(&Live {
                     inner: cells(&snapshot, busy.as_ref()),

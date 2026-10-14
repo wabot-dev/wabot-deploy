@@ -62,7 +62,7 @@ pub fn print(url: &str, token: &str) {
 /// spoke the way this does. Found on a VM node.
 pub async fn url(database: &wabot::sqlite::SqliteDatabase, config: &Config) -> String {
     address(
-        crate::infra::node::settings::domain(database, config)
+        crate::infra::node::settings::domain(database)
             .await
             .as_deref(),
         config.edge.https_port,
@@ -82,8 +82,6 @@ mod tests {
 
     #[test]
     fn the_default_port_is_not_spelled_out() {
-        let mut config = Config::default();
-        config.node.domain = Some("node.example".into());
         assert_eq!(address(Some("node.example"), 443), "https://node.example");
         assert_eq!(
             address(Some("node.example"), 8443),
@@ -97,7 +95,7 @@ mod tests {
     async fn the_address_is_the_one_the_console_set() {
         let database = crate::infra::db::open_in_memory().await.expect("open");
         let mut config = Config::default();
-        config.node.domain = Some("installed.example".into());
+        config.seed_domain(Some("installed.example".into()));
         config.edge.https_port = 443;
         crate::infra::node::settings::set_domain(&database, Some("renamed.example"))
             .await

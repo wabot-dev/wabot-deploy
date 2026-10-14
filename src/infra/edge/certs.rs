@@ -495,11 +495,7 @@ pub async fn load(database: &SqliteDatabase, domain: &str) -> CertResult<Option<
 /// so with ACME off the badge never cleared; the stream that updates them
 /// counted any row as arrived, so with it on the badge cleared before the
 /// real one came. Found on a VM node.
-pub async fn settled(
-    database: &SqliteDatabase,
-    config: &crate::infra::config::Config,
-    name: &str,
-) -> bool {
+pub async fn settled(database: &SqliteDatabase, name: &str) -> bool {
     if load(database, name)
         .await
         .ok()
@@ -508,9 +504,9 @@ pub async fn settled(
     {
         return true;
     }
-    config.acme.disabled
+    !crate::infra::node::settings::acme_enabled(database).await
         || !matches!(
-            crate::infra::edge::policy::for_name(database, config, name)
+            crate::infra::edge::policy::for_name(database, name)
                 .await
                 .renew_with,
             crate::infra::edge::policy::RenewWith::Acme
@@ -800,18 +796,21 @@ fn now_ms() -> i64 {
 #[tokio::test]
 async fn a_name_is_settled_when_nothing_else_is_coming_for_it() {
     let database = crate::infra::db::open_in_memory().await.expect("open");
-    let mut config = crate::infra::config::Config::default();
     let name = "app.example";
 
-    config.acme.disabled = true;
+    crate::infra::node::settings::set_acme_enabled(&database, false)
+        .await
+        .expect("off");
     assert!(
-        settled(&database, &config, name).await,
+        settled(&database, name).await,
         "ACME off: the local authority is the answer"
     );
 
-    config.acme.disabled = false;
+    crate::infra::node::settings::set_acme_enabled(&database, true)
+        .await
+        .expect("on");
     assert!(
-        !settled(&database, &config, name).await,
+        !settled(&database, name).await,
         "an authority will be asked, and has not answered"
     );
 
@@ -822,10 +821,7 @@ async fn a_name_is_settled_when_nothing_else_is_coming_for_it() {
     )
     .await
     .expect("policy");
-    assert!(
-        settled(&database, &config, name).await,
-        "this name asks nobody"
-    );
+    assert!(settled(&database, name).await, "this name asks nobody");
 
     crate::infra::edge::policy::set(
         &database,
@@ -848,7 +844,7 @@ async fn a_name_is_settled_when_nothing_else_is_coming_for_it() {
     )
     .await
     .expect("saved");
-    assert!(settled(&database, &config, name).await, "it arrived");
+    assert!(settled(&database, name).await, "it arrived");
 }
 
 #[cfg(test)]

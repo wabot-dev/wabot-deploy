@@ -101,7 +101,6 @@ impl TenantRestController {
 
         match crate::features::organisations::node_user_set_organisation_domain::run(
             &self.state.database,
-            &self.state.config,
             &self.state.deployer,
             &account,
             id,

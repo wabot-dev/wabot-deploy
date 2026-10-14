@@ -349,7 +349,7 @@ async fn report_names(config: &Config) {
     // than the hostnames it stores: it can own a service that somebody
     // else serves. The same list `acme` orders certificates for, so
     // what is checked here is exactly what will be asked of the world.
-    let names = crate::infra::edge::acme::wanted_names(&database, config).await;
+    let names = crate::infra::edge::acme::wanted_names(&database).await;
     let _ = database.close().await;
 
     println!();

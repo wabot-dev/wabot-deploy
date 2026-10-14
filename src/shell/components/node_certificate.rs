@@ -274,8 +274,36 @@ pub fn certificate_card<'a>(
                 </div>
             </form>
 
-            (certificate_source_form("/node/certificate/source", policy))
+            (certificate_source_form("/node/certificate/source", policy, *state != CertificateState::Local))
+            (acme_switch(*state != CertificateState::Local))
         </section>
+    }
+}
+
+/// Whether this node asks a public authority for anything.
+///
+/// The node's own setting, in the database, and nowhere else. It was a
+/// line in `config.toml` that `install --self-signed` wrote, and every
+/// choice of source on this page was silently overruled by it.
+pub fn acme_switch(on: bool) -> impl Renderable {
+    rsx! {
+        <form method="post" action="/node/acme" class="stack">
+            <label class="check">
+                @if on {
+                    <input type="checkbox" name="acme" value="1" checked>
+                } @else {
+                    <input type="checkbox" name="acme" value="1">
+                }
+                (t("Ask a public authority (Let's Encrypt) for certificates"))
+            </label>
+            <p class="field-hint">(t("Off, this node signs every name itself and never places an \
+                 order — the honest setting for a machine on a private network. On, every \
+                 name nobody gave another source asks Let's Encrypt, and each one is checked \
+                 to resolve here first."))</p>
+            <div class="actions">
+                <button class="btn btn-secondary" type="submit">(t("Save"))</button>
+            </div>
+        </form>
     }
 }
 
@@ -308,6 +336,11 @@ pub fn source_word(renew_with: &crate::infra::edge::policy::RenewWith) -> &'stat
 pub fn certificate_source_form(
     action: &str,
     policy: &crate::infra::edge::policy::Policy,
+    // Whether the node asks a public authority at all. Off, the choice is
+    // not offered: it used to be, and saving it stored a source the
+    // renewal loop then ignored, so the page read back the opposite of
+    // what had just been chosen. Found on a VM node.
+    acme: bool,
 ) -> impl Renderable {
     let (cert_path, key_path) = match &policy.renew_with {
         crate::infra::edge::policy::RenewWith::File {
@@ -329,7 +362,7 @@ pub fn certificate_source_form(
             <form method="post" action=(action) class="stack">
                 <label for=(field("source"))>(t("Where the certificate comes from"))</label>
                 <select id=(field("source")) name="renew_with">
-                    @for (value, label) in SOURCES {
+                    @for (value, label) in SOURCES.iter().filter(|(value, _)| acme || *value != "acme") {
                         @if policy.renew_with.as_str() == *value {
                             <option value=(value) selected>(label)</option>
                         } @else {

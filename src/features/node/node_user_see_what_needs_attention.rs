@@ -213,7 +213,7 @@ async fn certificates_that_would_not_issue(
         concerns.push(ConcernResponse {
             weight: Weight::Wrong,
             what: "A certificate would not issue".into(),
-            which: crate::infra::node::settings::domain(state.database, state.config)
+            which: crate::infra::node::settings::domain(state.database)
                 .await
                 .unwrap_or_else(|| "this node".into()),
             why: first_line(&reason),
@@ -225,8 +225,7 @@ async fn certificates_that_would_not_issue(
         let Some(hostname) = &port.hostname else {
             continue;
         };
-        let policy =
-            crate::infra::edge::policy::for_name(state.database, state.config, hostname).await;
+        let policy = crate::infra::edge::policy::for_name(state.database, hostname).await;
         let Some(reason) = &policy.last_error else {
             continue;
         };

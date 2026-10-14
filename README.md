@@ -61,7 +61,7 @@ says what is missing and the node keeps asking.
 | `--domain` | the hostname this node answers to |
 | `--email` | contact for the certificate authority — it warns you before expiry |
 | `--acme-staging` | Let's Encrypt staging while testing; production refuses more than five failed orders an hour |
-| `--self-signed` | never ask a public authority; serve this node's own certificate |
+| `--self-signed` | never ask a public authority; serve this node's own certificate (the node page turns it back on) |
 | `--no-runtime` | leave containerd alone; something else manages it |
 | `--no-system` | change nothing outside the data directory |
 | `--no-start` | install everything, start on the next boot |
@@ -118,12 +118,12 @@ updater does not rewrite it. Re-run `install` for that.
 ## Configuration
 
 `/etc/wabot-deploy/config.toml`, written by `install` and never rewritten
-afterwards. Unknown keys are refused rather than ignored, so a typo fails
-loudly instead of leaving a default quietly in place.
+afterwards — except `[backup.s3]`, which the console's Backup tab writes
+there on purpose. Unknown keys are refused rather than ignored, so a typo
+fails loudly instead of leaving a default quietly in place.
 
 ```toml
 [node]
-domain = "node.example.com"          # seeds the name; the console owns it afterwards
 data_dir = "/var/lib/wabot-deploy"
 
 [edge]
@@ -133,15 +133,20 @@ http_port = 80
 [acme]
 directory = "production"             # or "staging", or a directory URL
 email = "you@example.com"
-disabled = false
+
+[overlay]
+port = 51820
 
 [log]
 filter = "info"
 ```
 
-`node.domain` is a **seed**. After the first start the name lives in the
-database, where the node page can change it — set it there, or re-run
-`install --domain`; editing the file again does nothing.
+**What the console changes is not here.** The node's domain and whether it
+asks a public authority for certificates live in the database, and the node
+page changes both. `install --domain` and `install --self-signed` write
+them there too. A file may still carry `node.domain` or `acme.disabled` —
+every install before this wrote them — and they are read **once**, at the
+first start, and never again; `doctor` says so when it finds them.
 
 Environment overrides, for a container or a one-off run:
 `WABOT_DEPLOY_DOMAIN`, `WABOT_DEPLOY_DATA_DIR`, `WABOT_DEPLOY_HTTPS_PORT`,

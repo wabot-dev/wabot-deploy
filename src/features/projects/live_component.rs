@@ -204,8 +204,7 @@ pub async fn name_cells(
             continue;
         };
         for hostname in ports.into_iter().filter_map(|port| port.hostname) {
-            let secured =
-                crate::infra::edge::certs::settled(&state.database, &state.config, &hostname).await;
+            let secured = crate::infra::edge::certs::settled(&state.database, &hostname).await;
             cells.insert(hostname, NameCell { waiting: !secured });
         }
     }

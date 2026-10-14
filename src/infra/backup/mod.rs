@@ -265,7 +265,7 @@ pub async fn once(
     volumes.extend(engines.copied);
     // Into the *root*, not this backup's directory: blobs are the part
     // every node shares, and one node's copy of a layer is every node's.
-    let images = keep_images(database, config, &root).await;
+    let images = keep_images(database, &root).await;
     let manifest = Manifest {
         format: FORMAT,
         taken_by: format!("wabot-deploy {}", crate::infra::update::VERSION),
@@ -1138,21 +1138,8 @@ async fn copy_volumes(
 ///
 /// Blobs go to the shared store under their digest, so a network of
 /// nodes running the same base image keeps it once.
-async fn keep_images(
-    database: &wabot::sqlite::SqliteDatabase,
-    config: &Config,
-    root: &Path,
-) -> Vec<Kept> {
-    // The node's config, not a default one: the file is where a domain
-    // given to `install` lives until the console writes one, and asked of
-    // a default this was no domain at all — so a node never renamed in the
-    // console kept none of the images only it holds, and said public ones
-    // come back with a pull. Found on a VM node.
-    let Some(domain) = crate::infra::node::settings::domain(database, config).await else {
-        // With no name of its own this node has no registry anybody
-        // pushed to, so there is nothing here that a pull cannot get.
-        return Vec::new();
-    };
+async fn keep_images(database: &wabot::sqlite::SqliteDatabase, root: &Path) -> Vec<Kept> {
+    let domain = crate::infra::node::settings::domain(database).await;
     let Ok(services) = crate::infra::repositories::services::all(database, None).await else {
         return Vec::new();
     };
@@ -1167,19 +1154,36 @@ async fn keep_images(
     for service in &services {
         // What it would actually deploy: the release that is running,
         // or the image on the service when nothing has been pushed.
-        let reference =
-            match crate::infra::repositories::releases::of_service(database, &service.id).await {
-                Ok(releases) => releases
+        let running = crate::infra::repositories::releases::of_service(database, &service.id)
+            .await
+            .ok()
+            .and_then(|releases| {
+                releases
                     .into_iter()
                     .find(|release| release.deployed_at.is_some())
-                    .map(|release| release.reference)
-                    .unwrap_or_else(|| service.image.clone()),
-                Err(_) => service.image.clone(),
-            };
+            });
+        let (reference, pushed) = match running {
+            Some(release) => (
+                release.reference,
+                release.source == crate::domain::entities::release::Source::Push,
+            ),
+            None => (service.image.clone(), false),
+        };
 
         // Ours or somebody's. A public image is somebody else's to keep,
         // and copying it here would be gigabytes of what a pull returns.
-        if !reference.starts_with(&format!("{domain}/")) {
+        //
+        // **What this node's registry received is ours whatever host it
+        // is named under.** A push is named after the node's name at that
+        // moment, so deciding by today's name called every image pushed
+        // before a rename somebody else's — and a node named after it
+        // booted had named them all `localhost/…`. Both left a backup
+        // without the only copy. Found on a VM node.
+        let named_here = crate::domain::values::image_reference::ImageReference::parse(&reference)
+            .ok()
+            .and_then(|reference| reference.host())
+            .is_some_and(|host| host == "localhost" || Some(&host) == domain.as_ref());
+        if !pushed && !named_here {
             continue;
         }
         if kept.iter().any(|one| one.reference == reference) {

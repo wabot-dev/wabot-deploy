@@ -148,7 +148,9 @@ pub fn port_form<'a>(
                                     // On a node that never asks an authority, the
                                     // default was one that never arrives.
                                     <select id="renew_with" name="renew_with">
-                                        <option value="acme">(t("Let's Encrypt"))</option>
+                                        @if !acme_off {
+                                            <option value="acme">(t("Let's Encrypt"))</option>
+                                        }
                                         @if acme_off {
                                             <option value="self_signed" selected>(t("Signed here"))</option>
                                         } @else {

@@ -361,8 +361,8 @@ pub async fn obtain(
 /// says it is working — an attempt over an empty list is not an
 /// attempt, and a page that flashed "requesting" twice a day for a
 /// node with no domain would be reporting a thing that never happened.
-pub async fn wanted_names(database: &SqliteDatabase, config: &Config) -> Vec<String> {
-    let mut names: Vec<String> = crate::infra::node::settings::domain(database, config)
+pub async fn wanted_names(database: &SqliteDatabase) -> Vec<String> {
+    let mut names: Vec<String> = crate::infra::node::settings::domain(database)
         .await
         .into_iter()
         .collect();
@@ -435,14 +435,13 @@ pub async fn wanted_names(database: &SqliteDatabase, config: &Config) -> Vec<Str
 /// this is idempotent: a pass that changes nothing costs one read.
 pub async fn refresh_local(
     database: &SqliteDatabase,
-    config: &Config,
     resolver: &certs::CertResolver,
 ) -> AcmeResult<()> {
     // The fallback, and the name another node dials over the overlay, come
     // from `own_names` — the one definition both builders of this
     // certificate share. Pushing the fallback here and nothing else is what
     // dropped the internal name at this pass.
-    let names = certs::own_names(database, wanted_names(database, config).await).await;
+    let names = certs::own_names(database, wanted_names(database).await).await;
 
     let before = certs::load(database, certs::FALLBACK_NAME).await?;
     let after = certs::ensure_self_signed(database, certs::FALLBACK_NAME, &names).await?;
@@ -549,11 +548,11 @@ pub async fn ensure_all(
     let mut changed = false;
     let mut failure: Option<AcmeError> = None;
 
-    for name in wanted_names(database, config).await {
+    for name in wanted_names(database).await {
         // What to do is read per name rather than inferred from what is
         // installed. Inferring it is what let this loop replace a
         // certificate it had not issued — see migration `0012`.
-        let policy = policy::for_name(database, config, &name).await;
+        let policy = policy::for_name(database, &name).await;
         let outcome = match &policy.renew_with {
             policy::RenewWith::Acme => ensure(database, config, resolver, &name).await,
             // Handled by `refresh_local`, which covers every name the
@@ -595,7 +594,7 @@ pub async fn ensure_all(
         }
     }
 
-    if prune_unwanted(database, config, resolver).await {
+    if prune_unwanted(database, resolver).await {
         changed = true;
     }
 
@@ -623,14 +622,10 @@ pub async fn ensure_all(
 /// all, which is exactly how one came to be listed twice. A source that
 /// cannot be read is a short list, and a short list here deletes working
 /// certificates, so that case gives up instead.
-async fn prune_unwanted(
-    database: &SqliteDatabase,
-    config: &Config,
-    resolver: &certs::CertResolver,
-) -> bool {
-    let mut wanted = wanted_names(database, config).await;
+async fn prune_unwanted(database: &SqliteDatabase, resolver: &certs::CertResolver) -> bool {
+    let mut wanted = wanted_names(database).await;
     wanted.push(certs::FALLBACK_NAME.to_string());
-    match crate::infra::deploy::database_certificate_keys(database, config).await {
+    match crate::infra::deploy::database_certificate_keys(database).await {
         Ok(keys) => wanted.extend(keys),
         Err(error) => {
             tracing::warn!(%error, "not pruning certificates: could not read the databases");
@@ -667,7 +662,7 @@ pub async fn ensure(
     resolver: &certs::CertResolver,
     domain: &str,
 ) -> AcmeResult<bool> {
-    if config.acme.disabled {
+    if !crate::infra::node::settings::acme_enabled(database).await {
         return Ok(false);
     }
     let domain = domain.to_string();
@@ -695,7 +690,7 @@ pub async fn ensure(
         // `ensure_self_signed` has always asked this — the local path is
         // convergent on the name set — and the ACME path did not, which is
         // the asymmetry that let it happen.
-        let covers = crate::infra::deploy::public_names_for(database, config, &domain)
+        let covers = crate::infra::deploy::public_names_for(database, &domain)
             .await
             .iter()
             .all(|name| existing.names.contains(name));
@@ -735,9 +730,9 @@ pub async fn ensure(
     // report.
     // Every name this order will carry — a database's is two, and both
     // have to be checked or the order fails on the one nobody looked at.
-    let names = crate::infra::deploy::public_names_for(database, config, &domain).await;
+    let names = crate::infra::deploy::public_names_for(database, &domain).await;
 
-    if let Some(node_domain) = crate::infra::node::settings::domain(database, config).await {
+    if let Some(node_domain) = crate::infra::node::settings::domain(database).await {
         for name in &names {
             let resolution = crate::infra::deploy::dns::resolves_here(name, &node_domain).await;
             match resolution {
@@ -925,8 +920,8 @@ pub async fn renewal_loop(
     wake: Arc<Wake>,
     cancel: wabot::lifecycle::Cancel,
 ) -> Result<(), std::convert::Infallible> {
-    if config.acme.disabled {
-        tracing::info!("ACME is disabled; serving the local authority's certificate");
+    if !crate::infra::node::settings::acme_enabled(&database).await {
+        tracing::info!("ACME is off; serving the local authority's certificate");
     }
 
     // A node with no domain *yet* still runs this loop. It has nothing
@@ -947,18 +942,21 @@ pub async fn renewal_loop(
         // Nothing to certify is not an attempt. Marking one anyway
         // would flash "requesting" on a page about a node that has no
         // domain, twice a day, for a request never made.
-        let attempt = (!wanted_names(&database, &config).await.is_empty()).then(|| wake.begin());
+        let attempt = (!wanted_names(&database).await.is_empty()).then(|| wake.begin());
 
         // Before the public one, and whether or not there will be a
         // public one. A node whose domain just changed is presenting a
         // certificate for the name it used to have; that is true even
         // where ACME is switched off, and it is the case somebody
         // testing on a laptop is most likely to be looking at.
-        if let Err(error) = refresh_local(&database, &config, &resolver).await {
+        if let Err(error) = refresh_local(&database, &resolver).await {
             tracing::warn!(%error, "could not reissue the local certificate");
         }
 
-        if config.acme.disabled {
+        // Read every pass: the switch is the console's, and a node that
+        // read it once at boot would order nothing until somebody
+        // restarted it after turning it on.
+        if !crate::infra::node::settings::acme_enabled(&database).await {
             drop(attempt);
             tokio::select! {
                 _ = cancel.cancelled() => return Ok(()),
@@ -1214,14 +1212,12 @@ mod tests {
     #[tokio::test]
     async fn a_domain_that_is_an_address_is_never_asked_for() {
         let database = database().await;
-        let mut config = Config::default();
-        config.node.domain = Some("192.168.1.55".into());
         crate::infra::node::settings::set_domain(&database, Some("192.168.1.55"))
             .await
             .expect("domain");
 
         assert!(
-            wanted_names(&database, &config).await.is_empty(),
+            wanted_names(&database).await.is_empty(),
             "an authority refuses an IP identifier, and asking spends the attempt anyway"
         );
         // Where the coverage comes from instead: `own_names` puts the
@@ -1234,9 +1230,8 @@ mod tests {
         crate::infra::node::settings::set_domain(&database, Some("node.example"))
             .await
             .expect("domain");
-        config.node.domain = Some("node.example".into());
         assert_eq!(
-            wanted_names(&database, &config).await,
+            wanted_names(&database).await,
             vec!["node.example".to_string()]
         );
     }
@@ -1254,13 +1249,11 @@ mod tests {
     #[tokio::test]
     async fn an_address_is_never_asked_of_an_authority() {
         let database = database().await;
-        let mut config = Config::default();
-        config.node.domain = Some("node.example.com".into());
         crate::infra::node::settings::set_domain(&database, Some("node.example.com"))
             .await
             .expect("domain");
 
-        let wanted = wanted_names(&database, &config).await;
+        let wanted = wanted_names(&database).await;
         for address in crate::infra::network::lan::addresses() {
             assert!(
                 !wanted.contains(&address),
@@ -1360,8 +1353,9 @@ mod tests {
     #[tokio::test]
     async fn a_name_served_for_another_node_gets_a_certificate_too() {
         let database = database().await;
-        let mut config = Config::default();
-        config.node.domain = Some("node.example.com".into());
+        crate::infra::node::settings::set_domain(&database, Some("node.example.com"))
+            .await
+            .expect("domain");
 
         crate::infra::network::claim(&database, "app.example.com", Some("nd-elsewhere"))
             .await
@@ -1369,7 +1363,7 @@ mod tests {
             .expect("granted");
 
         assert_eq!(
-            wanted_names(&database, &config).await,
+            wanted_names(&database).await,
             vec![
                 "app.example.com".to_string(),
                 "node.example.com".to_string()
@@ -1394,8 +1388,9 @@ mod tests {
     #[tokio::test]
     async fn an_organisations_console_name_is_wanted_like_the_nodes_own() {
         let database = database().await;
-        let mut config = Config::default();
-        config.node.domain = Some("node.example.com".into());
+        crate::infra::node::settings::set_domain(&database, Some("node.example.com"))
+            .await
+            .expect("domain");
 
         let tenant = crate::infra::repositories::tenants::create(&database, "Acme")
             .await
@@ -1403,7 +1398,7 @@ mod tests {
         // Until it has a domain there is nothing to want, and a tenant
         // with none is the ordinary case.
         assert_eq!(
-            wanted_names(&database, &config).await,
+            wanted_names(&database).await,
             vec!["node.example.com".to_string()]
         );
 
@@ -1415,7 +1410,7 @@ mod tests {
         .await
         .expect("domain");
         assert_eq!(
-            wanted_names(&database, &config).await,
+            wanted_names(&database).await,
             vec![
                 "acme.example.com".to_string(),
                 "node.example.com".to_string()
@@ -1430,8 +1425,9 @@ mod tests {
     #[tokio::test]
     async fn one_name_is_wanted_once_however_many_places_it_appears() {
         let database = database().await;
-        let mut config = Config::default();
-        config.node.domain = Some("node.example.com".into());
+        crate::infra::node::settings::set_domain(&database, Some("node.example.com"))
+            .await
+            .expect("domain");
 
         let project = crate::infra::repositories::projects::create(&database, "demo")
             .await
@@ -1457,7 +1453,7 @@ mod tests {
         .expect("port");
 
         assert_eq!(
-            wanted_names(&database, &config).await,
+            wanted_names(&database).await,
             vec!["node.example.com".to_string()]
         );
     }
@@ -1479,9 +1475,13 @@ mod tests {
     async fn a_disabled_acme_is_not_attempted() {
         let database = database().await;
         let resolver = certs::CertResolver::new();
-        let mut config = Config::default();
-        config.node.domain = Some("node.example.com".into());
-        config.acme.disabled = true;
+        let config = Config::default();
+        crate::infra::node::settings::set_domain(&database, Some("node.example.com"))
+            .await
+            .expect("domain");
+        crate::infra::node::settings::set_acme_enabled(&database, false)
+            .await
+            .expect("off");
 
         assert!(!ensure_all(&database, &config, &resolver)
             .await
@@ -1494,8 +1494,10 @@ mod tests {
     async fn a_fresh_certificate_is_left_alone() {
         let database = database().await;
         let resolver = certs::CertResolver::new();
-        let mut config = Config::default();
-        config.node.domain = Some("node.example.com".into());
+        let config = Config::default();
+        crate::infra::node::settings::set_domain(&database, Some("node.example.com"))
+            .await
+            .expect("domain");
 
         // A stored certificate from the configured authority, not
         // close to expiring. `ensure` must return without talking to
@@ -1536,7 +1538,9 @@ mod tests {
         let database = database().await;
         let resolver = certs::CertResolver::new();
         let mut config = Config::default();
-        config.node.domain = Some("node.example.com".into());
+        crate::infra::node::settings::set_domain(&database, Some("node.example.com"))
+            .await
+            .expect("domain");
         config.acme.directory = "production".into();
 
         let staging = "https://acme-staging-v02.api.letsencrypt.org/directory";
@@ -1572,7 +1576,9 @@ mod tests {
         let database = database().await;
         let resolver = certs::CertResolver::new();
         let mut config = Config::default();
-        config.node.domain = Some("localhost".into());
+        crate::infra::node::settings::set_domain(&database, Some("localhost"))
+            .await
+            .expect("domain");
         config.acme.directory = "staging".into();
 
         // A managed database, so its key wants two names.
@@ -1629,7 +1635,9 @@ mod tests {
         let mut config = Config::default();
         // `localhost` resolves, so there is something to compare against;
         // `.invalid` is reserved by RFC 2606 so that it never can.
-        config.node.domain = Some("localhost".into());
+        crate::infra::node::settings::set_domain(&database, Some("localhost"))
+            .await
+            .expect("domain");
         config.acme.directory = "staging".into();
 
         match ensure(&database, &config, &resolver, "nothing.invalid").await {
@@ -1652,7 +1660,9 @@ mod tests {
         let database = database().await;
         let resolver = certs::CertResolver::new();
         let mut config = Config::default();
-        config.node.domain = Some("node.example.com".into());
+        crate::infra::node::settings::set_domain(&database, Some("node.example.com"))
+            .await
+            .expect("domain");
         config.acme.directory = "staging".into();
 
         certs::save(&database, &stored_from(config.acme.directory_url(), 60))

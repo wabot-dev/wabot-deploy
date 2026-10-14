@@ -29,7 +29,6 @@ use wabot::sqlite::rusqlite::{OptionalExtension, Row};
 use wabot::sqlite::{SqliteDatabase, SqliteResult};
 
 use crate::infra::clock::now_ms;
-use crate::infra::config::Config;
 
 /// What to do about a name's certificate when it needs one.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -47,15 +46,13 @@ pub enum RenewWith {
 impl RenewWith {
     /// What a name gets when nobody has chosen.
     ///
-    /// Reads the config rather than hard-coding ACME: `acme.disabled`
-    /// is an operator saying up front that this node signs for itself,
-    /// and a default that ignored it would start ordering certificates
-    /// they had switched off.
-    pub fn default_for(config: &Config) -> Self {
-        if config.acme.disabled {
-            Self::SelfSigned
-        } else {
-            Self::Acme
+    /// Reads the node's switch rather than hard-coding ACME: off is an
+    /// operator saying this node signs for itself, and a default that
+    /// ignored it would start ordering certificates they had switched off.
+    pub async fn default_for(database: &SqliteDatabase) -> Self {
+        match crate::infra::node::settings::acme_enabled(database).await {
+            true => Self::Acme,
+            false => Self::SelfSigned,
         }
     }
 
@@ -134,8 +131,8 @@ fn read(row: &Row<'_>, default: &RenewWith) -> wabot::sqlite::rusqlite::Result<P
 const COLUMNS: &str = "\"name\", \"renew_with\", \"cert_path\", \"key_path\", \"last_error\"";
 
 /// What is configured for `name`, or the default.
-pub async fn for_name(database: &SqliteDatabase, config: &Config, name: &str) -> Policy {
-    let default = RenewWith::default_for(config);
+pub async fn for_name(database: &SqliteDatabase, name: &str) -> Policy {
+    let default = RenewWith::default_for(database).await;
     let fallback = || Policy {
         name: name.to_string(),
         renew_with: default.clone(),
@@ -247,7 +244,7 @@ pub async fn set(
 
 /// Go back to the default by forgetting the choice, rather than by
 /// writing the default down. A stored default would go stale the day
-/// `acme.disabled` changed.
+/// the node's ACME switch changed.
 pub async fn clear(database: &SqliteDatabase, name: &str) -> SqliteResult<()> {
     let name = name.to_string();
     database
@@ -274,15 +271,24 @@ pub async fn clear(database: &SqliteDatabase, name: &str) -> SqliteResult<()> {
 
 /// Store it — **forgetting** rather than writing the default.
 ///
-/// A stored default would go stale the day `acme.disabled` changed, and
-/// then say the opposite of what the node does.
+/// A stored default would go stale the day the node's ACME switch
+/// changed, and then say the opposite of what the node does.
 pub async fn store_source(
     database: &wabot::sqlite::SqliteDatabase,
-    config: &crate::infra::config::Config,
     name: &str,
     renew_with: &RenewWith,
 ) -> Result<(), String> {
-    let stored = match renew_with == &RenewWith::default_for(config) {
+    // Beside the write, because no caller may answer it differently: a
+    // source the renewal loop will never act on is a row that lies.
+    if renew_with == &RenewWith::Acme && !crate::infra::node::settings::acme_enabled(database).await
+    {
+        return Err(
+            "this node does not ask a public authority for certificates — turn that on in \
+             the node's settings first"
+                .into(),
+        );
+    }
+    let stored = match renew_with == &RenewWith::default_for(database).await {
         true => clear(database, name).await,
         false => set(database, name, renew_with).await,
     };
@@ -302,23 +308,20 @@ mod tests {
     #[tokio::test]
     async fn a_name_nobody_configured_gets_the_default() {
         let database = database().await;
-        let mut config = Config::default();
 
         assert_eq!(
-            for_name(&database, &config, "node.example.com")
-                .await
-                .renew_with,
+            for_name(&database, "node.example.com").await.renew_with,
             RenewWith::Acme
         );
 
         // Switching ACME off is somebody saying this node signs for
         // itself. A default that ignored it would order certificates
         // they had turned off.
-        config.acme.disabled = true;
+        crate::infra::node::settings::set_acme_enabled(&database, false)
+            .await
+            .expect("off");
         assert_eq!(
-            for_name(&database, &config, "node.example.com")
-                .await
-                .renew_with,
+            for_name(&database, "node.example.com").await.renew_with,
             RenewWith::SelfSigned
         );
     }
@@ -326,7 +329,6 @@ mod tests {
     #[tokio::test]
     async fn a_choice_is_stored_and_read_back() {
         let database = database().await;
-        let config = Config::default();
         let file = RenewWith::File {
             cert_path: "/etc/ssl/node.crt".into(),
             key_path: "/etc/ssl/node.key".into(),
@@ -336,19 +338,15 @@ mod tests {
             .await
             .expect("set");
         assert_eq!(
-            for_name(&database, &config, "node.example.com")
-                .await
-                .renew_with,
+            for_name(&database, "node.example.com").await.renew_with,
             file
         );
 
         // Clearing forgets rather than writes the default down: a
-        // stored default goes stale the day `acme.disabled` changes.
+        // stored default goes stale the day the switch changes.
         clear(&database, "node.example.com").await.expect("clear");
         assert_eq!(
-            for_name(&database, &config, "node.example.com")
-                .await
-                .renew_with,
+            for_name(&database, "node.example.com").await.renew_with,
             RenewWith::Acme
         );
     }
@@ -359,7 +357,6 @@ mod tests {
     #[tokio::test]
     async fn a_half_configured_file_source_is_not_a_file_source() {
         let database = database().await;
-        let config = Config::default();
         database
             .write(|connection| {
                 connection.execute(
@@ -374,9 +371,7 @@ mod tests {
             .expect("insert");
 
         assert_eq!(
-            for_name(&database, &config, "node.example.com")
-                .await
-                .renew_with,
+            for_name(&database, "node.example.com").await.renew_with,
             RenewWith::Acme
         );
     }
@@ -386,21 +381,20 @@ mod tests {
     #[tokio::test]
     async fn a_failure_is_recorded_against_one_name() {
         let database = database().await;
-        let config = Config::default();
 
         record_failure(&database, "api.example.com", "dns did not answer")
             .await
             .expect("record");
 
         assert_eq!(
-            for_name(&database, &config, "api.example.com")
+            for_name(&database, "api.example.com")
                 .await
                 .last_error
                 .as_deref(),
             Some("dns did not answer")
         );
         assert!(
-            for_name(&database, &config, "other.example.com")
+            for_name(&database, "other.example.com")
                 .await
                 .last_error
                 .is_none(),
@@ -410,7 +404,7 @@ mod tests {
         clear_failure(&database, "api.example.com")
             .await
             .expect("clear");
-        assert!(for_name(&database, &config, "api.example.com")
+        assert!(for_name(&database, "api.example.com")
             .await
             .last_error
             .is_none());
@@ -418,29 +412,26 @@ mod tests {
 
     /// A row that exists only to carry a failure must not also assert a
     /// choice: `renew_with` stays NULL, so the answer still follows the
-    /// config the day it changes.
+    /// switch the day it changes.
     #[tokio::test]
     async fn a_recorded_failure_does_not_invent_a_choice() {
         let database = database().await;
-        let mut config = Config::default();
 
         record_failure(&database, "api.example.com", "refused")
             .await
             .expect("record");
         assert_eq!(
-            for_name(&database, &config, "api.example.com")
-                .await
-                .renew_with,
+            for_name(&database, "api.example.com").await.renew_with,
             RenewWith::Acme
         );
 
-        config.acme.disabled = true;
+        crate::infra::node::settings::set_acme_enabled(&database, false)
+            .await
+            .expect("off");
         assert_eq!(
-            for_name(&database, &config, "api.example.com")
-                .await
-                .renew_with,
+            for_name(&database, "api.example.com").await.renew_with,
             RenewWith::SelfSigned,
-            "the row followed the config rather than freezing it"
+            "the row followed the switch rather than freezing it"
         );
     }
 
@@ -449,7 +440,6 @@ mod tests {
     #[tokio::test]
     async fn clearing_a_choice_keeps_the_reason() {
         let database = database().await;
-        let config = Config::default();
 
         set(
             &database,
@@ -466,7 +456,7 @@ mod tests {
             .expect("record");
 
         clear(&database, "api.example.com").await.expect("clear");
-        let policy = for_name(&database, &config, "api.example.com").await;
+        let policy = for_name(&database, "api.example.com").await;
         assert_eq!(policy.renew_with, RenewWith::Acme, "the choice went");
         assert_eq!(
             policy.last_error.as_deref(),

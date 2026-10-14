@@ -536,12 +536,9 @@ mod tests {
         // different file than the original by design.
         let restored = crate::infra::db::open(&backup).await.expect("reopen");
         assert_eq!(
-            crate::infra::node::settings::domain(
-                &restored,
-                &crate::infra::config::Config::default()
-            )
-            .await
-            .as_deref(),
+            crate::infra::node::settings::domain(&restored)
+                .await
+                .as_deref(),
             Some("before.example")
         );
     }

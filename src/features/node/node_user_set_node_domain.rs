@@ -19,7 +19,7 @@ pub async fn run(
         return Err("only an administrator of this node can do that".into());
     }
 
-    let previous = crate::infra::node::settings::domain(database, config).await;
+    let previous = crate::infra::node::settings::domain(database).await;
 
     if typed.is_empty() {
         crate::infra::node::settings::set_domain(database, None)

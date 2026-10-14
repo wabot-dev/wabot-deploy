@@ -60,7 +60,6 @@ impl DatabaseRestController {
             true => {
                 crate::features::databases::node_user_name_database::run(
                     &self.state.database,
-                    &self.state.config,
                     &account,
                     &project,
                     &service,
@@ -71,7 +70,6 @@ impl DatabaseRestController {
             false => {
                 crate::features::databases::tenant_user_name_database::run(
                     &self.state.database,
-                    &self.state.config,
                     &account,
                     &project,
                     &service,
@@ -89,15 +87,9 @@ impl DatabaseRestController {
         // policy left on the old one would be an answer nothing reads and a
         // new name quietly back on the default.
         if let Some(was) = named.was {
-            let policy = crate::infra::edge::policy::for_name(
-                &self.state.database,
-                &self.state.config,
-                &was,
-            )
-            .await;
+            let policy = crate::infra::edge::policy::for_name(&self.state.database, &was).await;
             if let Err(error) = crate::infra::edge::policy::store_source(
                 &self.state.database,
-                &self.state.config,
                 &named.now,
                 &policy.renew_with,
             )
@@ -215,13 +207,8 @@ impl DatabaseRestController {
             Err(response) => return Ok(response),
         };
 
-        let names = crate::infra::deploy::certificate_names(
-            &self.state.database,
-            &self.state.config,
-            &project,
-            &service,
-        )
-        .await;
+        let names =
+            crate::infra::deploy::certificate_names(&self.state.database, &project, &service).await;
         let Some(first) = names.first().cloned() else {
             return Ok(back_with_error(&here, "this database has no name yet"));
         };
@@ -234,7 +221,6 @@ impl DatabaseRestController {
             true => {
                 crate::features::databases::node_user_set_database_certificate::run(
                     &self.state.database,
-                    &self.state.config,
                     &account,
                     &project,
                     &service,
@@ -245,7 +231,6 @@ impl DatabaseRestController {
             false => {
                 crate::features::databases::tenant_user_set_database_certificate::run(
                     &self.state.database,
-                    &self.state.config,
                     &account,
                     &project,
                     &service,
@@ -259,13 +244,8 @@ impl DatabaseRestController {
             Err(reason) => return Ok(back_with_error(&here, &reason)),
         };
 
-        if let Err(error) = crate::infra::edge::policy::store_source(
-            &self.state.database,
-            &self.state.config,
-            &name,
-            &renew_with,
-        )
-        .await
+        if let Err(error) =
+            crate::infra::edge::policy::store_source(&self.state.database, &name, &renew_with).await
         {
             return Ok(back_with_error(&here, &error));
         }
@@ -485,13 +465,7 @@ mod tests {
         .await
         .expect("created");
 
-        let names = crate::infra::deploy::certificate_names(
-            &database,
-            &crate::infra::config::Config::default(),
-            &project,
-            &service,
-        )
-        .await;
+        let names = crate::infra::deploy::certificate_names(&database, &project, &service).await;
         // The qualified name first, which is how `certificate_names` orders
         // them and what `crate::features::databases::database_cards_component::Strings::of` reads the four choices out of.
         assert_eq!(
@@ -581,13 +555,7 @@ mod tests {
         .run(&database)
         .await
         .expect("created");
-        let names = crate::infra::deploy::certificate_names(
-            &database,
-            &crate::infra::config::Config::default(),
-            &project,
-            &service,
-        )
-        .await;
+        let names = crate::infra::deploy::certificate_names(&database, &project, &service).await;
         let replicas = crate::infra::repositories::replicas::of_service(&database, &service.id)
             .await
             .expect("replicas");
@@ -671,10 +639,8 @@ mod tests {
         .run(&database)
         .await
         .expect("created");
-        let config = crate::infra::config::Config::default();
 
-        let derived =
-            crate::infra::deploy::certificate_names(&database, &config, &project, &service).await;
+        let derived = crate::infra::deploy::certificate_names(&database, &project, &service).await;
         assert_eq!(
             derived.first().map(String::as_str),
             Some("orders.db-test.node.example"),
@@ -694,8 +660,7 @@ mod tests {
         .await
         .expect("named");
 
-        let chosen =
-            crate::infra::deploy::certificate_names(&database, &config, &project, &service).await;
+        let chosen = crate::infra::deploy::certificate_names(&database, &project, &service).await;
         assert_eq!(
             chosen.first().map(String::as_str),
             Some("db.example.com"),

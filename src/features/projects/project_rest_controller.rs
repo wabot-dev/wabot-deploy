@@ -406,7 +406,7 @@ impl ProjectRestController {
                 // and a push token on its own is something somebody has
                 // to remember the wrapper for.
                 let host = crate::infra::node::authority(
-                    crate::infra::node::settings::domain(&self.state.database, &self.state.config)
+                    crate::infra::node::settings::domain(&self.state.database)
                         .await
                         .as_deref(),
                     self.state.config.edge.https_port,

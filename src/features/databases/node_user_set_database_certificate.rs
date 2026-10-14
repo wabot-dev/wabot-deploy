@@ -5,12 +5,10 @@ use crate::domain::entities::account::Account;
 use crate::domain::entities::project::Project;
 use crate::domain::entities::service::Service;
 use crate::features::databases::check_database_certificate_command::CheckDatabaseCertificate;
-use crate::infra::config::Config;
 use crate::infra::edge::policy::RenewWith;
 
 pub async fn run(
     database: &SqliteDatabase,
-    config: &Config,
     account: &Account,
     project: &Project,
     service: &Service,
@@ -25,6 +23,6 @@ pub async fn run(
         service,
         renew_with,
     }
-    .run(database, config)
+    .run(database)
     .await
 }

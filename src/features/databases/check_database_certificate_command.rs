@@ -2,7 +2,6 @@ use wabot::sqlite::SqliteDatabase;
 
 use crate::domain::entities::project::Project;
 use crate::domain::entities::service::Service;
-use crate::infra::config::Config;
 use crate::infra::edge::policy::RenewWith;
 
 /// **ACME is refused unless both names resolve here**, and both is the
@@ -22,17 +21,15 @@ pub struct CheckDatabaseCertificate<'a> {
 }
 
 impl CheckDatabaseCertificate<'_> {
-    pub async fn run(&self, database: &SqliteDatabase, config: &Config) -> Result<String, String> {
+    pub async fn run(&self, database: &SqliteDatabase) -> Result<String, String> {
         let names =
-            crate::infra::deploy::certificate_names(database, config, self.project, self.service)
-                .await;
+            crate::infra::deploy::certificate_names(database, self.project, self.service).await;
         let Some(name) = names.first().cloned() else {
             return Err("this database has no name yet".into());
         };
 
         if self.renew_with == &RenewWith::Acme {
-            let Some(node_domain) = crate::infra::node::settings::domain(database, config).await
-            else {
+            let Some(node_domain) = crate::infra::node::settings::domain(database).await else {
                 return Err(
                     "this node has no domain of its own, so it cannot check whether \
                             those names point here — set one on the node page first"

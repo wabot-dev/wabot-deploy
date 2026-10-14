@@ -259,7 +259,7 @@ impl ProjectUiController {
         // login` for whatever the node was called at install time, for
         // as long as nobody had edited the file to match.
         let registry_host = crate::infra::node::authority(
-            crate::infra::node::settings::domain(&self.state.database, &self.state.config)
+            crate::infra::node::settings::domain(&self.state.database)
                 .await
                 .as_deref(),
             self.state.config.edge.https_port,

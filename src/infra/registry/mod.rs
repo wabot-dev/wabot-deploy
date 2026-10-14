@@ -42,9 +42,21 @@ use wabot::sqlite::SqliteDatabase;
 pub struct RegistryState {
     pub database: Arc<SqliteDatabase>,
     pub deployer: Arc<crate::infra::deploy::Deployer>,
-    /// The host an image pushed here is named under, so `ctr images
-    /// ls` shows something somebody could paste into a `docker pull`.
-    pub host: String,
+}
+
+impl RegistryState {
+    /// The host an image pushed here is named under, so `ctr images ls`
+    /// shows something somebody could paste into a `docker pull`.
+    ///
+    /// Asked at each push. It was read once at startup, so a node named
+    /// from the console after it booted named every push `localhost/…` —
+    /// and a backup, which decides what is this node's own by its current
+    /// name, then kept none of them. Found on a VM node.
+    pub async fn host(&self) -> String {
+        crate::infra::node::settings::domain(&self.database)
+            .await
+            .unwrap_or_else(|| "localhost".into())
+    }
 }
 
 /// A caller that proved it may push to a project.
@@ -167,6 +179,27 @@ pub(crate) fn not_found() -> Response {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A node named from its console after it booted names the next push
+    /// after that name. It named every one `localhost/…` for as long as
+    /// the process lived, and a backup then kept none of them.
+    #[tokio::test]
+    async fn a_push_is_named_after_the_name_the_node_has_now() {
+        let database = Arc::new(crate::infra::db::open_in_memory().await.expect("open"));
+        let state = RegistryState {
+            database: database.clone(),
+            deployer: Arc::new(crate::infra::deploy::Deployer::new(
+                database.clone(),
+                &crate::infra::config::Config::default(),
+            )),
+        };
+        assert_eq!(state.host().await, "localhost");
+
+        crate::infra::node::settings::set_domain(&database, Some("node.example"))
+            .await
+            .expect("named");
+        assert_eq!(state.host().await, "node.example");
+    }
 
     #[test]
     fn a_repository_name_may_contain_slashes() {

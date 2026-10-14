@@ -499,6 +499,7 @@ pub fn certificate_card<'a>(
     // which is what sent Jorge to `doctor` to find out whether his
     // certificate had been issued.
     cells: &'a crate::shell::components::node_certificate::CertificateCells,
+    acme: bool,
 ) -> impl Renderable + 'a {
     let signs_here = matches!(
         policy.renew_with,
@@ -525,7 +526,7 @@ pub fn certificate_card<'a>(
                 <p class="failure">(&cells.failure)</p>
             }
 
-            (crate::shell::components::node_certificate::certificate_source_form(action, policy))
+            (crate::shell::components::node_certificate::certificate_source_form(action, policy, acme))
             @if signs_here {
                 <p class="field-hint">(t("This node signs it, so a client has to be given the \
                      authority before it can verify anything. A container gets it at \

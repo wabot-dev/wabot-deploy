@@ -37,6 +37,14 @@ pub async fn run(config: Config) -> anyhow::Result<i32> {
     // it worked is this one — see `update::settle_after_restart`.
     crate::infra::update::settle_after_restart(&database).await;
 
+    // The file read once, before anything asks the rows it seeds — see
+    // `settings::seed`. Here as well as in `install` because an update
+    // replaces the binary without running the installer, and a node from
+    // before the rows existed has only the file.
+    if let Err(error) = crate::infra::node::settings::seed(&database, &config).await {
+        tracing::warn!(%error, "could not seed the node's settings from its config");
+    }
+
     // What this node is. Here as well as in `install` because an update
     // replaces the binary and restarts without running the installer,
     // so a node upgraded into a version that has this table would
@@ -118,9 +126,6 @@ pub async fn run(config: Config) -> anyhow::Result<i32> {
                 .with_routes(routes.clone())
                 .with_certificates(wake.clone()),
         ),
-        host: crate::infra::node::settings::domain(&database, &config)
-            .await
-            .unwrap_or_else(|| "localhost".into()),
     });
     crate::web::registry_rest_controller::register(&container, registry_state);
 
@@ -138,14 +143,8 @@ pub async fn run(config: Config) -> anyhow::Result<i32> {
     // `console::tenant`.
     let tenant_plane =
         crate::web::console::tenant_routes(&container).merge(crate::web::api::routes(&container));
-    let (edge, resolver) = crate::infra::edge::build(
-        &database,
-        control_plane,
-        tenant_plane,
-        &config,
-        routes.clone(),
-    )
-    .await?;
+    let (edge, resolver) =
+        crate::infra::edge::build(&database, control_plane, tenant_plane, routes.clone()).await?;
 
     // After the edge is built, so the deployer holds the same route
     // table the listener reads and a deployment takes effect without a

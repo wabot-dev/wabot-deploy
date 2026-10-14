@@ -141,6 +141,7 @@ pub enum Panel {
         /// without the other is a card that can only be half wrong.
         certificate: Option<(Policy, CertificateCells)>,
         host_port: Option<u16>,
+        acme: bool,
     },
     Image {
         push: Option<Push>,
@@ -242,13 +243,13 @@ pub fn render<'a>(page: &'a ServiceSettings<'a>) -> impl Renderable + 'a {
             // the engine's row, and a form here would be one whose value
             // the next deployment overwrites. What is left to choose is
             // the size.
-            Panel::Database { name, actions, certificate, host_port } => {
+            Panel::Database { name, actions, certificate, host_port, acme } => {
                 @if let Some(name) = name {
                     (database_cards_component::name_card(
                         &actions.0, name, &crate::infra::deploy::hosts::pool_name(name)))
                 }
                 @if let Some((policy, cells)) = certificate {
-                    (database_cards_component::certificate_card(&actions.1, policy, cells))
+                    (database_cards_component::certificate_card(&actions.1, policy, cells, *acme))
                 }
                 @if let Some(name) = name {
                     (database_cards_component::published_card(&actions.2, *host_port, name))

@@ -284,7 +284,6 @@ impl ServiceRestController {
             true => {
                 crate::features::services::node_user_add_service_port::run(
                     &self.state.database,
-                    &self.state.config,
                     &account,
                     &service,
                     &asked,
@@ -294,7 +293,6 @@ impl ServiceRestController {
             false => {
                 crate::features::services::tenant_user_add_service_port::run(
                     &self.state.database,
-                    &self.state.config,
                     &account,
                     &service,
                     &asked,
@@ -332,7 +330,6 @@ impl ServiceRestController {
                         Ok(renew_with) => {
                             if let Err(error) = crate::infra::edge::policy::store_source(
                                 &self.state.database,
-                                &self.state.config,
                                 hostname,
                                 &renew_with,
                             )
@@ -1128,7 +1125,6 @@ impl ServiceRestController {
 
         let on = crate::features::services::set_service_placement_command::On {
             database: &self.state.database,
-            config: &self.state.config,
             deployer: &self.state.deployer,
             container: &self.state.container,
         };
@@ -1218,7 +1214,6 @@ impl ServiceRestController {
             true => {
                 crate::features::services::node_user_set_service_edges::run(
                     &self.state.database,
-                    &self.state.config,
                     &account,
                     &service,
                     &hostname,
@@ -1229,7 +1224,6 @@ impl ServiceRestController {
             false => {
                 crate::features::services::tenant_user_set_service_edges::run(
                     &self.state.database,
-                    &self.state.config,
                     &account,
                     &service,
                     &hostname,

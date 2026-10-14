@@ -80,7 +80,7 @@ mod tests {
     fn config_in(dir: &std::path::Path) -> Config {
         let mut config = Config::default();
         config.node.data_dir = dir.join("data");
-        config.acme.disabled = true;
+        config.seed_acme(false);
         config
     }
 

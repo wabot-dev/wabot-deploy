@@ -4,7 +4,6 @@ use wabot::sqlite::SqliteDatabase;
 
 use crate::domain::entities::project::Project;
 use crate::domain::entities::service::Service;
-use crate::infra::config::Config;
 use crate::infra::deploy::quotas;
 use crate::infra::deploy::Deployer;
 use crate::infra::repositories::replicas;
@@ -22,13 +21,12 @@ pub enum Placement {
 
 /// What this command needs from the node it runs on.
 ///
-/// Four things travel together through every step of a placement, and
+/// Three things travel together through every step of a placement, and
 /// naming them once keeps the signatures readable — and under clippy's
 /// argument count, which is the same complaint in a lint.
 #[derive(Clone, Copy)]
 pub struct On<'a> {
     pub database: &'a SqliteDatabase,
-    pub config: &'a Config,
     pub deployer: &'a Deployer,
     pub container: &'a Container,
 }
@@ -369,9 +367,7 @@ async fn dispatch(
             continue_managed = true;
             continue;
         }
-        if let Err(error) =
-            send_there(database, on.config, project, service, &node_id, by, slots).await
-        {
+        if let Err(error) = send_there(database, project, service, &node_id, by, slots).await {
             // Reported and not fatal: the other placements are
             // still worth making, and the page shows a replica
             // nobody has answered for.
@@ -409,7 +405,6 @@ async fn dispatch(
 /// One `host` errand, with a credential for this node's registry.
 async fn send_there(
     database: &SqliteDatabase,
-    config: &Config,
     project: &crate::domain::entities::project::Project,
     service: &Service,
     node_id: &str,
@@ -439,7 +434,7 @@ async fn send_there(
     // No credential is the honest payload for a registry that
     // serves anybody: the far node pulls anonymously, which is what
     // it would do with a credential Docker Hub does not know.
-    let mine = crate::infra::node::settings::domain(database, config).await;
+    let mine = crate::infra::node::settings::domain(database).await;
     let secret = match mine.as_deref() == Some(registry.as_str()) {
         true => Some(
             crate::infra::repositories::tokens::create(

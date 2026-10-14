@@ -14,11 +14,12 @@ use crate::infra::config::Config;
 use crate::infra::ledger::{self, Status, Step};
 
 pub async fn run(mut config: Config, config_path: &Path, args: InstallArgs) -> anyhow::Result<i32> {
-    // Flags win over the file, and are then persisted — so
-    // `install --domain x` once is the same as editing the file.
-    let explicit_domain = args.domain.is_some();
+    // Flags win over the file. The two the console owns — the domain and
+    // the ACME switch — go to the database below, where every later
+    // reader looks; the rest seed a new file.
+    let explicit_domain = args.domain.clone();
     if let Some(domain) = args.domain {
-        config.node.domain = Some(domain);
+        config.seed_domain(Some(domain));
     }
     if let Some(email) = args.email {
         config.acme.email = Some(email);
@@ -27,7 +28,7 @@ pub async fn run(mut config: Config, config_path: &Path, args: InstallArgs) -> a
         config.acme.directory = "staging".into();
     }
     if args.self_signed {
-        config.acme.disabled = true;
+        config.seed_acme(false);
     }
 
     // Preflight before anything is written. A machine that cannot run
@@ -41,17 +42,27 @@ pub async fn run(mut config: Config, config_path: &Path, args: InstallArgs) -> a
     // ledger is *in* the database — so this step records itself last.
     let layout = layout(&config)?;
     let wrote_config = config.write_if_absent(config_path)?;
-    // **And on a node that already has a file.** `write_if_absent` refuses
-    // to clobber one, which is right — it holds the operator's edits — so
-    // a flag that only reached `config` would apply to this process and be
-    // forgotten at the next start. Written with the same section surgery
-    // the bucket credential uses: everything else in the file, comments
-    // and all, is left exactly as it was.
-    if args.self_signed && !wrote_config {
-        crate::infra::config::store_acme_disabled(config_path, true)?;
-    }
 
     let database = crate::infra::db::open(&config.database_path()).await?;
+
+    // **And on a node that already has rows.** A flag that only reached
+    // `config` would apply to this process and be forgotten: the seed
+    // fills only what is empty, so a flag is written over whatever an
+    // earlier run or the console left.
+    //
+    // A domain changed from the console survives an `install` without
+    // `--domain`, which is what an upgrade runs.
+    crate::infra::node::settings::seed(&database, &config).await?;
+    let previous = crate::infra::node::settings::domain(&database).await;
+    if let Some(domain) = &explicit_domain {
+        crate::infra::node::settings::set_domain(&database, Some(domain)).await?;
+    }
+    if args.self_signed {
+        crate::infra::node::settings::set_acme_enabled(&database, false).await?;
+    }
+    let domain = crate::infra::node::settings::domain(&database).await;
+    let renamed = domain != previous;
+    let acme = crate::infra::node::settings::acme_enabled(&database).await;
 
     // These three run unconditionally — they are cheap and idempotent,
     // and two of them have to happen *before* there is a ledger to
@@ -123,25 +134,14 @@ pub async fn run(mut config: Config, config_path: &Path, args: InstallArgs) -> a
         println!("  run `wabot-deploy serve` yourself, or supervise it however this machine does.");
     }
 
-    report(&config, config_path, wrote_config, &database).await?;
-
-    // What this node answers to, settled before the certificate is
-    // asked for — that request reads it, and so does the console
-    // afterwards.
-    //
-    // `--domain` is somebody saying it now, and wins. Without the flag
-    // the stored value stands: a domain changed from the console must
-    // survive the next `install`, which is what an upgrade runs.
-    let previous = crate::infra::node::settings::domain(&database, &config).await;
-    let domain = match explicit_domain {
-        true => config.node.domain.clone(),
-        false => previous.clone(),
-    };
-    if let Some(domain) = &domain {
-        crate::infra::node::settings::set_domain(&database, Some(domain)).await?;
-    }
-    config.node.domain = domain.clone();
-    let renamed = domain != previous;
+    report(
+        &config,
+        config_path,
+        wrote_config,
+        &database,
+        domain.as_deref(),
+    )
+    .await?;
 
     // What this node is, as a row other nodes can be listed beside.
     // After the domain is settled, because whether this node is public
@@ -213,7 +213,7 @@ pub async fn run(mut config: Config, config_path: &Path, args: InstallArgs) -> a
     // certificate already in hand does not have to be disturbed; one
     // without may be deep in the renewal loop's backoff — up to six
     // hours — and a restart is what makes it try now.
-    let wants_certificate = !config.acme.disabled
+    let wants_certificate = acme
         && match &domain {
             Some(domain) => !has_public_certificate(&config, &database, domain).await,
             None => false,
@@ -276,8 +276,8 @@ pub async fn run(mut config: Config, config_path: &Path, args: InstallArgs) -> a
     // was fatal, so the node never started, so the next run failed the
     // same way.
     let node_running = init.supervises() && crate::infra::bootstrap::service::is_active();
-    let verdict = match (&domain, config.acme.disabled) {
-        (Some(domain), false) => Some(
+    let verdict = match (&domain, acme) {
+        (Some(domain), true) => Some(
             await_certificate(
                 &config,
                 &database,
@@ -584,6 +584,7 @@ async fn report(
     config_path: &Path,
     wrote_config: bool,
     database: &SqliteDatabase,
+    domain: Option<&str>,
 ) -> anyhow::Result<()> {
     println!("wabot-deploy {} installed", crate::infra::update::VERSION);
     println!();
@@ -593,7 +594,7 @@ async fn report(
     }
     println!("  data      {}", config.node.data_dir.display());
     println!("  database  {}", config.database_path().display());
-    match &config.node.domain {
+    match domain {
         Some(domain) => println!("  domain    {domain}"),
         None => println!("  domain    (none — the node will serve a self-signed certificate)"),
     }
@@ -641,7 +642,7 @@ mod tests {
     fn config_in(dir: &Path) -> Config {
         let mut config = Config::default();
         config.node.data_dir = dir.join("data");
-        config.acme.disabled = true;
+        config.seed_acme(false);
         config
     }
 
@@ -664,9 +665,16 @@ mod tests {
         assert!(config_path.exists(), "the config file was written");
         assert!(database_path.exists(), "the database was created");
 
-        // The domain from the flag reached the file.
+        // The domain from the flag reached the database, and only there.
         let written = Config::load(&config_path).expect("load");
-        assert_eq!(written.node.domain.as_deref(), Some("node.example.com"));
+        assert_eq!(written.seeded_domain(), None);
+        let database = crate::infra::db::open(&database_path).await.expect("open");
+        assert_eq!(
+            crate::infra::node::settings::domain(&database)
+                .await
+                .as_deref(),
+            Some("node.example.com")
+        );
     }
 
     /// A node has to exist as a row before anything can be listed
@@ -735,7 +743,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let config_path = dir.path().join("config.toml");
         let mut config = config_in(dir.path());
-        config.acme.disabled = false;
+        config.seed_acme(true);
         config.acme.directory = "http://127.0.0.1:1/directory".into();
 
         let mut args = InstallArgs::with_domain("node.example.com");
@@ -751,7 +759,7 @@ mod tests {
     async fn what_the_certificate_wait_concludes() {
         let dir = tempfile::tempdir().expect("tempdir");
         let mut config = config_in(dir.path());
-        config.acme.disabled = false;
+        config.seed_acme(true);
         config.acme.directory = "https://acme-v02.api.letsencrypt.org/directory".into();
         let database = crate::infra::db::open_in_memory().await.expect("open");
         let none = std::time::Duration::ZERO;
@@ -792,7 +800,7 @@ mod tests {
     async fn a_staging_certificate_is_not_the_one_that_was_asked_for() {
         let dir = tempfile::tempdir().expect("tempdir");
         let mut config = config_in(dir.path());
-        config.acme.disabled = false;
+        config.seed_acme(true);
         config.acme.directory = "production".into();
         let database = crate::infra::db::open_in_memory().await.expect("open");
 
@@ -814,7 +822,7 @@ mod tests {
     async fn an_expired_certificate_does_not_count() {
         let dir = tempfile::tempdir().expect("tempdir");
         let mut config = config_in(dir.path());
-        config.acme.disabled = false;
+        config.seed_acme(true);
         let database = crate::infra::db::open_in_memory().await.expect("open");
 
         store_certificate(
@@ -862,7 +870,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let config_path = dir.path().join("config.toml");
         let mut config = config_in(dir.path());
-        config.acme.disabled = false;
+        config.seed_acme(true);
 
         let mut args = InstallArgs::with_domain("node.example.com");
         args.self_signed = true;
@@ -872,8 +880,38 @@ mod tests {
 
         // And it survives the next start, which is the half the old flag
         // did not do at all: it changed an exit code and stored nothing.
-        let stored = crate::infra::config::Config::load(&config_path).expect("load");
-        assert!(stored.acme.disabled, "the file has to carry it");
+        let database = crate::infra::db::open(&config_in(dir.path()).database_path())
+            .await
+            .expect("open");
+        assert!(!crate::infra::node::settings::acme_enabled(&database).await);
+    }
+
+    /// `--self-signed` on a node that already has its rows. The seed
+    /// fills only what is empty, so a flag that went only through it
+    /// would be forgotten on every node that had ever started.
+    #[tokio::test]
+    async fn self_signed_on_an_installed_node_turns_acme_off() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let config_path = dir.path().join("config.toml");
+        let mut config = config_in(dir.path());
+        config.seed_acme(true);
+        config.acme.directory = "http://127.0.0.1:1/directory".into();
+        let mut args = InstallArgs::none();
+        args.self_signed = false;
+        run(config.clone(), &config_path, args)
+            .await
+            .expect("first");
+
+        let mut args = InstallArgs::none();
+        args.self_signed = true;
+        run(config.clone(), &config_path, args)
+            .await
+            .expect("second");
+
+        let database = crate::infra::db::open(&config.database_path())
+            .await
+            .expect("open");
+        assert!(!crate::infra::node::settings::acme_enabled(&database).await);
     }
 
     /// ACME switched off is somebody saying up front that this node
@@ -931,7 +969,7 @@ mod tests {
         .expect("install");
 
         let database = crate::infra::db::open(&database_path).await.expect("open");
-        let stored = crate::infra::node::settings::domain(&database, &config_in(dir.path())).await;
+        let stored = crate::infra::node::settings::domain(&database).await;
         assert_eq!(stored.as_deref(), Some("changed.example"));
     }
 
@@ -1056,7 +1094,7 @@ mod tests {
         .expect("install");
 
         let database = crate::infra::db::open(&database_path).await.expect("open");
-        let stored = crate::infra::node::settings::domain(&database, &config_in(dir.path())).await;
+        let stored = crate::infra::node::settings::domain(&database).await;
         assert_eq!(stored.as_deref(), Some("said.example"));
     }
 
@@ -1086,8 +1124,9 @@ mod tests {
         assert!(entries.iter().all(|e| e.status == Status::Done));
     }
 
-    /// An operator's edits survive a re-install — the flag is a way to
-    /// set the value the first time, not to overwrite it every time.
+    /// An operator's edits survive a re-install, and `--domain` on the
+    /// second run is somebody saying it now: it reaches the database,
+    /// which is where the node reads its name.
     #[tokio::test]
     async fn a_second_install_does_not_clobber_the_config() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -1100,6 +1139,10 @@ mod tests {
         )
         .await
         .expect("install");
+        let edited = std::fs::read_to_string(&config_path)
+            .expect("read")
+            .replace("filter = \"info\"", "filter = \"debug\"");
+        std::fs::write(&config_path, edited).expect("edit");
 
         run(
             config_in(dir.path()),
@@ -1110,13 +1153,18 @@ mod tests {
         .expect("install");
 
         assert_eq!(
-            Config::load(&config_path)
-                .expect("load")
-                .node
-                .domain
-                .as_deref(),
-            Some("first.example.com"),
+            Config::load(&config_path).expect("load").log.filter,
+            "debug",
             "the existing file wins; edit it or delete it"
+        );
+        let database = crate::infra::db::open(&config_in(dir.path()).database_path())
+            .await
+            .expect("open");
+        assert_eq!(
+            crate::infra::node::settings::domain(&database)
+                .await
+                .as_deref(),
+            Some("second.example.com")
         );
     }
 

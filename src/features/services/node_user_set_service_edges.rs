@@ -4,11 +4,9 @@ use crate::domain::authz::node_user;
 use crate::domain::entities::account::Account;
 use crate::domain::entities::service::Service;
 use crate::features::services::set_service_edges_command::SetServiceEdges;
-use crate::infra::config::Config;
 
 pub async fn run(
     database: &SqliteDatabase,
-    config: &Config,
     account: &Account,
     service: &Service,
     hostname: &str,
@@ -23,6 +21,6 @@ pub async fn run(
         hostname,
         chosen,
     }
-    .run(database, config)
+    .run(database)
     .await
 }

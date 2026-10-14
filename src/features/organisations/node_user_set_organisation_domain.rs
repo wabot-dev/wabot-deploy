@@ -2,14 +2,12 @@ use wabot::sqlite::SqliteDatabase;
 
 use crate::domain::authz::node_user;
 use crate::domain::entities::account::Account;
-use crate::infra::config::Config;
 use crate::infra::deploy::dns::Resolution;
 use crate::infra::deploy::Deployer;
 use crate::infra::repositories::tenants;
 
 pub async fn run(
     database: &SqliteDatabase,
-    config: &Config,
     deployer: &Deployer,
     account: &Account,
     organisation: &str,
@@ -31,7 +29,7 @@ pub async fn run(
         // Refused here as well as in `routing::sync`: the sync skipping
         // it would leave a row saved on a page that shows it and a
         // console that never answers there, which is a setting that lies.
-        if crate::infra::node::settings::domain(database, config)
+        if crate::infra::node::settings::domain(database)
             .await
             .as_deref()
             == Some(wanted.as_str())
@@ -55,7 +53,7 @@ pub async fn run(
         // service hostname are asked before they are saved. Not asked, a
         // typo was saved, routed and shown, and the console never
         // answered on it. Found on a VM node with `nowhere.invalid`.
-        let node_domain = crate::infra::node::settings::domain(database, config).await;
+        let node_domain = crate::infra::node::settings::domain(database).await;
         let reference = node_domain.as_deref().unwrap_or(&wanted);
         let outcome = match crate::infra::deploy::dns::resolves_here(&wanted, reference).await {
             Resolution::NoReference if node_domain.is_none() => Resolution::Missing,

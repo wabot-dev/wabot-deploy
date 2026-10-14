@@ -177,13 +177,7 @@ impl ServiceUiController {
         let mut secured = std::collections::BTreeSet::new();
         for port in &ports {
             if let Some(hostname) = &port.hostname {
-                if crate::infra::edge::certs::settled(
-                    &self.state.database,
-                    &self.state.config,
-                    hostname,
-                )
-                .await
-                {
+                if crate::infra::edge::certs::settled(&self.state.database, hostname).await {
                     secured.insert(hostname.clone());
                 }
             }
@@ -266,13 +260,8 @@ impl ServiceUiController {
         // so the page cannot name something the certificate does not cover.
         let names = match service.kind.is_managed() {
             true => {
-                crate::infra::deploy::certificate_names(
-                    &self.state.database,
-                    &self.state.config,
-                    &project,
-                    &service,
-                )
-                .await
+                crate::infra::deploy::certificate_names(&self.state.database, &project, &service)
+                    .await
             }
             false => Vec::new(),
         };
@@ -285,13 +274,9 @@ impl ServiceUiController {
         // settings with the name and the port.
         let signs_here = match names.first() {
             Some(name) => matches!(
-                crate::infra::edge::policy::for_name(
-                    &self.state.database,
-                    &self.state.config,
-                    name
-                )
-                .await
-                .renew_with,
+                crate::infra::edge::policy::for_name(&self.state.database, name)
+                    .await
+                    .renew_with,
                 crate::infra::edge::policy::RenewWith::SelfSigned
             ),
             None => false,
@@ -405,8 +390,7 @@ impl ServiceUiController {
         // exists only because the caller did not say what it wanted.
         let settings = Tab::Image.path(&project.slug, &service.slug);
         let logs = format!("/projects/{}/services/{}/logs", project.slug, service.slug);
-        let domain =
-            crate::infra::node::settings::domain(&self.state.database, &self.state.config).await;
+        let domain = crate::infra::node::settings::domain(&self.state.database).await;
         let exposure = crate::features::services::service_ports_component::exposure(
             &service,
             &project.slug,
@@ -856,7 +840,6 @@ impl ServiceUiController {
             Tab::Database => {
                 let names = crate::infra::deploy::certificate_names(
                     &self.state.database,
-                    &self.state.config,
                     &project,
                     &service,
                 )
@@ -865,19 +848,16 @@ impl ServiceUiController {
                     Some(name) => {
                         let facts =
                             crate::shell::state::certificate_facts_for(&self.state, name).await;
-                        let policy = crate::infra::edge::policy::for_name(
-                            &self.state.database,
-                            &self.state.config,
-                            name,
-                        )
-                        .await;
+                        let policy =
+                            crate::infra::edge::policy::for_name(&self.state.database, name).await;
                         let state =
                             crate::shell::components::node_certificate::CertificateState::read(
                                 &facts,
                                 Some(name),
                                 policy.last_error.clone(),
                                 self.state.certificates.phase(),
-                                self.state.config.acme.disabled,
+                                !crate::infra::node::settings::acme_enabled(&self.state.database)
+                                    .await,
                             );
                         let cells = crate::shell::components::node_certificate::certificate_cells(
                             &state,
@@ -897,12 +877,11 @@ impl ServiceUiController {
                     ),
                     certificate,
                     host_port: ports.first().and_then(|port| port.host_port),
+                    acme: crate::infra::node::settings::acme_enabled(&self.state.database).await,
                 }
             }
             Tab::Image => {
-                let domain =
-                    crate::infra::node::settings::domain(&self.state.database, &self.state.config)
-                        .await;
+                let domain = crate::infra::node::settings::domain(&self.state.database).await;
                 Panel::Image {
                     push: crate::features::services::service_push_component::push(
                         &service,
@@ -923,9 +902,7 @@ impl ServiceUiController {
             },
             Tab::Resources => Panel::Resources,
             Tab::Network => {
-                let domain =
-                    crate::infra::node::settings::domain(&self.state.database, &self.state.config)
-                        .await;
+                let domain = crate::infra::node::settings::domain(&self.state.database).await;
                 // Whether each HTTPS name has a certificate yet. Asked
                 // rather than assumed: the certificate arrives seconds
                 // after the route does, and a page that showed the name as
@@ -937,23 +914,13 @@ impl ServiceUiController {
                     let Some(hostname) = &port.hostname else {
                         continue;
                     };
-                    if crate::infra::edge::certs::settled(
-                        &self.state.database,
-                        &self.state.config,
-                        hostname,
-                    )
-                    .await
-                    {
+                    if crate::infra::edge::certs::settled(&self.state.database, hostname).await {
                         secured.insert(hostname.clone());
                     }
                     let facts =
                         crate::shell::state::certificate_facts_for(&self.state, hostname).await;
-                    let policy = crate::infra::edge::policy::for_name(
-                        &self.state.database,
-                        &self.state.config,
-                        hostname,
-                    )
-                    .await;
+                    let policy =
+                        crate::infra::edge::policy::for_name(&self.state.database, hostname).await;
                     let state = crate::shell::components::node_certificate::CertificateState::read(
                         &facts,
                         Some(hostname),
@@ -962,7 +929,7 @@ impl ServiceUiController {
                         // would blame this name for that one.
                         None,
                         self.state.certificates.phase(),
-                        self.state.config.acme.disabled,
+                        !crate::infra::node::settings::acme_enabled(&self.state.database).await,
                     );
                     let cells = crate::shell::components::node_certificate::certificate_cells(
                         &state,
@@ -981,7 +948,7 @@ impl ServiceUiController {
                 // hostname only when the POST could accept one. It asked
                 // whether the node had a domain, and a named node with
                 // `edge` off drew the field for a refusal.
-                let answered = !dns::references(&self.state.database, &self.state.config)
+                let answered = !dns::references(&self.state.database)
                     .await
                     .unwrap_or_default()
                     .is_empty();
@@ -999,7 +966,8 @@ impl ServiceUiController {
                     add: format!("{here}/ports"),
                     suggestion,
                     may_publish: account.is_admin(),
-                    acme_off: self.state.config.acme.disabled,
+                    acme_off: !crate::infra::node::settings::acme_enabled(&self.state.database)
+                        .await,
                     public_nodes: crate::infra::network::edge_candidates(&self.state.database)
                         .await?,
                     serving: crate::infra::repositories::edges::of_service(

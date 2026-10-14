@@ -33,27 +33,22 @@ pub async fn run(config: Config, config_path: &Path) -> anyhow::Result<i32> {
         "  file      {}",
         describe(config_path.exists(), config_path)
     );
-    // The file's value, and said to be the file's value. What the node
-    // answers to is the stored one — the file only seeds it — so a node
-    // renamed from the console has a config file naming something it
-    // stopped answering to years ago. Printing that as `domain` made
-    // this report contradict its own `network` section a page later,
-    // which was found on a node and is exactly the kind of thing that
-    // can only be found there.
-    println!(
-        "  domain    {} (in the file)",
-        config
-            .node
-            .domain
-            .clone()
-            .unwrap_or_else(|| "(none — self-signed)".into())
-    );
     println!(
         "  data      {}",
         describe(config.node.data_dir.exists(), &config.node.data_dir)
     );
     println!("  https     port {}", config.edge.https_port);
     println!("  http      port {}", config.edge.http_port);
+    // Said because a value in the file that the node no longer reads is
+    // a value somebody edits and waits for.
+    if let Some(domain) = config.seeded_domain() {
+        println!("  seed      node.domain = {domain:?} — read at the first start only;");
+        println!("            the node page decides the domain now");
+    }
+    if config.seeded_acme_off() {
+        println!("  seed      acme.disabled = true — read at the first start only;");
+        println!("            the node page decides whether ACME is asked now");
+    }
 
     println!();
     println!("database");
@@ -64,6 +59,8 @@ pub async fn run(config: Config, config_path: &Path) -> anyhow::Result<i32> {
             database_path.display()
         );
         problems += 1;
+        println!();
+        problems += machine_and_runtime(&config);
         return finish(problems);
     }
     println!("  {}", database_path.display());
@@ -104,78 +101,7 @@ pub async fn run(config: Config, config_path: &Path) -> anyhow::Result<i32> {
         }
     }
 
-    println!();
-    println!("machine");
-    // Ports are skipped when the node holds them: a running node
-    // failing its own port check would be a healthy node reading as
-    // broken.
-    let node_running = crate::infra::bootstrap::service::is_active();
-    for check in crate::infra::bootstrap::preflight::run(
-        config.edge.https_port,
-        config.edge.http_port,
-        !node_running,
-    ) {
-        if check.blocks() {
-            problems += 1;
-        }
-        println!("  {check}");
-    }
-    if node_running {
-        println!("  ok    ports          held by the running node");
-    }
-
-    println!();
-    println!("runtime");
-    let runtime = crate::infra::bootstrap::runtime::status();
-    println!(
-        "  containerd  {}",
-        runtime
-            .containerd
-            .clone()
-            .unwrap_or_else(|| "absent".into())
-    );
-    println!(
-        "  crun        {}",
-        runtime.crun.clone().unwrap_or_else(|| "absent".into())
-    );
-    println!(
-        "  socket      {}",
-        if runtime.socket {
-            crate::infra::bootstrap::runtime::SOCKET.to_string()
-        } else {
-            format!("{} (absent)", crate::infra::bootstrap::runtime::SOCKET)
-        }
-    );
-    let missing = crate::infra::bootstrap::runtime::missing_programs();
-    if !missing.is_empty() {
-        // Not a containerd problem, and it looks like one: the
-        // container starts and then fails to get an address.
-        println!(
-            "  missing     {} — no container can get a network",
-            missing
-                .iter()
-                .map(|program| program.command)
-                .collect::<Vec<_>>()
-                .join(", ")
-        );
-        problems += 1;
-    }
-    if !runtime.ready() {
-        // Not counted as a problem: nothing deploys containers yet, so
-        // a node without containerd is incomplete rather than broken.
-        println!("  (no containers can run until all three are present)");
-    }
-
-    // A memory ceiling is a cgroup, and a cgroup v2 tree with the
-    // memory controller is what crun writes it into. Where there is
-    // none the limit is *silently ignored* — the container starts,
-    // the page says 128 MB, and the process takes the machine. That is
-    // the failure this line exists to make visible, and it is one this
-    // report can answer without asking containerd anything.
-    println!("  cgroups     {}", cgroup_memory());
-    if !cgroup_memory_works() {
-        problems += 1;
-    }
+    problems += machine_and_runtime(&config);
 
     println!();
     println!("storage");
@@ -225,7 +151,7 @@ pub async fn run(config: Config, config_path: &Path) -> anyhow::Result<i32> {
         );
         println!(
             "  state       {}",
-            if node_running {
+            if crate::infra::bootstrap::service::is_active() {
                 "active"
             } else {
                 "not running"
@@ -357,7 +283,7 @@ pub async fn run(config: Config, config_path: &Path) -> anyhow::Result<i32> {
 
     // The reason a certificate is missing is recorded beside the
     // domain, so an operator sees it here rather than in the journal.
-    let domain = crate::infra::node::settings::domain(&database, &config).await;
+    let domain = crate::infra::node::settings::domain(&database).await;
     if let Some(error) = crate::infra::node::settings::acme_error(&database).await {
         let name = domain.as_deref().unwrap_or("this node");
         println!("  last ACME failure for {name}:");
@@ -367,8 +293,8 @@ pub async fn run(config: Config, config_path: &Path) -> anyhow::Result<i32> {
 
     println!();
     println!("acme");
-    if config.acme.disabled {
-        println!("  disabled — the local authority's certificate is served");
+    if !crate::infra::node::settings::acme_enabled(&database).await {
+        println!("  off — the local authority's certificate is served; the node page turns it on");
     } else if domain.is_none() {
         println!("  no domain set; nothing a public authority could validate");
     } else {
@@ -391,18 +317,6 @@ pub async fn run(config: Config, config_path: &Path) -> anyhow::Result<i32> {
     match crate::infra::network::me(&database).await {
         Ok(Some(me)) => {
             println!("  this node   {} ({})", me.name, me.id);
-            // Said only when the two disagree. Agreement is the usual
-            // case and needs no line; disagreement is a node answering
-            // to a name its own config file does not mention, which
-            // reads as a mistake until somebody explains it.
-            if let Some(stored) = &domain {
-                if config.node.domain.as_deref() != Some(stored.as_str()) {
-                    println!(
-                        "              renamed since install — the file still says {}",
-                        config.node.domain.as_deref().unwrap_or("nothing")
-                    );
-                }
-            }
             println!("  kind        {}", me.kind.as_str());
             println!(
                 "  reachable   {}",
@@ -806,6 +720,89 @@ fn cgroup_memory() -> String {
     }
 }
 
+/// What the machine and its runtime are, which needs no database.
+///
+/// Its own function so it runs **before** an install too. `doctor` on a
+/// fresh machine stopped at the missing database and never got here, and
+/// this is the part somebody runs it for before installing — the book of
+/// use cases says so at 1.4. Found on a VM node.
+fn machine_and_runtime(config: &Config) -> usize {
+    let mut problems = 0usize;
+    println!();
+    println!("machine");
+    // Ports are skipped when the node holds them: a running node
+    // failing its own port check would be a healthy node reading as
+    // broken.
+    let node_running = crate::infra::bootstrap::service::is_active();
+    for check in crate::infra::bootstrap::preflight::run(
+        config.edge.https_port,
+        config.edge.http_port,
+        !node_running,
+    ) {
+        if check.blocks() {
+            problems += 1;
+        }
+        println!("  {check}");
+    }
+    if node_running {
+        println!("  ok    ports          held by the running node");
+    }
+
+    println!();
+    println!("runtime");
+    let runtime = crate::infra::bootstrap::runtime::status();
+    println!(
+        "  containerd  {}",
+        runtime
+            .containerd
+            .clone()
+            .unwrap_or_else(|| "absent".into())
+    );
+    println!(
+        "  crun        {}",
+        runtime.crun.clone().unwrap_or_else(|| "absent".into())
+    );
+    println!(
+        "  socket      {}",
+        if runtime.socket {
+            crate::infra::bootstrap::runtime::SOCKET.to_string()
+        } else {
+            format!("{} (absent)", crate::infra::bootstrap::runtime::SOCKET)
+        }
+    );
+    let missing = crate::infra::bootstrap::runtime::missing_programs();
+    if !missing.is_empty() {
+        // Not a containerd problem, and it looks like one: the
+        // container starts and then fails to get an address.
+        println!(
+            "  missing     {} — no container can get a network",
+            missing
+                .iter()
+                .map(|program| program.command)
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+        problems += 1;
+    }
+    if !runtime.ready() {
+        // Not counted as a problem: nothing deploys containers yet, so
+        // a node without containerd is incomplete rather than broken.
+        println!("  (no containers can run until all three are present)");
+    }
+
+    // A memory ceiling is a cgroup, and a cgroup v2 tree with the
+    // memory controller is what crun writes it into. Where there is
+    // none the limit is *silently ignored* — the container starts,
+    // the page says 128 MB, and the process takes the machine. That is
+    // the failure this line exists to make visible, and it is one this
+    // report can answer without asking containerd anything.
+    println!("  cgroups     {}", cgroup_memory());
+    if !cgroup_memory_works() {
+        problems += 1;
+    }
+    problems
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -821,7 +818,7 @@ mod tests {
     fn config_in(dir: &Path) -> Config {
         let mut config = Config::default();
         config.node.data_dir = dir.join("data");
-        config.acme.disabled = true;
+        config.seed_acme(false);
         config
     }
 

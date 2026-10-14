@@ -141,13 +141,15 @@ impl Default for OverlayConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct NodeConfig {
-    /// The hostname this node answers to.
+    /// A seed for the hostname this node answers to, read once.
     ///
-    /// Optional on purpose: without one the node still serves, on a
-    /// self-signed certificate, so it can be installed and inspected
-    /// before DNS exists. ACME needs it, and turns on when it appears.
-    #[serde(default)]
-    pub domain: Option<String>,
+    /// `infra::node::settings::seed` copies it into the database at the
+    /// first start, and the console owns it from then on. Read so a file
+    /// prepared before the first boot still works; never written, because
+    /// a value in this file that the node no longer reads is a value
+    /// somebody will edit and wait for.
+    #[serde(default, skip_serializing)]
+    pub(in crate::infra) domain: Option<String>,
     /// Database, certificates, and anything else with state.
     #[serde(default = "default_data_dir")]
     pub data_dir: PathBuf,
@@ -183,11 +185,12 @@ pub struct AcmeConfig {
     /// which is the last warning before an outage.
     #[serde(default)]
     pub email: Option<String>,
-    /// Turn ACME off and keep serving the local authority's
-    /// certificate — for a node reachable only on a private network,
-    /// where no public CA can validate anything.
-    #[serde(default)]
-    pub disabled: bool,
+    /// A seed for the node's ACME switch, read once — the same rule as
+    /// `node.domain`. The switch is on the node page; `install
+    /// --self-signed` and `WABOT_DEPLOY_ACME_DISABLED` reach it through
+    /// here.
+    #[serde(default, skip_serializing)]
+    pub(in crate::infra) disabled: bool,
 }
 
 impl AcmeConfig {
@@ -359,6 +362,26 @@ impl Config {
         Ok(())
     }
 
+    /// The domain the file or a flag offers as a seed. Named for what it
+    /// is so no reader mistakes it for the node's name, which is
+    /// `infra::node::settings::domain`.
+    pub fn seeded_domain(&self) -> Option<&str> {
+        self.node.domain.as_deref()
+    }
+
+    /// Whether the file or a flag asks for ACME to start off.
+    pub fn seeded_acme_off(&self) -> bool {
+        self.acme.disabled
+    }
+
+    pub fn seed_domain(&mut self, domain: Option<String>) {
+        self.node.domain = domain;
+    }
+
+    pub fn seed_acme(&mut self, on: bool) {
+        self.acme.disabled = !on;
+    }
+
     /// The database file. One place decides, so `install`, `serve` and
     /// `doctor` cannot disagree about where the node's state lives.
     pub fn database_path(&self) -> PathBuf {
@@ -418,10 +441,10 @@ impl Config {
              # refused rather than ignored, so a typo fails loudly instead of\n\
              # leaving a default in place.\n\
              #\n\
-             # node.domain seeds the name this node answers to. After the\n\
-             # first start it lives in the database, where the console can\n\
-             # change it — editing it here again does nothing unless you\n\
-             # re-run `install --domain`.\n\n{body}"
+             # The node's domain and whether it asks a public authority for\n\
+             # certificates are not here: they live in the database and the\n\
+             # console changes them. `node.domain` and `acme.disabled` are\n\
+             # still read, once, the first time a node starts.\n\n{body}"
         )
     }
 
@@ -485,10 +508,8 @@ pub fn store_s3(
 
 /// Splice one section into the file and put it back, atomically.
 ///
-/// Shared by the two callers that write a section — the bucket credential
-/// and the ACME switch — because everything careful about it is the same:
-/// parse before writing, rename rather than truncate, and 0600 because one
-/// of the two holds a secret.
+/// Parse before writing, rename rather than truncate, and 0600 because
+/// the section holds a secret.
 fn write_section(
     path: &Path,
     existing: &str,
@@ -526,59 +547,6 @@ fn write_section(
     })
 }
 
-/// Turn ACME off — or on — in the file, leaving everything else alone.
-///
-/// `install --self-signed` on a node that already has a config file: it
-/// cannot be written by `write_if_absent`, which refuses to clobber the
-/// operator's edits, so a flag that only reached the struct would apply to
-/// one process and be forgotten at the next start.
-///
-/// The same section surgery as the bucket credential, for the same reason:
-/// the file says "edit freely", and re-serializing it would throw away
-/// every comment in it.
-pub fn store_acme_disabled(path: &Path, disabled: bool) -> ConfigResult<()> {
-    let existing = match std::fs::read_to_string(path) {
-        Ok(text) => text,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
-        Err(source) => {
-            return Err(ConfigError::Read {
-                path: path.to_path_buf(),
-                source,
-            })
-        }
-    };
-
-    // The whole section is replaced, so anything else under `[acme]` — the
-    // contact address, the directory — has to be carried over. Read from
-    // the file rather than from a `Config`, which may hold values that came
-    // from the environment and do not belong in it.
-    let held: JustAcme = toml::from_str(&existing).unwrap_or_default();
-    let mut section = String::from(
-        "[acme]\n\
-         # `disabled` is written by `install --self-signed`. On means this\n\
-         # node never asks a public authority and serves its own\n\
-         # certificate, which is the honest setting for a machine on a\n\
-         # private network.\n",
-    );
-    section.push_str(&format!("disabled = {disabled}\n"));
-    section.push_str(&format!(
-        "directory = {}\n",
-        toml_string(&held.acme.directory)
-    ));
-    if let Some(email) = &held.acme.email {
-        section.push_str(&format!("email = {}\n", toml_string(email)));
-    }
-
-    write_section(path, &existing, "[acme]", Some(section))
-}
-
-/// Just enough of the file to carry a section over unchanged.
-#[derive(Deserialize, Default)]
-struct JustAcme {
-    #[serde(default)]
-    acme: AcmeConfig,
-}
-
 /// The section as it goes into the file.
 ///
 /// The comment goes with it: somebody reading this file at two in the
@@ -586,35 +554,24 @@ struct JustAcme {
 /// where from.
 fn section_for(credentials: &crate::infra::backup::s3::Credentials) -> String {
     let mut section = String::from(
-        "[backup.s3]
-         # Written by the console's Backup tab. Editing it here works too —
-         # it is read at the moment of use, so no restart is needed either
-         # way. It is deliberately not in the database: a key that can read
-         # every backup in the network must not be inside the thing being
-         # backed up.
-",
+        "[backup.s3]\n\
+         # Written by the console's Backup tab. Editing it here works too —\n\
+         # it is read at the moment of use, so no restart is needed either\n\
+         # way. It is deliberately not in the database: a key that can read\n\
+         # every backup in the network must not be inside the thing being\n\
+         # backed up.\n",
     );
     section.push_str(&format!(
-        "access_key_id = {}
-",
+        "access_key_id = {}\n",
         toml_string(&credentials.access_key_id)
     ));
     section.push_str(&format!(
-        "secret_access_key = {}
-",
+        "secret_access_key = {}\n",
         toml_string(&credentials.secret_access_key)
     ));
-    section.push_str(&format!(
-        "region = {}
-",
-        toml_string(&credentials.region)
-    ));
+    section.push_str(&format!("region = {}\n", toml_string(&credentials.region)));
     if let Some(endpoint) = &credentials.endpoint {
-        section.push_str(&format!(
-            "endpoint = {}
-",
-            toml_string(endpoint)
-        ));
+        section.push_str(&format!("endpoint = {}\n", toml_string(endpoint)));
     }
     section
 }
@@ -818,38 +775,6 @@ mod tests {
         assert!(config.s3().is_none());
     }
 
-    /// Turning ACME off works on a node that already has a config file.
-    ///
-    /// `write_if_absent` refuses to clobber one — it holds the operator's
-    /// edits — so `install --self-signed` on an existing node would
-    /// otherwise apply to one process and be forgotten at the next start.
-    #[test]
-    fn acme_can_be_turned_off_on_a_node_that_is_already_installed() {
-        let (_dir, path) = write(
-            "# my own notes\n\
-             [node]\n\
-             domain = \"node.example\"\n\n\
-             [acme]\n\
-             email = \"me@example.com\"\n\
-             directory = \"staging\"\n",
-        );
-
-        store_acme_disabled(&path, true).expect("store");
-        let text = std::fs::read_to_string(&path).expect("read");
-
-        let config = Config::load(&path).expect("load what was written");
-        assert!(config.acme.disabled);
-        // The rest of that section is carried over, not dropped: an
-        // operator who set a contact address and a staging directory has
-        // not asked for either to be forgotten.
-        assert_eq!(config.acme.email.as_deref(), Some("me@example.com"));
-        assert_eq!(config.acme.directory, "staging");
-        // And the rest of the file, comments included.
-        assert!(text.contains("# my own notes"), "{text}");
-        assert_eq!(config.node.domain.as_deref(), Some("node.example"));
-        assert_eq!(text.matches("[acme]").count(), 1, "{text}");
-    }
-
     /// The file is read at the moment of use, not once at startup.
     ///
     /// This is what makes the console's Save apply to the very next
@@ -868,6 +793,21 @@ mod tests {
             "AKIAEXAMPLE",
             "the same Config, and the file has moved on"
         );
+    }
+
+    /// The lines the console writes read like the rest of the file. The
+    /// comment above the credential went in indented by nine spaces — a
+    /// string literal continued over source lines keeps the indentation.
+    /// Found on a VM node.
+    #[test]
+    fn the_section_the_console_writes_is_not_indented() {
+        let (_dir, path) = write("[node]\n");
+        store_s3(&path, Some(&some_credentials())).expect("store");
+
+        let text = std::fs::read_to_string(&path).expect("read");
+        for line in text.lines().skip_while(|line| *line != "[backup.s3]") {
+            assert_eq!(line, line.trim_start(), "{text}");
+        }
     }
 
     /// Root-only, because the console now puts a secret in it.
@@ -933,15 +873,39 @@ mod tests {
     #[test]
     fn what_install_writes_is_what_load_reads() {
         let mut original = Config::default();
-        original.node.domain = Some("node.example.com".into());
         original.edge.https_port = 8443;
 
         let (_dir, path) = write(&original.to_toml());
         let reloaded = Config::load(&path).expect("load");
 
-        assert_eq!(reloaded.node.domain, original.node.domain);
         assert_eq!(reloaded.edge.https_port, 8443);
         assert_eq!(reloaded.node.data_dir, original.node.data_dir);
+    }
+
+    /// The two settings the console owns are not written here. A value in
+    /// this file the node no longer reads is one somebody edits and waits
+    /// for — so they are seeds a file may carry, and nothing writes them.
+    #[test]
+    fn what_the_console_owns_is_not_written_to_the_file() {
+        let mut original = Config::default();
+        original.node.domain = Some("node.example.com".into());
+        original.acme.disabled = true;
+
+        let text = original.to_toml();
+        assert!(!text.contains("domain ="), "{text}");
+        assert!(!text.contains("disabled ="), "{text}");
+    }
+
+    /// And a file that has them still loads: every node installed before
+    /// this wrote both, and `deny_unknown_fields` would otherwise keep
+    /// that node from starting.
+    #[test]
+    fn a_file_written_by_an_older_install_still_loads() {
+        let (_dir, path) =
+            write("[node]\ndomain = \"node.example.com\"\n\n[acme]\ndisabled = true\n");
+        let config = Config::load(&path).expect("load");
+        assert_eq!(config.node.domain.as_deref(), Some("node.example.com"));
+        assert!(config.acme.disabled);
     }
 
     #[test]

@@ -3,7 +3,6 @@ use wabot::sqlite::SqliteDatabase;
 use crate::domain::entities::project::Project;
 use crate::domain::entities::service::Service;
 use crate::features::databases::database_named_response::DatabaseNamedResponse;
-use crate::infra::config::Config;
 use crate::infra::repositories::ports;
 
 pub struct NameDatabase<'a> {
@@ -13,11 +12,7 @@ pub struct NameDatabase<'a> {
 }
 
 impl NameDatabase<'_> {
-    pub async fn run(
-        &self,
-        database: &SqliteDatabase,
-        config: &Config,
-    ) -> Result<DatabaseNamedResponse, String> {
+    pub async fn run(&self, database: &SqliteDatabase) -> Result<DatabaseNamedResponse, String> {
         let typed = crate::domain::values::hostname::Hostname::parse(self.typed)
             .as_str()
             .to_string();
@@ -25,11 +20,10 @@ impl NameDatabase<'_> {
             return Err("a database is reached by name, so it has to have one".into());
         }
 
-        let was =
-            crate::infra::deploy::certificate_names(database, config, self.project, self.service)
-                .await
-                .into_iter()
-                .next();
+        let was = crate::infra::deploy::certificate_names(database, self.project, self.service)
+            .await
+            .into_iter()
+            .next();
 
         let Some(port) = ports::of_service(database, &self.service.id)
             .await

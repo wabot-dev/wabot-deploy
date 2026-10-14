@@ -6,16 +6,22 @@
 //! serves a self-signed certificate and there is nothing to be done
 //! about it from a console that only reads a value fixed at startup.
 //!
-//! So the database holds it and the file seeds it. The file stays
-//! useful — it is what an operator edits before the first boot, and
-//! what an install writes — but from then on the answer to "what is
-//! this node called" comes from one place that a request can change.
+//! So the database holds it and the file seeds it — **once**. [`seed`]
+//! copies what the file and the environment say into the rows the first
+//! time a node starts, and nothing reads the file for these again. It was
+//! a fallback for as long as no row existed, and a fallback is a second
+//! source of truth: the registry named every push after the value the
+//! file had at boot, and a backup then decided which images were this
+//! node's own by a different one. Found on a VM node.
 
 use wabot::sqlite::rusqlite::OptionalExtension;
 use wabot::sqlite::{SqliteDatabase, SqliteResult};
 
 /// Where the domain lives in the `setting` table.
 const DOMAIN: &str = "node.domain";
+
+/// Whether this node asks a public certificate authority for anything.
+const ACME: &str = "acme.enabled";
 
 /// Why the last certificate attempt failed.
 ///
@@ -27,25 +33,13 @@ const DOMAIN: &str = "node.domain";
 const ACME_ERROR: &str = "acme.last_error";
 
 /// What this node answers to, or `None` while nobody has said.
-///
-/// The stored value wins over the file. A console that could be
-/// overruled by a config file nobody edited would be a console whose
-/// changes quietly stop applying at the next restart.
-pub async fn domain(
-    database: &SqliteDatabase,
-    config: &crate::infra::config::Config,
-) -> Option<String> {
+pub async fn domain(database: &SqliteDatabase) -> Option<String> {
     match read(database, DOMAIN).await {
         Ok(Some(stored)) if !stored.trim().is_empty() => Some(stored),
-        // Nothing stored: the file is the seed. An explicit empty
-        // value stored by the console means "no domain", and has to
-        // survive being read back — hence the emptiness check above
-        // rather than treating empty as absent.
-        Ok(Some(_)) => None,
-        Ok(None) => config.node.domain.clone(),
+        Ok(_) => None,
         Err(error) => {
-            tracing::warn!(%error, "could not read the node's domain; using the config file");
-            config.node.domain.clone()
+            tracing::warn!(%error, "could not read the node's domain");
+            None
         }
     }
 }
@@ -54,6 +48,40 @@ pub async fn domain(
 pub async fn set_domain(database: &SqliteDatabase, domain: Option<&str>) -> SqliteResult<()> {
     let value = domain.map(str::trim).unwrap_or_default().to_string();
     write(database, DOMAIN, &value).await
+}
+
+/// Whether a public authority is asked for certificates.
+///
+/// On when nothing is stored, which is what a node that has never been
+/// seeded is: the production default, the same one `install` has always
+/// had.
+pub async fn acme_enabled(database: &SqliteDatabase) -> bool {
+    !matches!(read(database, ACME).await, Ok(Some(value)) if value == "off")
+}
+
+pub async fn set_acme_enabled(database: &SqliteDatabase, on: bool) -> SqliteResult<()> {
+    write(database, ACME, if on { "on" } else { "off" }).await
+}
+
+/// Copy what the file and the environment say into the rows, where no
+/// row exists yet.
+///
+/// A row is written **whatever the file holds**, empty included, so the
+/// file is read for these exactly once. Writing only a value left a node
+/// installed without a domain consulting the file at every start, and an
+/// operator who later typed one there would have found it applied — the
+/// opposite of what the file's own header says.
+pub async fn seed(
+    database: &SqliteDatabase,
+    config: &crate::infra::config::Config,
+) -> SqliteResult<()> {
+    if read(database, DOMAIN).await?.is_none() {
+        set_domain(database, config.node.domain.as_deref()).await?;
+    }
+    if read(database, ACME).await?.is_none() {
+        set_acme_enabled(database, !config.acme.disabled).await?;
+    }
+    Ok(())
 }
 
 /// Whether this node keeps the write-ahead log of its databases, so
@@ -209,10 +237,12 @@ mod tests {
     #[tokio::test]
     async fn the_file_is_the_seed() {
         let database = crate::infra::db::open_in_memory().await.expect("open");
-        let config = config_with(Some("from-the-file.example"));
+        seed(&database, &config_with(Some("from-the-file.example")))
+            .await
+            .expect("seed");
 
         assert_eq!(
-            domain(&database, &config).await.as_deref(),
+            domain(&database).await.as_deref(),
             Some("from-the-file.example")
         );
     }
@@ -222,15 +252,14 @@ mod tests {
     #[tokio::test]
     async fn what_was_set_wins_over_the_file() {
         let database = crate::infra::db::open_in_memory().await.expect("open");
-        let config = config_with(Some("from-the-file.example"));
-
         set_domain(&database, Some("chosen.example"))
             .await
             .expect("set");
-        assert_eq!(
-            domain(&database, &config).await.as_deref(),
-            Some("chosen.example")
-        );
+
+        seed(&database, &config_with(Some("from-the-file.example")))
+            .await
+            .expect("seed");
+        assert_eq!(domain(&database).await.as_deref(), Some("chosen.example"));
     }
 
     /// Clearing it has to mean "no domain", not "fall back to the
@@ -239,16 +268,52 @@ mod tests {
     #[tokio::test]
     async fn clearing_it_means_none() {
         let database = crate::infra::db::open_in_memory().await.expect("open");
-        let config = config_with(Some("from-the-file.example"));
-
         set_domain(&database, None).await.expect("clear");
-        assert_eq!(domain(&database, &config).await, None);
+
+        seed(&database, &config_with(Some("from-the-file.example")))
+            .await
+            .expect("seed");
+        assert_eq!(domain(&database).await, None);
+    }
+
+    /// The file is read once. A node installed with no domain wrote an
+    /// empty row, so a name typed into the file afterwards is not one the
+    /// node starts answering to at its next restart.
+    #[tokio::test]
+    async fn a_file_edited_after_the_first_start_changes_nothing() {
+        let database = crate::infra::db::open_in_memory().await.expect("open");
+        seed(&database, &config_with(None)).await.expect("first");
+
+        let mut edited = config_with(Some("typed-later.example"));
+        edited.acme.disabled = true;
+        seed(&database, &edited).await.expect("second");
+
+        assert_eq!(domain(&database).await, None);
+        assert!(acme_enabled(&database).await);
+    }
+
+    /// `install --self-signed` and `WABOT_DEPLOY_ACME_DISABLED` arrive
+    /// through the config, and have to land in the row that is read.
+    #[tokio::test]
+    async fn acme_switched_off_in_the_file_is_seeded_off() {
+        let database = crate::infra::db::open_in_memory().await.expect("open");
+        let mut config = config_with(None);
+        config.acme.disabled = true;
+
+        seed(&database, &config).await.expect("seed");
+        assert!(!acme_enabled(&database).await);
+
+        set_acme_enabled(&database, true).await.expect("on");
+        assert!(
+            acme_enabled(&database).await,
+            "and the console can turn it on"
+        );
     }
 
     #[tokio::test]
     async fn a_node_with_nothing_anywhere_has_no_domain() {
         let database = crate::infra::db::open_in_memory().await.expect("open");
-        assert_eq!(domain(&database, &config_with(None)).await, None);
+        assert_eq!(domain(&database).await, None);
     }
 
     /// Cleared has to read as "nothing wrong", not as an empty
@@ -276,9 +341,6 @@ mod tests {
             .await
             .expect("set");
 
-        assert_eq!(
-            domain(&database, &config_with(None)).await.as_deref(),
-            Some("spaced.example")
-        );
+        assert_eq!(domain(&database).await.as_deref(), Some("spaced.example"));
     }
 }

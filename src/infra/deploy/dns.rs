@@ -321,7 +321,6 @@ pub fn suggested_hostname(service_slug: &str, project_slug: &str, node_domain: &
 /// own domain, which is the same string by a different route.
 pub async fn references(
     database: &wabot::sqlite::SqliteDatabase,
-    config: &crate::infra::config::Config,
 ) -> Result<Vec<Reference>, String> {
     let mut references = Vec::new();
     for node in crate::infra::network::edge_candidates(database)
@@ -329,7 +328,7 @@ pub async fn references(
         .map_err(|error| error.to_string())?
     {
         let at = match node.is_self {
-            true => crate::infra::node::settings::domain(database, config).await,
+            true => crate::infra::node::settings::domain(database).await,
             // The port is not part of a lookup, and an endpoint
             // without one would be a name that never resolves.
             false => node

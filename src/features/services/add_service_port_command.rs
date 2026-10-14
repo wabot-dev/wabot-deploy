@@ -2,7 +2,6 @@ use wabot::sqlite::SqliteDatabase;
 
 use crate::domain::entities::port::Port;
 use crate::domain::entities::service::Service;
-use crate::infra::config::Config;
 use crate::infra::deploy::dns;
 use crate::infra::repositories::ports;
 
@@ -17,7 +16,7 @@ impl AddServicePort<'_> {
     /// anything; this is what gives an answer in the form instead of two
     /// failed validations a day against an authority that locks the
     /// account at five an hour.
-    pub async fn run(&self, database: &SqliteDatabase, config: &Config) -> Result<Port, String> {
+    pub async fn run(&self, database: &SqliteDatabase) -> Result<Port, String> {
         let (hostname, edges) = match self.asked.https {
             false => (None, Vec::new()),
             true => {
@@ -29,9 +28,9 @@ impl AddServicePort<'_> {
                         .as_str()
                         .to_string();
 
-                let references = dns::references(database, config).await?;
+                let references = dns::references(database).await?;
                 if references.is_empty() {
-                    let named = crate::infra::node::settings::domain(database, config)
+                    let named = crate::infra::node::settings::domain(database)
                         .await
                         .is_some();
                     return Err(match named {

@@ -111,13 +111,10 @@ impl NodeUiController {
         // unwell. The comment saying so was already on one of them.
         let panel = match tab {
             NodeTab::Domain => {
-                let domain =
-                    crate::infra::node::settings::domain(&self.state.database, &self.state.config)
-                        .await;
+                let domain = crate::infra::node::settings::domain(&self.state.database).await;
                 let facts = crate::shell::state::certificate_facts(&self.state).await;
                 let policy = crate::infra::edge::policy::for_name(
                     &self.state.database,
-                    &self.state.config,
                     domain
                         .as_deref()
                         .unwrap_or(crate::infra::edge::certs::FALLBACK_NAME),
@@ -134,7 +131,7 @@ impl NodeUiController {
                         .clone()
                         .or(crate::infra::node::settings::acme_error(&self.state.database).await),
                     self.state.certificates.phase(),
-                    self.state.config.acme.disabled,
+                    !crate::infra::node::settings::acme_enabled(&self.state.database).await,
                 );
                 let cells = crate::shell::components::node_certificate::certificate_cells(
                     &state,
@@ -151,9 +148,7 @@ impl NodeUiController {
                 }
             }
             NodeTab::Allows => {
-                let domain =
-                    crate::infra::node::settings::domain(&self.state.database, &self.state.config)
-                        .await;
+                let domain = crate::infra::node::settings::domain(&self.state.database).await;
                 let mut provides = Vec::new();
                 for capability in crate::domain::values::capability::Capability::ALL {
                     let on = network::capability::provides(&self.state.database, capability).await;

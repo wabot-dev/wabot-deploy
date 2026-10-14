@@ -53,7 +53,7 @@ pub async fn run(
     // sends nothing — so absence there is the form being unable to say,
     // not somebody saying off. Read as off, saving `store` once made the
     // node private for good, and it stayed private after it had a name.
-    let addressed = crate::infra::node::settings::domain(database, config)
+    let addressed = crate::infra::node::settings::domain(database)
         .await
         .is_some();
     for capability in Capability::ALL {

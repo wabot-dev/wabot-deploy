@@ -113,7 +113,7 @@ impl ConsoleState {
         };
         let domain = match theirs {
             Some(domain) => Some(domain),
-            None => crate::infra::node::settings::domain(&self.database, &self.config).await,
+            None => crate::infra::node::settings::domain(&self.database).await,
         };
         format!(
             "https://{}",
@@ -155,7 +155,7 @@ pub(crate) async fn certificate_facts(state: &ConsoleState) -> CertificateFacts 
     // The domain is not carried back out: every caller already knows it
     // — they render the form that sets it — and two copies of a value
     // one page shows twice is how they end up disagreeing.
-    match crate::infra::node::settings::domain(&state.database, &state.config).await {
+    match crate::infra::node::settings::domain(&state.database).await {
         Some(domain) => certificate_facts_for(state, &domain).await,
         None => CertificateFacts::none(),
     }

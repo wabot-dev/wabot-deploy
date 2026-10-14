@@ -18,7 +18,7 @@
 # and on this machine's own architecture so it runs at native speed.
 #
 # ACME is off because no authority can reach a laptop: `--self-signed`
-# writes `[acme] disabled` and the node serves its own certificate.
+# turns the node's switch off and it serves its own certificate.
 #
 # Needs `brew install lima zig protobuf` and `cargo install cargo-zigbuild`.
 set -euo pipefail

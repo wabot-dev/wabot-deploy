@@ -155,7 +155,7 @@ pub async fn put(
 
     // Then the image record, which is what makes it an image rather
     // than bytes: the runtime resolves images by name through this.
-    let host = state.host.clone();
+    let host = state.host().await;
     let full = image_name(&host, name, reference);
     create_image(&client, &full, &digest, size, &media_type).await?;
 
@@ -228,7 +228,7 @@ async fn release(
     // With the host, because this is what will be deployed: a
     // reference with no host is one containerd reads as `<first
     // segment>` being a registry to dial.
-    let pushed = format!("{}/{name}:{reference}", state.host);
+    let pushed = format!("{}/{name}:{reference}", state.host().await);
     let services = services::all(&state.database, Some(&pusher.project.id)).await?;
     let mut recorded = false;
 

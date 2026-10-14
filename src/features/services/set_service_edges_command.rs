@@ -1,7 +1,6 @@
 use wabot::sqlite::SqliteDatabase;
 
 use crate::domain::entities::service::Service;
-use crate::infra::config::Config;
 use crate::infra::deploy::dns;
 use crate::infra::repositories::edges;
 
@@ -18,16 +17,12 @@ pub struct SetServiceEdges<'a> {
 }
 
 impl SetServiceEdges<'_> {
-    pub async fn run(
-        &self,
-        database: &SqliteDatabase,
-        config: &Config,
-    ) -> Result<Vec<String>, String> {
+    pub async fn run(&self, database: &SqliteDatabase) -> Result<Vec<String>, String> {
         if self.hostname.is_empty() {
             return Err("that names no hostname".into());
         }
 
-        let references: Vec<dns::Reference> = dns::references(database, config)
+        let references: Vec<dns::Reference> = dns::references(database)
             .await?
             .into_iter()
             .filter(|reference| self.chosen.contains(&reference.node_id))

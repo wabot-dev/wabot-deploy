@@ -381,7 +381,7 @@ impl Deployer {
     pub async fn sync_routes(&self) {
         if let Err(error) = routing::sync(
             &self.database,
-            crate::infra::node::settings::domain(&self.database, &self.config)
+            crate::infra::node::settings::domain(&self.database)
                 .await
                 .as_deref(),
             self.routes.as_ref(),
@@ -422,7 +422,7 @@ impl Deployer {
     }
 
     async fn write_hosts(&self) -> DeployResult<()> {
-        let domain = crate::infra::node::settings::domain(&self.database, &self.config).await;
+        let domain = crate::infra::node::settings::domain(&self.database).await;
         let data_dir = &self.config.node.data_dir;
 
         for project in crate::infra::repositories::projects::all(&self.database).await? {
@@ -985,9 +985,7 @@ impl Deployer {
                 service.slug.clone(),
                 format!("{}.{}", service.slug, project.slug),
             ];
-            if let Some(domain) =
-                crate::infra::node::settings::domain(&self.database, &self.config).await
-            {
+            if let Some(domain) = crate::infra::node::settings::domain(&self.database).await {
                 // First, so it is the certificate's common name: it is
                 // the one a public authority can sign, and the one a
                 // client outside this node would use.
@@ -1791,7 +1789,7 @@ impl Deployer {
             &self.database,
             service,
             self.primary_overlay(service).await.ok().flatten(),
-            crate::infra::node::settings::domain(&self.database, &self.config).await,
+            crate::infra::node::settings::domain(&self.database).await,
         )
         .await
         {
@@ -2157,7 +2155,7 @@ impl Deployer {
                 return;
             }
         };
-        let domain = crate::infra::node::settings::domain(&self.database, &self.config).await;
+        let domain = crate::infra::node::settings::domain(&self.database).await;
         if let Err(error) =
             crate::infra::deploy::standbys::dispatch(&self.database, service, primary, domain, also)
                 .await
@@ -2808,7 +2806,7 @@ impl Deployer {
     }
 
     async fn certificate_names(&self, project: &Project, service: &Service) -> Vec<String> {
-        certificate_names(&self.database, &self.config, project, service).await
+        certificate_names(&self.database, project, service).await
     }
 
     /// Put this copy's certificate in its volume, and make sure the
@@ -3741,7 +3739,6 @@ fn primary_port(ports: &[Port]) -> Option<u16> {
 /// wants a certificate for has to ask here too.
 pub async fn certificate_names(
     database: &SqliteDatabase,
-    config: &crate::infra::config::Config,
     project: &Project,
     service: &Service,
 ) -> Vec<String> {
@@ -3757,7 +3754,7 @@ pub async fn certificate_names(
         // once already and the failure was a client dialling a name no
         // certificate held.
         _ => {
-            let node_domain = crate::infra::node::settings::domain(database, config).await;
+            let node_domain = crate::infra::node::settings::domain(database).await;
             crate::infra::repositories::project_domain::domain_for(
                 database,
                 project,
@@ -3836,11 +3833,7 @@ fn cgroup_of(pid: u32) -> Option<String> {
 /// this node. Choosing a public authority for a database therefore costs
 /// the short names their verification — the page says so, and this is
 /// where it becomes true.
-pub async fn public_names_for(
-    database: &SqliteDatabase,
-    config: &crate::infra::config::Config,
-    key: &str,
-) -> Vec<String> {
+pub async fn public_names_for(database: &SqliteDatabase, key: &str) -> Vec<String> {
     let projects = crate::infra::repositories::projects::all(database)
         .await
         .unwrap_or_default();
@@ -3851,7 +3844,7 @@ pub async fn public_names_for(
         let Some(project) = projects.iter().find(|p| p.id == service.project_id) else {
             continue;
         };
-        let names = certificate_names(database, config, project, &service).await;
+        let names = certificate_names(database, project, &service).await;
         if names.first().map(String::as_str) != Some(key) {
             continue;
         }
@@ -3862,10 +3855,7 @@ pub async fn public_names_for(
     vec![key.to_string()]
 }
 
-pub async fn database_certificate_keys(
-    database: &SqliteDatabase,
-    config: &crate::infra::config::Config,
-) -> DeployResult<Vec<String>> {
+pub async fn database_certificate_keys(database: &SqliteDatabase) -> DeployResult<Vec<String>> {
     let projects = crate::infra::repositories::projects::all(database).await?;
     let mut keys = Vec::new();
     for service in services::all(database, None).await? {
@@ -3875,7 +3865,7 @@ pub async fn database_certificate_keys(
         let Some(project) = projects.iter().find(|p| p.id == service.project_id) else {
             continue;
         };
-        if let Some(primary) = certificate_names(database, config, project, &service)
+        if let Some(primary) = certificate_names(database, project, &service)
             .await
             .into_iter()
             .next()
