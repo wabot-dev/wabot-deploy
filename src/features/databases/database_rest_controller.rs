@@ -1071,6 +1071,18 @@ mod tests {
             ),
             "the row says where the volume comes from, wherever that is"
         );
+
+        // And the page says it too. The row always kept it, and the copy
+        // read exactly like a database made empty. Found on a VM node.
+        let body = console
+            .harness
+            .get("/projects/my-api/services/orders-from-away")
+            .header("cookie", &cookie)
+            .send()
+            .await
+            .body;
+        assert!(body.contains("Restored from"), "{body}");
+        assert!(body.contains("as far as the archived log went"), "{body}");
     }
 
     /// A moment nothing can reach is refused, with the reason on the page

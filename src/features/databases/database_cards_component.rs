@@ -430,6 +430,20 @@ pub fn database_card<'a>(
                 )</dd>
                 <dt>(t("Copies"))</dt>
                 <dd>(format!("{copies} ({standbys} read-only)"))</dd>
+                // The row has always kept both, and no page said either: a
+                // restored copy read exactly like a database made empty.
+                // Found on a VM node.
+                @if let Some(from) = &row.restored_from {
+                    <dt>(t("Restored from"))</dt>
+                    <dd class="mono">(from)</dd>
+                    <dt>(t("Up to"))</dt>
+                    <dd>(
+                        row.recovery_target
+                            .as_deref()
+                            .map(|moment| format!("{moment} UTC"))
+                            .unwrap_or_else(|| t("as far as the archived log went").to_string())
+                    )</dd>
+                }
             </dl>
             @if let Some(strings) = &strings {
                 (connection_block(strings, published))

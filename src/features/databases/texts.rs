@@ -33,6 +33,7 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
     ("Read pool", "Pool de lectura"),
     ("Recovers nothing", "No recupera nada"),
     ("Restore into a copy", "Restaurar en una copia"),
+    ("Restored from", "Restaurada desde"),
     ("Save name", "Guardar nombre"),
     ("Short name", "Nombre corto"),
     ("Stop publishing", "Dejar de publicar"),
@@ -49,7 +50,9 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
     ("This node is not keeping the write-ahead log, so a restore reaches the moment of a backup and no further. The switch is on the node's Backup tab.", "Este nodo no está guardando el log de escritura anticipada, así que una restauración llega al momento de un backup y no más allá. El interruptor está en la pestaña Backup del nodo."),
     ("This node signs it, so a client has to be given the authority before it can verify anything. A container gets it at /etc/wabot/ca.crt; anything else needs the file.", "Lo firma este nodo, así que a un cliente hay que darle la autoridad antes de que pueda verificar nada. Un contenedor la recibe en /etc/wabot/ca.crt; cualquier otra cosa necesita el fichero."),
     ("UTC, as the window above reads it: 2026-08-16 14:32. Empty means as far as the archived log goes, which is the most recent moment there is.", "UTC, como lo dice la ventana de arriba: 2026-08-16 14:32. Vacío significa hasta donde llegue el log archivado, que es el momento más reciente que hay."),
+    ("Up to", "Hasta"),
     ("Up to which moment", "Hasta qué momento"),
+    ("as far as the archived log went", "hasta donde llegaba el log archivado"),
 ];
 
 pub fn t(english: &'static str) -> &'static str {
