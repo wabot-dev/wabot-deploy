@@ -277,8 +277,30 @@ pub async fn stop(client: &Containerd, id: &str, grace: std::time::Duration) -> 
     }
 
     tracing::warn!(container = id, ?grace, "did not stop; killing");
-    kill(client, id, 9).await
+    kill(client, id, 9).await?;
+
+    // And waited for, because a signal is delivered, not obeyed on the
+    // spot. Returning here sent the caller straight to `Tasks.Delete`,
+    // which containerd refuses for a process still exiting — so a
+    // service redeployed while its container ignored SIGTERM ended
+    // `Exited 137` with "cannot delete a running process" on its row.
+    // Found on a VM node.
+    let deadline = std::time::Instant::now() + KILLED_EXIT;
+    while std::time::Instant::now() < deadline {
+        match status(client, id).await? {
+            Some(task) if task.running() => {
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await
+            }
+            _ => return Ok(()),
+        }
+    }
+    Ok(())
 }
+
+/// How long a SIGKILLed process gets to be reaped. The kernel does not
+/// negotiate; this only covers the moment between the signal and the
+/// shim noticing.
+const KILLED_EXIT: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// Send a signal to a container's main process.
 ///
