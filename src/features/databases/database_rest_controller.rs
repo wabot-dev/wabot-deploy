@@ -767,7 +767,7 @@ mod tests {
             project_id: &project_id,
             name: "orders",
             version: "17",
-            memory_limit: 64 * 1024 * 1024,
+            memory_limit: 128 * 1024 * 1024,
         }
         .run(&console.database)
         .await

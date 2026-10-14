@@ -45,7 +45,7 @@ pub fn render<'a>(page: &'a NewDatabase<'a>) -> impl Renderable + 'a {
 
             <label for="memory">(t("Memory"))</label>
             <select id="memory" name="memory">
-                @for rung in presets::LADDER {
+                @for rung in presets::LADDER.into_iter().filter(|rung| crate::domain::policies::postgres::initialises_in(*rung)) {
                     @if rung == DEFAULT_PRESET {
                         <option value=(rung.to_string()) selected>(presets::label(rung))</option>
                     } @else {

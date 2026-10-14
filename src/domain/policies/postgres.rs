@@ -527,11 +527,9 @@ pub fn environment(
 
 /// What `initdb` is told, when it can be told anything.
 ///
-/// The server's `-c` arguments never reach `initdb`, which runs with the
-/// stock 128 MB of shared buffers — so inside the smallest ceiling it was
-/// killed in its own post-bootstrap and the database never initialised.
-/// Found on a VM node. `--set` arrived in 16; 15 has no way to say it, and
-/// [`initialises_in`] keeps it out of a ceiling it cannot start in.
+/// The server's `-c` arguments never reach `initdb`, which otherwise runs
+/// its post-bootstrap with the stock 128 MB of shared buffers. `--set`
+/// arrived in 16.
 pub fn initdb_arguments(version: &str, memory_limit: u64) -> Option<String> {
     let major: u32 = version.parse().ok()?;
     (major >= 16).then(|| {
@@ -542,9 +540,21 @@ pub fn initdb_arguments(version: &str, memory_limit: u64) -> Option<String> {
     })
 }
 
-/// Whether `initdb` for this version fits in this ceiling.
-pub fn initialises_in(version: &str, memory_limit: u64) -> bool {
-    initdb_arguments(version, memory_limit).is_some() || memory_limit >= 128 * MB
+/// The smallest ceiling `initdb` finishes inside.
+///
+/// **Measured, and not the shared buffers.** In 64 MB it was killed in its
+/// post-bootstrap with them at 16 MB, and the retry after a restart got
+/// through: it writes the catalogs through the page cache, the cgroup
+/// counts that, and there is no swap to lean on — so whether it finishes
+/// is a race with writeback. A size that starts a database on its second
+/// attempt, or its fifth, is not one to offer. A server already
+/// initialised is a different load; this is about the first start. Found
+/// on a VM node.
+pub const INITDB_FLOOR: u64 = 128 * MB;
+
+/// Whether a new database can be initialised inside this ceiling.
+pub fn initialises_in(memory_limit: u64) -> bool {
+    memory_limit >= INITDB_FLOOR
 }
 
 /// Who may connect, from where, and how.
@@ -1181,25 +1191,24 @@ mod tests {
         assert!(!script.contains("PGPASSWORD"), "{script}");
     }
 
-    /// The smallest preset initialises: `initdb` is given the preset's
-    /// shared buffers where it can be, and refused where it cannot.
+    /// `initdb` is given the preset's shared buffers where it can be,
+    /// and a new database is not started in a ceiling `initdb` does not
+    /// finish inside.
     #[test]
-    fn initdb_is_given_the_presets_shared_buffers() {
-        let small = 64 * MB;
+    fn initdb_is_given_the_presets_shared_buffers_and_room_to_finish() {
         assert_eq!(
-            initdb_arguments("17", small).as_deref(),
-            Some("--set=shared_buffers=16MB")
+            initdb_arguments("17", 128 * MB).as_deref(),
+            Some("--set=shared_buffers=32MB")
         );
-        assert_eq!(initdb_arguments("15", small), None);
-        assert!(initialises_in("16", small));
-        assert!(!initialises_in("15", small));
-        assert!(initialises_in("15", 128 * MB));
+        assert_eq!(initdb_arguments("15", 128 * MB), None);
         assert_eq!(
-            environment("u", "p", "d", "18", small)
+            environment("u", "p", "d", "18", 128 * MB)
                 .get("POSTGRES_INITDB_ARGS")
                 .map(String::as_str),
-            Some("--set=shared_buffers=16MB")
+            Some("--set=shared_buffers=32MB")
         );
+        assert!(!initialises_in(64 * MB));
+        assert!(initialises_in(128 * MB));
     }
 
     /// The mistake the whole table exists to prevent: `shared_buffers`

@@ -35,12 +35,13 @@ impl CreateDatabase<'_> {
                 "that is not one of the sizes on offer".into(),
             ));
         }
-        if !postgres::initialises_in(self.version, self.memory_limit) {
+        if !postgres::initialises_in(self.memory_limit) {
             return Err(PlatformError::Refused(format!(
-                "PostgreSQL {} cannot be initialised in {}: before 16 its initdb takes no \
-                 setting for its 128 MB of shared buffers — choose 128 MB, or a newer version",
-                self.version,
-                presets::label(self.memory_limit)
+                "a database is not started in {}: initdb writes its catalogs through the \
+                 page cache, which the ceiling counts, and the kernel can stop it before it \
+                 finishes — choose {} or more",
+                presets::label(self.memory_limit),
+                presets::label(postgres::INITDB_FLOOR)
             )));
         }
 
