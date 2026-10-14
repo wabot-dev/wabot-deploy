@@ -36,8 +36,11 @@ pub async fn run(config: Config, username: &str) -> anyhow::Result<i32> {
             println!();
             println!("  {password}");
             println!();
-            println!("  Sign in at {url}, then change it if you want one you can");
-            println!("  remember. Nothing else was touched.");
+            // Not "change it once you are in": the console has no form
+            // for that, and this said it did. Found on a VM node.
+            println!("  Sign in at {url}, and keep it somewhere safe — there is no");
+            println!("  form to change it, and this command issues another. Nothing");
+            println!("  else was touched.");
             println!();
             Ok(0)
         }
