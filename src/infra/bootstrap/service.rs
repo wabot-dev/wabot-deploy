@@ -200,11 +200,30 @@ pub fn another_instance() -> Option<u32> {
         };
         let running = exe.to_string_lossy();
         let running = running.strip_suffix(" (deleted)").unwrap_or(&running);
-        if Path::new(running).file_name().and_then(|n| n.to_str()) == Some(name) {
+        if Path::new(running).file_name().and_then(|n| n.to_str()) != Some(name) {
+            continue;
+        }
+        let cmdline = std::fs::read(format!("/proc/{pid}/cmdline")).unwrap_or_default();
+        let arguments: Vec<&str> = cmdline
+            .split(|byte| *byte == 0)
+            .filter_map(|argument| std::str::from_utf8(argument).ok())
+            .collect();
+        if holds_the_node(&arguments) {
             return Some(pid);
         }
     }
     None
+}
+
+/// Whether a `wabot-deploy` process with these arguments holds the node.
+///
+/// Every copy of a service with timestamped logs has a `log-writer` of
+/// its own, a child of the container's shim that outlives the node by
+/// design — and it was found here and named as the node, so `restore-node`
+/// refused on a stopped node for as long as one container ran. Found on a
+/// VM node. It touches a log file and nothing else.
+fn holds_the_node(arguments: &[&str]) -> bool {
+    !arguments.contains(&"log-writer")
 }
 
 /// Is there anything here that can keep the node running?
@@ -337,6 +356,21 @@ pub fn unit_path() -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_log_writer_does_not_hold_the_node() {
+        assert!(!holds_the_node(&[
+            "/usr/local/bin/wabot-deploy",
+            "log-writer",
+            "/var/lib/wabot-deploy/logs/shop.web.log",
+        ]));
+        assert!(holds_the_node(&[
+            "/usr/local/bin/wabot-deploy",
+            "--config",
+            "/etc/wabot-deploy/config.toml",
+            "serve",
+        ]));
+    }
 
     const CONFIG: &str = "/etc/wabot-deploy/config.toml";
 
