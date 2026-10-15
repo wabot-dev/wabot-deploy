@@ -336,7 +336,9 @@ containerd, CNI, the registry a push lands in — on
 it as a browser would, with a session made through `/setup` and the
 token `install` prints; push with `skopeo` inside the VM. Names resolve
 through the VM's `/etc/hosts`, which is what a private network's DNS
-would be.
+would be. `scripts/vm_console.py` is that browser — scripting off, every
+form read off its page — and `docs/vm-walk.md` §7 is how the last walk
+set the VM up, including the trap that reached Let's Encrypt.
 
 It found more than twenty breaks in its first afternoon, none of them
 visible to the tests, and most were the same thing: a sentence or a form
@@ -450,6 +452,16 @@ happened:
   kernel; the port is not.
 - Health and failover across the upstreams of one name. Today a dead
   replica keeps its share of the traffic until the owner notices.
+- A container that dies is never started again: `reconcile` runs once,
+  at boot. It needs a restart policy, which is a decision before it is
+  code.
+- A service created under an organisation's quota runs with no ceiling.
+- A running container no row claims — what a restore from an older
+  backup leaves — is on no page.
+
+All three, and the rest of what the VM walk of 2026-10-14 left, with how
+to reproduce each and how to re-test what it fixed:
+[`docs/vm-walk.md`](docs/vm-walk.md).
 
 **Timestamped logs are a switch, and the switch shows its price.**
 `file://` is the default: containerd appends the container's bytes and no
