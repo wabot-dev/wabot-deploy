@@ -305,11 +305,28 @@ async fn what_nothing_claims(state: &Sources<'_>, concerns: &mut Vec<ConcernResp
     if leftovers.is_empty() {
         return;
     }
+    // Which copies they were, said here. The link lands on the node's
+    // disk card, which has totals and no list — so the card said "7" and
+    // "look" at a page where none of the seven was named. Found on a VM
+    // node after restoring an older backup over newer services.
+    let mut owners: Vec<String> = leftovers
+        .iter()
+        .filter_map(|(_, path)| path.file_name()?.to_str().map(str::to_string))
+        .map(|name| match name.split_once(".log") {
+            Some((id, _)) => id.to_string(),
+            None => name,
+        })
+        .collect();
+    owners.sort();
+    owners.dedup();
     concerns.push(ConcernResponse {
         weight: Weight::Notice,
         what: "Storage nothing claims".into(),
         which: format!("{}", leftovers.len()),
-        why: String::new(),
+        why: format!(
+            "{} — `wabot-deploy clean` names each one, and `clean --apply` removes all but the data",
+            owners.join(", ")
+        ),
         // This node's own page, which is where the disk card is. `/nodes`
         // is the list of machines and says nothing about storage, so the
         // link answered "see" with a page that had nothing to see —

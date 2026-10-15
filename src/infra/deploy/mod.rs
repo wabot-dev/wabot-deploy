@@ -1997,9 +1997,14 @@ impl Deployer {
     /// Bring the node's containers in line with its rows.
     ///
     /// Runs at startup. Only ever *starts* things: a container running
-    /// that no row claims is left alone and reported, because deleting
-    /// something the node does not understand is how a reconciler
-    /// destroys data.
+    /// that no row claims is left alone, because deleting something the
+    /// node does not understand is how a reconciler destroys data.
+    ///
+    /// **Left alone, and not reported** — this said "and reported", and
+    /// nothing does. The files it writes beside one surface as storage
+    /// nothing claims, named by container; the running process itself is
+    /// on no page. Found on a VM node restored from an older backup, with
+    /// two containers from after it still running.
     pub async fn reconcile(&self) -> DeployResult<usize> {
         let services = services::all(&self.database, None).await?;
         let projects = crate::infra::repositories::projects::all(&self.database).await?;
