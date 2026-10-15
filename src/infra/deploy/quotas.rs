@@ -162,7 +162,14 @@ pub async fn admits(
     // A quota only means something if the things under it have ceilings.
     // Named service by service, because "some service has no limit" is
     // not something anybody can act on.
-    if rooms.memory.known || rooms.cpu.known {
+    //
+    // **Except to the request that gives this one a ceiling**, which is
+    // the correction the refusal asks for. Two services without one each
+    // named the other, so neither could be given one through any door —
+    // found on a VM node — and the test that said a ceiling clears the
+    // way had set it through the repository, which no page can.
+    let gives_itself_one = memory.is_some() && service.memory_limit.is_none();
+    if (rooms.memory.known || rooms.cpu.known) && !gives_itself_one {
         if let Some(offender) = limitless(database, project, service).await? {
             return Ok(Some(format!(
                 "{name} has a quota, so its services need a ceiling — {offender} has none"
@@ -372,6 +379,39 @@ mod tests {
         assert!(refusal.contains("512 MB to promise"), "{refusal}");
     }
 
+    /// Two services without a ceiling under one quota can each be given
+    /// one, through the same question every page asks. Each refusal
+    /// named the other, so neither could. Found on a VM node.
+    #[tokio::test]
+    async fn the_ceiling_a_quota_asks_for_can_always_be_given() {
+        let (database, project, _) = tenant_with_a_service().await;
+        let mut loose = Vec::new();
+        for name in ["one", "two"] {
+            loose.push(
+                crate::infra::repositories::services::create(
+                    &database,
+                    &project.id,
+                    name,
+                    "hub.example/theirs/worker@sha256:b",
+                    &[],
+                )
+                .await
+                .expect("service"),
+            );
+        }
+
+        for service in &loose {
+            assert_eq!(
+                admits(&database, &project, service, Some(32 * MB), None, None, 1)
+                    .await
+                    .expect("asked"),
+                None,
+                "{} could not be given the ceiling the quota asks for",
+                service.slug
+            );
+        }
+    }
+
     /// A quota demands ceilings, and the refusal names the service.
     ///
     /// Unlike a node, which cannot refuse a limitless container that is
@@ -380,7 +420,17 @@ mod tests {
     /// floor and the page would show it as a total.
     #[tokio::test]
     async fn a_quota_demands_that_its_services_have_ceilings() {
-        let (database, project, service) = tenant_with_a_service().await;
+        let (database, project, mut service) = tenant_with_a_service().await;
+        // Already under one, and asking for more: what the rule exists to
+        // refuse while something beside it has none.
+        crate::infra::repositories::services::set_memory_limit(
+            &database,
+            &service.id,
+            Some(32 * MB),
+        )
+        .await
+        .expect("ceiling");
+        service.memory_limit = Some(32 * MB);
         let loose = crate::infra::repositories::services::create(
             &database,
             &project.id,
