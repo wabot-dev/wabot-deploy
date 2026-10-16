@@ -2482,6 +2482,19 @@ mod tests {
         let console = Console::new().await;
         let cookie = console.signed_in().await;
         let service = placed_service(&console, &cookie).await;
+        // This node takes no copies, so the other machine is the only
+        // place left. Said rather than assumed: on Linux this node
+        // measures its own memory and is the emptiest candidate, so the
+        // copy came home instead — the test passed only where the
+        // machine running it cannot measure itself, which is a Mac, and
+        // failed on every Linux CI run.
+        crate::infra::network::capability::set_provides(
+            &console.database,
+            crate::domain::values::capability::Capability::Host,
+            false,
+        )
+        .await
+        .expect("this node takes no copies");
 
         for (id, name) in [("nd-going0001", "leaving"), ("nd-staying001", "staying")] {
             crate::infra::network::save(
