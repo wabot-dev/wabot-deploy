@@ -452,6 +452,9 @@ happened:
   kernel; the port is not.
 - Health and failover across the upstreams of one name. Today a dead
   replica keeps its share of the traffic until the owner notices.
+- Projects — and so organisations — are not isolated on the network:
+  `FORWARD` accepts everything, so one tenant's container reaches
+  another's services and the operator's databases. Measured 2026-10-15.
 - A container that dies is never started again: `reconcile` runs once,
   at boot. It needs a restart policy, which is a decision before it is
   code.
@@ -459,7 +462,7 @@ happened:
 - A running container no row claims — what a restore from an older
   backup leaves — is on no page.
 
-All three, and the rest of what the VM walk of 2026-10-14 left, with how
+All four, and the rest of what the VM walk of 2026-10-14 left, with how
 to reproduce each and how to re-test what it fixed:
 [`docs/vm-walk.md`](docs/vm-walk.md).
 

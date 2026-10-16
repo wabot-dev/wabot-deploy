@@ -170,6 +170,57 @@ not (that was the bug); they are worth fixing by hand on the image tab.
 
 ## 2. Open faults
 
+### 2.0 Organisations are not isolated from each other on the network
+
+**The one to read before offering the node to anybody you do not trust.**
+
+**What happens.** Measured on the VM on 2026-10-15: from inside an
+organisation's container (`site.www`, `10.42.2.4`), the node operator's
+own service answered over HTTP (`wget http://10.42.1.6/` → nginx's page)
+and the operator's database accepted a connection on `10.42.1.254:5432`.
+The node's own `FORWARD` policy is `ACCEPT` with no rules. It was first
+measured on node-1 on 2026-08-25 between two projects, and it still holds
+between organisations. Pages, projects, people and certificates are
+separated by the console; packets are not.
+
+**Why.** Each project gets its own bridge (`wd-<n>`), and nothing stops
+the node from routing between them: `ip_forward=1`, no CNI `firewall`
+plugin in the chain, no `FORWARD` rules. Worse for databases: the
+cross-bridge packet is masqueraded, so it arrives from the target
+bridge's own gateway (`10.42.<n>.1`), which is inside the
+`hostssl … 10.42.<n>.0/24` range the node writes into `pg_hba.conf` —
+only the password still stands. And `wabot0` is a `/24`, so a container
+also reaches the overlay and the other nodes' consoles. The comments in
+`runtime/network.rs` and `deploy/hosts.rs` claim the bridges are
+separate L2 domains with nothing routing between them; that is false.
+
+**To build.** Drop traffic between project bridges, and from bridges to
+the overlay, except what the node itself forwards (the edge, published
+ports, a standby dialling its primary over the overlay):
+
+- the CNI `firewall` plugin (already in the plugins tarball the node
+  downloads) in each project's conflist, or
+- explicit `FORWARD` rules installed by the node at boot: accept
+  established, accept bridge → uplink, drop `wd-*` → `wd-*` and
+  `wd-*` → `wabot0`, with the exceptions above as narrower accepts;
+- `wabot0` as `/32` with explicit routes per peer.
+
+Then correct the two comments.
+
+**Reproduce on the VM.** Two projects (or a project and an organisation's),
+one service each:
+
+```sh
+scripts/vm.sh root ctr -n wabot t exec --exec-id x <their-project>.<service> \
+  wget -qO- -T 3 http://<address of a container in your project>/
+scripts/vm.sh root ctr -n wabot t exec --exec-id y <their-project>.<service> \
+  nc -z -w 3 <address of your database> 5432 && echo open
+```
+
+**Fixed looks like.** Both time out; the same commands inside one project
+still succeed; a remote standby still streams; `https://<a service's
+hostname>/` still answers through the edge.
+
 ### 2.1 A container that dies is never started again
 
 **What happens.** `kill -9` a service's process, or let it crash or be
