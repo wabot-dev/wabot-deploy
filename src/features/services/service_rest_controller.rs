@@ -1711,7 +1711,7 @@ mod tests {
             .header("cookie", &cookie)
             .form(&[
                 ("name", "orders"),
-                ("version", "17"),
+                ("postgres_version", "17"),
                 ("memory", "67108864"),
             ])
             .send()
@@ -3587,6 +3587,63 @@ mod tests {
     /// And it is on the page, with the button that takes it.
     /// A size the ladder does not have is saved, and a database's is not.
     ///
+    /// MySQL has no read-only copies, and under 256 MB it is killed
+    /// however it is tuned. Both are refused at the POST, which is the
+    /// check that counts: the page offering neither is a courtesy.
+    #[tokio::test]
+    async fn a_mysql_database_stays_one_copy_and_above_its_floor() {
+        let console = Console::new().await;
+        let cookie = console.signed_in().await;
+        service(&console, &cookie).await;
+        let project = crate::infra::repositories::projects::find(&console.database, "my-api")
+            .await
+            .expect("query")
+            .expect("made");
+        let (made, _) = crate::features::databases::create_database_command::CreateDatabase {
+            project_id: &project.id,
+            name: "Orders",
+            engine: crate::domain::entities::database::Engine::Mysql,
+            version: "8.4",
+            memory_limit: 256 * 1024 * 1024,
+        }
+        .run(&console.database)
+        .await
+        .expect("database");
+        let base = format!("/projects/my-api/services/{}", made.slug);
+
+        let response = console
+            .harness
+            .post(&format!("{base}/placement"))
+            .header("cookie", &cookie)
+            .form(&[("replicas", "2"), ("new-on", "")])
+            .send()
+            .await;
+        assert!(
+            response
+                .header("location")
+                .unwrap_or_default()
+                .contains("error="),
+            "a second copy was not refused"
+        );
+        let copies = crate::infra::repositories::replicas::of_service(&console.database, &made.id)
+            .await
+            .expect("query");
+        assert_eq!(copies.len(), 1);
+
+        console
+            .harness
+            .post(&format!("{base}/memory"))
+            .header("cookie", &cookie)
+            .form(&[("memory", "134217728"), ("cpu", "")])
+            .send()
+            .await;
+        let after = services::find(&console.database, &made.id)
+            .await
+            .expect("query")
+            .expect("still there");
+        assert_eq!(after.memory_limit, Some(256 * 1024 * 1024));
+    }
+
     /// The select was never the restriction: `services::set_memory_limit`
     /// refused anything off the ladder, so a hand-made POST was refused
     /// too. That check is a floor now — a machine truth, since below a few
@@ -3684,6 +3741,7 @@ mod tests {
         let made = crate::features::databases::create_database_command::CreateDatabase {
             project_id: &project.id,
             name: "Orders",
+            engine: crate::domain::entities::database::Engine::Postgres,
             version: "17",
             memory_limit: crate::domain::policies::presets::LADDER[1],
         }
@@ -4214,6 +4272,7 @@ mod tests {
         let made = crate::features::databases::create_database_command::CreateDatabase {
             project_id: &project.id,
             name: "Orders",
+            engine: crate::domain::entities::database::Engine::Postgres,
             version: "17",
             memory_limit: crate::domain::policies::presets::LADDER[1],
         }
@@ -4495,6 +4554,7 @@ mod tests {
         let (database, _) = crate::features::databases::create_database_command::CreateDatabase {
             project_id: &project.id,
             name: "orders",
+            engine: crate::domain::entities::database::Engine::Postgres,
             version: "17",
             memory_limit: 256 * 1024 * 1024,
         }
@@ -4982,6 +5042,7 @@ mod tests {
         crate::features::databases::create_database_command::CreateDatabase {
             project_id: &project.id,
             name: "orders",
+            engine: crate::domain::entities::database::Engine::Postgres,
             version: "17",
             memory_limit: 256 * 1024 * 1024,
         }

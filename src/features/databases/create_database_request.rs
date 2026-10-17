@@ -16,6 +16,8 @@ pub struct CreateDatabaseRequest {
     #[max_length(60)]
     pub name: String,
     #[serde(default)]
+    pub engine: String,
+    #[serde(default)]
     pub version: String,
     #[serde(default)]
     pub memory: String,

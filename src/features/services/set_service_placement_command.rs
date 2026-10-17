@@ -3,7 +3,7 @@ use std::collections::BTreeSet;
 use wabot::sqlite::SqliteDatabase;
 
 use crate::domain::entities::project::Project;
-use crate::domain::entities::service::Service;
+use crate::domain::entities::service::{Kind, Service};
 use crate::infra::deploy::quotas;
 use crate::infra::deploy::Deployer;
 use crate::infra::repositories::replicas;
@@ -48,6 +48,20 @@ pub struct SetServicePlacement<'a> {
 
 impl SetServicePlacement<'_> {
     pub async fn run(&self, on: On<'_>) -> Result<(), String> {
+        if self.service.kind == Kind::Mysql {
+            let moved = self
+                .fields
+                .iter()
+                .any(|(key, node)| key.starts_with("slot-") && !node.trim().is_empty());
+            if self.replicas.trim().parse::<u32>().unwrap_or(1) != 1
+                || !self.on.trim().is_empty()
+                || moved
+            {
+                return Err("a MySQL database runs as one copy, on this node: \
+                     read-only copies are not built for it yet"
+                    .into());
+            }
+        }
         let (database, deployer) = (on.database, on.deployer);
         let placements = replicas::of_service(database, &self.service.id)
             .await

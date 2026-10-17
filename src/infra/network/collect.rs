@@ -1243,6 +1243,14 @@ async fn hold_standby(
     authority: &str,
     standby: errand::Standby,
 ) -> Result<(), String> {
+    if crate::domain::entities::database::Engine::parse(&standby.engine)
+        != crate::domain::entities::database::Engine::Postgres
+    {
+        return Err(format!(
+            "a copy of a {} database is not something this node can hold",
+            standby.engine
+        ));
+    }
     if standby.slots.contains(&standby.primary_slot) {
         // The one instruction this node must refuse rather than obey.
         // A second primary is two databases taking writes under one
@@ -2426,6 +2434,54 @@ mod tests {
                 .is_empty(),
             "it was refused before anything was written"
         );
+    }
+
+    /// MySQL has no read-only copies yet, so a node that sends a copy of
+    /// one is a mistake on the sending side: it would be deployed here as
+    /// a standby this node cannot make.
+    #[tokio::test]
+    async fn an_errand_for_a_copy_of_a_mysql_database_is_refused() {
+        let database = crate::infra::db::open_in_memory().await.expect("open");
+        let container = Container::new();
+        crate::infra::network::capability::grant(
+            &database,
+            "nd-a",
+            &[crate::domain::values::capability::Capability::Store],
+        )
+        .await
+        .expect("grant");
+
+        let error = carry_out(
+            &database,
+            &Config::default(),
+            &container,
+            "nd-a",
+            Errand {
+                id: "er-1".into(),
+                kind: Kind::Database,
+                payload: serde_json::json!({
+                    "project": "shared", "service": "orders",
+                    "image": "docker.io/library/mysql:8.4",
+                    "registry": "docker.io",
+                    "memory_limit": 268435456u64,
+                    "engine": "mysql", "version": "8.4",
+                    "database_name": "orders", "admin_user": "orders",
+                    "admin_password": "a", "replication_user": "r",
+                    "replication_password": "b",
+                    "primary": "10.42.0.1:30002",
+                    "slots": [2],
+                    "primary_slot": 1,
+                }),
+            },
+        )
+        .await
+        .expect_err("refused");
+
+        assert!(error.contains("mysql"), "{error}");
+        assert!(services::all(&database, None)
+            .await
+            .expect("services")
+            .is_empty());
     }
 
     /// Keeping somebody's data is a different favour from running

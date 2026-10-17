@@ -26,7 +26,7 @@ pub async fn run(
         return Err("you cannot deploy in this project".into());
     }
 
-    // Blank is not "no ceiling" here. An unbounded Postgres on a node
+    // Blank is not "no ceiling" here. An unbounded database on a node
     // with one core is the node, so the form's empty answer is the
     // form's default answer.
     let memory_limit = crate::domain::policies::presets::parse(&asked.memory)?
@@ -35,6 +35,7 @@ pub async fn run(
     let (service, _) = crate::features::databases::create_database_command::CreateDatabase {
         project_id: &project.id,
         name: &asked.name,
+        engine: crate::domain::entities::database::Engine::parse(&asked.engine),
         version: &asked.version,
         memory_limit,
     }

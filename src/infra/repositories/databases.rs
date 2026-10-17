@@ -145,6 +145,7 @@ mod tests {
         let (service, row) = CreateDatabase {
             project_id: &project_id,
             name: "Orders",
+            engine: crate::domain::entities::database::Engine::Postgres,
             version: "17",
             memory_limit: 128 * 1024 * 1024,
         }
@@ -188,6 +189,81 @@ mod tests {
         assert_eq!(row.primary_slot, 1);
     }
 
+    #[tokio::test]
+    async fn a_mysql_database_is_made_with_its_own_image_volume_and_port() {
+        let (database, project_id) = project().await;
+        let (service, row) = CreateDatabase {
+            project_id: &project_id,
+            name: "Orders",
+            engine: Engine::Mysql,
+            version: "8.4",
+            memory_limit: 256 * 1024 * 1024,
+        }
+        .run(&database)
+        .await
+        .expect("created");
+
+        assert_eq!(service.kind, Kind::Mysql);
+        assert_eq!(service.image, "docker.io/library/mysql:8.4");
+        let volumes = volumes::of_service(&database, &service.id)
+            .await
+            .expect("volumes");
+        assert_eq!(volumes[0].path, crate::domain::policies::mysql::DATA_MOUNT);
+        let ports = ports::of_service(&database, &service.id)
+            .await
+            .expect("ports");
+        assert_eq!(ports[0].container_port, 3306);
+
+        let stored = of_service(&database, &service.id)
+            .await
+            .expect("query")
+            .expect("there");
+        assert_eq!(stored, row);
+        assert_eq!(stored.engine, Engine::Mysql);
+        assert_eq!(stored.admin_user, "orders");
+    }
+
+    #[tokio::test]
+    async fn each_engine_refuses_the_sizes_it_does_not_start_in() {
+        let mb = 1024 * 1024;
+        for (engine, version, refused, taken) in [
+            (Engine::Postgres, "17", 64 * mb, 128 * mb),
+            (Engine::Mysql, "8.4", 128 * mb, 256 * mb),
+        ] {
+            let (database, project_id) = project().await;
+            let ask = |memory_limit| CreateDatabase {
+                project_id: &project_id,
+                name: "orders",
+                engine,
+                version,
+                memory_limit,
+            };
+            let error = ask(refused).run(&database).await.expect_err("refused");
+            assert!(error.to_string().contains("or more"), "{error}");
+            assert!(services::all(&database, Some(&project_id))
+                .await
+                .expect("services")
+                .is_empty());
+            ask(taken).run(&database).await.expect("taken");
+        }
+    }
+
+    #[tokio::test]
+    async fn an_engine_this_node_does_not_offer_is_refused() {
+        let (database, project_id) = project().await;
+        let error = CreateDatabase {
+            project_id: &project_id,
+            name: "orders",
+            engine: Engine::Unknown,
+            version: "17",
+            memory_limit: 256 * 1024 * 1024,
+        }
+        .run(&database)
+        .await
+        .expect_err("refused");
+        assert!(error.to_string().contains("engine"), "{error}");
+    }
+
     /// The address a connection string names cannot move when the
     /// container is recreated, so it is allocated when the database is
     /// made rather than when it first starts.
@@ -197,6 +273,7 @@ mod tests {
         let (service, _) = CreateDatabase {
             project_id: &project_id,
             name: "orders",
+            engine: crate::domain::entities::database::Engine::Postgres,
             version: "17",
             memory_limit: 128 * 1024 * 1024,
         }
@@ -220,6 +297,7 @@ mod tests {
         let (service, made) = CreateDatabase {
             project_id: &project_id,
             name: "orders",
+            engine: crate::domain::entities::database::Engine::Postgres,
             version: "16",
             memory_limit: 256 * 1024 * 1024,
         }
@@ -268,6 +346,7 @@ mod tests {
         let (service, _) = CreateDatabase {
             project_id: &project_id,
             name: "orders",
+            engine: crate::domain::entities::database::Engine::Postgres,
             version: "17",
             memory_limit: 256 * 1024 * 1024,
         }
@@ -346,6 +425,7 @@ mod tests {
         let (service, _) = CreateDatabase {
             project_id: &project_id,
             name: "orders",
+            engine: crate::domain::entities::database::Engine::Postgres,
             version: "17",
             memory_limit: 256 * 1024 * 1024,
         }
@@ -406,6 +486,7 @@ mod tests {
         let error = CreateDatabase {
             project_id: &project_id,
             name: "orders",
+            engine: crate::domain::entities::database::Engine::Postgres,
             version: "9.6",
             memory_limit: 128 * 1024 * 1024,
         }
@@ -429,6 +510,7 @@ mod tests {
         assert!(CreateDatabase {
             project_id: &project_id,
             name: "orders",
+            engine: crate::domain::entities::database::Engine::Postgres,
             version: "17",
             memory_limit: 100,
         }
@@ -446,6 +528,7 @@ mod tests {
         let (_, row) = CreateDatabase {
             project_id: &project_id,
             name: "orders",
+            engine: crate::domain::entities::database::Engine::Postgres,
             version: "17",
             memory_limit: 128 * 1024 * 1024,
         }
@@ -467,6 +550,14 @@ mod tests {
         assert_eq!(Engine::parse(""), Engine::Unknown);
     }
 
+    #[test]
+    fn an_engine_reads_back_as_what_it_was_written_as() {
+        for engine in Engine::OFFERED {
+            assert_eq!(Engine::parse(engine.as_str()), engine);
+            assert_eq!(engine.kind().engine(), Some(engine));
+        }
+    }
+
     /// Deleting the service takes the engine's row, its volume rows and
     /// its ports. It does not take the bytes — that is `volumes::discard`,
     /// and its only caller is a confirmation somebody typed.
@@ -476,6 +567,7 @@ mod tests {
         let (service, _) = CreateDatabase {
             project_id: &project_id,
             name: "orders",
+            engine: crate::domain::entities::database::Engine::Postgres,
             version: "17",
             memory_limit: 128 * 1024 * 1024,
         }

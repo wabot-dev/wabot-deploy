@@ -487,7 +487,10 @@ pub fn render<'a>(page: &'a ServiceSettings<'a>) -> impl Renderable + 'a {
                         @if service.kind.is_managed() {
                             <select id="memory-size" name="memory">
                                 <option value="">(t("no ceiling"))</option>
-                                @for rung in crate::domain::policies::presets::LADDER {
+                                @for rung in crate::domain::policies::presets::LADDER.into_iter().filter(|rung| {
+                                    service.kind != crate::domain::entities::service::Kind::Mysql
+                                        || *rung >= crate::domain::policies::mysql::FLOOR
+                                }) {
                                     @if Some(rung) == service.memory_limit {
                                         <option value=(rung.to_string()) selected>(
                                             crate::domain::policies::presets::label(rung)

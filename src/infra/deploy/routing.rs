@@ -500,6 +500,7 @@ mod tests {
         let (service, _) = crate::features::databases::create_database_command::CreateDatabase {
             project_id: &project.id,
             name: "orders",
+            engine: crate::domain::entities::database::Engine::Postgres,
             version: "17",
             memory_limit: 256 * 1024 * 1024,
         }

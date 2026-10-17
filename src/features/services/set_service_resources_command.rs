@@ -3,8 +3,8 @@ use wabot::sqlite::SqliteDatabase;
 use crate::domain::entities::project::Project;
 use crate::infra::deploy::Deployer;
 
-use crate::domain::entities::service::Service;
-use crate::domain::policies::presets;
+use crate::domain::entities::service::{Kind, Service};
+use crate::domain::policies::{mysql, presets};
 use crate::infra::deploy::quotas;
 use crate::infra::repositories::replicas;
 use crate::infra::repositories::services;
@@ -32,6 +32,12 @@ impl SetServiceResources<'_> {
             true => presets::parse(&self.asked.memory),
             false => presets::parse_size(&self.asked.memory),
         }?;
+        if self.service.kind == Kind::Mysql && memory.is_some_and(|memory| memory < mysql::FLOOR) {
+            return Err(format!(
+                "MySQL is killed below {} however it is tuned, so that is the smallest size it takes",
+                presets::label(mysql::FLOOR)
+            ));
+        }
         let cpu = presets::parse_cores(&self.asked.cpu)?;
         let disk = presets::parse_size(&self.asked.disk)?;
 

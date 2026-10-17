@@ -414,8 +414,8 @@ A separate subject, with its own documents and its own decisions:
 - [`docs/network.md`](docs/network.md) — the plan and the record for
   enrolment, the overlay, errands, capabilities, edges, the census and
   node management. **Read its "What it is for" before the phases.**
-- [`docs/databases.md`](docs/databases.md) — managed PostgreSQL on top
-  of `service` and `replica`.
+- [`docs/databases.md`](docs/databases.md) — managed PostgreSQL and
+  MySQL on top of `service` and `replica`.
 - [`docs/naming.md`](docs/naming.md) — how a name is derived and which
   authority can sign it.
 
@@ -461,6 +461,10 @@ happened:
 - A service created under an organisation's quota runs with no ceiling.
 - A running container no row claims — what a restore from an older
   backup leaves — is on no page.
+- MySQL is one copy on its own node: no read-only copies, nothing across
+  nodes, and a restore reaches the moment of a backup. The grants the
+  replica phase needs are already on every one — `docs/databases.md`,
+  "MySQL".
 
 All four, and the rest of what the VM walk of 2026-10-14 left, with how
 to reproduce each and how to re-test what it fixed:

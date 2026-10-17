@@ -895,7 +895,7 @@ pub async fn restore_one(
             if !path
                 .join("volumes")
                 .join(&container)
-                .join("base.tar.gz")
+                .join(row.engine.backup_file())
                 .exists()
             {
                 return Err(NotRestored::HoldsNoCopy(path));
@@ -915,7 +915,7 @@ pub async fn restore_one(
                 .filter(|(path, _)| {
                     path.join("volumes")
                         .join(&container)
-                        .join("base.tar.gz")
+                        .join(row.engine.backup_file())
                         .exists()
                 })
                 .collect();
@@ -974,6 +974,10 @@ pub async fn restore_one(
         }
     };
 
+    // Only Postgres replays to a moment. A MySQL copy is the backup as it
+    // was taken, and a row saying otherwise would be a promise.
+    let target =
+        target.filter(|_| row.engine == crate::domain::entities::database::Engine::Postgres);
     let name = into
         .map(str::to_string)
         .unwrap_or_else(|| format!("{}-restored", source.slug));

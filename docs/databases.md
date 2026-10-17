@@ -854,3 +854,211 @@ be a way to write anywhere on the disk.
 naming *one specific* remote backup for one database is not possible —
 the search picks the newest that can reach the moment. `restore-node
 --from s3://…` names one and now fetches it correctly.
+
+## MySQL
+
+Asked for on 2026-10-15, and scoped by Jorge to **one primary and its
+backups**: created from the console, sized from the ladder, TLS on its
+own name, a connection string, the fixed address, a published port, a
+nightly backup, and a restore into a copy. Read-only copies, copies on
+another node and point-in-time recovery are refused with a sentence each,
+and are the next phase.
+
+### The promise at the top of this document
+
+"A table of numbers and two strings" was half right. The numbers are a
+table (`policies::mysql::tuning`) and most of what Postgres needed — the
+volume, the ceiling, the address, the certificate, the published port,
+the backup schedule — took the second engine without a change. What did
+not was everything that talks to the engine itself, and each of these is
+its own code:
+
+| | Postgres | MySQL |
+|---|---|---|
+| who may connect | `pg_hba.conf`, `hostssl` | `require_secure_transport`, one flag |
+| the node's own user | a role with `REPLICATION` | a user with the dump privileges, `CONNECTION_ADMIN`, and `REPLICATION SLAVE` / `BACKUP_ADMIN` for the replica phase |
+| a renewed certificate | `SIGHUP` | `ALTER INSTANCE RELOAD TLS`, from a client container |
+| a backup | `pg_basebackup -Ft -z` | `mysqldump \| gzip`, `dump.sql.gz` |
+| a restore | unpacked before the server starts | loaded *by* the server's entrypoint, as an init script |
+| the data directory | `pgdata` below the mount | `data` below the mount, passed as `--datadir` |
+
+`Engine` carries the facts the rest of the tree asks for — image, port,
+mount, the certificate's directory, the server's user, the backup's file,
+the floor — so a page or a backup asks the row rather than naming
+Postgres.
+
+### The image
+
+`docker.io/library/mysql:8.4`, the long-term release. There is no Alpine
+variant: it is Oracle Linux 9, **222 MiB** compressed for arm64 against
+Postgres's ~80. Its entrypoint is `docker-entrypoint.sh mysqld`, so
+arguments appended to the command reach the server and the entrypoint
+alike — and the entrypoint takes `datadir` from them, which is what lets
+the data directory sit one level below the mount where the certificate
+lives. It has `mysqldump` and `mysql`, so no client is in this binary,
+which is what phase 5 above decided for Postgres.
+
+### The ladder, measured
+
+On the VM node, each rung under its own cgroup, with a million-row table
+and every connection running a sort or a grouping at once from a client
+container of its own (clients run *inside* the server's container are
+charged to its ceiling — the first run did that and measured the clients):
+
+| Ceiling | buffer pool | connections | peak, every connection busy |
+|---|---|---|---|
+| 128 MB | — | — | **killed during `--initialize`**, even with a 16 MB pool |
+| 256 MB, stock settings | 128 MB | 151 | **killed 9 s after start** |
+| 256 MB | 48 MB | 20 | 213 MB (83 %) |
+| 512 MB | 192 MB | 40 | 396 MB (77 %) |
+| 1 GB | 512 MB | 80 | 793 MB (77 %) |
+| 2 GB | 1024 MB | 150 | not run: the VM has 2 GB |
+| 4 GB | 2304 MB | 200 | not run |
+
+So **256 MB is the floor**, for creating one and for resizing one. The two
+largest rungs are the same arithmetic — about 90 MB that does not move,
+the pool, and two to three MB per busy connection — on a machine too small
+to run them.
+
+Four defaults would have broken a small ceiling with the pool tuned, and
+each is an argument now:
+
+- **`temptable_max_ram` is 1 GiB**, shared by every connection — four
+  times the smallest ceiling. A sixteenth of the ceiling; past it a
+  temporary table spills to disk.
+- **`innodb_log_buffer_size` is 64 MiB**, a quarter of the smallest rung.
+- **The pool is rounded up to the chunk, which is 128 MiB.** A 192 MB pool
+  became 256, and a 48 MB one measured exactly like a 64 MB one until the
+  chunk was set to 16 MB.
+- **glibc's per-thread arenas.** Forty busy connections killed the
+  256 MB rung with `MALLOC_ARENA_MAX` unset, and the same forty survived
+  with it at 2.
+
+`performance_schema` is off at every rung: it sizes itself from the
+connection count and the table caches, which is memory no rung would be
+choosing. The binary log is off too — thirty days of disk by default, and
+nothing reads it until there are replicas or point-in-time recovery.
+
+### TLS, and the two faults Postgres did not have
+
+**A key the server cannot read does not stop it.** It starts *without*
+TLS, and with secure transport required it then refuses every client:
+`SSL is required but the server doesn't support it`. So the one-shot
+`chown` that Postgres needed runs for MySQL too, by name — `mysql`,
+resolved inside the image.
+
+**A `SIGHUP` does not reread the certificate.** Measured: three
+certificates written in turn, and the server served the second after a
+hang-up. `ALTER INSTANCE RELOAD TLS` does, without a restart, and the
+node's own user is granted `CONNECTION_ADMIN` for exactly that. Because a
+reload can fail where a signal cannot, the renewal pass compares the store
+against `tls/handed-over.crt` — what the server was last given — rather
+than against the file it reads: a failed reload is then asked again a
+quarter of an hour later instead of being forgotten until the next start.
+
+### Backups are logical, and that was a change of plan
+
+The question that scoped this named `CLONE LOCAL`, a physical copy built
+into MySQL. It was not used. `CLONE LOCAL` writes on the *server's*
+filesystem, into a directory the server's own user must be able to
+create, from inside the container being backed up; `mysqldump` runs in a
+client container on the host's network, writes into a mount, and fails
+with an exit code — the shape `pg_basebackup` already has here, with its
+traps already found. The dump is taken as the node's own user, never the
+admin, for the reason the Postgres backup learned: the operator may change
+the admin's password, and the backup would stop working that night.
+
+`--set-gtid-purged=OFF`, because a restore loads into a server with a
+history of its own. `--single-transaction`, so it is consistent for InnoDB
+without locking. The pipeline runs under `pipefail`, so a dump that fails
+halfway is a backup that failed rather than a short file with exit 0.
+
+CLONE comes back with read-only copies, where seeding a replica from a
+running server is what it is for — and the grants for it are already on
+every MySQL this node makes.
+
+### A restore is an init script
+
+The image runs `/docker-entrypoint-initdb.d` once, on an empty data
+directory, after it has made the users. So a restored copy gets
+`020-wabot-restore.sh` there, which loads `/base/dump.sql.gz` into the
+database the row names and then writes `.wabot-restored` into the data
+directory. Measured on the VM: a table, a view and a procedure came back,
+and a second start loaded nothing.
+
+**The mark is the whole safety of it.** A load that fails stops the
+entrypoint, but the data directory is already initialised, and the
+entrypoint would start it as it is next time — a database holding part of
+a backup. So the deploy path asks the volume: initialised and not marked
+is thrown away and loaded again; marked is an ordinary primary, which
+stops mounting the backup. That matters on its own: retention may delete
+the backup a copy was restored from, and a mount of a directory that is
+not there fails the deployment.
+
+A restore reaches **the moment of a backup**. The form says so, the
+"Going back" card says so instead of measuring an archive that does not
+exist, and the row records no recovery target, because none was replayed.
+
+### Refused, with a sentence
+
+- A second copy, or a copy on another node: "MySQL runs as one copy, on
+  this node". A database errand for a MySQL copy is refused at the far end
+  too, for a node older than this one that could send one.
+- A ceiling under 256 MB, when it is made and when it is resized.
+- A database or user name MySQL already uses — `root`, `mysql`, `sys`,
+  the two schemas and the node's own user — gets `db_` in front. User
+  names stop at 32 characters, so identifiers do.
+
+### What the node said
+
+Walked on a fresh VM node on 2026-10-16, through the console with
+scripting off (`scripts/vm_console.py`):
+
+- **Made and started.** 128 MB refused with its sentence; 256 MB made,
+  pulled, its key given to `mysql` by the one-shot, and serving in twenty
+  seconds. `memory.max` 268435456, `memory.swap.max` 0. From inside the
+  server: a 48 MB pool, 20 connections, 16 MB of TempTable, no
+  performance schema, no binary log, secure transport required.
+- **Who may connect.** `root` only on `localhost`; the node's user
+  `REQUIRE SSL`; an unencrypted connection from the host refused with
+  error 3159; the page's own string — `ssl-mode=VERIFY_IDENTITY` against
+  `/etc/wabot/ca.crt` — answers over TLS 1.3.
+- **Backed up** from the Backup tab's button: `dump.sql.gz` with the
+  table, its rows, a view and a procedure; `doctor` reads "last good".
+- **Restored** into a copy from the database's page: the rows, the view
+  and the procedure answer in the copy, the volume carries the mark, the
+  row records no target. A second deployment is an ordinary primary — no
+  `/base` mount, no restore script. With a row written to the copy and
+  the mark taken away, the next deployment threw the directory away and
+  loaded the backup again: the row was gone.
+- **Refused** through the console's own forms: a second copy, and 128 MB
+  on the resources page, which offers 256 MB and up.
+
+**And one thing was wrong, in the way only a node can show.** Renaming the
+database reissued its certificate, the node wrote it and asked for a
+reload, and MySQL answered `ERROR 3888: Failed to set up SSL … Invalid
+certificates` — and went on serving the old one. With no authority named
+it cannot check its own certificate; at start that is a warning in its
+log (`MY-015011 … unable to get local issuer certificate`), at a reload it
+is a refusal. The measurement before the node walk had used self-signed
+certificates, which is why it never showed. `--ssl-ca` names the node's
+authority and `--ssl-capath` the image's own roots, for a certificate a
+public authority signed. After it, a rename was handed to the running
+server on the same pid, and the pass at the node's start had already
+retried the reload that failed — which is what recording "handed over"
+apart from the file is for.
+
+A Postgres database made on the same node with the form's defaults came
+up as before: its key owned by the image's `postgres` (70), archiving on,
+`verify-full` by name.
+
+### Not run yet
+
+- **A certificate a public authority signed**, reloaded. The VM has no
+  public name; the roots it would be checked against are in the image.
+- **The 2 GB and 4 GB rungs**, on a machine that has them.
+- **A restore from a remote destination.** It is the Postgres path —
+  `fetch_dir` into the copy's directory — with the dump in place of the
+  tarballs, and has not been run for either engine's dump.
+- **A large database.** The dump is single-threaded and the load is one
+  client; how long either takes at gigabytes is unmeasured.

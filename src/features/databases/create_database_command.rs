@@ -3,10 +3,10 @@
 
 use wabot::sqlite::SqliteDatabase;
 
-use crate::domain::entities::database::{identifier, Database, Engine};
-use crate::domain::entities::service::{Kind, Service};
+use crate::domain::entities::database::{Database, Engine};
+use crate::domain::entities::service::Service;
 use crate::domain::errors::{PlatformError, PlatformResult};
-use crate::domain::policies::{postgres, presets};
+use crate::domain::policies::presets;
 use crate::infra::clock::now_ms;
 use crate::infra::repositories::databases::REPLICATION_USER;
 
@@ -18,15 +18,23 @@ pub const DEFAULT_PRESET: u64 = 256 * 1024 * 1024;
 pub struct CreateDatabase<'a> {
     pub project_id: &'a str,
     pub name: &'a str,
+    pub engine: Engine,
     pub version: &'a str,
     pub memory_limit: u64,
 }
 
 impl CreateDatabase<'_> {
     pub async fn run(&self, database: &SqliteDatabase) -> PlatformResult<(Service, Database)> {
-        if !postgres::VERSIONS.contains(&self.version) {
+        let engine = self.engine;
+        if !Engine::OFFERED.contains(&engine) {
+            return Err(PlatformError::Refused(
+                "this node does not offer that engine".into(),
+            ));
+        }
+        if !engine.versions().contains(&self.version) {
             return Err(PlatformError::Refused(format!(
-                "this node does not offer PostgreSQL {}",
+                "this node does not offer {} {}",
+                engine.label(),
                 self.version
             )));
         }
@@ -35,21 +43,29 @@ impl CreateDatabase<'_> {
                 "that is not one of the sizes on offer".into(),
             ));
         }
-        if !postgres::initialises_in(self.memory_limit) {
-            return Err(PlatformError::Refused(format!(
-                "a database is not started in {}: initdb writes its catalogs through the \
-                 page cache, which the ceiling counts, and the kernel can stop it before it \
-                 finishes — choose {} or more",
-                presets::label(self.memory_limit),
-                presets::label(postgres::INITDB_FLOOR)
-            )));
+        if self.memory_limit < engine.floor() {
+            return Err(PlatformError::Refused(match engine {
+                Engine::Mysql => format!(
+                    "MySQL is not started in {}: the kernel kills it while it is still \
+                     initialising, however it is tuned — choose {} or more",
+                    presets::label(self.memory_limit),
+                    presets::label(engine.floor())
+                ),
+                _ => format!(
+                    "a database is not started in {}: initdb writes its catalogs through the \
+                     page cache, which the ceiling counts, and the kernel can stop it before it \
+                     finishes — choose {} or more",
+                    presets::label(self.memory_limit),
+                    presets::label(engine.floor())
+                ),
+            }));
         }
 
         let service = crate::infra::repositories::services::create(
             database,
             self.project_id,
             self.name,
-            &postgres::image_for(self.version),
+            &engine.image_for(self.version),
             &[],
         )
         .await?;
@@ -58,7 +74,7 @@ impl CreateDatabase<'_> {
         // container for even a moment is one the deploy path would have
         // started without its volume — which for a database is an empty
         // one that looks like it worked.
-        crate::infra::repositories::services::set_kind(database, &service.id, Kind::Postgres)
+        crate::infra::repositories::services::set_kind(database, &service.id, engine.kind())
             .await?;
         crate::infra::repositories::services::set_memory_limit(
             database,
@@ -72,8 +88,8 @@ impl CreateDatabase<'_> {
         crate::infra::repositories::volumes::create(
             database,
             &service.id,
-            postgres::VOLUME,
-            postgres::DATA_MOUNT,
+            crate::domain::policies::postgres::VOLUME,
+            engine.data_mount(),
         )
         .await?;
 
@@ -84,17 +100,17 @@ impl CreateDatabase<'_> {
         crate::infra::repositories::ports::create(
             database,
             &service.id,
-            postgres::PORT,
+            engine.port(),
             false,
             None,
             &[],
         )
         .await?;
 
-        let identifier = identifier(&service.slug);
+        let identifier = engine.identifier(&service.slug, REPLICATION_USER);
         let row = Database {
             service_id: service.id.clone(),
-            engine: Engine::Postgres,
+            engine,
             version: self.version.to_string(),
             admin_user: identifier.clone(),
             admin_password: wabot::prelude::password::generate(24),
@@ -164,6 +180,7 @@ impl CreateDatabase<'_> {
 
         tracing::info!(
             service = %service.slug,
+            engine = engine.as_str(),
             version = self.version,
             limit = presets::label(self.memory_limit),
             "created a database"

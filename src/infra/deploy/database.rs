@@ -15,10 +15,10 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::domain::entities::database::Database;
+use crate::domain::entities::database::{Database, Engine};
 
-use crate::domain::policies::postgres;
 use crate::domain::policies::presets;
+use crate::domain::policies::{mysql, postgres};
 use crate::infra::runtime::spec::BindMount;
 
 /// Everything the deploy path adds to the request for this copy.
@@ -119,6 +119,107 @@ impl Plan<'_> {
 
 /// Write what this copy reads, and say what it needs.
 pub fn prepare(plan: &Plan<'_>) -> std::io::Result<Preparation> {
+    match plan.database.engine {
+        Engine::Mysql => prepare_mysql(plan),
+        Engine::Postgres | Engine::Unknown => prepare_postgres(plan),
+    }
+}
+
+fn prepare_mysql(plan: &Plan<'_>) -> std::io::Result<Preparation> {
+    let conf = config_dir(plan.data_dir, plan.container_id);
+    let init = init_dir(plan.data_dir, plan.container_id);
+    std::fs::create_dir_all(&conf)?;
+    std::fs::create_dir_all(&init)?;
+
+    std::fs::write(
+        init.join("010-wabot-node.sql"),
+        mysql::init_script(
+            &plan.database.replication_user,
+            &plan.database.replication_password,
+        ),
+    )?;
+
+    let mut mounts = vec![
+        BindMount {
+            source: conf,
+            destination: postgres::CONFIG_MOUNT.to_string(),
+            read_only: true,
+        },
+        BindMount {
+            source: init.clone(),
+            destination: postgres::INIT_MOUNT.to_string(),
+            read_only: true,
+        },
+    ];
+
+    let script = init.join("020-wabot-restore.sh");
+    match &plan.restoring {
+        Some(restoring) => {
+            // Initialised and never marked is a load that stopped part
+            // way, and the entrypoint would start it as it is.
+            if mysql_initialised(plan.data_dir, plan.container_id) {
+                discard_mysql_data(plan.data_dir, plan.container_id)?;
+            }
+            std::fs::write(&script, mysql::restore_script())?;
+            mounts.push(BindMount {
+                source: restoring.base.clone(),
+                destination: mysql::BASE_MOUNT.to_string(),
+                read_only: true,
+            });
+        }
+        None => match std::fs::remove_file(&script) {
+            Err(error) if error.kind() != std::io::ErrorKind::NotFound => return Err(error),
+            _ => {}
+        },
+    }
+
+    Ok(Preparation {
+        args: mysql::arguments(plan.limit()),
+        env: mysql::environment(
+            &plan.database.admin_user,
+            &plan.database.admin_password,
+            &plan.database.database_name,
+        ),
+        mounts,
+        shm_size: None,
+        role: plan.role,
+        primary_endpoint: None,
+        // Nothing to unpack before the server starts: the entrypoint
+        // loads the dump itself, from the script written above.
+        restoring: None,
+        max_connections: mysql::tuning(plan.limit()).max_connections,
+    })
+}
+
+/// Whether a restore into this copy finished.
+///
+/// Asked of the volume rather than of the row, because the row says
+/// "restored from" for ever and the load either happened in this
+/// directory or it did not.
+pub fn mysql_restored(data_dir: &Path, container_id: &str) -> bool {
+    mysql_data(data_dir, container_id)
+        .join(mysql::RESTORED_MARK)
+        .exists()
+}
+
+/// The same question the image's entrypoint asks before it initialises.
+fn mysql_initialised(data_dir: &Path, container_id: &str) -> bool {
+    mysql_data(data_dir, container_id).join("mysql").is_dir()
+}
+
+fn discard_mysql_data(data_dir: &Path, container_id: &str) -> std::io::Result<()> {
+    match std::fs::remove_dir_all(mysql_data(data_dir, container_id)) {
+        Err(error) if error.kind() != std::io::ErrorKind::NotFound => Err(error),
+        _ => Ok(()),
+    }
+}
+
+fn mysql_data(data_dir: &Path, container_id: &str) -> PathBuf {
+    crate::infra::repositories::volumes::directory(data_dir, container_id, postgres::VOLUME)
+        .join("data")
+}
+
+fn prepare_postgres(plan: &Plan<'_>) -> std::io::Result<Preparation> {
     let conf = config_dir(plan.data_dir, plan.container_id);
     let init = init_dir(plan.data_dir, plan.container_id);
     std::fs::create_dir_all(&conf)?;
@@ -313,6 +414,23 @@ pub fn write_tls(
         let _ = mode;
     }
     Ok(dir)
+}
+
+/// The certificate this copy's server was last given.
+///
+/// Apart from the file it reads because a server that has to be asked to
+/// reread it — MySQL — keeps the old one when the asking fails, and a
+/// renewal pass comparing the file would then never ask again.
+pub fn handed_over(data_dir: &Path, container_id: &str) -> PathBuf {
+    tls_dir(data_dir, container_id).join("handed-over.crt")
+}
+
+pub fn record_handed_over(data_dir: &Path, container_id: &str, cert_pem: &str) {
+    let path = handed_over(data_dir, container_id);
+    if let Err(error) = std::fs::write(&path, cert_pem) {
+        // The cost is one more reload in a quarter of an hour.
+        tracing::warn!(file = %path.display(), %error, "recording a certificate handed over");
+    }
 }
 
 /// Who owns this copy's TLS directory, when somebody already does.
@@ -663,6 +781,92 @@ mod tests {
         assert_eq!(prepared.mounts.len(), 2);
         assert!(prepared.mounts.iter().all(|mount| mount.read_only));
         assert_eq!(prepared.shm_size, Some(32 * 1024 * 1024));
+    }
+
+    #[test]
+    fn a_mysql_primary_gets_its_tuning_its_users_and_no_restore() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let row = Database {
+            engine: Engine::Mysql,
+            version: "8.4".into(),
+            ..database()
+        };
+        let mut plan = plan(dir.path(), "demo.db", &row, postgres::Role::Primary);
+        plan.memory_limit = Some(256 * 1024 * 1024);
+        let prepared = prepare(&plan).expect("prepared");
+
+        assert!(prepared
+            .args
+            .contains(&"--innodb-buffer-pool-size=48M".to_string()));
+        assert_eq!(prepared.max_connections, 20);
+        let env: std::collections::BTreeMap<_, _> = prepared.env.into_iter().collect();
+        assert_eq!(env.get("MYSQL_USER").map(String::as_str), Some("orders"));
+        assert!(!env.contains_key("PGDATA"));
+
+        let init = init_dir(dir.path(), "demo.db");
+        assert!(std::fs::read_to_string(init.join("010-wabot-node.sql"))
+            .expect("read")
+            .contains("wabot_replication"));
+        assert!(!init.join("020-wabot-restore.sh").exists());
+        assert!(
+            !config_dir(dir.path(), "demo.db")
+                .join("pg_hba.conf")
+                .exists(),
+            "MySQL has no use for Postgres's access file"
+        );
+        assert!(prepared
+            .mounts
+            .iter()
+            .all(|mount| mount.destination != mysql::BASE_MOUNT));
+    }
+
+    /// The entrypoint initialises only an empty directory, so one left
+    /// initialised by a load that failed would start as it was: a
+    /// database holding part of a backup, answering as if it were all of
+    /// it.
+    #[test]
+    fn a_mysql_restore_that_stopped_part_way_is_loaded_again() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let row = Database {
+            engine: Engine::Mysql,
+            version: "8.4".into(),
+            restored_from: Some("/backups/1/volumes/demo.db".into()),
+            ..database()
+        };
+        let data = mysql_data(dir.path(), "demo.db");
+        std::fs::create_dir_all(data.join("mysql")).expect("half a load");
+
+        let mut plan = plan(dir.path(), "demo.db", &row, postgres::Role::Restoring);
+        plan.restoring = Some(Restoring {
+            base: "/backups/1/volumes/demo.db".into(),
+            archive: dir.path().join("wal"),
+            target: None,
+        });
+        let prepared = prepare(&plan).expect("prepared");
+
+        assert!(!data.exists(), "the half-loaded directory is thrown away");
+        assert!(init_dir(dir.path(), "demo.db")
+            .join("020-wabot-restore.sh")
+            .exists());
+        assert!(prepared.mounts.iter().any(|mount| {
+            mount.destination == mysql::BASE_MOUNT
+                && mount.read_only
+                && mount.source == std::path::Path::new("/backups/1/volumes/demo.db")
+        }));
+        assert!(
+            prepared.restoring.is_none(),
+            "nothing is unpacked before the server starts"
+        );
+
+        std::fs::create_dir_all(data.join("mysql")).expect("a finished load");
+        std::fs::write(data.join(mysql::RESTORED_MARK), "").expect("mark");
+        assert!(mysql_restored(dir.path(), "demo.db"));
+        plan.restoring = None;
+        prepare(&plan).expect("prepared again");
+        assert!(data.join("mysql").exists(), "a finished restore is kept");
+        assert!(!init_dir(dir.path(), "demo.db")
+            .join("020-wabot-restore.sh")
+            .exists());
     }
 
     /// A standby's data directory arrives seeded, so the entrypoint

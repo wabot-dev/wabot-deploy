@@ -10,12 +10,12 @@
 //! screenshot. Markup rather than script, so it works with scripting
 //! off like everything else here.
 
-use crate::domain::policies::postgres;
 use crate::domain::policies::presets;
+use crate::domain::policies::{mysql, postgres};
 use crate::features::databases::texts::t;
 use hypertext::prelude::*;
 
-use crate::domain::entities::database::Database;
+use crate::domain::entities::database::{Database, Engine};
 
 /// What each size actually gives the engine.
 ///
@@ -40,6 +40,29 @@ pub fn sizes_table() -> impl Renderable {
                         <td class="mono">(format!("{} MB", postgres::tuning(rung).shared_buffers_mb))</td>
                         <td class="mono">(format!("{} MB", postgres::tuning(rung).work_mem_mb))</td>
                         <td class="mono">(postgres::tuning(rung).max_connections.to_string())</td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    }
+}
+
+pub fn mysql_sizes_table() -> impl Renderable {
+    rsx! {
+        <table>
+            <thead>
+                <tr>
+                    <th>(t("Memory"))</th>
+                    <th>("innodb_buffer_pool_size")</th>
+                    <th>(t("Connections"))</th>
+                </tr>
+            </thead>
+            <tbody>
+                @for rung in presets::LADDER.into_iter().filter(|rung| *rung >= mysql::FLOOR) {
+                    <tr>
+                        <td>(presets::label(rung))</td>
+                        <td class="mono">(format!("{} MB", mysql::tuning(rung).buffer_pool_mb))</td>
+                        <td class="mono">(mysql::tuning(rung).max_connections.to_string())</td>
                     </tr>
                 }
             </tbody>
@@ -80,6 +103,7 @@ pub fn sizes_table() -> impl Renderable {
 pub fn restore_card<'a>(
     project_slug: &'a str,
     service_slug: &'a str,
+    engine: Engine,
     window: &'a crate::infra::backup::Window,
     default_name: &'a str,
     // Where this node sends its backups, when that is not this machine.
@@ -109,9 +133,15 @@ pub fn restore_card<'a>(
                 <label for="restore-at">(t("Up to which moment"))</label>
                 <input id="restore-at" name="at" type="text" autocomplete="off" class="mono"
                        value="" placeholder=(&latest)>
-                <p class="field-hint">(t("UTC, as the window above reads it: 2026-08-16 14:32. \
-                     Empty means as far as the archived log goes, which is the most recent \
-                     moment there is."))</p>
+                @if engine == Engine::Mysql {
+                    <p class="field-hint">(t("UTC: 2026-08-16 14:32. The copy is the newest \
+                         backup taken at or before it — nothing between two backups can be \
+                         reached. Empty means the newest backup there is."))</p>
+                } @else {
+                    <p class="field-hint">(t("UTC, as the window above reads it: 2026-08-16 14:32. \
+                         Empty means as far as the archived log goes, which is the most recent \
+                         moment there is."))</p>
+                }
 
                 <label for="restore-into">(t("Call the copy"))</label>
                 <input id="restore-into" name="into" type="text" autocomplete="off" class="mono"
@@ -119,9 +149,16 @@ pub fn restore_card<'a>(
                 <p class="field-hint">(t("A new database in this project, with the same \
                      credentials and its own name. The original keeps running and keeps its \
                      data — this is a copy beside it, and deleting it later costs nothing."))</p>
-                <p class="field-hint">(t("It unpacks the backup and replays the log at its first \
-                     deployment, which starts as soon as you press this. A large database takes \
-                     as long to come up as it took to copy."))</p>
+                @if engine == Engine::Mysql {
+                    <p class="field-hint">(t("It loads the backup at its first deployment, which \
+                         starts as soon as you press this. Until the load finishes it accepts no \
+                         connections, and a large database takes as long as its dump takes to \
+                         replay."))</p>
+                } @else {
+                    <p class="field-hint">(t("It unpacks the backup and replays the log at its first \
+                         deployment, which starts as soon as you press this. A large database takes \
+                         as long to come up as it took to copy."))</p>
+                }
                 @if let Some(destination) = elsewhere {
                     <p class="field-hint">(t("The backup is looked for on this machine first, \
                          then at "))<span class="mono">(destination)</span>
@@ -195,18 +232,24 @@ impl Strings {
         // public one the client's own trust store is what checks it, and
         // naming a file that a laptop does not have would be a string that
         // fails for the one reader most likely to paste it.
-        let suffix = match signs_here {
-            true => "?sslmode=verify-full&sslrootcert=/etc/wabot/ca.crt",
-            false => "?sslmode=verify-full",
+        let suffix = match (row.engine, signs_here) {
+            (Engine::Mysql, true) => "?ssl-mode=VERIFY_IDENTITY&ssl-ca=/etc/wabot/ca.crt",
+            (Engine::Mysql, false) => "?ssl-mode=VERIFY_IDENTITY",
+            (_, true) => "?sslmode=verify-full&sslrootcert=/etc/wabot/ca.crt",
+            (_, false) => "?sslmode=verify-full",
+        };
+        let url = match row.engine {
+            Engine::Mysql => mysql::connection_url,
+            _ => postgres::connection_url,
         };
         let dsn = |host: &str| {
             format!(
                 "{}{suffix}",
-                postgres::connection_url(
+                url(
                     &row.admin_user,
                     &row.admin_password,
                     host,
-                    postgres::PORT,
+                    row.engine.port(),
                     &row.database_name,
                 )
             )
@@ -265,13 +308,35 @@ impl Strings {
 
         Some(Self {
             primary: offer(long_of(false), dsn(&primary_short)),
-            pool: offer(long_of(true), dsn(&pool_short)),
+            // MySQL has no read-only copies, so its pool name reaches the
+            // one copy there is and a string for it would promise more.
+            pool: match row.engine {
+                Engine::Mysql => Vec::new(),
+                _ => offer(long_of(true), dsn(&pool_short)),
+            },
         })
     }
 
     /// Whether the name is a choice at all.
     pub fn names_differ(&self) -> bool {
         self.primary.len() > 1
+    }
+}
+
+/// What going back means for a database whose log is not kept: a
+/// restore lands on a backup, and the card says so rather than measuring
+/// an archive that does not exist.
+pub fn backups_only_card() -> impl Renderable {
+    rsx! {
+        <section class="card stack" id="recovery">
+            <div class="split">
+                <p class="card-label">(t("Going back"))</p>
+                <span class="badge">(t("Backups only"))</span>
+            </div>
+            <p class="field-hint">(t("MySQL's binary log is not kept, so a restore reaches the \
+                 moment a backup was taken and nothing between two of them. The node's Backup \
+                 tab is where they are scheduled, or taken now."))</p>
+        </section>
     }
 }
 
@@ -441,7 +506,10 @@ pub fn database_card<'a>(
                         row.recovery_target
                             .as_deref()
                             .map(|moment| format!("{moment} UTC"))
-                            .unwrap_or_else(|| t("as far as the archived log went").to_string())
+                            .unwrap_or_else(|| match row.engine {
+                                Engine::Mysql => t("the moment of the backup").to_string(),
+                                _ => t("as far as the archived log went").to_string(),
+                            })
                     )</dd>
                 }
             </dl>
@@ -667,16 +735,22 @@ pub fn connection_block(strings: &Strings, published: Option<u16>) -> impl Rende
                             }
                         </div>
                     }
-                    <div class="dsn-group">
-                        <label class="check">
-                            <input type="radio" name="dsn-target" id="dsn-primary" checked>
-                            (t("Primary"))
-                        </label>
-                        <label class="check">
-                            <input type="radio" name="dsn-target" id="dsn-pool">
-                            (t("Read pool"))
-                        </label>
-                    </div>
+                    // The stylesheet shows a string while this is checked,
+                    // so it stays when there is nothing to choose it from.
+                    @if strings.pool.is_empty() {
+                        <input type="radio" name="dsn-target" id="dsn-primary" checked hidden>
+                    } @else {
+                        <div class="dsn-group">
+                            <label class="check">
+                                <input type="radio" name="dsn-target" id="dsn-primary" checked>
+                                (t("Primary"))
+                            </label>
+                            <label class="check">
+                                <input type="radio" name="dsn-target" id="dsn-pool">
+                                (t("Read pool"))
+                            </label>
+                        </div>
+                    }
                 </div>
 
                 // Every string that verifies, and the stylesheet shows the

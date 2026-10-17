@@ -4,7 +4,7 @@
 use wabot::sqlite::SqliteDatabase;
 
 use crate::domain::entities::database::Database;
-use crate::domain::entities::service::{Kind, Service};
+use crate::domain::entities::service::Service;
 use crate::domain::errors::PlatformResult;
 use crate::domain::policies::postgres;
 use crate::infra::clock::now_ms;
@@ -43,11 +43,12 @@ pub async fn restore_into(
         database,
         project_id,
         name,
-        &postgres::image_for(&source.version),
+        &source.engine.image_for(&source.version),
         &[],
     )
     .await?;
-    crate::infra::repositories::services::set_kind(database, &service.id, Kind::Postgres).await?;
+    crate::infra::repositories::services::set_kind(database, &service.id, source.engine.kind())
+        .await?;
     crate::infra::repositories::services::set_memory_limit(
         database,
         &service.id,
@@ -58,13 +59,13 @@ pub async fn restore_into(
         database,
         &service.id,
         postgres::VOLUME,
-        postgres::DATA_MOUNT,
+        source.engine.data_mount(),
     )
     .await?;
     crate::infra::repositories::ports::create(
         database,
         &service.id,
-        postgres::PORT,
+        source.engine.port(),
         false,
         None,
         &[],

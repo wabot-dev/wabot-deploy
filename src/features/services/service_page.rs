@@ -188,10 +188,14 @@ pub fn render<'a>(page: &'a ServiceDetail<'a>) -> impl Renderable + 'a {
             // because it is a fact about this database rather than about
             // the node — even though what decides it is a switch on the
             // node's page, which is why the card says so when it is off.
-            (database_cards_component::window_card(engine.window, engine.elsewhere))
+            @if engine.row.engine == crate::domain::entities::database::Engine::Mysql {
+                (database_cards_component::backups_only_card())
+            } @else {
+                (database_cards_component::window_card(engine.window, engine.elsewhere))
+            }
             @if engine.restorable {
                 (database_cards_component::restore_card(
-                    &project.slug, &service.slug, engine.window,
+                    &project.slug, &service.slug, engine.row.engine, engine.window,
                     &format!("{}-restored", service.slug), engine.elsewhere))
             }
         }

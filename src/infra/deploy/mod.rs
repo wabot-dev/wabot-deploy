@@ -35,17 +35,18 @@ use std::sync::Arc;
 
 use wabot::sqlite::SqliteDatabase;
 
+use crate::domain::entities::database::Engine;
 use crate::domain::entities::port::Port;
 use crate::domain::entities::project::Project;
 use crate::domain::entities::release::Release;
 use crate::domain::entities::replica::Replica;
-use crate::domain::policies::postgres;
+use crate::domain::policies::{mysql, postgres};
 use crate::infra::repositories::databases;
 use crate::infra::repositories::ports;
 use crate::infra::repositories::releases;
 use crate::infra::repositories::replicas;
 
-use crate::domain::entities::service::{DesiredState, Service};
+use crate::domain::entities::service::{DesiredState, Kind, Service};
 use crate::domain::entities::volume::Volume;
 use crate::domain::errors::PlatformError;
 use crate::infra::repositories::services;
@@ -846,13 +847,13 @@ impl Deployer {
         if !hosts_file.exists() {
             hosts::write(&self.config.node.data_dir, &id, &[])?;
         }
-        if service.kind.is_managed() {
+        if let Some(engine) = service.kind.engine() {
             // Inside the volume, and mounted writable: the one-shot
             // `chown` above works on this same directory, and a
             // read-only mount would refuse it.
             mounts.push(BindMount {
                 source: database::tls_dir(&self.config.node.data_dir, &id),
-                destination: postgres::TLS_DIR.to_string(),
+                destination: engine.tls_dir().to_string(),
                 read_only: false,
             });
         }
@@ -969,7 +970,7 @@ impl Deployer {
                 (PORTS_LABEL.to_string(), network::render(&published)),
                 (
                     ARCHIVING_LABEL.to_string(),
-                    match prepared.is_some() {
+                    match service.kind == Kind::Postgres {
                         true => archiving.to_string(),
                         false => String::new(),
                     },
@@ -1239,7 +1240,7 @@ impl Deployer {
         // one an upgrade changes: the default flipped once pruning
         // existed, and every database already running was started
         // without it.
-        if service.kind.is_managed() {
+        if service.kind == Kind::Postgres {
             if let Some(applied) = labels.get(ARCHIVING_LABEL) {
                 let wanted = crate::infra::node::settings::archiving(&self.database).await;
                 if applied != &wanted.to_string() {
@@ -2818,30 +2819,114 @@ impl Deployer {
                 if !replica.is_here() || replica.evicted() {
                     continue;
                 }
+                // A stopped MySQL cannot be asked, and its next start hands
+                // the certificate over anyway.
+                if service.kind == Kind::Mysql && service.desired_state == DesiredState::Stopped {
+                    continue;
+                }
                 let id = replica.container_id(&project.slug, &service.slug);
-                let on_disk =
-                    std::fs::read_to_string(database::tls_dir(data_dir, &id).join("server.crt"))
-                        .unwrap_or_default();
-                if on_disk == stored.cert_pem {
+                let served = match service.kind {
+                    Kind::Mysql => database::handed_over(data_dir, &id),
+                    _ => database::tls_dir(data_dir, &id).join("server.crt"),
+                };
+                if std::fs::read_to_string(served).unwrap_or_default() == stored.cert_pem {
                     continue;
                 }
 
                 database::write_tls(data_dir, &id, &stored.cert_pem, &stored.key_pem)?;
-                match containers::signal(&client, &id, 1).await {
+                match self
+                    .reload_certificate(&client, &service, &replica, &id)
+                    .await
+                {
                     Ok(()) => {
+                        if service.kind == Kind::Mysql {
+                            database::record_handed_over(data_dir, &id, &stored.cert_pem);
+                        }
                         tracing::info!(service = %service.slug, slot = replica.slot,
                             "handed a renewed certificate to a running server");
                         refreshed += 1;
                     }
                     // Not running is not a failure: the file is in
                     // place, and the next start reads it.
-                    Err(error) => {
+                    Err(error) if service.kind != Kind::Mysql => {
                         tracing::debug!(container = %id, %error, "could not signal")
+                    }
+                    // MySQL keeps serving the old certificate, and this pass
+                    // asks again in a quarter of an hour.
+                    Err(error) => {
+                        tracing::warn!(container = %id, %error, "a running MySQL refused its renewed certificate")
                     }
                 }
             }
         }
         Ok(refreshed)
+    }
+
+    async fn reload_certificate(
+        &self,
+        client: &Containerd,
+        service: &Service,
+        replica: &Replica,
+        id: &str,
+    ) -> Result<(), String> {
+        if service.kind != Kind::Mysql {
+            return containers::signal(client, id, 1)
+                .await
+                .map_err(|error| error.to_string());
+        }
+        let row = databases::of_service(&self.database, &service.id)
+            .await
+            .map_err(|error| error.to_string())?
+            .ok_or("no engine row")?;
+        let address = replica.address.as_deref().ok_or("no address yet")?;
+        let request = ContainerRequest {
+            command: mysql::reload_tls(address, mysql::PORT, &row.replication_user),
+            env: vec![("MYSQL_PWD".to_string(), row.replication_password.clone())],
+            ..Default::default()
+        };
+        self.run_client(
+            client,
+            service,
+            "mysql",
+            &format!("{id}.tls"),
+            &request,
+            ASK_DEADLINE,
+        )
+        .await
+    }
+
+    /// One command in a container of the engine's own image, on the
+    /// host's network, which reaches every bridge on this machine.
+    async fn run_client(
+        &self,
+        client: &Containerd,
+        service: &Service,
+        tool: &str,
+        id: &str,
+        request: &ContainerRequest,
+        deadline: std::time::Duration,
+    ) -> Result<(), String> {
+        let data_dir = &self.config.node.data_dir;
+        let log = logs::prepare(data_dir, id).map_err(|error| error.to_string())?;
+        let log = logs::uri(&log);
+        let outcome = containers::run_to_completion(
+            client,
+            id,
+            &service.image,
+            request,
+            None,
+            Some(&log),
+            deadline,
+        )
+        .await;
+        let said = logs::tail(data_dir, id, 2_000).unwrap_or_default();
+        logs::discard(data_dir, id);
+
+        match outcome {
+            Ok(0) => Ok(()),
+            Ok(code) => Err(format!("{tool} exited {code}: {said}")),
+            Err(error) => Err(error.to_string()),
+        }
     }
 
     async fn certificate_names(&self, project: &Project, service: &Service) -> Vec<String> {
@@ -2894,25 +2979,33 @@ impl Deployer {
                 .map_err(|error| DeployError::Refused(error.to_string()))?,
         };
         database::write_tls(data_dir, container_id, &stored.cert_pem, &stored.key_pem)?;
+        let engine = service.kind.engine().unwrap_or(Engine::Postgres);
+        if engine == Engine::Mysql {
+            database::record_handed_over(data_dir, container_id, &stored.cert_pem);
+        }
 
         // The archive directory has the same fault as the key: made by
         // the node as root, written by a server that is not. Fixed in
         // the same pass so a database needs one container for both
         // rather than one each.
-        let archiving = crate::infra::node::settings::archiving(&self.database).await;
+        let archiving = engine == Engine::Postgres
+            && crate::infra::node::settings::archiving(&self.database).await;
         let fix_archive = archiving && database::archive_owner_is_wrong(data_dir, container_id);
 
+        // Measured for MySQL: a key it cannot read does not stop it. It
+        // starts without TLS and then refuses every client, because it
+        // requires secure transport.
         if database::tls_owner_is_wrong(data_dir, container_id) || fix_archive {
             let fixer = format!("{container_id}.chown");
             let mut mounts = vec![BindMount {
                 source: volumes::ensure(data_dir, container_id, postgres::VOLUME)?,
-                destination: postgres::DATA_MOUNT.to_string(),
+                destination: engine.data_mount().to_string(),
                 read_only: false,
             }];
             let mut what = format!(
-                "chown -R postgres:postgres {dir} && chmod 0600 {key}",
-                dir = postgres::TLS_DIR,
-                key = postgres::key_path()
+                "chown -R {user}:{user} {dir} && chmod 0600 {dir}/server.key",
+                user = engine.server_user(),
+                dir = engine.tls_dir(),
             );
             if fix_archive {
                 mounts.push(BindMount {
@@ -3018,6 +3111,39 @@ impl Deployer {
         let client = Containerd::connect().await.map_err(|e| e.to_string())?;
         let id = format!("{}.backup", from.container_id(&project.slug, &service.slug));
 
+        match row.engine {
+            Engine::Postgres => {}
+            Engine::Mysql => {
+                let request = ContainerRequest {
+                    command: mysql::dump_into(
+                        &address,
+                        mysql::PORT,
+                        &row.replication_user,
+                        &row.database_name,
+                    ),
+                    env: vec![("MYSQL_PWD".to_string(), row.replication_password.clone())],
+                    mounts: vec![BindMount {
+                        source: into.to_path_buf(),
+                        destination: mysql::BACKUP_MOUNT.to_string(),
+                        read_only: false,
+                    }],
+                    ..Default::default()
+                };
+                return self
+                    .run_client(
+                        &client,
+                        service,
+                        "mysqldump",
+                        &id,
+                        &request,
+                        BACKUP_DEADLINE,
+                    )
+                    .await
+                    .map(|()| Some(crate::infra::node::disk::used(into).bytes));
+            }
+            Engine::Unknown => return Err("an engine this node does not know".into()),
+        }
+
         let request = ContainerRequest {
             // **The replication role, not the admin one.** A base backup
             // is a replication connection, and `pg_hba.conf` admits
@@ -3101,6 +3227,9 @@ impl Deployer {
             let Ok(Some(row)) = databases::of_service(&self.database, &service.id).await else {
                 continue;
             };
+            if row.engine != Engine::Postgres {
+                continue;
+            }
             let Ok(Some(project)) =
                 crate::infra::repositories::projects::find(&self.database, &service.project_id)
                     .await
@@ -3479,7 +3608,29 @@ impl Deployer {
         // deployment rather than the second.
         let placements = replicas::of_service(&self.database, &service.id).await?;
         let nodes = crate::infra::network::all(&self.database).await?;
-        let role = row.role_of(replica.slot);
+        let container_id = replica.container_id(&project.slug, &service.slug);
+        let role = match (row.engine, row.role_of(replica.slot)) {
+            (Engine::Unknown, _) => {
+                return Err(DeployError::Refused(format!(
+                    "{} was made by a newer node, with an engine this one does not know",
+                    service.slug
+                )))
+            }
+            (Engine::Mysql, postgres::Role::Standby) => {
+                return Err(DeployError::Refused(format!(
+                    "slot {} of {} would be a read-only copy, and MySQL has none yet",
+                    replica.slot, service.slug
+                )))
+            }
+            // Once the load has happened the backup is nothing to this copy,
+            // and a retention pass may already have removed it.
+            (Engine::Mysql, postgres::Role::Restoring)
+                if database::mysql_restored(&self.config.node.data_dir, &container_id) =>
+            {
+                postgres::Role::Primary
+            }
+            (_, role) => role,
+        };
 
         // Where a standby dials. Refused rather than started without
         // one: a standby with nowhere to follow would come up holding a
@@ -3558,7 +3709,6 @@ impl Deployer {
                 // pay for the bytes twice.
                 let base = match crate::infra::backup::destination::Destination::parse(from) {
                     Ok(remote) if remote.is_remote() => {
-                        let container_id = replica.container_id(&project.slug, &service.slug);
                         let into = database::fetched_dir(&self.config.node.data_dir, &container_id);
                         tracing::info!(
                             service = %service.slug,
@@ -3589,7 +3739,7 @@ impl Deployer {
             archiving,
             restoring,
             data_dir: &self.config.node.data_dir,
-            container_id: &replica.container_id(&project.slug, &service.slug),
+            container_id: &container_id,
             database: &row,
             role,
             memory_limit: service.memory_limit,
@@ -4390,6 +4540,7 @@ mod tests {
         let (service, _) = crate::features::databases::create_database_command::CreateDatabase {
             project_id: &project.id,
             name: "orders",
+            engine: crate::domain::entities::database::Engine::Postgres,
             version: "17",
             memory_limit: 256 * 1024 * 1024,
         }

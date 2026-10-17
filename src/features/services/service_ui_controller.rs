@@ -298,7 +298,7 @@ impl ServiceUiController {
         let silent = self.state.deployer.not_answering(&service).await;
         // What a restore of this database could reach. Read here rather
         // than in the card so the card stays a function of its argument.
-        let window = match service.kind.is_managed() {
+        let window = match service.kind == crate::domain::entities::service::Kind::Postgres {
             true => crate::infra::backup::window(
                 &self.state.config.node.data_dir,
                 &format!("{}.{}", project.slug, service.slug),
@@ -343,16 +343,17 @@ impl ServiceUiController {
                 }),
             false => None,
         };
-        let restorable = service.kind.is_managed()
-            && (elsewhere.is_some()
+        let restorable = service.kind.engine().is_some_and(|engine| {
+            elsewhere.is_some()
                 || crate::infra::backup::taken(&self.state.config.node.data_dir)
                     .iter()
                     .any(|(path, _)| {
                         path.join("volumes")
                             .join(format!("{}.{}", project.slug, service.slug))
-                            .join("base.tar.gz")
+                            .join(engine.backup_file())
                             .exists()
-                    }));
+                    })
+        });
         // What this service keeps, which is a row per volume and a
         // directory per copy of it.
         let volumes =

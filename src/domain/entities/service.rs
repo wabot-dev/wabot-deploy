@@ -63,6 +63,7 @@ pub enum Kind {
     /// were databases.
     Container,
     Postgres,
+    Mysql,
     /// A kind from a newer node. Held and refused rather than parsed
     /// into a panic — the same shape `errand::Kind` uses, and for the
     /// same reason: a row outlives the version that wrote it.
@@ -74,6 +75,7 @@ impl Kind {
         match self {
             Kind::Container => "container",
             Kind::Postgres => "postgres",
+            Kind::Mysql => "mysql",
             Kind::Unknown => "unknown",
         }
     }
@@ -82,7 +84,17 @@ impl Kind {
         match text {
             "container" => Kind::Container,
             "postgres" => Kind::Postgres,
+            "mysql" => Kind::Mysql,
             _ => Kind::Unknown,
+        }
+    }
+
+    pub fn engine(self) -> Option<crate::domain::entities::database::Engine> {
+        use crate::domain::entities::database::Engine;
+        match self {
+            Kind::Postgres => Some(Engine::Postgres),
+            Kind::Mysql => Some(Engine::Mysql),
+            Kind::Container | Kind::Unknown => None,
         }
     }
 

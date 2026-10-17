@@ -278,10 +278,15 @@ impl DatabaseRestController {
         // The two are the same today and will not stay that way: an
         // organisation has a quota and the machine's own frontier does
         // not.
+        let engine = match field(&form, "engine") {
+            "" => "postgres",
+            chosen => chosen,
+        };
         let asked = crate::features::databases::create_database_request::CreateDatabaseRequest {
             project: project_slug.to_string(),
             name: field(&form, "name").to_string(),
-            version: field(&form, "version").to_string(),
+            engine: engine.to_string(),
+            version: field(&form, &format!("{engine}_version")).to_string(),
             memory: field(&form, "memory").to_string(),
         };
         if let Err(reason) = asked.validate() {
@@ -458,6 +463,7 @@ mod tests {
         let (service, row) = crate::features::databases::create_database_command::CreateDatabase {
             project_id: &project.id,
             name: "orders",
+            engine: crate::domain::entities::database::Engine::Postgres,
             version: "17",
             memory_limit: 256 * 1024 * 1024,
         }
@@ -549,6 +555,7 @@ mod tests {
         let (service, row) = crate::features::databases::create_database_command::CreateDatabase {
             project_id: &project.id,
             name: "orders",
+            engine: crate::domain::entities::database::Engine::Postgres,
             version: "17",
             memory_limit: 256 * 1024 * 1024,
         }
@@ -633,6 +640,7 @@ mod tests {
         let (service, _) = crate::features::databases::create_database_command::CreateDatabase {
             project_id: &project.id,
             name: "orders",
+            engine: crate::domain::entities::database::Engine::Postgres,
             version: "17",
             memory_limit: 256 * 1024 * 1024,
         }
@@ -702,7 +710,7 @@ mod tests {
             .header("cookie", &cookie)
             .form(&[
                 ("name", "Orders"),
-                ("version", "17"),
+                ("postgres_version", "17"),
                 ("memory", &(128 * 1024 * 1024).to_string()),
             ])
             .send()
@@ -729,6 +737,49 @@ mod tests {
         assert!(!row.admin_password.is_empty());
     }
 
+    /// With scripting off both version selects are on the page and both
+    /// are sent, so the engine chosen is what decides which one is read.
+    #[tokio::test]
+    async fn the_form_reads_the_version_of_the_engine_it_chose() {
+        let console = Console::new().await;
+        let cookie = console.signed_in().await;
+        project(&console).await;
+
+        let body = console
+            .harness
+            .get("/projects/shared/databases/new")
+            .header("cookie", &cookie)
+            .send()
+            .await
+            .body;
+        assert!(body.contains("name=\"mysql_version\""), "{body}");
+        assert!(body.contains("innodb_buffer_pool_size"), "{body}");
+        crate::web::console::tests::conditions_name_real_controls(&body);
+
+        console
+            .harness
+            .post("/projects/shared/databases")
+            .header("cookie", &cookie)
+            .form(&[
+                ("name", "Orders"),
+                ("engine", "mysql"),
+                ("postgres_version", "17"),
+                ("mysql_version", "8.4"),
+                ("memory", &(256 * 1024 * 1024).to_string()),
+            ])
+            .send()
+            .await
+            .assert_status(StatusCode::SEE_OTHER);
+
+        let service = services::all(&console.database, None)
+            .await
+            .expect("services")
+            .pop()
+            .expect("one");
+        assert_eq!(service.kind, crate::domain::entities::service::Kind::Mysql);
+        assert_eq!(service.image, "docker.io/library/mysql:8.4");
+    }
+
     /// A size nothing offers would be a page showing one number and a
     /// container running another.
     #[tokio::test]
@@ -741,7 +792,11 @@ mod tests {
             .harness
             .post("/projects/shared/databases")
             .header("cookie", &cookie)
-            .form(&[("name", "Orders"), ("version", "17"), ("memory", "100")])
+            .form(&[
+                ("name", "Orders"),
+                ("postgres_version", "17"),
+                ("memory", "100"),
+            ])
             .send()
             .await;
         response.assert_status(StatusCode::SEE_OTHER);
@@ -766,6 +821,7 @@ mod tests {
         let (service, _) = crate::features::databases::create_database_command::CreateDatabase {
             project_id: &project_id,
             name: "orders",
+            engine: crate::domain::entities::database::Engine::Postgres,
             version: "17",
             memory_limit: 128 * 1024 * 1024,
         }
@@ -823,6 +879,7 @@ mod tests {
         crate::features::databases::create_database_command::CreateDatabase {
             project_id: &project.id,
             name: "orders",
+            engine: crate::domain::entities::database::Engine::Postgres,
             version: "17",
             memory_limit: 256 * 1024 * 1024,
         }
@@ -970,6 +1027,7 @@ mod tests {
         crate::features::databases::create_database_command::CreateDatabase {
             project_id: &project.id,
             name: "orders",
+            engine: crate::domain::entities::database::Engine::Postgres,
             version: "17",
             memory_limit: 256 * 1024 * 1024,
         }
@@ -1104,6 +1162,7 @@ mod tests {
         crate::features::databases::create_database_command::CreateDatabase {
             project_id: &project.id,
             name: "orders",
+            engine: crate::domain::entities::database::Engine::Postgres,
             version: "17",
             memory_limit: 256 * 1024 * 1024,
         }

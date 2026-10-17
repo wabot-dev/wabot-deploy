@@ -8,21 +8,29 @@
 
 use serde::Serialize;
 
-use crate::domain::policies::postgres;
+use crate::domain::entities::service::Kind;
+use crate::domain::policies::{mysql, postgres};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Engine {
     Postgres,
+    Mysql,
     /// A row written by a newer node. Held and refused, never parsed
     /// into a panic.
     Unknown,
 }
 
+// `Unknown` answers with Postgres's facts below because the deploy path
+// refuses it before anything is started, and Postgres is what every row
+// before a second engine was.
 impl Engine {
+    pub const OFFERED: [Engine; 2] = [Engine::Postgres, Engine::Mysql];
+
     pub fn as_str(self) -> &'static str {
         match self {
             Engine::Postgres => "postgres",
+            Engine::Mysql => "mysql",
             Engine::Unknown => "unknown",
         }
     }
@@ -32,6 +40,7 @@ impl Engine {
     pub fn label(self) -> &'static str {
         match self {
             Engine::Postgres => "PostgreSQL",
+            Engine::Mysql => "MySQL",
             Engine::Unknown => "unknown",
         }
     }
@@ -39,7 +48,90 @@ impl Engine {
     pub fn parse(text: &str) -> Self {
         match text {
             "postgres" => Engine::Postgres,
+            "mysql" => Engine::Mysql,
             _ => Engine::Unknown,
+        }
+    }
+
+    pub fn kind(self) -> Kind {
+        match self {
+            Engine::Postgres => Kind::Postgres,
+            Engine::Mysql => Kind::Mysql,
+            Engine::Unknown => Kind::Unknown,
+        }
+    }
+
+    pub fn image_for(self, version: &str) -> String {
+        match self {
+            Engine::Mysql => mysql::image_for(version),
+            Engine::Postgres | Engine::Unknown => postgres::image_for(version),
+        }
+    }
+
+    pub fn versions(self) -> &'static [&'static str] {
+        match self {
+            Engine::Mysql => &mysql::VERSIONS,
+            Engine::Postgres | Engine::Unknown => &postgres::VERSIONS,
+        }
+    }
+
+    pub fn default_version(self) -> &'static str {
+        match self {
+            Engine::Mysql => mysql::DEFAULT_VERSION,
+            Engine::Postgres | Engine::Unknown => postgres::DEFAULT_VERSION,
+        }
+    }
+
+    /// The smallest ceiling a new database of this engine is made in.
+    pub fn floor(self) -> u64 {
+        match self {
+            Engine::Mysql => mysql::FLOOR,
+            Engine::Postgres | Engine::Unknown => postgres::INITDB_FLOOR,
+        }
+    }
+
+    pub fn port(self) -> u16 {
+        match self {
+            Engine::Mysql => mysql::PORT,
+            Engine::Postgres | Engine::Unknown => postgres::PORT,
+        }
+    }
+
+    pub fn data_mount(self) -> &'static str {
+        match self {
+            Engine::Mysql => mysql::DATA_MOUNT,
+            Engine::Postgres | Engine::Unknown => postgres::DATA_MOUNT,
+        }
+    }
+
+    pub fn tls_dir(self) -> &'static str {
+        match self {
+            Engine::Mysql => mysql::TLS_DIR,
+            Engine::Postgres | Engine::Unknown => postgres::TLS_DIR,
+        }
+    }
+
+    /// Who the server runs as, by name, so the image resolves the number.
+    pub fn server_user(self) -> &'static str {
+        match self {
+            Engine::Mysql => mysql::SERVER_USER,
+            Engine::Postgres | Engine::Unknown => "postgres",
+        }
+    }
+
+    /// The file a backup of this engine leaves in its volume's directory,
+    /// which is how a restore knows a backup holds one.
+    pub fn backup_file(self) -> &'static str {
+        match self {
+            Engine::Mysql => mysql::DUMP_FILE,
+            Engine::Postgres | Engine::Unknown => postgres::BASE_FILE,
+        }
+    }
+
+    pub fn identifier(self, slug: &str, node_user: &str) -> String {
+        match self {
+            Engine::Mysql => mysql::identifier(&identifier(slug), node_user),
+            Engine::Postgres | Engine::Unknown => identifier(slug),
         }
     }
 }

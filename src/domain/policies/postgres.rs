@@ -259,6 +259,8 @@ pub fn archive_command() -> String {
 /// Where a backup being restored is mounted, inside the container.
 pub const BASE_MOUNT: &str = "/base";
 
+pub const BASE_FILE: &str = "base.tar.gz";
+
 /// Unpack a base backup into a data directory, and leave it ready to
 /// recover.
 ///
@@ -290,7 +292,7 @@ pub fn unpack_base() -> Vec<String> {
             "set -e; \
              [ -z \"$(ls -A {PGDATA} 2>/dev/null)\" ] || {{ echo 'that data directory is not empty'; exit 1; }}; \
              mkdir -p {PGDATA}; \
-             tar -xzf {BASE_MOUNT}/base.tar.gz -C {PGDATA}; \
+             tar -xzf {BASE_MOUNT}/{BASE_FILE} -C {PGDATA}; \
              mkdir -p {PGDATA}/pg_wal; \
              tar -xzf {BASE_MOUNT}/pg_wal.tar.gz -C {PGDATA}/pg_wal; \
              touch {PGDATA}/{RECOVERY_SIGNAL}; \
@@ -551,11 +553,6 @@ pub fn initdb_arguments(version: &str, memory_limit: u64) -> Option<String> {
 /// initialised is a different load; this is about the first start. Found
 /// on a VM node.
 pub const INITDB_FLOOR: u64 = 128 * MB;
-
-/// Whether a new database can be initialised inside this ceiling.
-pub fn initialises_in(memory_limit: u64) -> bool {
-    memory_limit >= INITDB_FLOOR
-}
 
 /// Who may connect, from where, and how.
 ///
@@ -1191,11 +1188,9 @@ mod tests {
         assert!(!script.contains("PGPASSWORD"), "{script}");
     }
 
-    /// `initdb` is given the preset's shared buffers where it can be,
-    /// and a new database is not started in a ceiling `initdb` does not
-    /// finish inside.
+    /// `initdb` is given the preset's shared buffers where it can be.
     #[test]
-    fn initdb_is_given_the_presets_shared_buffers_and_room_to_finish() {
+    fn initdb_is_given_the_presets_shared_buffers() {
         assert_eq!(
             initdb_arguments("17", 128 * MB).as_deref(),
             Some("--set=shared_buffers=32MB")
@@ -1207,8 +1202,6 @@ mod tests {
                 .map(String::as_str),
             Some("--set=shared_buffers=32MB")
         );
-        assert!(!initialises_in(64 * MB));
-        assert!(initialises_in(128 * MB));
     }
 
     /// The mistake the whole table exists to prevent: `shared_buffers`
