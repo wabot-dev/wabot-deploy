@@ -14,6 +14,12 @@
 //! reachable — so "does this name resolve to the same place" is
 //! answerable with two lookups and no assumptions.
 //!
+//! **And against the addresses it holds**, which the first draft left out
+//! as unreliable. They are not a guess about the public address — they are
+//! certain where they apply, because a name resolving to one arrives
+//! here. They were needed the first time a node ran on a Debian cloud
+//! image: its own name resolved, through `/etc/hosts`, to `127.0.1.1`.
+//!
 //! ## And not only against *this* node
 //!
 //! **This was the bug.** The question was "does it point here", and a
@@ -186,9 +192,19 @@ pub async fn resolves_to(hostname: &str, references: &[Reference]) -> Resolution
     let mut known = Vec::new();
     let mut addresses = Vec::new();
     for reference in references {
-        let at = lookup(&reference.at).await;
+        let mut at = lookup(&reference.at).await;
         if at.is_empty() {
             continue;
+        }
+        // An address this machine holds arrives here whatever `/etc/hosts`
+        // says its own name is: cloud-init writes `127.0.1.1 <fqdn>` on
+        // Debian and Ubuntu images, and the node took itself for loopback.
+        if reference.is_self {
+            at.extend(
+                crate::infra::network::lan::held()
+                    .into_iter()
+                    .map(|held| IpAddr::V4(held.address)),
+            );
         }
         known.push(format!(
             "{} at {}",
@@ -520,6 +536,28 @@ mod tests {
     async fn a_name_that_resolves_where_the_node_does_is_here() {
         let outcome = resolves_here("localhost", "localhost").await;
         assert!(outcome.ok() && outcome.reaches_here(), "{outcome:?}");
+    }
+
+    /// Found on a Debian node: cloud-init writes `127.0.1.1 <fqdn>` into
+    /// `/etc/hosts`, so the node's own name resolved to the loopback there
+    /// and every name pointing at its public address was refused as
+    /// pointing elsewhere. `localhost` stands in for that answer.
+    #[tokio::test]
+    async fn an_address_this_machine_holds_is_here_whatever_its_own_name_resolves_to() {
+        let Some(held) = crate::infra::network::lan::held()
+            .first()
+            .map(|held| held.address)
+        else {
+            return;
+        };
+        let outcome = resolves_here(&held.to_string(), "localhost").await;
+        assert!(outcome.reaches_here(), "{held}: {outcome:?}");
+
+        let elsewhere = resolves_here("192.0.2.1", "localhost").await;
+        assert!(
+            !elsewhere.ok(),
+            "an address nobody here holds: {elsewhere:?}"
+        );
     }
 
     #[tokio::test]
