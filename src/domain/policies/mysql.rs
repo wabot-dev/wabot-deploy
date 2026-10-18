@@ -181,6 +181,58 @@ pub fn dump_into(host: &str, port: u16, user: &str, database_name: &str) -> Vec<
     ]
 }
 
+pub const IMPORT_MOUNT: &str = "/import";
+
+/// The admin becomes the definer of every view, trigger, routine and event
+/// in the dump. The user that made them where the dump came from does not
+/// exist here, and naming another user takes `SET_ANY_DEFINER` — the right
+/// to make objects that run as root. Anchored to the line starts
+/// `mysqldump` writes them at, so a row that mentions one is not rewritten.
+pub const DEFINERS: &str = r#"sed -E -e 's#^/\*!50013 DEFINER=`[^`]*`@`[^`]*` #/*!50013 #' -e 's#^(/\*!50003 CREATE\*/ )/\*!50017 DEFINER=`[^`]*`@`[^`]*`\*/ ?#\1#' -e 's#^(/\*!50106 CREATE\*/ )/\*!50117 DEFINER=`[^`]*`@`[^`]*`\*/ ?#\1#' -e 's#^CREATE DEFINER=`[^`]*`@`[^`]*` #CREATE #'"#;
+
+/// Load a dump into the database as its own admin, so what it creates
+/// belongs to the user the application connects as.
+pub fn load_from(
+    host: &str,
+    port: u16,
+    user: &str,
+    database_name: &str,
+    file: &str,
+    compressed: bool,
+) -> Vec<String> {
+    let read = match compressed {
+        true => "gunzip -c",
+        false => "cat",
+    };
+    vec![
+        "sh".to_string(),
+        "-c".to_string(),
+        format!(
+            "set -o pipefail; {read} {IMPORT_MOUNT}/{file} | {DEFINERS} | mysql --host={host} \
+             --port={port} --user={user} --ssl-mode=REQUIRED --default-character-set=utf8mb4 \
+             --database={database_name}"
+        ),
+    ]
+}
+
+pub fn count_tables(host: &str, port: u16, user: &str, database_name: &str) -> Vec<String> {
+    [
+        "mysql",
+        &format!("--host={host}"),
+        &format!("--port={port}"),
+        &format!("--user={user}"),
+        "--ssl-mode=REQUIRED",
+        "--skip-column-names",
+        &format!(
+            "--execute=SELECT COUNT(*) FROM information_schema.tables \
+             WHERE table_schema = '{database_name}'"
+        ),
+    ]
+    .iter()
+    .map(|argument| argument.to_string())
+    .collect()
+}
+
 /// A SIGHUP does not reread the certificate: measured, the server kept
 /// serving the old one.
 pub fn reload_tls(host: &str, port: u16, user: &str) -> Vec<String> {
@@ -292,6 +344,65 @@ mod tests {
         assert!(command.contains("set -o pipefail"), "{command}");
         assert!(command.contains("--single-transaction"), "{command}");
         assert!(!command.contains("--password"), "{command}");
+    }
+
+    #[test]
+    fn an_import_that_fails_part_way_is_an_import_that_failed() {
+        let command =
+            load_from("10.42.2.200", PORT, "orders", "orders", "dump.sql.gz", true).join(" ");
+        assert!(command.contains("set -o pipefail"), "{command}");
+        assert!(
+            command.contains("gunzip -c /import/dump.sql.gz"),
+            "{command}"
+        );
+        assert!(command.contains("--database=orders"), "{command}");
+        assert!(!command.contains("--password"), "{command}");
+        // The client in the image speaks latin1 with no locale, so a dump
+        // that does not say its encoding would have every accent encoded
+        // twice on the way in. Measured on the VM node.
+        assert!(
+            command.contains("--default-character-set=utf8mb4"),
+            "{command}"
+        );
+        let plain = load_from("10.42.2.200", PORT, "orders", "orders", "dump.sql", false).join(" ");
+        assert!(plain.contains("cat /import/dump.sql |"), "{plain}");
+    }
+
+    /// Found importing Ghost's database on the VM node: Ghost 6 makes a
+    /// view, the dump named the user that made it, and the load stopped at
+    /// "you need the SUPER or SET_ANY_DEFINER privilege".
+    #[test]
+    fn a_definer_becomes_the_importer_and_a_row_that_mentions_one_does_not() {
+        let dump = [
+            "/*!50013 DEFINER=`ghost`@`%` SQL SECURITY INVOKER */",
+            "/*!50003 CREATE*/ /*!50017 DEFINER=`root`@`localhost`*/ /*!50003 TRIGGER t BEFORE INSERT ON x FOR EACH ROW SET @a=1 */;;",
+            "/*!50106 CREATE*/ /*!50117 DEFINER=`root`@`localhost`*/ /*!50106 EVENT e ON SCHEDULE EVERY 1 DAY DO SELECT 1 */ ;;",
+            "CREATE DEFINER=`ghost`@`%` PROCEDURE `p`()",
+            "INSERT INTO `posts` VALUES (1,'how /*!50013 DEFINER=`a`@`b` works');",
+        ]
+        .join("\n");
+        let output = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(format!("printf '%s\\n' \"$DUMP\" | {DEFINERS}"))
+            .env("DUMP", &dump)
+            .output()
+            .expect("sed runs");
+        let rewritten = String::from_utf8(output.stdout).expect("text");
+        let lines: Vec<&str> = rewritten.lines().collect();
+        assert_eq!(lines[0], "/*!50013 SQL SECURITY INVOKER */");
+        assert_eq!(
+            lines[1],
+            "/*!50003 CREATE*/ /*!50003 TRIGGER t BEFORE INSERT ON x FOR EACH ROW SET @a=1 */;;"
+        );
+        assert_eq!(
+            lines[2],
+            "/*!50106 CREATE*/ /*!50106 EVENT e ON SCHEDULE EVERY 1 DAY DO SELECT 1 */ ;;"
+        );
+        assert_eq!(lines[3], "CREATE PROCEDURE `p`()");
+        assert_eq!(
+            lines[4],
+            "INSERT INTO `posts` VALUES (1,'how /*!50013 DEFINER=`a`@`b` works');"
+        );
     }
 
     #[test]

@@ -52,6 +52,80 @@ pub fn ensure(data_dir: &Path, container_id: &str, name: &str) -> std::io::Resul
     Ok(path)
 }
 
+pub struct Filled {
+    pub entries: u64,
+    /// What the archive tried to write outside the directory.
+    pub skipped: Vec<String>,
+}
+
+/// Unpack an archive into one copy's directory for one volume, over what
+/// is there: a file of the same name is replaced, nothing else is removed.
+pub fn fill(
+    data_dir: &Path,
+    container_id: &str,
+    name: &str,
+    archive: &Path,
+    owner: Option<(u32, u32)>,
+) -> std::io::Result<Filled> {
+    let into = ensure(data_dir, container_id, name)?;
+    let file = std::fs::File::open(archive)?;
+    let compressed = archive
+        .file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.ends_with(".gz") || name.ends_with(".tgz"));
+    let reader: Box<dyn std::io::Read> = match compressed {
+        true => Box::new(flate2::read::GzDecoder::new(file)),
+        false => Box::new(file),
+    };
+    let mut unpacking = tar::Archive::new(reader);
+    unpacking.set_preserve_permissions(true);
+    unpacking.set_overwrite(true);
+    unpacking.set_preserve_ownerships(owner.is_none() && running_as_root());
+
+    let mut filled = Filled {
+        entries: 0,
+        skipped: Vec::new(),
+    };
+    for entry in unpacking.entries()? {
+        let mut entry = entry?;
+        let path = entry.path()?.display().to_string();
+        match entry.unpack_in(&into)? {
+            true => filled.entries += 1,
+            false => filled.skipped.push(path),
+        }
+    }
+    if let Some((uid, gid)) = owner {
+        own_tree(&into, uid, gid)?;
+    }
+    Ok(filled)
+}
+
+#[cfg(unix)]
+fn running_as_root() -> bool {
+    unsafe { libc::geteuid() == 0 }
+}
+
+#[cfg(not(unix))]
+fn running_as_root() -> bool {
+    false
+}
+
+#[cfg(unix)]
+fn own_tree(path: &Path, uid: u32, gid: u32) -> std::io::Result<()> {
+    std::os::unix::fs::lchown(path, Some(uid), Some(gid))?;
+    if std::fs::symlink_metadata(path)?.is_dir() {
+        for entry in std::fs::read_dir(path)? {
+            own_tree(&entry?.path(), uid, gid)?;
+        }
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn own_tree(_path: &Path, _uid: u32, _gid: u32) -> std::io::Result<()> {
+    Ok(())
+}
+
 /// Throw away everything one copy stored.
 ///
 /// The whole container's directory, not one volume of it: the caller is
@@ -164,7 +238,6 @@ pub async fn of_service(
 /// The directory stays. Removing the row is a change to what the next
 /// deployment mounts; removing the bytes is a decision with no way
 /// back, and the two do not belong in one call.
-#[allow(dead_code)]
 pub async fn delete(database: &SqliteDatabase, id: &str) -> PlatformResult<()> {
     let id = id.to_string();
     database
@@ -188,6 +261,46 @@ fn decode(row: &wabot::sqlite::rusqlite::Row<'_>) -> wabot::sqlite::rusqlite::Re
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn entry(archive: &mut tar::Builder<Vec<u8>>, raw_name: &str, body: &[u8]) {
+        let mut header = tar::Header::new_old();
+        header.as_old_mut().name[..raw_name.len()].copy_from_slice(raw_name.as_bytes());
+        header.set_size(body.len() as u64);
+        header.set_mode(0o644);
+        header.set_entry_type(tar::EntryType::Regular);
+        header.set_cksum();
+        archive.append(&header, body).expect("appended");
+    }
+
+    /// An archive is somebody else's file, unpacked as root. Built by hand,
+    /// because the library refuses to write these two names itself.
+    #[test]
+    fn a_volume_is_filled_and_nothing_in_the_archive_leaves_it() {
+        let node = tempfile::tempdir().expect("tempdir");
+        let mut archive = tar::Builder::new(Vec::new());
+        entry(&mut archive, "images/2020/07/cover.jpg", b"pixels");
+        entry(&mut archive, "../escape.txt", b"out");
+        entry(&mut archive, "/etc/abs.txt", b"out");
+        let tarball = archive.into_inner().expect("tar");
+        let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+        std::io::Write::write_all(&mut gz, &tarball).expect("gz");
+        let path = node.path().join("content.tar.gz");
+        std::fs::write(&path, gz.finish().expect("gz")).expect("written");
+
+        let filled = fill(node.path(), "shop.ghost", "content", &path, None).expect("filled");
+
+        let volume = directory(node.path(), "shop.ghost", "content");
+        assert_eq!(
+            std::fs::read(volume.join("images/2020/07/cover.jpg")).expect("unpacked"),
+            b"pixels"
+        );
+        assert!(!volume.parent().expect("parent").join("escape.txt").exists());
+        assert_eq!(filled.skipped, vec!["../escape.txt".to_string()]);
+        // An absolute name is read as relative to the volume, as GNU tar
+        // reads it, so it lands inside rather than over the node's /etc.
+        assert!(volume.join("etc/abs.txt").exists());
+        assert_eq!(filled.entries, 2);
+    }
     use crate::infra::repositories::services;
 
     async fn service() -> (SqliteDatabase, String) {

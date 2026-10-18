@@ -909,6 +909,14 @@ impl ServiceUiController {
                 history: config_history::of_service(&self.state.database, &service.id).await?,
             },
             Tab::Resources => Panel::Resources,
+            Tab::Storage => Panel::Storage {
+                volumes: crate::infra::repositories::volumes::of_service(
+                    &self.state.database,
+                    &service.id,
+                )
+                .await?,
+                add: format!("{here}/volumes"),
+            },
             Tab::Network => {
                 let domain = crate::infra::node::settings::domain(&self.state.database).await;
                 // Whether each HTTPS name has a certificate yet. Asked

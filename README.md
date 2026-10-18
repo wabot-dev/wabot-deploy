@@ -205,7 +205,7 @@ beneath it. See
 | &nbsp;&nbsp;`network/`, `node/`, `update/`, `backup/` | the nodes it knows and the errands between them; this machine; the self-update; taking and restoring backups |
 | `src/shell/` | what every feature's doors are built with: the console's state, the session and form readers, the layout, the pieces and words more than one feature uses |
 | `src/web/` | the router that mounts every feature, and the doors no feature owns: health, the control plane, the registry, the page a secret is shown on once |
-| `src/cli/` | the verbs: `install`, `serve`, `doctor`, `join`, `setup-token`, `passwd`, `backup`, `restore`, `restore-node`, `clean`, `log-writer`, `containerd` |
+| `src/cli/` | the verbs: `install`, `serve`, `doctor`, `join`, `setup-token`, `passwd`, `backup`, `restore`, `restore-node`, `import`, `clean`, `log-writer`, `containerd` |
 | `migrations/` | embedded with `include_str!`, so the binary stands alone |
 | `assets/` | the design system, vendored — a node must not need a CDN |
 

@@ -9,6 +9,7 @@ pub mod backup;
 pub mod clean;
 pub mod containerd;
 pub mod doctor;
+pub mod import;
 pub mod install;
 pub mod join;
 pub mod log_writer;
@@ -150,6 +151,34 @@ pub enum Command {
         /// rather than because the data stopped mattering.
         #[arg(long, requires = "apply")]
         volumes: bool,
+    },
+
+    /// Bring what a service had somewhere else: a dump into a managed
+    /// database, or an archive into a service's volume.
+    ///
+    /// For moving here. A database is loaded as its own admin, and one that
+    /// already holds tables is refused rather than mixed with it. An
+    /// archive is unpacked into every copy of the volume on this node, and
+    /// an entry that would land outside it is skipped and named.
+    Import {
+        /// Which database or service, by the name the console shows — or
+        /// `<project>/<name>` when two projects have one by that name.
+        #[arg(value_name = "SERVICE")]
+        service: String,
+
+        /// The dump (`.sql`, `.sql.gz`), or with `--volume` the archive
+        /// (`.tar`, `.tar.gz`).
+        #[arg(long, value_name = "FILE")]
+        from: PathBuf,
+
+        /// Unpack `--from` into this volume of the service instead.
+        #[arg(long, value_name = "NAME")]
+        volume: Option<String>,
+
+        /// Who owns what was unpacked, as `UID[:GID]`, for an image whose
+        /// process does not run as the archive's owner.
+        #[arg(long, value_name = "UID[:GID]", requires = "volume")]
+        owner: Option<String>,
     },
 
     /// Restore a database to a moment, as a new one beside it.

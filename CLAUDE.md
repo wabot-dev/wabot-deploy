@@ -455,9 +455,10 @@ happened:
 - Projects — and so organisations — are not isolated on the network:
   `FORWARD` accepts everything, so one tenant's container reaches
   another's services and the operator's databases. Measured 2026-10-15.
-- A container that dies is never started again: `reconcile` runs once,
-  at boot. It needs a restart policy, which is a decision before it is
-  code.
+- A service with a volume runs only on the node that keeps it: the errand
+  that places a copy elsewhere carries no volumes, so both directions are
+  refused with a sentence rather than starting a copy on an empty
+  directory.
 - A service created under an organisation's quota runs with no ceiling.
 - A running container no row claims — what a restore from an older
   backup leaves — is on no page.
@@ -469,6 +470,17 @@ happened:
 All four, and the rest of what the VM walk of 2026-10-14 left, with how
 to reproduce each and how to re-test what it fixed:
 [`docs/vm-walk.md`](docs/vm-walk.md).
+
+**A copy that stops on its own is started again, and a deployment that
+failed is not.** Decided by Jorge on 2026-10-17: restart with a growing
+wait — at once, then 10 s, 30 s and up to five minutes, forgiven after ten
+minutes up — and never what an operator stopped. `Deployer::watch` runs
+every ten seconds and tells the two apart by the address: a failed
+deployment clears it, so a copy with an address and no container is one
+that died. It is also what brings back a copy the boot's `reconcile`
+skipped because containerd was not answering yet, which on the VM node was
+every one of them. The reason lands on the copy's row: when, how it
+stopped, and its last line.
 
 **Timestamped logs are a switch, and the switch shows its price.**
 `file://` is the default: containerd appends the container's bytes and no

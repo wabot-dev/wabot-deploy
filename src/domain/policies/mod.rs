@@ -7,4 +7,5 @@
 pub mod mysql;
 pub mod postgres;
 pub mod presets;
+pub mod restarts;
 pub mod wal;

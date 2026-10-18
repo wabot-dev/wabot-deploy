@@ -960,6 +960,49 @@ pub fn slot_name(slot: u32) -> String {
     format!("wabot_slot_{slot}")
 }
 
+pub const IMPORT_MOUNT: &str = "/import";
+
+/// Load a dump as the database's own admin, in one transaction: a dump
+/// that fails part way leaves the database as empty as it was.
+pub fn load_from(
+    host: &str,
+    port: u16,
+    user: &str,
+    database_name: &str,
+    file: &str,
+    compressed: bool,
+) -> Vec<String> {
+    let read = match compressed {
+        true => "gunzip -c",
+        false => "cat",
+    };
+    vec![
+        "sh".to_string(),
+        "-c".to_string(),
+        format!(
+            "set -o pipefail; {read} {IMPORT_MOUNT}/{file} | psql \
+             \"host={host} port={port} user={user} dbname={database_name} sslmode=require\" \
+             --no-psqlrc --quiet --set ON_ERROR_STOP=1 --single-transaction --file -"
+        ),
+    ]
+}
+
+pub fn count_tables(host: &str, port: u16, user: &str, database_name: &str) -> Vec<String> {
+    [
+        "psql",
+        &format!("host={host} port={port} user={user} dbname={database_name} sslmode=require"),
+        "--no-psqlrc",
+        "--tuples-only",
+        "--no-align",
+        "--command",
+        "SELECT COUNT(*) FROM information_schema.tables \
+         WHERE table_schema NOT IN ('pg_catalog', 'information_schema')",
+    ]
+    .iter()
+    .map(|argument| argument.to_string())
+    .collect()
+}
+
 /// What somebody pastes into an application.
 pub fn connection_url(
     user: &str,
@@ -975,6 +1018,16 @@ pub fn connection_url(
 mod tests {
     use super::*;
     use crate::domain::policies::presets;
+
+    #[test]
+    fn an_import_that_fails_part_way_leaves_the_database_as_it_was() {
+        let command =
+            load_from("10.42.2.200", PORT, "orders", "orders", "dump.sql.gz", true).join(" ");
+        assert!(command.contains("--single-transaction"), "{command}");
+        assert!(command.contains("ON_ERROR_STOP=1"), "{command}");
+        assert!(command.contains("set -o pipefail"), "{command}");
+        assert!(!command.contains("password="), "{command}");
+    }
 
     /// The primary is asked about *slots*, not about connected
     /// standbys, and the reason is that absence is not an answer:

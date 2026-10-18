@@ -211,11 +211,43 @@ pub fn resume(data_dir: &Path, container_id: &str) -> std::io::Result<PathBuf> {
     Ok(path)
 }
 
+const BOUNDARY: &str = "── wabot-deploy ── started";
+
+/// The last thing a container said, as a person would read it: not the
+/// node's own line marking the next start, and without the colour codes
+/// a program writes for a terminal.
+pub fn last_words(data_dir: &Path, container_id: &str) -> Option<String> {
+    tail(data_dir, container_id, 4_000)?
+        .lines()
+        .rev()
+        .map(without_escapes)
+        .find(|line| !line.is_empty() && !line.starts_with(BOUNDARY))
+}
+
+fn without_escapes(line: &str) -> String {
+    let mut plain = String::with_capacity(line.len());
+    let mut chars = line.chars();
+    while let Some(c) = chars.next() {
+        if c != '\u{1b}' {
+            plain.push(c);
+            continue;
+        }
+        if chars.next() == Some('[') {
+            for code in chars.by_ref() {
+                if ('@'..='~').contains(&code) {
+                    break;
+                }
+            }
+        }
+    }
+    plain.trim().to_string()
+}
+
 /// The line that separates one run from the next.
 fn boundary() -> String {
     let now = time::OffsetDateTime::now_utc();
     format!(
-        "── wabot-deploy ── started {:04}-{:02}-{:02} {:02}:{:02}:{:02} UTC ──",
+        "{BOUNDARY} {:04}-{:02}-{:02} {:02}:{:02}:{:02} UTC ──",
         now.year(),
         now.month() as u8,
         now.day(),
@@ -866,6 +898,24 @@ pub fn discard(data_dir: &Path, container_id: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Found restarting Ghost on the VM node: the note named the node's own
+    /// separator as the container's last line, and kept the colour codes.
+    #[test]
+    fn the_last_words_are_the_containers_and_plain() {
+        let node = tempfile::tempdir().expect("tempdir");
+        let path = resume(node.path(), "shop.ghost").expect("log");
+        std::fs::write(
+            &path,
+            "\u{1b}[36mINFO\u{1b}[39m Ghost booted\n\u{1b}[31mERROR\u{1b}[39m out of memory\n\n",
+        )
+        .expect("written");
+        resume(node.path(), "shop.ghost").expect("the next start");
+        assert_eq!(
+            last_words(node.path(), "shop.ghost").as_deref(),
+            Some("ERROR out of memory")
+        );
+    }
 
     /// Keeping every container's output is only safe with a bound on
     /// it: the shim appends, so a chatty service

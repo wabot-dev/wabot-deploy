@@ -48,19 +48,31 @@ pub struct SetServicePlacement<'a> {
 
 impl SetServicePlacement<'_> {
     pub async fn run(&self, on: On<'_>) -> Result<(), String> {
-        if self.service.kind == Kind::Mysql {
-            let moved = self
+        let elsewhere = !self.on.trim().is_empty()
+            || self
                 .fields
                 .iter()
                 .any(|(key, node)| key.starts_with("slot-") && !node.trim().is_empty());
-            if self.replicas.trim().parse::<u32>().unwrap_or(1) != 1
-                || !self.on.trim().is_empty()
-                || moved
-            {
-                return Err("a MySQL database runs as one copy, on this node: \
-                     read-only copies are not built for it yet"
-                    .into());
-            }
+        if self.service.kind == Kind::Mysql
+            && (elsewhere || self.replicas.trim().parse::<u32>().unwrap_or(1) != 1)
+        {
+            return Err("a MySQL database runs as one copy, on this node: \
+                 read-only copies are not built for it yet"
+                .into());
+        }
+        // The errand that places a copy elsewhere carries no volumes.
+        if elsewhere
+            && !self.service.kind.is_managed()
+            && !crate::infra::repositories::volumes::of_service(on.database, &self.service.id)
+                .await
+                .map_err(|error| error.to_string())?
+                .is_empty()
+        {
+            return Err(
+                "this service keeps a volume, which is a directory on this machine: \
+                 a copy on another node would start without it"
+                    .into(),
+            );
         }
         let (database, deployer) = (on.database, on.deployer);
         let placements = replicas::of_service(database, &self.service.id)

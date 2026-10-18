@@ -377,6 +377,28 @@ pub async fn run(config: Config) -> anyhow::Result<i32> {
                 }
             }
         })
+        // A copy that stopped on its own, started again with a growing
+        // wait. Its first pass waits too: the boot's `reconcile` is
+        // bringing up everything that is missing, and two passes starting
+        // the same copy would be one deployment too many.
+        .service_with_cancel("restarts", {
+            let deployer = deployer.clone();
+            move |cancel| async move {
+                let mut restarts = crate::infra::deploy::restarts::Restarts::default();
+                let mut wait = std::time::Duration::from_secs(30);
+                loop {
+                    tokio::select! {
+                        _ = cancel.cancelled() => return Ok::<(), anyhow::Error>(()),
+                        _ = tokio::time::sleep(wait) => {}
+                    }
+                    wait = std::time::Duration::from_secs(10);
+                    let started = deployer.watch(&mut restarts).await;
+                    if started > 0 {
+                        tracing::info!(started, "copies started again");
+                    }
+                }
+            }
+        })
         // A renewed certificate reaching a running database.
         //
         // Its own loop rather than a step of the certificate loop: that

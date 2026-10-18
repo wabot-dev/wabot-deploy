@@ -5,6 +5,7 @@ use crate::domain::entities::port::Port;
 use crate::domain::entities::project::Project;
 use crate::domain::entities::replica::Replica;
 use crate::domain::entities::service::Service;
+use crate::domain::entities::volume::Volume;
 use crate::features::databases::database_cards_component;
 use crate::features::services::service_push_component::Push;
 use crate::features::services::texts::t;
@@ -40,6 +41,7 @@ pub enum Tab {
     Environment,
     Resources,
     Network,
+    Storage,
     Replicas,
     Logs,
     Danger,
@@ -55,6 +57,7 @@ impl Tab {
             Tab::Environment => "environment",
             Tab::Resources => "resources",
             Tab::Network => "network",
+            Tab::Storage => "storage",
             Tab::Replicas => "replicas",
             Tab::Logs => "logs",
             Tab::Danger => "danger",
@@ -68,6 +71,7 @@ impl Tab {
             Tab::Environment => t("Environment"),
             Tab::Resources => t("Resources"),
             Tab::Network => t("Network"),
+            Tab::Storage => t("Storage"),
             Tab::Replicas => t("Replicas"),
             Tab::Logs => t("Logs"),
             Tab::Danger => t("Danger"),
@@ -81,6 +85,7 @@ impl Tab {
             Tab::Environment,
             Tab::Resources,
             Tab::Network,
+            Tab::Storage,
             Tab::Replicas,
             Tab::Logs,
             Tab::Danger,
@@ -93,7 +98,13 @@ impl Tab {
     pub fn of(service: &Service) -> Vec<Tab> {
         let mut tabs = match service.kind.is_managed() {
             true => vec![Tab::Database, Tab::Resources],
-            false => vec![Tab::Image, Tab::Environment, Tab::Resources, Tab::Network],
+            false => vec![
+                Tab::Image,
+                Tab::Environment,
+                Tab::Resources,
+                Tab::Network,
+                Tab::Storage,
+            ],
         };
         // Where the copies go is a decision only the node that placed
         // them can make. A service that arrived on an errand has none to
@@ -155,6 +166,10 @@ pub enum Panel {
         history: Vec<Revision>,
     },
     Resources,
+    Storage {
+        volumes: Vec<Volume>,
+        add: String,
+    },
     Network {
         ports: Vec<Port>,
         /// Per port: its id, the name, what is installed and what would
@@ -677,6 +692,64 @@ pub fn render<'a>(page: &'a ServiceSettings<'a>) -> impl Renderable + 'a {
                     </section>
                 }
             }
+            Panel::Storage { volumes, add } => {
+                <section class="stack" id="volumes">
+                    <p class="card-label">(t("Volumes"))</p>
+                    @if volumes.is_empty() {
+                        <p class="tile-detail">(t("Nothing is kept. Every deployment starts from the \
+                             image, so anything the container wrote is gone — right for a service \
+                             that keeps its data elsewhere, and the loss of everything for one \
+                             that does not."))</p>
+                    } @else {
+                        <table>
+                            <thead>
+                                <tr>
+                                    <th>(t("Path in the container"))</th>
+                                    <th>(t("Name"))</th>
+                                    <th></th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                @for volume in volumes {
+                                    <tr>
+                                        <td class="mono">(&volume.path)</td>
+                                        <td class="mono">(&volume.name)</td>
+                                        <td>
+                                            <form method="post"
+                                                  action=(format!("{add}/{}/delete", volume.id))>
+                                                <button class="btn btn-ghost destructive btn-sm"
+                                                        type="submit">
+                                                    (t("Stop keeping"))
+                                                </button>
+                                            </form>
+                                        </td>
+                                    </tr>
+                                }
+                            </tbody>
+                        </table>
+                        <p class="field-hint">(t("Stop keeping unmounts it at the next deployment and \
+                             leaves what it holds on this node's disk, where adding the same name \
+                             again finds it. Deleting the service is what removes it."))</p>
+                    }
+
+                    <p class="card-label">(t("Keep a directory"))</p>
+                    <form method="post" action=(add) class="card stack">
+                        <label for="volume-path">(t("Path in the container"))</label>
+                        <input id="volume-path" name="path" type="text" autocomplete="off"
+                               class="mono" required placeholder="/var/lib/ghost/content">
+                        <label for="volume-name">(t("Name"))</label>
+                        <input id="volume-name" name="name" type="text" autocomplete="off"
+                               class="mono" placeholder=(t("the last part of the path"))>
+                        <p class="field-hint">(t("A directory on this node, one per copy, mounted at that \
+                             path from the next deployment on. Whatever the image had there is \
+                             hidden by it, so an empty volume over a directory the image fills \
+                             starts empty. Backups copy it as files while the service runs."))</p>
+                        <div class="actions">
+                            <button class="btn btn-secondary" type="submit">(t("Keep it"))</button>
+                        </div>
+                    </form>
+                </section>
+            }
             Panel::Replicas { placements, nodes, silent, queued } => {
                 @if service.is_ours() {
                     (service_placement_component::placement_card(
@@ -691,8 +764,9 @@ pub fn render<'a>(page: &'a ServiceSettings<'a>) -> impl Renderable + 'a {
                              it stored on this node. There is no undo and there is no backup — a \
                              read-only copy is not one, because a deletion reaches it too."))</p>
                     } @else {
-                        <p class="tile-detail">(t("Deleting a service stops its container and removes it. The \
-                             images it was built from stay in the registry."))</p>
+                        <p class="tile-detail">(t("Deleting a service stops its container and removes it, \
+                             and everything its volumes kept on this node. The images it was built \
+                             from stay in the registry."))</p>
                     }
                     <form method="post" action=(format!("{base}/delete")) class="stack">
                         <label for="confirm">(t("Type the name to confirm: "))(&service.slug)</label>

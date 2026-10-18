@@ -82,6 +82,12 @@ fn main() -> std::process::ExitCode {
                 into,
                 from,
             } => cli::backup::restore(config, database, to, into, from).await,
+            Command::Import {
+                service,
+                from,
+                volume,
+                owner,
+            } => cli::import::import(config, service, from, volume, owner).await,
             Command::Containerd { pull, run, port } => cli::containerd::run(pull, run, port).await,
         }
     });

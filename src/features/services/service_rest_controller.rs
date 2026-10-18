@@ -434,6 +434,111 @@ impl ServiceRestController {
         }
     }
 
+    #[post("/projects/:project/services/:service/volumes")]
+    #[raw]
+    #[middleware(SessionMiddleware)]
+    async fn add_volume(&self, request: Request) -> RestResult<Response> {
+        let path = request.uri().path().to_string();
+        let Some((project, service, _)) = self.locate(&path).await? else {
+            return Ok(see_other("/?error=no+such+service"));
+        };
+        let here = format!(
+            "/projects/{}/services/{}/settings/storage",
+            project.slug, service.slug
+        );
+        let form = match read_form(request).await {
+            Ok(form) => form,
+            Err(response) => return Ok(response),
+        };
+        let Some(account) = signed_in(&self.auth) else {
+            return Ok(see_other("/sign-in"));
+        };
+        let asked =
+            crate::features::services::add_service_volume_request::AddServiceVolumeRequest {
+                path: field(&form, "path").to_string(),
+                name: field(&form, "name").to_string(),
+            };
+        if let Err(reason) = asked.validate() {
+            return Ok(back_with_error(&here, &reason.to_string()));
+        }
+        let added = match crate::domain::authz::node_user::belongs_here(&account) {
+            true => {
+                crate::features::services::node_user_add_service_volume::run(
+                    &self.state.database,
+                    &account,
+                    &service,
+                    &asked,
+                )
+                .await
+            }
+            false => {
+                crate::features::services::tenant_user_add_service_volume::run(
+                    &self.state.database,
+                    &account,
+                    &service,
+                    &asked,
+                )
+                .await
+            }
+        };
+        match added {
+            Ok(_) => {
+                self.enqueue(&service.id, None).await;
+                Ok(see_other(&format!("{here}#volumes")))
+            }
+            Err(reason) => Ok(back_with_error(&here, &reason)),
+        }
+    }
+
+    #[post("/projects/:project/services/:service/volumes/:volume/delete")]
+    #[raw]
+    #[middleware(SessionMiddleware)]
+    async fn delete_volume(&self, request: Request) -> RestResult<Response> {
+        let path = request.uri().path().to_string();
+        let segments = crate::shell::auth::segments(&path);
+        let Some((project, service, _)) = self.locate(&path).await? else {
+            return Ok(see_other("/?error=no+such+service"));
+        };
+        let here = format!(
+            "/projects/{}/services/{}/settings/storage",
+            project.slug, service.slug
+        );
+        let ["projects", _, "services", _, "volumes", volume_id, "delete"] = segments.as_slice()
+        else {
+            return Ok(see_other(&here));
+        };
+        let Some(account) = signed_in(&self.auth) else {
+            return Ok(see_other("/sign-in"));
+        };
+        let removed = match crate::domain::authz::node_user::belongs_here(&account) {
+            true => {
+                crate::features::services::node_user_delete_service_volume::run(
+                    &self.state.database,
+                    &account,
+                    &service,
+                    volume_id,
+                )
+                .await
+            }
+            false => {
+                crate::features::services::tenant_user_delete_service_volume::run(
+                    &self.state.database,
+                    &account,
+                    &service,
+                    volume_id,
+                )
+                .await
+            }
+        };
+        match removed {
+            Ok(()) => {
+                self.enqueue(&service.id, None).await;
+                Ok(see_other(&format!("{here}#volumes")))
+            }
+            Err(reason) => Ok(back_with_error(&here, &reason)),
+        }
+    }
+
     /// Deploy one release — the newest, or an older one, which is
     /// what a rollback is.
     #[post("/projects/:project/services/:service/releases/:release/deploy")]
@@ -3587,6 +3692,197 @@ mod tests {
     /// And it is on the page, with the button that takes it.
     /// A size the ladder does not have is saved, and a database's is not.
     ///
+    /// Ghost keeps its images and themes in `/var/lib/ghost/content`, and
+    /// a service could not say so: only a database ever got a volume, so
+    /// every deployment of it would have started from an empty site.
+    #[tokio::test]
+    async fn a_service_keeps_a_directory_from_its_storage_tab() {
+        let console = Console::new().await;
+        let cookie = console.signed_in().await;
+        let service = placed_service(&console, &cookie).await;
+
+        let page = console
+            .ui
+            .with_header("cookie", cookie.clone())
+            .get("/projects/shared/services/web/settings/storage")
+            .await;
+        let html = page.html();
+        assert!(
+            html.contains("action=\"/projects/shared/services/web/volumes\""),
+            "{html}"
+        );
+
+        console
+            .harness
+            .post("/projects/shared/services/web/volumes")
+            .header("cookie", &cookie)
+            .form(&[("path", "/var/lib/ghost/content/"), ("name", "")])
+            .send()
+            .await
+            .assert_status(StatusCode::SEE_OTHER);
+        let kept = crate::infra::repositories::volumes::of_service(&console.database, &service.id)
+            .await
+            .expect("volumes");
+        assert_eq!(kept.len(), 1);
+        assert_eq!(kept[0].path, "/var/lib/ghost/content");
+        assert_eq!(
+            kept[0].name, "content",
+            "named after the last part of the path"
+        );
+
+        let directory =
+            crate::infra::repositories::volumes::ensure(&console.data_dir, "shared.web", "content")
+                .expect("directory");
+        std::fs::write(directory.join("image.jpg"), "bytes").expect("a file in it");
+        console
+            .harness
+            .post(&format!(
+                "/projects/shared/services/web/volumes/{}/delete",
+                kept[0].id
+            ))
+            .header("cookie", &cookie)
+            .send()
+            .await
+            .assert_status(StatusCode::SEE_OTHER);
+        assert!(
+            crate::infra::repositories::volumes::of_service(&console.database, &service.id)
+                .await
+                .expect("volumes")
+                .is_empty()
+        );
+        assert!(
+            directory.join("image.jpg").exists(),
+            "stopping keeping it is not deleting what it holds"
+        );
+    }
+
+    /// The errand that places a copy on another node carries no volumes,
+    /// so that copy would start on an empty directory. Refused from both
+    /// sides, before a row is written.
+    #[tokio::test]
+    async fn a_volume_and_a_copy_on_another_node_never_meet() {
+        let console = Console::new().await;
+        let cookie = console.signed_in().await;
+        let service = placed_service(&console, &cookie).await;
+        crate::infra::repositories::volumes::create(
+            &console.database,
+            &service.id,
+            "content",
+            "/var/lib/ghost/content",
+        )
+        .await
+        .expect("volume");
+        crate::infra::network::save(
+            &console.database,
+            &crate::infra::network::Node {
+                update_note: None,
+                version: None,
+                wanted_version: None,
+                usage: None,
+                draining_at: None,
+                capacity: None,
+                id: "nd-elsewhere1".into(),
+                name: "alpine.example".into(),
+                kind: crate::infra::network::Kind::Private,
+                endpoint: None,
+                public_key: Some("k".into()),
+                overlay_ip: Some("10.42.0.9".into()),
+                is_self: false,
+                last_seen_at: None,
+                allows: Vec::new(),
+                ca_pem: None,
+            },
+        )
+        .await
+        .expect("node");
+
+        let response = console
+            .harness
+            .post("/projects/shared/services/web/placement")
+            .header("cookie", &cookie)
+            .form(&[("replicas", "1"), ("new-on", "nd-elsewhere1")])
+            .send()
+            .await;
+        let refused = response.header("location").unwrap_or_default();
+        assert!(refused.contains("volume"), "{refused}");
+        let copies =
+            crate::infra::repositories::replicas::of_service(&console.database, &service.id)
+                .await
+                .expect("copies");
+        assert!(copies.iter().all(|copy| copy.is_here()));
+
+        let kept = crate::infra::repositories::volumes::of_service(&console.database, &service.id)
+            .await
+            .expect("volumes");
+        crate::infra::repositories::volumes::delete(&console.database, &kept[0].id)
+            .await
+            .expect("deleted");
+        for copy in &copies {
+            crate::infra::repositories::replicas::move_to(
+                &console.database,
+                &copy.id,
+                Some("nd-elsewhere1"),
+            )
+            .await
+            .expect("moved");
+        }
+        let response = console
+            .harness
+            .post("/projects/shared/services/web/volumes")
+            .header("cookie", &cookie)
+            .form(&[("path", "/data")])
+            .send()
+            .await;
+        let refused = response.header("location").unwrap_or_default();
+        assert!(refused.contains("volume"), "{refused}");
+        assert!(
+            crate::infra::repositories::volumes::of_service(&console.database, &service.id)
+                .await
+                .expect("volumes")
+                .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    async fn a_databases_storage_is_not_the_operators_to_change() {
+        let console = Console::new().await;
+        let cookie = console.signed_in().await;
+        service(&console, &cookie).await;
+        let project = crate::infra::repositories::projects::find(&console.database, "my-api")
+            .await
+            .expect("query")
+            .expect("made");
+        let (made, _) = crate::features::databases::create_database_command::CreateDatabase {
+            project_id: &project.id,
+            name: "Orders",
+            engine: crate::domain::entities::database::Engine::Postgres,
+            version: "17",
+            memory_limit: 256 * 1024 * 1024,
+        }
+        .run(&console.database)
+        .await
+        .expect("database");
+
+        let response = console
+            .harness
+            .post(&format!("/projects/my-api/services/{}/volumes", made.slug))
+            .header("cookie", &cookie)
+            .form(&[("path", "/elsewhere")])
+            .send()
+            .await;
+        assert!(response
+            .header("location")
+            .unwrap_or_default()
+            .contains("error="));
+        assert_eq!(
+            crate::infra::repositories::volumes::of_service(&console.database, &made.id)
+                .await
+                .expect("volumes")
+                .len(),
+            1
+        );
+    }
+
     /// MySQL has no read-only copies, and under 256 MB it is killed
     /// however it is tuned. Both are refused at the POST, which is the
     /// check that counts: the page offering neither is a courtesy.

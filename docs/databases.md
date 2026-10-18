@@ -1062,3 +1062,54 @@ up as before: its key owned by the image's `postgres` (70), archiving on,
   tarballs, and has not been run for either engine's dump.
 - **A large database.** The dump is single-threaded and the load is one
   client; how long either takes at gigabytes is unmeasured.
+
+## Bringing a database here: `import`
+
+Asked for to move a Ghost blog onto a node. A dump is taken where the
+database is, copied to the node, and loaded with
+`wabot-deploy import <project>/<database> --from dump.sql.gz` — as the
+database's own admin, through a client container of the engine's image on
+the host's network, the shape the backups already have.
+
+- **Only into an empty database.** One loaded over another is two
+  databases mixed into something that looks right, so the import counts
+  tables first and refuses with the number. Postgres loads in one
+  transaction (`--single-transaction`, `ON_ERROR_STOP`), so a failure
+  keeps nothing; MySQL commits each table as it makes it, so a failure
+  says the database now holds part of the dump and to make it again.
+- **A definer becomes the admin.** Found on the VM node: Ghost 6 makes a
+  view, `mysqldump` names the user that made it, and that user does not
+  exist here — the load stopped at "you need the SUPER or SET_ANY_DEFINER
+  privilege". Granting that would let the admin make objects that run as
+  root, so the `DEFINER` clauses are dropped instead, anchored to the line
+  starts `mysqldump` writes them at so a row that mentions one is left
+  alone (`mysql::DEFINERS`, tested by running the `sed`).
+- **The client speaks utf8mb4.** Also found on the node: with no locale,
+  the `mysql` in the image talks `latin1`. A `mysqldump` dump says `SET
+  NAMES utf8mb4` and was unaffected — the stored bytes of an accented
+  title were compared on the old server and on the node, and match — but
+  a dump that does not say its encoding would have had every accent
+  encoded twice.
+
+`import --volume <name>` is the other half of a move: an archive unpacked
+into every copy of a service's volume on this node, with `tar`'s
+`unpack_in`, which refuses an entry that would land outside it — `..` is
+skipped and named, an absolute name is read as relative to the volume.
+
+### An application that verifies the database
+
+A database here refuses an unencrypted connection, and the node's
+authority is mounted in every container at `/etc/wabot/ca.crt`. For a
+Node.js application on `mysql2` — Ghost — four variables are enough:
+
+```
+NODE_EXTRA_CA_CERTS=/etc/wabot/ca.crt
+database__connection__host=<database>
+database__connection__ssl__rejectUnauthorized=true
+database__connection__ssl__verifyIdentity=true
+```
+
+Measured inside Ghost's container with its own driver: by name with the
+authority it connects; without the authority it is refused (`self-signed
+certificate in certificate chain`); by address it is refused (the name is
+not on the certificate). So the check is real, not only the encryption.

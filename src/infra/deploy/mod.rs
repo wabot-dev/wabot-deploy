@@ -25,6 +25,7 @@ pub mod jobs;
 pub mod logs;
 pub mod planner;
 pub mod quotas;
+pub mod restarts;
 pub mod routing;
 pub mod standbys;
 pub mod upstreams;
@@ -2160,6 +2161,107 @@ impl Deployer {
         Ok(started)
     }
 
+    /// Start again every copy here that stopped on its own, each when its
+    /// wait is over. `reconcile` is the boot's one pass; this is every pass
+    /// after it, and it is also what catches a copy the boot skipped
+    /// because containerd was not answering yet — measured on the VM node.
+    pub async fn watch(&self, restarts: &mut restarts::Restarts) -> usize {
+        let (Ok(services), Ok(projects), Ok(mine)) = (
+            services::all(&self.database, None).await,
+            crate::infra::repositories::projects::all(&self.database).await,
+            replicas::here(&self.database).await,
+        ) else {
+            return 0;
+        };
+        let mut started = 0;
+
+        for replica in mine {
+            let Some(service) = services.iter().find(|s| s.id == replica.service_id) else {
+                continue;
+            };
+            let Some(project) = projects.iter().find(|p| p.id == service.project_id) else {
+                continue;
+            };
+            if service.desired_state != DesiredState::Running || service.awaiting_push() {
+                restarts.forget(&replica.id);
+                continue;
+            }
+            // A deployment holding the service is removing and creating its
+            // containers, and what it leaves for a moment is not a stop.
+            let observed = {
+                use wabot::async_jobs::Locker;
+                let Some(_free) = deploy_lock().try_acquire(&service.id).await else {
+                    continue;
+                };
+                self.observe(project, service, &replica).await
+            };
+            let running = match &observed {
+                Observed::Running { .. } => Some(true),
+                Observed::Unknown(_) => None,
+                Observed::Absent | Observed::Stopped { .. } => Some(false),
+            };
+            let restarts::Verdict::Restart { attempt } = restarts.decide(
+                &replica.id,
+                running,
+                replica.address.is_some(),
+                std::time::Instant::now(),
+            ) else {
+                continue;
+            };
+
+            let id = replica.container_id(&project.slug, &service.slug);
+            let how = match observed {
+                Observed::Stopped { exit_code } => format!("it stopped with exit {exit_code}"),
+                _ => "it was not running".to_string(),
+            };
+            let said = logs::last_words(&self.config.node.data_dir, &id);
+            let at = time::OffsetDateTime::now_utc();
+            tracing::warn!(service = %service.slug, slot = replica.slot, attempt, %how,
+                "starting a copy again");
+            if self.restart_copy(project, service, &replica).await {
+                started += 1;
+                let when = format!("{:02}:{:02} UTC", at.hour(), at.minute());
+                let note = match said {
+                    Some(line) => format!(
+                        "started again at {when} (attempt {attempt}) because {how}; \
+                         its last line: {line}"
+                    ),
+                    None => format!("started again at {when} (attempt {attempt}) because {how}"),
+                };
+                if let Err(error) =
+                    replicas::set_last_error(&self.database, &replica.id, Some(&note)).await
+                {
+                    tracing::warn!(%error, "could not record why a copy was started again");
+                }
+            }
+        }
+        started
+    }
+
+    /// One copy, from the image its service last deployed, and what a
+    /// deployment does after it: the routes, and where the standbys dial.
+    async fn restart_copy(&self, project: &Project, service: &Service, replica: &Replica) -> bool {
+        let image = releases::of_service(&self.database, &service.id)
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .find(|release| release.deployed_at.is_some())
+            .map(|release| release.pinned())
+            .unwrap_or_else(|| service.image.clone());
+        let pinned = Service {
+            image,
+            ..service.clone()
+        };
+        let outcome = {
+            use wabot::async_jobs::Locker;
+            let _held = deploy_lock().acquire(&service.id).await;
+            self.deploy_one(project, &pinned, replica).await
+        };
+        self.sync_routes().await;
+        self.dispatch_standbys(service).await;
+        outcome.is_ok()
+    }
+
     /// Tell the nodes holding standbys where this database's primary
     /// answers.
     ///
@@ -2893,10 +2995,12 @@ impl Deployer {
             ASK_DEADLINE,
         )
         .await
+        .map(|_| ())
     }
 
     /// One command in a container of the engine's own image, on the
-    /// host's network, which reaches every bridge on this machine.
+    /// host's network, which reaches every bridge on this machine. What it
+    /// printed comes back either way.
     async fn run_client(
         &self,
         client: &Containerd,
@@ -2905,7 +3009,7 @@ impl Deployer {
         id: &str,
         request: &ContainerRequest,
         deadline: std::time::Duration,
-    ) -> Result<(), String> {
+    ) -> Result<String, String> {
         let data_dir = &self.config.node.data_dir;
         let log = logs::prepare(data_dir, id).map_err(|error| error.to_string())?;
         let log = logs::uri(&log);
@@ -2923,7 +3027,7 @@ impl Deployer {
         logs::discard(data_dir, id);
 
         match outcome {
-            Ok(0) => Ok(()),
+            Ok(0) => Ok(said),
             Ok(code) => Err(format!("{tool} exited {code}: {said}")),
             Err(error) => Err(error.to_string()),
         }
@@ -3139,7 +3243,7 @@ impl Deployer {
                         BACKUP_DEADLINE,
                     )
                     .await
-                    .map(|()| Some(crate::infra::node::disk::used(into).bytes));
+                    .map(|_| Some(crate::infra::node::disk::used(into).bytes));
             }
             Engine::Unknown => return Err("an engine this node does not know".into()),
         }
@@ -3188,6 +3292,160 @@ impl Deployer {
             Ok(code) => Err(format!("pg_basebackup exited {code}: {said}")),
             Err(error) => Err(error.to_string()),
         }
+    }
+
+    /// Load a dump into a database that holds nothing yet, and say how many
+    /// tables it holds afterwards.
+    pub async fn import_dump(
+        &self,
+        project: &Project,
+        service: &Service,
+        file: &std::path::Path,
+    ) -> Result<u64, String> {
+        let row = databases::of_service(&self.database, &service.id)
+            .await
+            .map_err(|error| error.to_string())?
+            .ok_or("that service is not a managed database")?;
+        if row.engine == Engine::Unknown {
+            return Err(
+                "it was made by a newer node, with an engine this one does not know".into(),
+            );
+        }
+        let primary = replicas::of_service(&self.database, &service.id)
+            .await
+            .map_err(|error| error.to_string())?
+            .into_iter()
+            .find(|replica| {
+                replica.slot == row.primary_slot && replica.is_here() && !replica.evicted()
+            })
+            .ok_or("its primary does not run on this node, which is where a dump is loaded")?;
+        let address = primary
+            .address
+            .clone()
+            .ok_or("its primary has no address yet: deploy it, and load the dump once it runs")?;
+        let file =
+            std::fs::canonicalize(file).map_err(|error| format!("{}: {error}", file.display()))?;
+        if !file.is_file() {
+            return Err(format!("{} is not a file", file.display()));
+        }
+        let compressed = file.extension().is_some_and(|extension| extension == "gz");
+        let inside = match compressed {
+            true => "dump.sql.gz",
+            false => "dump.sql",
+        };
+
+        let (tool, count, load, password, mount) = match row.engine {
+            Engine::Mysql => (
+                "mysql",
+                mysql::count_tables(&address, mysql::PORT, &row.admin_user, &row.database_name),
+                mysql::load_from(
+                    &address,
+                    mysql::PORT,
+                    &row.admin_user,
+                    &row.database_name,
+                    inside,
+                    compressed,
+                ),
+                "MYSQL_PWD",
+                mysql::IMPORT_MOUNT,
+            ),
+            _ => (
+                "psql",
+                postgres::count_tables(
+                    &address,
+                    postgres::PORT,
+                    &row.admin_user,
+                    &row.database_name,
+                ),
+                postgres::load_from(
+                    &address,
+                    postgres::PORT,
+                    &row.admin_user,
+                    &row.database_name,
+                    inside,
+                    compressed,
+                ),
+                "PGPASSWORD",
+                postgres::IMPORT_MOUNT,
+            ),
+        };
+        let env = vec![(password.to_string(), row.admin_password.clone())];
+        let client = Containerd::connect().await.map_err(|e| e.to_string())?;
+        let id = format!(
+            "{}.import",
+            primary.container_id(&project.slug, &service.slug)
+        );
+        let tables = |said: String| {
+            said.lines()
+                .rev()
+                .find_map(|line| line.trim().parse::<u64>().ok())
+                .ok_or_else(|| format!("{tool} did not say how many tables there are: {said}"))
+        };
+
+        let asked = ContainerRequest {
+            command: count.clone(),
+            env: env.clone(),
+            ..Default::default()
+        };
+        let before = tables(
+            self.run_client(
+                &client,
+                service,
+                tool,
+                &format!("{id}.count"),
+                &asked,
+                ASK_DEADLINE,
+            )
+            .await?,
+        )?;
+        if before > 0 {
+            return Err(format!(
+                "{} already holds {before} table(s). A dump is loaded only into an empty \
+                 database: one loaded over another is two databases mixed into something \
+                 that looks right",
+                service.slug
+            ));
+        }
+
+        let loading = ContainerRequest {
+            command: load,
+            env: env.clone(),
+            mounts: vec![BindMount {
+                source: file.clone(),
+                destination: format!("{mount}/{inside}"),
+                read_only: true,
+            }],
+            ..Default::default()
+        };
+        if let Err(reason) = self
+            .run_client(&client, service, tool, &id, &loading, BACKUP_DEADLINE)
+            .await
+        {
+            return Err(match row.engine {
+                Engine::Mysql => format!(
+                    "{reason}\nMySQL commits each table as it makes it, so the database now \
+                     holds part of the dump: delete it and make it again before another try."
+                ),
+                _ => format!("{reason}\nNothing was kept: the load was one transaction."),
+            });
+        }
+
+        let asked = ContainerRequest {
+            command: count,
+            env,
+            ..Default::default()
+        };
+        tables(
+            self.run_client(
+                &client,
+                service,
+                tool,
+                &format!("{id}.count"),
+                &asked,
+                ASK_DEADLINE,
+            )
+            .await?,
+        )
     }
 
     /// Ask every primary here what its standbys are doing, and write it

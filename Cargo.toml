@@ -180,6 +180,14 @@ hyper-rustls = { version = "0.27", default-features = false, features = [
     "webpki-tokio",
 ] }
 
+# Filling a volume from an archive brought from another machine.
+# `unpack_in` refuses an entry whose path would leave the directory — `..`,
+# an absolute path, a symlink pointing out — which is the reason not to run
+# the host's `tar` as root over somebody's archive. Pure Rust, so the static
+# musl build stays one artifact.
+tar = "0.4"
+flate2 = "1"
+
 # Verifying release downloads before anything runs them.
 sha2 = "0.10"
 # HMAC-SHA256, which is all SigV4 needs beyond the sha2 already here,
