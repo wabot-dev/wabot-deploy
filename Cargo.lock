@@ -3125,9 +3125,9 @@ dependencies = [
 
 [[package]]
 name = "wabot-feature-rest-controller"
-version = "0.2.1"
+version = "0.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2ccd8a3e70df4aa4a12889aa644b4b6ad5d875471ba2eeb4c601a023380cc976"
+checksum = "95a9dba5f65d4eb8e51a99128a39fe73aefc607980d5597605e29a527477014b"
 dependencies = [
  "async-trait",
  "axum",
