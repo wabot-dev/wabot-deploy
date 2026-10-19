@@ -227,6 +227,7 @@ pub async fn run(mut config: Config, config_path: &Path, args: InstallArgs) -> a
         // running is one still answering to the old domain.
         if service::is_active()
             && service::running_current_binary()
+            && service::running_with_open_files()
             && !renamed
             && !wants_certificate
         {

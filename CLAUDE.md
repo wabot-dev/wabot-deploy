@@ -438,8 +438,10 @@ happened:
 - Reconcile checks whether a container runs, not whether its port
   mappings match the rows.
 - No image garbage collection.
-- The updater does not rewrite the systemd unit; a release that changes
-  it has to say so in its notes.
+- The updater does not rewrite the service file, neither the systemd unit
+  nor the OpenRC script; a release that changes either has to say so in
+  its notes. `install` rewrites it, and restarts a node whose process
+  runs with fewer open files than the file grants.
 - No rollback button for an update — rolling back a migration is not a
   file operation, which is what the database copy is for.
 - Wildcard certificates are refused by name: the resolver looks names up

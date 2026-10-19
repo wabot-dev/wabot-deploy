@@ -28,6 +28,14 @@ pub const BINARY_PATH: &str = "/usr/local/bin/wabot-deploy";
 /// OpenRC only knows the bare name, so one constant serves both.
 pub const SERVICE_NAME: &str = "wabot-deploy";
 
+/// The descriptors the node may hold, under either service manager.
+///
+/// Every proxied request holds two, one to the client and one to the
+/// container, so this is roughly twice the clients the edge can serve at
+/// once. At the 1024 a process gets by default, a thousand clients
+/// through the edge came back as 270,811 502s in 272,328 requests.
+pub const OPEN_FILES: u64 = 65535;
+
 #[derive(Debug, thiserror::Error)]
 pub enum ServiceError {
     #[error("{0}")]
@@ -269,7 +277,7 @@ TimeoutStopSec=45
 # its own data directory. It runs as root for now; narrowing this
 # wants a dedicated user in containerd's group, and doing it wrong
 # fails in ways that are hard to diagnose.
-LimitNOFILE=65535
+LimitNOFILE={open_files}
 NoNewPrivileges=yes
 
 # No PrivateTmp, ProtectHome or ProtectSystem, and the reason is not
@@ -293,6 +301,7 @@ WantedBy=multi-user.target
 "#,
         binary = BINARY_PATH,
         config = config_path.display(),
+        open_files = OPEN_FILES,
     )
 }
 
@@ -338,6 +347,11 @@ error_log="/var/log/wabot-deploy.log"
 # open connections.
 export RUST_ENV=production
 
+# Two descriptors for every proxied request, one to the client and one
+# to the container. OpenRC's default of 1024 turned nearly every request
+# away at a thousand clients; the systemd unit asks for the same number.
+rc_ulimit="-n {open_files}"
+
 depend() {{
     want containerd
     after net
@@ -345,7 +359,34 @@ depend() {{
 "#,
         binary = BINARY_PATH,
         config = config_path.display(),
+        open_files = OPEN_FILES,
     )
+}
+
+/// Whether the running node may hold the descriptors its service grants.
+///
+/// The limit is applied when the process starts, so a service file
+/// rewritten under a running node changes nothing until it restarts.
+/// Asked of the process rather than of whether `install` just rewrote the
+/// file: a run that died between writing and restarting would otherwise
+/// leave the old limit in place for good, with the right file on disk.
+pub fn running_with_open_files() -> bool {
+    let Some(pid) = main_pid() else {
+        return false;
+    };
+    std::fs::read_to_string(format!("/proc/{pid}/limits"))
+        .is_ok_and(|limits| grants_open_files(&limits))
+}
+
+/// The soft limit, because that is the one `accept` runs into. A process
+/// may raise it to the hard limit, and this one never does.
+fn grants_open_files(limits: &str) -> bool {
+    limits
+        .lines()
+        .find_map(|line| line.strip_prefix("Max open files"))
+        .and_then(|values| values.split_whitespace().next())
+        .and_then(|soft| soft.parse::<u64>().ok())
+        .is_some_and(|soft| soft >= OPEN_FILES)
 }
 
 /// Where the service file would go, for reporting.
@@ -557,6 +598,54 @@ mod openrc_tests {
     #[test]
     fn it_widens_the_drain_window() {
         assert!(script().contains("RUST_ENV=production"));
+    }
+
+    /// A node under OpenRC may hold as many descriptors as one under
+    /// systemd.
+    ///
+    /// **It shipped without.** The unit said `LimitNOFILE=65535` and the
+    /// script said nothing, so every Alpine node ran its edge at 1024 — two
+    /// per proxied request, so about five hundred clients. Measured on the
+    /// VM node on 2026-10-18: at a thousand clients 99.4 % of requests were
+    /// 502s, and the log took 409,000 lines in five seconds.
+    #[test]
+    fn an_openrc_node_may_hold_as_many_files_as_a_systemd_one() {
+        let file = service_file(Path::new(CONFIG));
+        let systemd = file
+            .systemd
+            .lines()
+            .find_map(|line| line.strip_prefix("LimitNOFILE="))
+            .expect("the unit sets a limit");
+        let openrc = file
+            .openrc
+            .lines()
+            .find_map(|line| line.strip_prefix("rc_ulimit=\"-n "))
+            .and_then(|rest| rest.strip_suffix('"'))
+            .expect("the script sets a limit");
+        assert_eq!(openrc, systemd);
+        assert!(systemd.parse::<u64>().expect("a number") >= 65535);
+    }
+
+    /// A node started before its script asked for more is restarted by
+    /// `install`, and one started after is left alone.
+    ///
+    /// In the layout `/proc/<pid>/limits` has on the VM node. The first has
+    /// a hard limit of 65535 on purpose: the soft one is what `accept` runs
+    /// into, and reading the hard one would leave the node at 1024
+    /// believing it had been given more.
+    #[test]
+    fn a_node_started_under_the_default_limit_reads_as_needing_a_restart() {
+        let header =
+            "Limit                     Soft Limit           Hard Limit           Units     \n";
+        let started_before = format!(
+            "{header}Max open files            1024                 65535                files     \n"
+        );
+        let started_after = format!(
+            "{header}Max open files            65535                65535                files     \n"
+        );
+        assert!(!grants_open_files(&started_before));
+        assert!(grants_open_files(&started_after));
+        assert!(!grants_open_files(header), "a missing line is not enough");
     }
 
     /// Both flavours have to name the same config file and the same
