@@ -4,7 +4,7 @@ use wabot::sqlite::SqliteDatabase;
 use crate::domain::authz::node_user;
 use crate::domain::entities::account::Account;
 use crate::domain::values::capability::Capability;
-use crate::features::dns::node_user_add_record::SENT_FROM_ELSEWHERE;
+use crate::features::dns::add_record_command::SENT_FROM_ELSEWHERE;
 use crate::features::dns::set_zone_servers_request::SetZoneServersRequest;
 use crate::infra::repositories::zones;
 

@@ -34,7 +34,9 @@ use wabot::ui::embedded_assets;
 use crate::features::access::{auth_rest_controller, auth_ui_controller};
 use crate::features::backups::backup_rest_controller;
 use crate::features::databases::{database_rest_controller, database_ui_controller};
-use crate::features::dns::{dns_rest_controller, dns_ui_controller};
+use crate::features::dns::{
+    dns_rest_controller, dns_ui_controller, tenant_dns_rest_controller, tenant_dns_ui_controller,
+};
 use crate::features::network::{network_rest_controller, network_ui_controller};
 use crate::features::node::{node_rest_controller, node_ui_controller};
 use crate::features::organisations::{tenant_rest_controller, tenant_ui_controller};
@@ -77,6 +79,8 @@ pub fn register(
         auth_rest_controller::AuthRestController,
         dns_ui_controller::DnsUiController,
         dns_rest_controller::DnsRestController,
+        tenant_dns_ui_controller::TenantDnsUiController,
+        tenant_dns_rest_controller::TenantDnsRestController,
         network_ui_controller::NetworkUiController,
         network_rest_controller::NetworkRestController,
         node_ui_controller::NodeUiController,
@@ -187,6 +191,10 @@ pub fn tenant_routes(container: &Container) -> Router {
 
     let pages =
         tenant_people_ui_controller::TenantPeopleUiController::register_ui_routes(container, pages);
+    let pages =
+        tenant_dns_ui_controller::TenantDnsUiController::register_ui_routes(container, pages);
+    let forms =
+        tenant_dns_rest_controller::TenantDnsRestController::register_routes(container, forms);
     let forms = tenant_people_rest_controller::TenantPeopleRestController::register_routes(
         container, forms,
     );

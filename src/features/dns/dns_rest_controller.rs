@@ -431,4 +431,42 @@ mod tests {
             "a refused choice changed nothing"
         );
     }
+
+    /// An organisation's console is a different router, and both halves
+    /// of that are the claim: its DNS doors are there, and the operator's
+    /// choice of name servers is not, by construction.
+    #[tokio::test]
+    async fn an_organisations_console_has_dns_and_no_choice_of_servers() {
+        let console = Console::new().await;
+
+        let page = console.tenant.get("/dns").send().await;
+        assert_ne!(
+            page.status,
+            StatusCode::NOT_FOUND,
+            "the organisation has no DNS page"
+        );
+        let add = console
+            .tenant
+            .post("/dns/zones")
+            .form(&[("name", "acme.example")])
+            .send()
+            .await;
+        assert_ne!(
+            add.status,
+            StatusCode::NOT_FOUND,
+            "the organisation cannot add a domain"
+        );
+
+        let choose = console
+            .tenant
+            .post("/dns/acme.example/servers")
+            .form(&[("server-nd-x", "1")])
+            .send()
+            .await;
+        assert_eq!(
+            choose.status,
+            StatusCode::NOT_FOUND,
+            "an organisation can choose name servers"
+        );
+    }
 }

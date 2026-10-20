@@ -417,6 +417,10 @@ impl Frame {
                     @if self.admin {
                         <a href="/network"
                            class=(current(self.area == Area::Network))>(t("Network"))</a>
+                    }
+                    // An organisation's administrator has DNS too, for its
+                    // own domains: the same word and a different page.
+                    @if self.scope_admin {
                         <a href="/dns"
                            class=(current(self.area == Area::Dns))>(t("DNS"))</a>
                     }

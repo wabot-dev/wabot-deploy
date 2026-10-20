@@ -119,10 +119,35 @@ saving it, no errand to itself, the minting form. **Two nodes answering
 for one zone needs two public nodes on one network**, which no VM can be
 (enrolment needs a public certificate) and which does not exist today.
 
+## Phase 3: organisations add their own domains
+
+- **The same bodies, two doors.** Creating a zone, adding and removing a
+  record, deleting one and describing one are commands now — `CreateZone`,
+  `AddRecord`, `RemoveRecord`, `DeleteZone`, `DescribeZone` — reached by a
+  `node_user_` and a `tenant_user_` use case each, the moment a second
+  actor needed them.
+- **An organisation chooses no servers.** Its domain is answered by this
+  node and every other that offers `dns` to it, and its console says which
+  name servers to set before a domain is even added. Choosing is the
+  operator's, on the same zone, from the machine's console.
+- **One organisation cannot learn another's domains.** A zone that is not
+  theirs reads as one that does not exist — same sentence, whoever holds
+  it — and the overlap rules beside the `INSERT` (phase 1) keep one from
+  claiming inside another's, or the node's own name.
+- **Two routers, as for people.** `tenant_dns_*` controllers on
+  `tenant_routes`; the operator's door for choosing servers is not
+  registered there at all, so it is a 404 rather than a refusal somebody
+  has to remember.
+- The DNS item in the topbar follows `scope_admin`: the operator, and an
+  organisation's administrator.
+
+On the VM node: an organisation created with its own domain, its owner
+joined through the link, added `acme.example` and a record, and `dig`
+answered it; `teresaasprilla.com` and `wabot.test` were refused with their
+sentences; the operator's list showed the zone as Acme's.
+
 ## Still to come
 
-- **Phase 3, organisations.** Their console adds their domains and shows
-  the name servers to set.
 - **Phase 4, the delegation check.** Ask the parent zone which servers it
   delegates to, and say so on the page: the failure that started this.
 
