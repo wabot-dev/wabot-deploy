@@ -348,6 +348,8 @@ button[data-wabot-state="failed"]:not(.btn-icon)::after {
 
 /* The cell a destructive button sits in, so it does not stretch. */
 .row-actions { width: 1%; white-space: nowrap; }
+/* A DKIM key is one word several hundred characters long. */
+.record-value code { word-break: break-all; }
 
 .mark { display: flex; align-items: center; gap: var(--sp-5); }
 .mark h1 { font-size: var(--fs-3xl); margin: 0; letter-spacing: -0.03em; }

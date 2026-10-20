@@ -34,6 +34,7 @@ use wabot::ui::embedded_assets;
 use crate::features::access::{auth_rest_controller, auth_ui_controller};
 use crate::features::backups::backup_rest_controller;
 use crate::features::databases::{database_rest_controller, database_ui_controller};
+use crate::features::dns::{dns_rest_controller, dns_ui_controller};
 use crate::features::network::{network_rest_controller, network_ui_controller};
 use crate::features::node::{node_rest_controller, node_ui_controller};
 use crate::features::organisations::{tenant_rest_controller, tenant_ui_controller};
@@ -74,6 +75,8 @@ pub fn register(
         container,
         auth_ui_controller::AuthUiController,
         auth_rest_controller::AuthRestController,
+        dns_ui_controller::DnsUiController,
+        dns_rest_controller::DnsRestController,
         network_ui_controller::NetworkUiController,
         network_rest_controller::NetworkRestController,
         node_ui_controller::NodeUiController,
@@ -129,12 +132,14 @@ fn shared(container: &Container, pages: Router, forms: Router) -> (Router, Route
 pub fn routes(container: &Container) -> Router {
     let (pages, forms) = shared(container, wabot::ui::ui_router(), Router::new());
 
+    let pages = dns_ui_controller::DnsUiController::register_ui_routes(container, pages);
     let pages = network_ui_controller::NetworkUiController::register_ui_routes(container, pages);
     let pages = node_ui_controller::NodeUiController::register_ui_routes(container, pages);
     let pages = people_ui_controller::PeopleUiController::register_ui_routes(container, pages);
     let pages = tenant_ui_controller::TenantUiController::register_ui_routes(container, pages);
     let pages = update_ui_controller::UpdateUiController::register_ui_routes(container, pages);
 
+    let forms = dns_rest_controller::DnsRestController::register_routes(container, forms);
     let forms = network_rest_controller::NetworkRestController::register_routes(container, forms);
     let forms = node_rest_controller::NodeRestController::register_routes(container, forms);
     let forms = backup_rest_controller::BackupRestController::register_routes(container, forms);

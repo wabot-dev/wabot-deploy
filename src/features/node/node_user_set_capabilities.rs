@@ -18,6 +18,7 @@ pub async fn run(
     database: &SqliteDatabase,
     config: &Config,
     deployer: &Deployer,
+    container: &wabot::prelude::Container,
     account: &Account,
     asked: &SetCapabilitiesRequest,
 ) -> Result<(), String> {
@@ -85,6 +86,8 @@ pub async fn run(
     // And the routes: a node that has just stopped being an edge is still
     // answering for every name it held a moment ago.
     deployer.sync_routes().await;
+    // And port 53, which opens or closes with the `dns` switch.
+    crate::infra::dns::reload(container, database).await;
 
     Ok(())
 }

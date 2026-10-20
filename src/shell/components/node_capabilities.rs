@@ -75,6 +75,9 @@ pub fn asking(capability: crate::domain::values::capability::Capability) -> &'st
         crate::domain::values::capability::Capability::Manage => {
             "Keep this node up to date, and restart it"
         }
+        crate::domain::values::capability::Capability::Dns => {
+            "Have this node answer DNS for its zones"
+        }
     }
 }
 
@@ -99,6 +102,11 @@ pub fn why(capability: crate::domain::values::capability::Capability) -> &'stati
              and ask for a backup. It creates nothing, reads no data and touches \
              no account — but it decides which binary this node runs."
         }
+        crate::domain::values::capability::Capability::Dns => {
+            "It can ask this node to be a name server for one of its zones. \
+             The records come from that node, and this one answers anybody \
+             who asks about them on port 53."
+        }
     }
 }
 
@@ -114,6 +122,7 @@ pub fn offering(capability: crate::domain::values::capability::Capability) -> &'
         crate::domain::values::capability::Capability::Manage => {
             "Update and restart that node from here"
         }
+        crate::domain::values::capability::Capability::Dns => "Answer DNS for this node's zones",
     }
 }
 
@@ -132,6 +141,7 @@ pub fn doing(capability: crate::domain::values::capability::Capability) -> &'sta
         crate::domain::values::capability::Capability::Manage => {
             "Be kept up to date from elsewhere"
         }
+        crate::domain::values::capability::Capability::Dns => "Answer DNS",
     }
 }
 
@@ -163,6 +173,15 @@ pub fn doing_why(
             "A node that has been granted this can install a release here, \
              restart the service and ask for a backup. Turning it off \
              withdraws that from every node at once."
+        }
+        crate::domain::values::capability::Capability::Dns if reachable => {
+            "A name server for the zones created here or sent here, on port \
+             53 of the addresses it holds. Off until it is turned on: a port \
+             53 open to the internet is a decision."
+        }
+        crate::domain::values::capability::Capability::Dns => {
+            "Needs a domain that resolves here. A name server the world \
+             cannot reach is one nobody can ask."
         }
     }
 }

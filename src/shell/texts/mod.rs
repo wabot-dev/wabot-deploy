@@ -66,6 +66,7 @@ mod tests {
             ("access", crate::features::access::texts::TABLE),
             ("backups", crate::features::backups::texts::TABLE),
             ("databases", crate::features::databases::texts::TABLE),
+            ("dns", crate::features::dns::texts::TABLE),
             ("network", crate::features::network::texts::TABLE),
             ("node", crate::features::node::texts::TABLE),
             (
@@ -253,6 +254,10 @@ mod tests {
         // translated because it is a word in a sentence, not a value.
         "Access key id",
         "CPU",
+        // The protocol, and the field every DNS provider calls this: a
+        // record is copied from a provider's screen, and the labels have to
+        // match it.
+        "DNS",
         "Endpoint",
         "Error: ",
         "General",
@@ -270,6 +275,7 @@ mod tests {
         "Slug",
         "Swap",
         "TCP",
+        "TTL",
     ];
 
     fn read(path: &str) -> String {

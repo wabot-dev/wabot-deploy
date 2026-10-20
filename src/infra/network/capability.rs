@@ -39,24 +39,27 @@ fn key(capability: Capability) -> &'static str {
         Capability::Edge => "node.provides.edge",
         Capability::Store => "node.provides.store",
         Capability::Manage => "node.provides.manage",
+        Capability::Dns => "node.provides.dns",
     }
 }
 
 /// Whether this node offers a capability at all.
 ///
-/// **Unset means yes.** Every node that exists today does both, and a
-/// default of "no" would take a working network off the air to
-/// introduce a setting. Turning one off is the deliberate act.
+/// **Unset means yes**, except for `Dns`. Every node that existed before
+/// the settings did both, and a default of "no" would take a working
+/// network off the air to introduce a setting. `Dns` came later and opens
+/// a port to the internet, so for it the deliberate act is turning it on.
 pub async fn provides(database: &SqliteDatabase, capability: Capability) -> bool {
     match crate::infra::node::settings::read(database, key(capability)).await {
-        Ok(Some(stored)) => stored != "off",
-        Ok(None) => true,
+        Ok(Some(stored)) => {
+            stored == "on" || (stored != "off" && capability.provided_unless_refused())
+        }
+        Ok(None) => capability.provided_unless_refused(),
         Err(error) => {
             // A database that cannot answer is not a reason to decide
-            // the node does nothing. Reading as capable keeps a node
-            // behaving the way it did a moment ago.
+            // the node does nothing, and not a reason to open port 53.
             tracing::warn!(%error, capability = capability.name(), "could not read a capability");
-            true
+            capability.provided_unless_refused()
         }
     }
 }
@@ -262,12 +265,58 @@ mod tests {
         let database = crate::infra::db::open_in_memory().await.expect("open");
 
         for capability in Capability::ALL {
-            assert!(
+            assert_eq!(
                 provides(&database, capability).await,
-                "{} was off before anybody said so",
+                capability.provided_unless_refused(),
+                "{} was not what it is before anybody said anything",
                 capability.name()
             );
         }
+    }
+
+    /// A node that was never asked does not open port 53, and turning it
+    /// on grants it to nobody.
+    ///
+    /// Every other capability reads as on until somebody turns it off,
+    /// because nodes existed before the switches did. This one arrived
+    /// after, and what it costs is a listener the whole internet can ask.
+    #[tokio::test]
+    async fn a_name_server_is_off_until_its_operator_turns_it_on() {
+        let database = crate::infra::db::open_in_memory().await.expect("open");
+        assert!(!provides(&database, Capability::Dns).await);
+
+        grant(&database, "nd-them", &Capability::ALL)
+            .await
+            .expect("grant");
+        assert!(
+            !granted_to(&database, "nd-them")
+                .await
+                .contains(&Capability::Dns),
+            "a grant opened port 53 on a node whose operator never turned it on"
+        );
+
+        set_provides(&database, Capability::Dns, true)
+            .await
+            .expect("on");
+        assert!(provides(&database, Capability::Dns).await);
+        assert!(
+            !granted_to(&database, "nd-them")
+                .await
+                .contains(&Capability::Dns),
+            "turning it on granted it to a node nobody granted it to"
+        );
+
+        grant(&database, "nd-them", &Capability::ALL)
+            .await
+            .expect("grant again");
+        assert!(granted_to(&database, "nd-them")
+            .await
+            .contains(&Capability::Dns));
+
+        set_provides(&database, Capability::Dns, false)
+            .await
+            .expect("off");
+        assert!(!provides(&database, Capability::Dns).await);
     }
 
     /// The whole point of the terms screen. A node may agree to serve
@@ -335,6 +384,7 @@ mod tests {
         // capability does not make this test wrong instead of the code.
         let expected: Vec<Capability> = Capability::ALL
             .into_iter()
+            .filter(|capability| capability.provided_unless_refused())
             .filter(|capability| *capability != Capability::Host)
             .collect();
         assert_eq!(granted_to(&database, "nd-them").await, expected);
@@ -393,6 +443,7 @@ mod tests {
         // The operator changes their mind about one of them.
         let kept: Vec<Capability> = Capability::ALL
             .into_iter()
+            .filter(|capability| capability.provided_unless_refused())
             .filter(|capability| *capability != Capability::Manage)
             .collect();
         set_granted(&database, "nd-them", &kept).await.expect("set");

@@ -309,6 +309,53 @@ pub async fn run(config: Config, config_path: &Path) -> anyhow::Result<i32> {
     }
 
     println!();
+    println!("dns");
+    let answers_dns = crate::infra::network::capability::provides(
+        &database,
+        crate::domain::values::capability::Capability::Dns,
+    )
+    .await;
+    match crate::infra::dns::what_this_node_serves(&database).await {
+        Err(error) => {
+            println!("  unreadable: {error}");
+            problems += 1;
+        }
+        Ok(served) if !answers_dns => {
+            println!("  off — turned on from the node page, as Answer DNS");
+            if !served.is_empty() {
+                println!("  {} zone(s) waiting for it", served.len());
+            }
+        }
+        Ok(served) if served.is_empty() => {
+            println!("  on, and no zone to answer for — port 53 stays closed until there is one");
+        }
+        Ok(served) => {
+            for address in crate::infra::dns::server::addresses(&config) {
+                let first = served[0].zone.name.to_string();
+                match crate::infra::dns::probe(address, &first).await {
+                    Ok(serial) => println!("  {address:<22} answering ({first} serial {serial})"),
+                    Err(reason) => {
+                        println!("  {address:<22} NOT ANSWERING: {reason}");
+                        problems += 1;
+                    }
+                }
+            }
+            for zone in served.iter() {
+                println!(
+                    "  zone {:<34} serial {:<11} {} record(s), name servers: {}",
+                    zone.zone.name.as_str(),
+                    zone.zone.serial,
+                    zone.records.len(),
+                    match zone.name_servers.is_empty() {
+                        true => "none".to_string(),
+                        false => zone.name_servers.join(", "),
+                    }
+                );
+            }
+        }
+    }
+
+    println!();
     println!("network");
     // The one place `join` can be checked from. Everything it wrote is
     // on this machine, and until there is a tunnel there is nothing to

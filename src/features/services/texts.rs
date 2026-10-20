@@ -71,7 +71,6 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
     ("No values — restoring this clears the environment.", "Sin valores — restaurar esto deja el entorno vacío."),
     ("No wildcard record answers for this node, so ", "Ningún registro comodín responde por este nodo, así que "),
     ("Nodes that expose the service", "Nodos que exponen el servicio"),
-    ("Not answering", "No responde"),
     ("Not following — reload to see more", "Sin seguir — recarga para ver más"),
     ("Nothing answers at any of these while it is not running.", "Mientras no esté corriendo, en ninguna de estas responde nada."),
     ("Nothing has been pushed yet. Create a push token on the project page and push an image to this repository.", "Todavía no se ha subido nada. Crea un token de subida en la página del proyecto y sube una imagen a este repositorio."),

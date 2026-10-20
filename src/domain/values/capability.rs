@@ -51,6 +51,12 @@ pub enum Capability {
     ///
     /// **Not backfilled**, for the reason `Store` is not.
     Manage,
+    /// Answer DNS for a zone: be one of its name servers.
+    ///
+    /// Port 53 open to the internet is a decision about the machine rather
+    /// than a favour to a peer, so a node does not provide it until its
+    /// operator turns it on — the one capability whose silence means no.
+    Dns,
 }
 
 impl Capability {
@@ -60,6 +66,7 @@ impl Capability {
             Capability::Edge => "edge",
             Capability::Store => "store",
             Capability::Manage => "manage",
+            Capability::Dns => "dns",
         }
     }
 
@@ -71,14 +78,20 @@ impl Capability {
     /// than written into the form, so a capability added later cannot
     /// arrive without an answer.
     pub fn needs_endpoint(&self) -> bool {
-        matches!(self, Capability::Edge)
+        matches!(self, Capability::Edge | Capability::Dns)
     }
 
-    pub const ALL: [Capability; 4] = [
+    /// Whether a node that never said provides it.
+    pub fn provided_unless_refused(&self) -> bool {
+        !matches!(self, Capability::Dns)
+    }
+
+    pub const ALL: [Capability; 5] = [
         Capability::Host,
         Capability::Edge,
         Capability::Store,
         Capability::Manage,
+        Capability::Dns,
     ];
 }
 

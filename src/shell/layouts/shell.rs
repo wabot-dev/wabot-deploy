@@ -96,6 +96,10 @@ pub enum Area {
     /// were the same place, and adding a node was a trip between two
     /// pages that had the same name.
     Network,
+    /// The domains this node answers DNS for. Its own word rather than an
+    /// item in Settings: a zone is not how this machine is set up, it is
+    /// what the world is told about somebody's domain.
+    Dns,
     /// Everything editable about this installation: this machine, the
     /// people, the updates. One word in the header instead of three,
     /// because they are one question — "how is this set up" — and none of
@@ -317,6 +321,7 @@ impl Frame {
         let mut trail = vec![match self.area {
             Area::Projects => (t("Projects").to_string(), Some("/".to_string())),
             Area::Network => (t("Network").to_string(), Some("/network".to_string())),
+            Area::Dns => (t("DNS").to_string(), Some("/dns".to_string())),
             Area::Settings => (t("Settings").to_string(), None),
         }];
 
@@ -412,6 +417,8 @@ impl Frame {
                     @if self.admin {
                         <a href="/network"
                            class=(current(self.area == Area::Network))>(t("Network"))</a>
+                        <a href="/dns"
+                           class=(current(self.area == Area::Dns))>(t("DNS"))</a>
                     }
                     // The people and what this runs on belong to whoever
                     // runs the node. A member has projects and nothing

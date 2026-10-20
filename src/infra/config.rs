@@ -66,6 +66,8 @@ pub struct Config {
     pub log: LogConfig,
     #[serde(default)]
     pub backup: BackupConfig,
+    #[serde(default)]
+    pub dns: DnsConfig,
     /// Where this was read from, for the one thing that has to write a
     /// value *back*: the bucket credential the console stores.
     ///
@@ -107,6 +109,37 @@ pub struct Config {
 pub struct BackupConfig {
     #[serde(default)]
     pub s3: Option<crate::infra::backup::s3::Credentials>,
+}
+
+/// Where this node answers DNS, when it answers at all.
+///
+/// Whether it does is the `dns` capability, a setting the console owns.
+/// This is only the where: a port, so a development node can answer on one
+/// that needs no root, and the addresses, for a machine whose public ones
+/// are not the ones it holds.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DnsConfig {
+    #[serde(default = "default_dns_port")]
+    pub port: u16,
+    /// Empty is every address this machine holds that is worth telling
+    /// anybody about — never `0.0.0.0`, which a local resolver already
+    /// holds on `127.0.0.53` on most Debian and Ubuntu machines.
+    #[serde(default)]
+    pub listen: Vec<std::net::IpAddr>,
+}
+
+fn default_dns_port() -> u16 {
+    53
+}
+
+impl Default for DnsConfig {
+    fn default() -> Self {
+        Self {
+            port: default_dns_port(),
+            listen: Vec::new(),
+        }
+    }
 }
 
 /// The private network between nodes.
@@ -313,6 +346,9 @@ impl Config {
         }
         if let Some(port) = env_port("WABOT_DEPLOY_HTTP_PORT")? {
             self.edge.http_port = port;
+        }
+        if let Some(port) = env_port("WABOT_DEPLOY_DNS_PORT")? {
+            self.dns.port = port;
         }
         if let Some(directory) = env_string("WABOT_DEPLOY_ACME_DIRECTORY") {
             self.acme.directory = directory;

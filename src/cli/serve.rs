@@ -158,6 +158,10 @@ pub async fn run(config: Config) -> anyhow::Result<i32> {
     container.register_instance::<crate::infra::deploy::Deployer>(deployer.clone());
     // The doorbell endpoint rings this; the collector loop answers it.
     container.register_instance::<crate::infra::network::collect::Doorbell>(doorbell.clone());
+    // What the DNS listener answers from, so a change made from the
+    // console or carried in by an errand reaches it without a restart.
+    let zones = Arc::new(crate::infra::dns::Zones::default());
+    container.register_instance::<crate::infra::dns::Zones>(zones.clone());
 
     let https: SocketAddr = (bind_address(&config), config.edge.https_port).into();
     let http: SocketAddr = (bind_address(&config), config.edge.http_port).into();
@@ -181,6 +185,8 @@ pub async fn run(config: Config) -> anyhow::Result<i32> {
     let schedule_database = database.clone();
     let schedule_config = config.clone();
     let https_port = config.edge.https_port;
+    let dns_database = database.clone();
+    let dns_config = config.clone();
 
     let outcome = ProjectRunner::new(container.clone())
         // Reconciling is a *service*, not a startup step.
@@ -462,6 +468,9 @@ pub async fn run(config: Config) -> anyhow::Result<i32> {
         })
         .service_with_cancel("edge-http", move |cancel| {
             crate::infra::edge::serve_http(https_port, http_database, http, cancel)
+        })
+        .service_with_cancel("dns", move |cancel| {
+            crate::infra::dns::server::serve(zones, dns_database, dns_config, cancel)
         })
         // Errands, asked for on a timer. Beside the listeners for the
         // same reason as everything else here: a node whose authority

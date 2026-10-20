@@ -1,6 +1,7 @@
 pub mod access;
 pub mod backups;
 pub mod databases;
+pub mod dns;
 #[cfg(test)]
 pub mod fixtures;
 pub mod network;

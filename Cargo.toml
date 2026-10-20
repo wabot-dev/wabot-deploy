@@ -80,6 +80,11 @@ time = { version = "0.3", default-features = false, features = ["std"] }
 # change. A lock would put every request behind the one writer.
 arc-swap = "1"
 
+# The node answering DNS for the zones it serves. Only the authoritative
+# half: no resolver, no DNSSEC, nothing that brings a second crypto
+# backend or a C toolchain into a binary that has to build on a bare machine.
+hickory-server = { version = "0.26", default-features = false }
+
 # The renderer. A direct dependency because `rsx!` expands to absolute
 # `::hypertext::…` paths, so re-exporting it from the framework is not
 # enough — see `wabot::ui::hypertext::hypertext`. The version must match

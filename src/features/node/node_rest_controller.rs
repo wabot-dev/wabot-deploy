@@ -233,6 +233,7 @@ impl NodeRestController {
             &self.state.database,
             &self.state.config,
             &self.state.deployer,
+            &self.state.container,
             &account,
             &asked,
         )
@@ -456,9 +457,10 @@ mod tests {
         assert_eq!(response.header("location"), Some("/"));
 
         for capability in crate::domain::values::capability::Capability::ALL {
-            assert!(
+            assert_eq!(
                 network::capability::provides(&console.database, capability).await,
-                "a member turned {} off for the whole node",
+                capability.provided_unless_refused(),
+                "a member changed {} for the whole node",
                 capability.name()
             );
         }

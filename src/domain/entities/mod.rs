@@ -7,6 +7,8 @@
 pub mod account;
 pub mod config_revision;
 pub mod database;
+pub mod dns_record;
+pub mod dns_zone;
 pub mod port;
 pub mod project;
 pub mod push_token;

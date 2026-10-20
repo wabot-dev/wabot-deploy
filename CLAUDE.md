@@ -418,6 +418,9 @@ A separate subject, with its own documents and its own decisions:
   MySQL on top of `service` and `replica`.
 - [`docs/naming.md`](docs/naming.md) — how a name is derived and which
   authority can sign it.
+- [`docs/dns.md`](docs/dns.md) — the nodes as authoritative name
+  servers: the `dns` capability (off until turned on), zones and records,
+  and which nodes answer for each zone.
 
 Four things belong here because they change what you may do, not what
 happened:

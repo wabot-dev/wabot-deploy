@@ -9,6 +9,7 @@ pub mod clock;
 pub mod config;
 pub mod db;
 pub mod deploy;
+pub mod dns;
 pub mod edge;
 pub mod ledger;
 pub mod network;
