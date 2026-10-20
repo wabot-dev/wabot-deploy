@@ -33,6 +33,9 @@ pub struct RemoteNodeRestController {
     /// Rung by an authority with something to hand over; answered by the
     /// collector loop.
     doorbell: Arc<crate::infra::network::collect::Doorbell>,
+    /// For the zone table, which a report naming a node anew moves: the
+    /// listener answering DNS lives in the container, not in the database.
+    container: Container,
 }
 
 #[rest_controller("/api/network")]
@@ -584,6 +587,17 @@ impl RemoteNodeRestController {
         }
         if let Err(error) = note_reachability(&self.database, &node, &report).await {
             return Ok(unreadable(error));
+        }
+        if let Some(names) = &report.name_servers {
+            match crate::infra::dns::names::remember(&self.database, &node, names).await {
+                Ok(true) => {
+                    crate::infra::dns::names::changed(&self.container, &self.database).await
+                }
+                Ok(false) => {}
+                Err(error) => {
+                    tracing::warn!(%error, node = %node, "could not record the names a node answers DNS as")
+                }
+            }
         }
 
         let mut recorded = 0;

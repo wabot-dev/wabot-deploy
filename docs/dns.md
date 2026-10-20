@@ -172,6 +172,48 @@ Against the real internet, from the VM node: teresaasprilla.com read
 afternoon. `acme.example` read *not known*, because `.example` does not
 exist.
 
+## Phase 5: a node answers under names of its own
+
+Asked for by Jorge on 2026-10-20, the day after 0.26.0: the registrar for
+teresaasprilla.com asks for two name servers, the network has one public
+node, and the stopgap typed there was `node-0.network.nubebasura.lat` beside
+`ns2.linode.com` — which answers REFUSED for it, so every resolver that
+picked it had to try again.
+
+- **The names are the node's, set on the node.** Its operator types them on
+  the DNS page — `ns0.nubebasura.lat`, `ns1.nubebasura.lat` — and empty is
+  its domain, as before. They are the node's own fact like its addresses,
+  so they travel the way `lan` does: on the report to the authority
+  (`Report::name_servers`) and in the roster to the members
+  (`Member::name_servers`), into a `node.name_servers` column outside
+  `save` (migration 0062). A zone administered anywhere lists that node
+  under them, and the NS it serves agrees with the NS it is sent.
+- **`None` is an older node and changes nothing**, and it is listed under
+  its endpoint as it was. Only a change of names is news: it reloads the
+  zone table and sends every zone administered here again, and a report
+  saying the same names every fifteen seconds sends nothing.
+- **What arrives is parsed before it is kept.** A name the listener cannot
+  write would take the whole zone off the air with it.
+- **The page says where each name leads**: here, elsewhere, or nowhere yet.
+  "Here" is an address the machine holds *or* one its domain resolves to —
+  behind a provider's NAT the public address is on no interface. `doctor`
+  prints the same and counts anything but "here" as a problem.
+- **The delegation verdict is worked out when it is read**, from the
+  parent's list kept as a fact. Stored, it would have said "points
+  elsewhere" about a registrar just set to the new names until the next
+  check half an hour later — and it already went stale that way when a
+  peer withdrew `dns`.
+
+On the VM node, with scripting off: three names saved as typed, mixed case,
+a trailing dot and a comma among them; `dig` answered the three NS at once
+and the SOA named the first; the zone page, the organisation's console and
+`doctor` all listed them; a name in `/etc/hosts` pointing at a documentation
+address read *points elsewhere*; a wildcard and an underscore were refused
+with their sentences; clearing the field went back to `node.wabot.test`.
+
+Two names on one machine satisfy a registrar that asks for two and are
+still one machine. The form says so.
+
 ## What is left
 
 - **Two nodes answering for one zone, verified on real machines.** The
@@ -182,6 +224,9 @@ exist.
 
 ## Known limits
 
-- **One public node is one name server**, and many registrars ask for two.
+- **One public node is one machine**, whatever it is called. Two names for
+  it satisfy a registrar that asks for two; they do not survive it stopping.
+- A name inside a zone these nodes serve needs a glue record at that zone's
+  registrar, and the node does not write the A record for it by itself.
 - IPv4 only, because `lan::held()` is. AAAA records are still served.
 - No DNSSEC, no zone transfers, no zone import.

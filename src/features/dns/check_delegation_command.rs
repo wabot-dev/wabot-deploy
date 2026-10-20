@@ -36,12 +36,7 @@ impl CheckDelegation<'_> {
         let servers = zones::servers(database, &zone.id)
             .await
             .map_err(|error| error.to_string())?;
-        let published = crate::infra::dns::published_names(database).await?;
-        let answering: Vec<String> = crate::infra::dns::answering(database, &servers)
-            .await?
-            .iter()
-            .filter_map(|node| published.get(node).cloned())
-            .collect();
+        let answering = crate::infra::dns::name_servers(database, &servers).await?;
 
         let checked_at = crate::infra::clock::now_ms();
         let seen = match delegation::delegated(asker, resolvers, zone.name.as_str()).await {

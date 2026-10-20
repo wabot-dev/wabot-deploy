@@ -22,7 +22,7 @@ pub struct ZoneResponse {
 pub struct ServerChoice {
     pub node_id: String,
     pub node_name: String,
-    pub published: Option<String>,
+    pub published: Vec<String>,
     pub this_node: bool,
     pub chosen: bool,
     pub agreed: bool,

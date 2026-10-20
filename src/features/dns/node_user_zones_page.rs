@@ -1,8 +1,8 @@
 use hypertext::prelude::*;
 
-use crate::features::dns::dns_status_component;
 use crate::features::dns::texts::{t, word};
 use crate::features::dns::zones_response::{ZoneOwner, ZonesResponse};
+use crate::features::dns::{dns_status_component, own_names_component};
 use crate::shell::layouts::layout;
 
 pub struct ZonesPage<'a> {
@@ -24,6 +24,7 @@ pub fn render<'a>(page: &'a ZonesPage<'a>) -> impl Renderable + 'a {
             zones.zones.iter().any(|zone| zone.answered_here),
             &zones.listening,
         ))
+        (own_names_component::names_card(zones))
 
         <section class="card stack">
             <p class="card-label">(t("Zones"))</p>

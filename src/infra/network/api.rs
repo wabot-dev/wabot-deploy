@@ -258,6 +258,16 @@ pub struct Report {
     /// way to be out of date.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dial: Option<String>,
+    /// The names the reporting node answers DNS as, in order.
+    ///
+    /// A zone administered here lists that node under these when it is
+    /// one of the zone's servers, and the NS records it is sent have to
+    /// agree with the ones it serves. Its operator sets them on that
+    /// machine, which makes this the road they travel. `None` from an
+    /// older node leaves the column alone, and it is listed under its
+    /// endpoint as it was before there was this.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name_servers: Option<Vec<String>>,
 }
 
 /// One copy, as the node running it sees it.

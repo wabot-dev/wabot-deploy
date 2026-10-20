@@ -48,6 +48,45 @@ impl DnsRestController {
         }
     }
 
+    #[post("/dns/names")]
+    #[raw]
+    #[middleware(SessionMiddleware)]
+    async fn set_names(&self, request: Request) -> RestResult<Response> {
+        let Some(account) = signed_in(&self.auth) else {
+            return Ok(see_other("/sign-in"));
+        };
+        let form = match read_form(request).await {
+            Ok(form) => form,
+            Err(response) => return Ok(response),
+        };
+        let asked = crate::features::dns::set_name_servers_request::SetNameServersRequest {
+            names: form
+                .get("names")
+                .map(|typed| {
+                    typed
+                        .split(|letter: char| letter.is_whitespace() || letter == ',')
+                        .filter(|name| !name.is_empty())
+                        .map(str::to_string)
+                        .collect()
+                })
+                .unwrap_or_default(),
+        };
+        if let Err(reason) = asked.validate() {
+            return Ok(back_with_error("/dns", &reason.to_string()));
+        }
+        match crate::features::dns::node_user_set_name_servers::run(
+            &self.state.database,
+            &self.state.container,
+            &account,
+            &asked,
+        )
+        .await
+        {
+            Ok(()) => Ok(see_other("/dns")),
+            Err(reason) => Ok(back_with_error("/dns", &reason)),
+        }
+    }
+
     #[post("/dns/:zone/records")]
     #[raw]
     #[middleware(SessionMiddleware)]

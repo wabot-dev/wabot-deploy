@@ -19,17 +19,16 @@ pub async fn tell_servers(database: &SqliteDatabase, zone: &DnsZone, removed: &[
     if !zone.is_ours() {
         return;
     }
-    let (Ok(servers), Ok(records), Ok(published), Ok(candidates), Ok(nodes)) = (
+    let (Ok(servers), Ok(records), Ok(candidates), Ok(nodes)) = (
         zones::servers(database, &zone.id).await,
         zones::records(database, zone).await,
-        super::published_names(database).await,
         crate::infra::network::candidates_for(database, Capability::Dns).await,
         crate::infra::network::all(database).await,
     ) else {
         tracing::warn!(zone = %zone.name, "could not work out who answers for it");
         return;
     };
-    let Ok(answering) = super::answering(database, &servers).await else {
+    let Ok(name_servers) = super::name_servers(database, &servers).await else {
         tracing::warn!(zone = %zone.name, "could not work out who answers for it");
         return;
     };
@@ -53,10 +52,7 @@ pub async fn tell_servers(database: &SqliteDatabase, zone: &DnsZone, removed: &[
                 ttl: record.ttl,
             })
             .collect(),
-        name_servers: answering
-            .iter()
-            .filter_map(|node| published.get(node).cloned())
-            .collect(),
+        name_servers,
         withdrawn: false,
     };
     let subject = format!("zone:{}", zone.id);
@@ -232,6 +228,40 @@ mod tests {
             1,
             "saying the same thing twice says nothing"
         );
+    }
+
+    /// The zone a peer is sent lists every server under the names it
+    /// answers as, so the NS records it serves agree with the ones served
+    /// here — and a registrar that asks for two gets two from one node.
+    #[tokio::test]
+    async fn a_zone_names_each_server_as_it_answers() {
+        let (database, me) = network().await;
+        let ours = crate::domain::values::name_server::NameServerName::all(&[
+            "ns0.example.net".into(),
+            "ns1.example.net".into(),
+        ])
+        .expect("names");
+        crate::infra::dns::names::declare(&database, &ours)
+            .await
+            .expect("declared");
+        crate::infra::dns::names::remember(&database, "nd-yes", &["ns2.example.net".into()])
+            .await
+            .expect("said");
+        let zone = zone(&database, &[me, "nd-yes".into()]).await;
+
+        tell_servers(&database, &zone, &[]).await;
+        let sent = zone_errands(&database).await;
+        let payload: errand::Zone =
+            serde_json::from_value(sent[0].payload.clone()).expect("a zone");
+        assert_eq!(
+            payload.name_servers,
+            vec!["ns0.example.net", "ns1.example.net", "ns2.example.net"]
+        );
+
+        let served = crate::infra::dns::what_this_node_serves(&database)
+            .await
+            .expect("served");
+        assert_eq!(served[0].name_servers, payload.name_servers);
     }
 
     #[tokio::test]

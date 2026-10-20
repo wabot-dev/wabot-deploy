@@ -48,6 +48,28 @@ pub struct Delegation {
     pub checked_at: i64,
 }
 
+impl Delegation {
+    /// The parent's answer read against the names that answer now.
+    ///
+    /// What the parent said is a fact as of when it was asked; what it
+    /// *means* depends on this node's side too, which moves without asking
+    /// the parent anything — an operator names the node `ns0` and `ns1`, or
+    /// a peer stops answering. Kept as a verdict, it would say "points
+    /// elsewhere" about a registrar that had just been set right, until the
+    /// next check half an hour later.
+    pub fn against(&self, answering: &[String]) -> Delegation {
+        match self.status {
+            DelegationStatus::Here | DelegationStatus::Partly | DelegationStatus::Elsewhere => {
+                Delegation {
+                    status: verdict(&self.delegated, answering),
+                    ..self.clone()
+                }
+            }
+            DelegationStatus::Unregistered | DelegationStatus::Unknown => self.clone(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub enum DelegationStatus {
     /// The parent lists exactly the nodes that answer for it.
@@ -138,5 +160,28 @@ mod tests {
             DelegationStatus::Elsewhere
         );
         assert_eq!(verdict(&[], &ours), DelegationStatus::Unregistered);
+    }
+
+    #[test]
+    fn naming_the_node_changes_what_the_last_answer_means_without_asking_again() {
+        let seen = Delegation {
+            status: DelegationStatus::Elsewhere,
+            delegated: names(&["ns0.nubebasura.lat", "ns1.nubebasura.lat"]),
+            reason: None,
+            checked_at: 7,
+        };
+        let before = names(&["node-0.network.nubebasura.lat"]);
+        let after = names(&["ns0.nubebasura.lat", "ns1.nubebasura.lat"]);
+        assert_eq!(seen.against(&before).status, DelegationStatus::Elsewhere);
+        assert_eq!(seen.against(&after).status, DelegationStatus::Here);
+        assert_eq!(seen.against(&after).checked_at, 7);
+
+        let unasked = Delegation {
+            status: DelegationStatus::Unknown,
+            delegated: Vec::new(),
+            reason: Some("no answer".into()),
+            checked_at: 7,
+        };
+        assert_eq!(unasked.against(&after).status, DelegationStatus::Unknown);
     }
 }

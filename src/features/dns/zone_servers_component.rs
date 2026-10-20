@@ -25,8 +25,8 @@ pub fn servers_card<'a>(here: &'a str, zone: &'a ZoneResponse) -> impl Renderabl
                         <span>
                             <strong>(&choice.node_name)</strong>
                             <span class="tile-detail">
-                                @if let Some(name) = &choice.published {
-                                    (name)
+                                @if !choice.published.is_empty() {
+                                    (choice.published.join(", "))
                                 } @else {
                                     (t("no name the world can ask"))
                                 }
@@ -36,7 +36,7 @@ pub fn servers_card<'a>(here: &'a str, zone: &'a ZoneResponse) -> impl Renderabl
                         </span>
                     </label>
                 }
-                <p class="field-hint">(t("A node is offered here once it answers DNS and lets this node use it as a name server — it grants dns from its own console. Each is listed at the registrar under its own name."))</p>
+                <p class="field-hint">(t("A node is offered here once it answers DNS and lets this node use it as a name server — it grants dns from its own console. Each is listed at the registrar under the names it answers as, which its operator sets."))</p>
                 <div class="actions">
                     <button type="submit">(t("Save"))</button>
                 </div>

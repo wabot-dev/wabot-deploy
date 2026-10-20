@@ -7,6 +7,7 @@
 
 pub mod delegation;
 pub mod dispatch;
+pub mod names;
 pub mod server;
 
 use std::collections::BTreeMap;
@@ -126,30 +127,60 @@ pub async fn reload(container: &wabot::prelude::Container, database: &SqliteData
     }
 }
 
-/// The name each node publishes about itself, which is what a zone lists
-/// as its name server: this node's own domain, and another's endpoint
-/// without the port. A node with neither has no name to give.
+/// The names each node answers as, which is what a zone lists as its name
+/// servers: this node's own, and what each other node said — or, for one
+/// that never said, its endpoint without the port. A node with none of
+/// those has no name to give.
 pub async fn published_names(
     database: &SqliteDatabase,
-) -> Result<BTreeMap<String, String>, String> {
+) -> Result<BTreeMap<String, Vec<String>>, String> {
     let nodes = crate::infra::network::all(database)
         .await
         .map_err(|error| error.to_string())?;
-    let own_domain = crate::infra::node::settings::domain(database).await;
+    let own = names::of_this_node(database).await;
+    let said = names::said_by_others(database)
+        .await
+        .map_err(|error| error.to_string())?;
     Ok(nodes
         .iter()
         .filter_map(|node| {
-            let name = match node.is_self {
-                true => own_domain.clone(),
-                false => node
-                    .endpoint
-                    .as_deref()
-                    .map(|endpoint| endpoint.rsplit_once(':').map_or(endpoint, |(host, _)| host))
-                    .map(str::to_string),
-            }?;
-            Some((node.id.clone(), name))
+            let names = match node.is_self {
+                true => own.clone(),
+                false => said
+                    .get(&node.id)
+                    .filter(|names| !names.is_empty())
+                    .cloned()
+                    .or_else(|| {
+                        node.endpoint
+                            .as_deref()
+                            .map(|endpoint| {
+                                endpoint.rsplit_once(':').map_or(endpoint, |(host, _)| host)
+                            })
+                            .map(|host| vec![host.to_string()])
+                    })
+                    .unwrap_or_default(),
+            };
+            (!names.is_empty()).then(|| (node.id.clone(), names))
         })
         .collect())
+}
+
+/// What a zone's NS records say: every name of every node that answers for
+/// it, in the order the nodes were chosen, each once.
+pub async fn name_servers(
+    database: &SqliteDatabase,
+    servers: &[String],
+) -> Result<Vec<String>, String> {
+    let published = published_names(database).await?;
+    let mut named: Vec<String> = Vec::new();
+    for node in answering(database, servers).await? {
+        for name in published.get(&node).into_iter().flatten() {
+            if !named.contains(name) {
+                named.push(name.clone());
+            }
+        }
+    }
+    Ok(named)
 }
 
 /// Of the nodes chosen for a zone, the ones that answer for it: this node,
@@ -190,7 +221,6 @@ pub async fn what_this_node_serves(database: &SqliteDatabase) -> Result<Vec<Serv
         .into_iter()
         .find(|node| node.is_self)
         .map(|node| node.id);
-    let published = published_names(database).await?;
 
     let mut served = Vec::new();
     for zone in zones::all(database)
@@ -213,11 +243,7 @@ pub async fn what_this_node_serves(database: &SqliteDatabase) -> Result<Vec<Serv
             .await
             .map_err(|error| error.to_string())?;
         let name_servers = match zone.is_ours() {
-            true => answering(database, &servers)
-                .await?
-                .iter()
-                .filter_map(|node| published.get(node).cloned())
-                .collect(),
+            true => name_servers(database, &servers).await?,
             false => zone.received_name_servers.clone(),
         };
         served.push(Served {

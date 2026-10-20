@@ -8,6 +8,16 @@ pub struct ZonesResponse {
     pub provides_dns: bool,
     pub addressed: bool,
     pub listening: Vec<Listening>,
+    /// What this node's operator typed, for the form; empty is its domain.
+    pub declared: Vec<String>,
+    pub answers_as: Vec<OwnName>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct OwnName {
+    pub name: String,
+    pub addresses: Vec<String>,
+    pub here: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]

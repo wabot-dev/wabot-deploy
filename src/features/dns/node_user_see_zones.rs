@@ -5,7 +5,7 @@ use wabot::sqlite::SqliteDatabase;
 use crate::domain::authz::node_user;
 use crate::domain::entities::account::Account;
 use crate::domain::values::capability::Capability;
-use crate::features::dns::zones_response::{ZoneOwner, ZoneRow, ZonesResponse};
+use crate::features::dns::zones_response::{OwnName, ZoneOwner, ZoneRow, ZonesResponse};
 use crate::infra::dns::Zones;
 use crate::infra::repositories::{tenants, zones};
 
@@ -68,5 +68,19 @@ pub async fn run(
         listening: table
             .map(|table| table.listening().to_vec())
             .unwrap_or_default(),
+        declared: crate::infra::dns::names::declared(database).await,
+        answers_as: crate::infra::dns::names::where_each_points(database)
+            .await
+            .into_iter()
+            .map(|pointing| OwnName {
+                addresses: pointing
+                    .addresses
+                    .iter()
+                    .map(|address| address.to_string())
+                    .collect(),
+                here: pointing.here,
+                name: pointing.name,
+            })
+            .collect(),
     })
 }

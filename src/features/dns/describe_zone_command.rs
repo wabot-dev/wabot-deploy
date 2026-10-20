@@ -58,12 +58,9 @@ impl DescribeZone<'_> {
 
         let mut name_servers = Vec::new();
         let named: Vec<String> = match zone.is_ours() {
-            true => crate::infra::dns::answering(database, &servers)
+            true => crate::infra::dns::name_servers(database, &servers)
                 .await
-                .map_err(unreadable)?
-                .iter()
-                .filter_map(|server| published.get(server).cloned())
-                .collect(),
+                .map_err(unreadable)?,
             false => zone.received_name_servers.clone(),
         };
         for name in &named {
@@ -98,7 +95,7 @@ impl DescribeZone<'_> {
                 .collect(),
             name_servers,
             servers: servers_offered,
-            delegation: zone.delegation.clone(),
+            delegation: zone.delegation.as_ref().map(|seen| seen.against(&named)),
             id: zone.id.clone(),
             name: zone.name.to_string(),
             serial: zone.serial,
@@ -112,7 +109,7 @@ async fn choices(
     database: &SqliteDatabase,
     zone: &str,
     chosen: &[String],
-    published: &BTreeMap<String, String>,
+    published: &BTreeMap<String, Vec<String>>,
 ) -> Vec<ServerChoice> {
     let nodes = crate::infra::network::all(database)
         .await
@@ -154,7 +151,7 @@ async fn choices(
                     }
                 });
             ServerChoice {
-                published: published.get(&node.id).cloned(),
+                published: published.get(&node.id).cloned().unwrap_or_default(),
                 this_node: node.is_self,
                 chosen: chosen.contains(&node.id),
                 agreed: node.is_self || agreed.contains(&node.id),

@@ -315,6 +315,28 @@ pub async fn run(config: Config, config_path: &Path) -> anyhow::Result<i32> {
         crate::domain::values::capability::Capability::Dns,
     )
     .await;
+    if answers_dns {
+        for pointing in crate::infra::dns::names::where_each_points(&database).await {
+            let leads: Vec<String> = pointing
+                .addresses
+                .iter()
+                .map(|address| address.to_string())
+                .collect();
+            let leads = leads.join(", ");
+            if pointing.addresses.is_empty() {
+                println!("  answers as {:<30} DOES NOT RESOLVE", pointing.name);
+                problems += 1;
+            } else if pointing.here {
+                println!("  answers as {:<30} {leads}", pointing.name);
+            } else {
+                println!(
+                    "  answers as {:<30} POINTS ELSEWHERE: {leads}",
+                    pointing.name
+                );
+                problems += 1;
+            }
+        }
+    }
     match crate::infra::dns::what_this_node_serves(&database).await {
         Err(error) => {
             println!("  unreadable: {error}");
@@ -355,7 +377,12 @@ pub async fn run(config: Config, config_path: &Path) -> anyhow::Result<i32> {
                     continue;
                 }
                 use crate::domain::entities::dns_zone::DelegationStatus;
-                match &zone.zone.delegation {
+                match zone
+                    .zone
+                    .delegation
+                    .as_ref()
+                    .map(|seen| seen.against(&zone.name_servers))
+                {
                     None => println!("       registrar: not checked yet"),
                     Some(seen) => {
                         let what = match seen.status {

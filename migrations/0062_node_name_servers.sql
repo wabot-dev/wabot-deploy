@@ -1,0 +1,16 @@
+-- The names a node answers DNS as, as that node said them.
+--
+-- A zone lists its servers by node and names each one when it is served.
+-- The name used to be the node's endpoint, which is one name per machine;
+-- a registrar that asks for two name servers then had nothing to be given
+-- by a network with one public node. Each node now says which names it
+-- answers as — the operator sets them on that node — and the others list it
+-- under those.
+--
+-- Comma-separated, in order. **Outside `COLUMNS`, `read` and `save`** in
+-- `network::mod`, for the reason `lan` is (migration 0046): `save` writes the
+-- whole row, and this node must have no opinion about another machine's
+-- names. Written by the report and the roster that carried them. NULL is a
+-- node that has never said, which is an older one, and it is listed under
+-- its endpoint as before.
+ALTER TABLE node ADD COLUMN "name_servers" TEXT;

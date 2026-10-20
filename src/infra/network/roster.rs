@@ -69,6 +69,10 @@ pub struct Member {
     /// only way either learns it.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub lan: Vec<String>,
+    /// The names that member answers DNS as, as it said them. `None` from
+    /// an authority older than this, which changes nothing here.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name_servers: Option<Vec<String>>,
 }
 
 /// The members of the network this node is the authority of.
@@ -103,8 +107,13 @@ pub async fn of_this_node(database: &SqliteDatabase) -> NetworkResult<Roster> {
                 )
             })
             .collect();
+    let mut named = crate::infra::dns::names::said_by_others(database).await?;
     if let Some(me) = super::me(database).await? {
-        held.insert(me.id, super::lan::addresses());
+        held.insert(me.id.clone(), super::lan::addresses());
+        named.insert(
+            me.id,
+            crate::infra::dns::names::of_this_node(database).await,
+        );
     }
 
     let members = super::all(database)
@@ -135,6 +144,7 @@ pub async fn of_this_node(database: &SqliteDatabase) -> NetworkResult<Roster> {
                 },
                 endpoint: node.endpoint.clone(),
                 lan: held.get(&node.id).cloned().unwrap_or_default(),
+                name_servers: named.get(&node.id).cloned(),
             })
         })
         .collect();
@@ -150,6 +160,9 @@ pub struct Applied {
     pub changed: usize,
     /// Members whose address is already held by a different node here.
     pub conflicts: Vec<(String, String)>,
+    /// Members that now answer DNS under other names. Every zone that lists
+    /// one of them has to be told again.
+    pub renamed: usize,
 }
 
 /// Learn the members of a network, narrowly.
@@ -191,6 +204,13 @@ pub async fn apply(database: &SqliteDatabase, roster: &Roster) -> NetworkResult<
                     applied.changed += 1;
                 }
             }
+            // Said by the authority about itself, or relayed from the node
+            // that said it: a node's names are its own word either way, and
+            // no network's accounting can disagree with them the way two
+            // authorities can about an address.
+            if renamed(database, member).await? {
+                applied.renamed += 1;
+            }
             continue;
         }
         match holder_of(database, &member.overlay_ip).await? {
@@ -209,8 +229,18 @@ pub async fn apply(database: &SqliteDatabase, roster: &Roster) -> NetworkResult<
         // empty list is a member that has none worth naming, which is news
         // and clears what was stored.
         super::lan::remember(database, &member.node, &member.lan).await?;
+        if renamed(database, member).await? {
+            applied.renamed += 1;
+        }
     }
     Ok(applied)
+}
+
+async fn renamed(database: &SqliteDatabase, member: &Member) -> NetworkResult<bool> {
+    match &member.name_servers {
+        Some(names) => Ok(crate::infra::dns::names::remember(database, &member.node, names).await?),
+        None => Ok(false),
+    }
 }
 
 /// Which node holds this overlay address here, if any.
@@ -456,6 +486,71 @@ mod tests {
         );
     }
 
+    /// A sibling's names reach the node that administers a zone listing it,
+    /// and an authority too old to relay them takes nothing away.
+    #[tokio::test]
+    async fn a_member_is_listed_under_the_names_it_answers_dns_as() {
+        let database = network().await;
+        let names = vec!["ns2.example.net".to_string(), "ns3.example.net".to_string()];
+        let member = |name_servers: Option<Vec<String>>| Member {
+            node: "nd-sibling01".into(),
+            name: "sibling".into(),
+            overlay_ip: "10.42.0.12".into(),
+            public_key: "dddd".into(),
+            ca_pem: None,
+            endpoint: Some("sibling.example.net:443".into()),
+            lan: Vec::new(),
+            name_servers,
+        };
+
+        let applied = apply(
+            &database,
+            &Roster {
+                members: vec![member(Some(names.clone()))],
+            },
+        )
+        .await
+        .expect("applied");
+        assert_eq!(
+            applied.renamed, 1,
+            "a member seen for the first time keeps its names"
+        );
+        let said = crate::infra::dns::names::said_by_others(&database)
+            .await
+            .expect("read");
+        assert_eq!(said.get("nd-sibling01"), Some(&names));
+
+        let again = apply(
+            &database,
+            &Roster {
+                members: vec![member(Some(names.clone())), member(None)],
+            },
+        )
+        .await
+        .expect("applied");
+        assert_eq!(again.renamed, 0, "saying the same names again is not news");
+        let said = crate::infra::dns::names::said_by_others(&database)
+            .await
+            .expect("read");
+        assert_eq!(said.get("nd-sibling01"), Some(&names));
+
+        let roster = of_this_node(&database).await.expect("roster");
+        let me = super::super::me(&database)
+            .await
+            .expect("query")
+            .expect("self");
+        let mine = roster
+            .members
+            .iter()
+            .find(|member| member.node == me.id)
+            .expect("itself");
+        assert_eq!(
+            mine.name_servers.as_deref(),
+            Some(&["hub.example".to_string()][..]),
+            "an authority says what it answers as, like any member"
+        );
+    }
+
     /// Nothing describes this machine to this machine.
     #[tokio::test]
     async fn applying_a_roster_does_not_describe_this_node_to_itself() {
@@ -476,6 +571,7 @@ mod tests {
                     ca_pem: None,
                     endpoint: Some("elsewhere.example:443".into()),
                     lan: Vec::new(),
+                    name_servers: None,
                 }],
             },
         )
@@ -514,6 +610,7 @@ mod tests {
                     ca_pem: None,
                     endpoint: None,
                     lan: Vec::new(),
+                    name_servers: None,
                 }],
             },
         )
@@ -589,6 +686,7 @@ mod tests {
                     ca_pem: Some("the anchor".into()),
                     endpoint: Some("moved.example:443".into()),
                     lan: Vec::new(),
+                    name_servers: None,
                 }],
             },
         )
@@ -624,6 +722,7 @@ mod tests {
                     ca_pem: Some("the anchor".into()),
                     endpoint: Some("hub.example:443".into()),
                     lan: Vec::new(),
+                    name_servers: None,
                 }],
             },
         )
@@ -649,6 +748,7 @@ mod tests {
                 ca_pem: Some("anchor".into()),
                 endpoint: None,
                 lan: Vec::new(),
+                name_servers: None,
             }],
         };
 

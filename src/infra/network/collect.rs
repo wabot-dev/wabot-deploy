@@ -305,7 +305,7 @@ async fn from_one(
     // sibling's overlay address is obeyed with a session already in place.
     // A failure costs nothing: the pass goes on, and the census is asked
     // for again in fifteen seconds.
-    learn_the_network(database, config, node_id, &endpoint, &secret).await;
+    learn_the_network(database, config, container, node_id, &endpoint, &secret).await;
 
     // And what this node has asked *that* one to do. Before collecting
     // for the same reason the report is: what comes back should be
@@ -364,6 +364,7 @@ async fn from_one(
 async fn learn_the_network(
     database: &SqliteDatabase,
     config: &Config,
+    container: &Container,
     node_id: &str,
     endpoint: &str,
     secret: &str,
@@ -405,6 +406,9 @@ async fn learn_the_network(
         if let Err(error) = super::tunnel::ensure(database, config).await {
             tracing::warn!(%error, "could not put the new members on the overlay");
         }
+    }
+    if applied.renamed > 0 {
+        crate::infra::dns::names::changed(container, database).await;
     }
 }
 
@@ -646,6 +650,7 @@ async fn report_for(
             .await
             .map_err(|error| error.to_string())
             .ok(),
+        name_servers: Some(crate::infra::dns::names::of_this_node(database).await),
     })
 }
 

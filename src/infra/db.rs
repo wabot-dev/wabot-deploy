@@ -244,6 +244,10 @@ fn migrations() -> Vec<Migration> {
             "0061_dns_received_name_servers",
             include_str!("../../migrations/0061_dns_received_name_servers.sql"),
         ),
+        Migration::new(
+            "0062_node_name_servers",
+            include_str!("../../migrations/0062_node_name_servers.sql"),
+        ),
     ]
 }
 

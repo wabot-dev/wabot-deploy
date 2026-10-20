@@ -64,24 +64,18 @@ pub async fn run(
                 .map(|node| node.id),
         )
         .collect();
-    let answering = crate::infra::dns::answering(database, &offered)
-        .await
-        .map_err(unreadable)?;
-    let published = crate::infra::dns::published_names(database)
-        .await
-        .map_err(unreadable)?;
     let mut name_servers: Vec<NameServer> = Vec::new();
-    for name in answering.iter().filter_map(|node| published.get(node)) {
-        if name_servers.iter().any(|server| &server.name == name) {
-            continue;
-        }
+    for name in crate::infra::dns::name_servers(database, &offered)
+        .await
+        .map_err(unreadable)?
+    {
         name_servers.push(NameServer {
-            name: name.clone(),
-            addresses: crate::infra::deploy::dns::lookup(name)
+            addresses: crate::infra::deploy::dns::lookup(&name)
                 .await
                 .into_iter()
                 .map(|address| address.to_string())
                 .collect(),
+            name,
         });
     }
 

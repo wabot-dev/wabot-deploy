@@ -10,6 +10,7 @@ pub mod hostname;
 pub mod image_reference;
 pub mod language;
 pub mod mount_point;
+pub mod name_server;
 pub mod record_data;
 pub mod record_name;
 pub mod roles;
