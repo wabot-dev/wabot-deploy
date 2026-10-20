@@ -3312,7 +3312,7 @@ dependencies = [
 
 [[package]]
 name = "wabot-deploy"
-version = "0.26.0"
+version = "0.27.0"
 dependencies = [
  "anyhow",
  "arc-swap",
