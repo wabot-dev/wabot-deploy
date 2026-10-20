@@ -5,6 +5,7 @@
 //! from what is in memory, and a lock on that would put every answer behind
 //! the rare write.
 
+pub mod delegation;
 pub mod dispatch;
 pub mod server;
 

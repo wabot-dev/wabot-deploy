@@ -98,6 +98,7 @@ impl DescribeZone<'_> {
                 .collect(),
             name_servers,
             servers: servers_offered,
+            delegation: zone.delegation.clone(),
             id: zone.id.clone(),
             name: zone.name.to_string(),
             serial: zone.serial,

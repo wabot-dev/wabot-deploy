@@ -4,7 +4,7 @@ use crate::features::dns::texts::{t, word};
 use crate::features::dns::zone_response::ZoneResponse;
 use crate::features::dns::zones_response::ZoneOwner;
 use crate::features::dns::{
-    name_servers_component, zone_records_component, zone_servers_component,
+    delegation_component, name_servers_component, zone_records_component, zone_servers_component,
 };
 use crate::shell::layouts::layout;
 
@@ -42,6 +42,9 @@ pub fn render<'a>(page: &'a ZonePage<'a>) -> impl Renderable + 'a {
             (zone_servers_component::servers_card(&here, zone))
         }
         (name_servers_component::registrar_card(&zone.name_servers))
+        @if zone.editable {
+            (delegation_component::delegation_card(&here, zone))
+        }
         (zone_records_component::records_card(&here, zone))
 
         <section class="card stack">

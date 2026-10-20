@@ -187,6 +187,7 @@ pub async fn run(config: Config) -> anyhow::Result<i32> {
     let https_port = config.edge.https_port;
     let dns_database = database.clone();
     let dns_config = config.clone();
+    let delegation_database = database.clone();
 
     let outcome = ProjectRunner::new(container.clone())
         // Reconciling is a *service*, not a startup step.
@@ -471,6 +472,31 @@ pub async fn run(config: Config) -> anyhow::Result<i32> {
         })
         .service_with_cancel("dns", move |cancel| {
             crate::infra::dns::server::serve(zones, dns_database, dns_config, cancel)
+        })
+        // Where each parent zone sends resolvers for the zones administered
+        // here. A minute after starting, then every half hour: a registrar
+        // changes nothing faster, and a page whose sentence is a day old is
+        // the failure that started all of this.
+        .service_with_cancel("dns-delegation", move |cancel| async move {
+            let mut wait = std::time::Duration::from_secs(60);
+            loop {
+                tokio::select! {
+                    _ = cancel.cancelled() => return Ok::<(), anyhow::Error>(()),
+                    _ = tokio::time::sleep(wait) => {}
+                }
+                let zones = crate::infra::repositories::zones::all(&delegation_database)
+                    .await
+                    .unwrap_or_default();
+                for zone in zones.iter().filter(|zone| zone.is_ours()) {
+                    let checked = crate::features::dns::check_delegation_command::CheckDelegation { zone }
+                        .run(&delegation_database)
+                        .await;
+                    if let Err(error) = checked {
+                        tracing::warn!(%error, zone = %zone.name, "could not check where the registrar points");
+                    }
+                }
+                wait = std::time::Duration::from_secs(1800);
+            }
         })
         // Errands, asked for on a timer. Beside the listeners for the
         // same reason as everything else here: a node whose authority

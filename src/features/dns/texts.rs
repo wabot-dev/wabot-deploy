@@ -16,21 +16,30 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
     ("Answered", "Respondida"),
     ("Answering", "Respondiendo"),
     ("At your domain's registrar", "En el registrador de tu dominio"),
+    ("Check now", "Comprobar ahora"),
+    ("Delegated here", "Delegado aquí"),
     ("Delete", "Eliminar"),
     ("Delete this zone", "Eliminar esta zona"),
     ("Every record goes with it, and this node stops answering for the domain. Resolvers keep what they were told until it expires.", "Todos los registros se van con ella, y este nodo deja de responder por el dominio. Los resolutores conservan lo que se les dijo hasta que caduque."),
     ("Here", "Aquí"),
+    ("It could not be asked:", "No se pudo preguntar:"),
     ("It needs a domain that resolves here first: a name server the world cannot reach is one nobody can ask.", "Antes necesita un dominio que resuelva aquí: un servidor de nombres que el mundo no alcanza es uno al que nadie puede preguntar."),
+    ("Last asked", "Última consulta"),
     ("No node answers for this zone yet, so there is nothing to set there.", "Ningún nodo responde todavía por esta zona, así que no hay nada que poner allí."),
     ("No node is answering for it yet. The operator of this node turns DNS on; until then the records are kept and nothing is answered.", "Todavía no responde ningún nodo por ella. Quien opera este nodo enciende el DNS; mientras tanto los registros se guardan y no se responde nada."),
     ("None yet. A zone is a domain this node answers for: its addresses, its mail, everything a resolver asks about it.", "Ninguna todavía. Una zona es un dominio por el que responde este nodo: sus direcciones, su correo, todo lo que un resolutor pregunta sobre él."),
     ("None yet. Add a domain your organisation has registered, and these nodes answer for it: its addresses, its mail, everything a resolver asks about it.", "Ninguno todavía. Añade un dominio que tu organización haya registrado, y estos nodos responden por él: sus direcciones, su correo, todo lo que un resolutor pregunta sobre él."),
     ("None yet. The name servers and the start of authority are written by the node and are not listed here.", "Ninguno todavía. Los servidores de nombres y el inicio de autoridad los escribe el nodo y no se listan aquí."),
     ("Not answered yet", "Todavía sin respuesta"),
+    ("Not checked yet. It is asked every half hour, or now with the button.", "Todavía no se ha comprobado. Se pregunta cada media hora, o ahora con el botón."),
     ("Not here", "Aquí no"),
+    ("Not known", "No se sabe"),
+    ("Not registered", "No registrado"),
     ("Off", "Apagado"),
     ("On", "Encendido"),
     ("Only for MX and SRV: lower is tried first.", "Solo para MX y SRV: el más bajo se prueba primero."),
+    ("Partly", "En parte"),
+    ("Points elsewhere", "Apunta a otro sitio"),
     ("Port 53 opens with the first zone this node answers for, and closes with the last.", "El puerto 53 se abre con la primera zona por la que responde este nodo, y se cierra con la última."),
     ("Priority", "Prioridad"),
     ("Records", "Registros"),
@@ -43,6 +52,8 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
     ("Stop answering for it", "Dejar de responder por ella"),
     ("TTL", "TTL"),
     ("The domain itself, as it was registered. This node answers for it and for every name under it that has a record.", "El dominio mismo, tal como se registró. Este nodo responde por él y por cada nombre debajo que tenga un registro."),
+    ("The parent zone has never heard of this domain. Is it registered, and is the registration paid?", "La zona padre nunca ha oído hablar de este dominio. ¿Está registrado, y está pagado el registro?"),
+    ("The registrar sends resolvers to these nodes, and only these.", "El registrador envía a los resolutores a estos nodos, y solo a estos."),
     ("The zone of the organisation", "La zona de la organización"),
     ("This node as a name server", "Este nodo como servidor de nombres"),
     ("This node does not answer DNS yet: turn on Answer DNS in its settings.", "Este nodo todavía no responde DNS: enciende Responder DNS en sus ajustes."),
@@ -52,6 +63,7 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
     ("This node's own zone.", "La zona propia de este nodo."),
     ("This node's settings", "Ajustes de este nodo"),
     ("Value", "Valor"),
+    ("Where the registrar sends resolvers", "A dónde envía el registrador a los resolutores"),
     ("Which nodes answer for it", "Qué nodos responden por ella"),
     ("Whose", "De quién"),
     ("Your domains", "Tus dominios"),
@@ -99,6 +111,30 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
     ("this zone was sent by another node, and it is changed there — this node only answers for it", "esta zona la envió otro nodo, y se cambia allí — este nodo solo responde por ella"),
     ("told to stop", "se le pidió que pare"),
 ];
+
+/// Where the registrar sends resolvers, when some of them are these nodes.
+pub fn delegated_partly(names: &str) -> String {
+    match crate::shell::texts::language::current() {
+        crate::domain::values::language::Language::En => format!(
+            "The registrar lists {names}. Some of those are these nodes and some are not: set exactly the ones above."
+        ),
+        crate::domain::values::language::Language::Es => format!(
+            "El registrador tiene {names}. Algunos son estos nodos y otros no: pon exactamente los de arriba."
+        ),
+    }
+}
+
+/// Where the registrar sends resolvers, when none of them is.
+pub fn delegated_elsewhere(names: &str) -> String {
+    match crate::shell::texts::language::current() {
+        crate::domain::values::language::Language::En => format!(
+            "The registrar sends resolvers to {names}, not to these nodes. Change the name servers there to the ones above."
+        ),
+        crate::domain::values::language::Language::Es => format!(
+            "El registrador envía a los resolutores a {names}, no a estos nodos. Cambia allí los servidores de nombres por los de arriba."
+        ),
+    }
+}
 
 pub fn t(english: &'static str) -> &'static str {
     crate::shell::texts::language::translated(english, TABLE)

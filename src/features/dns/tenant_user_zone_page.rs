@@ -2,7 +2,7 @@ use hypertext::prelude::*;
 
 use crate::features::dns::texts::{t, word};
 use crate::features::dns::zone_response::ZoneResponse;
-use crate::features::dns::{name_servers_component, zone_records_component};
+use crate::features::dns::{delegation_component, name_servers_component, zone_records_component};
 use crate::shell::layouts::layout;
 
 pub struct OrganisationZonePage<'a> {
@@ -24,6 +24,9 @@ pub fn render<'a>(page: &'a OrganisationZonePage<'a>) -> impl Renderable + 'a {
         }
 
         (name_servers_component::registrar_card(&zone.name_servers))
+        @if zone.editable {
+            (delegation_component::delegation_card(&here, zone))
+        }
         (zone_records_component::records_card(&here, zone))
 
         <section class="card stack">

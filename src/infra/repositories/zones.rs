@@ -409,6 +409,35 @@ pub async fn delete(database: &SqliteDatabase, zone: &DnsZone) -> PlatformResult
     Ok(())
 }
 
+/// The note holds the parent's list, or the reason there is none — one
+/// column, because a check produces one or the other.
+pub async fn save_delegation(
+    database: &SqliteDatabase,
+    zone: &DnsZone,
+    delegation: &Delegation,
+) -> PlatformResult<()> {
+    let note = match &delegation.reason {
+        Some(reason) => reason.clone(),
+        None => delegation.delegated.join(","),
+    };
+    let (id, status, at) = (
+        zone.id.clone(),
+        delegation.status.as_str(),
+        delegation.checked_at,
+    );
+    database
+        .write(move |connection| {
+            connection.execute(
+                "UPDATE dns_zone SET \"delegation_status\" = ?2, \"delegation_note\" = ?3, \
+                   \"delegation_checked_at\" = ?4 WHERE \"id\" = ?1",
+                (id, status, note, at),
+            )?;
+            Ok(())
+        })
+        .await?;
+    Ok(())
+}
+
 const ZONE_COLUMNS: &str = "SELECT \"id\", \"name\", \"tenant_id\", \"authority_id\", \"serial\", \
      \"default_ttl\", \"delegation_status\", \"delegation_note\", \"delegation_checked_at\", \
      \"created_at\", \"updated_at\", \"name_servers\" FROM dns_zone";
@@ -427,11 +456,26 @@ fn read_zone(row: &Row<'_>) -> wabot::sqlite::rusqlite::Result<Option<DnsZone>> 
         row.get::<_, Option<String>>(7)?,
         row.get::<_, Option<i64>>(8)?,
     ) {
-        (Some(status), note, Some(checked_at)) => Some(Delegation {
-            status: DelegationStatus::parse(&status),
-            note: note.unwrap_or_default(),
-            checked_at,
-        }),
+        (Some(status), note, Some(checked_at)) => {
+            let status = DelegationStatus::parse(&status);
+            let note = note.unwrap_or_default();
+            let (delegated, reason) = match status {
+                DelegationStatus::Unknown => (Vec::new(), Some(note)),
+                _ => (
+                    note.split(',')
+                        .filter(|name| !name.is_empty())
+                        .map(str::to_string)
+                        .collect(),
+                    None,
+                ),
+            };
+            Some(Delegation {
+                status,
+                delegated,
+                reason,
+                checked_at,
+            })
+        }
         _ => None,
     };
     Ok(Some(DnsZone {

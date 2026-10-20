@@ -14,6 +14,7 @@ pub struct ZoneResponse {
     pub records: Vec<RecordRow>,
     pub name_servers: Vec<NameServer>,
     pub servers: Vec<ServerChoice>,
+    pub delegation: Option<crate::domain::entities::dns_zone::Delegation>,
 }
 
 /// A node that could answer for the zone, and what it was last told.

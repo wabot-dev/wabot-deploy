@@ -146,10 +146,39 @@ joined through the link, added `acme.example` and a record, and `dig`
 answered it; `teresaasprilla.com` and `wabot.test` were refused with their
 sentences; the operator's list showed the zone as Acme's.
 
-## Still to come
+## Phase 4: whether the world asks these nodes at all
 
-- **Phase 4, the delegation check.** Ask the parent zone which servers it
-  delegates to, and say so on the page: the failure that started this.
+- **Asked of the parent, without recursion.** A resolver remembers, and one
+  whose delegation is broken says SERVFAIL and nothing about why. The
+  parent zone's own servers say exactly what the registrar wrote.
+- **The parent is found by its NS records, not its SOA.** Every zone cut
+  has NS records; not every resolver answers a SOA question. The one Lima
+  gives a VM answers `com SOA` with an empty NOERROR and `com NS`
+  correctly, and the first version said "no zone above
+  teresaasprilla.com answered" for that reason. Measured on the VM node.
+- **The resolvers are the machine's own**, from `/etc/resolv.conf`, with
+  two public ones only when the file names none. The network sits behind
+  a trait, so the walk is tested with answers written down.
+- **Kept as facts, said in the reader's language**: the status, the
+  parent's list, or the reason there is none — five states, *delegated
+  here*, *partly*, *points elsewhere*, *not registered*, *not known*.
+- **A minute after starting, then every half hour**, for the zones
+  administered here; a button asks now. `doctor` prints the last answer
+  and counts anything but *delegated here* or *not known* as a problem.
+
+Against the real internet, from the VM node: teresaasprilla.com read
+*points elsewhere — ns1, ns2, ns3, ns4.linode.com*, which is exactly the
+`.com` referral that day, and the sentence that would have saved an
+afternoon. `acme.example` read *not known*, because `.example` does not
+exist.
+
+## What is left
+
+- **Two nodes answering for one zone, verified on real machines.** The
+  code is tested, and the VM cannot be a second public node.
+- Records made for a service's hostname by themselves, importing a zone
+  file, and wildcard certificates over DNS-01 — named in the plan and
+  deliberately not in this one.
 
 ## Known limits
 

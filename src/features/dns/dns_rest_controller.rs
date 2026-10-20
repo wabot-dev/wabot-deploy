@@ -156,6 +156,30 @@ impl DnsRestController {
         }
     }
 
+    #[post("/dns/:zone/check")]
+    #[raw]
+    #[middleware(SessionMiddleware)]
+    async fn check_delegation(&self, request: Request) -> RestResult<Response> {
+        let Some(account) = signed_in(&self.auth) else {
+            return Ok(see_other("/sign-in"));
+        };
+        let path = request.uri().path().to_string();
+        let Some(zone) = segments(&path).get(1).map(|zone| zone.to_string()) else {
+            return Ok(see_other("/dns"));
+        };
+        let here = format!("/dns/{zone}");
+        match crate::features::dns::node_user_check_delegation::run(
+            &self.state.database,
+            &account,
+            &zone,
+        )
+        .await
+        {
+            Ok(()) => Ok(see_other(&here)),
+            Err(reason) => Ok(back_with_error(&here, &reason)),
+        }
+    }
+
     #[post("/dns/:zone/delete")]
     #[raw]
     #[middleware(SessionMiddleware)]

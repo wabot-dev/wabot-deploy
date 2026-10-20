@@ -351,6 +351,37 @@ pub async fn run(config: Config, config_path: &Path) -> anyhow::Result<i32> {
                         false => zone.name_servers.join(", "),
                     }
                 );
+                if !zone.zone.is_ours() {
+                    continue;
+                }
+                use crate::domain::entities::dns_zone::DelegationStatus;
+                match &zone.zone.delegation {
+                    None => println!("       registrar: not checked yet"),
+                    Some(seen) => {
+                        let what = match seen.status {
+                            DelegationStatus::Here => "delegated here".to_string(),
+                            DelegationStatus::Partly => {
+                                problems += 1;
+                                format!("PARTLY: {}", seen.delegated.join(", "))
+                            }
+                            DelegationStatus::Elsewhere => {
+                                problems += 1;
+                                format!("POINTS ELSEWHERE: {}", seen.delegated.join(", "))
+                            }
+                            DelegationStatus::Unregistered => {
+                                problems += 1;
+                                "NOT REGISTERED: the parent zone has never heard of it".to_string()
+                            }
+                            DelegationStatus::Unknown => {
+                                format!("not known: {}", seen.reason.as_deref().unwrap_or_default())
+                            }
+                        };
+                        println!(
+                            "       registrar: {what} (asked {})",
+                            crate::shell::layouts::layout::exactly(seen.checked_at)
+                        );
+                    }
+                }
             }
         }
     }
