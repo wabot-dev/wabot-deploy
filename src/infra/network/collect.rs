@@ -811,6 +811,11 @@ async fn carry_out(
                 .map_err(|error| format!("that is not a command errand: {error}"))?;
             do_once(database, config, &id, command.action).await
         }
+        Kind::Zone => {
+            let zone: errand::Zone = serde_json::from_value(order.payload)
+                .map_err(|error| format!("that is not a zone errand: {error}"))?;
+            serve_zone(database, container, authority, zone).await
+        }
         // An instruction from a newer node. Refused with the reason
         // rather than dropped — the authority learns that this node is
         // the old one, which is something somebody can act on.
@@ -1524,6 +1529,66 @@ async fn serve_name(
         %authority,
         "serving a name for another node"
     );
+    Ok(())
+}
+
+/// Answer DNS for a zone another node administers, or stop.
+///
+/// A record this version cannot read is left out with a line in the log
+/// rather than refusing the zone: a newer owner may write a kind this node
+/// has never heard of, and the rest of the zone is still worth answering.
+async fn serve_zone(
+    database: &SqliteDatabase,
+    container: &Container,
+    authority: &str,
+    zone: errand::Zone,
+) -> Result<(), String> {
+    use crate::domain::values::record_data::{RecordData, RecordKind};
+    use crate::domain::values::record_name::RecordName;
+    use crate::domain::values::zone_name::ZoneName;
+    use crate::infra::repositories::zones;
+
+    let name = ZoneName::parse(&zone.name).map_err(str::to_string)?;
+    if zone.withdrawn {
+        zones::forget_received(database, &name, authority)
+            .await
+            .map_err(|error| error.to_string())?;
+        crate::infra::dns::reload(container, database).await;
+        return Ok(());
+    }
+
+    let mut records = Vec::new();
+    for record in &zone.records {
+        let parsed = RecordName::parse(&record.name, &name).and_then(|at| {
+            let kind = RecordKind::parse(&record.kind)?;
+            let priority = record.priority.map(|priority| priority.to_string());
+            let data = RecordData::parse(kind, &record.value, priority.as_deref())?;
+            Ok((at, data, record.ttl))
+        });
+        match parsed {
+            Ok(record) => records.push(record),
+            Err(reason) => {
+                tracing::warn!(zone = %name, record = %record.name, %reason, "a record left out")
+            }
+        }
+    }
+
+    zones::replace_received(
+        database,
+        zones::Received {
+            name: &name,
+            authority,
+            serial: zone.serial,
+            default_ttl: zone.default_ttl,
+            records,
+            name_servers: &zone.name_servers,
+        },
+    )
+    .await
+    .map_err(|error| error.to_string())?;
+    crate::infra::dns::reload(container, database).await;
+
+    tracing::info!(zone = %name, serial = zone.serial, %authority, "answering DNS for another node");
     Ok(())
 }
 
@@ -2937,5 +3002,154 @@ mod tests {
                 .map(|c| c.secret),
             Some("a-push-token".to_string())
         );
+    }
+
+    fn zone_errand(id: &str, withdrawn: bool) -> Errand {
+        Errand {
+            id: id.into(),
+            kind: Kind::Zone,
+            payload: serde_json::json!({
+                "name": "teresaasprilla.com",
+                "serial": 1792387798u32,
+                "default_ttl": 300,
+                "records": [{ "name": "@", "kind": "A", "value": "209.50.48.176", "ttl": 300 }],
+                "name_servers": ["node-0.example.net", "node-1.example.net"],
+                "withdrawn": withdrawn,
+            }),
+        }
+    }
+
+    async fn answering_dns(database: &SqliteDatabase, granted_to: &[&str]) {
+        crate::infra::network::capability::set_provides(
+            database,
+            crate::domain::values::capability::Capability::Dns,
+            true,
+        )
+        .await
+        .expect("dns on");
+        for node in granted_to {
+            crate::infra::network::capability::grant(
+                database,
+                node,
+                &[crate::domain::values::capability::Capability::Dns],
+            )
+            .await
+            .expect("grant");
+        }
+    }
+
+    /// The zone arrives whole and is answered with the name servers it came
+    /// with — this node may never have heard of the other one.
+    #[tokio::test]
+    async fn a_zone_from_a_node_granted_dns_is_answered_here() {
+        let database = crate::infra::db::open_in_memory().await.expect("open");
+        answering_dns(&database, &["nd-a"]).await;
+
+        carry_out(
+            &database,
+            &Config::default(),
+            &Container::new(),
+            "nd-a",
+            zone_errand("er-1", false),
+        )
+        .await
+        .expect("held");
+
+        let served = crate::infra::dns::what_this_node_serves(&database)
+            .await
+            .expect("served");
+        assert_eq!(served.len(), 1);
+        assert_eq!(served[0].zone.authority_id.as_deref(), Some("nd-a"));
+        assert_eq!(served[0].records.len(), 1);
+        assert_eq!(
+            served[0].name_servers,
+            vec!["node-0.example.net", "node-1.example.net"]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_zone_from_a_node_never_granted_dns_is_refused() {
+        let database = crate::infra::db::open_in_memory().await.expect("open");
+        answering_dns(&database, &[]).await;
+
+        let refused = carry_out(
+            &database,
+            &Config::default(),
+            &Container::new(),
+            "nd-a",
+            zone_errand("er-1", false),
+        )
+        .await;
+        assert!(
+            refused.is_err(),
+            "a node that was never asked answered for somebody's domain"
+        );
+        assert!(crate::infra::dns::what_this_node_serves(&database)
+            .await
+            .expect("served")
+            .is_empty());
+    }
+
+    /// Revoking the grant takes the zone off the air before anything is
+    /// sent: the next read of what this node serves asks the grant.
+    #[tokio::test]
+    async fn a_zone_is_not_answered_once_its_senders_grant_is_revoked() {
+        let database = crate::infra::db::open_in_memory().await.expect("open");
+        answering_dns(&database, &["nd-a"]).await;
+        carry_out(
+            &database,
+            &Config::default(),
+            &Container::new(),
+            "nd-a",
+            zone_errand("er-1", false),
+        )
+        .await
+        .expect("held");
+
+        crate::infra::network::capability::grant(&database, "nd-a", &[])
+            .await
+            .expect("revoke");
+        assert!(crate::infra::dns::what_this_node_serves(&database)
+            .await
+            .expect("served")
+            .is_empty());
+        assert_eq!(
+            crate::infra::dns::forget_ungranted(&database).await,
+            vec!["teresaasprilla.com".to_string()]
+        );
+    }
+
+    /// The same rule edges learned the hard way: a withdrawal needs no
+    /// permission, or revoking a grant leaves the zone answered for ever.
+    #[tokio::test]
+    async fn a_zone_can_be_taken_back_from_a_node_that_revoked_the_grant() {
+        let database = crate::infra::db::open_in_memory().await.expect("open");
+        answering_dns(&database, &["nd-a"]).await;
+        carry_out(
+            &database,
+            &Config::default(),
+            &Container::new(),
+            "nd-a",
+            zone_errand("er-1", false),
+        )
+        .await
+        .expect("held");
+
+        crate::infra::network::capability::grant(&database, "nd-a", &[])
+            .await
+            .expect("revoke");
+        carry_out(
+            &database,
+            &Config::default(),
+            &Container::new(),
+            "nd-a",
+            zone_errand("er-2", true),
+        )
+        .await
+        .expect("a withdrawal needs no permission");
+        assert!(crate::infra::dns::what_this_node_serves(&database)
+            .await
+            .expect("served")
+            .is_empty());
     }
 }

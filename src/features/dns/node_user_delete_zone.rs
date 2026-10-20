@@ -25,11 +25,13 @@ pub async fn run(
         })?
         .ok_or_else(|| zones::NO_SUCH_ZONE.to_string())?;
 
+    let servers = zones::servers(database, &zone.id).await.unwrap_or_default();
     zones::delete(database, &zone).await.map_err(|error| {
         tracing::warn!(%error, "could not delete a zone");
         "that could not be saved".to_string()
     })?;
 
     crate::infra::dns::reload(container, database).await;
+    crate::infra::dns::dispatch::tell_servers(database, &zone, &servers).await;
     Ok(())
 }

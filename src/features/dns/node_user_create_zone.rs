@@ -43,6 +43,7 @@ pub async fn run(
     })?;
 
     crate::infra::dns::reload(container, database).await;
+    crate::infra::dns::dispatch::tell_servers(database, &zone, &[]).await;
     Ok(ZoneCreatedResponse {
         name: zone.name.to_string(),
     })

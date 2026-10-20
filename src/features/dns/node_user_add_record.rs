@@ -54,5 +54,8 @@ pub async fn run(
         })?;
 
     crate::infra::dns::reload(container, database).await;
+    if let Ok(Some(zone)) = zones::find_by_name(database, zone.name.as_str()).await {
+        crate::infra::dns::dispatch::tell_servers(database, &zone, &[]).await;
+    }
     Ok(())
 }

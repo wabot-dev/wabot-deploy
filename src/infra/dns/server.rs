@@ -118,7 +118,15 @@ pub async fn serve(
     config: Config,
     cancel: Cancel,
 ) -> std::io::Result<()> {
-    zones.reload(&database).await;
+    let forgotten = super::forget_ungranted(&database).await;
+    if !forgotten.is_empty() {
+        tracing::info!(
+            zones = forgotten.join(", "),
+            "let go of zones held for nodes no longer granted dns"
+        );
+    }
+    zones.refresh(&database).await;
+    super::dispatch::tell_all(&database).await;
     let mut running: Option<(Vec<SocketAddr>, Server<Answering>)> = None;
     loop {
         let wanted = wanted(&zones, &database, &config).await;
@@ -139,7 +147,9 @@ pub async fn serve(
         tokio::select! {
             _ = cancel.cancelled() => break,
             _ = zones.changed() => {}
-            _ = tokio::time::sleep(RECHECK) => {}
+            _ = tokio::time::sleep(RECHECK) => {
+                zones.refresh(&database).await;
+            }
         }
     }
     if let Some((_, mut server)) = running.take() {

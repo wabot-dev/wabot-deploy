@@ -89,6 +89,46 @@ impl DnsRestController {
         }
     }
 
+    #[post("/dns/:zone/servers")]
+    #[raw]
+    #[middleware(SessionMiddleware)]
+    async fn set_servers(&self, request: Request) -> RestResult<Response> {
+        let Some(account) = signed_in(&self.auth) else {
+            return Ok(see_other("/sign-in"));
+        };
+        let path = request.uri().path().to_string();
+        let Some(zone) = segments(&path).get(1).map(|zone| zone.to_string()) else {
+            return Ok(see_other("/dns"));
+        };
+        let here = format!("/dns/{zone}");
+        let form = match read_form(request).await {
+            Ok(form) => form,
+            Err(response) => return Ok(response),
+        };
+        let mut servers: Vec<String> = form
+            .keys()
+            .filter_map(|key| key.strip_prefix("server-"))
+            .map(str::to_string)
+            .collect();
+        servers.sort();
+        let asked =
+            crate::features::dns::set_zone_servers_request::SetZoneServersRequest { zone, servers };
+        if let Err(reason) = asked.validate() {
+            return Ok(back_with_error(&here, &reason.to_string()));
+        }
+        match crate::features::dns::node_user_set_zone_servers::run(
+            &self.state.database,
+            &self.state.container,
+            &account,
+            &asked,
+        )
+        .await
+        {
+            Ok(()) => Ok(see_other(&here)),
+            Err(reason) => Ok(back_with_error(&here, &reason)),
+        }
+    }
+
     #[post("/dns/:zone/records/:record/delete")]
     #[raw]
     #[middleware(SessionMiddleware)]
@@ -323,5 +363,72 @@ mod tests {
             .await
             .expect("served")
             .is_empty());
+    }
+
+    /// The checkbox for a node that never agreed is disabled, which is a
+    /// courtesy; this is the check that counts, on the POST.
+    #[tokio::test]
+    async fn only_a_node_that_agreed_can_be_chosen_to_answer() {
+        let console = Console::new().await;
+        let admin = console.signed_in().await;
+        add_zone(&console, &admin, "teresaasprilla.com").await;
+        crate::infra::network::save(
+            &console.database,
+            &crate::infra::network::Node {
+                update_note: None,
+                version: None,
+                wanted_version: None,
+                usage: None,
+                draining_at: None,
+                capacity: None,
+                id: "nd-stranger".into(),
+                name: "node-9.example.net".into(),
+                kind: crate::infra::network::Kind::Public,
+                endpoint: Some("node-9.example.net:443".into()),
+                public_key: None,
+                overlay_ip: Some("10.42.0.99".into()),
+                is_self: false,
+                last_seen_at: None,
+                allows: Vec::new(),
+                ca_pem: None,
+            },
+        )
+        .await
+        .expect("a node that never agreed");
+        let me = crate::infra::network::all(&console.database)
+            .await
+            .expect("nodes")
+            .into_iter()
+            .find(|node| node.is_self)
+            .expect("this node")
+            .id;
+
+        let forged = console
+            .harness
+            .post("/dns/teresaasprilla.com/servers")
+            .header("cookie", &admin)
+            .form(&[
+                (format!("server-{me}").as_str(), "1"),
+                ("server-nd-stranger", "1"),
+            ])
+            .send()
+            .await;
+        let location = forged.header("location").unwrap_or_default();
+        assert!(
+            location.contains("error=that+node+has+not+agreed"),
+            "{location}"
+        );
+
+        let zone = zones::find_by_name(&console.database, "teresaasprilla.com")
+            .await
+            .expect("read")
+            .expect("zone");
+        assert_eq!(
+            zones::servers(&console.database, &zone.id)
+                .await
+                .expect("servers"),
+            vec![me],
+            "a refused choice changed nothing"
+        );
     }
 }

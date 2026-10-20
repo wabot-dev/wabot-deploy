@@ -240,6 +240,10 @@ fn migrations() -> Vec<Migration> {
             include_str!("../../migrations/0059_edges_follow_their_port.sql"),
         ),
         Migration::new("0060_dns", include_str!("../../migrations/0060_dns.sql")),
+        Migration::new(
+            "0061_dns_received_name_servers",
+            include_str!("../../migrations/0061_dns_received_name_servers.sql"),
+        ),
     ]
 }
 

@@ -6,6 +6,7 @@
 
 pub(crate) const TABLE: &[(&str, &str)] = &[
     ("@ is the domain itself. Otherwise what comes before it — www, mg, _dmarc — or the whole name, pasted as your provider shows it.", "@ es el dominio mismo. Si no, lo que va antes — www, mg, _dmarc — o el nombre completo, pegado tal como lo muestra tu proveedor."),
+    ("A node is offered here once it answers DNS and lets this node use it as a name server — it grants dns from its own console. Each is listed at the registrar under its own name.", "Un nodo aparece aquí cuando responde DNS y deja que este nodo lo use como servidor de nombres — concede dns desde su propia consola. Cada uno figura en el registrador con su propio nombre."),
     ("Add a zone", "Añadir una zona"),
     ("Add record", "Añadir registro"),
     ("Add zone", "Añadir zona"),
@@ -46,6 +47,7 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
     ("This node's own zone.", "La zona propia de este nodo."),
     ("This node's settings", "Ajustes de este nodo"),
     ("Value", "Valor"),
+    ("Which nodes answer for it", "Qué nodos responden por ella"),
     ("Whose", "De quién"),
     ("Zones", "Zonas"),
     ("Zones can be prepared, and none is answered until Answer DNS is turned on for this node.", "Se pueden preparar zonas, y ninguna se responde hasta que se enciende Responder DNS en este nodo."),
@@ -59,11 +61,19 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
     ("a priority is a number from 0 to 65535 — lower is tried first", "una prioridad es un número de 0 a 65535 — el más bajo se prueba primero"),
     ("a record's name is made of letters, digits, hyphens and underscores — @ for the domain itself, and a * only at the very start", "el nombre de un registro está hecho de letras, dígitos, guiones y guiones bajos — @ para el dominio mismo, y un * solo al principio del todo"),
     ("a zone is a domain, not a pattern — add the domain itself", "una zona es un dominio, no un patrón — añade el dominio mismo"),
+    ("a zone needs at least one node to answer for it", "una zona necesita al menos un nodo que responda por ella"),
     ("an A record points at an IPv4 address, like 203.0.113.7", "un registro A apunta a una dirección IPv4, como 203.0.113.7"),
     ("an AAAA record points at an IPv6 address, like 2001:db8::7", "un registro AAAA apunta a una dirección IPv6, como 2001:db8::7"),
     ("an SRV record is a weight, a port and a target, like 5 5060 sip.example.com", "un registro SRV es un peso, un puerto y un destino, como 5 5060 sip.example.com"),
+    ("answering", "respondiendo"),
     ("does not resolve yet", "todavía no resuelve"),
+    ("has not agreed to answer DNS for this node", "no ha aceptado responder DNS para este nodo"),
+    ("no name the world can ask", "sin un nombre al que el mundo pueda preguntar"),
+    ("not chosen", "no elegido"),
+    ("nothing sent yet", "todavía no se ha enviado nada"),
     ("only an administrator of this node can do that", "solo un administrador de este nodo puede hacer eso"),
+    ("refused:", "rechazado:"),
+    ("sent, waiting to be collected", "enviado, esperando a que lo recoja"),
     ("that could not be saved", "no se pudo guardar"),
     ("that domain holds the name another organisation's console answers to", "ese dominio contiene el nombre al que responde la consola de otra organización"),
     ("that domain holds this node's own name, which is the node operator's to manage", "ese dominio contiene el nombre de este nodo, que gestiona quien opera el nodo"),
@@ -71,6 +81,7 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
     ("that has to be a full name, like mail.example.com — a name without a dot is ambiguous", "tiene que ser un nombre completo, como mail.example.com — un nombre sin punto es ambiguo"),
     ("that is not a kind of record this node serves", "ese no es un tipo de registro que sirva este nodo"),
     ("that name is longer than DNS allows", "ese nombre es más largo de lo que permite el DNS"),
+    ("that node has not agreed to answer DNS for this one — it grants dns from its own console", "ese nodo no ha aceptado responder DNS para este — concede dns desde su propia consola"),
     ("that record is already there", "ese registro ya está"),
     ("the domain itself cannot be a CNAME — it already has the records every domain needs, and a CNAME stands alone. Use an A record", "el dominio mismo no puede ser un CNAME — ya tiene los registros que todo dominio necesita, y un CNAME va solo. Usa un registro A"),
     ("the zones could not be read", "no se pudieron leer las zonas"),
@@ -79,6 +90,7 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
     ("this node already has a zone for that domain", "este nodo ya tiene una zona para ese dominio"),
     ("this node does not know its own id yet — restart it once", "este nodo todavía no conoce su propio id — reinícialo una vez"),
     ("this zone was sent by another node, and it is changed there — this node only answers for it", "esta zona la envió otro nodo, y se cambia allí — este nodo solo responde por ella"),
+    ("told to stop", "se le pidió que pare"),
 ];
 
 pub fn t(english: &'static str) -> &'static str {

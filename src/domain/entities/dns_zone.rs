@@ -15,6 +15,9 @@ pub struct DnsZone {
     pub serial: u32,
     pub default_ttl: u32,
     pub delegation: Option<Delegation>,
+    /// For a zone sent here, the name servers it was sent with. Empty for
+    /// this node's own, whose servers are named when they are served.
+    pub received_name_servers: Vec<String>,
     pub created_at: i64,
     pub updated_at: i64,
 }

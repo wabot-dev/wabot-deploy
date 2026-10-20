@@ -75,6 +75,8 @@ pub enum Kind {
     /// that would have. So it is settled *before* it is obeyed, and the
     /// errand's own id is the idempotency key: see `carry_out`.
     Command,
+    /// Answer DNS for this zone, with these records.
+    Zone,
     /// Anything this version does not know about.
     #[serde(other)]
     Unknown,
@@ -88,6 +90,7 @@ impl Kind {
             Self::Database => "database",
             Self::Manage => "manage",
             Self::Command => "command",
+            Self::Zone => "zone",
             Self::Unknown => "unknown",
         }
     }
@@ -103,6 +106,7 @@ impl Kind {
             "database" => Self::Database,
             "manage" => Self::Manage,
             "command" => Self::Command,
+            "zone" => Self::Zone,
             _ => Self::Unknown,
         }
     }
@@ -356,6 +360,39 @@ pub struct Standby {
     pub running: bool,
 }
 
+/// The arguments of a [`Kind::Zone`] errand: answer DNS for this zone.
+///
+/// **The whole zone, every time**, like an edge errand's upstreams: the
+/// receiving node keeps nothing of its own about it, so it can never hold a
+/// version the owner does not. And the name servers travel **by name**,
+/// because the other nodes that answer for it may be machines this one has
+/// never heard of — the same reason an edge errand carries its peers.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Zone {
+    pub name: String,
+    pub serial: u32,
+    pub default_ttl: u32,
+    #[serde(default)]
+    pub records: Vec<ZoneRecord>,
+    #[serde(default)]
+    pub name_servers: Vec<String>,
+    /// Stop answering for it. Its own field rather than an empty list,
+    /// because a zone with no records is a real zone: it still answers
+    /// with its SOA and its name servers.
+    #[serde(default)]
+    pub withdrawn: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ZoneRecord {
+    pub name: String,
+    pub kind: String,
+    pub value: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub priority: Option<u16>,
+    pub ttl: u32,
+}
+
 /// The arguments of a [`Kind::Manage`] errand: be on this release.
 ///
 /// One field, and it is a **tag** rather than a URL and a checksum. The
@@ -471,6 +508,12 @@ pub fn consent_for(
                 // parsed must not slip past the check by being broken.
                 .unwrap_or(false);
             (!withdrawing).then_some(crate::domain::values::capability::Capability::Edge)
+        }
+        Kind::Zone => {
+            let withdrawing = serde_json::from_value::<Zone>(payload.clone())
+                .map(|zone| zone.withdrawn)
+                .unwrap_or(false);
+            (!withdrawing).then_some(crate::domain::values::capability::Capability::Dns)
         }
         Kind::Unknown => None,
     }

@@ -108,8 +108,17 @@ pub fn enrol_card(may_enrol: bool) -> impl Renderable {
                     <p class="tile-detail">(t("Ask that node to let this one:"))</p>
                     @for capability in crate::domain::values::capability::Capability::ALL {
                         <label class="capability">
-                            <input type="checkbox" name=(format!("require-{}", capability.name()))
-                                   value="1" checked>
+                            // Ticked by default except `dns`: answering
+                            // DNS opens a port on the other machine, and a
+                            // token should not ask for that unless somebody
+                            // meant it.
+                            @if capability.provided_unless_refused() {
+                                <input type="checkbox" name=(format!("require-{}", capability.name()))
+                                       value="1" checked>
+                            } @else {
+                                <input type="checkbox" name=(format!("require-{}", capability.name()))
+                                       value="1">
+                            }
                             // `offering`, not `asking`: these two are
                             // written from the granting node's side, and
                             // this list is what *this* node wants to be

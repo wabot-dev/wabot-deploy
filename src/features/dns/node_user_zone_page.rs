@@ -3,7 +3,9 @@ use hypertext::prelude::*;
 use crate::features::dns::texts::{t, word};
 use crate::features::dns::zone_response::ZoneResponse;
 use crate::features::dns::zones_response::ZoneOwner;
-use crate::features::dns::{name_servers_component, zone_records_component};
+use crate::features::dns::{
+    name_servers_component, zone_records_component, zone_servers_component,
+};
 use crate::shell::layouts::layout;
 
 pub struct ZonePage<'a> {
@@ -36,6 +38,9 @@ pub fn render<'a>(page: &'a ZonePage<'a>) -> impl Renderable + 'a {
             }
         </p>
 
+        @if zone.editable {
+            (zone_servers_component::servers_card(&here, zone))
+        }
         (name_servers_component::registrar_card(&zone.name_servers))
         (zone_records_component::records_card(&here, zone))
 

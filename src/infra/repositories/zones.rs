@@ -24,6 +24,8 @@ pub const CNAME_STANDS_ALONE: &str = "a CNAME stands alone: that name already ha
 pub const ALREADY_THERE: &str = "that record is already there";
 pub const NO_SUCH_ZONE: &str = "there is no such zone";
 pub const NO_SUCH_RECORD: &str = "there is no such record";
+pub const OURS_ALREADY: &str = "this node has a zone of its own for that domain";
+pub const HELD_FOR_ANOTHER: &str = "that domain is answered here for another node already";
 
 /// What creating a zone needs to know about who is asking — which owner
 /// it will belong to — and nothing about whether they may.
@@ -68,6 +70,7 @@ pub async fn create(database: &SqliteDatabase, asked: NewZone<'_>) -> PlatformRe
         serial: zone_serial::next(0, (now / 1000) as u64),
         default_ttl: DEFAULT_TTL,
         delegation: None,
+        received_name_servers: Vec::new(),
         created_at: now,
         updated_at: now,
     };
@@ -267,6 +270,132 @@ pub async fn remove_record(
     }
 }
 
+pub async fn set_servers(
+    database: &SqliteDatabase,
+    zone: &DnsZone,
+    servers: &[String],
+) -> PlatformResult<()> {
+    let (zone_id, servers) = (zone.id.clone(), servers.to_vec());
+    database
+        .transaction(move |transaction| {
+            write_servers(transaction, &zone_id, &servers)?;
+            bump(transaction, &zone_id)?;
+            Ok(())
+        })
+        .await?;
+    Ok(())
+}
+
+/// A zone another node administers, as it arrived.
+pub struct Received<'a> {
+    pub name: &'a ZoneName,
+    pub authority: &'a str,
+    pub serial: u32,
+    pub default_ttl: u32,
+    pub records: Vec<(RecordName, RecordData, u32)>,
+    pub name_servers: &'a [String],
+}
+
+/// Hold a zone for the node that sent it, replacing whatever it sent before.
+///
+/// **A domain has one authority here.** A second node asking for a zone
+/// this one already holds for somebody is refused rather than merged — two
+/// owners' records for one domain is not a conflict anything can settle —
+/// and so is one this node administers itself.
+pub async fn replace_received(
+    database: &SqliteDatabase,
+    received: Received<'_>,
+) -> PlatformResult<()> {
+    let existing = find_by_name(database, received.name.as_str()).await?;
+    if let Some(zone) = &existing {
+        if zone.is_ours() {
+            return Err(PlatformError::Refused(OURS_ALREADY.into()));
+        }
+        if zone.authority_id.as_deref() != Some(received.authority) {
+            return Err(PlatformError::Refused(HELD_FOR_ANOTHER.into()));
+        }
+    }
+
+    let now = now_ms();
+    let id = existing
+        .map(|zone| zone.id)
+        .unwrap_or_else(|| format!("zone-{}", wabot::prelude::password::generate(12)));
+    let name = received.name.to_string();
+    let authority = received.authority.to_string();
+    let (serial, ttl) = (received.serial, received.default_ttl);
+    let name_servers = received.name_servers.join(",");
+    let records: Vec<Written> = received
+        .records
+        .into_iter()
+        .map(|(name, data, ttl)| Written {
+            id: format!("rec-{}", wabot::prelude::password::generate(12)),
+            name: name.to_string(),
+            kind: data.kind().name(),
+            value: data.value(),
+            priority: data.priority(),
+            ttl,
+        })
+        .collect();
+
+    database
+        .transaction(move |transaction| {
+            transaction.execute(
+                "INSERT INTO dns_zone (\"id\", \"name\", \"tenant_id\", \"authority_id\", \"serial\", \
+                   \"default_ttl\", \"name_servers\", \"created_at\", \"updated_at\") \
+                 VALUES (?1, ?2, NULL, ?3, ?4, ?5, ?6, ?7, ?7) \
+                 ON CONFLICT (\"id\") DO UPDATE SET \"serial\" = ?4, \"default_ttl\" = ?5, \
+                   \"name_servers\" = ?6, \"updated_at\" = ?7",
+                (&id, &name, &authority, serial, ttl, &name_servers, now),
+            )?;
+            transaction.execute("DELETE FROM dns_record WHERE \"zone_id\" = ?1", [&id])?;
+            for record in &records {
+                transaction.execute(
+                    "INSERT INTO dns_record (\"id\", \"zone_id\", \"name\", \"kind\", \"value\", \
+                       \"priority\", \"ttl\", \"created_at\") \
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                    (
+                        &record.id,
+                        &id,
+                        &record.name,
+                        record.kind,
+                        &record.value,
+                        record.priority,
+                        record.ttl,
+                        now,
+                    ),
+                )?;
+            }
+            Ok(())
+        })
+        .await?;
+    Ok(())
+}
+
+struct Written {
+    id: String,
+    name: String,
+    kind: &'static str,
+    value: String,
+    priority: Option<u16>,
+    ttl: u32,
+}
+
+/// Stop holding a zone for the node that sent it. Whether it was there is
+/// the answer, so withdrawing twice is not an error.
+pub async fn forget_received(
+    database: &SqliteDatabase,
+    name: &ZoneName,
+    authority: &str,
+) -> PlatformResult<bool> {
+    match find_by_name(database, name.as_str()).await? {
+        Some(zone) if zone.authority_id.as_deref() == Some(authority) => {
+            delete(database, &zone).await?;
+            Ok(true)
+        }
+        _ => Ok(false),
+    }
+}
+
 pub async fn delete(database: &SqliteDatabase, zone: &DnsZone) -> PlatformResult<()> {
     let id = zone.id.clone();
     database
@@ -282,7 +411,7 @@ pub async fn delete(database: &SqliteDatabase, zone: &DnsZone) -> PlatformResult
 
 const ZONE_COLUMNS: &str = "SELECT \"id\", \"name\", \"tenant_id\", \"authority_id\", \"serial\", \
      \"default_ttl\", \"delegation_status\", \"delegation_note\", \"delegation_checked_at\", \
-     \"created_at\", \"updated_at\" FROM dns_zone";
+     \"created_at\", \"updated_at\", \"name_servers\" FROM dns_zone";
 
 /// `None` for a row whose name no longer reads as a zone — written by a
 /// newer version, or by hand — so one bad row cannot take every zone off
@@ -313,6 +442,16 @@ fn read_zone(row: &Row<'_>) -> wabot::sqlite::rusqlite::Result<Option<DnsZone>> 
         serial: row.get(4)?,
         default_ttl: row.get(5)?,
         delegation,
+        received_name_servers: row
+            .get::<_, Option<String>>(11)?
+            .map(|names| {
+                names
+                    .split(',')
+                    .filter(|name| !name.is_empty())
+                    .map(str::to_string)
+                    .collect()
+            })
+            .unwrap_or_default(),
         created_at: row.get(9)?,
         updated_at: row.get(10)?,
     }))
@@ -375,6 +514,78 @@ mod tests {
 
     async fn database() -> SqliteDatabase {
         crate::infra::db::open_in_memory().await.expect("open")
+    }
+
+    fn received<'a>(
+        name: &'a ZoneName,
+        authority: &'a str,
+        serial: u32,
+        servers: &'a [String],
+    ) -> Received<'a> {
+        Received {
+            name,
+            authority,
+            serial,
+            default_ttl: 300,
+            records: vec![(
+                RecordName::apex(),
+                RecordData::parse(RecordKind::A, "209.50.48.176", None).expect("data"),
+                300,
+            )],
+            name_servers: servers,
+        }
+    }
+
+    /// The copy a node holds for another is the last one it was sent,
+    /// whole: nothing of an earlier one survives, and nobody else's arrives.
+    #[tokio::test]
+    async fn a_received_zone_is_the_last_one_sent_and_only_by_its_sender() {
+        let database = database().await;
+        let name = zone_name("teresaasprilla.com");
+        let servers = vec![
+            "node-0.example.net".to_string(),
+            "node-1.example.net".to_string(),
+        ];
+
+        replace_received(&database, received(&name, "nd-owner", 10, &servers))
+            .await
+            .expect("first");
+        let mut again = received(&name, "nd-owner", 11, &servers[..1]);
+        again.records.clear();
+        replace_received(&database, again).await.expect("again");
+
+        let zone = find_by_name(&database, "teresaasprilla.com")
+            .await
+            .expect("read")
+            .expect("there");
+        assert_eq!(zone.authority_id.as_deref(), Some("nd-owner"));
+        assert_eq!(zone.serial, 11);
+        assert_eq!(zone.received_name_servers, vec!["node-0.example.net"]);
+        assert!(records(&database, &zone).await.expect("records").is_empty());
+
+        let other = replace_received(&database, received(&name, "nd-stranger", 12, &servers)).await;
+        assert!(matches!(other, Err(PlatformError::Refused(reason)) if reason == HELD_FOR_ANOTHER));
+        assert!(!forget_received(&database, &name, "nd-stranger")
+            .await
+            .expect("forget"));
+        assert!(forget_received(&database, &name, "nd-owner")
+            .await
+            .expect("forget"));
+        assert!(find_by_name(&database, "teresaasprilla.com")
+            .await
+            .expect("read")
+            .is_none());
+    }
+
+    #[tokio::test]
+    async fn a_node_does_not_take_a_zone_for_a_domain_it_administers_itself() {
+        let database = database().await;
+        zone(&database, "teresaasprilla.com", None)
+            .await
+            .expect("ours");
+        let name = zone_name("teresaasprilla.com");
+        let refused = replace_received(&database, received(&name, "nd-owner", 10, &[])).await;
+        assert!(matches!(refused, Err(PlatformError::Refused(reason)) if reason == OURS_ALREADY));
     }
 
     fn zone_name(name: &str) -> ZoneName {

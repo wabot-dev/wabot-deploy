@@ -13,6 +13,27 @@ pub struct ZoneResponse {
     pub provides_dns: bool,
     pub records: Vec<RecordRow>,
     pub name_servers: Vec<NameServer>,
+    pub servers: Vec<ServerChoice>,
+}
+
+/// A node that could answer for the zone, and what it was last told.
+#[derive(Debug, Clone, Serialize)]
+pub struct ServerChoice {
+    pub node_id: String,
+    pub node_name: String,
+    pub published: Option<String>,
+    pub this_node: bool,
+    pub chosen: bool,
+    pub agreed: bool,
+    pub last: Option<Delivery>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub enum Delivery {
+    Waiting,
+    Answering,
+    Withdrawn,
+    Refused(String),
 }
 
 #[derive(Debug, Clone, Serialize)]

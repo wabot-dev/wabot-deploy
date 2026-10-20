@@ -84,12 +84,43 @@ Measured on the Alpine VM node, with the console driven with scripting off:
   record typed as `k1._domainkey.mg.teresaasprilla.com` was stored as
   `k1._domainkey.mg`.
 
+## Phase 2: the zone travels to the nodes chosen for it
+
+- **`errand::Kind::Zone` carries the whole zone**, every time: records,
+  serial, and the name servers **by name**, because the other nodes that
+  answer for it may be machines the receiver has never heard of. A
+  separate `withdrawn` rather than an empty list, because a zone with no
+  records is still a zone.
+- **`dispatch::tell_servers` is `tell_edges` again**: rebuilt from the
+  rows, `queue_if_changed` on `zone:{id}`, never to this node, never to a
+  node outside `candidates_for(Dns)`, and a withdrawal to every node taken
+  off. Sent after every change and once at boot.
+- **On the receiving node, `serve_zone` claims the domain**: refused when
+  that node has its own zone for it or holds it for somebody else. The
+  copy is read-only there and evictable — and evicting is one-way, the
+  owner sends it again on its next change unless the grant goes.
+- **A withdrawal needs no permission**, the rule edges learned: revoking a
+  grant must not block the message that cleans up after it.
+- **Revoking `dns` takes the zone off the air at once.** What a node
+  serves is computed asking the grant every time, the listener refreshes
+  it every minute, and the rows go at boot (`forget_ungranted`), beside
+  `release_ungranted`.
+- **The name servers are only the nodes that answer**: this one and the
+  peers still granting `dns`. A chosen node that withdrew is neither sent
+  the zone nor listed in its NS — resolvers sent there would hear nothing.
+- **The zone's page offers the nodes that agreed**, a disabled box for one
+  that did not, and what each was last sent: waiting to be collected,
+  answering, told to stop, or the refusal and its reason. The POST checks
+  again; a box is a courtesy.
+- The token minting form no longer asks for `dns` by default.
+
+Verified on the VM node only as far as one node goes — the servers card,
+saving it, no errand to itself, the minting form. **Two nodes answering
+for one zone needs two public nodes on one network**, which no VM can be
+(enrolment needs a public certificate) and which does not exist today.
+
 ## Still to come
 
-- **Phase 2, the network.** The `zone` errand, carrying the whole zone to
-  the nodes chosen for it; choosing them on the zone's page; evicting a zone
-  that was sent. The token minting form ticks every capability by default
-  and should not ask for `dns` unless somebody means it.
 - **Phase 3, organisations.** Their console adds their domains and shows
   the name servers to set.
 - **Phase 4, the delegation check.** Ask the parent zone which servers it

@@ -5,6 +5,7 @@
 //! from what is in memory, and a lock on that would put every answer behind
 //! the rare write.
 
+pub mod dispatch;
 pub mod server;
 
 use std::collections::BTreeMap;
@@ -78,13 +79,22 @@ impl Zones {
         self.changed.notified().await
     }
 
-    /// Read the rows again and answer from them.
+    /// Read the rows again, answer from them, and tell the listener.
     pub async fn reload(&self, database: &SqliteDatabase) {
+        if self.refresh(database).await {
+            self.changed.notify_one();
+        }
+    }
+
+    /// Read the rows again and answer from them, telling nobody — what the
+    /// listener itself calls on its timer, which a notice would wake again
+    /// at once.
+    pub async fn refresh(&self, database: &SqliteDatabase) -> bool {
         let served = match what_this_node_serves(database).await {
             Ok(served) => served,
             Err(error) => {
                 tracing::warn!(%error, "could not read the zones; still answering from the last ones");
-                return;
+                return false;
             }
         };
         let mut catalog = Catalog::new();
@@ -101,7 +111,7 @@ impl Zones {
         }
         self.catalog.store(Arc::new(catalog));
         self.served.store(Arc::new(served));
-        self.changed.notify_one();
+        true
     }
 }
 
@@ -141,6 +151,36 @@ pub async fn published_names(
         .collect())
 }
 
+/// Of the nodes chosen for a zone, the ones that answer for it: this node,
+/// and the others that still let it use them as a name server. A node that
+/// withdrew its grant is not sent the zone, and listing it as a name server
+/// anyway would send resolvers to a machine that answers nothing.
+pub async fn answering(
+    database: &SqliteDatabase,
+    servers: &[String],
+) -> Result<Vec<String>, String> {
+    let agreed: Vec<String> = crate::infra::network::candidates_for(
+        database,
+        crate::domain::values::capability::Capability::Dns,
+    )
+    .await
+    .map_err(|error| error.to_string())?
+    .into_iter()
+    .map(|node| node.id)
+    .collect();
+    let me = crate::infra::network::all(database)
+        .await
+        .map_err(|error| error.to_string())?
+        .into_iter()
+        .find(|node| node.is_self)
+        .map(|node| node.id);
+    Ok(servers
+        .iter()
+        .filter(|server| Some(*server) == me.as_ref() || agreed.contains(server))
+        .cloned()
+        .collect())
+}
+
 /// The zones whose servers include this node, and the ones it was sent.
 pub async fn what_this_node_serves(database: &SqliteDatabase) -> Result<Vec<Served>, String> {
     let me = crate::infra::network::all(database)
@@ -159,17 +199,26 @@ pub async fn what_this_node_serves(database: &SqliteDatabase) -> Result<Vec<Serv
         let servers = zones::servers(database, &zone.id)
             .await
             .map_err(|error| error.to_string())?;
-        let answers_here = !zone.is_ours() || me.as_ref().is_some_and(|me| servers.contains(me));
+        let answers_here = match &zone.authority_id {
+            None => me.as_ref().is_some_and(|me| servers.contains(me)),
+            Some(authority) => crate::infra::network::capability::granted_to(database, authority)
+                .await
+                .contains(&crate::domain::values::capability::Capability::Dns),
+        };
         if !answers_here {
             continue;
         }
         let records = zones::records(database, &zone)
             .await
             .map_err(|error| error.to_string())?;
-        let name_servers = servers
-            .iter()
-            .filter_map(|node| published.get(node).cloned())
-            .collect();
+        let name_servers = match zone.is_ours() {
+            true => answering(database, &servers)
+                .await?
+                .iter()
+                .filter_map(|node| published.get(node).cloned())
+                .collect(),
+            false => zone.received_name_servers.clone(),
+        };
         served.push(Served {
             zone,
             records,
@@ -265,6 +314,27 @@ fn rdata_of(data: &RecordData) -> Result<RData, String> {
             })
         }
     })
+}
+
+/// Let go of the zones held for nodes this one no longer answers DNS for.
+///
+/// At boot, beside `network::release_ungranted` and by its rule: the grant
+/// is the more recent decision. Until then they are already not answered —
+/// `what_this_node_serves` asks the grant every time it is read.
+pub async fn forget_ungranted(database: &SqliteDatabase) -> Vec<String> {
+    let mut forgotten = Vec::new();
+    for zone in zones::all(database).await.unwrap_or_default() {
+        let Some(authority) = zone.authority_id.clone() else {
+            continue;
+        };
+        let granted = crate::infra::network::capability::granted_to(database, &authority)
+            .await
+            .contains(&crate::domain::values::capability::Capability::Dns);
+        if !granted && zones::delete(database, &zone).await.is_ok() {
+            forgotten.push(zone.name.to_string());
+        }
+    }
+    forgotten
 }
 
 /// Ask `at` for a zone's SOA the way a resolver would, and hand back the
