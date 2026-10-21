@@ -18,6 +18,9 @@ use crate::infra::clock::now_ms;
 /// them consulting the other's table.
 pub(crate) const HOST_PORT_RANGE: std::ops::Range<u16> = 20000..29000;
 
+pub const REDIRECTS_ALREADY: &str =
+    "that name redirects to a service — a name either serves or redirects";
+
 /// Declare a port on a service.
 ///
 /// `publish` allocates a node port; `hostname` is stored as given and
@@ -46,6 +49,12 @@ pub async fn create(
         .map(Hostname::parse)
         .filter(|name| !name.is_empty())
         .map(|name| name.as_str().to_string());
+
+    if let Some(name) = hostname.as_deref() {
+        if redirects(database, name).await? {
+            return Err(PlatformError::Refused(REDIRECTS_ALREADY.into()));
+        }
+    }
 
     let host_port = if publish {
         Some(free_host_port(database).await?)
@@ -119,7 +128,7 @@ pub async fn create(
 /// ones that can serve it**. A row naming a node the name does not point
 /// at is an errand that node will carry out for traffic that never
 /// arrives.
-async fn serve_from(
+pub(crate) async fn serve_from(
     database: &SqliteDatabase,
     service_id: &str,
     hostname: &str,
@@ -263,6 +272,11 @@ pub async fn set_hostname(
     // gives about writing the row itself: a caller that renames a port
     // and does not know to move this gets a name stored, shown, and
     // served by nobody.
+    if let Some(name) = hostname {
+        if redirects(database, name).await? {
+            return Err(PlatformError::Refused(REDIRECTS_ALREADY.into()));
+        }
+    }
     let port = all(database).await?.into_iter().find(|port| port.id == id);
     let was = port.as_ref().and_then(|port| port.hostname.clone());
     let service_id = port.map(|port| port.service_id);
@@ -275,6 +289,11 @@ pub async fn set_hostname(
     let refused = name.clone();
     database
         .write(move |connection| {
+            // A port with no name is nothing to redirect to: its redirects
+            // go with the name, and so does whoever answered for them.
+            if name.is_none() {
+                forget_redirects_of(connection, &owned)?;
+            }
             connection.execute(
                 "UPDATE port SET \"hostname\" = ?2 WHERE \"id\" = ?1",
                 (owned, name),
@@ -376,11 +395,44 @@ pub async fn delete(database: &SqliteDatabase, id: &str) -> PlatformResult<()> {
                          AND kept.\"id\" != gone.\"id\"))",
                 [&id],
             )?;
+            forget_redirects_of(connection, &id)?;
             connection.execute("DELETE FROM port WHERE \"id\" = ?1", [&id])?;
             Ok(())
         })
         .await?;
     Ok(())
+}
+
+/// The redirects to a port, and who answered for their names. The
+/// redirect rows would go with the port by themselves; the edge rows are
+/// keyed on a name and would not, and they are what orders a certificate.
+fn forget_redirects_of(
+    connection: &wabot::sqlite::rusqlite::Connection,
+    port_id: &str,
+) -> wabot::sqlite::rusqlite::Result<()> {
+    connection.execute(
+        "DELETE FROM service_edge WHERE \"hostname\" IN \
+           (SELECT \"hostname\" FROM service_redirect WHERE \"port_id\" = ?1)",
+        [port_id],
+    )?;
+    connection.execute(
+        "DELETE FROM service_redirect WHERE \"port_id\" = ?1",
+        [port_id],
+    )?;
+    Ok(())
+}
+
+async fn redirects(database: &SqliteDatabase, hostname: &str) -> PlatformResult<bool> {
+    let hostname = Hostname::parse(hostname).as_str().to_string();
+    Ok(database
+        .read(move |connection| {
+            connection.query_row(
+                "SELECT EXISTS (SELECT 1 FROM service_redirect WHERE \"hostname\" = ?1)",
+                [hostname],
+                |row| row.get::<_, bool>(0),
+            )
+        })
+        .await?)
 }
 
 fn decode(row: &wabot::sqlite::rusqlite::Row<'_>) -> wabot::sqlite::rusqlite::Result<Port> {

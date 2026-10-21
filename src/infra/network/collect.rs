@@ -1517,14 +1517,13 @@ async fn serve_name(
     // `None` for the service: there is no local service behind this
     // name, and that absence is exactly what stops the local sync from
     // pruning the row — see `routes::retain_proxies`.
-    crate::infra::edge::routes::upsert(
-        database,
-        &edge.hostname,
-        &crate::infra::edge::routes::Upstream::Proxy(upstreams),
-        None,
-    )
-    .await
-    .map_err(|error| error.to_string())?;
+    let upstream = match &edge.redirect_to {
+        Some(target) => crate::infra::edge::routes::Upstream::Redirect(target.clone()),
+        None => crate::infra::edge::routes::Upstream::Proxy(upstreams),
+    };
+    crate::infra::edge::routes::upsert(database, &edge.hostname, &upstream, None)
+        .await
+        .map_err(|error| error.to_string())?;
 
     reload_routes(container).await;
 
@@ -2317,6 +2316,7 @@ mod tests {
                             .into(),
                 }],
                 secret: Some("the-shared-secret".into()),
+                redirect_to: None,
             },
         )
         .await
@@ -2352,6 +2352,59 @@ mod tests {
 
     /// claim rule finally does its job: two nodes pointing one hostname
     /// at different backends is not a conflict anything can resolve,
+    /// A name sent as a redirect is answered with one, and a withdrawal
+    /// takes it away like any name held for another node.
+    #[tokio::test]
+    async fn a_name_sent_as_a_redirect_redirects_here_until_it_is_withdrawn() {
+        let database = crate::infra::db::open_in_memory().await.expect("open");
+        let edge = |upstreams: Vec<String>| errand::Edge {
+            hostname: "www.teresaasprilla.com".into(),
+            upstreams,
+            peers: Vec::new(),
+            secret: None,
+            redirect_to: Some("teresaasprilla.com".into()),
+        };
+        serve_name(
+            &database,
+            &Config::default(),
+            &Container::new(),
+            "nd-owner",
+            edge(vec!["10.42.0.3:30000".into()]),
+        )
+        .await
+        .expect("served");
+        let routes = crate::infra::edge::routes::load_all(&database)
+            .await
+            .expect("routes");
+        assert!(routes.contains(&(
+            "www.teresaasprilla.com".into(),
+            crate::infra::edge::routes::Upstream::Redirect("teresaasprilla.com".into())
+        )));
+        assert!(crate::infra::network::claimed_for_others(&database)
+            .await
+            .expect("claims")
+            .contains(&"www.teresaasprilla.com".to_string()));
+
+        serve_name(
+            &database,
+            &Config::default(),
+            &Container::new(),
+            "nd-owner",
+            edge(Vec::new()),
+        )
+        .await
+        .expect("withdrawn");
+        assert!(!crate::infra::edge::routes::load_all(&database)
+            .await
+            .expect("routes")
+            .iter()
+            .any(|(host, _)| host == "www.teresaasprilla.com"));
+        assert!(crate::infra::network::claimed_for_others(&database)
+            .await
+            .expect("claims")
+            .is_empty());
+    }
+
     /// and choosing silently would make the wrong backend look right.
     #[tokio::test]
     async fn a_name_is_served_for_one_authority_and_the_second_is_told_who_has_it() {
@@ -2361,6 +2414,7 @@ mod tests {
             upstreams: vec!["10.42.0.3:30000".into(), "10.42.0.3:30001".into()],
             peers: Vec::new(),
             secret: None,
+            redirect_to: None,
         };
 
         serve_name(
@@ -2432,6 +2486,7 @@ mod tests {
                 upstreams: vec!["10.42.0.3:30000".into()],
                 peers: Vec::new(),
                 secret: None,
+                redirect_to: None,
             },
         )
         .await

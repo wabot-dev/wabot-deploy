@@ -76,6 +76,7 @@ the first administrator.
 | --- | --- |
 | **Projects and services** | a service is an image, an environment and the ports it declares |
 | **Ports** | each one says whether it is published on the node's IP, served over HTTPS on a hostname, both, or neither |
+| **Redirects** | another name — `www.example.com`, an old domain — sent to one of the service's own with a 301, path and query kept |
 | **Certificates** | Let's Encrypt over HTTP-01, one per hostname, renewed in the background |
 | **Registry** | `docker push` / `ctr push` straight into containerd's content store — no second copy of any layer |
 | **Releases** | every push is a release, pinned by digest; roll back to an earlier one from the console |

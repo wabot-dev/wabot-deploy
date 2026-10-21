@@ -49,6 +49,9 @@ pub enum Upstream {
     /// send it. A boundary nothing has to remember to apply beats thirty
     /// queries that each narrow correctly.
     Tenant(String),
+    /// A permanent redirect to this hostname, keeping the path and the
+    /// query. Answered by the edge itself: nothing behind it runs.
+    Redirect(String),
 }
 
 impl Upstream {
@@ -64,7 +67,7 @@ impl Upstream {
     /// [`pick_live`](Self::pick_live), which is what the edge calls.
     pub fn pick(&self, turn: usize) -> Option<SocketAddr> {
         match self {
-            Self::ControlPlane | Self::Tenant(_) => None,
+            Self::ControlPlane | Self::Tenant(_) | Self::Redirect(_) => None,
             Self::Proxy(addresses) if addresses.is_empty() => None,
             Self::Proxy(addresses) => Some(addresses[turn % addresses.len()]),
         }
@@ -167,7 +170,7 @@ impl RouteTable {
             .values()
             .filter_map(|upstream| match upstream {
                 Upstream::Proxy(addresses) => Some(addresses.clone()),
-                Upstream::ControlPlane | Upstream::Tenant(_) => None,
+                Upstream::ControlPlane | Upstream::Tenant(_) | Upstream::Redirect(_) => None,
             })
             .flatten()
             .collect();
@@ -317,6 +320,35 @@ pub async fn retain_proxies(database: &SqliteDatabase, keep: &[String]) -> Sqlit
         .await
 }
 
+/// Drop the redirects this node's own services no longer have.
+///
+/// The sibling of [`retain_proxies`], over the other kind a local service
+/// writes, and blind to rows with no service for the same reason: those
+/// were written by an errand, for a name this node answers for somebody
+/// else, and [`forget_for_other`] is what takes them away.
+pub async fn retain_redirects(database: &SqliteDatabase, keep: &[String]) -> SqliteResult<usize> {
+    let keep: Vec<String> = keep.iter().map(|host| normalize(host)).collect();
+    database
+        .write(move |connection| {
+            let mut removed = 0;
+            let hosts: Vec<String> = connection
+                .prepare(
+                    "SELECT \"host\" FROM route \
+                     WHERE \"upstream_kind\" = 'redirect' AND \"service_id\" IS NOT NULL",
+                )?
+                .query_map([], |row| row.get(0))?
+                .collect::<Result<_, _>>()?;
+            for host in hosts {
+                if !keep.contains(&host) {
+                    connection.execute("DELETE FROM route WHERE \"host\" = ?1", [&host])?;
+                    removed += 1;
+                }
+            }
+            Ok(removed)
+        })
+        .await
+}
+
 /// Forget a name this node was answering **for another node**.
 ///
 /// The gap between the two functions above, and nothing filled it:
@@ -334,7 +366,7 @@ pub async fn forget_for_other(database: &SqliteDatabase, host: &str) -> SqliteRe
         .write(move |connection| {
             connection.execute(
                 "DELETE FROM route \
-                 WHERE \"host\" = ?1 AND \"upstream_kind\" = 'proxy' \
+                 WHERE \"host\" = ?1 AND \"upstream_kind\" IN ('proxy', 'redirect') \
                    AND \"service_id\" IS NULL",
                 [host],
             )
@@ -428,6 +460,7 @@ pub async fn load_all(database: &SqliteDatabase) -> SqliteResult<Vec<(String, Up
             // so serving it unnarrowed is the one outcome that must not
             // happen. `retain_tenants` is what removes them on purpose.
             "tenant" => addr.map(|id| (host, Upstream::Tenant(id))),
+            "redirect" => addr.map(|target| (host, Upstream::Redirect(target))),
             // Comma-separated, because a route is now *n* replicas.
             // One that will not parse is dropped and the rest kept: a
             // service with three copies and one bad row should serve
@@ -478,6 +511,7 @@ pub async fn upsert(
     let (kind, addr) = match upstream {
         Upstream::ControlPlane => ("control_plane".to_string(), None),
         Upstream::Tenant(id) => ("tenant".to_string(), Some(id.clone())),
+        Upstream::Redirect(target) => ("redirect".to_string(), Some(target.clone())),
         Upstream::Proxy(addresses) => (
             "proxy".to_string(),
             Some(

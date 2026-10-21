@@ -427,6 +427,11 @@ impl ServiceRestController {
         };
         match removed {
             Ok(()) => {
+                // Now, not when the redeploy gets there: the other nodes
+                // that answered for the port's name are told to stop by
+                // the route sync, and a deployment that fails first would
+                // leave them answering.
+                self.state.deployer.sync_routes().await;
                 self.enqueue(&service.id, None).await;
                 Ok(see_other(&format!("{here}#ports")))
             }
@@ -1360,24 +1365,8 @@ impl ServiceRestController {
         // releases the name there rather than leaving it answering for
         // something nobody asked it to serve.
         for node_id in dropped {
-            let payload = serde_json::to_value(crate::infra::network::errand::Edge {
-                hostname: hostname.clone(),
-                upstreams: Vec::new(),
-                // Nothing to reach and nothing to reach it with: this
-                // errand exists to make a node stop answering, and a
-                // co-edge list would be telling it about a name it is
-                // being taken off.
-                peers: Vec::new(),
-                secret: None,
-            })
-            .unwrap_or_default();
-            crate::infra::network::errand::queue(
-                &self.state.database,
-                &node_id,
-                crate::infra::network::errand::Kind::Edge,
-                &payload,
-            )
-            .await?;
+            crate::infra::network::errand::withdraw_name(&self.state.database, &node_id, &hostname)
+                .await?;
         }
 
         Ok(see_other(&format!("{here}#edges")))
@@ -4966,6 +4955,140 @@ mod tests {
                 .len(),
             before,
             "the same instruction twice is one errand"
+        );
+    }
+
+    /// A service whose port answers at `localhost`, served by a node of
+    /// its own that has been told so — the state the next two tests take
+    /// apart.
+    async fn served_elsewhere(console: &Console, cookie: &str) {
+        service(console, cookie).await;
+        crate::infra::network::save(
+            &console.database,
+            &crate::infra::network::Node {
+                update_note: None,
+                version: None,
+                wanted_version: None,
+                usage: None,
+                draining_at: None,
+                capacity: None,
+                id: "nd-theedge".into(),
+                name: "edge.example".into(),
+                kind: crate::infra::network::Kind::Public,
+                endpoint: Some("localhost:443".into()),
+                public_key: Some("0hEr0DzTvMDTRfPPmYFCVCQ1cA0nnUnP+2fFqZBBBGQ=".into()),
+                overlay_ip: Some("10.42.0.9".into()),
+                is_self: false,
+                last_seen_at: None,
+                allows: vec![crate::domain::values::capability::Capability::Edge],
+                ca_pem: Some(
+                    "-----BEGIN CERTIFICATE-----\nnot real\n-----END CERTIFICATE-----\n".into(),
+                ),
+            },
+        )
+        .await
+        .expect("the other node");
+        console
+            .harness
+            .post("/projects/my-api/services/web/ports")
+            .header("cookie", cookie)
+            .form(&[
+                ("container_port", "8080"),
+                ("https", "1"),
+                ("hostname", "localhost"),
+                ("renew_with", "self_signed"),
+            ])
+            .send()
+            .await;
+        // What a deployment sends once a copy runs. Nothing runs here, so
+        // the errand the port queued has nothing behind it — which is
+        // already a withdrawal, and would make these tests prove nothing.
+        let serving = serde_json::to_value(crate::infra::network::errand::Edge {
+            hostname: "localhost".into(),
+            upstreams: vec!["10.42.0.3:30000".into()],
+            peers: Vec::new(),
+            secret: None,
+            redirect_to: None,
+        })
+        .expect("payload");
+        crate::infra::network::errand::queue(
+            &console.database,
+            "nd-theedge",
+            crate::infra::network::errand::Kind::Edge,
+            &serving,
+        )
+        .await
+        .expect("served");
+        assert!(
+            crate::infra::network::errand::names_told(&console.database)
+                .await
+                .expect("told")
+                .contains(&("nd-theedge".to_string(), "localhost".to_string())),
+            "the other node was never told to answer for the name"
+        );
+    }
+
+    /// **Deleting a port left the other nodes answering for its name**,
+    /// with a certificate renewed for it twice a day: the rows that would
+    /// have told them were the ones the delete removed. Found while adding
+    /// redirects, 2026-10-20.
+    #[tokio::test]
+    async fn deleting_a_port_tells_the_nodes_that_answered_for_its_name_to_stop() {
+        let console = Console::new().await;
+        let cookie = console.signed_in().await;
+        served_elsewhere(&console, &cookie).await;
+
+        let service = crate::infra::repositories::services::all(&console.database, None)
+            .await
+            .expect("services")
+            .pop()
+            .expect("web");
+        let port = crate::infra::repositories::ports::of_service(&console.database, &service.id)
+            .await
+            .expect("ports")
+            .pop()
+            .expect("the named port");
+        console
+            .harness
+            .post(&format!(
+                "/projects/my-api/services/web/ports/{}/delete",
+                port.id
+            ))
+            .header("cookie", &cookie)
+            .send()
+            .await
+            .assert_status(StatusCode::SEE_OTHER);
+
+        assert!(
+            crate::infra::network::errand::names_told(&console.database)
+                .await
+                .expect("told")
+                .is_empty(),
+            "the other node still answers for the name"
+        );
+    }
+
+    #[tokio::test]
+    async fn deleting_a_service_tells_the_nodes_that_answered_for_its_names_to_stop() {
+        let console = Console::new().await;
+        let cookie = console.signed_in().await;
+        served_elsewhere(&console, &cookie).await;
+
+        console
+            .harness
+            .post("/projects/my-api/services/web/delete")
+            .header("cookie", &cookie)
+            .form(&[("confirm", "web")])
+            .send()
+            .await
+            .assert_status(StatusCode::SEE_OTHER);
+
+        assert!(
+            crate::infra::network::errand::names_told(&console.database)
+                .await
+                .expect("told")
+                .is_empty(),
+            "the other node still answers for the name"
         );
     }
 

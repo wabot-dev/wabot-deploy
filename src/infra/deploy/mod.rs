@@ -20,6 +20,7 @@
 
 pub mod database;
 pub mod dns;
+pub mod edge_withdrawals;
 pub mod hosts;
 pub mod jobs;
 pub mod logs;
@@ -398,6 +399,10 @@ impl Deployer {
         if let Some(wake) = &self.certificates {
             wake.now();
         }
+
+        // And the other nodes, about the names this one stopped asking
+        // them to answer for — whatever it was that dropped them.
+        edge_withdrawals::withdraw_unwanted(&self.database).await;
 
         // And the names *inside* the containers, which answer the same
         // question one layer down. Here rather than in the deploy path
@@ -2610,6 +2615,10 @@ impl Deployer {
             .into_iter()
             .map(|node| node.id)
             .collect();
+        let redirects =
+            crate::infra::repositories::redirects::of_service(&self.database, &service.id)
+                .await
+                .unwrap_or_default();
 
         for (hostname, node_id) in &chosen {
             // This node's own choice needs no errand: it does not poll
@@ -2638,6 +2647,10 @@ impl Deployer {
                     .await
                     .ok()
                     .flatten(),
+                redirect_to: redirects
+                    .iter()
+                    .find(|redirect| &redirect.hostname == hostname)
+                    .map(|redirect| redirect.target.clone()),
             }) {
                 Ok(payload) => payload,
                 Err(error) => {

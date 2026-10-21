@@ -84,6 +84,20 @@ pub async fn of_node(
 }
 
 /// Every (hostname, node) this service has asked for.
+/// Every name and every node that answers for it.
+pub async fn all(database: &SqliteDatabase) -> PlatformResult<Vec<(String, String)>> {
+    Ok(database
+        .read(|connection| {
+            let mut statement =
+                connection.prepare("SELECT \"hostname\", \"node_id\" FROM service_edge")?;
+            let rows: wabot::sqlite::rusqlite::Result<Vec<(String, String)>> = statement
+                .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+                .collect();
+            rows
+        })
+        .await?)
+}
+
 pub async fn of_service(
     database: &SqliteDatabase,
     service_id: &str,

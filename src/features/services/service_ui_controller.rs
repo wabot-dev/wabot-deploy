@@ -975,7 +975,37 @@ impl ServiceUiController {
                     )),
                     _ => None,
                 };
+                let mut redirects = Vec::new();
+                for redirect in crate::infra::repositories::redirects::of_service(
+                    &self.state.database,
+                    &service.id,
+                )
+                .await?
+                {
+                    let facts =
+                        crate::shell::state::certificate_facts_for(&self.state, &redirect.hostname)
+                            .await;
+                    let state = crate::shell::components::node_certificate::CertificateState::read(
+                        &facts,
+                        Some(&redirect.hostname),
+                        None,
+                        self.state.certificates.phase(),
+                        !crate::infra::node::settings::acme_enabled(&self.state.database).await,
+                    );
+                    let cells = crate::shell::components::node_certificate::certificate_cells(
+                        &state,
+                        &facts,
+                        Some(&redirect.hostname),
+                    );
+                    redirects.push((redirect, cells));
+                }
+                let add_redirect = (service.is_ours()
+                    && ports.iter().any(|port| port.hostname.is_some()))
+                .then(|| format!("{here}/redirects/new"));
                 Panel::Network {
+                    redirects,
+                    add_redirect,
+                    remove_redirect: format!("{here}/redirects"),
                     certificates,
                     secured,
                     domain,

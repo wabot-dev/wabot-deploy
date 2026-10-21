@@ -11,6 +11,7 @@ use crate::features::services::service_push_component::Push;
 use crate::features::services::texts::t;
 use crate::features::services::{
     service_placement_component, service_ports_component, service_push_component,
+    service_redirects_component,
 };
 use crate::infra::edge::policy::Policy;
 use crate::infra::network::errand::Record;
@@ -193,6 +194,14 @@ pub enum Panel {
         public_nodes: Vec<Node>,
         serving: Vec<(String, String)>,
         orders: Vec<Record>,
+        redirects: Vec<(
+            crate::domain::entities::redirect::Redirect,
+            CertificateCells,
+        )>,
+        /// Where a redirect is made; `None` when the service has no name to
+        /// send one to, or is not this node's to change.
+        add_redirect: Option<String>,
+        remove_redirect: String,
     },
     Replicas {
         placements: Vec<Replica>,
@@ -586,7 +595,8 @@ pub fn render<'a>(page: &'a ServiceSettings<'a>) -> impl Renderable + 'a {
             }
             Panel::Network {
                 ports, certificates, secured, domain, add, suggestion, may_publish,
-                acme_off, public_nodes, serving, orders,
+                acme_off, public_nodes, serving, orders, redirects, add_redirect,
+                remove_redirect,
             } => {
                 <section class="stack" id="ports">
                     <p class="card-label">(t("Exposed ports"))</p>
@@ -672,6 +682,9 @@ pub fn render<'a>(page: &'a ServiceSettings<'a>) -> impl Renderable + 'a {
                     <p class="card-label">(t("Expose a port"))</p>
                     (service_ports_component::port_form(add, suggestion, *may_publish, domain.is_some(), *acme_off))
                 </section>
+
+                (service_redirects_component::redirects_card(
+                    redirects, add_redirect.as_deref(), remove_redirect))
 
                 @if service.is_ours() && !public_nodes.is_empty()
                     && ports.iter().any(|port| port.hostname.is_some()) {

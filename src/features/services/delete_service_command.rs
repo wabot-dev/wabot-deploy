@@ -26,6 +26,11 @@ impl DeleteService<'_> {
         deployer.discard_storage(self.project, self.service).await;
         services::delete(database, &self.service.id)
             .await
-            .map_err(|error| error.to_string())
+            .map_err(|error| error.to_string())?;
+        // After the rows, not with the teardown: the names are dropped
+        // with them, and this is what tells the other nodes that answered
+        // for them to stop.
+        deployer.sync_routes().await;
+        Ok(())
     }
 }

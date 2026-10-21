@@ -252,6 +252,10 @@ fn migrations() -> Vec<Migration> {
             "0063_zone_in_a_project",
             include_str!("../../migrations/0063_zone_in_a_project.sql"),
         ),
+        Migration::new(
+            "0064_service_redirect",
+            include_str!("../../migrations/0064_service_redirect.sql"),
+        ),
     ]
 }
 

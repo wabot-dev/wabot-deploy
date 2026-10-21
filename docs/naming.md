@@ -468,3 +468,58 @@ turned out to be the claim.
 for. That belongs in `ports` rather than in the console for the reason
 `create` already gives: a caller that renames a port and does not know
 to move this gets a name stored, shown, and served by nobody.
+
+## A second name that sends people to the first
+
+Asked for by Jorge on 2026-10-20: `www.teresaasprilla.com` should land
+on `teresaasprilla.com`. A port carries one hostname, so the second name
+had nowhere to go but a second service.
+
+- **A redirect belongs to a port, and goes to whatever that port answers
+  to.** Only one of the service's own hostnames, chosen with Jorge: a
+  redirect to anywhere is a typo away from sending a site's visitors
+  somewhere else. Renaming the port moves the target with it; deleting
+  the port, taking its name away, or deleting the service takes the
+  redirect (migration 0064).
+- **The edge answers it, with a 301** to the same path and query on the
+  target, and the port the client asked on when it was not 443. Nothing
+  behind it runs. Plain HTTP goes to HTTPS first, so that is two hops.
+- **Its name is a name like any other** in everything but the route: it
+  is checked against DNS before it is stored, it has its `service_edge`
+  rows, and so it gets its own certificate — a browser reaches
+  `https://www…` before it is told to go anywhere. Its route exists
+  while the target's service has something running, like the target's.
+- **A name serves or redirects, never both**, refused beside both
+  `INSERT`s.
+- **Another node that answers for it is told on the edge errand**, in an
+  optional `redirect_to`. A node older than that reads the errand as a
+  name to proxy and serves the site there instead — the redirect missing,
+  nothing broken. Deleting one tells every other node that answered for
+  its name to stop — see the next section.
+
+On the VM node: `https://www.bench.wabot.test/blog/?p=2&q=a%20b` answered
+301 to the same path and query on `bench.wabot.test`, plain HTTP reached
+the site after two hops, the certificate presented covered the `www`
+name, and removing the redirect left a 404.
+
+## A name dropped here is withdrawn everywhere
+
+Found while adding redirects: **deleting a port left every other node
+that answered for its name answering**, with a certificate renewed for it
+twice a day. The rows that would have told them were the ones the delete
+removed. Deleting a service or a project did the same, and so did
+renaming a port's name; only choosing different nodes on the service's
+page sent a withdrawal, because that one form had been written to.
+
+So it is not a thing each deletion remembers.
+`deploy::edge_withdrawals::withdraw_unwanted` asks what each node was last
+told about each name — the newest edge errand, which is kept until the
+node leaves the network — and withdraws every name a node was told to
+serve that the `service_edge` rows no longer give it. It runs at the end
+of every route sync, so whatever dropped a name is covered, including a
+path written later, and so is a boot after a change that never got that
+far. Deleting a service or a project syncs again after its rows are gone,
+because the teardown's own sync runs while they still exist.
+
+A withdrawal is harmless where the name is not held, and never sent to
+this node, nor twice.

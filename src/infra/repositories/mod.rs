@@ -10,6 +10,7 @@ pub mod edges;
 pub mod ports;
 pub mod project_domain;
 pub mod projects;
+pub mod redirects;
 pub mod registry_credentials;
 pub mod releases;
 pub mod replicas;

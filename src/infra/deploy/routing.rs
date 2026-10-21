@@ -199,6 +199,42 @@ pub async fn sync(
 
     routes::retain_proxies(database, &hosts).await?;
 
+    // The names that send their requests to one of these. Answered here
+    // when this node was chosen for the redirect's own name — not its
+    // target's, which may be served somewhere else entirely — and only
+    // while the target has something running: a redirect to a name that
+    // answers 404 is a longer way to the same nothing, and it keeps this
+    // node and the ones told about it in agreement.
+    let mut redirected = Vec::new();
+    for redirect in crate::infra::repositories::redirects::all(database).await? {
+        if !serving.contains(&redirect.hostname) {
+            continue;
+        }
+        let Some(port) = ports.iter().find(|port| port.id == redirect.port_id) else {
+            continue;
+        };
+        let running = !upstreams_of(
+            &placements,
+            &elsewhere,
+            &nodes,
+            &redirect.service_id,
+            port.container_port,
+        )
+        .is_empty();
+        if !running {
+            continue;
+        }
+        routes::upsert(
+            database,
+            &redirect.hostname,
+            &Upstream::Redirect(redirect.target.clone()),
+            Some(&redirect.service_id),
+        )
+        .await?;
+        redirected.push(redirect.hostname);
+    }
+    routes::retain_redirects(database, &redirected).await?;
+
     // The console keeps its own names whatever the services do. The
     // edge only falls back to the control plane while *no* route
     // exists, so the first service hostname would otherwise take the
@@ -312,6 +348,64 @@ mod tests {
     /// answer for one. Without the self row nothing here is an edge for
     /// anything — correctly, a node that does not know who it is cannot
     /// have been chosen — and every route would be skipped.
+    /// A redirect is routed where its own name is answered, while the
+    /// service it points at has something running — and stops being
+    /// routed when it is deleted, which is the half a stale row would get
+    /// wrong.
+    #[tokio::test]
+    async fn a_redirect_is_routed_while_its_service_runs_and_not_after_it_goes() {
+        let (database, _, service) = node().await;
+        let port = ports::create(
+            &database,
+            &service,
+            80,
+            false,
+            Some("teresaasprilla.com"),
+            &[],
+        )
+        .await
+        .expect("port");
+        crate::infra::repositories::redirects::create(
+            &database,
+            &port,
+            "www.teresaasprilla.com",
+            &[],
+        )
+        .await
+        .expect("redirect");
+
+        let table = Arc::new(RouteTable::new());
+        sync(&database, Some("node.example"), Some(&table))
+            .await
+            .expect("sync");
+        assert!(
+            table.resolve("www.teresaasprilla.com").is_none(),
+            "a redirect to a service with nothing running"
+        );
+
+        running_at(&database, &service, Some("10.42.1.5")).await;
+        sync(&database, Some("node.example"), Some(&table))
+            .await
+            .expect("sync");
+        assert_eq!(
+            table.resolve("www.teresaasprilla.com"),
+            Some(Upstream::Redirect("teresaasprilla.com".into()))
+        );
+
+        crate::infra::repositories::redirects::delete(
+            &database,
+            &service,
+            "www.teresaasprilla.com",
+        )
+        .await
+        .expect("deleted");
+        sync(&database, Some("node.example"), Some(&table))
+            .await
+            .expect("sync");
+        assert!(table.resolve("www.teresaasprilla.com").is_none());
+        assert!(table.resolve("teresaasprilla.com").is_some());
+    }
+
     async fn node() -> (SqliteDatabase, String, String) {
         let database = crate::infra::db::open_in_memory().await.expect("open");
         crate::infra::node::settings::set_domain(&database, Some("node.example"))

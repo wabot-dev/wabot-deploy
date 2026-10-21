@@ -52,7 +52,9 @@ impl DeleteProject<'_> {
 
         projects::delete(database, &self.project.id)
             .await
-            .map_err(|error| error.to_string())
+            .map_err(|error| error.to_string())?;
+        deployer.sync_routes().await;
+        Ok(())
     }
 }
 

@@ -278,6 +278,13 @@ pub struct Edge {
     /// answer for this name.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub secret: Option<String>,
+    /// When the name is a redirect, the hostname it sends requests to, and
+    /// then the node answers with that instead of proxying. A node older
+    /// than redirects does not read it and proxies the name to the service,
+    /// which serves the site there rather than sending people elsewhere —
+    /// the redirect it was not told about, and nothing broken.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub redirect_to: Option<String>,
 }
 
 /// One co-edge of a name, and everything needed to reach it.
@@ -525,6 +532,52 @@ pub fn consent_for(
 /// an instruction that is an *event* — see `Kind::Command`. Asking twice
 /// is two errands on purpose, and what stops the same asking being obeyed
 /// twice is its id.
+/// Tell a node to stop answering for a name: an edge errand with nothing
+/// behind it, which needs no grant on the far side.
+pub async fn withdraw_name(
+    database: &SqliteDatabase,
+    node_id: &str,
+    hostname: &str,
+) -> NetworkResult<Errand> {
+    let payload = serde_json::to_value(Edge {
+        hostname: hostname.to_string(),
+        upstreams: Vec::new(),
+        peers: Vec::new(),
+        secret: None,
+        redirect_to: None,
+    })
+    .unwrap_or_default();
+    queue(database, node_id, Kind::Edge, &payload).await
+}
+
+/// The names each node was last told to answer for, by the newest edge
+/// errand about each: a withdrawal, or one never collected that said to
+/// serve, counts for what it says.
+pub async fn names_told(database: &SqliteDatabase) -> NetworkResult<Vec<(String, String)>> {
+    let rows: Vec<(String, String)> = database
+        .read(|connection| {
+            connection
+                .prepare(
+                    "SELECT \"node_id\", \"payload\" FROM errand WHERE \"kind\" = 'edge' \
+                     ORDER BY \"created_at\" DESC, \"rowid\" DESC",
+                )?
+                .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+                .collect()
+        })
+        .await?;
+    let mut seen = std::collections::BTreeSet::new();
+    let mut serving = Vec::new();
+    for (node, payload) in rows {
+        let Ok(edge) = serde_json::from_str::<Edge>(&payload) else {
+            continue;
+        };
+        if seen.insert((node.clone(), edge.hostname.clone())) && !edge.upstreams.is_empty() {
+            serving.push((node, edge.hostname));
+        }
+    }
+    Ok(serving)
+}
+
 pub async fn queue(
     database: &SqliteDatabase,
     node_id: &str,

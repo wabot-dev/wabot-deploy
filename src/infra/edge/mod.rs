@@ -305,6 +305,7 @@ async fn dispatch(State(state): State<EdgeState>, request: Request) -> Response 
                 Err(never) => match never {},
             }
         }
+        Upstream::Redirect(ref target) => moved_to(target, host.as_deref(), &request),
         Upstream::Proxy(_) => {
             // Which copy takes it is the table's to decide — the
             // counter lives there, so two requests in a row do not both
@@ -344,6 +345,33 @@ fn host_of(request: &Request) -> Option<String> {
                 .and_then(|value| value.to_str().ok())
                 .map(str::to_string)
         })
+}
+
+/// A name that redirects: 301 to the same path and query on `target`.
+///
+/// The port the client asked on comes along, which is nothing on a node
+/// listening on 443 and is what keeps a development node on another port
+/// from sending somebody to a port nothing listens on.
+fn moved_to(target: &str, asked: Option<&str>, request: &Request) -> Response {
+    let port = asked
+        .and_then(|host| host.rsplit_once(':'))
+        .and_then(|(_, port)| port.parse::<u16>().ok())
+        .filter(|port| *port != 443)
+        .map(|port| format!(":{port}"))
+        .unwrap_or_default();
+    let path = request
+        .uri()
+        .path_and_query()
+        .map(|pq| pq.as_str())
+        .unwrap_or("/");
+    match HeaderValue::from_str(&format!("https://{target}{port}{path}")) {
+        Ok(location) => (
+            StatusCode::MOVED_PERMANENTLY,
+            [(header::LOCATION, location)],
+        )
+            .into_response(),
+        Err(_) => (StatusCode::BAD_REQUEST, "bad redirect").into_response(),
+    }
 }
 
 async fn redirect_to_https(State(state): State<HttpState>, request: Request) -> Response {
@@ -485,6 +513,64 @@ mod tests {
                 String::from_utf8_lossy(&body),
                 expected,
                 "{host} reached the wrong router"
+            );
+        }
+    }
+
+    /// The whole of what a redirect promises: permanent, the same path and
+    /// query on the other name, and the port the client asked on when it
+    /// was not the default — or a development node sends people to a port
+    /// nothing listens on.
+    #[tokio::test]
+    async fn a_redirecting_name_answers_301_to_the_same_path_on_its_target() {
+        let state = state(false);
+        state.routes.replace(vec![(
+            "www.teresaasprilla.com".into(),
+            Upstream::Redirect("teresaasprilla.com".into()),
+        )]);
+        let app = Router::new().fallback(dispatch).with_state(state);
+
+        for (host, path, expected) in [
+            (
+                "www.teresaasprilla.com",
+                "/blog/hola/?p=2&q=a%20b",
+                "https://teresaasprilla.com/blog/hola/?p=2&q=a%20b",
+            ),
+            (
+                "www.teresaasprilla.com:9443",
+                "/",
+                "https://teresaasprilla.com:9443/",
+            ),
+            (
+                "www.teresaasprilla.com:443",
+                "/x",
+                "https://teresaasprilla.com/x",
+            ),
+        ] {
+            use tower::ServiceExt;
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .uri(path)
+                        .header("host", host)
+                        .body(wabot::rest::axum::body::Body::empty())
+                        .expect("request"),
+                )
+                .await
+                .expect("answered");
+            assert_eq!(
+                response.status(),
+                StatusCode::MOVED_PERMANENTLY,
+                "{host}{path}"
+            );
+            assert_eq!(
+                response
+                    .headers()
+                    .get(header::LOCATION)
+                    .and_then(|value| value.to_str().ok()),
+                Some(expected),
+                "{host}{path}"
             );
         }
     }

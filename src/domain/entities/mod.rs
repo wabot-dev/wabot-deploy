@@ -12,6 +12,7 @@ pub mod dns_zone;
 pub mod port;
 pub mod project;
 pub mod push_token;
+pub mod redirect;
 pub mod release;
 pub mod replica;
 pub mod service;
