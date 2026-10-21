@@ -19,7 +19,14 @@ pub fn render<'a>(page: &'a ZonePage<'a>) -> impl Renderable + 'a {
     let here = format!("/projects/{}/zones/{}", page.project.slug, zone.name);
     rsx! {
         (layout::style_tag())
-        <h1>(&zone.name)</h1>
+        <div class="split">
+            <h1>(&zone.name)</h1>
+            @if zone.editable {
+                <div class="row">
+                    <a class="btn" href=(format!("{here}/records/new"))>(t("Add record"))</a>
+                </div>
+            }
+        </div>
         @if let Some(message) = page.error {
             (layout::error_note(word(message)))
         }

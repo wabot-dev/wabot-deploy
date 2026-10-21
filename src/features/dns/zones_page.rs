@@ -1,7 +1,6 @@
 use hypertext::prelude::*;
 
 use crate::domain::entities::project::Project;
-use crate::features::dns::name_servers_component;
 use crate::features::dns::texts::{t, word};
 use crate::features::dns::zones_response::ZonesResponse;
 use crate::shell::layouts::layout;
@@ -17,7 +16,14 @@ pub fn render<'a>(page: &'a ZonesPage<'a>) -> impl Renderable + 'a {
     let here = format!("/projects/{}/zones", page.project.slug);
     rsx! {
         (layout::style_tag())
-        <h1>(t("DNS"))</h1>
+        <div class="split">
+            <h1>(t("DNS"))</h1>
+            @if zones.editable {
+                <div class="row">
+                    <a class="btn" href=(format!("{here}/new"))>(t("Add zone"))</a>
+                </div>
+            }
+        </div>
         @if let Some(message) = page.error {
             (layout::error_note(word(message)))
         }
@@ -53,21 +59,5 @@ pub fn render<'a>(page: &'a ZonesPage<'a>) -> impl Renderable + 'a {
                 </table>
             }
         </section>
-
-        @if zones.editable {
-            <section class="stack">
-                <p class="card-label">(t("Add a zone"))</p>
-                <form method="post" action=(&here) class="card stack">
-                    <label for="zone-name">(t("Domain"))</label>
-                    <input id="zone-name" name="name" type="text" autocomplete="off"
-                           placeholder="example.com" required>
-                    <p class="field-hint">(t("The domain itself, as it was registered. These nodes answer for it and for every name under it that has a record."))</p>
-                    <div class="actions">
-                        <button type="submit">(t("Add zone"))</button>
-                    </div>
-                </form>
-            </section>
-            (name_servers_component::registrar_card(&zones.name_servers))
-        }
     }
 }

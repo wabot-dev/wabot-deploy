@@ -88,6 +88,67 @@ impl ZoneUiController {
         Ok(frame.render(body).into_view().into())
     }
 
+    #[view("/projects/:project/zones/new")]
+    #[middleware(SessionMiddleware)]
+    async fn new_zone(&self, query: ZonesQuery) -> UiResult<ViewOutcome> {
+        let Some(account) = signed_in(&self.auth) else {
+            return Ok(Redirect::found("/sign-in").into());
+        };
+        let Some((project, allowed)) =
+            access::find_project(&self.state.database, &account, &query.project).await?
+        else {
+            return Ok(Redirect::found("/?error=no+such+project").into());
+        };
+        let back = format!("/projects/{}/zones", project.slug);
+        let seen = match crate::domain::authz::node_user::belongs_here(&account) {
+            true => {
+                crate::features::dns::node_user_see_zones::run(
+                    &self.state.database,
+                    &account,
+                    &project.slug,
+                )
+                .await
+            }
+            false => {
+                crate::features::dns::tenant_user_see_zones::run(
+                    &self.state.database,
+                    &account,
+                    &project.slug,
+                )
+                .await
+            }
+        };
+        let Ok(zones) = seen else {
+            return Ok(Redirect::found(back).into());
+        };
+        if !zones.editable {
+            return Ok(Redirect::found(back).into());
+        }
+        let all_projects = access::projects_for(&self.state.database, &account).await?;
+
+        layout::head("Add zone");
+        let frame = Frame::new(
+            &account,
+            Area::Projects,
+            &all_projects,
+            Some(&project),
+            format!("{back}/new"),
+        )
+        .allowing(allowed);
+        let page = crate::features::dns::new_zone_page::NewZonePage {
+            action: &back,
+            back: &back,
+            name_servers: &zones.name_servers,
+            error: query.error.as_deref(),
+        };
+        let body = crate::shell::texts::language::scoped(account.language, || {
+            crate::features::dns::new_zone_page::render(&page)
+                .render()
+                .into_inner()
+        });
+        Ok(frame.render(body).into_view().into())
+    }
+
     #[view("/projects/:project/zones/:zone")]
     #[middleware(SessionMiddleware)]
     async fn zone(&self, query: ZoneQuery) -> UiResult<ViewOutcome> {
@@ -140,6 +201,66 @@ impl ZoneUiController {
         };
         let body = crate::shell::texts::language::scoped(account.language, || {
             crate::features::dns::zone_page::render(&page)
+                .render()
+                .into_inner()
+        });
+        Ok(frame.render(body).into_view().into())
+    }
+
+    #[view("/projects/:project/zones/:zone/records/new")]
+    #[middleware(SessionMiddleware)]
+    async fn new_record(&self, query: ZoneQuery) -> UiResult<ViewOutcome> {
+        let Some(account) = signed_in(&self.auth) else {
+            return Ok(Redirect::found("/sign-in").into());
+        };
+        let found = match crate::domain::authz::node_user::belongs_here(&account) {
+            true => {
+                crate::features::dns::node_user_see_zone::theirs(
+                    &self.state.database,
+                    &account,
+                    &query.project,
+                    &query.zone,
+                )
+                .await
+            }
+            false => {
+                crate::features::dns::tenant_user_see_zone::theirs(
+                    &self.state.database,
+                    &account,
+                    &query.project,
+                    &query.zone,
+                )
+                .await
+            }
+        };
+        let Ok((project, allowed, zone)) = found else {
+            return Ok(Redirect::found(format!("/projects/{}/zones", query.project)).into());
+        };
+        let back = format!("/projects/{}/zones/{}", project.slug, zone.name);
+        if !allowed.may_deploy() || !zone.is_ours() {
+            return Ok(Redirect::found(back).into());
+        }
+        let all_projects = access::projects_for(&self.state.database, &account).await?;
+
+        layout::head("Add record");
+        let action = format!("{back}/records");
+        let frame = Frame::new(
+            &account,
+            Area::Projects,
+            &all_projects,
+            Some(&project),
+            format!("{back}/records/new"),
+        )
+        .allowing(allowed);
+        let zone_name = zone.name.to_string();
+        let page = crate::features::dns::new_record_page::NewRecordPage {
+            zone: &zone_name,
+            action: &action,
+            back: &back,
+            error: query.error.as_deref(),
+        };
+        let body = crate::shell::texts::language::scoped(account.language, || {
+            crate::features::dns::new_record_page::render(&page)
                 .render()
                 .into_inner()
         });

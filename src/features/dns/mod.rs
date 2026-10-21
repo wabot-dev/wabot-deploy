@@ -12,6 +12,8 @@ pub mod dns_rest_controller;
 pub mod dns_status_component;
 pub mod held_zones_component;
 pub mod name_servers_component;
+pub mod new_record_page;
+pub mod new_zone_page;
 pub mod node_user_add_record;
 pub mod node_user_check_delegation;
 pub mod node_user_create_zone;

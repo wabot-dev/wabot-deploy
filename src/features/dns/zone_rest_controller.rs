@@ -31,6 +31,7 @@ impl ZoneRestController {
             return Ok(see_other("/"));
         };
         let here = format!("/projects/{project}/zones");
+        let form_page = format!("{here}/new");
         let form = match read_form(request).await {
             Ok(form) => form,
             Err(response) => return Ok(response),
@@ -40,7 +41,7 @@ impl ZoneRestController {
             name: form.get("name").cloned().unwrap_or_default(),
         };
         if let Err(reason) = asked.validate() {
-            return Ok(back_with_error(&here, &reason.to_string()));
+            return Ok(back_with_error(&form_page, &reason.to_string()));
         }
         let created = match node_user::belongs_here(&account) {
             true => {
@@ -64,7 +65,7 @@ impl ZoneRestController {
         };
         match created {
             Ok(created) => Ok(see_other(&format!("{here}/{}", created.name))),
-            Err(reason) => Ok(back_with_error(&here, &reason)),
+            Err(reason) => Ok(back_with_error(&form_page, &reason)),
         }
     }
 
@@ -84,6 +85,7 @@ impl ZoneRestController {
             return Ok(see_other("/"));
         };
         let here = format!("/projects/{project}/zones/{zone}");
+        let form_page = format!("{here}/records/new");
         let form = match read_form(request).await {
             Ok(form) => form,
             Err(response) => return Ok(response),
@@ -99,7 +101,7 @@ impl ZoneRestController {
             ttl: field("ttl"),
         };
         if let Err(reason) = asked.validate() {
-            return Ok(back_with_error(&here, &reason.to_string()));
+            return Ok(back_with_error(&form_page, &reason.to_string()));
         }
         let added = match node_user::belongs_here(&account) {
             true => {
@@ -123,7 +125,7 @@ impl ZoneRestController {
         };
         match added {
             Ok(()) => Ok(see_other(&here)),
-            Err(reason) => Ok(back_with_error(&here, &reason)),
+            Err(reason) => Ok(back_with_error(&form_page, &reason)),
         }
     }
 
@@ -377,8 +379,10 @@ mod tests {
         .await;
         let location = refused.header("location").unwrap_or_default();
         assert!(
-            location.starts_with("/projects/site/zones/teresaasprilla.com?error=an+A+record"),
-            "the refusal goes back to the page it came from: {location}"
+            location.starts_with(
+                "/projects/site/zones/teresaasprilla.com/records/new?error=an+A+record"
+            ),
+            "the refusal goes back to the form it came from: {location}"
         );
         let zone = zones::find_by_name(&console.database, "teresaasprilla.com")
             .await
@@ -388,6 +392,174 @@ mod tests {
             .await
             .expect("records")
             .is_empty());
+    }
+
+    /// A zone is added on a page of its own too, with the name servers to
+    /// set beside the form — what somebody needs before they add a domain,
+    /// not after.
+    #[tokio::test]
+    async fn a_zone_is_added_on_a_page_of_its_own() {
+        let console = Console::new().await;
+        let admin = console.signed_in().await;
+        project(&console, &admin, "Site").await;
+
+        let list = console
+            .harness
+            .get("/projects/site/zones")
+            .header("cookie", &admin)
+            .send()
+            .await;
+        list.assert_ok();
+        assert!(list.body.contains("href=\"/projects/site/zones/new\""));
+        assert!(
+            !list.body.contains("name=\"name\""),
+            "the list still carries the zone form"
+        );
+
+        let form = console
+            .harness
+            .get("/projects/site/zones/new")
+            .header("cookie", &admin)
+            .send()
+            .await;
+        form.assert_ok();
+        assert!(form.body.contains("action=\"/projects/site/zones\""));
+        assert!(form.body.contains("name=\"name\""));
+        assert!(
+            form.body.contains("At your domain"),
+            "the name servers to set are not beside the form"
+        );
+
+        let refused = add_zone(&console, &admin, "site", "localhost").await;
+        let location = refused.header("location").unwrap_or_default();
+        assert!(
+            location.starts_with("/projects/site/zones/new?error="),
+            "the refusal goes back to the form it came from: {location}"
+        );
+
+        let viewer = console.joined_as(&admin, "viewer").await;
+        let account = crate::infra::accounts::all(&console.database)
+            .await
+            .expect("accounts")
+            .into_iter()
+            .find(|account| account.username == "viewer")
+            .expect("the viewer");
+        let site = crate::infra::repositories::projects::find(&console.database, "site")
+            .await
+            .expect("read")
+            .expect("site");
+        crate::infra::repositories::access::grant(
+            &console.database,
+            &account.id,
+            &site.id,
+            crate::domain::values::roles::ProjectRole::Viewer,
+        )
+        .await
+        .expect("a viewer of site");
+        let bounced = console
+            .harness
+            .get("/projects/site/zones/new")
+            .header("cookie", &viewer)
+            .send()
+            .await;
+        assert_eq!(
+            bounced.header("location"),
+            Some("/projects/site/zones"),
+            "a viewer was shown the form"
+        );
+        let list = console
+            .harness
+            .get("/projects/site/zones")
+            .header("cookie", &viewer)
+            .send()
+            .await;
+        assert!(!list.body.contains("href=\"/projects/site/zones/new\""));
+    }
+
+    /// A record is added on a page of its own, the way a service or a
+    /// database is made: the zone's page lists them and offers the button,
+    /// and the form is somewhere else. It was under the list, which Jorge
+    /// called horrible.
+    #[tokio::test]
+    async fn a_record_is_added_on_a_page_of_its_own() {
+        let console = Console::new().await;
+        let admin = console.signed_in().await;
+        project(&console, &admin, "Site").await;
+        add_zone(&console, &admin, "site", "teresaasprilla.com").await;
+
+        let zone = console
+            .harness
+            .get("/projects/site/zones/teresaasprilla.com")
+            .header("cookie", &admin)
+            .send()
+            .await;
+        zone.assert_ok();
+        assert!(zone
+            .body
+            .contains("href=\"/projects/site/zones/teresaasprilla.com/records/new\""));
+        assert!(
+            !zone.body.contains("name=\"value\""),
+            "the zone's page still carries the record form"
+        );
+
+        let form = console
+            .harness
+            .get("/projects/site/zones/teresaasprilla.com/records/new")
+            .header("cookie", &admin)
+            .send()
+            .await;
+        form.assert_ok();
+        assert!(form
+            .body
+            .contains("action=\"/projects/site/zones/teresaasprilla.com/records\""));
+        assert!(form.body.contains("name=\"value\""));
+        assert!(form
+            .body
+            .contains("href=\"/projects/site/zones/teresaasprilla.com\""));
+
+        let viewer = console.joined_as(&admin, "viewer").await;
+        let account = crate::infra::accounts::all(&console.database)
+            .await
+            .expect("accounts")
+            .into_iter()
+            .find(|account| account.username == "viewer")
+            .expect("the viewer");
+        let site = crate::infra::repositories::projects::find(&console.database, "site")
+            .await
+            .expect("read")
+            .expect("site");
+        crate::infra::repositories::access::grant(
+            &console.database,
+            &account.id,
+            &site.id,
+            crate::domain::values::roles::ProjectRole::Viewer,
+        )
+        .await
+        .expect("a viewer of site");
+        let refused = console
+            .harness
+            .get("/projects/site/zones/teresaasprilla.com/records/new")
+            .header("cookie", &viewer)
+            .send()
+            .await;
+        assert_eq!(
+            refused.header("location"),
+            Some("/projects/site/zones/teresaasprilla.com"),
+            "a viewer was shown the form"
+        );
+        let page = console
+            .harness
+            .get("/projects/site/zones/teresaasprilla.com")
+            .header("cookie", &viewer)
+            .send()
+            .await;
+        page.assert_ok();
+        assert!(
+            !page
+                .body
+                .contains("href=\"/projects/site/zones/teresaasprilla.com/records/new\""),
+            "a viewer was offered the button"
+        );
     }
 
     #[tokio::test]
