@@ -12,7 +12,10 @@ pub async fn run(
     account: &Account,
     asked: &AddRecordRequest,
 ) -> Result<(), String> {
-    let zone = theirs(database, account, &asked.zone).await?;
+    let (_, allowed, zone) = theirs(database, account, &asked.project, &asked.zone).await?;
+    if !allowed.may_deploy() {
+        return Err("you may look at this project, not change it".into());
+    }
     AddRecord { zone: &zone, asked }
         .run(database, container)
         .await

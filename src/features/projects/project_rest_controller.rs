@@ -511,6 +511,7 @@ impl ProjectRestController {
             true => {
                 crate::features::projects::node_user_delete_project::run(
                     &self.state.database,
+                    &self.state.container,
                     &self.state.deployer,
                     &account,
                     &project,
@@ -522,6 +523,7 @@ impl ProjectRestController {
             false => {
                 crate::features::projects::tenant_user_delete_project::run(
                     &self.state.database,
+                    &self.state.container,
                     &self.state.deployer,
                     &account,
                     &project,

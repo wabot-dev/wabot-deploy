@@ -93,11 +93,14 @@ mod tests {
     async fn what_the_check_learned_stays_on_the_zone() {
         let database = crate::infra::db::open_in_memory().await.expect("open");
         let name = ZoneName::parse("teresaasprilla.com").expect("zone");
+        let site = crate::infra::repositories::projects::create(&database, "site")
+            .await
+            .expect("project");
         let zone = zones::create(
             &database,
             zones::NewZone {
                 name: &name,
-                tenant_id: None,
+                project: &site,
                 servers: &[],
             },
         )

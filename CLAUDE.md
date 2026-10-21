@@ -419,8 +419,9 @@ A separate subject, with its own documents and its own decisions:
 - [`docs/naming.md`](docs/naming.md) — how a name is derived and which
   authority can sign it.
 - [`docs/dns.md`](docs/dns.md) — the nodes as authoritative name
-  servers: the `dns` capability (off until turned on), zones and records,
-  which nodes answer for each zone, and the names each node answers as.
+  servers: the `dns` capability (off until turned on), zones and records
+  as a project's resource, which nodes answer for each zone, and the names
+  each node answers as.
 
 Four things belong here because they change what you may do, not what
 happened:

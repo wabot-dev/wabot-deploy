@@ -258,6 +258,7 @@ impl TenantRestController {
 
         match crate::features::organisations::node_user_delete_organisation::run(
             &self.state.database,
+            &self.state.container,
             &self.state.deployer,
             &account,
             id,

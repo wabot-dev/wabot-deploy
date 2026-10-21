@@ -6,6 +6,8 @@ use wabot::prelude::*;
 #[derive(Debug, Clone, Default, Deserialize, Serialize, Validate)]
 pub struct SetZoneServersRequest {
     #[min_length(1)]
+    pub project: String,
+    #[min_length(1)]
     pub zone: String,
     #[serde(default)]
     pub servers: Vec<String>,

@@ -28,8 +28,10 @@ organisation, for its own domains — writes the records in the console.
 - **The name servers are the nodes' own names** (`node-0.network…`), so the
   registrar needs no glue records. The cost: resolving the domain also
   depends on those names' DNS.
-- **Organisations add their own domains** and are told which name servers
-  to set at their registrar. They do not choose nodes.
+- **A zone is a project's** (phase 6), managed by that project's people
+  the way its services are. An organisation's are answered by every node
+  that offers `dns`, and its people are told which name servers to set at
+  their registrar; they do not choose nodes.
 - **First version:** zones, records, choosing nodes, organisations, and a
   check that says whether the registrar really points here. Records made
   for services by themselves, importing a zone file and wildcard
@@ -213,6 +215,62 @@ with their sentences; clearing the field went back to `node.wabot.test`.
 
 Two names on one machine satisfy a registrar that asks for two and are
 still one machine. The form says so.
+
+## Phase 6: a zone is a project's
+
+Asked for by Jorge on 2026-10-20, the day 0.27.0 shipped: a zone belonged
+to an owner — the operator, or an organisation — and only that owner's
+administrator could touch it. A domain is part of what a project *is*, and
+the people deploying its services are the ones who know which records it
+needs.
+
+- **A zone belongs to a project, like a service.** A deployer adds and
+  deletes zones and records; a viewer reads them. It lives at
+  `/projects/<slug>/zones/<domain>`, under DNS in the project's sidebar, on
+  both consoles — one controller each for pages and forms, choosing the
+  actor's use case by the console the request arrived at.
+- **A name has one owner, and the owner is a project.** The overlap rule
+  beside the `INSERT` compared owners; it compares projects now. Two
+  projects of one organisation, or two of the operator's, are two sets of
+  people, and a zone nested in another's would answer for names the other's
+  people wrote.
+- **Deleting a project tells every node answering for its zones to stop.**
+  `ON DELETE CASCADE` takes the rows and nothing else: the peers would have
+  gone on answering with nobody left to withdraw them, so `DeleteProject`
+  deletes each zone the way the zone's own page does before the project.
+- **Who answers is still the machine's choice.** The operator's projects
+  start with this node and the operator adds the rest on the zone's page;
+  an organisation's start with every node that offers `dns`. The door that
+  saves the choice is registered on the machine's console only, so on an
+  organisation's it is a 404.
+- **`/dns` is gone, from both consoles.** What it held that was the node's
+  and not a project's — whether it answers, and the names it answers as —
+  is the DNS tab of Settings › Node, beside the switch on Capabilities. The
+  tab also lists the zones no project here holds: those another node sent,
+  and any the move left without a project. The operator can put those down
+  and do nothing else with them.
+- **The move is migration 0063.** Each zone administered here went into the
+  oldest project of the owner it had, never a project sent from elsewhere;
+  one whose owner had no project stayed in none. `tenant_id` is dropped:
+  whose a zone is follows from its project, and a second column saying it
+  is one that can disagree.
+- **A project sent from another node makes its zones there.** Refused beside
+  the `INSERT`.
+
+On the VM node, with scripting off: the move put `teresaasprilla.com` and
+its six records in `shop`, the oldest of the node's projects, and left
+`acme.example` in no project because Acme had none — both still answered.
+A zone added from a project's page answered `dig` at once; a record was
+added and removed, the delegation checked, and the zone deleted, after
+which the node answered REFUSED for it. `blog.teresaasprilla.com` from
+another project was refused. As Acme's owner: DNS in the project's sidebar
+and not in the topbar, a zone made with no choice of servers, and deleting
+the project took the zone off the air.
+
+**A zone left in no project still holds its name.** Nothing can add it, or
+a name under it, to a project until the operator deletes it from the DNS
+tab — which is what Acme would have to ask for on the VM before adding
+`acme.example` to a project of its own.
 
 ## What is left
 

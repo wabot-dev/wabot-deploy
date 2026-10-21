@@ -24,7 +24,7 @@ pub fn status_card<'a>(
                     " "
                     (t("Zones can be prepared, and none is answered until Answer DNS is turned on for this node."))
                 </p>
-                <p><a href="/node">(t("This node's settings"))</a></p>
+                <p><a href="/node/allows">(t("Turn it on in Capabilities"))</a></p>
             } @else if !has_zones || listening.is_empty() {
                 <p class="tile-detail">
                     <span class="badge badge-info"><span class="dot dot-info"></span>(t("On"))</span>

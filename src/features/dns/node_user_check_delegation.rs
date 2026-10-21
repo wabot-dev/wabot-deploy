@@ -1,25 +1,19 @@
 use wabot::sqlite::SqliteDatabase;
 
-use crate::domain::authz::node_user;
 use crate::domain::entities::account::Account;
 use crate::features::dns::check_delegation_command::CheckDelegation;
-use crate::infra::repositories::zones;
+use crate::features::dns::node_user_see_zone::theirs;
 
 pub async fn run(
     database: &SqliteDatabase,
     account: &Account,
+    project: &str,
     zone_name: &str,
 ) -> Result<(), String> {
-    if !node_user::manages_the_machine(account) {
-        return Err("only an administrator of this node can do that".into());
+    let (_, allowed, zone) = theirs(database, account, project, zone_name).await?;
+    if !allowed.may_deploy() {
+        return Err("you may look at this project, not change it".into());
     }
-    let zone = zones::find_by_name(database, zone_name)
-        .await
-        .map_err(|error| {
-            tracing::warn!(%error, "could not read a zone");
-            "the zones could not be read".to_string()
-        })?
-        .ok_or_else(|| zones::NO_SUCH_ZONE.to_string())?;
     CheckDelegation { zone: &zone }
         .run(database)
         .await

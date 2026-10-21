@@ -7,14 +7,15 @@ use crate::domain::values::capability::Capability;
 use crate::features::dns::zone_response::{
     Delivery, NameServer, RecordRow, ServerChoice, ZoneResponse,
 };
-use crate::features::dns::zones_response::ZoneOwner;
-use crate::infra::repositories::{tenants, zones};
+use crate::infra::repositories::zones;
 
 /// What a zone's page shows, whoever is looking. `offer_servers` is the
-/// operator's: an organisation is told its name servers and chooses none.
+/// machine operator's, on any zone held here: an organisation is told its
+/// name servers and chooses none, and neither does a project's deployer.
 pub struct DescribeZone<'a> {
     pub zone: &'a DnsZone,
     pub offer_servers: bool,
+    pub editable: bool,
 }
 
 impl DescribeZone<'_> {
@@ -38,19 +39,6 @@ impl DescribeZone<'_> {
             .map_err(unreadable)?
             .iter()
             .any(|served| served.zone.id == zone.id);
-        let organisations: BTreeMap<String, String> = tenants::all(database)
-            .await
-            .map_err(|error| unreadable(error.to_string()))?
-            .into_iter()
-            .map(|tenant| (tenant.id, tenant.name))
-            .collect();
-        let nodes: BTreeMap<String, String> = crate::infra::network::all(database)
-            .await
-            .map_err(|error| unreadable(error.to_string()))?
-            .into_iter()
-            .map(|node| (node.id, node.name))
-            .collect();
-
         let servers_offered = match zone.is_ours() && self.offer_servers {
             true => choices(database, &zone.name.to_string(), &servers, &published).await,
             false => Vec::new(),
@@ -76,8 +64,7 @@ impl DescribeZone<'_> {
         }
 
         Ok(ZoneResponse {
-            owner: ZoneOwner::of(zone, &organisations, &nodes),
-            editable: zone.is_ours(),
+            editable: zone.is_ours() && self.editable,
             answered_here,
             provides_dns: crate::infra::network::capability::provides(database, Capability::Dns)
                 .await,

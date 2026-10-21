@@ -1,3 +1,4 @@
+use wabot::prelude::Container;
 use wabot::sqlite::SqliteDatabase;
 
 use crate::domain::authz::node_user;
@@ -7,6 +8,7 @@ use crate::infra::repositories::tenants;
 
 pub async fn run(
     database: &SqliteDatabase,
+    container: &Container,
     deployer: &Deployer,
     account: &Account,
     organisation: &str,
@@ -33,7 +35,7 @@ pub async fn run(
             project,
             confirm: &project.slug,
         }
-        .run(database, deployer)
+        .run(database, container, deployer)
         .await?;
     }
 

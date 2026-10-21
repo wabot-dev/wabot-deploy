@@ -5,6 +5,7 @@ use wabot::sqlite::SqliteDatabase;
 
 use crate::domain::entities::dns_record::DnsRecord;
 use crate::domain::entities::dns_zone::{Delegation, DelegationStatus, DnsZone, DEFAULT_TTL};
+use crate::domain::entities::project::Project;
 use crate::domain::errors::{PlatformError, PlatformResult};
 use crate::domain::policies::zone_serial;
 use crate::domain::values::record_data::{RecordData, RecordKind};
@@ -14,7 +15,9 @@ use crate::infra::clock::now_ms;
 
 pub const ALREADY_SERVED: &str = "this node already has a zone for that domain";
 pub const OVERLAPS: &str =
-    "that domain overlaps a zone somebody else manages on this node — a name has one owner";
+    "that domain overlaps a zone outside this project — a name has one owner";
+pub const PROJECT_SENT_HERE: &str =
+    "that project is administered from the node that sent it, and its zones are made there";
 pub const HOLDS_THE_NODE: &str =
     "that domain holds this node's own name, which is the node operator's to manage";
 pub const HOLDS_AN_ORGANISATION: &str =
@@ -27,28 +30,34 @@ pub const NO_SUCH_RECORD: &str = "there is no such record";
 pub const OURS_ALREADY: &str = "this node has a zone of its own for that domain";
 pub const HELD_FOR_ANOTHER: &str = "that domain is answered here for another node already";
 
-/// What creating a zone needs to know about who is asking — which owner
-/// it will belong to — and nothing about whether they may.
+/// What creating a zone needs to know: the project it goes into, which is
+/// whose it is, and nothing about whether the asker may.
 pub struct NewZone<'a> {
     pub name: &'a ZoneName,
-    pub tenant_id: Option<&'a str>,
+    pub project: &'a Project,
     pub servers: &'a [String],
 }
 
+/// **A name has one owner, and the owner is a project.** Two projects of
+/// one organisation are still two sets of people, and a zone nested in
+/// another's would answer for names the other's people wrote.
 pub async fn create(database: &SqliteDatabase, asked: NewZone<'_>) -> PlatformResult<DnsZone> {
+    if !asked.project.is_ours() {
+        return Err(PlatformError::Refused(PROJECT_SENT_HERE.into()));
+    }
     let zones = all(database).await?;
     if zones.iter().any(|zone| zone.name == *asked.name) {
         return Err(PlatformError::Refused(ALREADY_SERVED.into()));
     }
     let overlapping = zones.iter().any(|zone| {
-        let same_owner = zone.tenant_id.as_deref() == asked.tenant_id && zone.is_ours();
+        let same_owner = zone.project_id.as_deref() == Some(asked.project.id.as_str());
         !same_owner
             && (zone.name.holds(asked.name.as_str()) || asked.name.holds(zone.name.as_str()))
     });
     if overlapping {
         return Err(PlatformError::Refused(OVERLAPS.into()));
     }
-    if let Some(tenant) = asked.tenant_id {
+    if let Some(tenant) = asked.project.tenant_id.as_deref() {
         if let Some(domain) = crate::infra::node::settings::domain(database).await {
             if asked.name.holds(&domain) {
                 return Err(PlatformError::Refused(HOLDS_THE_NODE.into()));
@@ -65,7 +74,7 @@ pub async fn create(database: &SqliteDatabase, asked: NewZone<'_>) -> PlatformRe
     let zone = DnsZone {
         id: format!("zone-{}", wabot::prelude::password::generate(12)),
         name: asked.name.clone(),
-        tenant_id: asked.tenant_id.map(str::to_string),
+        project_id: Some(asked.project.id.clone()),
         authority_id: None,
         serial: zone_serial::next(0, (now / 1000) as u64),
         default_ttl: DEFAULT_TTL,
@@ -79,13 +88,13 @@ pub async fn create(database: &SqliteDatabase, asked: NewZone<'_>) -> PlatformRe
     database
         .transaction(move |transaction| {
             transaction.execute(
-                "INSERT INTO dns_zone (\"id\", \"name\", \"tenant_id\", \"authority_id\", \"serial\", \
+                "INSERT INTO dns_zone (\"id\", \"name\", \"project_id\", \"authority_id\", \"serial\", \
                    \"default_ttl\", \"created_at\", \"updated_at\") \
                  VALUES (?1, ?2, ?3, NULL, ?4, ?5, ?6, ?6)",
                 (
                     &row.id,
                     row.name.as_str(),
-                    &row.tenant_id,
+                    &row.project_id,
                     row.serial,
                     row.default_ttl,
                     row.created_at,
@@ -108,6 +117,26 @@ pub async fn all(database: &SqliteDatabase) -> PlatformResult<Vec<DnsZone>> {
             connection
                 .prepare(&format!("{ZONE_COLUMNS} ORDER BY \"name\""))?
                 .query_map([], read_zone)?
+                .collect::<Result<Vec<_>, _>>()
+        })
+        .await?
+        .into_iter()
+        .flatten()
+        .collect())
+}
+
+pub async fn of_project(
+    database: &SqliteDatabase,
+    project_id: &str,
+) -> PlatformResult<Vec<DnsZone>> {
+    let project_id = project_id.to_string();
+    Ok(database
+        .read(move |connection| {
+            connection
+                .prepare(&format!(
+                    "{ZONE_COLUMNS} WHERE \"project_id\" = ?1 ORDER BY \"name\""
+                ))?
+                .query_map([project_id], read_zone)?
                 .collect::<Result<Vec<_>, _>>()
         })
         .await?
@@ -340,7 +369,7 @@ pub async fn replace_received(
     database
         .transaction(move |transaction| {
             transaction.execute(
-                "INSERT INTO dns_zone (\"id\", \"name\", \"tenant_id\", \"authority_id\", \"serial\", \
+                "INSERT INTO dns_zone (\"id\", \"name\", \"project_id\", \"authority_id\", \"serial\", \
                    \"default_ttl\", \"name_servers\", \"created_at\", \"updated_at\") \
                  VALUES (?1, ?2, NULL, ?3, ?4, ?5, ?6, ?7, ?7) \
                  ON CONFLICT (\"id\") DO UPDATE SET \"serial\" = ?4, \"default_ttl\" = ?5, \
@@ -438,7 +467,8 @@ pub async fn save_delegation(
     Ok(())
 }
 
-const ZONE_COLUMNS: &str = "SELECT \"id\", \"name\", \"tenant_id\", \"authority_id\", \"serial\", \
+const ZONE_COLUMNS: &str =
+    "SELECT \"id\", \"name\", \"project_id\", \"authority_id\", \"serial\", \
      \"default_ttl\", \"delegation_status\", \"delegation_note\", \"delegation_checked_at\", \
      \"created_at\", \"updated_at\", \"name_servers\" FROM dns_zone";
 
@@ -481,7 +511,7 @@ fn read_zone(row: &Row<'_>) -> wabot::sqlite::rusqlite::Result<Option<DnsZone>> 
     Ok(Some(DnsZone {
         id: row.get(0)?,
         name,
-        tenant_id: row.get(2)?,
+        project_id: row.get(2)?,
         authority_id: row.get(3)?,
         serial: row.get(4)?,
         default_ttl: row.get(5)?,
@@ -624,7 +654,8 @@ mod tests {
     #[tokio::test]
     async fn a_node_does_not_take_a_zone_for_a_domain_it_administers_itself() {
         let database = database().await;
-        zone(&database, "teresaasprilla.com", None)
+        let site = project(&database, "site", None).await;
+        zone(&database, "teresaasprilla.com", &site)
             .await
             .expect("ours");
         let name = zone_name("teresaasprilla.com");
@@ -639,17 +670,23 @@ mod tests {
     async fn zone(
         database: &SqliteDatabase,
         name: &str,
-        tenant: Option<&str>,
+        project: &Project,
     ) -> PlatformResult<DnsZone> {
         create(
             database,
             NewZone {
                 name: &zone_name(name),
-                tenant_id: tenant,
+                project,
                 servers: &["nd-self".to_string()],
             },
         )
         .await
+    }
+
+    async fn project(database: &SqliteDatabase, name: &str, tenant: Option<&str>) -> Project {
+        crate::infra::repositories::projects::create_for(database, name, tenant)
+            .await
+            .expect("project")
     }
 
     async fn tenant(database: &SqliteDatabase, id: &str, domain: Option<&str>) {
@@ -678,40 +715,74 @@ mod tests {
     #[tokio::test]
     async fn a_domain_has_one_zone_on_a_node() {
         let database = database().await;
-        zone(&database, "teresaasprilla.com", None)
+        let site = project(&database, "site", None).await;
+        let other = project(&database, "other", None).await;
+        zone(&database, "teresaasprilla.com", &site)
             .await
             .expect("first");
-        let second = zone(&database, "TeresaAsprilla.com.", None).await;
-        assert!(matches!(second, Err(PlatformError::Refused(reason)) if reason == ALREADY_SERVED));
+        for project in [&site, &other] {
+            let second = zone(&database, "TeresaAsprilla.com.", project).await;
+            assert!(
+                matches!(&second, Err(PlatformError::Refused(reason)) if reason == ALREADY_SERVED),
+                "{second:?}"
+            );
+        }
     }
 
-    /// An organisation that could add `cloud.teresaasprilla.com` under
-    /// somebody else's `teresaasprilla.com`, or the other way round, would
-    /// be answering for names it does not own.
+    /// A project that could add `cloud.teresaasprilla.com` under another's
+    /// `teresaasprilla.com`, or the other way round, would be answering for
+    /// names other people wrote — and that holds between two projects of one
+    /// organisation, and two of the operator's, as much as between strangers.
     #[tokio::test]
-    async fn one_owner_cannot_reach_into_another_owners_zone() {
+    async fn one_project_cannot_reach_into_another_projects_zone() {
         let database = database().await;
         tenant(&database, "tnt-teresa", None).await;
         tenant(&database, "tnt-other", None).await;
-        zone(&database, "teresaasprilla.com", Some("tnt-teresa"))
+        let hers = project(&database, "teresa", Some("tnt-teresa")).await;
+        zone(&database, "teresaasprilla.com", &hers)
             .await
             .expect("hers");
 
-        for owner in [Some("tnt-other"), None] {
-            let refused = zone(&database, "cloud.teresaasprilla.com", owner).await;
+        let strangers = [
+            project(&database, "teresa blog", Some("tnt-teresa")).await,
+            project(&database, "other", Some("tnt-other")).await,
+            project(&database, "operator", None).await,
+        ];
+        for stranger in &strangers {
+            let refused = zone(&database, "cloud.teresaasprilla.com", stranger).await;
             assert!(
                 matches!(&refused, Err(PlatformError::Refused(reason)) if reason == OVERLAPS),
-                "inside hers, for {owner:?}: {refused:?}"
+                "inside hers, from {}: {refused:?}",
+                stranger.slug
             );
         }
-        let refused = zone(&database, "asprilla.com", Some("tnt-other")).await;
+        let refused = zone(&database, "asprilla.com", &strangers[1]).await;
         assert!(
             refused.is_ok(),
             "a different domain with similar letters: {refused:?}"
         );
-        zone(&database, "blog.teresaasprilla.com", Some("tnt-teresa"))
+        zone(&database, "blog.teresaasprilla.com", &hers)
             .await
             .expect("her own subdomain is hers");
+    }
+
+    #[tokio::test]
+    async fn a_project_sent_from_another_node_makes_its_zones_there() {
+        let database = database().await;
+        let sent = project(&database, "sent", None).await;
+        crate::infra::repositories::projects::set_origin(&database, &sent.id, "nd-far")
+            .await
+            .expect("origin");
+        let sent = crate::infra::repositories::projects::find(&database, &sent.id)
+            .await
+            .expect("read")
+            .expect("there");
+
+        let refused = zone(&database, "teresaasprilla.com", &sent).await;
+        assert!(
+            matches!(&refused, Err(PlatformError::Refused(reason)) if reason == PROJECT_SENT_HERE),
+            "{refused:?}"
+        );
     }
 
     #[tokio::test]
@@ -720,11 +791,13 @@ mod tests {
         tenant(&database, "tnt-teresa", Some("cloud.teresaasprilla.com")).await;
         tenant(&database, "tnt-other", None).await;
 
-        let refused = zone(&database, "teresaasprilla.com", Some("tnt-other")).await;
+        let other = project(&database, "other", Some("tnt-other")).await;
+        let refused = zone(&database, "teresaasprilla.com", &other).await;
         assert!(
             matches!(refused, Err(PlatformError::Refused(reason)) if reason == HOLDS_AN_ORGANISATION)
         );
-        zone(&database, "teresaasprilla.com", Some("tnt-teresa"))
+        let hers = project(&database, "teresa", Some("tnt-teresa")).await;
+        zone(&database, "teresaasprilla.com", &hers)
             .await
             .expect("the organisation whose console it is may hold it");
     }
@@ -737,17 +810,77 @@ mod tests {
             .await
             .expect("domain");
 
-        let refused = zone(&database, "nubebasura.lat", Some("tnt-other")).await;
+        let other = project(&database, "other", Some("tnt-other")).await;
+        let refused = zone(&database, "nubebasura.lat", &other).await;
         assert!(matches!(refused, Err(PlatformError::Refused(reason)) if reason == HOLDS_THE_NODE));
-        zone(&database, "nubebasura.lat", None)
+        let operator = project(&database, "operator", None).await;
+        zone(&database, "nubebasura.lat", &operator)
             .await
             .expect("the operator's own domain is the operator's");
     }
 
     #[tokio::test]
+    async fn a_projects_zones_are_its_own_and_nobody_elses() {
+        let database = database().await;
+        let site = project(&database, "site", None).await;
+        let other = project(&database, "other", None).await;
+        zone(&database, "teresaasprilla.com", &site)
+            .await
+            .expect("site's");
+        zone(&database, "asprilla.com", &other)
+            .await
+            .expect("other's");
+
+        let listed: Vec<String> = of_project(&database, &site.id)
+            .await
+            .expect("site's zones")
+            .into_iter()
+            .map(|zone| zone.name.to_string())
+            .collect();
+        assert_eq!(listed, vec!["teresaasprilla.com"]);
+    }
+
+    /// The project's rows go with it, and the zone's with those — which is
+    /// what the foreign keys promise and a schema change could quietly break.
+    #[tokio::test]
+    async fn deleting_a_project_takes_its_zones_and_their_records() {
+        let database = database().await;
+        let site = project(&database, "site", None).await;
+        let created = zone(&database, "teresaasprilla.com", &site)
+            .await
+            .expect("zone");
+        add_record(
+            &database,
+            &created,
+            name(&created, "www"),
+            data(RecordKind::A, "209.50.48.176"),
+            300,
+        )
+        .await
+        .expect("record");
+
+        crate::infra::repositories::projects::delete(&database, &site.id)
+            .await
+            .expect("delete");
+        assert!(all(&database).await.expect("zones").is_empty());
+        let left: i64 = database
+            .read(|connection| {
+                connection.query_row(
+                    "SELECT (SELECT COUNT(*) FROM dns_record) + (SELECT COUNT(*) FROM dns_zone_server)",
+                    [],
+                    |row| row.get(0),
+                )
+            })
+            .await
+            .expect("count");
+        assert_eq!(left, 0);
+    }
+
+    #[tokio::test]
     async fn a_cname_stands_alone_at_its_name() {
         let database = database().await;
-        let zone = zone(&database, "teresaasprilla.com", None)
+        let site = project(&database, "site", None).await;
+        let zone = zone(&database, "teresaasprilla.com", &site)
             .await
             .expect("zone");
 
@@ -799,7 +932,8 @@ mod tests {
     #[tokio::test]
     async fn every_change_moves_the_serial_and_reads_back_whole() {
         let database = database().await;
-        let created = zone(&database, "teresaasprilla.com", None)
+        let site = project(&database, "site", None).await;
+        let created = zone(&database, "teresaasprilla.com", &site)
             .await
             .expect("zone");
 

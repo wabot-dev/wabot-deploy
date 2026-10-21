@@ -5,6 +5,7 @@ use crate::domain::authz::node_user;
 use crate::domain::entities::account::Account;
 use crate::domain::values::capability::Capability;
 use crate::features::dns::add_record_command::SENT_FROM_ELSEWHERE;
+use crate::features::dns::node_user_see_zone::theirs;
 use crate::features::dns::set_zone_servers_request::SetZoneServersRequest;
 use crate::infra::repositories::zones;
 
@@ -25,10 +26,7 @@ pub async fn run(
         tracing::warn!(%error, "could not read a zone");
         "the zones could not be read".to_string()
     };
-    let zone = zones::find_by_name(database, &asked.zone)
-        .await
-        .map_err(|error| unreadable(error.to_string()))?
-        .ok_or_else(|| zones::NO_SUCH_ZONE.to_string())?;
+    let (_, _, zone) = theirs(database, account, &asked.project, &asked.zone).await?;
     if !zone.is_ours() {
         return Err(SENT_FROM_ELSEWHERE.into());
     }

@@ -1,13 +1,10 @@
 use serde::Serialize;
 
-use crate::features::dns::zones_response::ZoneOwner;
-
 #[derive(Debug, Clone, Serialize)]
 pub struct ZoneResponse {
     pub id: String,
     pub name: String,
     pub serial: u32,
-    pub owner: ZoneOwner,
     pub editable: bool,
     pub answered_here: bool,
     pub provides_dns: bool,

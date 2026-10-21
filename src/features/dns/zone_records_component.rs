@@ -79,8 +79,6 @@ pub fn records_card<'a>(here: &'a str, zone: &'a ZoneResponse) -> impl Renderabl
                         <button type="submit">(t("Add record"))</button>
                     </div>
                 </form>
-            } @else {
-                <p class="field-hint">(t("Sent by another node: it is changed there, and this node only answers for it."))</p>
             }
         </section>
     }

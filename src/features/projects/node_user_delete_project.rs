@@ -1,3 +1,4 @@
+use wabot::prelude::Container;
 use wabot::sqlite::SqliteDatabase;
 
 use crate::domain::authz::node_user;
@@ -9,6 +10,7 @@ use crate::infra::deploy::Deployer;
 
 pub async fn run(
     database: &SqliteDatabase,
+    container: &Container,
     deployer: &Deployer,
     account: &Account,
     project: &Project,
@@ -24,6 +26,6 @@ pub async fn run(
     }
 
     DeleteProject { project, confirm }
-        .run(database, deployer)
+        .run(database, container, deployer)
         .await
 }

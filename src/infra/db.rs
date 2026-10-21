@@ -248,6 +248,10 @@ fn migrations() -> Vec<Migration> {
             "0062_node_name_servers",
             include_str!("../../migrations/0062_node_name_servers.sql"),
         ),
+        Migration::new(
+            "0063_zone_in_a_project",
+            include_str!("../../migrations/0063_zone_in_a_project.sql"),
+        ),
     ]
 }
 
@@ -359,6 +363,79 @@ mod tests {
             migrate(&database).await.expect("migrate").is_empty(),
             "a second run has nothing to do"
         );
+    }
+
+    /// What a node that answered DNS before zones had projects finds after
+    /// the update: each zone in the oldest project of the owner it had, a
+    /// project sent from elsewhere never chosen, and nothing lost on the way.
+    #[tokio::test]
+    async fn a_zone_moves_into_the_oldest_project_of_whoever_owned_it() {
+        let database = SqliteDatabase::in_memory().expect("open");
+        let before: Vec<Migration> = migrations()
+            .into_iter()
+            .take_while(|migration| migration.id != "0063_zone_in_a_project")
+            .collect();
+        MigrationRunner::new(database.clone())
+            .with_migrations(before)
+            .up()
+            .await
+            .expect("the schema as 0.27.0 left it");
+        database
+            .write(|connection| {
+                connection.execute_batch(
+                    "INSERT INTO tenant (id, name, slug, created_at) VALUES
+                       ('tnt-acme', 'Acme', 'acme', 1), ('tnt-globex', 'Globex', 'globex', 1);
+                     INSERT INTO project (id, name, slug, created_at, origin_node_id, tenant_id) VALUES
+                       ('prj-sent', 'Sent', 'sent', 1, 'nd-far', NULL),
+                       ('prj-newer', 'Newer', 'newer', 3, NULL, NULL),
+                       ('prj-older', 'Older', 'older', 2, NULL, NULL),
+                       ('prj-acme', 'Acme site', 'acme-site', 4, NULL, 'tnt-acme');
+                     INSERT INTO dns_zone (id, name, tenant_id, authority_id, serial, created_at, updated_at) VALUES
+                       ('zone-node', 'teresaasprilla.com', NULL, NULL, 1, 1, 1),
+                       ('zone-acme', 'acme.example', 'tnt-acme', NULL, 1, 1, 1),
+                       ('zone-globex', 'globex.example', 'tnt-globex', NULL, 1, 1, 1),
+                       ('zone-received', 'far.example', NULL, 'nd-far', 1, 1, 1);
+                     INSERT INTO dns_record (id, zone_id, name, kind, value, ttl, created_at) VALUES
+                       ('rec-1', 'zone-node', '@', 'A', '209.50.48.176', 300, 1);",
+                )?;
+                Ok(())
+            })
+            .await
+            .expect("zones as 0.27.0 kept them");
+
+        migrate(&database).await.expect("0063");
+
+        let placed: Vec<(String, Option<String>)> = database
+            .read(|connection| {
+                connection
+                    .prepare("SELECT id, project_id FROM dns_zone ORDER BY id")?
+                    .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+                    .collect()
+            })
+            .await
+            .expect("zones");
+        let project = |zone: &str| {
+            placed
+                .iter()
+                .find(|(id, _)| id == zone)
+                .and_then(|(_, project)| project.clone())
+        };
+        assert_eq!(project("zone-node").as_deref(), Some("prj-older"));
+        assert_eq!(project("zone-acme").as_deref(), Some("prj-acme"));
+        assert_eq!(project("zone-globex"), None, "globex has no project");
+        assert_eq!(
+            project("zone-received"),
+            None,
+            "a received zone is no project's here"
+        );
+
+        let records: i64 = database
+            .read(|connection| {
+                connection.query_row("SELECT COUNT(*) FROM dns_record", [], |row| row.get(0))
+            })
+            .await
+            .expect("records");
+        assert_eq!(records, 1, "the records stayed with their zone");
     }
 
     /// The path `install` takes: a real file, created along with the

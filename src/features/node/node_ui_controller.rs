@@ -164,6 +164,23 @@ impl NodeUiController {
                     owned: projects.iter().filter(|project| project.is_ours()).count(),
                 }
             }
+            NodeTab::Dns => {
+                let table = self
+                    .state
+                    .container
+                    .try_resolve::<crate::infra::dns::Zones>()
+                    .ok();
+                match crate::features::dns::node_user_see_dns::run(
+                    &self.state.database,
+                    table.as_deref(),
+                    &account,
+                )
+                .await
+                {
+                    Ok(dns) => Panel::Dns { dns },
+                    Err(_) => return Ok(Redirect::found("/").into()),
+                }
+            }
             NodeTab::Resources => Panel::Resources {
                 // The reading, not a stream: this page does not host the
                 // meters.

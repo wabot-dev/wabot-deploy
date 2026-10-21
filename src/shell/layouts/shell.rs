@@ -96,10 +96,6 @@ pub enum Area {
     /// were the same place, and adding a node was a trip between two
     /// pages that had the same name.
     Network,
-    /// The domains this node answers DNS for. Its own word rather than an
-    /// item in Settings: a zone is not how this machine is set up, it is
-    /// what the world is told about somebody's domain.
-    Dns,
     /// Everything editable about this installation: this machine, the
     /// people, the updates. One word in the header instead of three,
     /// because they are one question — "how is this set up" — and none of
@@ -175,6 +171,9 @@ fn collection(segment: &str) -> Option<String> {
         "node" => t("Node").to_string(),
         "people" => t("People").to_string(),
         "updates" => t("Updates").to_string(),
+        // A project's DNS is a page, so its crumb links there: the zones
+        // are what a zone's page came out of.
+        "zones" => t("DNS").to_string(),
         _ => return None,
     })
 }
@@ -321,7 +320,6 @@ impl Frame {
         let mut trail = vec![match self.area {
             Area::Projects => (t("Projects").to_string(), Some("/".to_string())),
             Area::Network => (t("Network").to_string(), Some("/network".to_string())),
-            Area::Dns => (t("DNS").to_string(), Some("/dns".to_string())),
             Area::Settings => (t("Settings").to_string(), None),
         }];
 
@@ -417,12 +415,6 @@ impl Frame {
                     @if self.admin {
                         <a href="/network"
                            class=(current(self.area == Area::Network))>(t("Network"))</a>
-                    }
-                    // An organisation's administrator has DNS too, for its
-                    // own domains: the same word and a different page.
-                    @if self.scope_admin {
-                        <a href="/dns"
-                           class=(current(self.area == Area::Dns))>(t("DNS"))</a>
                     }
                     // The people and what this runs on belong to whoever
                     // runs the node. A member has projects and nothing
@@ -644,11 +636,16 @@ impl Frame {
     fn project_nav(&self, slug: &str) -> impl Renderable + '_ {
         let base = format!("/projects/{slug}");
         let settings = format!("{base}/settings");
+        let zones = format!("{base}/zones");
 
         rsx! {
             <nav>
                 <a href=(&base) class=(current(self.path == base))>(t("Overview"))</a>
-                // Two items, and both are places. "Create service" was
+                // A project's domains are a place of their own, like its
+                // settings, and unlike them readable by anybody in it.
+                <a href=(&zones)
+                   class=(current(self.path.starts_with(&zones)))>(t("DNS"))</a>
+                // Places, and nothing else. "Create service" was
                 // neither — it was a button wearing a nav item's
                 // clothes, sitting in the list of pages you can be *on*
                 // while never being one you stay on. It belongs beside

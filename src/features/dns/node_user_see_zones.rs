@@ -1,86 +1,30 @@
-use std::collections::BTreeMap;
-
 use wabot::sqlite::SqliteDatabase;
 
 use crate::domain::authz::node_user;
 use crate::domain::entities::account::Account;
-use crate::domain::values::capability::Capability;
-use crate::features::dns::zones_response::{OwnName, ZoneOwner, ZoneRow, ZonesResponse};
-use crate::infra::dns::Zones;
-use crate::infra::repositories::{tenants, zones};
+use crate::features::dns::describe_zones_command::DescribeZones;
+use crate::features::dns::zones_response::ZonesResponse;
+use crate::infra::repositories::access;
 
 pub async fn run(
     database: &SqliteDatabase,
-    table: Option<&Zones>,
     account: &Account,
+    project: &str,
 ) -> Result<ZonesResponse, String> {
-    if !node_user::manages_the_machine(account) {
-        return Err("only an administrator of this node can do that".into());
+    if !node_user::belongs_here(account) {
+        return Err("that is not this console's to see".into());
     }
-    let unreadable = |error: String| {
-        tracing::warn!(%error, "could not read the zones");
-        "the zones could not be read".to_string()
-    };
-
-    let all = zones::all(database)
+    let (project, allowed) = access::find_project(database, account, project)
         .await
-        .map_err(|error| unreadable(error.to_string()))?;
-    let served: Vec<String> = crate::infra::dns::what_this_node_serves(database)
-        .await
-        .map_err(unreadable)?
-        .into_iter()
-        .map(|served| served.zone.id)
-        .collect();
-    let organisations: BTreeMap<String, String> = tenants::all(database)
-        .await
-        .map_err(|error| unreadable(error.to_string()))?
-        .into_iter()
-        .map(|tenant| (tenant.id, tenant.name))
-        .collect();
-    let nodes: BTreeMap<String, String> = crate::infra::network::all(database)
-        .await
-        .map_err(|error| unreadable(error.to_string()))?
-        .into_iter()
-        .map(|node| (node.id, node.name))
-        .collect();
-
-    let mut rows = Vec::new();
-    for zone in all {
-        let records = zones::records(database, &zone)
-            .await
-            .map(|records| records.len())
-            .unwrap_or_default();
-        rows.push(ZoneRow {
-            owner: ZoneOwner::of(&zone, &organisations, &nodes),
-            answered_here: served.contains(&zone.id),
-            id: zone.id,
-            name: zone.name.to_string(),
-            records,
-        });
+        .map_err(|error| {
+            tracing::warn!(%error, "could not read a project");
+            "the zones could not be read".to_string()
+        })?
+        .ok_or_else(|| "no such project".to_string())?;
+    DescribeZones {
+        project: &project,
+        editable: allowed.may_deploy() && project.is_ours(),
     }
-
-    Ok(ZonesResponse {
-        zones: rows,
-        provides_dns: crate::infra::network::capability::provides(database, Capability::Dns).await,
-        addressed: crate::infra::node::settings::domain(database)
-            .await
-            .is_some(),
-        listening: table
-            .map(|table| table.listening().to_vec())
-            .unwrap_or_default(),
-        declared: crate::infra::dns::names::declared(database).await,
-        answers_as: crate::infra::dns::names::where_each_points(database)
-            .await
-            .into_iter()
-            .map(|pointing| OwnName {
-                addresses: pointing
-                    .addresses
-                    .iter()
-                    .map(|address| address.to_string())
-                    .collect(),
-                here: pointing.here,
-                name: pointing.name,
-            })
-            .collect(),
-    })
+    .run(database)
+    .await
 }

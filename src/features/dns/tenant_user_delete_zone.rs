@@ -9,8 +9,12 @@ pub async fn run(
     database: &SqliteDatabase,
     container: &Container,
     account: &Account,
+    project: &str,
     zone_name: &str,
 ) -> Result<(), String> {
-    let zone = theirs(database, account, zone_name).await?;
+    let (_, allowed, zone) = theirs(database, account, project, zone_name).await?;
+    if !allowed.may_deploy() {
+        return Err("you may look at this project, not change it".into());
+    }
     DeleteZone { zone: &zone }.run(database, container).await
 }

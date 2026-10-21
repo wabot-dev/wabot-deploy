@@ -2,6 +2,8 @@ use hypertext::prelude::*;
 
 use crate::domain::values::capability::Capability;
 use crate::features::backups::node_backup_component;
+use crate::features::dns::dns_response::DnsResponse;
+use crate::features::dns::{dns_status_component, held_zones_component, own_names_component};
 use crate::features::node::texts::t;
 use crate::infra::backup::plan::{Attempt, Plan};
 use crate::infra::backup::s3::Credentials;
@@ -12,11 +14,12 @@ use crate::shell::components::node_certificate::{CertificateCells, CertificateSt
 use crate::shell::components::{node_capabilities, node_certificate, node_settings_cards};
 use crate::shell::layouts::layout;
 
-/// The four things this machine can be told about itself.
+/// The five things this machine can be told about itself.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NodeTab {
     Domain,
     Allows,
+    Dns,
     Resources,
     Backup,
 }
@@ -26,6 +29,7 @@ impl NodeTab {
         match self {
             NodeTab::Domain => "domain",
             NodeTab::Allows => "allows",
+            NodeTab::Dns => "dns",
             NodeTab::Resources => "resources",
             NodeTab::Backup => "backup",
         }
@@ -38,15 +42,19 @@ impl NodeTab {
             // says so.
             NodeTab::Domain => t("Domain"),
             NodeTab::Allows => t("Capabilities"),
+            NodeTab::Dns => t("DNS"),
             NodeTab::Resources => t("Resources"),
             NodeTab::Backup => t("Backup"),
         }
     }
 
-    pub fn all() -> [NodeTab; 4] {
+    pub fn all() -> [NodeTab; 5] {
         [
             NodeTab::Domain,
             NodeTab::Allows,
+            // Beside the switch that turns it on: what this node answers
+            // as, and the zones it holds that are no project's here.
+            NodeTab::Dns,
             NodeTab::Resources,
             // Last, because it is the one somebody sets up once and then
             // comes back to only to read: what the other three answer is
@@ -99,6 +107,9 @@ pub enum Panel {
         /// sentence after.
         owned: usize,
     },
+    Dns {
+        dns: DnsResponse,
+    },
     Resources {
         snapshot: Snapshot,
         reserves: (Option<u64>, Option<u32>),
@@ -138,7 +149,7 @@ pub fn render<'a>(page: &'a NodeSettings<'a>) -> impl Renderable + 'a {
         (layout::style_tag())
         <h1>(t("Node"))</h1>
 
-        // No tagline. The tabs say what is here in four words, and a
+        // No tagline. The tabs say what is here a word each, and a
         // sentence between the title and them was a line Jorge read once
         // and then had to scroll past on every visit — asked for and
         // removed.
@@ -156,7 +167,11 @@ pub fn render<'a>(page: &'a NodeSettings<'a>) -> impl Renderable + 'a {
         </nav>
 
         @if let Some(message) = page.error {
-            (layout::error_note(message))
+            @if page.tab == NodeTab::Dns {
+                (layout::error_note(crate::features::dns::texts::word(message)))
+            } @else {
+                (layout::error_note(message))
+            }
         }
         @match &page.panel {
             Panel::Domain { self_id, cells, state, policy, domain, checked } => {
@@ -169,6 +184,12 @@ pub fn render<'a>(page: &'a NodeSettings<'a>) -> impl Renderable + 'a {
             }
             Panel::Allows { provides, reachable, owns, owned } => {
                 (node_capabilities::capabilities_card(provides, *reachable, *owns, *owned))
+            }
+            Panel::Dns { dns } => {
+                (dns_status_component::status_card(
+                    dns.provides_dns, dns.addressed, dns.answering_any, &dns.listening))
+                (own_names_component::names_card(dns))
+                (held_zones_component::held_card(dns))
             }
             Panel::Resources { snapshot, reserves, cores } => {
                 (node_settings_cards::reserves_card(snapshot, *reserves, *cores))

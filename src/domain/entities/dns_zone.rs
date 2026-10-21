@@ -8,8 +8,9 @@ pub const DEFAULT_TTL: u32 = 300;
 pub struct DnsZone {
     pub id: String,
     pub name: ZoneName,
-    /// `None` is the node operator's.
-    pub tenant_id: Option<String>,
+    /// `None` on a zone sent here, and on one administered here whose owner
+    /// had no project when zones moved into projects (migration 0063).
+    pub project_id: Option<String>,
     /// `None` is administered here; otherwise the node that sent it.
     pub authority_id: Option<String>,
     pub serial: u32,

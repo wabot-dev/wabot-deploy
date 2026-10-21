@@ -7,9 +7,13 @@ use crate::features::dns::tenant_user_see_zone::theirs;
 pub async fn run(
     database: &SqliteDatabase,
     account: &Account,
+    project: &str,
     zone_name: &str,
 ) -> Result<(), String> {
-    let zone = theirs(database, account, zone_name).await?;
+    let (_, allowed, zone) = theirs(database, account, project, zone_name).await?;
+    if !allowed.may_deploy() {
+        return Err("you may look at this project, not change it".into());
+    }
     CheckDelegation { zone: &zone }
         .run(database)
         .await

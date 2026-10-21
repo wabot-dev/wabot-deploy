@@ -247,11 +247,14 @@ mod tests {
             .await
             .expect("self");
         let name = ZoneName::parse("teresaasprilla.com").expect("zone");
+        let site = crate::infra::repositories::projects::create(&database, "site")
+            .await
+            .expect("project");
         let zone = zones::create(
             &database,
             zones::NewZone {
                 name: &name,
-                tenant_id: None,
+                project: &site,
                 servers: &[me.id],
             },
         )
