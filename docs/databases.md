@@ -108,9 +108,39 @@ half of the preset — the engine's arithmetic — is Postgres's.
 **The image comes from Docker Hub.** `docker.io/library/postgres:<major>-alpine`,
 written out in full because containerd does not do Docker's
 familiar-name normalisation: `postgres:17` is a reference to a registry
-called `postgres`, and only the fully-qualified form resolves. The
-operator can point it somewhere else — a mirror, a private copy — and
-the default is what appears in the field.
+called `postgres`, and only the fully-qualified form resolves.
+
+**Or from wherever somebody says, at their own risk.** "Use my own
+image" on the form takes a reference instead, for the operator and for
+a tenant alike. It exists for extensions the official image does not
+carry — `docker.io/pgvector/pgvector:pg17-trixie` is pgvector, for
+retrieval — and the form says, in the warning colour, that nothing about
+it is guaranteed. Four things hold it together:
+
+- **The version is still chosen.** It is what `initdb_arguments` reads,
+  what the page says and what a restore must match, and an image cannot
+  be asked for it before it has been pulled.
+- **The image is asked before anything starts from it.** An image built
+  on the official one declares its major (`PG_MAJOR=17`, `MYSQL_MAJOR=8.4`
+  — read off `postgres:17-alpine`, `pgvector/pgvector`, Timescale's
+  Alpine image and `mysql:8.4`). One that declares another is refused
+  with a sentence on the copy's row, before the certificate step's
+  `chown` container — because 16 under a row that says 17 initialises,
+  starts and answers, and nothing else would ever notice. One that
+  declares nothing is let through.
+- **A restore takes the original's image**, not the default for its
+  version. It used to derive it, which was right while there was one
+  image per version: a pgvector copy would have been unpacked by
+  Alpine's user 70 into files Debian's 999 wrote, under another C
+  library's collation.
+- **The image is as fixed as the version.** Nothing edits it, for the
+  same reason: moving a data directory between Alpine and Debian is a
+  dump and a load, not a change of tag.
+
+What it does not do: a standby on another node is sent no credential,
+so an image only a private registry serves will not start there; and
+a backup does not copy a public image, so a restore depends on its
+publisher still serving the tag.
 
 **Alpine, for the size.** ~80 MB against ~150, on a node where
 `deploy.sh` already takes 25 minutes. The cost is musl's collation: a

@@ -44,6 +44,9 @@ pub struct Preparation {
     /// from here rather than recomputed by the caller: it is one of the
     /// arguments above, and two places deriving it is how they differ.
     pub max_connections: u32,
+    /// The version the row was made as, which the image is asked to
+    /// agree with before anything is started from it.
+    pub version: String,
 }
 
 /// What this copy is, as the rows describe it.
@@ -188,6 +191,7 @@ fn prepare_mysql(plan: &Plan<'_>) -> std::io::Result<Preparation> {
         // loads the dump itself, from the script written above.
         restoring: None,
         max_connections: mysql::tuning(plan.limit()).max_connections,
+        version: plan.database.version.clone(),
     })
 }
 
@@ -362,6 +366,7 @@ fn prepare_postgres(plan: &Plan<'_>) -> std::io::Result<Preparation> {
         primary_endpoint: plan.primary.clone(),
         restoring: plan.restoring.clone(),
         max_connections: postgres::tuning(plan.limit()).max_connections,
+        version: plan.database.version.clone(),
     })
 }
 

@@ -38,6 +38,7 @@ pub async fn run(
         engine: crate::domain::entities::database::Engine::parse(&asked.engine),
         version: &asked.version,
         memory_limit,
+        image: asked.image.as_deref(),
     }
     .run(database)
     .await

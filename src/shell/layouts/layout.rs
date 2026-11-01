@@ -369,6 +369,14 @@ button[data-wabot-state="failed"]:not(.btn-icon)::after {
   font-size: var(--fs-sm);
   margin: 0 0 var(--sp-4);
 }
+.form-warning {
+  background: rgb(var(--c-warning-bg));
+  color: rgb(var(--c-warning-fg));
+  padding: var(--sp-3) var(--sp-4);
+  border-radius: var(--r-md);
+  font-size: var(--fs-sm);
+  margin: 0;
+}
 
 .grid {
   display: grid;

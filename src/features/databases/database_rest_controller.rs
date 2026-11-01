@@ -288,6 +288,10 @@ impl DatabaseRestController {
             engine: engine.to_string(),
             version: field(&form, &format!("{engine}_version")).to_string(),
             memory: field(&form, "memory").to_string(),
+            image: match field(&form, "custom_image") {
+                "" => None,
+                _ => Some(field(&form, "image").to_string()),
+            },
         };
         if let Err(reason) = asked.validate() {
             return Ok(back_with_error(&here, &reason.to_string()));
@@ -466,6 +470,7 @@ mod tests {
             engine: crate::domain::entities::database::Engine::Postgres,
             version: "17",
             memory_limit: 256 * 1024 * 1024,
+            image: None,
         }
         .run(&database)
         .await
@@ -558,6 +563,7 @@ mod tests {
             engine: crate::domain::entities::database::Engine::Postgres,
             version: "17",
             memory_limit: 256 * 1024 * 1024,
+            image: None,
         }
         .run(&database)
         .await
@@ -643,6 +649,7 @@ mod tests {
             engine: crate::domain::entities::database::Engine::Postgres,
             version: "17",
             memory_limit: 256 * 1024 * 1024,
+            image: None,
         }
         .run(&database)
         .await
@@ -780,6 +787,114 @@ mod tests {
         assert_eq!(service.image, "docker.io/library/mysql:8.4");
     }
 
+    #[tokio::test]
+    async fn a_ticked_box_makes_the_database_from_the_image_typed() {
+        let console = Console::new().await;
+        let cookie = console.signed_in().await;
+        project(&console).await;
+
+        let body = console
+            .harness
+            .get("/projects/shared/databases/new")
+            .header("cookie", &cookie)
+            .send()
+            .await
+            .body;
+        assert!(body.contains("name=\"custom_image\""), "{body}");
+        assert!(body.contains("class=\"form-warning\""), "{body}");
+
+        console
+            .harness
+            .post("/projects/shared/databases")
+            .header("cookie", &cookie)
+            .form(&[
+                ("name", "Vectors"),
+                ("postgres_version", "17"),
+                ("memory", &(256 * 1024 * 1024).to_string()),
+                ("custom_image", "1"),
+                ("image", " docker.io/pgvector/pgvector:pg17-trixie "),
+            ])
+            .send()
+            .await
+            .assert_status(StatusCode::SEE_OTHER);
+
+        let service = services::all(&console.database, None)
+            .await
+            .expect("services")
+            .pop()
+            .expect("one");
+        assert_eq!(service.image, "docker.io/pgvector/pgvector:pg17-trixie");
+        assert_eq!(
+            service.kind,
+            crate::domain::entities::service::Kind::Postgres
+        );
+    }
+
+    /// With scripting off the field is on the page whether the box is
+    /// ticked or not, so what is typed in it says nothing by itself.
+    #[tokio::test]
+    async fn an_image_left_in_the_field_with_the_box_unticked_is_not_used() {
+        let console = Console::new().await;
+        let cookie = console.signed_in().await;
+        project(&console).await;
+
+        console
+            .harness
+            .post("/projects/shared/databases")
+            .header("cookie", &cookie)
+            .form(&[
+                ("name", "Orders"),
+                ("postgres_version", "17"),
+                ("memory", &(256 * 1024 * 1024).to_string()),
+                ("image", "docker.io/pgvector/pgvector:pg17-trixie"),
+            ])
+            .send()
+            .await
+            .assert_status(StatusCode::SEE_OTHER);
+
+        let service = services::all(&console.database, None)
+            .await
+            .expect("services")
+            .pop()
+            .expect("one");
+        assert_eq!(service.image, "docker.io/library/postgres:17-alpine");
+    }
+
+    #[tokio::test]
+    async fn a_ticked_box_with_no_image_comes_back_to_the_form() {
+        let console = Console::new().await;
+        let cookie = console.signed_in().await;
+        project(&console).await;
+
+        let response = console
+            .harness
+            .post("/projects/shared/databases")
+            .header("cookie", &cookie)
+            .form(&[
+                ("name", "Vectors"),
+                ("postgres_version", "17"),
+                ("memory", &(256 * 1024 * 1024).to_string()),
+                ("custom_image", "1"),
+                ("image", ""),
+            ])
+            .send()
+            .await;
+        response.assert_status(StatusCode::SEE_OTHER);
+        let location = response.header("location").expect("somewhere");
+        assert!(
+            location.starts_with("/projects/shared/databases/new"),
+            "{location}"
+        );
+
+        assert!(
+            services::all(&console.database, None)
+                .await
+                .expect("services")
+                .is_empty(),
+            "a refusal left a service behind"
+        );
+    }
+
     /// A size nothing offers would be a page showing one number and a
     /// container running another.
     #[tokio::test]
@@ -824,6 +939,7 @@ mod tests {
             engine: crate::domain::entities::database::Engine::Postgres,
             version: "17",
             memory_limit: 128 * 1024 * 1024,
+            image: None,
         }
         .run(&console.database)
         .await
@@ -882,6 +998,7 @@ mod tests {
             engine: crate::domain::entities::database::Engine::Postgres,
             version: "17",
             memory_limit: 256 * 1024 * 1024,
+            image: None,
         }
         .run(&console.database)
         .await
@@ -1030,6 +1147,7 @@ mod tests {
             engine: crate::domain::entities::database::Engine::Postgres,
             version: "17",
             memory_limit: 256 * 1024 * 1024,
+            image: None,
         }
         .run(&console.database)
         .await
@@ -1165,6 +1283,7 @@ mod tests {
             engine: crate::domain::entities::database::Engine::Postgres,
             version: "17",
             memory_limit: 256 * 1024 * 1024,
+            image: None,
         }
         .run(&console.database)
         .await

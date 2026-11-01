@@ -82,6 +82,29 @@ impl Engine {
         }
     }
 
+    /// The version an image says it runs, when that is not the one this
+    /// database was made as.
+    ///
+    /// Asked because nothing else would notice: PostgreSQL 16 under a row
+    /// that says 17 initialises, starts and answers, and from then on the
+    /// page, a restore and every upgrade reason about the wrong engine. An
+    /// image that declares nothing is let through — it is somebody's own,
+    /// and the form already said a custom image is theirs to answer for.
+    pub fn other_version_in(self, image_env: &[String], version: &str) -> Option<String> {
+        let variable = format!(
+            "{}=",
+            match self {
+                Engine::Mysql => mysql::MAJOR_VARIABLE,
+                Engine::Postgres | Engine::Unknown => postgres::MAJOR_VARIABLE,
+            }
+        );
+        image_env
+            .iter()
+            .find_map(|line| line.strip_prefix(variable.as_str()))
+            .filter(|declared| *declared != version)
+            .map(str::to_string)
+    }
+
     /// The smallest ceiling a new database of this engine is made in.
     pub fn floor(self) -> u64 {
         match self {
@@ -247,5 +270,35 @@ mod tests {
             );
             assert!(!identifier.starts_with(|c: char| c.is_ascii_digit()));
         }
+    }
+
+    #[test]
+    fn an_image_running_another_version_is_named_and_one_saying_nothing_is_not() {
+        let env = |line: &str| vec!["PATH=/usr/local/bin".to_string(), line.to_string()];
+
+        assert_eq!(
+            Engine::Postgres.other_version_in(&env("PG_MAJOR=16"), "17"),
+            Some("16".to_string())
+        );
+        assert_eq!(
+            Engine::Postgres.other_version_in(&env("PG_MAJOR=17"), "17"),
+            None
+        );
+        assert_eq!(
+            Engine::Mysql.other_version_in(&env("MYSQL_MAJOR=8.4"), "8.4"),
+            None
+        );
+        assert_eq!(
+            Engine::Mysql.other_version_in(&env("MYSQL_MAJOR=9.1"), "8.4"),
+            Some("9.1".to_string())
+        );
+        assert_eq!(
+            Engine::Postgres.other_version_in(&env("PG_VERSION=17.11"), "17"),
+            None
+        );
+        assert_eq!(
+            Engine::Postgres.other_version_in(&env("MYSQL_MAJOR=8.4"), "17"),
+            None
+        );
     }
 }

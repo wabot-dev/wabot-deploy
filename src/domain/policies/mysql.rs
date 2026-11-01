@@ -13,6 +13,10 @@ pub const VERSIONS: [&str; 1] = ["8.4"];
 
 pub const DEFAULT_VERSION: &str = "8.4";
 
+/// Read off `mysql:8.4`, which says `MYSQL_MAJOR=8.4` — the version as
+/// [`VERSIONS`] spells it, not the full one beside it.
+pub const MAJOR_VARIABLE: &str = "MYSQL_MAJOR";
+
 pub const PORT: u16 = 3306;
 
 pub const DATA_MOUNT: &str = "/var/lib/mysql";

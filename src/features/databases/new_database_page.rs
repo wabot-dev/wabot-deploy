@@ -65,6 +65,27 @@ pub fn render<'a>(page: &'a NewDatabase<'a>) -> impl Renderable + 'a {
                  is fixed once the database exists: changing it is a data migration, not \
                  an image change."))</p>
 
+            <label class="check">
+                <input type="checkbox" name="custom_image" value="1">
+                (t("Use my own image"))
+            </label>
+            <div class="stack-sm" data-when="custom_image">
+                <p class="form-warning">(t("A custom image is not guaranteed to work. The node \
+                     starts it exactly as it starts its own, so it has to be built on the \
+                     engine's official image, at the version chosen above, with the same \
+                     entrypoint and the same user. Anything else may refuse to start, or start \
+                     and fail later, and keeping it up to date is up to whoever publishes it."))</p>
+                <label for="image">(t("Image reference"))</label>
+                <input id="image" name="image" type="text" autocomplete="off" class="mono"
+                       placeholder="docker.io/pgvector/pgvector:pg17-trixie"
+                       data-required-when="custom_image">
+                <p class="field-hint">(t("With its registry written out. For vector search, "))
+                    <code>"docker.io/pgvector/pgvector:pg17-trixie"</code>
+                    (t(" is PostgreSQL 17 with pgvector. The node checks the version the image \
+                     says it runs before starting it, and the image stays fixed once the \
+                     database exists."))</p>
+            </div>
+
             <label for="memory">(t("Memory"))</label>
             <select id="memory" name="memory">
                 @for rung in presets::LADDER.into_iter().filter(|rung| *rung >= smallest) {

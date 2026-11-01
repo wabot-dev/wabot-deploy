@@ -148,6 +148,7 @@ mod tests {
             engine: crate::domain::entities::database::Engine::Postgres,
             version: "17",
             memory_limit: 128 * 1024 * 1024,
+            image: None,
         }
         .run(&database)
         .await
@@ -198,6 +199,7 @@ mod tests {
             engine: Engine::Mysql,
             version: "8.4",
             memory_limit: 256 * 1024 * 1024,
+            image: None,
         }
         .run(&database)
         .await
@@ -237,6 +239,7 @@ mod tests {
                 engine,
                 version,
                 memory_limit,
+                image: None,
             };
             let error = ask(refused).run(&database).await.expect_err("refused");
             assert!(error.to_string().contains("or more"), "{error}");
@@ -257,6 +260,7 @@ mod tests {
             engine: Engine::Unknown,
             version: "17",
             memory_limit: 256 * 1024 * 1024,
+            image: None,
         }
         .run(&database)
         .await
@@ -276,6 +280,7 @@ mod tests {
             engine: crate::domain::entities::database::Engine::Postgres,
             version: "17",
             memory_limit: 128 * 1024 * 1024,
+            image: None,
         }
         .run(&database)
         .await
@@ -300,6 +305,7 @@ mod tests {
             engine: crate::domain::entities::database::Engine::Postgres,
             version: "16",
             memory_limit: 256 * 1024 * 1024,
+            image: None,
         }
         .run(&database)
         .await
@@ -349,6 +355,7 @@ mod tests {
             engine: crate::domain::entities::database::Engine::Postgres,
             version: "17",
             memory_limit: 256 * 1024 * 1024,
+            image: None,
         }
         .run(&database)
         .await
@@ -428,6 +435,7 @@ mod tests {
             engine: crate::domain::entities::database::Engine::Postgres,
             version: "17",
             memory_limit: 256 * 1024 * 1024,
+            image: None,
         }
         .run(&database)
         .await
@@ -489,6 +497,7 @@ mod tests {
             engine: crate::domain::entities::database::Engine::Postgres,
             version: "9.6",
             memory_limit: 128 * 1024 * 1024,
+            image: None,
         }
         .run(&database)
         .await
@@ -513,6 +522,7 @@ mod tests {
             engine: crate::domain::entities::database::Engine::Postgres,
             version: "17",
             memory_limit: 100,
+            image: None,
         }
         .run(&database)
         .await
@@ -531,6 +541,7 @@ mod tests {
             engine: crate::domain::entities::database::Engine::Postgres,
             version: "17",
             memory_limit: 128 * 1024 * 1024,
+            image: None,
         }
         .run(&database)
         .await
@@ -570,6 +581,7 @@ mod tests {
             engine: crate::domain::entities::database::Engine::Postgres,
             version: "17",
             memory_limit: 128 * 1024 * 1024,
+            image: None,
         }
         .run(&database)
         .await

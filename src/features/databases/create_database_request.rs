@@ -21,4 +21,10 @@ pub struct CreateDatabaseRequest {
     pub version: String,
     #[serde(default)]
     pub memory: String,
+    /// `None` is the node's own image for the engine and version, and
+    /// `Some("")` is not: somebody who asked for their own image and
+    /// left the field empty made a mistake, and taking the default would
+    /// hide it.
+    #[serde(default)]
+    pub image: Option<String>,
 }

@@ -7,6 +7,7 @@ use crate::domain::entities::database::{Database, Engine};
 use crate::domain::entities::service::Service;
 use crate::domain::errors::{PlatformError, PlatformResult};
 use crate::domain::policies::presets;
+use crate::domain::values::image_reference::ImageReference;
 use crate::infra::clock::now_ms;
 use crate::infra::repositories::databases::REPLICATION_USER;
 
@@ -21,6 +22,7 @@ pub struct CreateDatabase<'a> {
     pub engine: Engine,
     pub version: &'a str,
     pub memory_limit: u64,
+    pub image: Option<&'a str>,
 }
 
 impl CreateDatabase<'_> {
@@ -60,12 +62,28 @@ impl CreateDatabase<'_> {
                 ),
             }));
         }
+        let image = match self.image {
+            None => engine.image_for(self.version),
+            Some(typed) => {
+                let reference = ImageReference::typed(typed)?;
+                if reference.is_empty() {
+                    return Err(PlatformError::Refused(format!(
+                        "a custom image needs a reference — the one this node uses for {} {} \
+                         is {}",
+                        engine.label(),
+                        self.version,
+                        engine.image_for(self.version)
+                    )));
+                }
+                reference.to_string()
+            }
+        };
 
         let service = crate::infra::repositories::services::create(
             database,
             self.project_id,
             self.name,
-            &engine.image_for(self.version),
+            &image,
             &[],
         )
         .await?;

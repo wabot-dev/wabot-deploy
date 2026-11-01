@@ -47,6 +47,11 @@ pub const VERSIONS: [&str; 4] = ["18", "17", "16", "15"];
 /// The one it offers first.
 pub const DEFAULT_VERSION: &str = "17";
 
+/// Where an image built on the official one says which major it runs.
+/// Read off `postgres:17-alpine`, `pgvector/pgvector:pg17-trixie` and
+/// `timescale/timescaledb:latest-pg17-oss`: `PG_MAJOR=17` in all three.
+pub const MAJOR_VARIABLE: &str = "PG_MAJOR";
+
 /// The port Postgres listens on, and the one every client assumes.
 pub const PORT: u16 = 5432;
 

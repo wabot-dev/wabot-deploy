@@ -38,10 +38,58 @@ pub async fn run(
         engine: crate::domain::entities::database::Engine::parse(&asked.engine),
         version: &asked.version,
         memory_limit,
+        image: asked.image.as_deref(),
     }
     .run(database)
     .await
     .map_err(|error| error.to_string())?;
 
     Ok((project, service))
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::features::databases::create_database_request::CreateDatabaseRequest;
+    use crate::infra::repositories::projects;
+
+    #[tokio::test]
+    async fn an_organisation_makes_a_database_from_an_image_of_its_own() {
+        let organisation = crate::features::fixtures::organisation().await;
+        let project = projects::create_for(
+            &organisation.database,
+            "Acme site",
+            organisation.admin.tenant_id.as_deref(),
+        )
+        .await
+        .expect("acme's project");
+        let asked = |image: &str| CreateDatabaseRequest {
+            project: project.slug.clone(),
+            name: "vectors".into(),
+            engine: "postgres".into(),
+            version: "17".into(),
+            memory: String::new(),
+            image: Some(image.into()),
+        };
+
+        let refused = super::run(
+            &organisation.database,
+            &organisation.admin,
+            &asked("pgvector/pgvector:pg17-trixie"),
+        )
+        .await
+        .expect_err("a reference with no registry");
+        assert!(
+            refused.contains("docker.io/pgvector/pgvector:pg17-trixie"),
+            "{refused}"
+        );
+
+        let (_, service) = super::run(
+            &organisation.database,
+            &organisation.admin,
+            &asked("docker.io/pgvector/pgvector:pg17-trixie"),
+        )
+        .await
+        .expect("made");
+        assert_eq!(service.image, "docker.io/pgvector/pgvector:pg17-trixie");
+    }
 }

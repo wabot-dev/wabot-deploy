@@ -984,11 +984,9 @@ pub async fn restore_one(
     let (restored, _) = crate::infra::backup::restore_database_into::restore_into(
         database,
         &row,
+        source,
         &project.id,
         &name,
-        source
-            .memory_limit
-            .unwrap_or(crate::domain::policies::presets::SMALLEST),
         &unpacks.display(),
         target,
     )

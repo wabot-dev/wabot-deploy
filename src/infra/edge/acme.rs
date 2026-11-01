@@ -1591,6 +1591,7 @@ mod tests {
             engine: crate::domain::entities::database::Engine::Postgres,
             version: "17",
             memory_limit: 256 * 1024 * 1024,
+            image: None,
         }
         .run(&database)
         .await

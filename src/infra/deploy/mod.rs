@@ -1001,7 +1001,9 @@ impl Deployer {
         // pool or a chosen name, so the pool's connection string failed
         // `verify-full` and a renamed database went back to its old
         // certificate at every deployment. Found on a VM node.
-        if prepared.is_some() {
+        if let Some(prepared) = &prepared {
+            self.check_engine_image(&client, service, &prepared.version, credential.as_ref())
+                .await?;
             let names = self.certificate_names(project, service).await;
             self.place_certificate(&client, service, &names, &id)
                 .await?;
@@ -3050,6 +3052,34 @@ impl Deployer {
         certificate_names(&self.database, project, service).await
     }
 
+    /// Refuse an image that says it runs another version than the row.
+    ///
+    /// Before the certificate, because that step already starts a
+    /// container from the image, and an `initdb` from the wrong major
+    /// writes a data directory no later fix can take back.
+    async fn check_engine_image(
+        &self,
+        client: &Containerd,
+        service: &Service,
+        version: &str,
+        credential: Option<&crate::infra::runtime::images::Credential>,
+    ) -> DeployResult<()> {
+        crate::infra::runtime::images::ensure(client, &service.image, credential).await?;
+        let config = crate::infra::runtime::images::config(client, &service.image).await?;
+        let engine = service.kind.engine().unwrap_or(Engine::Postgres);
+        match engine.other_version_in(&config.env, version) {
+            None => Ok(()),
+            Some(runs) => Err(DeployError::Refused(format!(
+                "{} runs {} {runs}, and this database was made as {} {version} — a data \
+                 directory belongs to one major version, so nothing was started. Make the \
+                 database again with the version the image runs, or an image of {version}",
+                service.image,
+                engine.label(),
+                engine.label(),
+            ))),
+        }
+    }
+
     /// Put this copy's certificate in its volume, and make sure the
     /// server can read it.
     ///
@@ -4814,6 +4844,7 @@ mod tests {
             engine: crate::domain::entities::database::Engine::Postgres,
             version: "17",
             memory_limit: 256 * 1024 * 1024,
+            image: None,
         }
         .run(&database)
         .await

@@ -25,6 +25,10 @@ use crate::infra::clock::now_ms;
 ///   opens, at the moment somebody is in a hurry.
 /// * The **version is the original's**, because a data directory built
 ///   by 17 is not one 18 will open.
+/// * So is the **image**, and it is not derived from the version: a
+///   database made with its own image has files written by that image's
+///   user under that image's C library, and the node's default for the
+///   same version is a different user and a different collation.
 /// * It is marked as recovering, so the deploy path unpacks and replays
 ///   rather than running `initdb` into an empty volume — which would
 ///   produce an empty database that looks exactly like a successful
@@ -32,18 +36,21 @@ use crate::infra::clock::now_ms;
 pub async fn restore_into(
     database: &SqliteDatabase,
     source: &Database,
+    original: &Service,
     project_id: &str,
     name: &str,
-    memory_limit: u64,
     // The backup directory it unpacks, and the moment it stops at.
     from: &str,
     target: Option<&str>,
 ) -> PlatformResult<(Service, Database)> {
+    let memory_limit = original
+        .memory_limit
+        .unwrap_or(crate::domain::policies::presets::SMALLEST);
     let service = crate::infra::repositories::services::create(
         database,
         project_id,
         name,
-        &source.engine.image_for(&source.version),
+        &original.image,
         &[],
     )
     .await?;
@@ -119,4 +126,53 @@ pub async fn restore_into(
         .await?;
 
     Ok((service, row))
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::domain::entities::database::Engine;
+    use crate::features::databases::create_database_command::CreateDatabase;
+
+    /// The copy used to take the node's default for the version, so a
+    /// database made from `pgvector/pgvector` — Debian, its user 999 —
+    /// would have been unpacked by and started under Alpine's, user 70,
+    /// with another C library's idea of how text sorts.
+    #[tokio::test]
+    async fn a_restored_copy_runs_the_image_the_original_was_made_with() {
+        let database = crate::infra::db::open_in_memory().await.expect("open");
+        let project = crate::infra::repositories::projects::create(&database, "demo")
+            .await
+            .expect("project");
+        let (original, row) = CreateDatabase {
+            project_id: &project.id,
+            name: "Vectors",
+            engine: Engine::Postgres,
+            version: "17",
+            memory_limit: 256 * 1024 * 1024,
+            image: Some("docker.io/pgvector/pgvector:pg17-trixie"),
+        }
+        .run(&database)
+        .await
+        .expect("created");
+
+        let (copy, copied) = super::restore_into(
+            &database,
+            &row,
+            &original,
+            &project.id,
+            "vectors-restored",
+            "/var/lib/wabot-deploy/backups/2026-11-01/volumes/abc",
+            None,
+        )
+        .await
+        .expect("restored");
+
+        assert_eq!(copy.image, "docker.io/pgvector/pgvector:pg17-trixie");
+        assert_eq!(copied.version, "17");
+        let stored = crate::infra::repositories::services::find(&database, &copy.id)
+            .await
+            .expect("read")
+            .expect("there");
+        assert_eq!(stored.memory_limit, original.memory_limit);
+    }
 }
