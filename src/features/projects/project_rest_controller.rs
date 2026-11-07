@@ -770,10 +770,21 @@ mod tests {
             .send()
             .await
             .body;
-        assert!(
-            !quiet.contains("Needs you"),
-            "nothing is wrong, so there is no panel: {quiet}"
-        );
+        // The disk card reads the filesystem the test runs on, so a
+        // laptop with less than a tenth free has a concern this test did
+        // not make. It failed the suite on one at 10.1 % free, dipping
+        // under while the suite wrote its own files.
+        let disk = crate::infra::node::disk::filesystem(&console.data_dir);
+        match crate::domain::policies::disk::nearly_full(disk.total, disk.available) {
+            false => assert!(
+                !quiet.contains("Needs you"),
+                "nothing is wrong, so there is no panel: {quiet}"
+            ),
+            true => assert!(
+                !quiet.contains("A copy will not start"),
+                "only the disk is wrong: {quiet}"
+            ),
+        }
 
         // A copy that will not start — the most direct of the concerns,
         // and the one an operator most needs off the page they land on.
