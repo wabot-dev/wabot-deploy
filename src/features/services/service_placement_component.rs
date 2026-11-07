@@ -105,6 +105,8 @@ pub fn placement_card<'a>(
                         </select>
                     </div>
                 </div>
+                <p class="field-hint">(t("To move a copy, pick another node in its own row. The node for \
+                     new ones only places the copies a higher number adds."))</p>
                 <p class="field-hint">(t("A new copy is created on the node you pick, rather than here and \
                      moved after — which would start a container on this machine and \
                      stop it again for nothing. Removing takes the ones already thrown \

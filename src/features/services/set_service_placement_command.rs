@@ -78,59 +78,53 @@ impl SetServicePlacement<'_> {
         let placements = replicas::of_service(database, &self.service.id)
             .await
             .map_err(|error| error.to_string())?;
-        let mut touched: BTreeSet<String> = placements
+
+        // Every question before any answer. The moves used to run first,
+        // so a count out of range or a quota refusal came back after a
+        // copy had already been stopped here and pointed somewhere else —
+        // the page said "refused" about a change that was half made.
+        let moves: Vec<(&crate::domain::entities::replica::Replica, Option<String>)> = placements
             .iter()
-            .filter_map(|replica| replica.node_id.clone())
+            .filter_map(|replica| {
+                let chosen = self.fields.get(&format!("slot-{}", replica.slot))?.trim();
+                let wanted = (!chosen.is_empty()).then(|| chosen.to_string());
+                (wanted.as_deref() != replica.node_id.as_deref()).then_some((replica, wanted))
+            })
             .collect();
 
-        for replica in &placements {
-            let Some(chosen) = self.fields.get(&format!("slot-{}", replica.slot)) else {
-                continue;
-            };
-            let chosen = chosen.trim().to_string();
-            let wanted = (!chosen.is_empty()).then_some(chosen.as_str());
-            if wanted == replica.node_id.as_deref() {
-                continue;
-            }
-            if let Some(node) = wanted {
-                room_on(database, deployer, self.service, node).await?;
-                touched.insert(node.to_string());
-            }
-            // Stopped before the row moves: the container id is derived
-            // from the rows, so moving first loses the handle to what is
-            // still running here.
-            if replica.is_here() && wanted.is_some() {
-                if let Err(error) = deployer
-                    .stop_replica(self.project, self.service, replica)
-                    .await
-                {
-                    tracing::warn!(
-                        slot = replica.slot,
-                        %error,
-                        "stopping a copy that was sent to another node"
-                    );
-                }
-            }
-            replicas::move_to(database, &replica.id, wanted)
-                .await
-                .map_err(|error| error.to_string())?;
-        }
-
-        let wanted: u32 = self.replicas.parse().unwrap_or(1);
+        let wanted: u32 = self.replicas.trim().parse().unwrap_or(1);
         if !(1..=16).contains(&wanted) {
             return Err("a service runs between 1 and 16 replicas".into());
         }
+        let adds = wanted as usize > placements.len();
 
-        let target = self.on.trim();
-        let placement = match target {
+        let placement = match self.on.trim() {
             "anywhere" => Placement::Anywhere,
             "" => Placement::Named(None),
+            // The selector for new copies, with none being added. Moving
+            // the only copy of a service by choosing a node here did
+            // nothing and said nothing: the count was already one, so no
+            // copy was made, and the node was sent an instruction to run
+            // none — found on node-0, three times in two minutes, by an
+            // organisation trying to move its service.
+            _ if moves.is_empty() && wanted as usize == placements.len() => {
+                return Err(
+                    "nothing was added, so there was no new copy to put on that node \
+                     — to move a copy, pick its node in its own row"
+                        .into(),
+                );
+            }
+            _ if !adds => Placement::Named(None),
             node => {
                 room_on(database, deployer, self.service, node).await?;
-                touched.insert(node.to_string());
                 Placement::Named(Some(node.to_string()))
             }
         };
+        for (_, node) in &moves {
+            if let Some(node) = node {
+                room_on(database, deployer, self.service, node).await?;
+            }
+        }
 
         // The organisation's ceiling before the node's, for the same
         // reason as everywhere else: it is the more general refusal.
@@ -147,6 +141,34 @@ impl SetServicePlacement<'_> {
         .map_err(|error| error.to_string())?
         {
             return Err(reason);
+        }
+
+        let mut touched: BTreeSet<String> = placements
+            .iter()
+            .filter_map(|replica| replica.node_id.clone())
+            .collect();
+        for (replica, wanted) in moves {
+            if let Some(node) = &wanted {
+                touched.insert(node.clone());
+            }
+            // Stopped before the row moves: the container id is derived
+            // from the rows, so moving first loses the handle to what is
+            // still running here.
+            if replica.is_here() && wanted.is_some() {
+                if let Err(error) = deployer
+                    .stop_replica(self.project, self.service, replica)
+                    .await
+                {
+                    tracing::warn!(
+                        slot = replica.slot,
+                        %error,
+                        "stopping a copy that was sent to another node"
+                    );
+                }
+            }
+            replicas::move_to(database, &replica.id, wanted.as_deref())
+                .await
+                .map_err(|error| error.to_string())?;
         }
 
         let added = resize(
@@ -467,7 +489,7 @@ async fn send_there(
                 database,
                 &project.id,
                 &format!("errand to {node_id}"),
-                by,
+                Some(by),
             )
             .await
             .map_err(|error| error.to_string())?

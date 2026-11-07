@@ -23,4 +23,7 @@ pub struct CreateServiceRequest {
     /// `KEY=value` lines, as the form carries them.
     #[serde(default)]
     pub env: String,
+    /// The node its first copy runs on, by id; empty for this one.
+    #[serde(default)]
+    pub on: String,
 }

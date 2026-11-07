@@ -196,6 +196,7 @@ impl ServiceRestController {
             name: field(&form, "name").to_string(),
             image: field(&form, "image").to_string(),
             env: field(&form, "env").to_string(),
+            on: field(&form, "on").to_string(),
         };
         if let Err(reason) = asked.validate() {
             return Ok(back_with_error(&form_url, &reason.to_string()));
@@ -2452,6 +2453,189 @@ mod tests {
             host.secret.is_none(),
             "a credential for this node's registry was sent to {}",
             host.registry
+        );
+    }
+
+    async fn a_node_elsewhere(console: &Console) {
+        crate::infra::network::save(
+            &console.database,
+            &crate::infra::network::Node {
+                update_note: None,
+                version: None,
+                wanted_version: None,
+                usage: None,
+                draining_at: None,
+                capacity: None,
+                id: "nd-elsewhere1".into(),
+                name: "alpine.example".into(),
+                kind: crate::infra::network::Kind::Private,
+                endpoint: None,
+                public_key: Some("k".into()),
+                overlay_ip: Some("10.42.0.9".into()),
+                is_self: false,
+                last_seen_at: None,
+                allows: vec![crate::domain::values::capability::Capability::Host],
+                ca_pem: None,
+            },
+        )
+        .await
+        .expect("node");
+    }
+
+    /// **Choosing a node for new copies while adding none is refused, and
+    /// says how to move one.** It used to do nothing and say nothing: an
+    /// organisation on node-0 tried to move the only copy of its service
+    /// that way three times in two minutes, and each time the node was
+    /// sent an instruction to run none of it while the copy stayed here.
+    #[tokio::test]
+    async fn a_node_for_new_copies_with_none_added_is_refused() {
+        let console = Console::new().await;
+        let cookie = console.signed_in().await;
+        let service = placed_service(&console, &cookie).await;
+        a_node_elsewhere(&console).await;
+
+        let response = console
+            .harness
+            .post("/projects/shared/services/web/placement")
+            .header("cookie", &cookie)
+            .form(&[
+                ("replicas", "1"),
+                ("slot-1", ""),
+                ("new-on", "nd-elsewhere1"),
+            ])
+            .send()
+            .await;
+
+        let location = response.header("location").unwrap_or_default();
+        assert!(location.contains("its+own+row"), "{location}");
+        let placements =
+            crate::infra::repositories::replicas::of_service(&console.database, &service.id)
+                .await
+                .expect("replicas");
+        assert!(placements.iter().all(|replica| replica.is_here()));
+        assert!(
+            crate::infra::network::errand::all(&console.database)
+                .await
+                .expect("errands")
+                .is_empty(),
+            "a node was told to run none of something it never had"
+        );
+    }
+
+    /// The create form offers a node only when there is another one that
+    /// runs containers for this, and what it posts is where the first copy
+    /// is born.
+    #[tokio::test]
+    async fn a_service_is_made_on_the_node_its_form_names() {
+        let console = Console::new().await;
+        let cookie = console.signed_in().await;
+        placed_service(&console, &cookie).await;
+        let form = || async {
+            console
+                .harness
+                .get("/projects/shared/services/new")
+                .header("cookie", &cookie)
+                .send()
+                .await
+                .body
+        };
+
+        assert!(!form().await.contains("name=\"on\""), "a choice of one");
+        a_node_elsewhere(&console).await;
+        let offered = form().await;
+        assert!(offered.contains("name=\"on\""), "{offered}");
+        assert!(offered.contains("alpine.example"), "{offered}");
+
+        console
+            .harness
+            .post("/projects/shared/services")
+            .header("cookie", &cookie)
+            .form(&[
+                ("name", "api"),
+                ("image", "docker.io/library/nginx:alpine"),
+                ("on", "nd-elsewhere1"),
+            ])
+            .send()
+            .await
+            .assert_status(StatusCode::SEE_OTHER);
+        let project = crate::infra::repositories::projects::find(&console.database, "shared")
+            .await
+            .expect("query")
+            .expect("there");
+        let api = services::in_project(&console.database, &project.id, "api")
+            .await
+            .expect("query")
+            .expect("made");
+        let copies = crate::infra::repositories::replicas::of_service(&console.database, &api.id)
+            .await
+            .expect("replicas");
+        assert_eq!(copies.len(), 1);
+        assert_eq!(copies[0].node_id.as_deref(), Some("nd-elsewhere1"));
+    }
+
+    /// The only copy moves by its own row, and the node it goes to is told
+    /// which slot it now runs.
+    #[tokio::test]
+    async fn the_only_copy_moves_to_the_node_named_in_its_row() {
+        let console = Console::new().await;
+        let cookie = console.signed_in().await;
+        let service = placed_service(&console, &cookie).await;
+        a_node_elsewhere(&console).await;
+
+        console
+            .harness
+            .post("/projects/shared/services/web/placement")
+            .header("cookie", &cookie)
+            .form(&[
+                ("replicas", "1"),
+                ("slot-1", "nd-elsewhere1"),
+                ("new-on", "nd-elsewhere1"),
+            ])
+            .send()
+            .await
+            .assert_status(StatusCode::SEE_OTHER);
+
+        let placements =
+            crate::infra::repositories::replicas::of_service(&console.database, &service.id)
+                .await
+                .expect("replicas");
+        assert_eq!(placements.len(), 1);
+        assert_eq!(placements[0].node_id.as_deref(), Some("nd-elsewhere1"));
+        let waiting = crate::infra::network::errand::waiting(&console.database, "nd-elsewhere1")
+            .await
+            .expect("waiting");
+        let host: crate::infra::network::errand::Host =
+            serde_json::from_value(waiting[0].payload.clone()).expect("a host errand");
+        assert_eq!(host.slots, vec![1]);
+    }
+
+    /// **A refused placement changes nothing.** The moves ran before the
+    /// count was checked, so a refusal came back about a change already
+    /// half made: the copy stopped here and pointed at another node.
+    #[tokio::test]
+    async fn a_refused_placement_leaves_every_copy_where_it_was() {
+        let console = Console::new().await;
+        let cookie = console.signed_in().await;
+        let service = placed_service(&console, &cookie).await;
+        a_node_elsewhere(&console).await;
+
+        let response = console
+            .harness
+            .post("/projects/shared/services/web/placement")
+            .header("cookie", &cookie)
+            .form(&[("replicas", "40"), ("slot-1", "nd-elsewhere1")])
+            .send()
+            .await;
+
+        let location = response.header("location").unwrap_or_default();
+        assert!(location.contains("error="), "{location}");
+        assert!(
+            crate::infra::repositories::replicas::of_service(&console.database, &service.id)
+                .await
+                .expect("replicas")
+                .iter()
+                .all(|replica| replica.is_here()),
+            "a refused placement moved a copy"
         );
     }
 

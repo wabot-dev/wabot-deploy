@@ -2,8 +2,10 @@ use wabot::sqlite::SqliteDatabase;
 
 use crate::domain::authz::node_user;
 use crate::domain::entities::account::Account;
+use crate::domain::values::capability::Capability;
 use crate::features::services::create_service_request::CreateServiceRequest as Asked;
 use crate::features::services::service_created_response::ServiceCreatedResponse;
+use crate::infra::network;
 use crate::infra::repositories::access;
 
 pub async fn run(
@@ -26,12 +28,27 @@ pub async fn run(
         return Err("you may look at this project, not change it".into());
     }
 
-    let service = crate::infra::repositories::services::create(
+    let first_on = match asked.on.trim() {
+        "" => None,
+        id => match network::candidates_for(database, Capability::Host)
+            .await
+            .map_err(|error| error.to_string())?
+            .into_iter()
+            .find(|node| node.id == id)
+        {
+            Some(node) if node.is_self => None,
+            Some(node) => Some(node.id),
+            None => return Err("that node has not agreed to run containers for this one".into()),
+        },
+    };
+
+    let service = crate::infra::repositories::services::create_on(
         database,
         &project.id,
         &asked.name,
         &asked.image,
         env,
+        first_on.as_deref(),
     )
     .await
     .map_err(|error| error.to_string())?;

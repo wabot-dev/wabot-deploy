@@ -2728,6 +2728,40 @@ impl Deployer {
         }
     }
 
+    /// A token for that node to pull this project's images with, unless
+    /// the last one it was handed for this registry is already this
+    /// project's.
+    async fn credential_for(
+        &self,
+        project: &Project,
+        node_id: &str,
+        registry: &str,
+    ) -> Option<String> {
+        match crate::infra::network::errand::credential_last_sent(&self.database, node_id, registry)
+            .await
+        {
+            Ok(Some(last)) if last == project.name => return None,
+            Ok(_) => {}
+            Err(error) => {
+                tracing::warn!(%error, node = %node_id, "could not read which credential that node holds");
+            }
+        }
+        match crate::infra::repositories::tokens::create(
+            &self.database,
+            &project.id,
+            &format!("errand to {node_id}"),
+            None,
+        )
+        .await
+        {
+            Ok((_, secret)) => Some(secret),
+            Err(error) => {
+                tracing::warn!(%error, node = %node_id, "could not mint a credential for that node");
+                None
+            }
+        }
+    }
+
     async fn tell_holders(&self, project: &Project, service: &Service, holding: Holding) {
         self.holders(project, service, holding, &Default::default())
             .await;
@@ -2806,6 +2840,11 @@ impl Deployer {
             == DesiredState::Running;
         let ceilings = fresh.as_ref().unwrap_or(service);
 
+        let ours = crate::infra::node::settings::domain(&self.database)
+            .await
+            .as_deref()
+            == Some(registry.as_str());
+
         // Worked out once rather than per row, through the same function
         // the placement form offers nodes with — so what was offerable and
         // what is dispatchable cannot drift apart.
@@ -2837,16 +2876,12 @@ impl Deployer {
                 continue;
             }
 
-            let payload = match serde_json::to_value(crate::infra::network::errand::Host {
+            let pulls = running && !slots.is_empty();
+            let mut payload = match serde_json::to_value(crate::infra::network::errand::Host {
                 project: project.name.clone(),
                 service: service.name.clone(),
                 image: service.image.clone(),
                 registry: registry.clone(),
-                // No credential in a derived instruction. The one the far
-                // node stored when the copy was placed is still there, and
-                // minting a fresh token on every pass would make every
-                // payload differ from the last — which is the comparison
-                // this relies on to stay quiet.
                 username: None,
                 secret: None,
                 env: service.env.clone(),
@@ -2867,23 +2902,56 @@ impl Deployer {
                 }
             };
 
-            match crate::infra::network::errand::queue_if_changed(
+            let subject = format!("placement:{}", service.id);
+            let kind = crate::infra::network::errand::Kind::Host;
+            match crate::infra::network::errand::would_change(
                 &self.database,
                 &node_id,
-                crate::infra::network::errand::Kind::Host,
-                &format!("placement:{}", service.id),
+                kind,
+                &subject,
                 &payload,
             )
             .await
             {
-                Ok(Some(_)) => tracing::info!(
+                Ok(true) => {}
+                Ok(false) => continue,
+                Err(error) => {
+                    tracing::warn!(%error, node = %node_id, "could not queue a placement");
+                    continue;
+                }
+            }
+
+            // A credential only when the instruction is going out, and
+            // only when that node would otherwise pull with somebody
+            // else's. Derived instructions carried none, trusting the one
+            // sent when the copy was placed — and a copy placed before its
+            // service had an image was never sent one, so its first push
+            // reached the far node as a 401. So did any copy whose node had
+            // since been handed another project's token: it keeps one per
+            // registry.
+            if pulls && ours {
+                if let Some(secret) = self.credential_for(project, &node_id, &registry).await {
+                    payload["username"] = "errand".into();
+                    payload["secret"] = secret.into();
+                }
+            }
+
+            match crate::infra::network::errand::queue_about(
+                &self.database,
+                &node_id,
+                kind,
+                Some(&subject),
+                &payload,
+            )
+            .await
+            {
+                Ok(_) => tracing::info!(
                     service = %service.slug,
                     node = %node_id,
                     running,
                     letting_go = holding == Holding::LetGo,
                     "told a node what it holds for this service"
                 ),
-                Ok(None) => {}
                 Err(error) => {
                     tracing::warn!(%error, node = %node_id, "could not queue a placement")
                 }
@@ -5487,6 +5555,96 @@ mod tests {
             .await
             .expect("errands")
             .is_empty());
+    }
+
+    /// **A copy made on another node before its first push is sent
+    /// something to pull with.** Derived instructions carried no
+    /// credential, trusting the one sent when the copy was placed — and a
+    /// service created there with no image yet was never sent one, so its
+    /// first push would have reached that node as a 401.
+    #[tokio::test]
+    async fn the_first_push_to_a_copy_elsewhere_travels_with_a_credential() {
+        let (database, project, _) = placed_elsewhere().await;
+        crate::infra::node::settings::set_domain(&database, Some("hub.example"))
+            .await
+            .expect("domain");
+        let service = crate::infra::repositories::services::create_on(
+            &database,
+            &project.id,
+            "api",
+            "",
+            &[],
+            Some("nd-far"),
+        )
+        .await
+        .expect("made there");
+        let deployer = Deployer::new(
+            std::sync::Arc::new(database.clone()),
+            &crate::infra::config::Config::default(),
+        );
+        let pushed = |digest: &str| Service {
+            image: format!("hub.example/shared/api@sha256:{digest}"),
+            ..service.clone()
+        };
+        let sent = || async {
+            crate::infra::network::errand::waiting(&database, "nd-far")
+                .await
+                .expect("errands")
+                .into_iter()
+                .map(|errand| {
+                    serde_json::from_value::<crate::infra::network::errand::Host>(errand.payload)
+                        .expect("a host errand")
+                })
+                .collect::<Vec<_>>()
+        };
+
+        deployer
+            .tell_holders(&project, &pushed("abc"), Holding::AsPlaced)
+            .await;
+        let first = sent().await;
+        assert_eq!(first.len(), 1, "{first:?}");
+        assert_eq!(first[0].slots, vec![1]);
+        assert!(first[0].secret.is_some(), "nothing to pull it with");
+
+        deployer
+            .tell_holders(&project, &pushed("abc"), Holding::AsPlaced)
+            .await;
+        assert_eq!(
+            sent().await.len(),
+            1,
+            "the same instruction again, only because its credential was new"
+        );
+
+        deployer
+            .tell_holders(&project, &pushed("def"), Holding::AsPlaced)
+            .await;
+        let second = sent().await;
+        assert_eq!(second.len(), 2);
+        assert!(
+            second[1].secret.is_none(),
+            "that node already pulls from here with this project's token"
+        );
+
+        crate::infra::network::errand::queue(
+            &database,
+            "nd-far",
+            crate::infra::network::errand::Kind::Host,
+            &serde_json::json!({
+                "project": "another", "service": "web", "image": "hub.example/another/web:1",
+                "registry": "hub.example", "username": "errand", "secret": "theirs",
+                "env": {}, "slots": [1], "running": true,
+            }),
+        )
+        .await
+        .expect("another project's placement");
+        deployer
+            .tell_holders(&project, &pushed("fed"), Holding::AsPlaced)
+            .await;
+        let third = sent().await;
+        assert!(
+            third.last().is_some_and(|host| host.secret.is_some()),
+            "another project's token replaced this one there, and it pulls nothing of ours"
+        );
     }
 
     /// The other half of that rule: what this node no longer agrees to

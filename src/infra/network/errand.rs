@@ -587,7 +587,7 @@ pub async fn queue(
     queue_about(database, node_id, kind, None, payload).await
 }
 
-async fn queue_about(
+pub async fn queue_about(
     database: &SqliteDatabase,
     node_id: &str,
     kind: Kind,
@@ -758,6 +758,24 @@ pub async fn queue_if_changed(
     subject: &str,
     payload: &serde_json::Value,
 ) -> NetworkResult<Option<Errand>> {
+    if !would_change(database, node_id, kind, subject, payload).await? {
+        return Ok(None);
+    }
+    queue_about(database, node_id, kind, Some(subject), payload)
+        .await
+        .map(Some)
+}
+
+/// Whether this says something the last instruction about `subject` did
+/// not — the decision [`queue_if_changed`] makes, for a caller that has
+/// to spend something before it sends.
+pub async fn would_change(
+    database: &SqliteDatabase,
+    node_id: &str,
+    kind: Kind,
+    subject: &str,
+    payload: &serde_json::Value,
+) -> NetworkResult<bool> {
     let (node, about) = (node_id.to_string(), subject.to_string());
     let last: Option<(String, Option<String>)> = database
         .read(move |connection| {
@@ -810,21 +828,65 @@ pub async fn queue_if_changed(
     // side, where carrying it out is idempotent, against an instruction
     // that otherwise never arrives.
     let handed_up = super::is_authorised(database, node_id).await;
-    if let Some((last, failed)) = last {
-        let refused = failed.is_some();
-        if !refused
-            && !handed_up
-            && serde_json::from_str::<serde_json::Value>(&last)
-                .ok()
-                .as_ref()
-                == Some(payload)
-        {
-            return Ok(None);
+    let Some((last, failed)) = last else {
+        return Ok(true);
+    };
+    if failed.is_some() || handed_up {
+        return Ok(true);
+    }
+    Ok(serde_json::from_str::<serde_json::Value>(&last)
+        .ok()
+        .map(|last| what_it_says(kind, &last))
+        != Some(what_it_says(kind, payload)))
+}
+
+/// An instruction without the registry credential it travels with.
+///
+/// The credential is how a `host` instruction is carried out, not what
+/// it asks for, and a fresh one is minted each time one is sent — so an
+/// instruction compared with it would never be the same twice. Only for
+/// `host`: an edge's `secret` is the relay secret its co-edges share,
+/// and a change to that is a change to the instruction.
+fn what_it_says(kind: Kind, payload: &serde_json::Value) -> serde_json::Value {
+    let mut payload = payload.clone();
+    if kind == Kind::Host {
+        if let Some(fields) = payload.as_object_mut() {
+            fields.remove("username");
+            fields.remove("secret");
         }
     }
-    queue_about(database, node_id, kind, Some(subject), payload)
-        .await
-        .map(Some)
+    payload
+}
+
+/// The project whose registry credential that node was handed last, for
+/// this registry.
+///
+/// A node keeps one credential per registry and a token pulls from one
+/// project, so the last one sent is the one it pulls everything from
+/// this registry with. A refused instruction is not counted: it may
+/// have been refused before the credential was stored.
+pub async fn credential_last_sent(
+    database: &SqliteDatabase,
+    node_id: &str,
+    registry: &str,
+) -> NetworkResult<Option<String>> {
+    let (node, registry) = (node_id.to_string(), registry.to_string());
+    Ok(database
+        .read(move |connection| {
+            connection
+                .query_row(
+                    "SELECT json_extract(\"payload\", '$.project') FROM errand \
+                     WHERE \"node_id\" = ?1 AND \"error\" IS NULL \
+                       AND json_extract(\"payload\", '$.registry') = ?2 \
+                       AND json_extract(\"payload\", '$.secret') IS NOT NULL \
+                     ORDER BY \"created_at\" DESC, \"rowid\" DESC LIMIT 1",
+                    (node, registry),
+                    |row| row.get::<_, Option<String>>(0),
+                )
+                .optional()
+        })
+        .await?
+        .flatten())
 }
 
 /// Tell a node there is something for it, if this node can reach it.

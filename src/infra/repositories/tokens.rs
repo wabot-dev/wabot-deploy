@@ -15,7 +15,7 @@ pub async fn create(
     database: &SqliteDatabase,
     project_id: &str,
     name: &str,
-    created_by: &str,
+    created_by: Option<&str>,
 ) -> PlatformResult<(PushToken, String)> {
     let name = name.trim();
     if name.is_empty() || name.chars().count() > 60 {
@@ -35,7 +35,7 @@ pub async fn create(
 
     let row = token.clone();
     let hash = crate::infra::accounts::sha256_hex(&secret);
-    let creator = created_by.to_string();
+    let creator = created_by.map(str::to_string);
     database
         .write(move |connection| {
             connection.execute(
@@ -161,7 +161,7 @@ mod tests {
     #[tokio::test]
     async fn a_token_authenticates_for_its_project() {
         let (database, project, admin) = project().await;
-        let (_, secret) = create(&database, &project, "ci", &admin)
+        let (_, secret) = create(&database, &project, "ci", Some(&admin))
             .await
             .expect("created");
 
@@ -174,7 +174,7 @@ mod tests {
     #[tokio::test]
     async fn something_that_is_not_a_token_is_nobody() {
         let (database, project, admin) = project().await;
-        create(&database, &project, "ci", &admin)
+        create(&database, &project, "ci", Some(&admin))
             .await
             .expect("created");
 
@@ -194,7 +194,7 @@ mod tests {
             .expect("project")
             .id;
 
-        let (_, secret) = create(&database, &first, "ci", &admin)
+        let (_, secret) = create(&database, &first, "ci", Some(&admin))
             .await
             .expect("created");
         let holder = authenticate(&database, &secret).await.expect("auth");
@@ -208,7 +208,7 @@ mod tests {
     #[tokio::test]
     async fn using_a_token_is_recorded() {
         let (database, project, admin) = project().await;
-        let (token, secret) = create(&database, &project, "ci", &admin)
+        let (token, secret) = create(&database, &project, "ci", Some(&admin))
             .await
             .expect("created");
         assert_eq!(token.last_used_at, None);
@@ -226,7 +226,7 @@ mod tests {
     #[tokio::test]
     async fn a_revoked_token_stops_working() {
         let (database, project, admin) = project().await;
-        let (token, secret) = create(&database, &project, "ci", &admin)
+        let (token, secret) = create(&database, &project, "ci", Some(&admin))
             .await
             .expect("created");
 
@@ -239,7 +239,7 @@ mod tests {
     #[tokio::test]
     async fn the_secret_is_not_stored() {
         let (database, project, admin) = project().await;
-        let (_, secret) = create(&database, &project, "ci", &admin)
+        let (_, secret) = create(&database, &project, "ci", Some(&admin))
             .await
             .expect("created");
 
@@ -258,13 +258,15 @@ mod tests {
     #[tokio::test]
     async fn a_token_needs_a_name() {
         let (database, project, admin) = project().await;
-        assert!(create(&database, &project, "  ", &admin).await.is_err());
+        assert!(create(&database, &project, "  ", Some(&admin))
+            .await
+            .is_err());
     }
 
     #[tokio::test]
     async fn tokens_go_with_the_project() {
         let (database, project, admin) = project().await;
-        create(&database, &project, "ci", &admin)
+        create(&database, &project, "ci", Some(&admin))
             .await
             .expect("created");
 

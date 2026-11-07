@@ -417,6 +417,22 @@ pub async fn create(
     image: &str,
     env: &[(String, String)],
 ) -> PlatformResult<Service> {
+    create_on(database, project_id, name, image, env, None).await
+}
+
+/// The same, with its first copy on `first_on` — `None` for this node.
+///
+/// Placed there from the start rather than made here and moved: a
+/// service made here is deployed here the moment it exists, so moving it
+/// afterwards starts a container on the wrong machine and stops it again.
+pub async fn create_on(
+    database: &SqliteDatabase,
+    project_id: &str,
+    name: &str,
+    image: &str,
+    env: &[(String, String)],
+    first_on: Option<&str>,
+) -> PlatformResult<Service> {
     let service = Service::new(project_id, name, image, env)?;
 
     let row = service.clone();
@@ -471,7 +487,13 @@ pub async fn create(
     //
     // Services that predate replicas were given theirs by migration
     // `0020`; this is the same row, for the ones made since.
-    crate::infra::repositories::replicas::ensure_here(database, &service.id, 1).await?;
+    match first_on {
+        None => crate::infra::repositories::replicas::ensure_here(database, &service.id, 1).await?,
+        Some(node) => {
+            crate::infra::repositories::replicas::ensure_count(database, &service.id, 1, Some(node))
+                .await?
+        }
+    };
 
     Ok(service)
 }

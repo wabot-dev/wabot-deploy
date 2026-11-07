@@ -128,10 +128,25 @@ impl ServiceUiController {
         layout::head("Create service");
         // The account's language, around the render and no wider:
         // the strings are read here, and nothing awaits inside.
+        let (here, elsewhere): (Vec<_>, Vec<_>) = crate::infra::network::candidates_for(
+            &self.state.database,
+            crate::domain::values::capability::Capability::Host,
+        )
+        .await?
+        .into_iter()
+        .partition(|node| node.is_self);
+        let here = match here.into_iter().next() {
+            Some(node) => Some(node.name),
+            None => crate::infra::network::me(&self.state.database)
+                .await?
+                .map(|node| node.name),
+        };
         let page = crate::features::services::new_service_page::NewService {
             action: &action,
             back: &back,
             query_error: query.error.as_deref(),
+            here: here.as_deref(),
+            elsewhere: &elsewhere,
         };
         let body = crate::shell::texts::language::scoped(account.language, || {
             crate::features::services::new_service_page::render(&page)

@@ -8,6 +8,10 @@ pub struct NewService<'a> {
     pub action: &'a str,
     pub back: &'a str,
     pub query_error: Option<&'a str>,
+    /// What this node is called, for the first choice.
+    pub here: Option<&'a str>,
+    /// The other nodes that agreed to run containers for this one.
+    pub elsewhere: &'a [crate::infra::network::Node],
 }
 
 pub fn render<'a>(page: &'a NewService<'a>) -> impl Renderable + 'a {
@@ -38,6 +42,18 @@ pub fn render<'a>(page: &'a NewService<'a>) -> impl Renderable + 'a {
             <p class="field-hint">(t("Leave it empty for your own application: the service \
                  waits, and the first push to its own repository becomes its first \
                  release. The page will show you the two commands."))</p>
+
+            @if !page.elsewhere.is_empty() {
+                <label for="on">(t("Runs on"))</label>
+                <select id="on" name="on">
+                    <option value="" selected>(page.here.unwrap_or(t("this node")))</option>
+                    @for node in page.elsewhere {
+                        <option value=(&node.id)>(&node.name)</option>
+                    }
+                </select>
+                <p class="field-hint">(t("Where its first copy runs. Copies can be moved, or added on other \
+                     nodes, from the service's settings."))</p>
+            }
 
             <label for="env">(t("Environment"))</label>
             <textarea id="env" name="env" autocomplete="off" rows="6" class="mono"
