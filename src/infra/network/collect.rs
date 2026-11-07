@@ -470,12 +470,30 @@ async fn report_to(
     secret: &str,
 ) {
     match report_for(database, config, container, node_id).await {
-        Ok(report) => {
-            if let Err(error) = super::call::report(endpoint, secret, &report).await {
-                tracing::debug!(%error, authority = %node_id, "could not report");
-            }
-        }
+        Ok(report) => match super::call::report(endpoint, secret, &report).await {
+            Ok(heard) => hear(database, node_id, &heard).await,
+            Err(error) => tracing::debug!(%error, authority = %node_id, "could not report"),
+        },
         Err(error) => tracing::warn!(%error, "could not read what this node is holding"),
+    }
+}
+
+/// What an authority said back to a report.
+async fn hear(database: &SqliteDatabase, authority: &str, heard: &super::api::Heard) {
+    let Some(allows) = &heard.allows else {
+        return;
+    };
+    let allows = crate::domain::values::capability::parse_list(allows);
+    match super::accept_allows(database, authority, &allows).await {
+        Ok(true) => tracing::info!(
+            %authority,
+            allows = %crate::domain::values::capability::to_list(&allows),
+            "learned what an authority lets this node ask of it"
+        ),
+        Ok(false) => {}
+        Err(error) => {
+            tracing::warn!(%error, %authority, "could not record what an authority allows")
+        }
     }
 }
 
@@ -1707,6 +1725,64 @@ async fn ensure_project(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// **What an authority grants a member reaches the member.** It was
+    /// written once, from the join token, and never again: an authority
+    /// that granted `edge` afterwards was never offered for a name on the
+    /// member, and one that withdrew `host` went on being sent copies it
+    /// refused. Reported by Jorge, granting a joined node `edge`.
+    #[tokio::test]
+    async fn what_an_authority_allows_this_node_is_heard_in_its_answer() {
+        use crate::domain::values::capability::Capability;
+        let database = crate::infra::db::open_in_memory().await.expect("open");
+        crate::infra::network::save(
+            &database,
+            &crate::infra::network::Node {
+                update_note: None,
+                version: None,
+                wanted_version: None,
+                usage: None,
+                draining_at: None,
+                capacity: None,
+                id: "nd-up".into(),
+                name: "up.example".into(),
+                kind: crate::infra::network::Kind::Public,
+                overlay_ip: Some("10.42.0.1".into()),
+                public_key: None,
+                endpoint: Some("up.example:443".into()),
+                allows: vec![Capability::Host],
+                is_self: false,
+                last_seen_at: None,
+                ca_pem: None,
+            },
+        )
+        .await
+        .expect("saved");
+        let allows = || async {
+            crate::infra::network::find(&database, "nd-up")
+                .await
+                .expect("query")
+                .expect("there")
+                .allows
+        };
+        let answer = |allows: Option<&str>| super::super::api::Heard {
+            settled: true,
+            allows: allows.map(str::to_string),
+        };
+
+        hear(&database, "nd-up", &answer(Some("host,edge"))).await;
+        assert_eq!(allows().await, vec![Capability::Host, Capability::Edge]);
+
+        hear(&database, "nd-up", &answer(None)).await;
+        assert_eq!(
+            allows().await,
+            vec![Capability::Host, Capability::Edge],
+            "an older authority's answer took away what it had said"
+        );
+
+        hear(&database, "nd-up", &answer(Some(""))).await;
+        assert!(allows().await.is_empty(), "withdrawing everything is news");
+    }
 
     /// An errand addressed to an *authority* was asked for by nobody:
     /// collection asks a node's authorities, so the one direction with

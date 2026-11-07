@@ -895,7 +895,7 @@ pub async fn credential_last_sent(
 /// this node's on file, or a tunnel that is down is a node that will find
 /// out on its next pass — which is the design, not a failure. The ring is
 /// the difference between fifteen seconds and none.
-async fn ring(database: &SqliteDatabase, node_id: &str) {
+pub async fn ring(database: &SqliteDatabase, node_id: &str) {
     let (Ok(Some(node)), Ok(Some(me))) = (
         super::find(database, node_id).await,
         super::me(database).await,

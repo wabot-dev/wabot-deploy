@@ -672,6 +672,25 @@ needs the path that ungrants tested with it.** All three of these are
 the same omission, and none is visible from the granting side — the node
 that revokes sees its own table change and assumes the rest followed.
 
+### And changing a grant after the join
+
+The grant itself had the same blind spot, in one direction. What a
+member grants its authority travels on every report, so the authority
+hears a change within one interval. What the **authority** grants the
+member travelled once, in the join token, and was never sent again: an
+authority that granted a member `edge` afterwards was never offered for
+a name on that member, and one that withdrew `host` would have gone on
+being sent copies it refused. Reported by Jorge on 2026-11-07, granting a
+joined node `edge`.
+
+The authority cannot dial a member, but it answers one every fifteen
+seconds, so the answer to a report now carries what the authority allows
+the reporter, and the member writes it on the authority's row. Saving a
+grant rings the member, so it reports at once rather than on its next
+pass. An authority too old to say leaves the member's copy alone, and a
+member too old to listen ignores the answer: both ends need the release
+before a change made on the authority reaches the member.
+
 ## What a stop turned out to need
 
 Phase 8's lesson generalised the way lessons do: the *next* switch had

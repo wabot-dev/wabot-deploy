@@ -661,7 +661,16 @@ impl RemoteNodeRestController {
         }
 
         tracing::debug!(node = %node, recorded, "a node reported");
-        Ok(json(StatusCode::OK, &Settled { settled: true }))
+        let allows = crate::domain::values::capability::to_list(
+            &crate::infra::network::capability::granted_to(&self.database, &node).await,
+        );
+        Ok(json(
+            StatusCode::OK,
+            &crate::infra::network::api::Heard {
+                settled: true,
+                allows: Some(allows),
+            },
+        ))
     }
 
     /// Record a node that is holding one of this node's join tokens.

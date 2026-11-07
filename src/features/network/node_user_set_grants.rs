@@ -23,5 +23,10 @@ pub async fn run(
             let node = &asked.node;
             tracing::warn!(%error, %node, "could not save what this node does for it");
             "that could not be saved".to_string()
-        })
+        })?;
+
+    // That node learns this in the answer to its next report, so ringing
+    // it makes the report now rather than in up to fifteen seconds.
+    crate::infra::network::errand::ring(database, &asked.node).await;
+    Ok(())
 }

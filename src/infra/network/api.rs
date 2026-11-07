@@ -100,6 +100,23 @@ pub struct Settled {
     pub settled: bool,
 }
 
+/// What a node answers a report with.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Heard {
+    pub settled: bool,
+    /// What the answering node has agreed the *reporter* may ask of it,
+    /// comma-separated — the other half of [`Report::allows`].
+    ///
+    /// A member learned this once, from the token it joined with, and
+    /// never again: an authority that granted it `edge` afterwards was
+    /// never offered for a name there, and one that withdrew `host` went
+    /// on being sent copies it refused. The member dials and the authority
+    /// cannot, so the answer to the call the member already makes is the
+    /// one road back. `None` from an older node, read as "no change".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allows: Option<String>,
+}
+
 /// Which copy's log, in the names both nodes already use for it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LogWanted {
@@ -2009,6 +2026,47 @@ mod tests {
                 .expect("query")
                 .expect("joined");
             assert_eq!(after.allows, expected, "after reporting {reported:?}");
+        }
+    }
+
+    /// The other direction: a report is answered with what this node lets
+    /// the reporter ask of it, as it stands now — including a grant made
+    /// after the join, which is the one the member never heard.
+    #[tokio::test]
+    async fn a_report_is_answered_with_what_this_node_allows_the_reporter() {
+        use crate::domain::values::capability::Capability;
+        let authority = authority().await;
+        authority
+            .harness
+            .post("/api/network/join")
+            .header("authorization", format!("Bearer {}", authority.secret))
+            .json(&arriving())
+            .send()
+            .await
+            .assert_ok();
+
+        for (granted, expected) in [
+            (vec![Capability::Host, Capability::Edge], "host,edge"),
+            (vec![Capability::Edge], "edge"),
+            (Vec::new(), ""),
+        ] {
+            super::super::capability::set_granted(&authority.database, "nd-joining001", &granted)
+                .await
+                .expect("granted");
+            let response = authority
+                .harness
+                .post("/api/network/report")
+                .header("authorization", format!("Bearer {}", authority.secret))
+                .json(&serde_json::json!({ "replicas": [] }))
+                .send()
+                .await;
+            response.assert_ok();
+            let heard: Heard = serde_json::from_str(&response.body).expect("an answer");
+            assert_eq!(
+                heard.allows.as_deref(),
+                Some(expected),
+                "after granting {granted:?}"
+            );
         }
     }
 

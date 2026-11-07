@@ -1150,6 +1150,34 @@ pub async fn remember_dial_secret(
         .await?)
 }
 
+/// What `node_id` has agreed this node may ask of it, as it said in
+/// answer to a report.
+///
+/// A statement of its own rather than a field of a saved row, for the
+/// reason the dial secret above has one: a row rebuilt from an older
+/// read must not be able to put back what that node has since changed.
+/// Whether anything changed, so a node saying the same thing every
+/// fifteen seconds is not logged every fifteen seconds.
+pub async fn accept_allows(
+    database: &SqliteDatabase,
+    node_id: &str,
+    allows: &[crate::domain::values::capability::Capability],
+) -> NetworkResult<bool> {
+    let (node_id, allows) = (
+        node_id.to_string(),
+        crate::domain::values::capability::to_list(allows),
+    );
+    Ok(database
+        .write(move |connection| {
+            Ok(connection.execute(
+                "UPDATE node SET \"allows\" = ?2 \
+                 WHERE \"id\" = ?1 AND \"is_self\" = 0 AND \"allows\" IS NOT ?2",
+                (node_id, allows),
+            )? > 0)
+        })
+        .await?)
+}
+
 /// What to present when dialling `node_id`, if it has said.
 pub async fn dial_secret_of(database: &SqliteDatabase, node_id: &str) -> Option<String> {
     let node_id = node_id.to_string();

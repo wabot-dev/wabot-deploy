@@ -135,12 +135,13 @@ pub async fn report(
     endpoint: &str,
     secret: &str,
     report: &super::api::Report,
-) -> Result<(), CallError> {
+) -> Result<super::api::Heard, CallError> {
     let url = format!("https://{endpoint}/api/network/report");
     let body = serde_json::to_string(report).expect("a report is plain data");
 
     match tokio::time::timeout(TIMEOUT, send(&url, secret, Some(body))).await {
-        Ok(result) => result.map(|_| ()),
+        Ok(result) => serde_json::from_slice(&result?)
+            .map_err(|error| CallError::Unreadable(url, error.to_string())),
         Err(_) => Err(CallError::TimedOut { url }),
     }
 }
