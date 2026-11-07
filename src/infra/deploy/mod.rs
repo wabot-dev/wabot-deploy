@@ -2222,13 +2222,28 @@ impl Deployer {
                 Observed::Unknown(_) => None,
                 Observed::Absent | Observed::Stopped { .. } => Some(false),
             };
-            let restarts::Verdict::Restart { attempt } = restarts.decide(
+            let attempt = match restarts.decide(
                 &replica.id,
                 running,
                 replica.address.is_some(),
                 std::time::Instant::now(),
-            ) else {
-                continue;
+            ) {
+                restarts::Verdict::Restart { attempt } => attempt,
+                restarts::Verdict::Settled => {
+                    if replica
+                        .last_error
+                        .as_deref()
+                        .is_some_and(crate::domain::policies::restarts::is_note)
+                    {
+                        if let Err(error) =
+                            replicas::set_last_error(&self.database, &replica.id, None).await
+                        {
+                            tracing::warn!(%error, "could not clear why a copy was started again");
+                        }
+                    }
+                    continue;
+                }
+                restarts::Verdict::Leave => continue,
             };
 
             let id = replica.container_id(&project.slug, &service.slug);
@@ -2243,13 +2258,8 @@ impl Deployer {
             if self.restart_copy(project, service, &replica).await {
                 started += 1;
                 let when = format!("{:02}:{:02} UTC", at.hour(), at.minute());
-                let note = match said {
-                    Some(line) => format!(
-                        "started again at {when} (attempt {attempt}) because {how}; \
-                         its last line: {line}"
-                    ),
-                    None => format!("started again at {when} (attempt {attempt}) because {how}"),
-                };
+                let note =
+                    crate::domain::policies::restarts::note(&when, attempt, &how, said.as_deref());
                 if let Err(error) =
                     replicas::set_last_error(&self.database, &replica.id, Some(&note)).await
                 {

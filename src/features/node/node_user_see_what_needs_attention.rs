@@ -90,7 +90,7 @@ async fn copies_that_failed(
     let projects = crate::infra::repositories::projects::all(state.database).await?;
 
     for replica in crate::infra::repositories::replicas::here(state.database).await? {
-        let Some(reason) = &replica.last_error else {
+        let Some(reason) = replica.failure() else {
             continue;
         };
         let Some(service) = services.iter().find(|s| s.id == replica.service_id) else {

@@ -171,7 +171,11 @@ impl ProjectUiController {
                 where_it_runs,
                 elsewhere_of(&placements),
             );
-            rows.push((service, cell, here.and_then(|replica| replica.last_error)));
+            rows.push((
+                service,
+                cell,
+                here.and_then(|replica| replica.failure().map(str::to_string)),
+            ));
         }
 
         let all_projects = access::projects_for(&self.state.database, &account).await?;

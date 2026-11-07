@@ -12,18 +12,26 @@ use crate::domain::policies::restarts::{wait_before, STABLE};
 #[derive(Default)]
 pub struct Restarts {
     episodes: HashMap<String, Episode>,
+    up_since: HashMap<String, Instant>,
 }
 
 struct Episode {
     attempts: u32,
     next_at: Instant,
-    running_since: Option<Instant>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum Verdict {
     Leave,
-    Restart { attempt: u32 },
+    Restart {
+        attempt: u32,
+    },
+    /// Seen running for as long as forgiving takes. Said on every pass
+    /// after that rather than once, and of a copy with no episode too: the
+    /// note a restart left on its row may have been written before this
+    /// process started, and an answer that depended on remembering the
+    /// restart would never clear one of those.
+    Settled,
 }
 
 impl Restarts {
@@ -43,24 +51,22 @@ impl Restarts {
         match running {
             None => Verdict::Leave,
             Some(true) => {
-                if let Some(episode) = self.episodes.get_mut(replica) {
-                    let since = *episode.running_since.get_or_insert(now);
-                    if now.duration_since(since) >= STABLE {
-                        self.episodes.remove(replica);
-                    }
+                let since = *self.up_since.entry(replica.to_string()).or_insert(now);
+                if now.duration_since(since) < STABLE {
+                    return Verdict::Leave;
                 }
-                Verdict::Leave
+                self.episodes.remove(replica);
+                Verdict::Settled
             }
             Some(false) => {
+                self.up_since.remove(replica);
                 if !deployed && !self.episodes.contains_key(replica) {
                     return Verdict::Leave;
                 }
                 let episode = self.episodes.entry(replica.to_string()).or_insert(Episode {
                     attempts: 0,
                     next_at: now,
-                    running_since: None,
                 });
-                episode.running_since = None;
                 if now < episode.next_at {
                     return Verdict::Leave;
                 }
@@ -75,6 +81,7 @@ impl Restarts {
 
     pub fn forget(&mut self, replica: &str) {
         self.episodes.remove(replica);
+        self.up_since.remove(replica);
     }
 }
 
@@ -148,11 +155,14 @@ mod tests {
         restarts.decide("r1", Some(false), true, start);
         restarts.decide("r1", Some(false), true, start + Duration::from_secs(10));
         restarts.decide("r1", Some(true), true, start + Duration::from_secs(20));
-        restarts.decide(
-            "r1",
-            Some(true),
-            true,
-            start + Duration::from_secs(20) + STABLE,
+        assert_eq!(
+            restarts.decide(
+                "r1",
+                Some(true),
+                true,
+                start + Duration::from_secs(20) + STABLE,
+            ),
+            Verdict::Settled
         );
         assert_eq!(
             restarts.decide(
@@ -163,6 +173,62 @@ mod tests {
             ),
             Verdict::Restart { attempt: 1 },
             "a new episode, started at once"
+        );
+    }
+
+    /// **A copy is settled by what this process has seen, not by what it
+    /// remembers.** The note a restart writes outlived the restart: it was
+    /// forgiven only in memory, so the row kept saying `Failed` for days —
+    /// airbag-tech-db on node-0 carried one from the disk incident of
+    /// 2026-11-02, written before the process that would have forgiven it
+    /// was replaced. Reported by Jorge with ghost beside it.
+    #[test]
+    fn a_copy_seen_up_long_enough_is_settled_whatever_this_process_remembers() {
+        let mut restarts = Restarts::default();
+        let start = Instant::now();
+        assert_eq!(
+            restarts.decide("r1", Some(true), true, start),
+            Verdict::Leave
+        );
+        assert_eq!(
+            restarts.decide("r1", Some(true), true, start + STABLE),
+            Verdict::Settled
+        );
+
+        restarts.decide(
+            "r1",
+            Some(false),
+            true,
+            start + STABLE + Duration::from_secs(1),
+        );
+        assert_eq!(
+            restarts.decide(
+                "r1",
+                Some(true),
+                true,
+                start + STABLE + Duration::from_secs(2)
+            ),
+            Verdict::Leave,
+            "a stop starts the count again"
+        );
+        assert_eq!(
+            restarts.decide(
+                "r1",
+                None,
+                true,
+                start + STABLE * 2 + Duration::from_secs(2)
+            ),
+            Verdict::Leave,
+            "a runtime that cannot be asked says nothing about the copy"
+        );
+        assert_eq!(
+            restarts.decide(
+                "r1",
+                Some(true),
+                true,
+                start + STABLE * 2 + Duration::from_secs(2)
+            ),
+            Verdict::Settled
         );
     }
 }

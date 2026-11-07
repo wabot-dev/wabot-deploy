@@ -130,13 +130,22 @@ pub fn replica_cell(
             detail: String::new(),
         };
     }
-    if let Some(failure) = &replica.last_error {
+    if replica.started_again() {
+        return ReplicaCell {
+            badge: "badge badge-warning",
+            dot: "dot dot-warning",
+            word: "Started again".into(),
+            cpu: String::new(),
+            detail: replica.last_error.clone().unwrap_or_default(),
+        };
+    }
+    if let Some(failure) = replica.failure() {
         return ReplicaCell {
             badge: "badge badge-danger",
             dot: "dot dot-danger",
             word: "Failed".into(),
             cpu: String::new(),
-            detail: failure.clone(),
+            detail: failure.to_string(),
         };
     }
     // Running, and no longer replicating. **Above the rotation check and

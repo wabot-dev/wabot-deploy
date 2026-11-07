@@ -110,6 +110,7 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
     ("Set the node's domain", "Poner el dominio del nodo"),
     ("Show everything kept", "Ver todo lo guardado"),
     ("Signed here", "Firmado aquí"),
+    ("Started again", "Arrancada de nuevo"),
     ("Stop keeping", "Dejar de conservar"),
     ("Stop keeping unmounts it at the next deployment and leaves what it holds on this node's disk, where adding the same name again finds it. Deleting the service is what removes it.", "Dejar de conservar lo desmonta en el próximo despliegue y deja lo que contiene en el disco de este nodo, donde volver a añadir el mismo nombre lo encuentra. Lo que lo borra es borrar el servicio."),
     ("Stops its containers here and tells the node that placed it to stop asking. It cannot be undone from this side — that node decides what happens next, and it may place it somewhere else.", "Para sus contenedores aquí y le dice al nodo que la colocó que deje de pedirla. No se puede deshacer desde este lado — ese nodo decide qué pasa después, y puede colocarla en otro sitio."),

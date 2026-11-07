@@ -113,6 +113,28 @@ impl Replica {
         self.evicted_at.is_some()
     }
 
+    /// Whether this copy stopped on its own, was started again, and is up.
+    ///
+    /// The note is on the row where a failure would be, and it is not one
+    /// while the copy has an address: calling a running copy `Failed` is
+    /// what made two services read as broken for days after they had
+    /// recovered.
+    pub fn started_again(&self) -> bool {
+        self.address.is_some()
+            && self
+                .last_error
+                .as_deref()
+                .is_some_and(crate::domain::policies::restarts::is_note)
+    }
+
+    /// What went wrong with this copy, if something is wrong now.
+    pub fn failure(&self) -> Option<&str> {
+        match self.started_again() {
+            true => None,
+            false => self.last_error.as_deref(),
+        }
+    }
+
     /// The containerd container id for this copy.
     ///
     /// **Slot 1 keeps the name the service always had.** A container id

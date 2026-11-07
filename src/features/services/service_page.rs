@@ -178,7 +178,7 @@ pub fn render<'a>(page: &'a ServiceDetail<'a>) -> impl Renderable + 'a {
             @if let Some(replica) = page.here {
                 <p class="failure detail-line"
                    data-replica-detail=(&replica.id)>(
-                    replica.last_error.clone().unwrap_or_default()
+                    replica.failure().unwrap_or_default()
                 )</p>
             }
         </section>

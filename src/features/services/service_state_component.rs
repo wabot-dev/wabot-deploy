@@ -455,7 +455,17 @@ mod tests {
             following: Some(false),
             ..replica(Some("10.42.1.5"))
         };
+        let started_again = crate::domain::entities::replica::Replica {
+            last_error: Some(crate::domain::policies::restarts::note(
+                "05:38 UTC",
+                17,
+                "it stopped with exit 1",
+                Some("Node.js v22.23.3"),
+            )),
+            ..replica(Some("10.42.1.5"))
+        };
         let copies = [
+            replica_cell(&started_again, false, false, false),
             replica_cell(&evicted, false, false, false),
             replica_cell(&failed, false, false, false),
             replica_cell(&replica(Some("10.42.1.5")), false, false, false),
@@ -473,6 +483,49 @@ mod tests {
                 cell.word
             );
         }
+    }
+
+    /// **A copy that was started again and is up is not `Failed`.** The
+    /// note a restart leaves sits where a failure does, and the page read
+    /// it as one: ghost and airbag-tech-db on node-0 said `Failed` beside
+    /// a `Running` badge for days after they had recovered. Reported by
+    /// Jorge.
+    #[test]
+    fn a_copy_started_again_and_up_is_not_called_failed() {
+        let note = crate::domain::policies::restarts::note(
+            "05:38 UTC",
+            17,
+            "it stopped with exit 1",
+            Some("Node.js v22.23.3"),
+        );
+        let copy = |address: Option<&str>| crate::domain::entities::replica::Replica {
+            id: "rp-1".into(),
+            service_id: "svc-1".into(),
+            node_id: None,
+            slot: 1,
+            address: address.map(str::to_string),
+            overlay_port: None,
+            last_error: Some(note.clone()),
+            evicted_at: None,
+            reserved_host: None,
+            memory_bytes: None,
+            disk_bytes: None,
+            cpu_millicores: None,
+            following: None,
+            wal_held: None,
+            placed_by: None,
+            placed_note: None,
+        };
+
+        let up = replica_cell(&copy(Some("10.42.1.5")), false, false, false);
+        assert_eq!(up.word, "Started again");
+        assert!(!up.badge.contains("danger"), "{}", up.badge);
+        assert_eq!(up.detail, note, "and it still says why");
+        assert_eq!(copy(Some("10.42.1.5")).failure(), None);
+
+        let down = replica_cell(&copy(None), false, false, false);
+        assert_eq!(down.word, "Failed", "down again is down");
+        assert_eq!(copy(None).failure(), Some(note.as_str()));
     }
 
     /// During a deployment containerd's answer is a half-truth — the

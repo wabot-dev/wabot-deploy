@@ -22,9 +22,45 @@ pub fn wait_before(attempt: u32) -> Duration {
     })
 }
 
+/// What a copy's row says once this node has started it again.
+///
+/// Written where a failure is, because it travels where a failure does —
+/// on the report to the node that placed the copy — and read back by
+/// [`is_note`], so the sentence and the test for it live together.
+pub fn note(when: &str, attempt: u32, how: &str, last_line: Option<&str>) -> String {
+    match last_line {
+        Some(line) => {
+            format!("{NOTE_OPENS}{when} (attempt {attempt}) because {how}; its last line: {line}")
+        }
+        None => format!("{NOTE_OPENS}{when} (attempt {attempt}) because {how}"),
+    }
+}
+
+/// Whether a copy's reason is that note rather than a failure.
+pub fn is_note(reason: &str) -> bool {
+    reason.starts_with(NOTE_OPENS)
+}
+
+const NOTE_OPENS: &str = "started again at ";
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_note_a_restart_leaves_is_told_apart_from_a_failure() {
+        assert!(is_note(&note(
+            "05:38 UTC",
+            17,
+            "it stopped with exit 1",
+            Some("Node.js v22.23.3")
+        )));
+        assert!(is_note(&note("05:49 UTC", 1, "it was not running", None)));
+        assert!(!is_note(
+            "could not pull docker.io/library/ghost:6.71.0-alpine"
+        ));
+        assert!(!is_note(""));
+    }
 
     #[test]
     fn the_wait_grows_and_stops_growing_at_five_minutes() {
