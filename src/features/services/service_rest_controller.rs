@@ -3127,6 +3127,83 @@ mod tests {
         assert_eq!(host.username.as_deref(), Some("errand"));
     }
 
+    /// A project's own registry name is this node's registry under another
+    /// host, so a copy placed elsewhere is sent a credential for it — and
+    /// the far node files it under that host, one per project, rather than
+    /// one for the whole node that the next project's errand replaces.
+    #[tokio::test]
+    async fn an_image_under_a_projects_own_registry_name_travels_with_its_credential() {
+        let console = Console::new().await;
+        let cookie = console.signed_in().await;
+        crate::infra::node::settings::set_domain(&console.database, Some("hub.example"))
+            .await
+            .expect("domain");
+
+        let project = crate::infra::repositories::projects::create(&console.database, "shared")
+            .await
+            .expect("project");
+        crate::infra::repositories::projects::set_registry_domain(
+            &console.database,
+            &project.id,
+            Some("registry.shared.example"),
+        )
+        .await
+        .expect("registry name");
+        crate::infra::repositories::services::create(
+            &console.database,
+            &project.id,
+            "web",
+            "registry.shared.example/shared/web:latest",
+            &[],
+        )
+        .await
+        .expect("service");
+        crate::infra::network::save(
+            &console.database,
+            &crate::infra::network::Node {
+                update_note: None,
+                version: None,
+                wanted_version: None,
+                usage: None,
+                draining_at: None,
+                capacity: None,
+                id: "nd-elsewhere3".into(),
+                name: "alpine.example".into(),
+                kind: crate::infra::network::Kind::Private,
+                endpoint: None,
+                public_key: Some("k".into()),
+                overlay_ip: Some("10.42.0.10".into()),
+                is_self: false,
+                last_seen_at: None,
+                allows: Vec::new(),
+                ca_pem: None,
+            },
+        )
+        .await
+        .expect("node");
+
+        console
+            .harness
+            .post("/projects/shared/services/web/placement")
+            .header("cookie", &cookie)
+            .form(&[("replicas", "2"), ("new-on", "nd-elsewhere3")])
+            .send()
+            .await
+            .assert_status(StatusCode::SEE_OTHER);
+
+        let waiting = crate::infra::network::errand::waiting(&console.database, "nd-elsewhere3")
+            .await
+            .expect("waiting");
+        let host: crate::infra::network::errand::Host =
+            serde_json::from_value(waiting[0].payload.clone()).expect("a host errand");
+        assert!(host.secret.is_some(), "nothing to pull it with");
+        assert_eq!(host.username.as_deref(), Some("errand"));
+        assert_eq!(
+            host.registry, "registry.shared.example",
+            "the far node keeps it under the project's own name, beside every other project's"
+        );
+    }
+
     /// Bringing a replica home has to tell the node it left.
     ///
     /// This shipped in v0.5.0 as a leak: the row moved and nothing was

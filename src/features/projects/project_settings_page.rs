@@ -11,6 +11,7 @@ pub struct ProjectSettings<'a> {
     pub members: &'a [crate::infra::repositories::access::Member],
     pub tokens: &'a [crate::domain::entities::push_token::PushToken],
     pub registry_host: Option<&'a str>,
+    pub registry_domain: Option<&'a str>,
     pub query_error: Option<&'a str>,
 }
 
@@ -39,6 +40,23 @@ pub fn render<'a>(page: &'a ProjectSettings<'a>) -> impl Renderable + 'a {
         }
 
         (crate::features::projects::people_card_component::people_card(here, members, allowed))
+
+        <section class="card stack">
+            <p class="card-label">(t("Registry"))</p>
+            <code class="mono">"docker login "(&registry_host)</code>
+            <p class="tile-detail">(t("Docker keeps one login per name, so projects that share this node's name share one login: signing in with one project's token signs out of the others. A name of this project's own keeps its login beside theirs."))</p>
+            @if allowed.may_administer() {
+                <form method="post" action=(format!("{here}/registry")) class="stack-sm">
+                    <label for="registry">(t("Its own name, pointed at this node. Empty is this node's name."))</label>
+                    <div class="row">
+                        <input id="registry" name="registry" type="text" autocomplete="off"
+                               class="mono" placeholder="registry.example.com"
+                               value=(page.registry_domain.unwrap_or_default())>
+                        <button class="btn btn-secondary" type="submit">(t("Save"))</button>
+                    </div>
+                </form>
+            }
+        </section>
 
         <section class="card stack">
             <div class="split">

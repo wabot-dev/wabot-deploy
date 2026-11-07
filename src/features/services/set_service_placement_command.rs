@@ -482,8 +482,7 @@ async fn send_there(
     // No credential is the honest payload for a registry that
     // serves anybody: the far node pulls anonymously, which is what
     // it would do with a credential Docker Hub does not know.
-    let mine = crate::infra::node::settings::domain(database).await;
-    let secret = match mine.as_deref() == Some(registry.as_str()) {
+    let secret = match crate::infra::registry::answers_as(database, &registry).await {
         true => Some(
             crate::infra::repositories::tokens::create(
                 database,

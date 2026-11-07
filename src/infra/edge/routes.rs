@@ -49,6 +49,13 @@ pub enum Upstream {
     /// send it. A boundary nothing has to remember to apply beats thirty
     /// queries that each narrow correctly.
     Tenant(String),
+    /// The registry, and only the registry, for one project.
+    ///
+    /// A host of its own is what lets `docker login` keep one project's
+    /// token beside another's — the client stores one credential per
+    /// host. Only `/v2` answers here: the console is not on this name,
+    /// and a token of another project is not accepted on it.
+    Registry(String),
     /// A permanent redirect to this hostname, keeping the path and the
     /// query. Answered by the edge itself: nothing behind it runs.
     Redirect(String),
@@ -67,7 +74,7 @@ impl Upstream {
     /// [`pick_live`](Self::pick_live), which is what the edge calls.
     pub fn pick(&self, turn: usize) -> Option<SocketAddr> {
         match self {
-            Self::ControlPlane | Self::Tenant(_) | Self::Redirect(_) => None,
+            Self::ControlPlane | Self::Tenant(_) | Self::Registry(_) | Self::Redirect(_) => None,
             Self::Proxy(addresses) if addresses.is_empty() => None,
             Self::Proxy(addresses) => Some(addresses[turn % addresses.len()]),
         }
@@ -170,7 +177,10 @@ impl RouteTable {
             .values()
             .filter_map(|upstream| match upstream {
                 Upstream::Proxy(addresses) => Some(addresses.clone()),
-                Upstream::ControlPlane | Upstream::Tenant(_) | Upstream::Redirect(_) => None,
+                Upstream::ControlPlane
+                | Upstream::Tenant(_)
+                | Upstream::Registry(_)
+                | Upstream::Redirect(_) => None,
             })
             .flatten()
             .collect();
@@ -385,19 +395,35 @@ pub async fn forget_for_other(database: &SqliteDatabase, host: &str) -> SqliteRe
 /// would sit in it the same way — still answering on the name it used to
 /// have, still holding a certificate for it.
 pub async fn retain_tenants(database: &SqliteDatabase, keep: &[String]) -> SqliteResult<usize> {
+    retain_kind(database, "tenant", keep).await
+}
+
+/// Drop the registry rows of projects that no longer have that name.
+///
+/// In the same gap as a tenant row, for the same reason: no service owns
+/// it, so `retain_proxies` never looks at it.
+pub async fn retain_registries(database: &SqliteDatabase, keep: &[String]) -> SqliteResult<usize> {
+    retain_kind(database, "registry", keep).await
+}
+
+async fn retain_kind(
+    database: &SqliteDatabase,
+    kind: &'static str,
+    keep: &[String],
+) -> SqliteResult<usize> {
     let keep: Vec<String> = keep.iter().map(|host| normalize(host)).collect();
     database
         .write(move |connection| {
             let mut removed = 0;
             let hosts: Vec<String> = connection
-                .prepare("SELECT \"host\" FROM route WHERE \"upstream_kind\" = 'tenant'")?
-                .query_map([], |row| row.get(0))?
+                .prepare("SELECT \"host\" FROM route WHERE \"upstream_kind\" = ?1")?
+                .query_map([kind], |row| row.get(0))?
                 .collect::<Result<_, _>>()?;
             for host in hosts {
                 if !keep.contains(&host) {
                     connection.execute(
-                        "DELETE FROM route WHERE \"host\" = ?1 AND \"upstream_kind\" = 'tenant'",
-                        [&host],
+                        "DELETE FROM route WHERE \"host\" = ?1 AND \"upstream_kind\" = ?2",
+                        (&host, kind),
                     )?;
                     removed += 1;
                 }
@@ -460,6 +486,7 @@ pub async fn load_all(database: &SqliteDatabase) -> SqliteResult<Vec<(String, Up
             // so serving it unnarrowed is the one outcome that must not
             // happen. `retain_tenants` is what removes them on purpose.
             "tenant" => addr.map(|id| (host, Upstream::Tenant(id))),
+            "registry" => addr.map(|id| (host, Upstream::Registry(id))),
             "redirect" => addr.map(|target| (host, Upstream::Redirect(target))),
             // Comma-separated, because a route is now *n* replicas.
             // One that will not parse is dropped and the rest kept: a
@@ -511,6 +538,7 @@ pub async fn upsert(
     let (kind, addr) = match upstream {
         Upstream::ControlPlane => ("control_plane".to_string(), None),
         Upstream::Tenant(id) => ("tenant".to_string(), Some(id.clone())),
+        Upstream::Registry(id) => ("registry".to_string(), Some(id.clone())),
         Upstream::Redirect(target) => ("redirect".to_string(), Some(target.clone())),
         Upstream::Proxy(addresses) => (
             "proxy".to_string(),

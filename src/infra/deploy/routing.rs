@@ -316,6 +316,39 @@ pub async fn sync(
     }
     routes::retain_tenants(database, &tenanted).await?;
 
+    // And one row per project that has a registry name of its own. Never
+    // over a name something else answers on: a route is keyed by its
+    // host, so the later writer would take it, and the console, an
+    // organisation's frontier or a service's site going dark because a
+    // project chose a registry name is not something a push should cost.
+    let services_hold: Vec<String> = ports
+        .iter()
+        .filter_map(|port| port.hostname.clone())
+        .chain(
+            crate::infra::repositories::redirects::all(database)
+                .await?
+                .into_iter()
+                .map(|redirect| redirect.hostname),
+        )
+        .collect();
+    let mut registries: Vec<String> = Vec::new();
+    for (project_id, domain) in
+        crate::infra::repositories::projects::registry_domains(database).await?
+    {
+        let taken = own
+            .iter()
+            .chain(&tenanted)
+            .chain(&services_hold)
+            .any(|name| name.eq_ignore_ascii_case(&domain));
+        if taken {
+            tracing::warn!(%domain, project = %project_id, "a registry name something else answers on");
+            continue;
+        }
+        routes::upsert(database, &domain, &Upstream::Registry(project_id), None).await?;
+        registries.push(domain);
+    }
+    routes::retain_registries(database, &registries).await?;
+
     if let Some(table) = table {
         table.replace(routes::load_all(database).await?);
         tracing::info!(hosts = table.hosts().join(", "), "routes reloaded");
@@ -427,6 +460,67 @@ mod tests {
         .await
         .expect("service");
         (database, project.id, service.id)
+    }
+
+    /// A project's registry name reaches that project's registry, and
+    /// stops answering when the name is taken away. Never over a name
+    /// something else answers on: the node's own, or a service's.
+    #[tokio::test]
+    async fn a_projects_registry_name_is_routed_to_its_registry_and_nothing_else() {
+        let (database, project, service) = node().await;
+        let table = Arc::new(RouteTable::new());
+
+        crate::infra::repositories::projects::set_registry_domain(
+            &database,
+            &project,
+            Some("registry.demo.example"),
+        )
+        .await
+        .expect("set");
+        sync(&database, Some("node.example"), Some(&table))
+            .await
+            .expect("sync");
+        assert_eq!(
+            table.resolve("registry.demo.example"),
+            Some(Upstream::Registry(project.clone()))
+        );
+        assert_eq!(table.resolve("node.example"), Some(Upstream::ControlPlane));
+
+        crate::infra::repositories::projects::set_registry_domain(&database, &project, None)
+            .await
+            .expect("cleared");
+        sync(&database, Some("node.example"), Some(&table))
+            .await
+            .expect("sync");
+        assert!(table.resolve("registry.demo.example").is_none());
+
+        for taken in ["node.example", "web.demo.example"] {
+            ports::create(
+                &database,
+                &service,
+                80,
+                false,
+                Some("web.demo.example"),
+                &[],
+            )
+            .await
+            .ok();
+            running_at(&database, &service, Some("10.42.1.5")).await;
+            crate::infra::repositories::projects::set_registry_domain(
+                &database,
+                &project,
+                Some(taken),
+            )
+            .await
+            .expect("set");
+            sync(&database, Some("node.example"), Some(&table))
+                .await
+                .expect("sync");
+            assert!(
+                !matches!(table.resolve(taken), Some(Upstream::Registry(_))),
+                "{taken} was taken from what answers on it"
+            );
+        }
     }
 
     /// The console answers on this machine's own addresses.

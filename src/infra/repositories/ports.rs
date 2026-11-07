@@ -54,6 +54,11 @@ pub async fn create(
         if redirects(database, name).await? {
             return Err(PlatformError::Refused(REDIRECTS_ALREADY.into()));
         }
+        if crate::infra::repositories::projects::is_a_registry(database, name).await? {
+            return Err(PlatformError::Refused(
+                crate::infra::repositories::projects::IS_A_REGISTRY.into(),
+            ));
+        }
     }
 
     let host_port = if publish {
@@ -275,6 +280,11 @@ pub async fn set_hostname(
     if let Some(name) = hostname {
         if redirects(database, name).await? {
             return Err(PlatformError::Refused(REDIRECTS_ALREADY.into()));
+        }
+        if crate::infra::repositories::projects::is_a_registry(database, name).await? {
+            return Err(PlatformError::Refused(
+                crate::infra::repositories::projects::IS_A_REGISTRY.into(),
+            ));
         }
     }
     let port = all(database).await?.into_iter().find(|port| port.id == id);

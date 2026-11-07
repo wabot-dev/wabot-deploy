@@ -1186,7 +1186,6 @@ async fn copy_volumes(
 /// Blobs go to the shared store under their digest, so a network of
 /// nodes running the same base image keeps it once.
 async fn keep_images(database: &wabot::sqlite::SqliteDatabase, root: &Path) -> Vec<Kept> {
-    let domain = crate::infra::node::settings::domain(database).await;
     let Ok(services) = crate::infra::repositories::services::all(database, None).await else {
         return Vec::new();
     };
@@ -1226,10 +1225,15 @@ async fn keep_images(database: &wabot::sqlite::SqliteDatabase, root: &Path) -> V
         // before a rename somebody else's — and a node named after it
         // booted had named them all `localhost/…`. Both left a backup
         // without the only copy. Found on a VM node.
-        let named_here = crate::domain::values::image_reference::ImageReference::parse(&reference)
+        let host = crate::domain::values::image_reference::ImageReference::parse(&reference)
             .ok()
-            .and_then(|reference| reference.host())
-            .is_some_and(|host| host == "localhost" || Some(&host) == domain.as_ref());
+            .and_then(|reference| reference.host());
+        let named_here = match host {
+            Some(host) => {
+                host == "localhost" || crate::infra::registry::answers_as(database, &host).await
+            }
+            None => false,
+        };
         if !pushed && !named_here {
             continue;
         }

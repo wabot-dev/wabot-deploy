@@ -28,7 +28,10 @@ impl RegistryRestController {
     #[get("/")]
     #[raw]
     async fn version(&self, request: Request) -> RestResult<Response> {
-        match self.authenticate(basic_password(&request)).await? {
+        match self
+            .authenticate(basic_password(&request), scope_of(&request))
+            .await?
+        {
             Some(_) => Ok(ok_empty()),
             None => Ok(challenge()),
         }
@@ -42,7 +45,10 @@ impl RegistryRestController {
     #[head("/*path")]
     #[raw]
     async fn head(&self, request: Request) -> RestResult<Response> {
-        let Some(pusher) = self.authenticate(basic_password(&request)).await? else {
+        let Some(pusher) = self
+            .authenticate(basic_password(&request), scope_of(&request))
+            .await?
+        else {
             return Ok(challenge());
         };
         let path = request.uri().path().to_string();
@@ -63,7 +69,10 @@ impl RegistryRestController {
     #[get("/*path")]
     #[raw]
     async fn get(&self, request: Request) -> RestResult<Response> {
-        let Some(pusher) = self.authenticate(basic_password(&request)).await? else {
+        let Some(pusher) = self
+            .authenticate(basic_password(&request), scope_of(&request))
+            .await?
+        else {
             return Ok(challenge());
         };
         let path = request.uri().path().to_string();
@@ -85,7 +94,10 @@ impl RegistryRestController {
     #[post("/*path")]
     #[raw]
     async fn post(&self, request: Request) -> RestResult<Response> {
-        let Some(pusher) = self.authenticate(basic_password(&request)).await? else {
+        let Some(pusher) = self
+            .authenticate(basic_password(&request), scope_of(&request))
+            .await?
+        else {
             return Ok(challenge());
         };
         let path = request.uri().path().to_string();
@@ -103,7 +115,10 @@ impl RegistryRestController {
     #[patch("/*path")]
     #[raw]
     async fn patch(&self, request: Request) -> RestResult<Response> {
-        let Some(pusher) = self.authenticate(basic_password(&request)).await? else {
+        let Some(pusher) = self
+            .authenticate(basic_password(&request), scope_of(&request))
+            .await?
+        else {
             return Ok(challenge());
         };
         let path = request.uri().path().to_string();
@@ -121,7 +136,10 @@ impl RegistryRestController {
     #[put("/*path")]
     #[raw]
     async fn put(&self, request: Request) -> RestResult<Response> {
-        let Some(pusher) = self.authenticate(basic_password(&request)).await? else {
+        let Some(pusher) = self
+            .authenticate(basic_password(&request), scope_of(&request))
+            .await?
+        else {
             return Ok(challenge());
         };
         let path = request.uri().path().to_string();
@@ -150,13 +168,25 @@ impl RegistryRestController {
     /// Takes the credential rather than the request: holding a
     /// `&Request` across an `await` needs `Body: Sync`, which it is
     /// not, and the handler quietly stops being one axum accepts.
-    async fn authenticate(&self, secret: Option<String>) -> RestResult<Option<Pusher>> {
+    ///
+    /// On a project's own registry name only that project's tokens are
+    /// anybody: the name exists so `docker login` keeps one credential
+    /// per project, and another project's token answered there would put
+    /// two projects behind one login again.
+    async fn authenticate(
+        &self,
+        secret: Option<String>,
+        scope: Option<String>,
+    ) -> RestResult<Option<Pusher>> {
         let Some(secret) = secret else {
             return Ok(None);
         };
         let Some(project_id) = tokens::authenticate(&self.state.database, &secret).await? else {
             return Ok(None);
         };
+        if scope.is_some_and(|scope| scope != project_id) {
+            return Ok(None);
+        }
         let Some(project) = projects::find(&self.state.database, &project_id).await? else {
             return Ok(None);
         };
@@ -186,6 +216,13 @@ impl RegistryRestController {
     }
 }
 
+fn scope_of(request: &Request) -> Option<String> {
+    request
+        .extensions()
+        .get::<crate::infra::edge::RegistryScope>()
+        .map(|scope| scope.0.clone())
+}
+
 pub fn register(container: &Container, state: Arc<crate::infra::registry::RegistryState>) {
     container.register_instance::<crate::infra::registry::RegistryState>(state);
     register_transients!(container, RegistryRestController);
@@ -193,4 +230,74 @@ pub fn register(container: &Container, state: Arc<crate::infra::registry::Regist
 
 pub fn routes(container: &Container) -> Router {
     RegistryRestController::register_routes(container, Router::new())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tower::ServiceExt;
+    use wabot::rest::axum::body::Body;
+
+    async fn version(router: &Router, secret: &str, scope: Option<&str>) -> u16 {
+        use base64::Engine;
+        let mut request = Request::builder()
+            .uri("/v2")
+            .header(
+                "authorization",
+                format!(
+                    "Basic {}",
+                    base64::engine::general_purpose::STANDARD.encode(format!("ci:{secret}"))
+                ),
+            )
+            .body(Body::empty())
+            .expect("request");
+        if let Some(scope) = scope {
+            request
+                .extensions_mut()
+                .insert(crate::infra::edge::RegistryScope(scope.to_string()));
+        }
+        router
+            .clone()
+            .oneshot(request)
+            .await
+            .expect("answered")
+            .status()
+            .as_u16()
+    }
+
+    /// On a project's own registry name, `docker login` with another
+    /// project's token fails. That is what keeps one credential per
+    /// project in the client: a host that took any project's token would
+    /// be one login for two projects again. On the node's own name every
+    /// project's token is still somebody.
+    #[tokio::test]
+    async fn a_projects_registry_name_takes_that_projects_tokens_only() {
+        let database = Arc::new(crate::infra::db::open_in_memory().await.expect("open"));
+        let acme = projects::create(&database, "acme").await.expect("project");
+        let other = projects::create(&database, "other").await.expect("project");
+        let (_, acme_secret) = tokens::create(&database, &acme.id, "ci", None)
+            .await
+            .expect("token");
+        let (_, other_secret) = tokens::create(&database, &other.id, "ci", None)
+            .await
+            .expect("token");
+
+        let container = Container::new();
+        register(
+            &container,
+            Arc::new(crate::infra::registry::RegistryState {
+                database: database.clone(),
+                deployer: Arc::new(crate::infra::deploy::Deployer::new(
+                    database.clone(),
+                    &crate::infra::config::Config::default(),
+                )),
+            }),
+        );
+        let router = routes(&container);
+
+        assert_eq!(version(&router, &acme_secret, Some(&acme.id)).await, 200);
+        assert_eq!(version(&router, &other_secret, Some(&acme.id)).await, 401);
+        assert_eq!(version(&router, &other_secret, None).await, 200);
+        assert_eq!(version(&router, &acme_secret, None).await, 200);
+    }
 }

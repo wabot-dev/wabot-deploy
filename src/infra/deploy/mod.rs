@@ -2850,10 +2850,7 @@ impl Deployer {
             == DesiredState::Running;
         let ceilings = fresh.as_ref().unwrap_or(service);
 
-        let ours = crate::infra::node::settings::domain(&self.database)
-            .await
-            .as_deref()
-            == Some(registry.as_str());
+        let ours = crate::infra::registry::answers_as(&self.database, &registry).await;
 
         // Worked out once rather than per row, through the same function
         // the placement form offers nodes with — so what was offerable and

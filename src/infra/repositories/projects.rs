@@ -252,6 +252,98 @@ async fn network_index(database: &SqliteDatabase, id: &str) -> PlatformResult<Op
     Ok(value.flatten().map(|index| index as u8))
 }
 
+/// The name this project's registry answers on, when it has one of its own.
+pub async fn registry_domain(
+    database: &SqliteDatabase,
+    id: &str,
+) -> PlatformResult<Option<String>> {
+    let id = id.to_string();
+    Ok(database
+        .read(move |connection| {
+            connection
+                .query_row(
+                    "SELECT \"registry_domain\" FROM project WHERE \"id\" = ?1",
+                    [id],
+                    |row| row.get::<_, Option<String>>(0),
+                )
+                .optional()
+        })
+        .await?
+        .flatten())
+}
+
+/// Every project that has a registry name of its own, as `(id, name)`.
+pub async fn registry_domains(database: &SqliteDatabase) -> PlatformResult<Vec<(String, String)>> {
+    Ok(database
+        .read(|connection| {
+            connection
+                .prepare(
+                    "SELECT \"id\", \"registry_domain\" FROM project \
+                     WHERE \"registry_domain\" IS NOT NULL ORDER BY \"registry_domain\"",
+                )?
+                .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+                .collect()
+        })
+        .await?)
+}
+
+/// What a site, a redirect or an organisation is told when the name it
+/// asked for is already a project's registry.
+pub const IS_A_REGISTRY: &str =
+    "that name is a project's registry — a name is a site or a registry, not both";
+
+/// Whether a project's registry answers on `host`.
+pub async fn is_a_registry(database: &SqliteDatabase, host: &str) -> PlatformResult<bool> {
+    Ok(registry_domains(database)
+        .await?
+        .iter()
+        .any(|(_, domain)| domain.eq_ignore_ascii_case(host)))
+}
+
+/// What became of asking for a registry name.
+#[derive(Debug, PartialEq, Eq)]
+pub enum RegistryClaim {
+    Set,
+    /// Another project answers on it; carries that project's name.
+    HeldBy(String),
+}
+
+/// Give a project a registry name of its own, or take it away with `None`.
+///
+/// The holder is asked inside the same write as the `UPDATE`, so two
+/// projects asking for one name at once cannot both be told yes; the
+/// unique index is what holds if anything ever forgets to ask.
+pub async fn set_registry_domain(
+    database: &SqliteDatabase,
+    id: &str,
+    domain: Option<&str>,
+) -> PlatformResult<RegistryClaim> {
+    let id = id.to_string();
+    let domain = domain.map(str::to_string);
+    Ok(database
+        .write(move |connection| {
+            if let Some(domain) = &domain {
+                let holder: Option<String> = connection
+                    .query_row(
+                        "SELECT \"name\" FROM project \
+                         WHERE \"registry_domain\" = ?1 AND \"id\" != ?2",
+                        (domain, &id),
+                        |row| row.get(0),
+                    )
+                    .optional()?;
+                if let Some(holder) = holder {
+                    return Ok(RegistryClaim::HeldBy(holder));
+                }
+            }
+            connection.execute(
+                "UPDATE project SET \"registry_domain\" = ?2 WHERE \"id\" = ?1",
+                (&id, &domain),
+            )?;
+            Ok(RegistryClaim::Set)
+        })
+        .await?)
+}
+
 /// Remove a project and every service under it.
 ///
 /// The caller stops the containers first — this only removes rows, and
@@ -281,6 +373,54 @@ mod tests {
 
     async fn database() -> SqliteDatabase {
         crate::infra::db::open_in_memory().await.expect("open")
+    }
+
+    #[tokio::test]
+    async fn a_registry_name_answers_for_one_project() {
+        let database = database().await;
+        let first = create(&database, "First").await.expect("created");
+        let second = create(&database, "Second").await.expect("created");
+
+        assert_eq!(
+            set_registry_domain(&database, &first.id, Some("registry.first.example"))
+                .await
+                .expect("set"),
+            RegistryClaim::Set
+        );
+        assert_eq!(
+            set_registry_domain(&database, &second.id, Some("registry.first.example"))
+                .await
+                .expect("asked"),
+            RegistryClaim::HeldBy("First".into())
+        );
+        assert_eq!(
+            registry_domain(&database, &second.id).await.expect("read"),
+            None,
+            "a refused name is not written"
+        );
+        assert_eq!(
+            set_registry_domain(&database, &first.id, Some("registry.first.example"))
+                .await
+                .expect("set again"),
+            RegistryClaim::Set,
+            "asking again for its own name is not a collision with itself"
+        );
+
+        set_registry_domain(&database, &first.id, None)
+            .await
+            .expect("cleared");
+        assert_eq!(registry_domains(&database).await.expect("read"), vec![]);
+        assert_eq!(
+            set_registry_domain(&database, &second.id, Some("registry.first.example"))
+                .await
+                .expect("set"),
+            RegistryClaim::Set,
+            "a name let go of is free"
+        );
+        assert_eq!(
+            registry_domains(&database).await.expect("read"),
+            vec![(second.id.clone(), "registry.first.example".to_string())]
+        );
     }
 
     #[tokio::test]

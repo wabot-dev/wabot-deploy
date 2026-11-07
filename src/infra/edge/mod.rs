@@ -58,6 +58,11 @@ pub struct EdgeState {
     /// this frontier by construction — no handler exists to forget the
     /// check in. See `console::tenant`.
     tenant_plane: Router,
+    /// The registry alone, for a project's own registry name. Its own
+    /// router so that name answers `/v2` and nothing else: the console
+    /// on a registry's host would be a login page under a name somebody
+    /// chose for `docker login`.
+    registry_plane: Router,
     /// Whether an unmatched hostname reaches the control plane. See
     /// [`build`].
     default_to_control_plane: bool,
@@ -68,6 +73,7 @@ pub async fn build(
     database: &SqliteDatabase,
     control_plane: Router,
     tenant_plane: Router,
+    registry_plane: Router,
     table: Arc<RouteTable>,
 ) -> anyhow::Result<(EdgeState, Arc<CertResolver>)> {
     // Every name this node can be reached by before ACME. `localhost`
@@ -105,6 +111,7 @@ pub async fn build(
     Ok((
         EdgeState {
             tenant_plane,
+            registry_plane,
             routes: table,
             proxy: Proxy::new(),
             control_plane,
@@ -279,6 +286,15 @@ async fn dispatch(State(state): State<EdgeState>, request: Request) -> Response 
                 Err(never) => match never {},
             }
         }
+        Upstream::Registry(ref id) => {
+            use tower::ServiceExt;
+            let mut request = trim_trailing_slash(request);
+            request.extensions_mut().insert(RegistryScope(id.clone()));
+            match state.registry_plane.clone().oneshot(request).await {
+                Ok(response) => response,
+                Err(never) => match never {},
+            }
+        }
         // `oneshot` rather than a request to ourselves over loopback:
         // the router is a `tower::Service`, so this is a function
         // call. No socket, no second serialization, no port.
@@ -327,6 +343,14 @@ async fn dispatch(State(state): State<EdgeState>, request: Request) -> Response 
 /// one of its own. Absent is the node's own console.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Tenancy(pub String);
+
+/// Which project's registry name a request arrived at.
+///
+/// Set from the route, like [`Tenancy`], so no request can carry one of
+/// its own. Absent is the node's own name, where every project's token
+/// is accepted for that project's repositories.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RegistryScope(pub String);
 
 /// The `Host` a request is for.
 ///
@@ -462,6 +486,15 @@ mod tests {
             // A second router that answers differently, so a test can
             // tell which one served — that is the whole property.
             tenant_plane: Router::new().route("/whoami", get(|| async { "tenant-plane" })),
+            registry_plane: Router::new().route(
+                "/whoami",
+                get(|request: Request| async move {
+                    match request.extensions().get::<RegistryScope>() {
+                        Some(scope) => format!("registry-plane for {}", scope.0),
+                        None => "registry-plane for nobody".to_string(),
+                    }
+                }),
+            ),
             default_to_control_plane,
         }
     }
@@ -514,6 +547,45 @@ mod tests {
                 expected,
                 "{host} reached the wrong router"
             );
+        }
+    }
+
+    /// A project's registry name reaches the registry alone, and carries
+    /// which project it is — the console is not on it, so `/whoami` on
+    /// the node's name and on the registry's are answered by different
+    /// routers.
+    #[tokio::test]
+    async fn a_projects_registry_name_reaches_the_registry_with_its_project() {
+        let state = state(false);
+        state.routes.replace(vec![
+            ("node.example".into(), Upstream::ControlPlane),
+            (
+                "registry.acme.example".into(),
+                Upstream::Registry("prj-acme".into()),
+            ),
+        ]);
+        let app = Router::new().fallback(dispatch).with_state(state);
+
+        for (host, expected) in [
+            ("node.example", "control-plane"),
+            ("registry.acme.example", "registry-plane for prj-acme"),
+        ] {
+            use tower::ServiceExt;
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .uri("/whoami")
+                        .header("host", host)
+                        .body(wabot::rest::axum::body::Body::empty())
+                        .expect("request"),
+                )
+                .await
+                .expect("answered");
+            let body = wabot::rest::axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .expect("body");
+            assert_eq!(String::from_utf8_lossy(&body), expected, "{host}");
         }
     }
 

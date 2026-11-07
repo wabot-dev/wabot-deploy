@@ -45,18 +45,59 @@ pub struct RegistryState {
 }
 
 impl RegistryState {
-    /// The host an image pushed here is named under, so `ctr images ls`
-    /// shows something somebody could paste into a `docker pull`.
+    /// The host an image pushed to this project is named under, so `ctr
+    /// images ls` shows something somebody could paste into a `docker
+    /// pull`.
     ///
     /// Asked at each push. It was read once at startup, so a node named
     /// from the console after it booted named every push `localhost/…` —
     /// and a backup, which decides what is this node's own by its current
     /// name, then kept none of them. Found on a VM node.
-    pub async fn host(&self) -> String {
-        crate::infra::node::settings::domain(&self.database)
+    pub async fn host_for(&self, project: &crate::domain::entities::project::Project) -> String {
+        name_of(&self.database, project)
             .await
             .unwrap_or_else(|| "localhost".into())
     }
+}
+
+/// The name this project's registry answers on.
+///
+/// Its own when it chose one, and the node's otherwise. By the project
+/// rather than by the `Host` a push arrived on, so a push through the
+/// node's name after a project chose its own still names the image the
+/// way every page and every far node will ask for it.
+pub async fn name_of(
+    database: &SqliteDatabase,
+    project: &crate::domain::entities::project::Project,
+) -> Option<String> {
+    match crate::infra::repositories::projects::registry_domain(database, &project.id).await {
+        Ok(Some(own)) => Some(own),
+        Ok(None) => crate::infra::node::settings::domain(database).await,
+        Err(error) => {
+            tracing::warn!(%error, project = %project.slug, "could not read the project's registry name");
+            crate::infra::node::settings::domain(database).await
+        }
+    }
+}
+
+/// Whether an image named under `host` is one this node's registry holds.
+///
+/// The node's name, or any project's own. Asked before a credential is
+/// sent with an image to another node: a registry that serves anybody
+/// gets none, and one of ours gets a token.
+pub async fn answers_as(database: &SqliteDatabase, host: &str) -> bool {
+    if crate::infra::node::settings::domain(database)
+        .await
+        .as_deref()
+        == Some(host)
+    {
+        return true;
+    }
+    crate::infra::repositories::projects::registry_domains(database)
+        .await
+        .unwrap_or_default()
+        .iter()
+        .any(|(_, domain)| domain == host)
 }
 
 /// A caller that proved it may push to a project.
@@ -193,12 +234,53 @@ mod tests {
                 &crate::infra::config::Config::default(),
             )),
         };
-        assert_eq!(state.host().await, "localhost");
+        let project = crate::infra::repositories::projects::create(&database, "demo")
+            .await
+            .expect("project");
+        assert_eq!(state.host_for(&project).await, "localhost");
 
         crate::infra::node::settings::set_domain(&database, Some("node.example"))
             .await
             .expect("named");
-        assert_eq!(state.host().await, "node.example");
+        assert_eq!(state.host_for(&project).await, "node.example");
+    }
+
+    /// A project with a registry name of its own has its pushes named
+    /// under it, whatever host the push came through, and that name is
+    /// one this node holds — so a copy elsewhere is sent a credential for
+    /// it. The other projects keep the node's.
+    #[tokio::test]
+    async fn a_project_with_its_own_registry_name_is_pushed_and_pulled_under_it() {
+        let database = Arc::new(crate::infra::db::open_in_memory().await.expect("open"));
+        let state = RegistryState {
+            database: database.clone(),
+            deployer: Arc::new(crate::infra::deploy::Deployer::new(
+                database.clone(),
+                &crate::infra::config::Config::default(),
+            )),
+        };
+        crate::infra::node::settings::set_domain(&database, Some("node.example"))
+            .await
+            .expect("named");
+        let acme = crate::infra::repositories::projects::create(&database, "acme")
+            .await
+            .expect("project");
+        let other = crate::infra::repositories::projects::create(&database, "other")
+            .await
+            .expect("project");
+        crate::infra::repositories::projects::set_registry_domain(
+            &database,
+            &acme.id,
+            Some("registry.acme.example"),
+        )
+        .await
+        .expect("set");
+
+        assert_eq!(state.host_for(&acme).await, "registry.acme.example");
+        assert_eq!(state.host_for(&other).await, "node.example");
+        assert!(answers_as(&database, "registry.acme.example").await);
+        assert!(answers_as(&database, "node.example").await);
+        assert!(!answers_as(&database, "docker.io").await);
     }
 
     #[test]

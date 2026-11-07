@@ -51,6 +51,12 @@ pub async fn run(
                 return Err(crate::shell::texts::sentences::name_is_taken(&held.name));
             }
         }
+        if crate::infra::repositories::projects::is_a_registry(database, &wanted)
+            .await
+            .map_err(|error| error.to_string())?
+        {
+            return Err(crate::infra::repositories::projects::IS_A_REGISTRY.into());
+        }
         // This node is the organisation's console, so its name has to
         // arrive here — the question the node's own domain and every
         // service hostname are asked before they are saved. Not asked, a

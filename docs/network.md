@@ -363,6 +363,20 @@ and per-service copies would be one secret duplicated per deployment
 with nowhere to rotate it. Same shape as `~/.docker/config.json`, for
 the same reason.
 
+**And that shape is why a project can have a registry host of its own**
+(migration `0065`). A token is a project's, and one host held one of
+them: on a laptop `docker login` with one project's token logged out of
+every other, and on a far node holding copies of two projects the second
+project's errand replaced the first one's credential — which 0.31.0
+patched by sending a token whenever the last one sent was another
+project's. A project with its own name is pushed to under it, names its
+images under it whatever host the push came through, and its copies
+elsewhere are pulled from it, so both the laptop and the far node keep
+one credential per project and nothing replaces anything. The name is
+routed to the registry alone, never the console, and takes only that
+project's tokens. Projects without one keep the node's name, and the
+re-sending stays for them.
+
 **Deploying is local, and stays local.** An errand is an *instruction*,
 not a job. The node that collects one writes its own local job for it,
 so the queue never stops being per-node and job routing never appears.

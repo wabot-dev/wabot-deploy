@@ -263,11 +263,16 @@ impl ProjectUiController {
         // login` for whatever the node was called at install time, for
         // as long as nobody had edited the file to match.
         let registry_host = crate::infra::node::authority(
-            crate::infra::node::settings::domain(&self.state.database)
+            crate::infra::registry::name_of(&self.state.database, &project)
                 .await
                 .as_deref(),
             self.state.config.edge.https_port,
         );
+        let registry_domain = crate::infra::repositories::projects::registry_domain(
+            &self.state.database,
+            &project.id,
+        )
+        .await?;
 
         let members = access::members(&self.state.database, &project.id).await?;
         let all_projects = access::projects_for(&self.state.database, &account).await?;
@@ -290,6 +295,7 @@ impl ProjectUiController {
             members: &members,
             tokens: &tokens,
             registry_host: Some(registry_host.as_str()),
+            registry_domain: registry_domain.as_deref(),
             query_error: query.error.as_deref(),
         };
         let body = crate::shell::texts::language::scoped(account.language, || {

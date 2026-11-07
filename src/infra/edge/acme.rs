@@ -394,6 +394,13 @@ pub async fn wanted_names(database: &SqliteDatabase) -> Vec<String> {
         Ok(tenants) => names.extend(tenants.into_iter().filter_map(|tenant| tenant.domain)),
         Err(error) => tracing::warn!(%error, "could not read the organisations' names"),
     }
+    // And every project's own registry name, which is the node's
+    // registry under another host and needs a certificate for the same
+    // reason an organisation's console name does: no service row holds it.
+    match crate::infra::repositories::projects::registry_domains(database).await {
+        Ok(registries) => names.extend(registries.into_iter().map(|(_, domain)| domain)),
+        Err(error) => tracing::warn!(%error, "could not read the projects' registry names"),
+    }
     // And the names this node serves for somebody else. They have no
     // port row here — the route arrived on an errand — so reading the
     // `port` table alone would leave the one thing this node was asked
@@ -1266,6 +1273,26 @@ mod tests {
         for address in crate::infra::network::lan::addresses() {
             assert!(served.contains(&address), "{served:?}");
         }
+    }
+
+    /// A project's registry name is served over a certificate for it:
+    /// nothing else asks for one, because no service row holds the name.
+    #[tokio::test]
+    async fn a_projects_registry_name_is_certified() {
+        let database = database().await;
+        let project = crate::infra::repositories::projects::create(&database, "shop")
+            .await
+            .expect("project");
+        crate::infra::repositories::projects::set_registry_domain(
+            &database,
+            &project.id,
+            Some("registry.shop.example"),
+        )
+        .await
+        .expect("set");
+        assert!(wanted_names(&database)
+            .await
+            .contains(&"registry.shop.example".to_string()));
     }
 
     /// A name two nodes answer for is ordered for **only if this node

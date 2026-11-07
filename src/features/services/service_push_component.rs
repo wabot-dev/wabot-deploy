@@ -33,7 +33,7 @@ pub enum Push {
 pub fn push(
     service: &crate::domain::entities::service::Service,
     project_slug: &str,
-    node_domain: Option<&str>,
+    registry: Option<&str>,
 ) -> Option<Push> {
     // Managed images are the node's own choice, pinned to a major
     // version; nothing is ever pushed at one, and there is nothing
@@ -46,7 +46,7 @@ pub fn push(
     else {
         return Some(Push::Pinned);
     };
-    let Some(host) = node_domain else {
+    let Some(host) = registry else {
         return Some(Push::Nameless);
     };
     // No image is a service waiting for its first push, and the create
@@ -78,8 +78,8 @@ pub fn push(
     // somebody to edit a field the push would have set itself.
     let name = reference.name();
     match name == project_slug || name.starts_with(&format!("{project_slug}/")) {
-        // The registry names a pushed image under the node's own host,
-        // and that is what containerd is later asked to pull. A
+        // The registry names a pushed image under the project's registry
+        // name, and that is what containerd is later asked to pull. A
         // reference with no host is one containerd reads as its first
         // segment being a registry to dial.
         true => Some(Push::To(format!("{host}/{name}:{tag}"))),

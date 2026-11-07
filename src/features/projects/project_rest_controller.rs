@@ -406,7 +406,7 @@ impl ProjectRestController {
                 // and a push token on its own is something somebody has
                 // to remember the wrapper for.
                 let host = crate::infra::node::authority(
-                    crate::infra::node::settings::domain(&self.state.database)
+                    crate::infra::registry::name_of(&self.state.database, &project)
                         .await
                         .as_deref(),
                     self.state.config.edge.https_port,
@@ -468,6 +468,59 @@ impl ProjectRestController {
             }
         };
         match revoked {
+            Ok(()) => Ok(see_other(&here)),
+            Err(reason) => Ok(back_with_error(&here, &reason)),
+        }
+    }
+
+    /// Give the project a registry name of its own, or take it back.
+    #[post("/projects/:project/registry")]
+    #[raw]
+    #[middleware(SessionMiddleware)]
+    async fn set_registry(&self, request: Request) -> RestResult<Response> {
+        let path = request.uri().path().to_string();
+        let Some((project, allowed, _)) = self.locate(&path).await? else {
+            return Ok(see_other("/?error=no+such+project"));
+        };
+        let here = format!("/projects/{}/settings", project.slug);
+        let Some(account) = signed_in(&self.auth) else {
+            return Ok(see_other("/sign-in"));
+        };
+        let form = match read_form(request).await {
+            Ok(form) => form,
+            Err(response) => return Ok(response),
+        };
+        let typed = field(&form, "registry").trim();
+        let asked =
+            crate::features::projects::set_registry_domain_request::SetRegistryDomainRequest {
+                domain: (!typed.is_empty()).then(|| typed.to_string()),
+            };
+
+        let set = match crate::domain::authz::node_user::belongs_here(&account) {
+            true => {
+                crate::features::projects::node_user_set_registry_domain::run(
+                    &self.state.database,
+                    &self.state.deployer,
+                    &account,
+                    &project,
+                    &allowed,
+                    &asked,
+                )
+                .await
+            }
+            false => {
+                crate::features::projects::tenant_user_set_registry_domain::run(
+                    &self.state.database,
+                    &self.state.deployer,
+                    &account,
+                    &project,
+                    &allowed,
+                    &asked,
+                )
+                .await
+            }
+        };
+        match set {
             Ok(()) => Ok(see_other(&here)),
             Err(reason) => Ok(back_with_error(&here, &reason)),
         }
@@ -1186,6 +1239,116 @@ mod tests {
             projects::all(&console.database).await.expect("query").len(),
             1,
             "and may not delete the project"
+        );
+
+        console
+            .harness
+            .post("/projects/shared/registry")
+            .header("cookie", &member)
+            .form(&[("registry", "localhost")])
+            .send()
+            .await;
+        assert_eq!(
+            projects::registry_domain(&console.database, &project.id)
+                .await
+                .expect("read"),
+            None,
+            "nor choose where it is pushed"
+        );
+    }
+
+    /// A project given a registry name of its own is pushed to under it:
+    /// the `docker login` on its settings and the one a new token is shown
+    /// with both name it, so the client keeps this project's login beside
+    /// every other's. Only a name that arrives here is kept, and an empty
+    /// one gives the project back the node's.
+    #[tokio::test]
+    async fn a_project_is_logged_in_to_under_its_own_registry_name() {
+        let console = Console::new().await;
+        let admin = console.signed_in().await;
+        crate::infra::node::settings::set_domain(&console.database, Some("localhost"))
+            .await
+            .expect("domain");
+        console
+            .harness
+            .post("/projects")
+            .header("cookie", &admin)
+            .form(&[("name", "shipping")])
+            .send()
+            .await;
+        let project = projects::all(&console.database)
+            .await
+            .expect("query")
+            .into_iter()
+            .find(|project| project.slug == "shipping")
+            .expect("made");
+        let save = |name: &'static str| {
+            let console = &console;
+            let admin = &admin;
+            async move {
+                console
+                    .harness
+                    .post("/projects/shipping/registry")
+                    .header("cookie", admin)
+                    .form(&[("registry", name)])
+                    .send()
+                    .await
+                    .header("location")
+                    .unwrap_or_default()
+                    .to_string()
+            }
+        };
+        let settings = || async {
+            console
+                .harness
+                .get("/projects/shipping/settings")
+                .header("cookie", &admin)
+                .send()
+                .await
+                .body
+        };
+
+        let refused = save("nowhere.invalid").await;
+        assert!(refused.contains("does+not+resolve"), "{refused}");
+        assert_eq!(
+            projects::registry_domain(&console.database, &project.id)
+                .await
+                .expect("read"),
+            None
+        );
+        let refused = save("localhost").await;
+        assert!(refused.contains("error="), "the node's own name: {refused}");
+
+        let saved = save("127.0.0.1").await;
+        assert!(!saved.contains("error="), "{saved}");
+        assert!(
+            settings().await.contains("docker login 127.0.0.1"),
+            "the settings name the project's registry"
+        );
+
+        let location = console
+            .harness
+            .post("/projects/shipping/tokens")
+            .header("cookie", &admin)
+            .form(&[("name", "ci")])
+            .send()
+            .await
+            .header("location")
+            .expect("redirected")
+            .to_string();
+        let shown = console
+            .harness
+            .get(&location)
+            .header("cookie", &admin)
+            .send()
+            .await
+            .body;
+        assert!(shown.contains("docker login 127.0.0.1"), "{shown}");
+
+        save("").await;
+        assert!(
+            settings().await.contains("docker login localhost"),
+            "empty is the node's name again"
         );
     }
 

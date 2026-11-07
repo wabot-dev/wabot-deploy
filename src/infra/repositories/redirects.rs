@@ -46,6 +46,11 @@ pub async fn create(
     if serves {
         return Err(PlatformError::Refused(IS_A_HOSTNAME.into()));
     }
+    if crate::infra::repositories::projects::is_a_registry(database, &hostname).await? {
+        return Err(PlatformError::Refused(
+            crate::infra::repositories::projects::IS_A_REGISTRY.into(),
+        ));
+    }
 
     let (name, port_id) = (hostname.clone(), port.id.clone());
     database
@@ -268,6 +273,38 @@ mod tests {
         refused(
             ports::set_hostname(&database, &other.id, Some("www.teresaasprilla.com")).await,
             ports::REDIRECTS_ALREADY,
+        );
+
+        let project = crate::infra::repositories::projects::all(&database)
+            .await
+            .expect("projects")
+            .remove(0);
+        crate::infra::repositories::projects::set_registry_domain(
+            &database,
+            &project.id,
+            Some("registry.teresaasprilla.com"),
+        )
+        .await
+        .expect("a registry name");
+        refused(
+            create(&database, &port, "registry.teresaasprilla.com", &[]).await,
+            crate::infra::repositories::projects::IS_A_REGISTRY,
+        );
+        refused(
+            ports::create(
+                &database,
+                &service,
+                9001,
+                false,
+                Some("registry.teresaasprilla.com"),
+                &[],
+            )
+            .await,
+            crate::infra::repositories::projects::IS_A_REGISTRY,
+        );
+        refused(
+            ports::set_hostname(&database, &other.id, Some("registry.teresaasprilla.com")).await,
+            crate::infra::repositories::projects::IS_A_REGISTRY,
         );
     }
 

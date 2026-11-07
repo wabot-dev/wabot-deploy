@@ -440,10 +440,11 @@ impl ServiceUiController {
             &ports,
             domain.as_deref(),
         );
+        let registry = crate::infra::registry::name_of(&self.state.database, &project).await;
         let push = crate::features::services::service_push_component::push(
             &service,
             &project.slug,
-            domain.as_deref(),
+            registry.as_deref(),
         );
 
         let all_projects = access::projects_for(&self.state.database, &account).await?;
@@ -925,12 +926,13 @@ impl ServiceUiController {
                 }
             }
             Tab::Image => {
-                let domain = crate::infra::node::settings::domain(&self.state.database).await;
+                let registry =
+                    crate::infra::registry::name_of(&self.state.database, &project).await;
                 Panel::Image {
                     push: crate::features::services::service_push_component::push(
                         &service,
                         &project.slug,
-                        domain.as_deref(),
+                        registry.as_deref(),
                     ),
                     project_settings: format!("/projects/{}/settings", project.slug),
                 }
