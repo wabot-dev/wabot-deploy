@@ -100,8 +100,8 @@ pub struct Plan<'a> {
 ///
 /// Two directories, because they live under different roots: the base
 /// backup under `backups/` and the archive under `wal/`. The caller
-/// connects them through the container id, which the backup layout puts
-/// at the end of one path and `archive_dir` keys the other on — see
+/// connects them: the backup layout puts the container id at the end of
+/// one path and `archive_dir` keys the other on the service — see
 /// `prepare_engine`, where that derivation is named.
 #[derive(Debug, Clone)]
 pub struct Restoring {
@@ -293,7 +293,7 @@ fn prepare_postgres(plan: &Plan<'_>) -> std::io::Result<Preparation> {
     // fails inside the shim, where the message is about a mount rather
     // than about the directory nobody created.
     if plan.archiving {
-        std::fs::create_dir_all(archive_dir(plan.data_dir, plan.container_id))?;
+        std::fs::create_dir_all(archive_dir(plan.data_dir, &plan.database.service_id))?;
     }
 
     let env = match plan.role {
@@ -336,7 +336,7 @@ fn prepare_postgres(plan: &Plan<'_>) -> std::io::Result<Preparation> {
             // restoring.
             if plan.archiving {
                 mounts.push(BindMount {
-                    source: archive_dir(plan.data_dir, plan.container_id),
+                    source: archive_dir(plan.data_dir, &plan.database.service_id),
                     destination: postgres::ARCHIVE_MOUNT.to_string(),
                     read_only: false,
                 });
@@ -488,12 +488,12 @@ pub fn tls_owner_is_wrong(data_dir: &Path, container_id: &str) -> bool {
 /// had ever been tried until a segment was forced. Then: `archive
 /// command failed with exit code 1`.
 #[cfg(unix)]
-pub fn archive_owner_is_wrong(data_dir: &Path, container_id: &str) -> bool {
-    root_owns(&archive_dir(data_dir, container_id))
+pub fn archive_owner_is_wrong(data_dir: &Path, service_id: &str) -> bool {
+    root_owns(&archive_dir(data_dir, service_id))
 }
 
 #[cfg(not(unix))]
-pub fn archive_owner_is_wrong(_data_dir: &Path, _container_id: &str) -> bool {
+pub fn archive_owner_is_wrong(_data_dir: &Path, _service_id: &str) -> bool {
     false
 }
 
@@ -664,10 +664,91 @@ pub fn fetched_dir(data_dir: &Path, container_id: &str) -> PathBuf {
 /// what the archive came from, and a log kept inside the volume would be
 /// deleted by the thing that needs it.
 ///
-/// Keyed on the container id like everything else here, so an operator
-/// reading `ls` sees the same names on both sides.
-pub fn archive_dir(data_dir: &Path, container_id: &str) -> PathBuf {
-    data_dir.join("wal").join(container_id)
+/// **Keyed on the service id, and not the container id like everything
+/// else here.** Everything else goes when its database goes; this is
+/// the one directory meant to outlive what wrote it, so it is the one a
+/// name can outlive too. It was the container id, and a database deleted
+/// and made again under the same name inherited its predecessor's
+/// archive: owned by the old image's user, holding a
+/// `000000010000000000000001.gz` the new one would also write. The
+/// archive command refuses to overwrite a segment, so every segment was
+/// refused, Postgres kept them all, and node-0's disk filled in twelve
+/// hours (2026-11-02) with nothing on any page.
+pub fn archive_dir(data_dir: &Path, service_id: &str) -> PathBuf {
+    data_dir.join("wal").join(service_id)
+}
+
+/// Take over an archive written under the container id, from before
+/// archives were keyed on the service.
+///
+/// A rename, which a running server does not notice: its bind mount
+/// holds the directory and not the name, so it goes on archiving into
+/// the same place now that the place is called something else.
+///
+/// **Not when the archive predates the database.** A segment archived
+/// before the row existed was archived by a database that no longer
+/// does — the case that made this necessary — and adopting it would
+/// carry the fault through the upgrade. That directory stays where it
+/// is, and `leftovers` names it.
+pub fn adopt_archive(
+    data_dir: &Path,
+    container_id: &str,
+    service_id: &str,
+    created_at: i64,
+) -> bool {
+    let legacy = data_dir.join("wal").join(container_id);
+    let adopted = archive_dir(data_dir, service_id);
+    if !legacy.is_dir() || adopted.exists() || older_than(&legacy, created_at) {
+        return false;
+    }
+    match std::fs::rename(&legacy, &adopted) {
+        Ok(()) => {
+            tracing::info!(from = %legacy.display(), to = %adopted.display(), "archive adopted");
+            true
+        }
+        Err(error) => {
+            tracing::warn!(directory = %legacy.display(), %error, "could not adopt an archive");
+            false
+        }
+    }
+}
+
+fn older_than(directory: &Path, at: i64) -> bool {
+    std::fs::read_dir(directory)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|entry| entry.metadata().ok()?.modified().ok())
+        .filter_map(|modified| modified.duration_since(std::time::UNIX_EPOCH).ok())
+        .any(|since| (since.as_millis() as i64) < at)
+}
+
+/// What this copy's server has finished and not archived.
+///
+/// Nothing for a copy whose data directory is on another node: the
+/// directory is not here to read.
+pub fn waiting_to_archive(
+    data_dir: &Path,
+    container_id: &str,
+) -> crate::infra::repositories::wal_archive::Waiting {
+    crate::infra::repositories::wal_archive::waiting(
+        &crate::infra::repositories::volumes::directory(data_dir, container_id, postgres::VOLUME)
+            .join("pgdata"),
+    )
+}
+
+/// Throw away a deleted database's archive.
+///
+/// Its volume has already gone, and nothing restores from an archive
+/// alone: a restore is made from a database's own page, which is gone
+/// with it, and a node restore never reads one.
+pub fn discard_archive(data_dir: &Path, service_id: &str) {
+    let path = archive_dir(data_dir, service_id);
+    match std::fs::remove_dir_all(&path) {
+        Ok(()) => tracing::info!(directory = %path.display(), "discarded an archive"),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => tracing::warn!(directory = %path.display(), %error, "discarding an archive"),
+    }
 }
 
 /// Where this copy reads the files the node writes for it.
@@ -718,6 +799,88 @@ pub async fn qualified_name(
 mod tests {
     use super::*;
     use crate::domain::entities::database::Engine;
+
+    fn archived_at(directory: &Path, name: &str, at: i64) {
+        std::fs::create_dir_all(directory).expect("mkdir");
+        let file = std::fs::File::create(directory.join(name)).expect("create");
+        file.set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_millis(at as u64))
+            .expect("set the time");
+    }
+
+    #[test]
+    fn an_archive_named_after_its_container_moves_to_its_service() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let legacy = dir.path().join("wal").join("shop.orders");
+        archived_at(&legacy, "000000010000000000000001.gz", 2_000_000);
+
+        assert!(adopt_archive(
+            dir.path(),
+            "shop.orders",
+            "svc-orders",
+            1_000_000
+        ));
+
+        assert!(!legacy.exists());
+        assert!(archive_dir(dir.path(), "svc-orders")
+            .join("000000010000000000000001.gz")
+            .exists());
+    }
+
+    /// What node-0 had on 2026-11-02: a database deleted on the 1st and
+    /// made again under its name, and the first one's archive still
+    /// there, holding a segment the new one would also write. Adopting it
+    /// would carry the fault through the upgrade.
+    #[test]
+    fn an_archive_older_than_its_database_is_not_adopted() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let legacy = dir.path().join("wal").join("shop.orders");
+        archived_at(&legacy, "000000010000000000000001.gz", 1_000_000);
+        archived_at(&legacy, "000000010000000000000002.gz", 3_000_000);
+
+        assert!(!adopt_archive(
+            dir.path(),
+            "shop.orders",
+            "svc-orders",
+            2_000_000
+        ));
+
+        assert!(legacy.join("000000010000000000000001.gz").exists());
+        assert!(!archive_dir(dir.path(), "svc-orders").exists());
+    }
+
+    #[test]
+    fn an_archive_is_not_adopted_over_one_the_service_already_has() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        archived_at(
+            &dir.path().join("wal").join("shop.orders"),
+            "000000010000000000000001.gz",
+            2_000_000,
+        );
+        archived_at(
+            &archive_dir(dir.path(), "svc-orders"),
+            "000000010000000000000009.gz",
+            2_000_000,
+        );
+
+        assert!(!adopt_archive(
+            dir.path(),
+            "shop.orders",
+            "svc-orders",
+            1_000_000
+        ));
+        assert!(!archive_dir(dir.path(), "svc-orders")
+            .join("000000010000000000000001.gz")
+            .exists());
+    }
+
+    #[test]
+    fn two_databases_with_one_name_have_two_archives() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        assert_ne!(
+            archive_dir(dir.path(), "svc-first"),
+            archive_dir(dir.path(), "svc-second")
+        );
+    }
 
     fn database() -> Database {
         Database {

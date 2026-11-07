@@ -61,6 +61,45 @@ pub fn held(archive: &std::path::Path) -> Held {
     held
 }
 
+/// What a server has finished writing and not yet handed to its archive.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct Waiting {
+    pub segments: usize,
+    /// When the oldest of them was finished.
+    pub since: Option<i64>,
+}
+
+/// Read what is waiting off `pg_wal/archive_status` in a data directory.
+///
+/// Postgres leaves a `.ready` beside every finished segment until the
+/// archive command takes it, and renames it `.done` when it does. That
+/// is the server's own ledger of what it has not archived, on this
+/// node's disk — no connection, no credentials, and the same answer
+/// whether the server is up or refusing to start.
+pub fn waiting(pgdata: &std::path::Path) -> Waiting {
+    let mut found = Waiting::default();
+    let Ok(entries) = std::fs::read_dir(pgdata.join("pg_wal").join("archive_status")) else {
+        return found;
+    };
+    for entry in entries.flatten() {
+        if !entry.file_name().to_string_lossy().ends_with(".ready") {
+            continue;
+        }
+        found.segments += 1;
+        let finished = entry
+            .metadata()
+            .ok()
+            .and_then(|meta| meta.modified().ok())
+            .and_then(|at| at.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|since| since.as_millis() as i64);
+        found.since = match (found.since, finished) {
+            (Some(oldest), Some(this)) => Some(oldest.min(this)),
+            (oldest, this) => oldest.or(this),
+        };
+    }
+    found
+}
+
 /// What a pass over one archive found and did.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Pruned {
@@ -115,6 +154,36 @@ pub fn prune(archive: &std::path::Path, oldest_needed: Option<&str>) -> Pruned {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn what_is_waiting_is_every_ready_segment_and_the_oldest_of_them() {
+        let pgdata = tempfile::tempdir().expect("tempdir");
+        let status = pgdata.path().join("pg_wal").join("archive_status");
+        std::fs::create_dir_all(&status).expect("mkdir");
+        for (name, at) in [
+            ("000000010000000000000001.done", 1_000_000u64),
+            ("000000010000000000000002.ready", 3_000_000),
+            ("000000010000000000000003.ready", 2_000_000),
+        ] {
+            std::fs::File::create(status.join(name))
+                .expect("create")
+                .set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_millis(at))
+                .expect("set the time");
+        }
+
+        assert_eq!(
+            waiting(pgdata.path()),
+            Waiting {
+                segments: 2,
+                since: Some(2_000_000),
+            },
+            "a .done was archived, and the oldest .ready is when the backlog began"
+        );
+        assert_eq!(
+            waiting(&pgdata.path().join("elsewhere")),
+            Waiting::default()
+        );
+    }
 
     /// **A hole is the real end of the window.** Recovery stops there,
     /// so everything archived after it is disk spent on something

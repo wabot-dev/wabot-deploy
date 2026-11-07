@@ -342,6 +342,7 @@ pub fn backups_only_card() -> impl Renderable {
 
 pub fn window_card<'a>(
     window: &'a crate::infra::backup::Window,
+    stuck: Option<crate::infra::repositories::wal_archive::Waiting>,
     // The destination, when the backups leave this machine. It changes
     // what `NoAnchor` *means*: not "there is no backup", which is what
     // this card used to say, but "there is none here" — and with a bucket
@@ -354,6 +355,11 @@ pub fn window_card<'a>(
         <section class="card stack" id="recovery">
             <div class="split">
                 <p class="card-label">(t("Going back"))</p>
+                @if stuck.is_some() {
+                    <span class="badge badge-danger">
+                        <span class="dot dot-danger"></span>(t("Not archiving"))
+                    </span>
+                } @else {
                 @match window {
                     Window::NotKeeping => {
                         <span class="badge">(t("Not kept"))</span>
@@ -379,7 +385,19 @@ pub fn window_card<'a>(
                         </span>
                     }
                 }
+                }
             </div>
+
+            @if let Some(waiting) = stuck {
+                <p class="form-warning">
+                    (t("Postgres has finished "))<span class="mono">(waiting.segments)</span>
+                    (t(" segments of its log that the archive has not taken, the oldest at "))
+                    <span class="mono">(crate::shell::layouts::layout::exactly(waiting.since.unwrap_or_default()))</span>
+                    (t(". It keeps every one until the archive command succeeds, so the disk \
+                         fills for as long as this lasts. The database's log says why the command \
+                         fails."))
+                </p>
+            }
 
             @match window {
                 Window::NotKeeping => {

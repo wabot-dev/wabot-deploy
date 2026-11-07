@@ -107,6 +107,9 @@ pub enum Observed {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Claim {
     pub container: String,
+    /// The service it is a copy of, which is what an archive is named
+    /// after.
+    pub service: String,
     /// A managed engine copies its own volume with its own tool, and a
     /// plain service's is a file copy. The distinction belongs here
     /// rather than at each caller because it is read off the same row.
@@ -1616,6 +1619,7 @@ impl Deployer {
                     let project = projects.iter().find(|p| p.id == service.project_id)?;
                     Some(Claim {
                         container: replica.container_id(&project.slug, &service.slug),
+                        service: service.id.clone(),
                         managed: service.kind.is_managed(),
                     })
                 })
@@ -1623,7 +1627,8 @@ impl Deployer {
         )
     }
 
-    pub fn leftovers(data_dir: &std::path::Path, live: &[String]) -> Vec<(&'static str, PathBuf)> {
+    pub fn leftovers(data_dir: &std::path::Path, claims: &[Claim]) -> Vec<(&'static str, PathBuf)> {
+        let live = &Claim::containers(claims);
         let mut found: Vec<(&'static str, PathBuf)> = volumes::orphans(data_dir, live)
             .into_iter()
             .map(|path| ("data", path))
@@ -1664,6 +1669,14 @@ impl Deployer {
                 };
                 if !live.iter().any(|claimed| claimed == id) {
                     found.push((kind, entry.path()));
+                }
+            }
+        }
+        if let Ok(entries) = std::fs::read_dir(data_dir.join("wal")) {
+            for entry in entries.flatten() {
+                let name = entry.file_name().to_string_lossy().to_string();
+                if !claims.iter().any(|claim| claim.service == name) {
+                    found.push(("archive", entry.path()));
                 }
             }
         }
@@ -2023,6 +2036,8 @@ impl Deployer {
         let mine = replicas::here(&self.database).await?;
         let mut started = 0;
 
+        self.adopt_archives(&services, &projects, &mine).await;
+
         for replica in mine {
             let Some(service) = services.iter().find(|s| s.id == replica.service_id) else {
                 continue;
@@ -2243,6 +2258,36 @@ impl Deployer {
             }
         }
         started
+    }
+
+    /// Move every archive still named after a container to its service.
+    ///
+    /// Before anything is started, so a copy this pass starts mounts the
+    /// archive where it now is, and on every pass because it asks the
+    /// disk rather than remembering it did it.
+    async fn adopt_archives(&self, services: &[Service], projects: &[Project], mine: &[Replica]) {
+        for replica in mine {
+            let Some(service) = services
+                .iter()
+                .find(|service| service.id == replica.service_id)
+                .filter(|service| service.kind == crate::domain::entities::service::Kind::Postgres)
+            else {
+                continue;
+            };
+            let Some(project) = projects.iter().find(|p| p.id == service.project_id) else {
+                continue;
+            };
+            let Ok(Some(created_at)) = databases::created_at(&self.database, &service.id).await
+            else {
+                continue;
+            };
+            database::adopt_archive(
+                &self.config.node.data_dir,
+                &replica.container_id(&project.slug, &service.slug),
+                &service.id,
+                created_at,
+            );
+        }
     }
 
     /// One copy, from the image its service last deployed, and what a
@@ -3137,7 +3182,7 @@ impl Deployer {
         // rather than one each.
         let archiving = engine == Engine::Postgres
             && crate::infra::node::settings::archiving(&self.database).await;
-        let fix_archive = archiving && database::archive_owner_is_wrong(data_dir, container_id);
+        let fix_archive = archiving && database::archive_owner_is_wrong(data_dir, &service.id);
 
         // Measured for MySQL: a key it cannot read does not stop it. It
         // starts without TLS and then refuses every client, because it
@@ -3156,7 +3201,7 @@ impl Deployer {
             );
             if fix_archive {
                 mounts.push(BindMount {
-                    source: database::archive_dir(data_dir, container_id),
+                    source: database::archive_dir(data_dir, &service.id),
                     destination: postgres::ARCHIVE_MOUNT.to_string(),
                     read_only: false,
                 });
@@ -3866,6 +3911,7 @@ impl Deployer {
             hosts::discard(&self.config.node.data_dir, &id);
             logs::discard(&self.config.node.data_dir, &id);
         }
+        database::discard_archive(&self.config.node.data_dir, &service.id);
     }
 
     /// What a managed engine needs, or `None` for an ordinary
@@ -3979,11 +4025,12 @@ impl Deployer {
         //
         // The container id comes off the end of the backup path, which
         // is a derivation and worth naming as one: `back_up_engines`
-        // writes each volume as `volumes/<container id>`, and
-        // `archive_dir` is keyed on the same id. One convention, used at
-        // both ends. What guards it is the manifest's `format` — a
-        // layout that changed without changing that number would break
-        // this quietly, which is what the number is for.
+        // writes each volume as `volumes/<container id>`. The archive is
+        // keyed on the service, so the id is turned into the one service
+        // in this project that has it — which is the original by
+        // construction, because `restore_one` takes only a backup whose
+        // copy names that service. What guards the layout is the
+        // manifest's `format`.
         let restoring = match (&row.restored_from, role) {
             (Some(from), postgres::Role::Restoring) => {
                 // The **original's** container id, off the end of the
@@ -4027,8 +4074,15 @@ impl Deployer {
                     }
                     _ => std::path::PathBuf::from(from),
                 };
+                let original = services::all(&self.database, Some(&project.id))
+                    .await
+                    .unwrap_or_default()
+                    .into_iter()
+                    .find(|candidate| format!("{}.{}", project.slug, candidate.slug) == container)
+                    .map(|found| found.id)
+                    .unwrap_or(container);
                 Some(database::Restoring {
-                    archive: database::archive_dir(&self.config.node.data_dir, &container),
+                    archive: database::archive_dir(&self.config.node.data_dir, &original),
                     base,
                     target: row.recovery_target.clone(),
                 })
@@ -4660,7 +4714,14 @@ mod tests {
         // And a claimed replica whose id ends in a number.
         std::fs::write(logs.join("shop.web.2.log"), "x").expect("write");
 
-        let found = Deployer::leftovers(dir.path(), &["shop.web.2".to_string()]);
+        let found = Deployer::leftovers(
+            dir.path(),
+            &[Claim {
+                container: "shop.web.2".into(),
+                service: "svc-web".into(),
+                managed: false,
+            }],
+        );
         let names: Vec<String> = found
             .iter()
             .map(|(_, path)| path.file_name().unwrap().to_string_lossy().to_string())
@@ -4674,6 +4735,37 @@ mod tests {
         assert!(
             !names.contains(&"shop.web.2.log".to_string()),
             "a claimed replica's log is not rubbish: {names:?}"
+        );
+    }
+
+    /// An archive outlives its database on purpose, so nothing else would
+    /// ever say it is there: node-0's predecessor archive sat in `wal/`
+    /// with no page, no `doctor` line and no `clean` able to see it.
+    #[test]
+    fn an_archive_no_service_here_claims_is_reported_and_a_claimed_one_is_not() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        for name in ["svc-orders", "svc-gone", "shop.orders"] {
+            std::fs::create_dir_all(dir.path().join("wal").join(name)).expect("mkdir");
+        }
+
+        let found = Deployer::leftovers(
+            dir.path(),
+            &[Claim {
+                container: "shop.orders".into(),
+                service: "svc-orders".into(),
+                managed: true,
+            }],
+        );
+        let archives: Vec<String> = found
+            .iter()
+            .filter(|(kind, _)| *kind == "archive")
+            .map(|(_, path)| path.file_name().unwrap().to_string_lossy().to_string())
+            .collect();
+
+        assert_eq!(
+            archives,
+            vec!["shop.orders".to_string(), "svc-gone".to_string()],
+            "a deleted database's, and one still named after its container, and not the live one"
         );
     }
 

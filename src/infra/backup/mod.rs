@@ -149,6 +149,14 @@ pub struct Copied {
     /// The container id it belongs to, which is what names the
     /// directory on the node it is restored to.
     pub container: String,
+    /// The database it is a copy of, which the container id is not: a
+    /// database deleted and made again under the same name has the same
+    /// container id and is not the same database. Its archive is keyed on
+    /// this, so this is what pairs a base copy with the log that continues
+    /// it. `None` on a plain volume, and on every copy taken before this
+    /// was written down.
+    #[serde(default)]
+    pub service: Option<String>,
     pub bytes: u64,
     /// How it was taken, in the words that decide whether it restores.
     pub how: How,
@@ -414,7 +422,7 @@ pub fn base_for<'a, T>(
     target: i64,
     // The database it has to hold, or `None` for a whole-node restore,
     // where every backup holds what it holds.
-    container: Option<&str>,
+    wanted: Option<Wanted<'_>>,
 ) -> Option<&'a (T, Manifest)> {
     // `taken` is newest first, so the first one at or before the target
     // is the newest such — no scan of the rest.
@@ -428,8 +436,8 @@ pub fn base_for<'a, T>(
     taken
         .iter()
         .filter(|(_, manifest)| manifest.taken_at <= target)
-        .find(|(_, manifest)| match container {
-            Some(container) => holds(manifest, container),
+        .find(|(_, manifest)| match wanted {
+            Some(wanted) => holds(manifest, wanted),
             None => true,
         })
 }
@@ -488,11 +496,11 @@ pub enum Window {
 /// `anchor` is when the oldest kept base backup was taken, which is the
 /// earliest moment any restore could target — everything before it is
 /// gone whatever the archive holds.
-pub fn window(data_dir: &Path, container: &str, anchor: Option<i64>, keeping: bool) -> Window {
+pub fn window(data_dir: &Path, service_id: &str, anchor: Option<i64>, keeping: bool) -> Window {
     if !keeping {
         return Window::NotKeeping;
     }
-    let archive = crate::infra::deploy::database::archive_dir(data_dir, container);
+    let archive = crate::infra::deploy::database::archive_dir(data_dir, service_id);
     let held = crate::infra::repositories::wal_archive::held(&archive);
 
     let Some(from) = anchor else {
@@ -526,6 +534,19 @@ pub fn window(data_dir: &Path, container: &str, anchor: Option<i64>, keeping: bo
         // already contains that moment.
         _ => Window::OnlyTheBackup { at: from },
     }
+}
+
+/// When the oldest backup holding this database was taken.
+///
+/// Of this database, not of the node: a backup taken before it existed
+/// holds nothing it can be restored from, and anchoring its window there
+/// promised a restore to a moment the database had not been made yet.
+pub fn anchor(backups: &[(PathBuf, Manifest)], wanted: Wanted<'_>) -> Option<i64> {
+    backups
+        .iter()
+        .filter(|(_, manifest)| holds(manifest, wanted))
+        .map(|(_, manifest)| manifest.taken_at)
+        .min()
 }
 
 /// When the newest segment before this one was archived.
@@ -589,38 +610,41 @@ pub fn sweep(data_dir: &Path, now: i64, keep_days: i64) -> (usize, u64) {
     // archive is asked about its own: two databases have two timelines
     // and two positions, and one number for both would be right for one
     // of them by accident.
-    let oldest = keep.last().and_then(|path| {
-        std::fs::read_dir(path.join("volumes")).ok().map(|entries| {
-            entries
-                .flatten()
-                .map(|entry| entry.path())
-                .collect::<Vec<_>>()
-        })
-    });
-    let Some(volumes) = oldest else {
+    //
+    // **Only the archive the copy names as its own.** A copy that names
+    // no service is pruned against nothing: it may be a predecessor that
+    // had the database's name, and its position says nothing about the
+    // log a database made since has written — a position further along
+    // than all of it would take the lot.
+    let Some((oldest, manifest)) = keep
+        .last()
+        .and_then(|path| backups.iter().find(|(taken, _)| taken == *path))
+    else {
         return (removed, freed);
     };
 
-    for volume in volumes {
-        let Some(container) = volume
-            .file_name()
-            .map(|name| name.to_string_lossy().to_string())
-        else {
+    for copied in &manifest.volumes {
+        let Some(service) = copied.service.as_deref() else {
             continue;
         };
         // No manifest is "needs everything" — the one answer that
         // cannot put a hole in a window. `prune` takes `None` and does
         // nothing with it.
-        let needed = std::fs::read_to_string(volume.join("backup_manifest"))
-            .ok()
-            .and_then(|manifest| crate::domain::policies::wal::start_of(&manifest))
-            .map(|(timeline, lsn)| crate::domain::policies::wal::segment_name(timeline, lsn));
+        let needed = std::fs::read_to_string(
+            oldest
+                .join("volumes")
+                .join(&copied.container)
+                .join("backup_manifest"),
+        )
+        .ok()
+        .and_then(|manifest| crate::domain::policies::wal::start_of(&manifest))
+        .map(|(timeline, lsn)| crate::domain::policies::wal::segment_name(timeline, lsn));
 
-        let archive = crate::infra::deploy::database::archive_dir(data_dir, &container);
+        let archive = crate::infra::deploy::database::archive_dir(data_dir, service);
         let pruned = crate::infra::repositories::wal_archive::prune(&archive, needed.as_deref());
         if pruned.removed > 0 {
             tracing::info!(
-                database = %container, removed = pruned.removed, freed = pruned.freed,
+                database = %copied.container, removed = pruned.removed, freed = pruned.freed,
                 kept = pruned.kept, "archived log pruned"
             );
             removed += pruned.removed;
@@ -883,6 +907,10 @@ pub async fn restore_one(
     }
 
     let container = format!("{}.{}", project.slug, source.slug);
+    let wanted = Wanted {
+        container: &container,
+        service: &source.id,
+    };
 
     // A backup somebody named is the whole answer: they are holding it,
     // and its two failures are about *it* rather than about what this
@@ -892,11 +920,12 @@ pub async fn restore_one(
             if manifest.taken_at > at {
                 return Err(NotRestored::NamedIsNewer(path));
             }
-            if !path
-                .join("volumes")
-                .join(&container)
-                .join(row.engine.backup_file())
-                .exists()
+            if !holds(&manifest, wanted)
+                || !path
+                    .join("volumes")
+                    .join(&container)
+                    .join(row.engine.backup_file())
+                    .exists()
             {
                 return Err(NotRestored::HoldsNoCopy(path));
             }
@@ -920,7 +949,7 @@ pub async fn restore_one(
                 })
                 .collect();
 
-            match base_for(&here, at, Some(&container)) {
+            match base_for(&here, at, Some(wanted)) {
                 Some((path, manifest)) => (
                     Destination::Local(path.join("volumes").join(&container)),
                     manifest.taken_at,
@@ -956,7 +985,7 @@ pub async fn restore_one(
                     let there = crate::infra::backup::destination::index(&destination, config)
                         .await
                         .map_err(NotRestored::Refused)?;
-                    match base_for(&there, at, Some(&container)) {
+                    match base_for(&there, at, Some(wanted)) {
                         Some((at_destination, manifest)) => (
                             at_destination.child(&format!("volumes/{container}")),
                             manifest.taken_at,
@@ -1009,11 +1038,26 @@ pub async fn restore_one(
 /// entry per volume it copied, and a database it could not copy is
 /// **absent** from that list. That is what makes "this backup holds it"
 /// answerable before a single byte moves.
-fn holds(manifest: &Manifest, container: &str) -> bool {
-    manifest
-        .volumes
-        .iter()
-        .any(|copied| copied.container == container)
+///
+/// **And of this database, not one that had its name.** A copy that says
+/// which service it was taken from is held only by that service; one
+/// taken before copies said so is taken at its container id's word,
+/// which is all there was.
+fn holds(manifest: &Manifest, wanted: Wanted<'_>) -> bool {
+    manifest.volumes.iter().any(|copied| {
+        copied.container == wanted.container
+            && copied
+                .service
+                .as_deref()
+                .is_none_or(|service| service == wanted.service)
+    })
+}
+
+/// One database, as a backup's manifest names it.
+#[derive(Debug, Clone, Copy)]
+pub struct Wanted<'a> {
+    pub container: &'a str,
+    pub service: &'a str,
 }
 
 /// Read a moment as somebody would type it: `2026-08-16 14:32`.
@@ -1104,6 +1148,7 @@ async fn copy_volumes(
                 println!("  volume      {container}  {}", human(bytes));
                 copied.push(Copied {
                     container,
+                    service: None,
                     bytes,
                     how: How::CrashConsistent,
                 });
@@ -1328,6 +1373,7 @@ async fn back_up_engines(
                 println!("  database    {container}  {}", human(bytes));
                 copied.push(Copied {
                     container,
+                    service: Some(service.id.clone()),
                     bytes,
                     // The engine's own tool wrote it, which is what
                     // makes this the one kind of copy that restores.
@@ -1469,6 +1515,126 @@ mod tests {
         // this node genuinely runs nothing, so nothing is claimed.
         let none = claims(&[]);
         assert_eq!(take("gone.orders.3", Some(&none)), Take::Skip);
+    }
+
+    fn holding(taken_at: i64, service: Option<&str>) -> (PathBuf, Manifest) {
+        (
+            PathBuf::from(format!("backup-{taken_at}")),
+            Manifest {
+                format: FORMAT,
+                taken_by: "test".into(),
+                taken_at,
+                node_id: None,
+                node_name: None,
+                volumes: vec![Copied {
+                    container: "shop.orders".into(),
+                    service: service.map(str::to_string),
+                    bytes: 1,
+                    how: How::Consistent,
+                }],
+                images: Vec::new(),
+            },
+        )
+    }
+
+    /// A database deleted and made again under its name has the same
+    /// container id and none of the same data, so a backup of the first
+    /// is neither something to restore the second from nor the start of
+    /// its window.
+    #[test]
+    fn a_backup_of_a_database_that_had_its_name_is_not_one_of_its_backups() {
+        let backups = vec![
+            holding(3_000, Some("svc-new")),
+            holding(2_000, Some("svc-old")),
+        ];
+        let new = Wanted {
+            container: "shop.orders",
+            service: "svc-new",
+        };
+        let old = Wanted {
+            container: "shop.orders",
+            service: "svc-old",
+        };
+
+        assert!(base_for(&backups, 2_500, Some(new)).is_none());
+        assert_eq!(
+            base_for(&backups, 3_500, Some(new)).map(|(_, manifest)| manifest.taken_at),
+            Some(3_000)
+        );
+        assert_eq!(anchor(&backups, new), Some(3_000));
+        assert_eq!(anchor(&backups, old), Some(2_000));
+    }
+
+    #[test]
+    fn a_copy_taken_before_copies_named_their_service_is_taken_at_its_container_s_word() {
+        let backups = vec![holding(1_000, None)];
+        let wanted = Wanted {
+            container: "shop.orders",
+            service: "svc-any",
+        };
+        assert!(base_for(&backups, 1_500, Some(wanted)).is_some());
+        assert_eq!(anchor(&backups, wanted), Some(1_000));
+    }
+
+    fn backed_up(data: &Path, taken_at: i64, service: Option<&str>) {
+        let backup = data
+            .join("backups")
+            .join("nodes")
+            .join("nd-test")
+            .join("b1");
+        let volume = backup.join("volumes").join("shop.orders");
+        std::fs::create_dir_all(&volume).expect("mkdir");
+        std::fs::write(
+            volume.join("backup_manifest"),
+            r#"{ "WAL-Ranges": [{ "Timeline": 1, "Start-LSN": "0/13000060",
+                                  "End-LSN": "0/13000168" }] }"#,
+        )
+        .expect("write");
+        let (_, manifest) = holding(taken_at, service);
+        std::fs::write(
+            backup.join("manifest.json"),
+            serde_json::to_string(&manifest).expect("json"),
+        )
+        .expect("write");
+    }
+
+    fn archived(data: &Path, service: &str) -> PathBuf {
+        let archive = crate::infra::deploy::database::archive_dir(data, service);
+        std::fs::create_dir_all(&archive).expect("mkdir");
+        for segment in 1..=0x15u64 {
+            std::fs::write(archive.join(format!("00000001{segment:016X}.gz")), b"x")
+                .expect("write");
+        }
+        archive
+    }
+
+    #[test]
+    fn a_sweep_prunes_the_archive_its_oldest_backup_names() {
+        let data = tempfile::tempdir().expect("tempdir");
+        let now = 10 * 24 * 60 * 60 * 1000;
+        backed_up(data.path(), now - 1_000, Some("svc-orders"));
+        let archive = archived(data.path(), "svc-orders");
+
+        sweep(data.path(), now, KEEP_DAYS);
+
+        assert!(!archive.join("000000010000000000000012.gz").exists());
+        assert!(archive.join("000000010000000000000013.gz").exists());
+    }
+
+    /// The copy may be of a predecessor with the database's name, and a
+    /// predecessor's position says nothing about what the database made
+    /// since has written: one further along would take every segment it
+    /// has.
+    #[test]
+    fn a_copy_that_names_no_service_prunes_no_archive() {
+        let data = tempfile::tempdir().expect("tempdir");
+        let now = 10 * 24 * 60 * 60 * 1000;
+        backed_up(data.path(), now - 1_000, None);
+        let archive = archived(data.path(), "svc-orders");
+
+        sweep(data.path(), now, KEEP_DAYS);
+
+        assert_eq!(std::fs::read_dir(&archive).expect("read").count(), 0x15);
     }
 
     /// **The newest backup at or before the moment, never the newest of
@@ -1738,6 +1904,7 @@ mod tests {
             node_name: Some("box.example".into()),
             volumes: vec![Copied {
                 container: "demo.api".into(),
+                service: None,
                 bytes: 4096,
                 how: How::CrashConsistent,
             }],

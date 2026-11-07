@@ -36,6 +36,9 @@ pub struct Engine<'a> {
     pub signs_here: bool,
     pub host_port: Option<u16>,
     pub window: &'a Window,
+    /// What the server has finished and could not archive, when it has
+    /// been waiting long enough to mean the archive command is failing.
+    pub stuck: Option<crate::infra::repositories::wal_archive::Waiting>,
     /// Where this node sends its backups, when that is not this machine.
     pub elsewhere: Option<&'a str>,
     /// A backup on **this** node actually holds it. A form that can only
@@ -191,7 +194,7 @@ pub fn render<'a>(page: &'a ServiceDetail<'a>) -> impl Renderable + 'a {
             @if engine.row.engine == crate::domain::entities::database::Engine::Mysql {
                 (database_cards_component::backups_only_card())
             } @else {
-                (database_cards_component::window_card(engine.window, engine.elsewhere))
+                (database_cards_component::window_card(engine.window, engine.stuck, engine.elsewhere))
             }
             @if engine.restorable {
                 (database_cards_component::restore_card(

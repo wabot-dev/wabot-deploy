@@ -38,6 +38,20 @@ pub fn segment_name(timeline: u32, lsn: u64) -> String {
         segment % per_id
     )
 }
+/// How long a finished segment may wait for the archive before the
+/// archive is called stuck.
+///
+/// Postgres tries a failing command three times, a second apart, and
+/// then waits a minute; a working archive takes a segment in well under
+/// a second. Ten minutes is a command that fails every time, not one
+/// that is slow, and a backlog after a restart drains long before it.
+pub const STUCK_AFTER_MS: i64 = 10 * 60 * 1000;
+
+/// Whether the oldest segment still waiting has waited too long.
+pub fn stuck(oldest_waiting: Option<i64>, now: i64) -> bool {
+    oldest_waiting.is_some_and(|since| now - since >= STUCK_AFTER_MS)
+}
+
 /// Whether this file may be deleted, given the oldest one still needed.
 ///
 /// A plain comparison, because the names are built for it. Anything that
@@ -94,6 +108,15 @@ pub fn segment_of(name: &str) -> Option<(u32, u64)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_archive_is_stuck_only_after_ten_minutes_of_the_same_segment_waiting() {
+        let now = 100 * STUCK_AFTER_MS;
+        assert!(!stuck(None, now), "nothing waiting");
+        assert!(!stuck(Some(now - 1_000), now), "a segment that just closed");
+        assert!(!stuck(Some(now - STUCK_AFTER_MS + 1), now));
+        assert!(stuck(Some(now - STUCK_AFTER_MS), now));
+    }
 
     /// Against a manifest the node actually wrote, so the shape is
     /// Postgres's rather than mine.

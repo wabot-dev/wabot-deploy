@@ -707,7 +707,7 @@ refusing connections with no obvious way out of it.
 |---|---|
 | the anchor | `pg_basebackup -Ft -z`, taken from a read-only copy when there is one |
 | the log | the primary's own `archive_command`, gzipped, one segment a minute |
-| the reach back | the oldest base backup kept |
+| the reach back | the oldest base backup kept that holds this database |
 | the reach forward | the last archived segment, which is **not** "now" |
 
 Both directions are on the database's page, and three of the four
@@ -716,7 +716,7 @@ badge is log arriving with no base backup to replay it onto: the archive
 fills, the disk goes down, every reading is normal, and it recovers
 nothing.
 
-### Four things the node taught, and no test could
+### Five things the node taught, and no test could
 
 - **The archive directory has the TLS key's fault.** Made by the node as
   root, written by a server that is not. `archive_command` reported exit
@@ -732,6 +732,29 @@ nothing.
   which answered "no backup on this node was taken before that moment".
   True, and read in the middle of a recovery as "you have nothing", by
   somebody holding it in their hand. `--from <path>` names one.
+- **A name is not a database.** The archive was `wal/<container id>`,
+  the one directory meant to outlive what wrote it, so it was the one a
+  name could outlive too. On node-0 (2026-11-02) a database deleted and
+  made again under its name inherited its predecessor's archive: owned
+  by the old image's user and holding a `…0001.gz` the new one would
+  also write. `archive_command` refuses to overwrite a segment, so it
+  refused every one, Postgres kept them all, and the disk filled in
+  twelve hours with nothing on any page. Now:
+  - the archive is `wal/<service id>`, which a new database never shares;
+  - deleting a database discards its archive with its volume;
+  - each copy in a backup's manifest names its service, and a restore,
+    the window's reach back and the pruning take only a copy of *this*
+    database — a predecessor's position would otherwise have decided
+    what the new one's archive keeps. A copy taken before copies said so
+    is still restored from at its container id's word, and prunes
+    nothing;
+  - `reconcile` renames an archive still named after its container,
+    unless a segment in it predates the database, and `leftovers` names
+    what was left;
+  - a server with a segment waiting more than ten minutes for the
+    archive (`pg_wal/archive_status/*.ready`, read off the node's disk)
+    is on the database's page, on the node's list of what needs
+    somebody and in `doctor`, beside a disk under a tenth free.
 
 ### What it still does not do
 

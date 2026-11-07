@@ -67,6 +67,8 @@ pub async fn run(
     a_database_with_every_copy_on_one_machine(state, &mut concerns).await;
     certificates_that_would_not_issue(state, &mut concerns).await?;
     errands_that_were_refused(state, &mut concerns).await;
+    databases_not_archiving(state, &mut concerns).await;
+    a_disk_nearly_full(state, &mut concerns).await;
     what_nothing_claims(state, &mut concerns).await;
     a_backup_that_did_not_work(state, &mut concerns).await;
     nodes_this_one_cannot_reach(state, &mut concerns).await;
@@ -300,8 +302,7 @@ async fn what_nothing_claims(state: &Sources<'_>, concerns: &mut Vec<ConcernResp
     let Some(claims) = crate::infra::deploy::Deployer::claimed(state.database).await else {
         return;
     };
-    let live = crate::infra::deploy::Claim::containers(&claims);
-    let leftovers = crate::infra::deploy::Deployer::leftovers(&state.config.node.data_dir, &live);
+    let leftovers = crate::infra::deploy::Deployer::leftovers(&state.config.node.data_dir, &claims);
     if leftovers.is_empty() {
         return;
     }
@@ -324,7 +325,7 @@ async fn what_nothing_claims(state: &Sources<'_>, concerns: &mut Vec<ConcernResp
         what: "Storage nothing claims".into(),
         which: format!("{}", leftovers.len()),
         why: format!(
-            "{} — `wabot-deploy clean` names each one, and `clean --apply` removes all but the data",
+            "{} — `wabot-deploy clean` names each one, and `clean --apply` removes all but data and archives",
             owners.join(", ")
         ),
         // This node's own page, which is where the disk card is. `/nodes`
@@ -332,6 +333,94 @@ async fn what_nothing_claims(state: &Sources<'_>, concerns: &mut Vec<ConcernResp
         // link answered "see" with a page that had nothing to see —
         // reported alongside the false count, and a separate fault from
         // it.
+        go: match crate::infra::network::me(state.database).await {
+            Ok(Some(me)) => format!("/network/{}", me.id),
+            _ => "/network".into(),
+        },
+    });
+}
+
+/// A database whose server has stopped handing its log to the archive.
+///
+/// **Wrong, and it will not fix itself.** The server keeps every segment
+/// the archive has not taken, so the disk goes down by the hour while
+/// every service reads healthy: node-0 ran like that for twelve hours on
+/// 2026-11-02, and the first sign anyone had was its sites going down.
+async fn databases_not_archiving(state: &Sources<'_>, concerns: &mut Vec<ConcernResponse>) {
+    let (Ok(services), Ok(projects)) = (
+        crate::infra::repositories::services::all(state.database, None).await,
+        crate::infra::repositories::projects::all(state.database).await,
+    ) else {
+        return;
+    };
+    let now = crate::infra::clock::now_ms();
+    for service in services
+        .iter()
+        .filter(|service| service.kind == crate::domain::entities::service::Kind::Postgres)
+    {
+        let Some(project) = projects.iter().find(|p| p.id == service.project_id) else {
+            continue;
+        };
+        let Ok(Some(row)) =
+            crate::infra::repositories::databases::of_service(state.database, &service.id).await
+        else {
+            continue;
+        };
+        let waiting = crate::infra::deploy::database::waiting_to_archive(
+            &state.config.node.data_dir,
+            &crate::domain::entities::replica::container_id_for(
+                &project.slug,
+                &service.slug,
+                row.primary_slot,
+            ),
+        );
+        let Some(since) = waiting
+            .since
+            .filter(|_| crate::domain::policies::wal::stuck(waiting.since, now))
+        else {
+            continue;
+        };
+        concerns.push(ConcernResponse {
+            weight: Weight::Wrong,
+            what: "A database is not archiving its log".into(),
+            which: service.slug.clone(),
+            why: format!(
+                "{} segments waiting, the oldest for {} — the server keeps them until the archive \
+                 command succeeds, and its log says why it fails",
+                waiting.segments,
+                waited(now - since)
+            ),
+            go: format!("/projects/{}/services/{}", project.slug, service.slug),
+        });
+    }
+}
+
+fn waited(ms: i64) -> String {
+    match ms / 60_000 {
+        minutes if minutes < 120 => format!("{minutes} min"),
+        minutes => format!("{} h", minutes / 60),
+    }
+}
+
+/// The filesystem holding this node's data, with less than a tenth left.
+///
+/// A notice and not a fault: nothing has failed yet. It is here because
+/// what fails when it runs out is everything at once — on node-0 a
+/// database could not write its lock file and a site went down with it.
+async fn a_disk_nearly_full(state: &Sources<'_>, concerns: &mut Vec<ConcernResponse>) {
+    let disk = crate::infra::node::disk::filesystem(&state.config.node.data_dir);
+    if !crate::domain::policies::disk::nearly_full(disk.total, disk.available) {
+        return;
+    }
+    concerns.push(ConcernResponse {
+        weight: Weight::Notice,
+        what: "The disk is nearly full".into(),
+        which: state.config.node.data_dir.display().to_string(),
+        why: format!(
+            "{} free of {} — what this node keeps is on its own page, by part",
+            crate::infra::node::memory::human(disk.available),
+            crate::infra::node::memory::human(disk.total)
+        ),
         go: match crate::infra::network::me(state.database).await {
             Ok(Some(me)) => format!("/network/{}", me.id),
             _ => "/network".into(),
@@ -481,6 +570,8 @@ mod tests {
             "An instruction was refused",
             "Storage nothing claims",
             "A backup did not work",
+            "A database is not archiving its log",
+            "The disk is nearly full",
             "A node this one cannot reach",
             "No way to reach a node",
             "Two nodes claim one address",

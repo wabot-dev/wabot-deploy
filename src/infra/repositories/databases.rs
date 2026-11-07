@@ -93,6 +93,25 @@ pub async fn of_service(
         })
         .await?)
 }
+/// When this node first held the database's row.
+pub async fn created_at(
+    database: &SqliteDatabase,
+    service_id: &str,
+) -> PlatformResult<Option<i64>> {
+    let service_id = service_id.to_string();
+    Ok(database
+        .read(move |connection| {
+            connection
+                .query_row(
+                    "SELECT \"created_at\" FROM database WHERE \"service_id\" = ?1",
+                    [service_id],
+                    |row| row.get(0),
+                )
+                .optional()
+        })
+        .await?)
+}
+
 fn decode(row: &Row<'_>) -> wabot::sqlite::rusqlite::Result<Database> {
     Ok(Database {
         service_id: row.get(0)?,

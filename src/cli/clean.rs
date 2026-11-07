@@ -19,7 +19,8 @@
 //!
 //! So a volume nothing claims is *named and left*, however much space it
 //! is holding, and `--volumes` is a separate word an operator has to
-//! type. The reason it is separate rather than merely confirmed: an
+//! type. A database's archived log is the same kind of thing — the only
+//! way back to a moment between two backups — and is left with them. The reason it is separate rather than merely confirmed: an
 //! unclaimed volume is usually a copy that was moved to another node or
 //! thrown off this one, and "the replica is gone" and "the data is
 //! wanted" are both true at once. That is exactly the case where a tidy
@@ -85,10 +86,8 @@ pub async fn run(config: Config, apply: bool, volumes: bool) -> anyhow::Result<i
         println!("  unclaimed. Refusing rather than guessing — see `doctor`.");
         return Ok(1);
     };
-    let live = crate::infra::deploy::Claim::containers(&claims);
-    for (kind, path) in crate::infra::deploy::Deployer::leftovers(&config.node.data_dir, &live) {
-        // A volume is the one kind that cannot be made again.
-        if kind == "data" && !volumes {
+    for (kind, path) in crate::infra::deploy::Deployer::leftovers(&config.node.data_dir, &claims) {
+        if matches!(kind, "data" | "archive") && !volumes {
             kept_back.push(path);
             continue;
         }
@@ -169,14 +168,14 @@ pub async fn run(config: Config, apply: bool, volumes: bool) -> anyhow::Result<i
     if !kept_back.is_empty() {
         println!();
         println!(
-            "  {} volume(s) nothing claims, left where they are:",
+            "  {} volume(s) and archive(s) nothing claims, left where they are:",
             kept_back.len()
         );
         for path in &kept_back {
             println!("    {}", path.display());
         }
         println!();
-        println!("  A volume is the only thing here nobody can make again, and one");
+        println!("  These are the only things here nobody can make again, and one");
         println!("  nothing claims is usually a copy moved elsewhere rather than");
         println!("  rubbish. `clean --apply --volumes` removes them for good.");
     }

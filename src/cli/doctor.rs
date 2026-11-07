@@ -105,8 +105,8 @@ pub async fn run(config: Config, config_path: &Path) -> anyhow::Result<i32> {
 
     println!();
     println!("storage");
-    match live_containers(&database).await {
-        Ok(live) => {
+    match crate::infra::deploy::Deployer::claimed(&database).await {
+        Some(claims) => {
             // What is on the disk, not how many containers were asked
             // about. The first version printed the container count under
             // the word `volumes`, so a node with two containers and no
@@ -129,7 +129,7 @@ pub async fn run(config: Config, config_path: &Path) -> anyhow::Result<i32> {
             // the two nobody could see accumulated a file per container
             // that ever ran here, silently.
             for (kind, orphan) in
-                crate::infra::deploy::Deployer::leftovers(&config.node.data_dir, &live)
+                crate::infra::deploy::Deployer::leftovers(&config.node.data_dir, &claims)
             {
                 println!(
                     "  orphan      {} ({kind}, no replica claims it)",
@@ -137,8 +137,22 @@ pub async fn run(config: Config, config_path: &Path) -> anyhow::Result<i32> {
                 );
             }
         }
-        Err(error) => println!("  volumes     unreadable: {error}"),
+        None => println!("  volumes     unreadable: could not read what this node claims"),
     }
+    let disk = crate::infra::node::disk::filesystem(&config.node.data_dir);
+    let free = format!(
+        "{} free of {}",
+        crate::infra::node::memory::human(disk.available),
+        crate::infra::node::memory::human(disk.total)
+    );
+    match crate::domain::policies::disk::nearly_full(disk.total, disk.available) {
+        true => {
+            problems += 1;
+            println!("  DISK        {free} — under a tenth left");
+        }
+        false => println!("  disk        {free}"),
+    }
+    problems += archives(&database, &config).await;
 
     println!();
     println!("service");
@@ -780,17 +794,63 @@ fn newest_backup(directory: &std::path::Path) -> Option<(std::path::PathBuf, usi
     copies.into_iter().next().map(|(_, path)| (path, count))
 }
 
-/// The container id of every copy this node runs.
+/// What each database whose primary is here has not archived.
 ///
-/// What `volumes::orphans` compares the disk against, and the same
-/// derivation the deploy path uses: project slug, service slug, slot.
-/// Reading it any other way would let the two disagree, and the
-/// disagreement would read as "this data belongs to nothing".
-async fn live_containers(database: &wabot::sqlite::SqliteDatabase) -> anyhow::Result<Vec<String>> {
-    crate::infra::deploy::Deployer::claimed(database)
-        .await
-        .map(|claims| crate::infra::deploy::Claim::containers(&claims))
-        .ok_or_else(|| anyhow::anyhow!("could not read what this node claims"))
+/// Read off the server's own `archive_status`, so it answers with the
+/// server stopped too — which is when somebody runs this.
+async fn archives(database: &wabot::sqlite::SqliteDatabase, config: &Config) -> usize {
+    let (Ok(services), Ok(projects)) = (
+        crate::infra::repositories::services::all(database, None).await,
+        crate::infra::repositories::projects::all(database).await,
+    ) else {
+        return 0;
+    };
+    let now = now_ms();
+    let mut problems = 0;
+    for service in services
+        .iter()
+        .filter(|service| service.kind == crate::domain::entities::service::Kind::Postgres)
+    {
+        let Some(project) = projects.iter().find(|p| p.id == service.project_id) else {
+            continue;
+        };
+        let Ok(Some(row)) =
+            crate::infra::repositories::databases::of_service(database, &service.id).await
+        else {
+            continue;
+        };
+        let container = crate::domain::entities::replica::container_id_for(
+            &project.slug,
+            &service.slug,
+            row.primary_slot,
+        );
+        let pgdata = crate::infra::repositories::volumes::directory(
+            &config.node.data_dir,
+            &container,
+            crate::domain::policies::postgres::VOLUME,
+        );
+        if !pgdata.exists() {
+            continue;
+        }
+        let waiting =
+            crate::infra::deploy::database::waiting_to_archive(&config.node.data_dir, &container);
+        match (
+            waiting.since,
+            crate::domain::policies::wal::stuck(waiting.since, now),
+        ) {
+            (Some(since), true) => {
+                problems += 1;
+                println!(
+                    "  ARCHIVE     {container}  {} segments waiting since {} — the command fails; \
+                     the database's log says why",
+                    waiting.segments,
+                    crate::shell::layouts::layout::exactly(since)
+                );
+            }
+            _ => println!("  archive     {container}  {} waiting", waiting.segments),
+        }
+    }
+    problems
 }
 
 /// Whether a memory ceiling written into the spec will be honoured.

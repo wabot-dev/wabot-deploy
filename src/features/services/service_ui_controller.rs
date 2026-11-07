@@ -301,14 +301,34 @@ impl ServiceUiController {
         let window = match service.kind == crate::domain::entities::service::Kind::Postgres {
             true => crate::infra::backup::window(
                 &self.state.config.node.data_dir,
-                &format!("{}.{}", project.slug, service.slug),
-                crate::infra::backup::taken(&self.state.config.node.data_dir)
-                    .last()
-                    .map(|(_, manifest)| manifest.taken_at),
+                &service.id,
+                crate::infra::backup::anchor(
+                    &crate::infra::backup::taken(&self.state.config.node.data_dir),
+                    crate::infra::backup::Wanted {
+                        container: &format!("{}.{}", project.slug, service.slug),
+                        service: &service.id,
+                    },
+                ),
                 crate::infra::node::settings::archiving(&self.state.database).await,
             ),
             false => crate::infra::backup::Window::NotKeeping,
         };
+        let stuck = engine
+            .as_ref()
+            .filter(|_| service.kind == crate::domain::entities::service::Kind::Postgres)
+            .map(|row| {
+                crate::infra::deploy::database::waiting_to_archive(
+                    &self.state.config.node.data_dir,
+                    &crate::domain::entities::replica::container_id_for(
+                        &project.slug,
+                        &service.slug,
+                        row.primary_slot,
+                    ),
+                )
+            })
+            .filter(|waiting| {
+                crate::domain::policies::wal::stuck(waiting.since, crate::infra::clock::now_ms())
+            });
         // Whether any backup here holds a copy of *this* database, which
         // is what decides if there is anything to restore. The window
         // above measures the archived log, and a log with no base backup
@@ -454,6 +474,7 @@ impl ServiceUiController {
                     signs_here,
                     host_port: ports.first().and_then(|port| port.host_port),
                     window: &window,
+                    stuck,
                     elsewhere: elsewhere.as_deref(),
                     restorable,
                 }),

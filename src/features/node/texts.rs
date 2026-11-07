@@ -13,6 +13,10 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
     ),
     ("A copy will not start", "Una copia no arranca"),
     (
+        "A database is not archiving its log",
+        "Una base no está archivando su log",
+    ),
+    (
         "A node this one cannot reach",
         "Un nodo que este no alcanza",
     ),
@@ -28,6 +32,7 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
     ),
     ("No way to reach a node", "Sin camino hacia un nodo"),
     ("Storage nothing claims", "Almacenamiento que nadie reclama"),
+    ("The disk is nearly full", "El disco está casi lleno"),
     (
         "Two nodes claim one address",
         "Dos nodos reclaman una dirección",
