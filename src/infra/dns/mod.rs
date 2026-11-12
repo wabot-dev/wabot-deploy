@@ -16,9 +16,13 @@ use std::sync::Arc;
 use arc_swap::ArcSwap;
 use hickory_server::net::runtime::TokioRuntimeProvider;
 use hickory_server::proto::rr::rdata::{self, caa::KeyValue};
-use hickory_server::proto::rr::{LowerName, Name, RData, Record};
+use hickory_server::proto::rr::{LowerName, Name, RData, Record, RecordType, TSigResponseContext};
+use hickory_server::server::{Request, RequestInfo};
 use hickory_server::store::in_memory::InMemoryZoneHandler;
-use hickory_server::zone_handler::{AxfrPolicy, Catalog, ZoneHandler, ZoneType};
+use hickory_server::zone_handler::{
+    AuthLookup, AxfrPolicy, Catalog, LookupControlFlow, LookupError, LookupOptions, ZoneHandler,
+    ZoneTransfer, ZoneType,
+};
 use tokio::sync::Notify;
 use wabot::sqlite::SqliteDatabase;
 
@@ -255,7 +259,7 @@ pub async fn what_this_node_serves(database: &SqliteDatabase) -> Result<Vec<Serv
     Ok(served)
 }
 
-fn handler(served: &Served) -> Result<(Name, InMemoryZoneHandler<TokioRuntimeProvider>), String> {
+fn handler(served: &Served) -> Result<(Name, Zone), String> {
     let origin = absolute(served.zone.name.as_str())?;
     let serial = served.zone.serial;
     let mut handler = InMemoryZoneHandler::<TokioRuntimeProvider>::empty(
@@ -289,8 +293,12 @@ fn handler(served: &Served) -> Result<(Name, InMemoryZoneHandler<TokioRuntimePro
         );
     }
 
+    let mut wildcards = Vec::new();
     for record in &served.records {
         let owner = absolute(&record.name.fqdn(&served.zone.name))?;
+        if owner.is_wildcard() {
+            wildcards.push(LowerName::new(&owner.base_name()));
+        }
         match rdata_of(&record.data) {
             Ok(data) => {
                 handler.upsert_mut(Record::from_rdata(owner, record.ttl, data), serial);
@@ -298,7 +306,106 @@ fn handler(served: &Served) -> Result<(Name, InMemoryZoneHandler<TokioRuntimePro
             Err(reason) => tracing::warn!(record = %record.id, %reason, "a record left out"),
         }
     }
-    Ok((origin, handler))
+    Ok((
+        origin,
+        Zone {
+            records: handler,
+            wildcards,
+        },
+    ))
+}
+
+/// hickory's own handler, except that a name a wildcard answers for exists.
+///
+/// hickory synthesises the A under `*.apps` and then decides whether the
+/// name exists by looking only at the names it stores, so the AAAA beside
+/// that A came back NXDOMAIN. A resolver that hears NXDOMAIN may forget
+/// the name for every type, and musl, asking both at once, refuses it.
+struct Zone {
+    records: InMemoryZoneHandler<TokioRuntimeProvider>,
+    wildcards: Vec<LowerName>,
+}
+
+impl Zone {
+    fn exists(
+        &self,
+        name: &LowerName,
+        found: LookupControlFlow<AuthLookup>,
+    ) -> LookupControlFlow<AuthLookup> {
+        let covered = self
+            .wildcards
+            .iter()
+            .any(|parent| parent != name && parent.zone_of(name));
+        match found {
+            LookupControlFlow::Continue(Err(error)) if error.is_nx_domain() && covered => {
+                LookupControlFlow::Continue(Err(LookupError::NameExists))
+            }
+            found => found,
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl ZoneHandler for Zone {
+    fn zone_type(&self) -> ZoneType {
+        self.records.zone_type()
+    }
+
+    fn axfr_policy(&self) -> AxfrPolicy {
+        self.records.axfr_policy()
+    }
+
+    fn origin(&self) -> &LowerName {
+        self.records.origin()
+    }
+
+    async fn lookup(
+        &self,
+        name: &LowerName,
+        rtype: RecordType,
+        request_info: Option<&RequestInfo<'_>>,
+        lookup_options: LookupOptions,
+    ) -> LookupControlFlow<AuthLookup> {
+        let found = self
+            .records
+            .lookup(name, rtype, request_info, lookup_options)
+            .await;
+        self.exists(name, found)
+    }
+
+    async fn search(
+        &self,
+        request: &Request,
+        lookup_options: LookupOptions,
+    ) -> (LookupControlFlow<AuthLookup>, Option<TSigResponseContext>) {
+        let (found, signed) = self.records.search(request, lookup_options).await;
+        match request.request_info() {
+            Ok(info) => (self.exists(info.query.name(), found), signed),
+            Err(_) => (found, signed),
+        }
+    }
+
+    async fn nsec_records(
+        &self,
+        name: &LowerName,
+        lookup_options: LookupOptions,
+    ) -> LookupControlFlow<AuthLookup> {
+        self.records.nsec_records(name, lookup_options).await
+    }
+
+    async fn zone_transfer(
+        &self,
+        request: &Request,
+        lookup_options: LookupOptions,
+        now: u64,
+    ) -> Option<(
+        Result<ZoneTransfer, LookupError>,
+        Option<TSigResponseContext>,
+    )> {
+        self.records
+            .zone_transfer(request, lookup_options, now)
+            .await
+    }
 }
 
 fn rdata_of(data: &RecordData) -> Result<RData, String> {

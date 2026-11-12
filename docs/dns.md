@@ -337,9 +337,33 @@ name may be `*.apps.example.com`.
   name whose certificate is read from disk: the resolver serves it the
   same way.
 
-Not run against a real authority yet: the order, the wait for the other
-servers and the errand between two nodes are covered by their parts' tests
-only.
+**Run on the VM node against Pebble, 2026-11-12.** Let's Encrypt's test
+authority inside the VM, validating DNS-01 by asking the node's own name
+server. The form accepted `*.apps.example.test` for a zone of the
+service's project. The TXT was written, served and gone again within a
+second, and the order took 0.8 s. The node then served:
+
+- the wildcard to `foo.` and `bar.apps.example.test`, verified against
+  Pebble's root and answered by the service;
+- the local certificate and a 404 to `a.b.apps.example.test`;
+- an exact name under the wildcard from another service, which won the
+  route.
+
+A restart ordered nothing new. Two refusals said what they should: a name
+no zone of the project holds, and a star in the middle.
+
+It found one fault, and it was in the name server, not the certificate.
+hickory answers the A under `*.apps` and then decides whether the name
+exists by looking only at the names it stores, so the AAAA beside that A
+came back NXDOMAIN. musl asks both at once and gives up on any NXDOMAIN,
+so the node's own check of the wildcard said the name did not resolve
+while its zone was answering it. `infra::dns::Zone` wraps hickory's
+handler and says a name a wildcard covers exists. The binary before it
+refused the name on the VM and the binary after it resolved it.
+
+Still not run against a real authority, nor between two nodes. The wait
+for the other servers and the errand between two nodes are covered by
+their parts' tests only.
 
 ## What is left
 

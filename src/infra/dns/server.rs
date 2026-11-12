@@ -434,6 +434,42 @@ mod tests {
         );
     }
 
+    /// A name a wildcard answers for exists for every type, so asking for
+    /// one the wildcard does not have is no data rather than no such name.
+    /// hickory answered NXDOMAIN to the AAAA beside a synthesised A, and
+    /// musl, which asks both at once, then said the name did not exist:
+    /// found on a VM node, where the node's own check of a wildcard
+    /// hostname refused a name its own zone was answering.
+    #[tokio::test]
+    async fn a_name_a_wildcard_answers_exists_for_every_type() {
+        let (zones, _database) = node(&[("*.blog", RecordKind::A, "203.0.113.9", None)]).await;
+        let listener = listen(zones).await;
+
+        for name in [
+            "anything.blog.teresaasprilla.com.",
+            "deeper.anything.blog.teresaasprilla.com.",
+        ] {
+            let no_data = over_udp(listener.udp, name, RecordType::AAAA).await;
+            assert_eq!(
+                no_data.metadata.response_code,
+                ResponseCode::NoError,
+                "{name}"
+            );
+            assert!(no_data.answers.is_empty());
+            assert!(no_data
+                .authorities
+                .iter()
+                .any(|record| matches!(record.data, RData::SOA(_))));
+        }
+
+        let beside = over_udp(listener.udp, "other.teresaasprilla.com.", RecordType::AAAA).await;
+        assert_eq!(
+            beside.metadata.response_code,
+            ResponseCode::NXDomain,
+            "a wildcard answers below its own name and nowhere else"
+        );
+    }
+
     /// A DKIM key is longer than a plain UDP answer may be. The answer says
     /// it was cut, and the same question over TCP gets the whole of it.
     #[tokio::test]
