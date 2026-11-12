@@ -371,11 +371,59 @@ pub async fn forget_ungranted(database: &SqliteDatabase) -> Vec<String> {
 /// listener that took the port are two different facts, and a firewall in
 /// front of either is a third.
 pub async fn probe(at: std::net::SocketAddr, zone: &str) -> Result<u32, String> {
-    use hickory_server::proto::op::{Message, Query, ResponseCode};
+    use hickory_server::proto::op::ResponseCode;
     use hickory_server::proto::rr::RecordType;
 
+    let answer = ask(at, zone, RecordType::SOA).await?;
+    if answer.metadata.response_code != ResponseCode::NoError {
+        return Err(format!("answered {}", answer.metadata.response_code));
+    }
+    if !answer.metadata.authoritative {
+        return Err("answered, but not as the authority for it".into());
+    }
+    answer
+        .answers
+        .iter()
+        .find_map(|record| match &record.data {
+            RData::SOA(soa) => Some(soa.serial),
+            _ => None,
+        })
+        .ok_or_else(|| "answered without the zone's SOA".to_string())
+}
+
+pub async fn holds_text(at: std::net::SocketAddr, name: &str, value: &str) -> Result<bool, String> {
+    use hickory_server::proto::op::ResponseCode;
+    use hickory_server::proto::rr::RecordType;
+
+    let answer = ask(at, name, RecordType::TXT).await?;
+    if !answer.metadata.authoritative {
+        return Err("answered, but not as the authority for it".into());
+    }
+    match answer.metadata.response_code {
+        ResponseCode::NoError | ResponseCode::NXDomain => {}
+        other => return Err(format!("answered {other}")),
+    }
+    Ok(answer.answers.iter().any(|record| match &record.data {
+        RData::TXT(txt) => {
+            txt.txt_data
+                .iter()
+                .map(|part| String::from_utf8_lossy(part))
+                .collect::<String>()
+                == value
+        }
+        _ => false,
+    }))
+}
+
+async fn ask(
+    at: std::net::SocketAddr,
+    name: &str,
+    kind: hickory_server::proto::rr::RecordType,
+) -> Result<hickory_server::proto::op::Message, String> {
+    use hickory_server::proto::op::{Message, Query};
+
     let mut question = Message::query();
-    question.add_query(Query::query(absolute(zone)?, RecordType::SOA));
+    question.add_query(Query::query(absolute(name)?, kind));
     let asked = question.to_vec().map_err(|error| error.to_string())?;
 
     let local: std::net::SocketAddr = match at {
@@ -394,22 +442,7 @@ pub async fn probe(at: std::net::SocketAddr, zone: &str) -> Result<u32, String> 
         .await
         .map_err(|_| "no answer within two seconds".to_string())?
         .map_err(|error| error.to_string())?;
-    let answer = Message::from_vec(&buffer[..read]).map_err(|error| error.to_string())?;
-
-    if answer.metadata.response_code != ResponseCode::NoError {
-        return Err(format!("answered {}", answer.metadata.response_code));
-    }
-    if !answer.metadata.authoritative {
-        return Err("answered, but not as the authority for it".into());
-    }
-    answer
-        .answers
-        .iter()
-        .find_map(|record| match &record.data {
-            RData::SOA(soa) => Some(soa.serial),
-            _ => None,
-        })
-        .ok_or_else(|| "answered without the zone's SOA".to_string())
+    Message::from_vec(&buffer[..read]).map_err(|error| error.to_string())
 }
 
 fn absolute(name: &str) -> Result<Name, String> {

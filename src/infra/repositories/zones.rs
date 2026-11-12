@@ -295,6 +295,16 @@ pub async fn put_challenge(
 ) -> PlatformResult<()> {
     let name = RecordName::parse(owner, &zone.name)
         .map_err(|reason| PlatformError::Refused(reason.into()))?;
+    let aliased = records(database, zone)
+        .await?
+        .into_iter()
+        .any(|record| record.name == name && record.data.kind() == RecordKind::Cname);
+    if aliased {
+        return Err(PlatformError::Refused(format!(
+            "{owner} is a CNAME in this zone, and a CNAME stands alone, so the challenge cannot \
+             be written beside it — remove that record from the zone"
+        )));
+    }
     let (zone_id, name, value) = (
         zone.id.clone(),
         name.as_str().to_string(),
@@ -835,6 +845,30 @@ mod tests {
         assert_eq!(left.len(), 1);
         assert_eq!(left[0].data.value(), "typed by a person");
         assert_eq!(clear_challenges(&database, &found.id).await.unwrap(), 0);
+    }
+
+    #[tokio::test]
+    async fn a_challenge_is_not_written_beside_a_cname() {
+        let database = database().await;
+        let site = project(&database, "site", None).await;
+        let found = zone(&database, "example.com", &site).await.expect("zone");
+        add_record(
+            &database,
+            &found,
+            name(&found, "_acme-challenge.apps"),
+            data(RecordKind::Cname, "apps.acme-dns.example.org"),
+            300,
+        )
+        .await
+        .expect("a delegated challenge");
+
+        let refused = put_challenge(&database, &found, "_acme-challenge.apps", "proof").await;
+
+        assert!(
+            matches!(&refused, Err(PlatformError::Refused(reason)) if reason.contains("CNAME")),
+            "{refused:?}"
+        );
+        assert_eq!(records(&database, &found).await.expect("records").len(), 1);
     }
 
     #[tokio::test]

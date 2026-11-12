@@ -19,4 +19,9 @@ pub struct AddServicePortRequest {
     pub hostname: String,
     #[serde(default)]
     pub https: bool,
+    /// Signed here or read from files rather than asked of a public
+    /// authority. Off is the authority, which is what an unspecified
+    /// source has always meant.
+    #[serde(default)]
+    pub without_authority: bool,
 }

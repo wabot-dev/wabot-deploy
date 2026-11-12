@@ -2735,6 +2735,7 @@ impl Deployer {
                     tracing::warn!(%error, node = %node_id, "could not queue an edge instruction")
                 }
             }
+            crate::infra::edge::acme::send_certificate(&self.database, hostname, node_id).await;
         }
     }
 

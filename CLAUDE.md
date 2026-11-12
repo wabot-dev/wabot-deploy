@@ -448,8 +448,10 @@ happened:
   runs with fewer open files than the file grants.
 - No rollback button for an update — rolling back a migration is not a
   file operation, which is what the database copy is for.
-- Wildcard certificates are refused by name: the resolver looks names up
-  in a map, so accepting one would store a certificate never served.
+- A wildcard certificate from Let's Encrypt (DNS-01, ordered by the node
+  holding the project's zone and sent with its key to the edges) has not
+  run against a real authority, nor between two nodes. `docs/dns.md`,
+  phase 7.
 - `scripts/deploy.sh` prints `line 76: release: command not found` on
   every run. Harmless, and it is exactly where somebody looks when
   something is wrong.

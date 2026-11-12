@@ -88,7 +88,7 @@ pub fn port_form<'a>(
                                              name already resolves here. Leave it as it is."))</p>
                                         <input name="hostname" type="text" autocomplete="off" class="mono"
                                                value=(name) data-required-when="https">
-                                        <p class="field-hint">(t("To serve every subdomain, type *.name — the project needs a DNS zone holding it, and the certificate is proved in that zone."))</p>
+                                        <p class="field-hint">(t("To serve every subdomain, type *.name. With Let's Encrypt the project needs a DNS zone holding it, because the certificate is proved in that zone."))</p>
                                     </div>
                                 }
                                 Some((name, false)) => {
@@ -104,7 +104,7 @@ pub fn port_form<'a>(
                                         <input name="hostname" type="text" autocomplete="off" class="mono"
                                                placeholder="api.example.com"
                                                data-required-when="https">
-                                        <p class="field-hint">(t("To serve every subdomain, type *.name — the project needs a DNS zone holding it, and the certificate is proved in that zone."))</p>
+                                        <p class="field-hint">(t("To serve every subdomain, type *.name. With Let's Encrypt the project needs a DNS zone holding it, because the certificate is proved in that zone."))</p>
                                     </div>
                                 }
                                 None if named => {

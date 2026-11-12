@@ -277,10 +277,16 @@ tab — which is what Acme would have to ask for on the VM before adding
 Asked for by Jorge on 2026-11-11, with the zones in place: a service's HTTPS
 name may be `*.apps.example.com`.
 
-- **It is accepted where the project holds the zone.** `AddServicePort`
-  takes a leading `*.` over a real name (`Hostname::wildcard_base`) and
-  asks `zones::holding` for a zone of the service's own project that holds
-  the base. Every other form still refuses a wildcard.
+- **The zone is asked for only when Let's Encrypt is.** `AddServicePort`
+  takes a leading `*.` over a real name (`Hostname::wildcard_base`). When
+  the certificate will come from the authority, it asks `zones::holding`
+  for a zone of the service's own project that holds the base, because
+  DNS-01 is proved by writing in that zone. Signed here or read from files,
+  no zone is needed — nothing is proved. Every other form still refuses a
+  wildcard.
+- **A name under the wildcard can still be a service of its own**, from
+  any project: the exact route and the exact certificate win. Decided by
+  Jorge on 2026-11-12.
 - **Reaching this node is probed with a random label** under the base, so
   the zone needs a `*` record pointing at the node — the same trick
   `wildcard_works` plays.
@@ -291,21 +297,49 @@ name may be `*.apps.example.com`.
   zone errand carry it with no knowledge of it. It is removed after the
   order, success or not, and `sweep_challenges` removes what an interrupted
   one left, at boot, without touching a person's `_acme-challenge`.
-- **Only the node that holds the zone orders.** It refuses, with a
-  sentence, when the zone does not point here (`Elsewhere`,
-  `Unregistered`) or this node is not among its servers. With other name
-  servers it waits 90 s for the TXT to reach them.
+- **Only the node that holds the zone orders, and it orders whether or
+  not it answers for the name** (`wildcards_proved_here`): the edges cannot
+  prove a zone they do not hold, so a `*` record pointing only at another
+  node would otherwise leave the name with no certificate and no reason.
+- **Nothing is spent on a coin toss.** It refuses, with a sentence, when
+  this node is not among the zone's servers, and when the registrar's list
+  read against the names that answer now (`Delegation::against`) is not
+  all of them: `Elsewhere`, `Unregistered`, and `Partly` too, naming the
+  foreign server, because the authority could ask it. Unknown goes ahead —
+  the authority asks the name itself.
+- **The challenge has to be heard before the authority looks.** This node
+  reloads its own table at once; every other server is asked for the TXT
+  at each address its names resolve to, every five seconds, for up to two
+  minutes (`dns::holds_text`). One that has not heard by then abandons the
+  order before `set_ready`, which spends nothing, and the reason names the
+  server and what it answered. A name server whose name does not resolve
+  is refused before an order exists.
+- **A CNAME at `_acme-challenge.<base>` is refused** beside the `INSERT`:
+  a CNAME stands alone, and a TXT beside one is a record no resolver
+  should be handed — the usual sign that the challenge is delegated
+  elsewhere on purpose.
 - **The edges are sent the certificate and its key.** `Kind::Certificate`,
-  consent `edge`, subject `certificate:<name>`, resent only when it
-  changes. A receiver keeps it only from the node that holds the claim on
-  the name (`claimed_by`), and only when it covers the name and the key
-  opens it (`certs::received`, source `received`). It never renews one.
+  consent `edge`, subject `certificate:<name>`. Sent when it is issued and
+  right after each edge errand for the name (`Deployer::tell_edges`: a
+  deployment, a placement, a boot), so a new edge has it as soon as it
+  is told to serve the name — and never from the renewal timer, because an
+  errand to an authority is queued again on every call and the timer left
+  a copy of the key in a row twice a day. Only a certificate this node
+  ordered is sent. A receiver keeps it only from the node that
+  holds the claim on the name (`claimed_by`), and only when it covers the
+  name and the key opens it (`certs::received`, source `received`). It never renews one,
+  so the expiry floor applies to it as to a file: three days out, the edge
+  signs for the name itself rather than serve an expired certificate.
 - **Routing and handshakes match one label**, exact name first:
   `RouteTable::resolve` and `CertResolver::find`. `a.b.apps.example.com`
   matches neither, as in TLS.
+- **A wildcard file covers one label below it** (`certs::covers`), for a
+  name whose certificate is read from disk: the resolver serves it the
+  same way.
 
-Not run against a real authority yet: the order, the propagation wait and
-the errand between two nodes are covered by their parts' tests only.
+Not run against a real authority yet: the order, the wait for the other
+servers and the errand between two nodes are covered by their parts' tests
+only.
 
 ## What is left
 

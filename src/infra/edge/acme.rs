@@ -379,6 +379,10 @@ pub async fn wanted_names(database: &SqliteDatabase) -> Vec<String> {
         Ok(serving) => names.extend(serving),
         Err(error) => tracing::warn!(%error, "could not read which names this node serves"),
     }
+    match wildcards_proved_here(database).await {
+        Ok(proved) => names.extend(proved),
+        Err(error) => tracing::warn!(%error, "could not read the wildcards this node orders"),
+    }
     // And every organisation's own console name.
     //
     // **A control-plane name, like this node's own domain**, and that is
@@ -517,15 +521,15 @@ async fn hold_the_floor(
     name: &str,
     policy: &policy::Policy,
 ) -> AcmeResult<bool> {
-    if policy.renew_with.is_self_serve() {
-        return Ok(false);
-    }
     let Some(existing) = certs::load(database, name).await? else {
         // Nothing installed at all: `refresh_local` covers the node
         // with a certificate carrying every name it answers for, so
         // this name is already being served something.
         return Ok(false);
     };
+    if policy.renew_with.is_self_serve() && existing.source != certs::Source::Received {
+        return Ok(false);
+    }
     if existing.not_after > now_ms() + FLOOR_DAYS * 86_400_000 {
         return Ok(false);
     }
@@ -800,7 +804,8 @@ pub fn answer_challenges_with(zones: Arc<crate::infra::dns::Zones>) {
     let _ = ZONES.set(zones);
 }
 
-const PROPAGATION_WAIT: std::time::Duration = std::time::Duration::from_secs(90);
+const PROPAGATION_LIMIT: std::time::Duration = std::time::Duration::from_secs(120);
+const PROPAGATION_STEP: std::time::Duration = std::time::Duration::from_secs(5);
 
 async fn ensure_wildcard(
     database: &SqliteDatabase,
@@ -814,9 +819,6 @@ async fn ensure_wildcard(
         let same_authority = existing.issuer == directory;
         let fresh = existing.not_after > now_ms() + RENEW_WITHIN_DAYS * 86_400_000;
         if same_authority && fresh {
-            if matches!(zone_for_wildcard(database, domain, base).await, Ok(Some(_))) {
-                send_to_edges(database, &existing).await;
-            }
             return Ok(false);
         }
     }
@@ -824,18 +826,14 @@ async fn ensure_wildcard(
     let Some(zone) = zone_for_wildcard(database, domain, base).await? else {
         return Ok(false);
     };
-    if let Some(delegation) = &zone.delegation {
-        if matches!(
-            delegation.status,
-            crate::domain::entities::dns_zone::DelegationStatus::Elsewhere
-                | crate::domain::entities::dns_zone::DelegationStatus::Unregistered
-        ) {
-            return Err(AcmeError::Refused(format!(
-                "the registrar for {} does not send resolvers to this node, so the authority \
-                 would never see the challenge — check the delegation on the zone's page",
-                zone.name
-            )));
-        }
+    let servers = crate::infra::repositories::zones::servers(database, &zone.id)
+        .await
+        .map_err(refused)?;
+    let named = crate::infra::dns::name_servers(database, &servers)
+        .await
+        .map_err(AcmeError::Refused)?;
+    if let Some(reason) = delegation_refusal(&zone, &named) {
+        return Err(AcmeError::Refused(reason));
     }
 
     let stored = obtain_wildcard(database, config, &zone, domain, base).await?;
@@ -844,17 +842,108 @@ async fn ensure_wildcard(
     Ok(true)
 }
 
-async fn send_to_edges(database: &SqliteDatabase, stored: &StoredCert) {
-    use crate::infra::network::errand::{self, Kind};
+/// The owner orders a wildcard whether or not it answers for the name:
+/// the edges cannot prove a zone they do not hold, so nobody else would.
+async fn wildcards_proved_here(
+    database: &SqliteDatabase,
+) -> Result<Vec<String>, crate::domain::errors::PlatformError> {
+    use crate::infra::repositories::{ports, services};
 
+    let mut proved = Vec::new();
+    for port in ports::all(database).await? {
+        let Some(name) = port.hostname.filter(|name| name.starts_with("*.")) else {
+            continue;
+        };
+        if policy::for_name(database, &name).await.renew_with != policy::RenewWith::Acme {
+            continue;
+        }
+        if services::find(database, &port.service_id)
+            .await?
+            .is_some_and(|service| service.is_ours())
+        {
+            proved.push(name);
+        }
+    }
+    Ok(proved)
+}
+
+/// Unknown is not a refusal: the check runs a minute after boot and the
+/// parent may not answer at all, and the authority asks the name itself.
+fn delegation_refusal(
+    zone: &crate::domain::entities::dns_zone::DnsZone,
+    named: &[String],
+) -> Option<String> {
+    use crate::domain::entities::dns_zone::DelegationStatus;
+
+    let seen = zone.delegation.as_ref()?.against(named);
+    match seen.status {
+        DelegationStatus::Here | DelegationStatus::Unknown => None,
+        DelegationStatus::Partly => {
+            let norm = |name: &String| name.trim().trim_end_matches('.').to_ascii_lowercase();
+            let ours: Vec<String> = named.iter().map(norm).collect();
+            let foreign: Vec<String> = seen
+                .delegated
+                .iter()
+                .map(norm)
+                .filter(|name| !ours.contains(name))
+                .collect();
+            Some(format!(
+                "the registrar for {} also lists {}, which never hears of the challenge — the \
+                 authority could ask it and fail. Leave only these nodes' names there",
+                zone.name,
+                foreign.join(", ")
+            ))
+        }
+        DelegationStatus::Elsewhere | DelegationStatus::Unregistered => Some(format!(
+            "the registrar for {} does not send resolvers to this node, so the authority would \
+             never see the challenge — check the delegation on the zone's page",
+            zone.name
+        )),
+    }
+}
+
+async fn send_to_edges(database: &SqliteDatabase, stored: &StoredCert) {
     let me = crate::infra::network::me(database)
         .await
         .ok()
         .flatten()
         .map(|node| node.id);
+    let allowed: Vec<String> = crate::infra::network::edge_candidates(database)
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .map(|node| node.id)
+        .collect();
     let serving = crate::infra::repositories::edges::nodes_for(database, &stored.domain)
         .await
         .unwrap_or_default();
+    for node in serving
+        .iter()
+        .filter(|node| Some(*node) != me.as_ref() && allowed.contains(node))
+    {
+        send_to(database, stored, node).await;
+    }
+}
+
+/// Called where the edge is told about the name, and never from the renewal
+/// timer: an errand to an authority is queued again on every call, so the
+/// timer would leave a copy of the key in a row twice a day.
+pub async fn send_certificate(database: &SqliteDatabase, hostname: &str, node_id: &str) {
+    if !hostname.starts_with("*.") {
+        return;
+    }
+    match certs::load(database, hostname).await {
+        Ok(Some(stored)) if stored.source == certs::Source::Acme => {
+            send_to(database, &stored, node_id).await
+        }
+        Ok(_) => {}
+        Err(error) => tracing::warn!(%error, %hostname, "could not read the certificate to send"),
+    }
+}
+
+async fn send_to(database: &SqliteDatabase, stored: &StoredCert, node: &str) {
+    use crate::infra::network::errand::{self, Kind};
+
     let payload = match serde_json::to_value(errand::Certificate {
         name: stored.domain.clone(),
         cert_pem: stored.cert_pem.clone(),
@@ -867,17 +956,12 @@ async fn send_to_edges(database: &SqliteDatabase, stored: &StoredCert) {
         }
     };
     let subject = format!("certificate:{}", stored.domain);
-    for node in serving.iter().filter(|node| Some(*node) != me.as_ref()) {
-        match errand::queue_if_changed(database, node, Kind::Certificate, &subject, &payload).await
-        {
-            Ok(Some(_)) => {
-                tracing::info!(%node, name = %stored.domain, "sent a wildcard certificate to an edge")
-            }
-            Ok(None) => {}
-            Err(error) => {
-                tracing::warn!(%error, %node, "could not queue a certificate for an edge")
-            }
+    match errand::queue_if_changed(database, node, Kind::Certificate, &subject, &payload).await {
+        Ok(Some(_)) => {
+            tracing::info!(%node, name = %stored.domain, "sent a wildcard certificate to an edge")
         }
+        Ok(None) => {}
+        Err(error) => tracing::warn!(%error, %node, "could not queue a certificate for an edge"),
     }
 }
 
@@ -898,6 +982,7 @@ async fn zone_for_wildcard(
     let Some(service) = services::find(database, &port.service_id)
         .await
         .map_err(refused)?
+        .filter(|service| service.is_ours())
     else {
         return Ok(None);
     };
@@ -968,6 +1053,9 @@ async fn obtain_wildcard(
 ) -> AcmeResult<StoredCert> {
     use crate::infra::repositories::zones;
 
+    let others = other_servers(database, zone)
+        .await
+        .map_err(AcmeError::Refused)?;
     let account = load_or_create_account(database, config).await?;
     let mut order = account
         .new_order(&NewOrder::new(&[Identifier::Dns(domain.to_string())]))
@@ -976,7 +1064,6 @@ async fn obtain_wildcard(
     let outcome = async {
         let owner = format!("_acme-challenge.{base}");
         let mut authorizations = order.authorizations();
-        let mut waiting_on_peers = false;
         while let Some(result) = authorizations.next().await {
             let mut authorization = result?;
             match authorization.status {
@@ -998,10 +1085,11 @@ async fn obtain_wildcard(
                 .await
                 .map_err(refused)?;
             announce_zone(database, zone.name.as_str()).await;
-            waiting_on_peers = waiting_on_peers || has_other_servers(database, zone).await;
-            if waiting_on_peers {
+            if !others.is_empty() {
                 tracing::info!(%domain, "waiting for the other name servers to hear the challenge");
-                tokio::time::sleep(PROPAGATION_WAIT).await;
+                until_heard(&others, &owner, &value, PROPAGATION_LIMIT)
+                    .await
+                    .map_err(AcmeError::Refused)?;
             }
             tracing::info!(%domain, "answering a dns-01 challenge");
             challenge.set_ready().await?;
@@ -1040,20 +1128,84 @@ async fn obtain_wildcard(
     Ok(stored)
 }
 
-async fn has_other_servers(
+async fn other_servers(
     database: &SqliteDatabase,
     zone: &crate::domain::entities::dns_zone::DnsZone,
-) -> bool {
+) -> Result<Vec<(String, std::net::SocketAddr)>, String> {
+    let servers = crate::infra::repositories::zones::servers(database, &zone.id)
+        .await
+        .map_err(|error| error.to_string())?;
+    let answering = crate::infra::dns::answering(database, &servers).await?;
+    let published = crate::infra::dns::published_names(database).await?;
     let me = crate::infra::network::me(database)
         .await
         .ok()
         .flatten()
         .map(|node| node.id);
-    crate::infra::repositories::zones::servers(database, &zone.id)
-        .await
-        .unwrap_or_default()
+
+    let mut asked = Vec::new();
+    for node in answering.iter().filter(|node| Some(*node) != me.as_ref()) {
+        for name in published.get(node).into_iter().flatten() {
+            let addresses = crate::infra::deploy::dns::lookup(name).await;
+            if addresses.is_empty() {
+                return Err(format!(
+                    "{name} answers DNS for {} and does not resolve, so nothing here can tell \
+                     whether it heard the challenge — fix its address before a certificate is \
+                     ordered",
+                    zone.name
+                ));
+            }
+            asked.extend(
+                addresses
+                    .into_iter()
+                    .map(|address| (name.clone(), std::net::SocketAddr::new(address, 53))),
+            );
+        }
+    }
+    Ok(asked)
+}
+
+/// Abandoning an order before it is ready spends nothing; telling the
+/// authority to look while one name server has not heard is a coin toss
+/// against an account that locks after five failures.
+async fn until_heard(
+    servers: &[(String, std::net::SocketAddr)],
+    owner: &str,
+    value: &str,
+    limit: std::time::Duration,
+) -> Result<(), String> {
+    let deadline = tokio::time::Instant::now() + limit;
+    let mut waiting: Vec<(&(String, std::net::SocketAddr), String)> = servers
         .iter()
-        .any(|server| Some(server) != me.as_ref())
+        .map(|server| (server, String::new()))
+        .collect();
+    loop {
+        let mut still = Vec::new();
+        for (server, _) in waiting {
+            match crate::infra::dns::holds_text(server.1, owner, value).await {
+                Ok(true) => {}
+                Ok(false) => still.push((server, "not yet".to_string())),
+                Err(reason) => still.push((server, reason)),
+            }
+        }
+        waiting = still;
+        if waiting.is_empty() {
+            return Ok(());
+        }
+        if tokio::time::Instant::now() >= deadline {
+            let unheard: Vec<String> = waiting
+                .iter()
+                .map(|((name, address), reason)| format!("{name} ({address}): {reason}"))
+                .collect();
+            return Err(format!(
+                "the challenge did not reach every name server in {} seconds, so the order was \
+                 abandoned before anything was spent — {}",
+                limit.as_secs(),
+                unheard.join("; ")
+            ));
+        }
+        tokio::time::sleep(PROPAGATION_STEP).await;
+    }
 }
 
 /// Why a public authority cannot be asked for one of these names.
@@ -1392,6 +1544,321 @@ mod tests {
 
     async fn database() -> SqliteDatabase {
         crate::infra::db::open_in_memory().await.expect("open")
+    }
+
+    fn delegated(
+        status: crate::domain::entities::dns_zone::DelegationStatus,
+        delegated: &[&str],
+    ) -> crate::domain::entities::dns_zone::DnsZone {
+        crate::domain::entities::dns_zone::DnsZone {
+            id: "zn-1".into(),
+            name: crate::domain::values::zone_name::ZoneName::parse("example.com").expect("zone"),
+            project_id: Some("prj-1".into()),
+            authority_id: None,
+            serial: 1,
+            default_ttl: 300,
+            delegation: Some(crate::domain::entities::dns_zone::Delegation {
+                status,
+                delegated: delegated.iter().map(|name| name.to_string()).collect(),
+                reason: None,
+                checked_at: 0,
+            }),
+            received_name_servers: Vec::new(),
+            created_at: 0,
+            updated_at: 0,
+        }
+    }
+
+    #[test]
+    fn a_wildcard_is_ordered_only_where_every_listed_server_is_one_of_these_nodes() {
+        use crate::domain::entities::dns_zone::DelegationStatus;
+        let ours = vec!["ns0.example.net".to_string(), "ns1.example.net".to_string()];
+
+        let here = delegated(
+            DelegationStatus::Here,
+            &["NS0.example.net.", "ns1.example.net"],
+        );
+        assert_eq!(delegation_refusal(&here, &ours), None);
+
+        let shared = delegated(
+            DelegationStatus::Here,
+            &["ns0.example.net", "ns2.linode.com"],
+        );
+        let refused = delegation_refusal(&shared, &ours).expect("refused");
+        assert!(refused.contains("ns2.linode.com"), "{refused}");
+        assert!(!refused.contains("ns0.example.net"), "{refused}");
+
+        let away = delegated(DelegationStatus::Here, &["ns1.linode.com"]);
+        assert!(delegation_refusal(&away, &ours).is_some());
+
+        let unknown = delegated(DelegationStatus::Unknown, &[]);
+        assert_eq!(delegation_refusal(&unknown, &ours), None);
+    }
+
+    #[tokio::test]
+    async fn a_name_server_that_never_hears_the_challenge_abandons_the_order_and_is_named() {
+        let silent = tokio::net::UdpSocket::bind("127.0.0.1:0")
+            .await
+            .expect("bind");
+        let address = silent.local_addr().expect("address");
+
+        let abandoned = until_heard(
+            &[("ns1.example.net".to_string(), address)],
+            "_acme-challenge.apps.example.com",
+            "proof",
+            std::time::Duration::ZERO,
+        )
+        .await;
+
+        let reason = abandoned.expect_err("abandoned");
+        assert!(reason.contains("ns1.example.net"), "{reason}");
+        assert!(reason.contains(&address.to_string()), "{reason}");
+    }
+
+    async fn a_wildcard_served_elsewhere(
+        source: certs::Source,
+    ) -> (SqliteDatabase, crate::domain::entities::service::Service) {
+        let database = database().await;
+        let me = crate::infra::network::ensure_self(&database, &Config::default())
+            .await
+            .expect("self");
+        crate::infra::network::save(
+            &database,
+            &crate::infra::network::Node {
+                update_note: None,
+                version: None,
+                wanted_version: None,
+                usage: None,
+                draining_at: None,
+                capacity: None,
+                id: "nd-edge".into(),
+                name: "edge.example".into(),
+                kind: crate::infra::network::Kind::Public,
+                endpoint: Some("edge.example:443".into()),
+                public_key: Some("0hEr0DzTvMDTRfPPmYFCVCQ1cA0nnUnP+2fFqZBBBGQ=".into()),
+                overlay_ip: Some("10.42.0.9".into()),
+                is_self: false,
+                last_seen_at: None,
+                allows: vec![crate::domain::values::capability::Capability::Edge],
+                ca_pem: None,
+            },
+        )
+        .await
+        .expect("the edge");
+        let project = crate::infra::repositories::projects::create(&database, "demo")
+            .await
+            .expect("project");
+        let service = crate::infra::repositories::services::create(
+            &database,
+            &project.id,
+            "web",
+            "docker.io/library/nginx:alpine",
+            &[],
+        )
+        .await
+        .expect("service");
+        crate::infra::repositories::ports::create(
+            &database,
+            &service.id,
+            80,
+            false,
+            Some("*.apps.example.com"),
+            &["nd-edge".to_string()],
+        )
+        .await
+        .expect("port");
+        crate::infra::repositories::zones::create(
+            &database,
+            crate::infra::repositories::zones::NewZone {
+                name: &crate::domain::values::zone_name::ZoneName::parse("example.com")
+                    .expect("zone"),
+                project: &project,
+                servers: std::slice::from_ref(&me.id),
+            },
+        )
+        .await
+        .expect("zone");
+        let signed = certs::ensure_self_signed(
+            &database,
+            "*.apps.example.com",
+            &["*.apps.example.com".into()],
+        )
+        .await
+        .expect("issue");
+        certs::save(
+            &database,
+            &StoredCert {
+                issuer: Config::default().acme.directory_url().to_string(),
+                source,
+                ..signed
+            },
+        )
+        .await
+        .expect("save");
+        (database, service)
+    }
+
+    async fn told_the_edge(database: &SqliteDatabase) -> Vec<crate::infra::network::errand::Kind> {
+        crate::infra::network::errand::waiting(database, "nd-edge")
+            .await
+            .expect("errands")
+            .into_iter()
+            .map(|order| order.kind)
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn an_edge_told_to_serve_a_wildcard_is_sent_its_certificate_right_after() {
+        use crate::infra::network::errand::Kind;
+        let (database, service) = a_wildcard_served_elsewhere(certs::Source::Acme).await;
+        let deployer = crate::infra::deploy::Deployer::new(
+            std::sync::Arc::new(database.clone()),
+            &Config::default(),
+        );
+
+        deployer.tell_edges(&service).await;
+        assert_eq!(
+            told_the_edge(&database).await,
+            vec![Kind::Edge, Kind::Certificate]
+        );
+
+        deployer.tell_edges(&service).await;
+        assert_eq!(
+            told_the_edge(&database).await,
+            vec![Kind::Edge, Kind::Certificate],
+            "saying the same thing again says nothing"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_certificate_this_node_did_not_order_is_not_sent() {
+        use crate::infra::network::errand::Kind;
+        let (database, service) = a_wildcard_served_elsewhere(certs::Source::SelfSigned).await;
+        let deployer = crate::infra::deploy::Deployer::new(
+            std::sync::Arc::new(database.clone()),
+            &Config::default(),
+        );
+
+        deployer.tell_edges(&service).await;
+
+        assert_eq!(told_the_edge(&database).await, vec![Kind::Edge]);
+    }
+
+    /// An errand to an authority is queued again on every call, so a
+    /// certificate sent from the renewal timer left a copy of its key in a
+    /// row twice a day.
+    #[tokio::test]
+    async fn a_renewal_pass_with_nothing_to_renew_sends_nothing() {
+        let (database, _) = a_wildcard_served_elsewhere(certs::Source::Acme).await;
+
+        let changed = ensure(
+            &database,
+            &Config::default(),
+            &certs::CertResolver::new(),
+            "*.apps.example.com",
+        )
+        .await
+        .expect("nothing to do");
+
+        assert!(!changed);
+        assert!(told_the_edge(&database).await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_certificate_another_node_sent_is_not_served_past_its_expiry() {
+        let database = database().await;
+        let signed = certs::ensure_self_signed(
+            &database,
+            "*.apps.example.com",
+            &["*.apps.example.com".into()],
+        )
+        .await
+        .expect("issue");
+        certs::save(
+            &database,
+            &StoredCert {
+                not_after: now_ms() + 86_400_000,
+                source: certs::Source::Received,
+                ..signed
+            },
+        )
+        .await
+        .expect("save");
+        let policy = policy::for_name(&database, "*.apps.example.com").await;
+        assert_eq!(policy.renew_with, policy::RenewWith::Acme);
+
+        let held = hold_the_floor(
+            &database,
+            &Config::default(),
+            &certs::CertResolver::new(),
+            "*.apps.example.com",
+            &policy,
+        )
+        .await
+        .expect("floor");
+
+        assert!(held);
+        let now = certs::load(&database, "*.apps.example.com")
+            .await
+            .expect("load")
+            .expect("a certificate");
+        assert_eq!(now.source, certs::Source::SelfSigned);
+        assert!(now.not_after > now_ms() + FLOOR_DAYS * 86_400_000);
+    }
+
+    #[tokio::test]
+    async fn the_node_that_owns_a_wildcard_orders_it_even_when_it_answers_for_it_nowhere() {
+        let database = database().await;
+        let project = crate::infra::repositories::projects::create(&database, "demo")
+            .await
+            .expect("project");
+        let service = crate::infra::repositories::services::create(
+            &database,
+            &project.id,
+            "web",
+            "docker.io/library/nginx:alpine",
+            &[],
+        )
+        .await
+        .expect("service");
+        crate::infra::repositories::ports::create(
+            &database,
+            &service.id,
+            80,
+            false,
+            Some("*.apps.example.com"),
+            &["nd-elsewhere".to_string()],
+        )
+        .await
+        .expect("port");
+        crate::infra::repositories::ports::create(
+            &database,
+            &service.id,
+            81,
+            false,
+            Some("*.signed.example.com"),
+            &["nd-elsewhere".to_string()],
+        )
+        .await
+        .expect("port");
+        policy::set(
+            &database,
+            "*.signed.example.com",
+            &policy::RenewWith::SelfSigned,
+        )
+        .await
+        .expect("policy");
+
+        let wanted = wanted_names(&database).await;
+
+        assert!(
+            wanted.contains(&"*.apps.example.com".to_string()),
+            "{wanted:?}"
+        );
+        assert!(
+            !wanted.contains(&"*.signed.example.com".to_string()),
+            "{wanted:?}"
+        );
     }
 
     #[tokio::test]

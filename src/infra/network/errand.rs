@@ -726,7 +726,7 @@ pub async fn waiting_here(
             let mut statement = connection.prepare(
                 "SELECT \"id\", \"kind\", \"payload\", \"from_node_id\" FROM errand \
                  WHERE \"node_id\" = ?1 AND \"done_at\" IS NULL \
-                 ORDER BY \"created_at\"",
+                 ORDER BY \"created_at\", \"rowid\"",
             )?;
             let rows: wabot::sqlite::rusqlite::Result<Vec<Row>> = statement
                 .query_map([node], |row| {
@@ -767,10 +767,9 @@ pub async fn waiting_here(
 /// answerable: one node can hold standbys of two databases, and the most
 /// recent errand of a kind is not enough to tell them apart.
 ///
-/// An unchanged payload is skipped **whatever became of the last one**,
-/// including a failure. A failure is an answer and this node's rule is
-/// that retrying is something somebody asks for; requeueing it here
-/// would be an automatic retry loop wearing a different name.
+/// An unchanged payload is skipped only when the last one was not refused
+/// and did not go up to an authority — see [`would_change`], which says
+/// why both of those are sent again.
 pub async fn queue_if_changed(
     database: &SqliteDatabase,
     node_id: &str,
@@ -966,7 +965,7 @@ pub async fn waiting(database: &SqliteDatabase, node_id: &str) -> NetworkResult<
             let mut statement = connection.prepare(
                 "SELECT \"id\", \"kind\", \"payload\" FROM errand \
                  WHERE \"node_id\" = ?1 AND \"done_at\" IS NULL \
-                 ORDER BY \"created_at\"",
+                 ORDER BY \"created_at\", \"rowid\"",
             )?;
             let rows: wabot::sqlite::rusqlite::Result<Vec<(String, String, String)>> = statement
                 .query_map([node], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?

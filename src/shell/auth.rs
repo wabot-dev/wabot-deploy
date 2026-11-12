@@ -180,6 +180,10 @@ pub fn capabilities_ticked(
         .collect()
 }
 
+pub fn asks_no_authority(form: &std::collections::HashMap<String, String>) -> bool {
+    matches!(field(form, "renew_with"), "self_signed" | "file")
+}
+
 pub fn source_from(
     form: &std::collections::HashMap<String, String>,
     name: &str,

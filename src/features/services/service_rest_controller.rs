@@ -280,6 +280,7 @@ impl ServiceRestController {
             publish: checked(&form, "publish"),
             hostname: field(&form, "hostname").to_string(),
             https: checked(&form, "https"),
+            without_authority: crate::shell::auth::asks_no_authority(&form),
         };
         let opened = match crate::domain::authz::node_user::belongs_here(&account) {
             true => {

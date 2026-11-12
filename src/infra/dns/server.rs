@@ -486,6 +486,38 @@ mod tests {
             .is_err());
     }
 
+    #[tokio::test]
+    async fn a_server_is_asked_whether_it_already_holds_the_challenge() {
+        let (zones, _database) =
+            node(&[("_acme-challenge.apps", RecordKind::Txt, "proof", None)]).await;
+        let listener = listen(zones).await;
+        let name = "_acme-challenge.apps.teresaasprilla.com";
+
+        assert_eq!(
+            crate::infra::dns::holds_text(listener.udp, name, "proof").await,
+            Ok(true)
+        );
+        assert_eq!(
+            crate::infra::dns::holds_text(listener.udp, name, "another").await,
+            Ok(false)
+        );
+        assert_eq!(
+            crate::infra::dns::holds_text(
+                listener.udp,
+                "_acme-challenge.shop.teresaasprilla.com",
+                "proof"
+            )
+            .await,
+            Ok(false)
+        );
+        assert!(
+            crate::infra::dns::holds_text(listener.udp, "_acme-challenge.google.com", "proof")
+                .await
+                .is_err(),
+            "a server that is not the authority is not an answer"
+        );
+    }
+
     #[test]
     fn one_source_gets_its_share_and_no_more() {
         let answering = Answering::new(Arc::new(Zones::default()));

@@ -685,15 +685,17 @@ pub fn names_in(cert_pem: &str) -> Vec<String> {
 
 /// Does one of `names` answer for `wanted`?
 ///
-/// Exact, case-insensitively. No wildcards: a name here is a name the
-/// node serves, and every one of them is written down — the node's
-/// domain, or a port's hostname. Matching `*.example.com` would mean
-/// the resolver has to as well, and it does not: it looks a name up in
-/// a map. Accepting one here and failing to serve it is worse than
-/// refusing it, because the console would report the node configured
-/// and no browser would open it.
+/// Case-insensitively, and a wildcard answers one label below it and no
+/// deeper — what a browser accepts, and what the resolver serves.
 pub fn covers(names: &[String], wanted: &str) -> bool {
-    names.iter().any(|name| name.eq_ignore_ascii_case(wanted))
+    let parent = wanted.split_once('.').map(|(_, parent)| parent);
+    names.iter().any(|name| {
+        name.eq_ignore_ascii_case(wanted)
+            || name
+                .strip_prefix("*.")
+                .zip(parent)
+                .is_some_and(|(base, parent)| base.eq_ignore_ascii_case(parent))
+    })
 }
 
 pub fn received(name: &str, cert_pem: &str, key_pem: &str) -> CertResult<StoredCert> {
@@ -751,15 +753,14 @@ pub fn from_files(name: &str, cert_path: &str, key_path: &str) -> CertResult<Sto
         )));
     }
     if !covers(&names, name) {
-        // A wildcard is the near miss worth naming. "is for
-        // *.example.com — not api.example.com" reads like a typo, and
-        // somebody would spend a while checking a file that is exactly
-        // what they thought it was.
+        // A wildcard is the near miss worth naming: "is for *.example.com —
+        // not a.b.example.com" reads like a typo in a file that is exactly
+        // what somebody thought it was.
         let wildcard = names.iter().any(|found| found.starts_with("*."));
         return Err(CertError::Invalid(if wildcard {
             format!(
-                "{cert_path} is a wildcard certificate ({}), and this node serves \
-                 names one at a time — give it a certificate for {name} itself",
+                "{cert_path} is for {}, and a wildcard covers one label below it and no \
+                 deeper — not {name}",
                 names.join(", ")
             )
         } else {
@@ -1014,33 +1015,28 @@ mod tests {
         assert!(error.to_string().contains("/nowhere/node.crt"), "{error}");
     }
 
-    /// Names match exactly. The resolver looks a name up in a map, so a
-    /// wildcard accepted here would be a certificate the node stored
-    /// and then never served.
     #[test]
-    fn a_name_matches_itself_and_nothing_else() {
+    fn a_name_matches_itself_and_a_wildcard_one_label_above_it() {
         let names = vec!["api.example.com".to_string()];
         assert!(covers(&names, "api.example.com"));
         assert!(covers(&names, "API.example.com"), "case does not matter");
         assert!(!covers(&names, "example.com"));
-        assert!(!covers(&["*.example.com".to_string()], "api.example.com"));
+
+        let wildcard = vec!["*.example.com".to_string()];
+        assert!(covers(&wildcard, "api.example.com"));
+        assert!(covers(&wildcard, "*.example.com"));
+        assert!(!covers(&wildcard, "example.com"));
+        assert!(!covers(&wildcard, "a.b.example.com"));
     }
 
-    /// A wildcard is the near miss worth explaining: "is for
-    /// *.example.com — not api.example.com" reads like a typo, and
-    /// somebody would go looking for a mistake in a file that is
-    /// exactly what they thought it was.
     #[test]
-    fn a_wildcard_is_refused_by_name() {
+    fn a_wildcard_file_serves_one_label_below_it_and_says_so_past_that() {
         let dir = tempfile::tempdir().expect("tempdir");
         let (cert_path, key_path) = write_pair(dir.path(), &["*.example.com"]);
 
-        let error = from_files("api.example.com", &cert_path, &key_path).expect_err("refused");
-        assert!(error.to_string().contains("wildcard"), "{error}");
-        assert!(
-            error.to_string().contains("api.example.com itself"),
-            "and says what would work: {error}"
-        );
+        from_files("api.example.com", &cert_path, &key_path).expect("one label below");
+        let error = from_files("a.b.example.com", &cert_path, &key_path).expect_err("refused");
+        assert!(error.to_string().contains("one label"), "{error}");
     }
 
     async fn database() -> SqliteDatabase {

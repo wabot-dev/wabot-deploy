@@ -25,12 +25,14 @@ impl AddServicePort<'_> {
                 }
                 let parsed = crate::domain::values::hostname::Hostname::parse(&self.asked.hostname);
                 if parsed.is_wildcard() && parsed.wildcard_base().is_none() {
-                    return Err(crate::domain::values::hostname::WILDCARD_REFUSED.into());
+                    return Err(crate::domain::values::hostname::WILDCARD_SHAPE.into());
                 }
                 let hostname = parsed.as_str().to_string();
                 let probed = match parsed.wildcard_base() {
                     Some(base) => {
-                        require_zone_for(database, self.service, base).await?;
+                        if self.asks_an_authority(database).await {
+                            require_zone_for(database, self.service, base).await?;
+                        }
                         dns::wildcard_probe(base)
                     }
                     None => hostname.clone(),
@@ -78,6 +80,10 @@ impl AddServicePort<'_> {
         .await
         .map_err(|error| error.to_string())
     }
+
+    async fn asks_an_authority(&self, database: &SqliteDatabase) -> bool {
+        !self.asked.without_authority && crate::infra::node::settings::acme_enabled(database).await
+    }
 }
 
 async fn require_zone_for(
@@ -91,8 +97,9 @@ async fn require_zone_for(
     match zone {
         Some(_) => Ok(()),
         None => Err(format!(
-            "this project has no DNS zone holding {base} — a wildcard certificate is proved in \
-             DNS, so add the zone to the project first"
+            "this project has no DNS zone holding {base} — Let's Encrypt proves a wildcard in \
+             DNS, so add the zone to the project first, or choose a certificate signed here or \
+             read from files"
         )),
     }
 }
@@ -102,8 +109,7 @@ mod tests {
     use super::*;
     use crate::features::services::add_service_port_request::AddServicePortRequest;
 
-    #[tokio::test]
-    async fn a_wildcard_needs_a_zone_of_the_services_own_project() {
+    async fn service() -> (SqliteDatabase, Service) {
         let database = crate::infra::db::open_in_memory().await.expect("open");
         let project = crate::infra::repositories::projects::create(&database, "demo")
             .await
@@ -117,23 +123,65 @@ mod tests {
         )
         .await
         .expect("service");
+        (database, service)
+    }
+
+    async fn wildcard(
+        database: &SqliteDatabase,
+        service: &Service,
+        without_authority: bool,
+    ) -> Result<Port, String> {
         let asked = AddServicePortRequest {
             container_port: 80,
             https: true,
             hostname: "*.apps.example.com".into(),
+            without_authority,
             ..Default::default()
         };
-
-        let refused = AddServicePort {
-            service: &service,
+        AddServicePort {
+            service,
             asked: &asked,
         }
-        .run(&database)
-        .await;
+        .run(database)
+        .await
+    }
+
+    #[tokio::test]
+    async fn a_wildcard_from_lets_encrypt_needs_a_zone_of_the_services_own_project() {
+        let (database, service) = service().await;
+
+        let refused = wildcard(&database, &service, false).await;
 
         assert!(
             matches!(&refused, Err(reason) if reason.contains("no DNS zone")),
             "{refused:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_wildcard_signed_here_or_read_from_files_needs_no_zone() {
+        let (database, service) = service().await;
+
+        let outcome = wildcard(&database, &service, true).await;
+
+        assert!(
+            !matches!(&outcome, Err(reason) if reason.contains("zone")),
+            "{outcome:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn on_a_node_that_asks_no_authority_a_wildcard_needs_no_zone() {
+        let (database, service) = service().await;
+        crate::infra::node::settings::set_acme_enabled(&database, false)
+            .await
+            .expect("acme off");
+
+        let outcome = wildcard(&database, &service, false).await;
+
+        assert!(
+            !matches!(&outcome, Err(reason) if reason.contains("zone")),
+            "{outcome:?}"
         );
     }
 }
