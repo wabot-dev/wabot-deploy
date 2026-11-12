@@ -260,6 +260,10 @@ fn migrations() -> Vec<Migration> {
             "0065_project_registry_domain",
             include_str!("../../migrations/0065_project_registry_domain.sql"),
         ),
+        Migration::new(
+            "0066_dns_record_acme_challenge",
+            include_str!("../../migrations/0066_dns_record_acme_challenge.sql"),
+        ),
     ]
 }
 

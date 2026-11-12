@@ -278,6 +278,10 @@ pub fn outbound_address() -> Option<IpAddr> {
 /// Probed with a random label, because a wildcard is invisible to a
 /// direct query: it answers for names nothing else defines, so the
 /// only way to see it is to ask for one.
+pub fn wildcard_probe(base: &str) -> String {
+    format!("{}.{base}", random_label())
+}
+
 pub async fn wildcard_works(node_domain: &str) -> bool {
     let probe = format!("{}.{node_domain}", random_label());
     resolves_here(&probe, node_domain).await.ok()

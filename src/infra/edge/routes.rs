@@ -206,7 +206,13 @@ impl RouteTable {
     }
 
     pub fn resolve(&self, host: &str) -> Option<Upstream> {
-        self.by_host.load().get(&normalize(host)).cloned()
+        let host = normalize(host);
+        let routes = self.by_host.load();
+        if let Some(upstream) = routes.get(&host) {
+            return Some(upstream.clone());
+        }
+        let (_, parent) = host.split_once('.')?;
+        routes.get(&format!("*.{parent}")).cloned()
     }
 
     pub fn replace(&self, routes: impl IntoIterator<Item = (String, Upstream)>) {
@@ -579,6 +585,38 @@ pub async fn upsert(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_wildcard_answers_one_label_below_it_and_an_exact_name_wins() {
+        let table = RouteTable::new();
+        let (wide, narrow) = (address(1), address(2));
+        table.replace([
+            (
+                "*.apps.example.com".to_string(),
+                Upstream::Proxy(vec![wide]),
+            ),
+            (
+                "admin.apps.example.com".to_string(),
+                Upstream::Proxy(vec![narrow]),
+            ),
+        ]);
+
+        assert_eq!(
+            table.resolve("shop.apps.example.com"),
+            Some(Upstream::Proxy(vec![wide]))
+        );
+        assert_eq!(
+            table.resolve("SHOP.apps.example.com:443"),
+            Some(Upstream::Proxy(vec![wide]))
+        );
+        assert_eq!(
+            table.resolve("admin.apps.example.com"),
+            Some(Upstream::Proxy(vec![narrow]))
+        );
+        assert_eq!(table.resolve("apps.example.com"), None);
+        assert_eq!(table.resolve("a.b.apps.example.com"), None);
+        assert_eq!(table.resolve("shop.example.com"), None);
+    }
+
     /// Health takes a replica out of the ring and leaves the ring
     /// turning. The share each live replica carries is unchanged —
     /// a node running two copies still appears twice — because health

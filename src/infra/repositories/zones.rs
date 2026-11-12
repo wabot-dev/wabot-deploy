@@ -275,6 +275,81 @@ pub async fn add_record(
     Ok(record)
 }
 
+pub async fn holding(
+    database: &SqliteDatabase,
+    project_id: &str,
+    name: &str,
+) -> PlatformResult<Option<DnsZone>> {
+    Ok(of_project(database, project_id)
+        .await?
+        .into_iter()
+        .filter(|zone| zone.is_ours() && zone.name.holds(name))
+        .max_by_key(|zone| zone.name.as_str().len()))
+}
+
+pub async fn put_challenge(
+    database: &SqliteDatabase,
+    zone: &DnsZone,
+    owner: &str,
+    value: &str,
+) -> PlatformResult<()> {
+    let name = RecordName::parse(owner, &zone.name)
+        .map_err(|reason| PlatformError::Refused(reason.into()))?;
+    let (zone_id, name, value) = (
+        zone.id.clone(),
+        name.as_str().to_string(),
+        value.to_string(),
+    );
+    database
+        .transaction(move |transaction| {
+            transaction.execute(
+                "INSERT INTO dns_record (\"id\", \"zone_id\", \"name\", \"kind\", \"value\", \
+                   \"priority\", \"ttl\", \"created_at\", \"acme_challenge\") \
+                 VALUES (?1, ?2, ?3, 'TXT', ?4, NULL, 60, ?5, 1)",
+                (
+                    format!("rec-{}", wabot::prelude::password::generate(12)),
+                    &zone_id,
+                    name,
+                    value,
+                    now_ms(),
+                ),
+            )?;
+            bump(transaction, &zone_id)?;
+            Ok(())
+        })
+        .await?;
+    Ok(())
+}
+
+pub async fn clear_challenges(database: &SqliteDatabase, zone_id: &str) -> PlatformResult<usize> {
+    let zone_id = zone_id.to_string();
+    Ok(database
+        .transaction(move |transaction| {
+            let removed = transaction.execute(
+                "DELETE FROM dns_record WHERE \"zone_id\" = ?1 AND \"acme_challenge\" = 1",
+                [&zone_id],
+            )?;
+            if removed > 0 {
+                bump(transaction, &zone_id)?;
+            }
+            Ok(removed)
+        })
+        .await?)
+}
+
+pub async fn zones_with_challenges(database: &SqliteDatabase) -> PlatformResult<Vec<String>> {
+    Ok(database
+        .read(|connection| {
+            connection
+                .prepare(
+                    "SELECT DISTINCT \"zone_id\" FROM dns_record WHERE \"acme_challenge\" = 1",
+                )?
+                .query_map([], |row| row.get(0))?
+                .collect()
+        })
+        .await?)
+}
+
 pub async fn remove_record(
     database: &SqliteDatabase,
     zone: &DnsZone,
@@ -710,6 +785,80 @@ mod tests {
 
     fn name(zone: &DnsZone, typed: &str) -> RecordName {
         RecordName::parse(typed, &zone.name).expect(typed)
+    }
+
+    #[tokio::test]
+    async fn a_challenge_is_one_more_record_and_is_cleared_without_touching_the_rest() {
+        let database = database().await;
+        let site = project(&database, "site", None).await;
+        let found = zone(&database, "example.com", &site).await.expect("zone");
+        add_record(
+            &database,
+            &found,
+            name(&found, "_acme-challenge.apps"),
+            data(RecordKind::Txt, "typed by a person"),
+            300,
+        )
+        .await
+        .expect("a person's record");
+        let before = find_by_name(&database, "example.com")
+            .await
+            .unwrap()
+            .unwrap()
+            .serial;
+
+        put_challenge(
+            &database,
+            &found,
+            "_acme-challenge.apps.example.com",
+            "proof",
+        )
+        .await
+        .expect("put");
+        let served = records(&database, &found).await.expect("records");
+        assert_eq!(served.len(), 2);
+        assert!(
+            find_by_name(&database, "example.com")
+                .await
+                .unwrap()
+                .unwrap()
+                .serial
+                > before
+        );
+        assert_eq!(
+            zones_with_challenges(&database).await.unwrap(),
+            vec![found.id.clone()]
+        );
+
+        assert_eq!(clear_challenges(&database, &found.id).await.unwrap(), 1);
+        let left = records(&database, &found).await.expect("records");
+        assert_eq!(left.len(), 1);
+        assert_eq!(left[0].data.value(), "typed by a person");
+        assert_eq!(clear_challenges(&database, &found.id).await.unwrap(), 0);
+    }
+
+    #[tokio::test]
+    async fn the_zone_that_holds_a_name_is_the_deepest_one_of_the_project() {
+        let database = database().await;
+        let site = project(&database, "site", None).await;
+        let other = project(&database, "other", None).await;
+        zone(&database, "example.com", &site).await.expect("zone");
+
+        let found = holding(&database, &site.id, "apps.example.com")
+            .await
+            .unwrap();
+        assert_eq!(
+            found.map(|zone| zone.name.to_string()),
+            Some("example.com".into())
+        );
+        assert!(holding(&database, &other.id, "apps.example.com")
+            .await
+            .unwrap()
+            .is_none());
+        assert!(holding(&database, &site.id, "apps.example.org")
+            .await
+            .unwrap()
+            .is_none());
     }
 
     #[tokio::test]

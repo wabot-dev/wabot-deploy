@@ -77,6 +77,8 @@ pub enum Kind {
     Command,
     /// Answer DNS for this zone, with these records.
     Zone,
+    /// Serve this certificate, and its key, for a name you answer for.
+    Certificate,
     /// Anything this version does not know about.
     #[serde(other)]
     Unknown,
@@ -91,6 +93,7 @@ impl Kind {
             Self::Manage => "manage",
             Self::Command => "command",
             Self::Zone => "zone",
+            Self::Certificate => "certificate",
             Self::Unknown => "unknown",
         }
     }
@@ -107,6 +110,7 @@ impl Kind {
             "manage" => Self::Manage,
             "command" => Self::Command,
             "zone" => Self::Zone,
+            "certificate" => Self::Certificate,
             _ => Self::Unknown,
         }
     }
@@ -390,6 +394,21 @@ pub struct Zone {
     pub withdrawn: bool,
 }
 
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Certificate {
+    pub name: String,
+    pub cert_pem: String,
+    pub key_pem: String,
+}
+
+impl std::fmt::Debug for Certificate {
+    fn fmt(&self, out: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        out.debug_struct("Certificate")
+            .field("name", &self.name)
+            .finish_non_exhaustive()
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ZoneRecord {
     pub name: String,
@@ -522,6 +541,7 @@ pub fn consent_for(
                 .unwrap_or(false);
             (!withdrawing).then_some(crate::domain::values::capability::Capability::Dns)
         }
+        Kind::Certificate => Some(crate::domain::values::capability::Capability::Edge),
         Kind::Unknown => None,
     }
 }
@@ -1295,6 +1315,8 @@ mod tests {
     fn an_instruction_this_version_does_not_know_is_a_value_not_a_crash() {
         assert_eq!(Kind::parse("host"), Kind::Host);
         assert_eq!(Kind::parse("edge"), Kind::Edge);
+        assert_eq!(Kind::parse("certificate"), Kind::Certificate);
+        assert_eq!(Kind::Certificate.as_str(), "certificate");
         // Something a later version might add. This example used to be
         // `edge`, which is the point: today's unknown is tomorrow's
         // kind, and what has to keep working is the *shape* of not

@@ -673,6 +673,9 @@ pub async fn ensure(
         return Ok(false);
     }
     let domain = domain.to_string();
+    if let Some(base) = domain.strip_prefix("*.") {
+        return ensure_wildcard(database, config, resolver, &domain, base).await;
+    }
 
     let directory = config.acme.directory_url();
     if let Some(existing) = certs::load(database, &domain).await? {
@@ -789,6 +792,268 @@ pub async fn ensure(
     // exists only in this process.
     resolver.replace(&certs::load_all(database).await?)?;
     Ok(true)
+}
+
+static ZONES: std::sync::OnceLock<Arc<crate::infra::dns::Zones>> = std::sync::OnceLock::new();
+
+pub fn answer_challenges_with(zones: Arc<crate::infra::dns::Zones>) {
+    let _ = ZONES.set(zones);
+}
+
+const PROPAGATION_WAIT: std::time::Duration = std::time::Duration::from_secs(90);
+
+async fn ensure_wildcard(
+    database: &SqliteDatabase,
+    config: &Config,
+    resolver: &certs::CertResolver,
+    domain: &str,
+    base: &str,
+) -> AcmeResult<bool> {
+    let directory = config.acme.directory_url();
+    if let Some(existing) = certs::load(database, domain).await? {
+        let same_authority = existing.issuer == directory;
+        let fresh = existing.not_after > now_ms() + RENEW_WITHIN_DAYS * 86_400_000;
+        if same_authority && fresh {
+            if matches!(zone_for_wildcard(database, domain, base).await, Ok(Some(_))) {
+                send_to_edges(database, &existing).await;
+            }
+            return Ok(false);
+        }
+    }
+
+    let Some(zone) = zone_for_wildcard(database, domain, base).await? else {
+        return Ok(false);
+    };
+    if let Some(delegation) = &zone.delegation {
+        if matches!(
+            delegation.status,
+            crate::domain::entities::dns_zone::DelegationStatus::Elsewhere
+                | crate::domain::entities::dns_zone::DelegationStatus::Unregistered
+        ) {
+            return Err(AcmeError::Refused(format!(
+                "the registrar for {} does not send resolvers to this node, so the authority \
+                 would never see the challenge — check the delegation on the zone's page",
+                zone.name
+            )));
+        }
+    }
+
+    let stored = obtain_wildcard(database, config, &zone, domain, base).await?;
+    send_to_edges(database, &stored).await;
+    resolver.replace(&certs::load_all(database).await?)?;
+    Ok(true)
+}
+
+async fn send_to_edges(database: &SqliteDatabase, stored: &StoredCert) {
+    use crate::infra::network::errand::{self, Kind};
+
+    let me = crate::infra::network::me(database)
+        .await
+        .ok()
+        .flatten()
+        .map(|node| node.id);
+    let serving = crate::infra::repositories::edges::nodes_for(database, &stored.domain)
+        .await
+        .unwrap_or_default();
+    let payload = match serde_json::to_value(errand::Certificate {
+        name: stored.domain.clone(),
+        cert_pem: stored.cert_pem.clone(),
+        key_pem: stored.key_pem.clone(),
+    }) {
+        Ok(payload) => payload,
+        Err(error) => {
+            tracing::warn!(%error, "could not build a certificate instruction");
+            return;
+        }
+    };
+    let subject = format!("certificate:{}", stored.domain);
+    for node in serving.iter().filter(|node| Some(*node) != me.as_ref()) {
+        match errand::queue_if_changed(database, node, Kind::Certificate, &subject, &payload).await
+        {
+            Ok(Some(_)) => {
+                tracing::info!(%node, name = %stored.domain, "sent a wildcard certificate to an edge")
+            }
+            Ok(None) => {}
+            Err(error) => {
+                tracing::warn!(%error, %node, "could not queue a certificate for an edge")
+            }
+        }
+    }
+}
+
+async fn zone_for_wildcard(
+    database: &SqliteDatabase,
+    domain: &str,
+    base: &str,
+) -> AcmeResult<Option<crate::domain::entities::dns_zone::DnsZone>> {
+    use crate::infra::repositories::{ports, services, zones};
+
+    let ports = ports::all(database).await.map_err(refused)?;
+    let Some(port) = ports
+        .iter()
+        .find(|port| port.hostname.as_deref() == Some(domain))
+    else {
+        return Ok(None);
+    };
+    let Some(service) = services::find(database, &port.service_id)
+        .await
+        .map_err(refused)?
+    else {
+        return Ok(None);
+    };
+    let Some(zone) = zones::holding(database, &service.project_id, base)
+        .await
+        .map_err(refused)?
+    else {
+        return Err(AcmeError::Refused(format!(
+            "no zone of this service's project holds {base}, so there is nowhere to prove \
+             the name — add the zone to the project"
+        )));
+    };
+    let served = crate::infra::dns::what_this_node_serves(database)
+        .await
+        .map_err(AcmeError::Refused)?;
+    if !served.iter().any(|one| one.zone.id == zone.id) {
+        return Err(AcmeError::Refused(format!(
+            "this node does not answer DNS for {}, and the challenge for {domain} is answered \
+             in that zone — choose this node on the zone's page",
+            zone.name
+        )));
+    }
+    Ok(Some(zone))
+}
+
+fn refused(error: crate::domain::errors::PlatformError) -> AcmeError {
+    AcmeError::Refused(error.to_string())
+}
+
+async fn announce_zone(database: &SqliteDatabase, zone_name: &str) {
+    if let Some(zones) = ZONES.get() {
+        zones.reload(database).await;
+    }
+    if let Ok(Some(zone)) =
+        crate::infra::repositories::zones::find_by_name(database, zone_name).await
+    {
+        crate::infra::dns::dispatch::tell_servers(database, &zone, &[]).await;
+    }
+}
+
+pub async fn sweep_challenges(database: &SqliteDatabase) {
+    let Ok(left) = crate::infra::repositories::zones::zones_with_challenges(database).await else {
+        return;
+    };
+    for zone_id in left {
+        let Ok(zones) = crate::infra::repositories::zones::all(database).await else {
+            return;
+        };
+        let Some(zone) = zones.into_iter().find(|zone| zone.id == zone_id) else {
+            continue;
+        };
+        if crate::infra::repositories::zones::clear_challenges(database, &zone.id)
+            .await
+            .is_ok_and(|removed| removed > 0)
+        {
+            tracing::info!(zone = %zone.name, "removed a DNS challenge an earlier order left behind");
+            announce_zone(database, zone.name.as_str()).await;
+        }
+    }
+}
+
+async fn obtain_wildcard(
+    database: &SqliteDatabase,
+    config: &Config,
+    zone: &crate::domain::entities::dns_zone::DnsZone,
+    domain: &str,
+    base: &str,
+) -> AcmeResult<StoredCert> {
+    use crate::infra::repositories::zones;
+
+    let account = load_or_create_account(database, config).await?;
+    let mut order = account
+        .new_order(&NewOrder::new(&[Identifier::Dns(domain.to_string())]))
+        .await?;
+
+    let outcome = async {
+        let owner = format!("_acme-challenge.{base}");
+        let mut authorizations = order.authorizations();
+        let mut waiting_on_peers = false;
+        while let Some(result) = authorizations.next().await {
+            let mut authorization = result?;
+            match authorization.status {
+                AuthorizationStatus::Pending => {}
+                AuthorizationStatus::Valid => continue,
+                other => {
+                    return Err(AcmeError::Refused(format!(
+                        "the authority will not validate {domain}: {other:?}"
+                    )))
+                }
+            }
+            let mut challenge = authorization
+                .challenge(ChallengeType::Dns01)
+                .ok_or_else(|| {
+                    AcmeError::Refused("the authority offered no dns-01 challenge".into())
+                })?;
+            let value = challenge.key_authorization().dns_value();
+            zones::put_challenge(database, zone, &owner, &value)
+                .await
+                .map_err(refused)?;
+            announce_zone(database, zone.name.as_str()).await;
+            waiting_on_peers = waiting_on_peers || has_other_servers(database, zone).await;
+            if waiting_on_peers {
+                tracing::info!(%domain, "waiting for the other name servers to hear the challenge");
+                tokio::time::sleep(PROPAGATION_WAIT).await;
+            }
+            tracing::info!(%domain, "answering a dns-01 challenge");
+            challenge.set_ready().await?;
+        }
+
+        let status = order.poll_ready(&RetryPolicy::default()).await?;
+        if status != OrderStatus::Ready {
+            return Err(AcmeError::Refused(format!(
+                "the order for {domain} ended {status:?} — check that the zone {} is the one \
+                 the registrar sends resolvers to",
+                zone.name
+            )));
+        }
+        let key_pem = order.finalize().await?;
+        let chain_pem = order.poll_certificate(&RetryPolicy::default()).await?;
+        Ok((key_pem, chain_pem))
+    }
+    .await;
+
+    if zones::clear_challenges(database, &zone.id).await.is_ok() {
+        announce_zone(database, zone.name.as_str()).await;
+    }
+    let (key_pem, chain_pem) = outcome?;
+
+    let stored = StoredCert {
+        domain: domain.to_string(),
+        names: vec![domain.to_string()],
+        not_after: certs::not_after(&chain_pem).unwrap_or_else(now_ms),
+        cert_pem: chain_pem,
+        key_pem,
+        issuer: config.acme.directory_url().to_string(),
+        source: certs::Source::Acme,
+    };
+    certs::save(database, &stored).await?;
+    tracing::info!(%domain, "obtained a wildcard certificate");
+    Ok(stored)
+}
+
+async fn has_other_servers(
+    database: &SqliteDatabase,
+    zone: &crate::domain::entities::dns_zone::DnsZone,
+) -> bool {
+    let me = crate::infra::network::me(database)
+        .await
+        .ok()
+        .flatten()
+        .map(|node| node.id);
+    crate::infra::repositories::zones::servers(database, &zone.id)
+        .await
+        .unwrap_or_default()
+        .iter()
+        .any(|server| Some(server) != me.as_ref())
 }
 
 /// Why a public authority cannot be asked for one of these names.
@@ -944,6 +1209,8 @@ pub async fn renewal_loop(
     // Once a certificate is in hand, checking twice a day is plenty
     // against a 30-day window.
     const SETTLED_DELAY: std::time::Duration = std::time::Duration::from_secs(12 * 3600);
+
+    sweep_challenges(&database).await;
 
     loop {
         // Nothing to certify is not an attempt. Marking one anyway

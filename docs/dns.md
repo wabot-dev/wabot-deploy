@@ -272,13 +272,47 @@ a name under it, to a project until the operator deletes it from the DNS
 tab — which is what Acme would have to ask for on the VM before adding
 `acme.example` to a project of its own.
 
+## Phase 7: a wildcard certificate for a service
+
+Asked for by Jorge on 2026-11-11, with the zones in place: a service's HTTPS
+name may be `*.apps.example.com`.
+
+- **It is accepted where the project holds the zone.** `AddServicePort`
+  takes a leading `*.` over a real name (`Hostname::wildcard_base`) and
+  asks `zones::holding` for a zone of the service's own project that holds
+  the base. Every other form still refuses a wildcard.
+- **Reaching this node is probed with a random label** under the base, so
+  the zone needs a `*` record pointing at the node — the same trick
+  `wildcard_works` plays.
+- **The certificate is `*.base` alone, over DNS-01.** `acme::ensure` hands
+  wildcard names to `ensure_wildcard`. The challenge is a TXT record the
+  node writes into the zone (`zones::put_challenge`, marked in
+  `dns_record.acme_challenge`, migration 0066), so the listener and the
+  zone errand carry it with no knowledge of it. It is removed after the
+  order, success or not, and `sweep_challenges` removes what an interrupted
+  one left, at boot, without touching a person's `_acme-challenge`.
+- **Only the node that holds the zone orders.** It refuses, with a
+  sentence, when the zone does not point here (`Elsewhere`,
+  `Unregistered`) or this node is not among its servers. With other name
+  servers it waits 90 s for the TXT to reach them.
+- **The edges are sent the certificate and its key.** `Kind::Certificate`,
+  consent `edge`, subject `certificate:<name>`, resent only when it
+  changes. A receiver keeps it only from the node that holds the claim on
+  the name (`claimed_by`), and only when it covers the name and the key
+  opens it (`certs::received`, source `received`). It never renews one.
+- **Routing and handshakes match one label**, exact name first:
+  `RouteTable::resolve` and `CertResolver::find`. `a.b.apps.example.com`
+  matches neither, as in TLS.
+
+Not run against a real authority yet: the order, the propagation wait and
+the errand between two nodes are covered by their parts' tests only.
+
 ## What is left
 
 - **Two nodes answering for one zone, verified on real machines.** The
   code is tested, and the VM cannot be a second public node.
-- Records made for a service's hostname by themselves, importing a zone
-  file, and wildcard certificates over DNS-01 — named in the plan and
-  deliberately not in this one.
+- Records made for a service's hostname by themselves and importing a zone
+  file — named in the plan and deliberately not in this one.
 
 ## Known limits
 

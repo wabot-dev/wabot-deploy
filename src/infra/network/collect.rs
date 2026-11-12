@@ -839,6 +839,11 @@ async fn carry_out(
                 .map_err(|error| format!("that is not a zone errand: {error}"))?;
             serve_zone(database, container, authority, zone).await
         }
+        Kind::Certificate => {
+            let certificate: errand::Certificate = serde_json::from_value(order.payload)
+                .map_err(|error| format!("that is not a certificate errand: {error}"))?;
+            keep_certificate(database, container, authority, certificate).await
+        }
         // An instruction from a newer node. Refused with the reason
         // rather than dropped — the authority learns that this node is
         // the old one, which is something somebody can act on.
@@ -1559,6 +1564,40 @@ async fn serve_name(
 /// A record this version cannot read is left out with a line in the log
 /// rather than refusing the zone: a newer owner may write a kind this node
 /// has never heard of, and the rest of the zone is still worth answering.
+async fn keep_certificate(
+    database: &SqliteDatabase,
+    container: &Container,
+    authority: &str,
+    certificate: errand::Certificate,
+) -> Result<(), String> {
+    let holder = crate::infra::network::claimed_by(database, &certificate.name)
+        .await
+        .map_err(|error| error.to_string())?;
+    if holder.as_deref() != Some(authority) {
+        return Err(format!(
+            "this node does not answer for {} on behalf of the node that sent its certificate",
+            certificate.name
+        ));
+    }
+    let stored = crate::infra::edge::certs::received(
+        &certificate.name,
+        &certificate.cert_pem,
+        &certificate.key_pem,
+    )
+    .map_err(|error| error.to_string())?;
+    crate::infra::edge::certs::save(database, &stored)
+        .await
+        .map_err(|error| error.to_string())?;
+    if let Ok(resolver) = container.try_resolve::<crate::infra::edge::certs::CertResolver>() {
+        let all = crate::infra::edge::certs::load_all(database)
+            .await
+            .map_err(|error| error.to_string())?;
+        resolver.replace(&all).map_err(|error| error.to_string())?;
+    }
+    tracing::info!(name = %certificate.name, %authority, "serving a certificate sent by another node");
+    Ok(())
+}
+
 async fn serve_zone(
     database: &SqliteDatabase,
     container: &Container,

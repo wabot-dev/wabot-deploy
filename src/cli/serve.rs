@@ -169,6 +169,8 @@ pub async fn run(config: Config) -> anyhow::Result<i32> {
     // console or carried in by an errand reaches it without a restart.
     let zones = Arc::new(crate::infra::dns::Zones::default());
     container.register_instance::<crate::infra::dns::Zones>(zones.clone());
+    crate::infra::edge::acme::answer_challenges_with(zones.clone());
+    container.register_instance::<crate::infra::edge::certs::CertResolver>(resolver.clone());
 
     let https: SocketAddr = (bind_address(&config), config.edge.https_port).into();
     let http: SocketAddr = (bind_address(&config), config.edge.http_port).into();

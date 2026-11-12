@@ -50,6 +50,12 @@ impl Hostname {
     pub fn as_str(&self) -> &str {
         &self.0
     }
+
+    pub fn wildcard_base(&self) -> Option<&str> {
+        let base = self.0.strip_prefix("*.")?;
+        let labelled = !base.is_empty() && !base.contains('*') && base.contains('.');
+        labelled.then_some(base)
+    }
 }
 
 impl fmt::Display for Hostname {
@@ -87,6 +93,19 @@ mod tests {
         assert!(Hostname::parse("*.example.com").is_wildcard());
         assert!(Hostname::parse("api.*.example.com").is_wildcard());
         assert!(!Hostname::parse("api.example.com").is_wildcard());
+    }
+
+    #[test]
+    fn only_a_leading_star_over_a_real_name_has_a_base() {
+        assert_eq!(
+            Hostname::parse("*.sub.example.com").wildcard_base(),
+            Some("sub.example.com")
+        );
+        assert_eq!(Hostname::parse("*.com").wildcard_base(), None);
+        assert_eq!(Hostname::parse("api.*.example.com").wildcard_base(), None);
+        assert_eq!(Hostname::parse("*.*.example.com").wildcard_base(), None);
+        assert_eq!(Hostname::parse("*example.com").wildcard_base(), None);
+        assert_eq!(Hostname::parse("api.example.com").wildcard_base(), None);
     }
 
     #[test]

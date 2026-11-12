@@ -142,6 +142,7 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
     ("Timestamp every line, and mark which stream it came from", "Poner estampa de tiempo en cada línea, y marcar de qué flujo viene"),
     ("To", "A"),
     ("To move a copy, pick another node in its own row. The node for new ones only places the copies a higher number adds.", "Para mover una copia, elige otro nodo en su propia fila. El nodo para las nuevas solo coloca las copias que añade un número mayor."),
+    ("To serve every subdomain, type *.name — the project needs a DNS zone holding it, and the certificate is proved in that zone.", "Para servir todos los subdominios, escribe *.nombre — el proyecto necesita una zona DNS que lo contenga, y el certificado se prueba en esa zona."),
     ("Volumes", "Volúmenes"),
     ("What the process listens on inside the container.", "En qué escucha el proceso dentro del contenedor."),
     ("What this copy has written. A deployment marks a line and carries on rather than starting the file again, so this holds every run since the last rotation — and the ones before that are in everything kept.", "Lo que esta copia ha escrito. Un despliegue marca una línea y continúa en vez de empezar el fichero de nuevo, así que esto contiene todas las ejecuciones desde la última rotación — y las anteriores están en todo lo guardado."),

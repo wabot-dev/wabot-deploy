@@ -120,6 +120,9 @@ pub enum Source {
     Acme,
     /// Read off disk, kept fresh by something outside this node.
     File,
+    /// Sent by the node that ordered it, for a name this node answers for.
+    /// Never renewed here: only the node holding the zone can prove the name.
+    Received,
 }
 
 impl Source {
@@ -128,6 +131,7 @@ impl Source {
             Self::SelfSigned => "self_signed",
             Self::Acme => "acme",
             Self::File => "file",
+            Self::Received => "received",
         }
     }
 
@@ -138,6 +142,7 @@ impl Source {
         match text {
             "acme" => Self::Acme,
             "file" => Self::File,
+            "received" => Self::Received,
             _ => Self::SelfSigned,
         }
     }
@@ -186,6 +191,14 @@ impl CertResolver {
         }
     }
 
+    fn find(&self, name: &str) -> Option<Arc<CertifiedKey>> {
+        let certificates = self.by_name.load();
+        certificates.get(name).cloned().or_else(|| {
+            let (_, parent) = name.split_once('.')?;
+            certificates.get(&format!("*.{parent}")).cloned()
+        })
+    }
+
     pub fn names(&self) -> Vec<String> {
         let mut names: Vec<String> = self.by_name.load().keys().cloned().collect();
         names.sort();
@@ -217,8 +230,8 @@ impl CertResolver {
 impl ResolvesServerCert for CertResolver {
     fn resolve(&self, hello: ClientHello<'_>) -> Option<Arc<CertifiedKey>> {
         if let Some(name) = hello.server_name() {
-            if let Some(key) = self.by_name.load().get(name) {
-                return Some(key.clone());
+            if let Some(key) = self.find(name) {
+                return Some(key);
             }
             tracing::debug!(sni = %name, "no certificate for this name; serving the fallback");
         }
@@ -683,6 +696,37 @@ pub fn covers(names: &[String], wanted: &str) -> bool {
     names.iter().any(|name| name.eq_ignore_ascii_case(wanted))
 }
 
+pub fn received(name: &str, cert_pem: &str, key_pem: &str) -> CertResult<StoredCert> {
+    let names = names_in(cert_pem);
+    if !names.iter().any(|found| found.eq_ignore_ascii_case(name)) {
+        return Err(CertError::Invalid(format!(
+            "the certificate sent for {name} is for {} — not {name}",
+            names.join(", ")
+        )));
+    }
+    let not_after = not_after(cert_pem).ok_or_else(|| {
+        CertError::Invalid(format!(
+            "could not read an expiry from the certificate sent for {name}"
+        ))
+    })?;
+    if not_after <= now_ms() {
+        return Err(CertError::Invalid(format!(
+            "the certificate sent for {name} has already expired"
+        )));
+    }
+    let stored = StoredCert {
+        domain: name.to_string(),
+        names,
+        cert_pem: cert_pem.to_string(),
+        key_pem: key_pem.to_string(),
+        issuer: issuer_of(cert_pem).unwrap_or_default(),
+        not_after,
+        source: Source::Received,
+    };
+    certified_key(&stored)?;
+    Ok(stored)
+}
+
 /// Read a certificate and its key off disk, refusing anything that
 /// would take the node off the air.
 ///
@@ -1083,6 +1127,41 @@ mod tests {
             resolver.fallback.load().is_some(),
             "a handshake with no SNI still needs an answer"
         );
+    }
+
+    #[tokio::test]
+    async fn a_wildcard_certificate_answers_one_label_below_its_name_and_no_deeper() {
+        let database = database().await;
+        ensure_self_signed(
+            &database,
+            "*.apps.example.com",
+            &["*.apps.example.com".into()],
+        )
+        .await
+        .expect("issue");
+        let resolver = CertResolver::new();
+        resolver
+            .replace(&load_all(&database).await.expect("load"))
+            .expect("replace");
+
+        assert!(resolver.find("shop.apps.example.com").is_some());
+        assert!(resolver.find("apps.example.com").is_none());
+        assert!(resolver.find("a.b.apps.example.com").is_none());
+        assert!(resolver.find("shop.example.com").is_none());
+    }
+
+    #[tokio::test]
+    async fn a_certificate_sent_for_another_name_is_not_kept() {
+        let database = database().await;
+        let sent = ensure_self_signed(&database, "other.example", &["other.example".into()])
+            .await
+            .expect("issue");
+
+        let refused = received("*.apps.example.com", &sent.cert_pem, &sent.key_pem);
+        assert!(refused.is_err(), "{refused:?}");
+
+        let kept = received("other.example", &sent.cert_pem, &sent.key_pem).expect("its own name");
+        assert_eq!(kept.source, Source::Received);
     }
 
     /// The store used to keep a certificate for ever once it had one.

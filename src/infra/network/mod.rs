@@ -1388,6 +1388,10 @@ pub async fn claimed_for_others(database: &SqliteDatabase) -> NetworkResult<Vec<
         .await?)
 }
 
+pub async fn claimed_by(database: &SqliteDatabase, name: &str) -> NetworkResult<Option<String>> {
+    Ok(holder(database, name).await?.flatten())
+}
+
 pub async fn release(database: &SqliteDatabase, name: &str) -> NetworkResult<()> {
     let name = name.to_string();
     Ok(database

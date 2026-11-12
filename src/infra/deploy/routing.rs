@@ -439,6 +439,33 @@ mod tests {
         assert!(table.resolve("teresaasprilla.com").is_some());
     }
 
+    #[tokio::test]
+    async fn a_wildcard_port_routes_every_name_one_label_below_it() {
+        let (database, _, service) = node().await;
+        ports::create(
+            &database,
+            &service,
+            80,
+            false,
+            Some("*.apps.node.example"),
+            &[],
+        )
+        .await
+        .expect("port");
+        running_at(&database, &service, Some("10.42.1.5")).await;
+
+        let table = Arc::new(RouteTable::new());
+        sync(&database, Some("node.example"), Some(&table))
+            .await
+            .expect("sync");
+
+        assert!(matches!(
+            table.resolve("shop.apps.node.example"),
+            Some(Upstream::Proxy(_))
+        ));
+        assert!(table.resolve("apps.node.example").is_none());
+    }
+
     async fn node() -> (SqliteDatabase, String, String) {
         let database = crate::infra::db::open_in_memory().await.expect("open");
         crate::infra::node::settings::set_domain(&database, Some("node.example"))
