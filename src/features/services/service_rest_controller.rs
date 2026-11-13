@@ -1808,10 +1808,18 @@ mod tests {
             .form(&[
                 ("name", "orders"),
                 ("postgres_version", "17"),
-                ("memory", "67108864"),
+                ("postgres_memory", "134217728"),
             ])
             .send()
             .await;
+        assert!(
+            services::all(&console.database, None)
+                .await
+                .expect("services")
+                .iter()
+                .any(|service| service.slug == "orders"),
+            "a page for a database that was never made says nothing about its URL"
+        );
 
         let body = console
             .harness
@@ -4191,6 +4199,90 @@ mod tests {
             .expect("query")
             .expect("still there");
         assert_eq!(after.memory_limit, Some(256 * 1024 * 1024));
+    }
+
+    /// Settings offered a Postgres 64 MB that the new-database form did not,
+    /// which read as a size the form had lost. One floor now, on both — and
+    /// a database made at 64 MB before it keeps that size through a save
+    /// that changes something else, because a select missing its value
+    /// lands on "no ceiling".
+    #[tokio::test]
+    async fn a_postgres_database_is_not_lowered_below_its_floor_and_keeps_one_it_had() {
+        let console = Console::new().await;
+        let cookie = console.signed_in().await;
+        service(&console, &cookie).await;
+        let project = crate::infra::repositories::projects::find(&console.database, "my-api")
+            .await
+            .expect("query")
+            .expect("made");
+        let (made, _) = crate::features::databases::create_database_command::CreateDatabase {
+            project_id: &project.id,
+            name: "Orders",
+            engine: crate::domain::entities::database::Engine::Postgres,
+            version: "17",
+            memory_limit: 256 * 1024 * 1024,
+            image: None,
+        }
+        .run(&console.database)
+        .await
+        .expect("database");
+        let base = format!("/projects/my-api/services/{}", made.slug);
+        let small = (64 * 1024 * 1024).to_string();
+        let offered = |body: &str| body.contains(&format!("<option value=\"{small}\""));
+
+        let page = console
+            .harness
+            .get(&format!("{base}/settings/resources"))
+            .header("cookie", &cookie)
+            .send()
+            .await
+            .body;
+        assert!(!offered(&page), "64 MB is offered: {page}");
+
+        let response = console
+            .harness
+            .post(&format!("{base}/memory"))
+            .header("cookie", &cookie)
+            .form(&[("memory", small.as_str()), ("cpu", "")])
+            .send()
+            .await;
+        assert!(response
+            .header("location")
+            .unwrap_or_default()
+            .contains("error="));
+        let after = services::find(&console.database, &made.id)
+            .await
+            .expect("query")
+            .expect("still there");
+        assert_eq!(after.memory_limit, Some(256 * 1024 * 1024));
+
+        services::set_memory_limit(&console.database, &made.id, Some(64 * 1024 * 1024))
+            .await
+            .expect("an old database");
+        let page = console
+            .harness
+            .get(&format!("{base}/settings/resources"))
+            .header("cookie", &cookie)
+            .send()
+            .await
+            .body;
+        assert!(
+            page.contains(&format!("<option value=\"{small}\" selected")),
+            "the size it has is not the one selected: {page}"
+        );
+        console
+            .harness
+            .post(&format!("{base}/memory"))
+            .header("cookie", &cookie)
+            .form(&[("memory", small.as_str()), ("cpu", "0.5")])
+            .send()
+            .await;
+        let after = services::find(&console.database, &made.id)
+            .await
+            .expect("query")
+            .expect("still there");
+        assert_eq!(after.memory_limit, Some(64 * 1024 * 1024));
+        assert_eq!(after.cpu_millicores, Some(500), "the cores were not saved");
     }
 
     /// The select was never the restriction: `services::set_memory_limit`

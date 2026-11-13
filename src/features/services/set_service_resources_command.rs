@@ -3,8 +3,9 @@ use wabot::sqlite::SqliteDatabase;
 use crate::domain::entities::project::Project;
 use crate::infra::deploy::Deployer;
 
-use crate::domain::entities::service::{Kind, Service};
-use crate::domain::policies::{mysql, presets};
+use crate::domain::entities::database::Engine;
+use crate::domain::entities::service::Service;
+use crate::domain::policies::presets;
 use crate::infra::deploy::quotas;
 use crate::infra::repositories::replicas;
 use crate::infra::repositories::services;
@@ -32,11 +33,25 @@ impl SetServiceResources<'_> {
             true => presets::parse(&self.asked.memory),
             false => presets::parse_size(&self.asked.memory),
         }?;
-        if self.service.kind == Kind::Mysql && memory.is_some_and(|memory| memory < mysql::FLOOR) {
-            return Err(format!(
-                "MySQL is killed below {} however it is tuned, so that is the smallest size it takes",
-                presets::label(mysql::FLOOR)
-            ));
+        // Keeping a size it already has is not choosing it: a database
+        // made at 64 MB before the floor would otherwise refuse every
+        // change to its cores until somebody also raised its memory.
+        if let (Some(engine), Some(asked)) = (self.service.kind.engine(), memory) {
+            if asked < engine.floor() && memory != self.service.memory_limit {
+                return Err(match engine {
+                    Engine::Mysql => format!(
+                        "MySQL is killed below {} however it is tuned, so that is the smallest \
+                         size it takes",
+                        presets::label(engine.floor())
+                    ),
+                    _ => format!(
+                        "{} is the smallest size PostgreSQL takes: in less, the kernel can kill \
+                         initdb before it finishes, and a database is not given a size it could \
+                         not have been made in",
+                        presets::label(engine.floor())
+                    ),
+                });
+            }
         }
         let cpu = presets::parse_cores(&self.asked.cpu)?;
         let disk = presets::parse_size(&self.asked.disk)?;

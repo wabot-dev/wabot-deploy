@@ -45,7 +45,8 @@ pub async fn restore_into(
 ) -> PlatformResult<(Service, Database)> {
     let memory_limit = original
         .memory_limit
-        .unwrap_or(crate::domain::policies::presets::SMALLEST);
+        .unwrap_or(0)
+        .max(source.engine.floor());
     let service = crate::infra::repositories::services::create(
         database,
         project_id,
@@ -174,5 +175,57 @@ mod tests {
             .expect("read")
             .expect("there");
         assert_eq!(stored.memory_limit, original.memory_limit);
+    }
+
+    /// An original with no ceiling was restored into 64 MB, which is under
+    /// both floors — and for MySQL a copy the kernel kills on its first
+    /// start, however it is tuned.
+    #[tokio::test]
+    async fn a_restored_copy_is_not_made_smaller_than_its_engine_takes() {
+        for (engine, version, had) in [
+            (Engine::Postgres, "17", None),
+            (Engine::Postgres, "17", Some(64 * 1024 * 1024)),
+            (Engine::Mysql, "8.4", None),
+        ] {
+            let database = crate::infra::db::open_in_memory().await.expect("open");
+            let project = crate::infra::repositories::projects::create(&database, "demo")
+                .await
+                .expect("project");
+            let (mut original, row) = CreateDatabase {
+                project_id: &project.id,
+                name: "Orders",
+                engine,
+                version,
+                memory_limit: 256 * 1024 * 1024,
+                image: None,
+            }
+            .run(&database)
+            .await
+            .expect("created");
+            original.memory_limit = had;
+
+            let (copy, _) = super::restore_into(
+                &database,
+                &row,
+                &original,
+                &project.id,
+                "orders-restored",
+                "/var/lib/wabot-deploy/backups/2026-11-01/volumes/abc",
+                None,
+            )
+            .await
+            .expect("restored");
+
+            let stored = crate::infra::repositories::services::find(&database, &copy.id)
+                .await
+                .expect("read")
+                .expect("there");
+            assert_eq!(
+                stored.memory_limit,
+                Some(engine.floor()),
+                "{} from {had:?}",
+                engine.as_str()
+            );
+        }
     }
 }

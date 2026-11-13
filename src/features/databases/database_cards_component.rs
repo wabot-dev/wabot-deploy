@@ -34,7 +34,7 @@ pub fn sizes_table() -> impl Renderable {
                 </tr>
             </thead>
             <tbody>
-                @for rung in presets::LADDER {
+                @for rung in presets::LADDER.into_iter().filter(|rung| *rung >= Engine::Postgres.floor()) {
                     <tr>
                         <td>(presets::label(rung))</td>
                         <td class="mono">(format!("{} MB", postgres::tuning(rung).shared_buffers_mb))</td>
@@ -58,7 +58,7 @@ pub fn mysql_sizes_table() -> impl Renderable {
                 </tr>
             </thead>
             <tbody>
-                @for rung in presets::LADDER.into_iter().filter(|rung| *rung >= mysql::FLOOR) {
+                @for rung in presets::LADDER.into_iter().filter(|rung| *rung >= Engine::Mysql.floor()) {
                     <tr>
                         <td>(presets::label(rung))</td>
                         <td class="mono">(format!("{} MB", mysql::tuning(rung).buffer_pool_mb))</td>

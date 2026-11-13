@@ -17,11 +17,6 @@ pub struct NewDatabase<'a> {
 pub fn render<'a>(page: &'a NewDatabase<'a>) -> impl Renderable + 'a {
     let action = page.action;
     let back = page.back;
-    let smallest = Engine::OFFERED
-        .into_iter()
-        .map(Engine::floor)
-        .min()
-        .unwrap_or(presets::SMALLEST);
     rsx! {
     (layout::style_tag())
         <div class="stack-sm">
@@ -86,31 +81,40 @@ pub fn render<'a>(page: &'a NewDatabase<'a>) -> impl Renderable + 'a {
                      database exists."))</p>
             </div>
 
-            <label for="memory">(t("Memory"))</label>
-            <select id="memory" name="memory">
-                @for rung in presets::LADDER.into_iter().filter(|rung| *rung >= smallest) {
-                    @if rung == DEFAULT_PRESET {
-                        <option value=(rung.to_string()) selected>(presets::label(rung))</option>
-                    } @else {
-                        <option value=(rung.to_string())>(presets::label(rung))</option>
+            @for engine in Engine::OFFERED {
+                <div class="stack-sm" data-when=(format!("engine={}", engine.as_str()))>
+                    <label for=(format!("{}-memory", engine.as_str()))>(t("Memory"))</label>
+                    <select id=(format!("{}-memory", engine.as_str()))
+                            name=(format!("{}_memory", engine.as_str()))>
+                        @for rung in presets::LADDER.into_iter().filter(|rung| *rung >= engine.floor()) {
+                            @if rung == DEFAULT_PRESET {
+                                <option value=(rung.to_string()) selected>(presets::label(rung))</option>
+                            } @else {
+                                <option value=(rung.to_string())>(presets::label(rung))</option>
+                            }
+                        }
+                    </select>
+                    @match engine {
+                        Engine::Mysql => {
+                            <p class="field-hint">(t("A ceiling on the container and the engine's own \
+                                 settings, together. MySQL's own defaults were killed at 256 MB, and \
+                                 below that it does not start however it is tuned — so 256 MB is the \
+                                 smallest size it takes, and its connections are counted against the \
+                                 ceiling."))</p>
+                            (crate::features::databases::database_cards_component::mysql_sizes_table())
+                        }
+                        _ => {
+                            <p class="field-hint">(t("A ceiling on the container and the engine's own \
+                                 settings, together. Postgres is given a quarter of it for shared buffers \
+                                 and told to expect half of it as cache — its defaults alone would be \
+                                 killed on the smaller sizes. 128 MB is the smallest size it takes: in \
+                                 64 MB the kernel can kill initdb before it finishes writing its \
+                                 catalogs."))</p>
+                            (crate::features::databases::database_cards_component::sizes_table())
+                        }
                     }
-                }
-            </select>
-            <div class="stack-sm" data-when="engine=postgres">
-                <p class="field-hint">(t("A ceiling on the container and the engine's own \
-                     settings, together. Postgres is given a quarter of it for shared buffers \
-                     and told to expect half of it as cache — its defaults alone would be \
-                     killed on the smaller sizes."))</p>
-                (crate::features::databases::database_cards_component::sizes_table())
-            </div>
-            <div class="stack-sm" data-when="engine=mysql">
-                <p class="field-hint">(t("A ceiling on the container and the engine's own \
-                     settings, together. MySQL's own defaults were killed at 256 MB, and \
-                     below that it does not start however it is tuned — so 256 MB is the \
-                     smallest size it takes, and its connections are counted against the \
-                     ceiling."))</p>
-                (crate::features::databases::database_cards_component::mysql_sizes_table())
-            </div>
+                </div>
+            }
 
             <div class="actions">
                 <button type="submit">(t("Create database"))</button>

@@ -287,7 +287,7 @@ impl DatabaseRestController {
             name: field(&form, "name").to_string(),
             engine: engine.to_string(),
             version: field(&form, &format!("{engine}_version")).to_string(),
-            memory: field(&form, "memory").to_string(),
+            memory: field(&form, &format!("{engine}_memory")).to_string(),
             image: match field(&form, "custom_image") {
                 "" => None,
                 _ => Some(field(&form, "image").to_string()),
@@ -718,7 +718,7 @@ mod tests {
             .form(&[
                 ("name", "Orders"),
                 ("postgres_version", "17"),
-                ("memory", &(128 * 1024 * 1024).to_string()),
+                ("postgres_memory", &(128 * 1024 * 1024).to_string()),
             ])
             .send()
             .await
@@ -772,7 +772,8 @@ mod tests {
                 ("engine", "mysql"),
                 ("postgres_version", "17"),
                 ("mysql_version", "8.4"),
-                ("memory", &(256 * 1024 * 1024).to_string()),
+                ("postgres_memory", &(128 * 1024 * 1024).to_string()),
+                ("mysql_memory", &(256 * 1024 * 1024).to_string()),
             ])
             .send()
             .await
@@ -785,6 +786,69 @@ mod tests {
             .expect("one");
         assert_eq!(service.kind, crate::domain::entities::service::Kind::Mysql);
         assert_eq!(service.image, "docker.io/library/mysql:8.4");
+    }
+
+    /// The Postgres table went on listing 64 MB, with its shared buffers
+    /// and its connections, after 39765f4 took 64 MB out of the selector
+    /// above it — so the form described a size it would not make, and
+    /// read as one that had lost it.
+    #[tokio::test]
+    async fn every_size_the_form_describes_is_one_it_offers() {
+        let console = Console::new().await;
+        let cookie = console.signed_in().await;
+        project(&console).await;
+
+        let body = console
+            .harness
+            .get("/projects/shared/databases/new")
+            .header("cookie", &cookie)
+            .send()
+            .await
+            .body;
+        for rung in crate::domain::policies::presets::LADDER {
+            let label = crate::domain::policies::presets::label(rung);
+            if body.contains(&format!("<td>{label}</td>")) {
+                assert!(
+                    body.contains(&format!("<option value=\"{rung}\"")),
+                    "the form describes {label} and does not offer it"
+                );
+            }
+        }
+    }
+
+    /// One memory select for both engines offered MySQL 128 MB, which the
+    /// POST then refused — a size the form chose for somebody and would not
+    /// make.
+    #[tokio::test]
+    async fn each_engine_is_offered_only_the_sizes_it_takes() {
+        let console = Console::new().await;
+        let cookie = console.signed_in().await;
+        project(&console).await;
+
+        let body = console
+            .harness
+            .get("/projects/shared/databases/new")
+            .header("cookie", &cookie)
+            .send()
+            .await
+            .body;
+        for engine in crate::domain::entities::database::Engine::OFFERED {
+            let opening = format!("name=\"{}_memory\"", engine.as_str());
+            let select = body
+                .split_once(&opening)
+                .and_then(|(_, rest)| rest.split_once("</select>"))
+                .map(|(select, _)| select)
+                .unwrap_or_else(|| panic!("no memory select for {}: {body}", engine.as_str()));
+            for rung in crate::domain::policies::presets::LADDER {
+                assert_eq!(
+                    select.contains(&format!("<option value=\"{rung}\"")),
+                    rung >= engine.floor(),
+                    "{} and {}",
+                    engine.as_str(),
+                    crate::domain::policies::presets::label(rung)
+                );
+            }
+        }
     }
 
     #[tokio::test]
@@ -810,7 +874,7 @@ mod tests {
             .form(&[
                 ("name", "Vectors"),
                 ("postgres_version", "17"),
-                ("memory", &(256 * 1024 * 1024).to_string()),
+                ("postgres_memory", &(256 * 1024 * 1024).to_string()),
                 ("custom_image", "1"),
                 ("image", " docker.io/pgvector/pgvector:pg17-trixie "),
             ])
@@ -845,7 +909,7 @@ mod tests {
             .form(&[
                 ("name", "Orders"),
                 ("postgres_version", "17"),
-                ("memory", &(256 * 1024 * 1024).to_string()),
+                ("postgres_memory", &(256 * 1024 * 1024).to_string()),
                 ("image", "docker.io/pgvector/pgvector:pg17-trixie"),
             ])
             .send()
@@ -873,7 +937,7 @@ mod tests {
             .form(&[
                 ("name", "Vectors"),
                 ("postgres_version", "17"),
-                ("memory", &(256 * 1024 * 1024).to_string()),
+                ("postgres_memory", &(256 * 1024 * 1024).to_string()),
                 ("custom_image", "1"),
                 ("image", ""),
             ])
@@ -910,7 +974,7 @@ mod tests {
             .form(&[
                 ("name", "Orders"),
                 ("postgres_version", "17"),
-                ("memory", "100"),
+                ("postgres_memory", "100"),
             ])
             .send()
             .await;

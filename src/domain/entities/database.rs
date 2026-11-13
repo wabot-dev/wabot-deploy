@@ -105,7 +105,11 @@ impl Engine {
             .map(str::to_string)
     }
 
-    /// The smallest ceiling a new database of this engine is made in.
+    /// The smallest ceiling a database of this engine is given — made,
+    /// resized or restored. One number everywhere, decided 2026-11-12: a
+    /// Postgres already initialised runs in 64 MB, but settings that
+    /// offered it while the new-database form did not read as a size the
+    /// form had lost.
     pub fn floor(self) -> u64 {
         match self {
             Engine::Mysql => mysql::FLOOR,

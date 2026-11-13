@@ -65,6 +65,15 @@ sizes below.
 | 2 GB | 2 GiB | 512 MB | 1 GB | 8 MB | 256 MB | 150 | 512 MB | 2 GB |
 | 4 GB | 4 GiB | 1 GB | 2 GB | 16 MB | 512 MB | 200 | 512 MB | 2 GB |
 
+The 64 MB row is the arithmetic, not an offer. **128 MB is the floor**,
+for creating one, resizing one and restoring one: in 64 MB the kernel
+killed `initdb` in its post-bootstrap, and it got through only on a
+retry (`postgres::INITDB_FLOOR`). A database already initialised does
+run in 64 MB, and settings offered it for a while; Jorge took it off on
+2026-11-12, because a size settings had and the new-database form did
+not read as one the form had lost. A database made at 64 MB before then
+keeps it, and its page shows it, until somebody chooses another.
+
 `shared_buffers` is a quarter, `effective_cache_size` a half,
 `maintenance_work_mem` an eighth and `/dev/shm` a quarter bounded to
 16 MB–512 MB. The three that are not a fraction are `work_mem`,
@@ -968,7 +977,8 @@ charged to its ceiling — the first run did that and measured the clients):
 | 2 GB | 1024 MB | 150 | not run: the VM has 2 GB |
 | 4 GB | 2304 MB | 200 | not run |
 
-So **256 MB is the floor**, for creating one and for resizing one. The two
+So **256 MB is the floor**, for creating one, resizing one and restoring
+one — a copy of a database with no ceiling used to be given 64 MB. The two
 largest rungs are the same arithmetic — about 90 MB that does not move,
 the pool, and two to three MB per busy connection — on a machine too small
 to run them.

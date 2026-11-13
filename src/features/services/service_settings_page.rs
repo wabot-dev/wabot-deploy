@@ -511,9 +511,12 @@ pub fn render<'a>(page: &'a ServiceSettings<'a>) -> impl Renderable + 'a {
                         @if service.kind.is_managed() {
                             <select id="memory-size" name="memory">
                                 <option value="">(t("no ceiling"))</option>
+                                // The size it has stays on the list even under
+                                // the floor: a select missing its value lands on
+                                // "no ceiling", and the next save would lift it.
                                 @for rung in crate::domain::policies::presets::LADDER.into_iter().filter(|rung| {
-                                    service.kind != crate::domain::entities::service::Kind::Mysql
-                                        || *rung >= crate::domain::policies::mysql::FLOOR
+                                    *rung >= service.kind.engine().map_or(0, |engine| engine.floor())
+                                        || Some(*rung) == service.memory_limit
                                 }) {
                                     @if Some(rung) == service.memory_limit {
                                         <option value=(rung.to_string()) selected>(
