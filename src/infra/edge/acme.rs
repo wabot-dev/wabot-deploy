@@ -1357,62 +1357,18 @@ pub async fn renewal_loop(
     // are the ones most likely to be waiting on DNS the operator is
     // still setting up.
     let mut delay = std::time::Duration::from_secs(60);
-    const MAX_DELAY: std::time::Duration = std::time::Duration::from_secs(6 * 3600);
-    // Once a certificate is in hand, checking twice a day is plenty
-    // against a 30-day window.
-    const SETTLED_DELAY: std::time::Duration = std::time::Duration::from_secs(12 * 3600);
 
     sweep_challenges(&database).await;
 
     loop {
-        // Nothing to certify is not an attempt. Marking one anyway
-        // would flash "requesting" on a page about a node that has no
-        // domain, twice a day, for a request never made.
-        let attempt = (!wanted_names(&database).await.is_empty()).then(|| wake.begin());
+        // Nothing to certify is not an attempt, and nor is a pass that
+        // asks nobody. Marking one anyway would flash "requesting" on a
+        // page about a node that has no domain, twice a day, for a
+        // request never made.
+        let asking = crate::infra::node::settings::acme_enabled(&database).await;
+        let attempt = (asking && !wanted_names(&database).await.is_empty()).then(|| wake.begin());
 
-        // Before the public one, and whether or not there will be a
-        // public one. A node whose domain just changed is presenting a
-        // certificate for the name it used to have; that is true even
-        // where ACME is switched off, and it is the case somebody
-        // testing on a laptop is most likely to be looking at.
-        if let Err(error) = refresh_local(&database, &resolver).await {
-            tracing::warn!(%error, "could not reissue the local certificate");
-        }
-
-        // Read every pass: the switch is the console's, and a node that
-        // read it once at boot would order nothing until somebody
-        // restarted it after turning it on.
-        if !crate::infra::node::settings::acme_enabled(&database).await {
-            drop(attempt);
-            tokio::select! {
-                _ = cancel.cancelled() => return Ok(()),
-                _ = wake.notified() => continue,
-            }
-        }
-
-        match ensure_all(&database, &config, &resolver).await {
-            Ok(changed) => {
-                if changed {
-                    tracing::info!(
-                        names = resolver.names().join(", "),
-                        "certificate installed without a restart"
-                    );
-                }
-                if let Err(error) =
-                    crate::infra::node::settings::set_acme_error(&database, None).await
-                {
-                    tracing::debug!(%error, "could not clear the last failure");
-                }
-                delay = SETTLED_DELAY;
-            }
-            Err(error) => {
-                tracing::warn!(%error, retry_in = ?delay, "could not obtain a certificate");
-                if let Err(error) = record_failure(&database, &error).await {
-                    tracing::debug!(%error, "could not record the failure");
-                }
-                delay = (delay * 2).min(MAX_DELAY);
-            }
-        }
+        delay = pass(&database, &config, &resolver, delay).await;
 
         // After the outcome is stored, never before: a page woken by
         // this reads the database, and waking it first would show it
@@ -1434,6 +1390,55 @@ pub async fn renewal_loop(
                 // and the backoff should start from the bottom again.
                 delay = std::time::Duration::from_secs(60);
             }
+        }
+    }
+}
+
+const MAX_DELAY: std::time::Duration = std::time::Duration::from_secs(6 * 3600);
+// Once a certificate is in hand, checking twice a day is plenty against a
+// 30-day window.
+const SETTLED_DELAY: std::time::Duration = std::time::Duration::from_secs(12 * 3600);
+
+/// One pass of the loop, whether or not ACME is on.
+///
+/// With it off `ensure` asks nobody, and the pass still installs what is
+/// on disk, holds the expiry floor, forgets certificates for names nobody
+/// serves and clears the failures asking left behind. Skipping the pass
+/// while ACME was off left all four undone for as long as it stayed off.
+async fn pass(
+    database: &SqliteDatabase,
+    config: &Config,
+    resolver: &certs::CertResolver,
+    delay: std::time::Duration,
+) -> std::time::Duration {
+    // Before the public one, and whether or not there will be a public
+    // one. A node whose domain just changed is presenting a certificate
+    // for the name it used to have; that is true even where ACME is
+    // switched off, and it is the case somebody testing on a laptop is
+    // most likely to be looking at.
+    if let Err(error) = refresh_local(database, resolver).await {
+        tracing::warn!(%error, "could not reissue the local certificate");
+    }
+
+    match ensure_all(database, config, resolver).await {
+        Ok(changed) => {
+            if changed {
+                tracing::info!(
+                    names = resolver.names().join(", "),
+                    "certificate installed without a restart"
+                );
+            }
+            if let Err(error) = crate::infra::node::settings::set_acme_error(database, None).await {
+                tracing::debug!(%error, "could not clear the last failure");
+            }
+            SETTLED_DELAY
+        }
+        Err(error) => {
+            tracing::warn!(%error, retry_in = ?delay, "could not obtain a certificate");
+            if let Err(error) = record_failure(database, &error).await {
+                tracing::debug!(%error, "could not record the failure");
+            }
+            (delay * 2).min(MAX_DELAY)
         }
     }
 }
@@ -2230,6 +2235,56 @@ mod tests {
         assert!(!ensure_all(&database, &config, &resolver)
             .await
             .expect("ensure"));
+    }
+
+    /// Turning ACME off left the last refusal standing for ever, in
+    /// `doctor` and on the page of what needs attention, and a certificate
+    /// for a name nobody serves any more was never forgotten: both are
+    /// done by the pass, and the pass was skipped while ACME was off.
+    /// Found on a VM node after a walk against Pebble.
+    #[tokio::test]
+    async fn a_pass_with_acme_off_forgets_what_asking_left_behind() {
+        let database = database().await;
+        let resolver = certs::CertResolver::new();
+        let config = Config::default();
+        crate::infra::node::settings::set_domain(&database, Some("node.example.com"))
+            .await
+            .expect("domain");
+        crate::infra::node::settings::set_acme_error(&database, Some("the authority said no"))
+            .await
+            .expect("node-wide failure");
+        policy::record_failure(&database, "node.example.com", "the authority said no")
+            .await
+            .expect("failure for the name");
+        certs::ensure_self_signed(&database, "gone.example.com", &["gone.example.com".into()])
+            .await
+            .expect("a certificate for a name nobody serves");
+        crate::infra::node::settings::set_acme_enabled(&database, false)
+            .await
+            .expect("off");
+
+        pass(
+            &database,
+            &config,
+            &resolver,
+            std::time::Duration::from_secs(60),
+        )
+        .await;
+
+        assert_eq!(
+            crate::infra::node::settings::acme_error(&database).await,
+            None
+        );
+        assert_eq!(
+            policy::for_name(&database, "node.example.com")
+                .await
+                .last_error,
+            None
+        );
+        assert!(certs::load(&database, "gone.example.com")
+            .await
+            .expect("load")
+            .is_none());
     }
 
     #[tokio::test]
