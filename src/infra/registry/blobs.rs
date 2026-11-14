@@ -19,8 +19,10 @@ use wabot::rest::axum::http::{header, StatusCode};
 use wabot::rest::axum::response::Response;
 use wabot::rest::{RestError, RestResult};
 
-use crate::infra::runtime::client::Containerd;
-use crate::infra::runtime::content;
+use std::time::Duration;
+
+use crate::infra::runtime::client::{ClientResult, Containerd};
+use crate::infra::runtime::{content, leases};
 
 /// How much of one request's body is held in memory at a time.
 ///
@@ -48,22 +50,27 @@ pub async fn head(digest: &str) -> RestResult<Response> {
 /// `GET /v2/<name>/blobs/<digest>`.
 pub async fn get(digest: &str) -> RestResult<Response> {
     let client = connect().await?;
-    let descriptor = containerd_client::types::Descriptor {
-        digest: digest.to_string(),
-        size: 0,
-        ..Default::default()
+    let Some(size) = content::exists(&client, digest).await.map_err(internal)? else {
+        return Ok(missing());
     };
+    let chunks = content::stream(&client, digest).await.map_err(internal)?;
+    Ok(serving(digest, size, chunks))
+}
 
-    match content::read(&client, &descriptor).await {
-        Ok(bytes) => Ok(Response::builder()
-            .status(StatusCode::OK)
-            .header(header::CONTENT_TYPE, "application/octet-stream")
-            .header(header::CONTENT_LENGTH, bytes.len())
-            .header("docker-content-digest", digest)
-            .body(Body::from(bytes))
-            .expect("a constant response is well-formed")),
-        Err(_) => Ok(missing()),
-    }
+/// A layer is hundreds of megabytes and the node's spare memory often less,
+/// so the body is the store's own stream: whole, the 674 MB layer another
+/// node asked node-0 for was more than the 481 MB it had free.
+fn serving<S>(digest: &str, size: i64, chunks: S) -> Response
+where
+    S: futures_util::Stream<Item = ClientResult<Vec<u8>>> + Send + 'static,
+{
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, "application/octet-stream")
+        .header(header::CONTENT_LENGTH, size)
+        .header("docker-content-digest", digest)
+        .body(Body::from_stream(chunks))
+        .expect("a constant response is well-formed")
 }
 
 /// `POST /v2/<name>/blobs/uploads/` — begin.
@@ -74,12 +81,13 @@ pub async fn get(digest: &str) -> RestResult<Response> {
 /// round trips for a two-kilobyte config.
 pub async fn start(name: &str, request: Request) -> RestResult<Response> {
     let digest = query_digest(&request);
-    let session = format!("wd-{}", wabot::prelude::password::generate(20));
+    let session = session_id();
 
     match digest {
         Some(digest) => {
             let body = read_body(request).await?;
-            commit(&session, &digest, body).await?;
+            let client = leased(&connect().await?, &session).await?;
+            commit(&client, &session, &digest, body).await?;
             Ok(created(name, &digest))
         }
         None => Ok(accepted(name, &session, 0)),
@@ -89,7 +97,8 @@ pub async fn start(name: &str, request: Request) -> RestResult<Response> {
 /// `PATCH` — a chunk.
 pub async fn patch(name: &str, session: &str, request: Request) -> RestResult<Response> {
     let offset = starting_offset(&request);
-    let end = stream_into(session, offset, request).await?;
+    let client = leased(&connect().await?, session).await?;
+    let end = stream_into(&client, session, offset, request).await?;
     Ok(accepted(name, session, end))
 }
 
@@ -106,7 +115,7 @@ pub async fn finish(name: &str, session: &str, request: Request) -> RestResult<R
     // client is free to send everything in the `PUT` and never `PATCH`
     // at all.
     let body = read_body(request).await?;
-    let client = connect().await?;
+    let client = leased(&connect().await?, session).await?;
 
     // Asked of containerd, never of the request. The final `PUT` of a
     // layered upload carries no body, no length and no range — so a
@@ -132,8 +141,12 @@ pub async fn finish(name: &str, session: &str, request: Request) -> RestResult<R
 /// layer is fifty chunks, and fifty stream set-ups against a
 /// single-core node is time the TLS handshakes of the four parallel
 /// uploads beside it are waiting for.
-async fn stream_into(session: &str, offset: i64, request: Request) -> RestResult<i64> {
-    let client = connect().await?;
+async fn stream_into(
+    client: &Containerd,
+    session: &str,
+    offset: i64,
+    request: Request,
+) -> RestResult<i64> {
     let body = request.into_body().into_data_stream();
 
     // Coalesced into pieces of a megabyte before they cross the
@@ -156,16 +169,15 @@ async fn stream_into(session: &str, offset: i64, request: Request) -> RestResult
         }
     };
 
-    content::write_chunks(&client, session, offset, chunks)
+    content::write_chunks(client, session, offset, chunks)
         .await
         .map_err(internal)
 }
 
 /// Commit a blob that arrived whole.
-async fn commit(session: &str, digest: &str, body: Vec<u8>) -> RestResult<()> {
-    let client = connect().await?;
+async fn commit(client: &Containerd, session: &str, digest: &str, body: Vec<u8>) -> RestResult<()> {
     content::commit(
-        &client,
+        client,
         session,
         digest,
         body.len() as i64,
@@ -189,6 +201,22 @@ pub(crate) async fn read_body(request: Request) -> RestResult<Vec<u8>> {
             message: format!("could not read the body: {error}"),
         })
 }
+
+pub(crate) fn session_id() -> String {
+    format!("wd-{}", wabot::prelude::password::generate(20))
+}
+
+/// `client`, with everything it writes held under the lease `id`.
+///
+/// A committed blob nothing references is the collector's at its next run,
+/// and a node with a database runs one a minute — so a push's first layers
+/// were gone before its manifest arrived to name them (node-0, 2026-11-14).
+pub(crate) async fn leased(client: &Containerd, id: &str) -> RestResult<Containerd> {
+    leases::hold(client, id, HELD_FOR).await.map_err(internal)?;
+    Ok(client.clone().leased(id))
+}
+
+const HELD_FOR: Duration = Duration::from_secs(24 * 60 * 60);
 
 pub(crate) async fn connect() -> RestResult<Containerd> {
     Containerd::connect().await.map_err(|error| {
@@ -318,6 +346,34 @@ mod tests {
 
         let without = Request::builder().uri("/x").body(Body::empty()).unwrap();
         assert_eq!(starting_offset(&without), 0);
+    }
+
+    /// Each blob was read whole before its first byte went out: a 400 MB
+    /// layer took the node from 27 to 427 MB on the VM, and node-0 had 481
+    /// MB free when another node asked it for a 674 MB one (2026-11-14).
+    #[tokio::test]
+    async fn a_client_has_the_first_bytes_before_the_store_has_sent_the_last() {
+        use futures_util::StreamExt;
+        use http_body_util::BodyExt;
+
+        let first = futures_util::stream::iter([Ok(b"head".to_vec())]);
+        let response = serving(
+            "sha256:abc",
+            674_000_000,
+            first.chain(futures_util::stream::pending()),
+        );
+
+        assert_eq!(
+            response.headers().get(header::CONTENT_LENGTH).unwrap(),
+            "674000000"
+        );
+        let mut body = response.into_body();
+        let frame = tokio::time::timeout(std::time::Duration::from_secs(1), body.frame())
+            .await
+            .expect("the first piece arrives while the rest is still coming")
+            .expect("a frame")
+            .expect("not an error");
+        assert_eq!(frame.into_data().unwrap(), "head");
     }
 
     /// The location a client follows for the next chunk has to name

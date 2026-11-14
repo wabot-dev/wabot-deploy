@@ -479,15 +479,24 @@ Cuatro cosas críticas:
 
 1. **Registry y workloads en el mismo namespace de containerd**, o el
    contenido no es visible entre ellos y se pierde el ahorro.
-2. **Lease sostenido durante todo el push.** Entre el commit del último
-   blob y el `Images.Create` los blobs no tienen referencias y un pase de
-   GC se los lleva.
+2. **Un lease por subida, que caduca a las 24 h.** Entre el commit de un
+   blob y el manifest que lo nombra, el blob no tiene referencias y el
+   siguiente pase de GC se lo lleva — y en un nodo con una base de datos
+   hay uno por minuto. Estaba escrito aquí desde el principio y no estaba
+   hecho: el 2026-11-14 node-0 guardó un manifest al que le faltaban 8 de
+   sus 10 blobs, el push respondió que todo bien, y el fallo apareció
+   horas después en otro nodo. Por eso el `PUT` del manifest, además,
+   pregunta por cada blob después de guardarlo y responde
+   `MANIFEST_BLOB_UNKNOWN` si falta alguno: el push falla en la terminal
+   de quien empuja, y repetirlo manda lo que falta.
 3. **Labels de GC con las convenciones de containerd**
    (`containerd.io/gc.ref.content.*`). Inventar las nuestras rompe `ctr`,
    `nerdctl` y el propio GC.
-4. **Escribir por gRPC, leer del filesystem.** Los blobs son inmutables y
-   direccionables por contenido; servir un GET a través del stream de
-   protobuf es caro.
+4. **Un GET se sirve en trozos, nunca entero.** El plan era leer del
+   filesystem; se sirve del stream del servicio Content, pieza a pieza,
+   que cuesta CPU y no memoria. Entero, una capa de 400 MB llevó el
+   proceso de 27 a 427 MB en la VM, y la de 674 MB que otro nodo le pidió
+   a node-0 era más de los 481 MB que tenía libres.
 
 La sesión de subida es de containerd, no nuestra: su escritura de
 contenido es una transacción con nombre, reanudable por ref y offset. Así

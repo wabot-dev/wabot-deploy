@@ -29,7 +29,7 @@ use crate::infra::repositories::releases;
 use crate::infra::repositories::services;
 use crate::infra::runtime::content;
 
-use super::blobs::{connect, internal, read_body};
+use super::blobs::{connect, internal, leased, read_body, session_id};
 use super::{Pusher, RegistryState};
 
 /// What this node calls an image somebody pushed.
@@ -141,9 +141,10 @@ pub async fn put(
     // The manifest is a blob like any other, and it has to carry the
     // labels that keep what it points at alive.
     let client = connect().await?;
+    let held = leased(&client, &session_id()).await?;
     let size = body.len() as i64;
     content::commit(
-        &client,
+        &held,
         &format!("manifest-{digest}"),
         &digest,
         size,
@@ -152,6 +153,14 @@ pub async fn put(
     )
     .await
     .map_err(internal)?;
+
+    // Asked after the commit, so a blob found here is already held by the
+    // manifest's labels and cannot be collected between the two.
+    let absent = absent(&held, &manifest.referenced()).await?;
+    if !absent.is_empty() {
+        tracing::warn!(repository = %name, %reference, ?absent, "refused a manifest naming blobs this node does not have");
+        return Ok(blob_unknown(&absent));
+    }
 
     // Then the image record, which is what makes it an image rather
     // than bytes: the runtime resolves images by name through this.
@@ -452,6 +461,47 @@ fn missing() -> Response {
         .expect("a constant response is well-formed")
 }
 
+async fn absent(
+    client: &crate::infra::runtime::client::Containerd,
+    digests: &[String],
+) -> RestResult<Vec<String>> {
+    let mut absent = Vec::new();
+    for digest in digests {
+        if content::exists(client, digest)
+            .await
+            .map_err(internal)?
+            .is_none()
+        {
+            absent.push(digest.clone());
+        }
+    }
+    Ok(absent)
+}
+
+fn blob_unknown(absent: &[String]) -> Response {
+    let errors: Vec<serde_json::Value> = absent
+        .iter()
+        .map(|digest| {
+            serde_json::json!({
+                "code": "MANIFEST_BLOB_UNKNOWN",
+                "message": format!(
+                    "the manifest names {digest}, which this registry does not have; push again to send it"
+                ),
+                "detail": { "digest": digest },
+            })
+        })
+        .collect();
+
+    Response::builder()
+        .status(StatusCode::BAD_REQUEST)
+        .header(header::CONTENT_TYPE, "application/json")
+        .header("docker-distribution-api-version", "registry/2.0")
+        .body(Body::from(
+            serde_json::json!({ "errors": errors }).to_string(),
+        ))
+        .expect("a constant response is well-formed")
+}
+
 #[cfg(test)]
 mod tests {
     /// A push to a service's own repository is a release for it, whatever
@@ -554,6 +604,33 @@ mod tests {
         )
         .expect("parsed");
         assert_eq!(manifest.referenced(), ["sha256:cfg"]);
+    }
+
+    /// The registry stored a manifest whose layers it did not have and
+    /// answered the push with success; the failure surfaced four hours later
+    /// on another node, as a pull that could not find a layer (node-0,
+    /// `nubo-testing`, 2026-11-14).
+    #[tokio::test]
+    async fn a_manifest_naming_a_blob_the_node_lacks_is_refused_with_the_code_clients_print() {
+        use http_body_util::BodyExt;
+
+        let response = blob_unknown(&["sha256:gone".into(), "sha256:also".into()]);
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let errors = json["errors"].as_array().unwrap();
+
+        assert_eq!(errors.len(), 2);
+        assert_eq!(errors[0]["code"], "MANIFEST_BLOB_UNKNOWN");
+        assert_eq!(errors[0]["detail"]["digest"], "sha256:gone");
+        assert!(
+            errors[1]["message"]
+                .as_str()
+                .unwrap()
+                .contains("sha256:also"),
+            "{json}"
+        );
     }
 
     #[test]

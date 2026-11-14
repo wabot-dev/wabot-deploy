@@ -122,6 +122,7 @@ impl RuncOptions {
 pub struct Containerd {
     channel: Channel,
     socket: String,
+    lease: Option<String>,
 }
 
 impl std::fmt::Debug for Containerd {
@@ -130,6 +131,7 @@ impl std::fmt::Debug for Containerd {
         // only part anyone debugging wants to see.
         f.debug_struct("Containerd")
             .field("socket", &self.socket)
+            .field("lease", &self.lease)
             .finish_non_exhaustive()
     }
 }
@@ -179,11 +181,17 @@ impl Containerd {
         Ok(Self {
             channel,
             socket: path,
+            lease: None,
         })
     }
 
     pub fn socket(&self) -> &str {
         &self.socket
+    }
+
+    pub fn leased(mut self, lease: &str) -> Self {
+        self.lease = Some(lease.to_string());
+        self
     }
 
     /// A request carrying the namespace header containerd requires.
@@ -196,6 +204,12 @@ impl Containerd {
             "containerd-namespace",
             NAMESPACE.parse().expect("the namespace is a valid header"),
         );
+        if let Some(lease) = &self.lease {
+            request.metadata_mut().insert(
+                "containerd-lease",
+                lease.parse().expect("a lease id is a valid header"),
+            );
+        }
         request
     }
 
@@ -327,6 +341,32 @@ mod tests {
             crate::infra::bootstrap::runtime::CRUN_PATH,
             "the runtime the node asks for has to be the one it installed"
         );
+    }
+
+    fn lazy() -> Containerd {
+        Containerd {
+            channel: Endpoint::from_static("http://[::]:50051").connect_lazy(),
+            socket: "/dev/null/containerd.sock".into(),
+            lease: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn a_leased_client_names_its_lease_on_every_request() {
+        let request = lazy().leased("wd-upload").request(());
+        let metadata = request.metadata();
+
+        assert_eq!(metadata.get("containerd-lease").unwrap(), "wd-upload");
+        assert_eq!(metadata.get("containerd-namespace").unwrap(), NAMESPACE);
+    }
+
+    #[tokio::test]
+    async fn a_client_holds_nothing_unless_it_is_leased() {
+        assert!(lazy()
+            .request(())
+            .metadata()
+            .get("containerd-lease")
+            .is_none());
     }
 
     /// An unreachable socket has to fail with something that names it.

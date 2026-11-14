@@ -1,15 +1,8 @@
 //! Reading blobs out of containerd's content store.
 //!
-//! Over the Content service rather than off the filesystem. The
-//! architecture notes say the opposite for *serving* registry blobs —
-//! framing megabytes through protobuf over a unix socket is real
-//! overhead, and blobs are immutable and content-addressed, so reading
-//! the file directly is safe there.
-//!
-//! Here the blobs are manifests and configs: a few kilobytes, read once
-//! per deployment. Going through the API costs nothing measurable and
-//! buys not caring where containerd keeps its files or which content
-//! plugin is configured.
+//! Over the Content service rather than off the filesystem: it buys not
+//! caring where containerd keeps its files or which content plugin is
+//! configured.
 
 use std::collections::HashMap;
 
@@ -21,30 +14,15 @@ use containerd_client::types::Descriptor;
 
 use super::client::{ClientError, ClientResult, Containerd};
 
-/// Everything at `descriptor.digest`.
-///
-/// The response is a stream of chunks; containerd decides the sizes and
-/// a caller must not assume one message is the whole blob.
+/// Everything at `descriptor.digest`, in memory — for manifests and configs.
+/// A layer goes through [`stream`].
 pub async fn read(client: &Containerd, descriptor: &Descriptor) -> ClientResult<Vec<u8>> {
-    let mut stream = ContentClient::new(client.channel())
-        .read(client.request(ReadContentRequest {
-            digest: descriptor.digest.clone(),
-            offset: 0,
-            size: 0,
-        }))
-        .await
-        .map_err(|source| ClientError::Call {
-            call: "Content.Read",
-            source,
-        })?
-        .into_inner();
+    use futures_util::StreamExt;
 
+    let mut chunks = stream(client, &descriptor.digest).await?;
     let mut bytes = Vec::with_capacity(descriptor.size.max(0) as usize);
-    while let Some(chunk) = stream.message().await.map_err(|source| ClientError::Call {
-        call: "Content.Read",
-        source,
-    })? {
-        bytes.extend_from_slice(&chunk.data);
+    while let Some(chunk) = chunks.next().await {
+        bytes.extend_from_slice(&chunk?);
     }
 
     // The descriptor's size is part of the contract, and a short read
@@ -60,6 +38,37 @@ pub async fn read(client: &Containerd, descriptor: &Descriptor) -> ClientResult<
     }
 
     Ok(bytes)
+}
+
+/// The blob at `digest`, in the pieces containerd sends it in.
+pub async fn stream(
+    client: &Containerd,
+    digest: &str,
+) -> ClientResult<impl futures_util::Stream<Item = ClientResult<Vec<u8>>> + Send + Unpin + 'static>
+{
+    use futures_util::StreamExt;
+
+    let chunks = ContentClient::new(client.channel())
+        .read(client.request(ReadContentRequest {
+            digest: digest.to_string(),
+            offset: 0,
+            size: 0,
+        }))
+        .await
+        .map_err(|source| ClientError::Call {
+            call: "Content.Read",
+            source,
+        })?
+        .into_inner();
+
+    Ok(chunks.map(|chunk| {
+        chunk
+            .map(|chunk| chunk.data)
+            .map_err(|source| ClientError::Call {
+                call: "Content.Read",
+                source,
+            })
+    }))
 }
 
 /// Is this blob already here?
