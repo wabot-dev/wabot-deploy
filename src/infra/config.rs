@@ -254,6 +254,14 @@ pub struct LogConfig {
 }
 
 fn default_data_dir() -> PathBuf {
+    // A test that wants a data directory makes one. Most take
+    // `Config::default()` for something else and still reach code that
+    // writes copies' files under it, and as root on the VM node they wrote
+    // into the node's own directory. `/dev/null` is a file, so nothing —
+    // root included — can make a directory under it.
+    if cfg!(test) {
+        return PathBuf::from("/dev/null/wabot-deploy");
+    }
     PathBuf::from("/var/lib/wabot-deploy")
 }
 fn default_https_port() -> u16 {
@@ -875,7 +883,16 @@ mod tests {
             config.edge.http_port, 80,
             "untouched sections still default"
         );
-        assert_eq!(config.node.data_dir, PathBuf::from("/var/lib/wabot-deploy"));
+        assert_eq!(config.node.data_dir, Config::default().node.data_dir);
+    }
+
+    /// The suite ran as root on the VM node and wrote test copies' `hosts`,
+    /// `config` and log files into the node's own `/var/lib/wabot-deploy`.
+    #[test]
+    fn a_test_cannot_write_where_a_node_keeps_its_data() {
+        let data = Config::default().node.data_dir;
+        assert_ne!(data, PathBuf::from("/var/lib/wabot-deploy"));
+        assert!(std::fs::create_dir_all(data.join("hosts")).is_err());
     }
 
     /// The reason for `deny_unknown_fields`: a typo must not leave the

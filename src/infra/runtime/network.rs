@@ -523,9 +523,27 @@ pub async fn detach(network: &ProjectNetwork, container_id: &str) {
     }
 }
 
+/// Every program this module runs changes the machine: a namespace, a
+/// veth on a project's bridge, an address reserved in its range, a NAT
+/// rule. Tests reach here through deployments they made against an
+/// in-memory database, and as root — the suite runs that way on the VM
+/// node — they ran for real. On 2026-11-14, one run had left interfaces
+/// named for test copies on two real projects' bridges, with addresses
+/// out of their ranges and masquerade rules of their own, and every later
+/// run added more. So a test runs nothing here, whoever it runs as.
+fn machine(program: impl AsRef<std::ffi::OsStr>) -> NetworkResult<Command> {
+    if cfg!(test) {
+        return Err(NetworkError::Refused(
+            "a test does not change the machine's network".into(),
+        ));
+    }
+    Ok(Command::new(program))
+}
+
 fn create_netns(name: &str) -> NetworkResult<()> {
+    let mut ip = machine("ip")?;
     std::fs::create_dir_all(NETNS_DIR)?;
-    let output = Command::new("ip")
+    let output = ip
         .args(["netns", "add", name])
         .output()
         .map_err(|error| NetworkError::Refused(format!("could not run `ip`: {error}")))?;
@@ -543,9 +561,7 @@ fn delete_netns(name: &str) -> NetworkResult<()> {
     if !netns_path(name).exists() {
         return Ok(());
     }
-    let output = Command::new("ip")
-        .args(["netns", "delete", name])
-        .output()?;
+    let output = machine("ip")?.args(["netns", "delete", name]).output()?;
     if !output.status.success() {
         return Err(NetworkError::Refused(
             String::from_utf8_lossy(&output.stderr).trim().to_string(),
@@ -577,6 +593,7 @@ async fn plugin(
         )));
     }
 
+    let mut plugin = machine(&binary)?;
     let netns = netns_path(container_id);
     let config = config.to_string();
     let container_id = container_id.to_string();
@@ -590,7 +607,7 @@ async fn plugin(
         // recognise, so the one thing a caller might want to say
         // through it — which address to allocate — has to travel in the
         // config instead. See `ProjectNetwork::config`.
-        let mut child = Command::new(&binary)
+        let mut child = plugin
             .env("CNI_COMMAND", command)
             .env("CNI_CONTAINERID", &container_id)
             .env("CNI_NETNS", netns)

@@ -7,6 +7,7 @@
 #   scripts/vm.sh token          # a setup token for /setup
 #   scripts/vm.sh root [cmd…]    # a root shell, or one command as root
 #   scripts/vm.sh logs           # follow the node's log
+#   scripts/vm.sh suite          # the tests as root on the node, and what they changed
 #   scripts/vm.sh down           # stop it, keep it
 #   scripts/vm.sh reset          # throw it away
 #
@@ -81,6 +82,101 @@ logs)
   root tail -n 100 -F /var/log/wabot-deploy.log
   ;;
 
+suite)
+  # Root is what lets a test that reaches the machine change it: anyone
+  # else's run fails quietly at the same call. On 2026-11-14 one run as
+  # root left an overlay interface, network namespaces on two projects'
+  # bridges, a container and files in the node's directory. A run should
+  # change nothing, and this says whether it did.
+  arch=$(limactl shell --workdir / "$VM" uname -m)
+  target="$arch-unknown-linux-musl"
+  rustup target list --installed | grep -qx "$target" || rustup target add "$target"
+  echo "==> building the tests for $target"
+  tests=$(cargo-zigbuild test --no-run --target "$target" 2>&1 |
+    sed -n 's/.*Executable unittests src\/main.rs (\(.*\))/\1/p' | tail -1)
+  [[ -n "$tests" ]] || { echo "no test binary came out of the build"; exit 1; }
+  scratch=$(mktemp -d)
+  trap 'rm -rf "$scratch"' EXIT
+  # Tests read the tree at the path they were compiled in, so it goes to
+  # the same path in the VM. Without COPYFILE_DISABLE, macOS adds a `._`
+  # file beside each one and the tree's own guards fail on them.
+  git ls-files -co --exclude-standard | while read -r file; do
+    [[ -e "$file" ]] && printf '%s\n' "$file"
+  done | COPYFILE_DISABLE=1 tar -cf "$scratch/tree.tar" -T -
+  limactl copy "$scratch/tree.tar" "$VM:/var/tmp/wabot-suite.tar"
+  limactl copy "$tests" "$VM:/var/tmp/wabot-suite-tests"
+  # A file rather than stdin: a test that read stdin would eat the rest.
+  root sh -c 'cat > /var/tmp/wabot-suite.sh' <<'SWEEP'
+set -u
+here=$1
+s=/var/tmp/wabot-suite
+# The tree is thrown away and replaced. Under a mount of this machine's
+# disk it would be the checkout itself.
+for mount in $(awk '$2 != "/" {print $2}' /proc/mounts); do
+  case "$here/" in "$mount"/*)
+    echo "$here is under $mount, a mount: not replacing it"
+    exit 1
+    ;;
+  esac
+done
+rm -rf "$here" "$s" && mkdir -p "$here" "$s"
+tar -xf /var/tmp/wabot-suite.tar -C "$here"
+chmod 0755 /var/tmp/wabot-suite-tests
+
+# Asked of the process table: OpenRC says stopped while the node drains.
+running=no
+pgrep -f "wabot-deploy .*serve" >/dev/null && running=yes
+rc-service wabot-deploy stop >/dev/null 2>&1
+i=0
+while pgrep -f "wabot-deploy .*serve" >/dev/null && [ $i -lt 60 ]; do sleep 1; i=$((i + 1)); done
+
+state() {
+  ip -o link | awk -F': ' '{print $2}' | sed 's/@.*//' | sort > $s/links.$1
+  ls /run/netns 2>/dev/null | sort > $s/namespaces.$1
+  ctr -n wabot containers ls -q | sort > $s/containers.$1
+  for table in nat filter mangle; do iptables-save -t $table; done |
+    grep -v '^#' | sed 's/\[[0-9]*:[0-9]*\]//' > $s/iptables.$1
+  ls /var/lib/cni/networks/*/ 2>/dev/null | sort > $s/reservations.$1
+}
+state before
+touch $s/marker
+sleep 1
+(cd "$here" && /var/tmp/wabot-suite-tests < /dev/null > $s/tests.log 2>&1)
+passed=$?
+state after
+
+changed=0
+echo "==> $(grep 'test result' $s/tests.log)"
+[ $passed -eq 0 ] || grep -E '^test .* FAILED$' $s/tests.log
+for what in links namespaces containers iptables reservations; do
+  if ! diff -q $s/$what.before $s/$what.after >/dev/null; then
+    changed=1
+    echo "==> $what changed"
+    diff $s/$what.before $s/$what.after | grep '^[<>]'
+  fi
+done
+# What a running copy writes on its own: its log, its volume, its WAL.
+for id in $(cat $s/containers.after); do echo "/var/lib/wabot-deploy/logs/$id.log"; done > $s/own
+written=$(find / -xdev -newer $s/marker -type f 2>/dev/null |
+  grep -vE "^/(proc|sys|dev|tmp|var/tmp|home|root|var/log|var/lib/containerd)/|^$here/" |
+  grep -vE '^/var/lib/wabot-deploy/(volumes|wal)/' | grep -vF -f $s/own)
+written="$written$(find /run -newer $s/marker -type f 2>/dev/null | grep -vE 'containerd|/run/openrc/')"
+if [ -n "$written" ]; then
+  changed=1
+  echo "==> files written"
+  echo "$written"
+fi
+if pgrep -f "wabot-deploy .*serve" >/dev/null; then
+  changed=1
+  echo "==> a test started the node"
+fi
+[ $changed -eq 0 ] && echo "==> nothing on the machine changed"
+[ $running = yes ] && rc-service wabot-deploy start >/dev/null 2>&1
+[ $passed -eq 0 ] && [ $changed -eq 0 ]
+SWEEP
+  root sh /var/tmp/wabot-suite.sh "$(pwd)"
+  ;;
+
 down)
   limactl stop "$VM"
   ;;
@@ -90,7 +186,7 @@ reset)
   ;;
 
 *)
-  sed -n '3,13p' "$0" | sed 's/^# \{0,1\}//'
+  sed -n '3,14p' "$0" | sed 's/^# \{0,1\}//'
   exit 2
   ;;
 esac

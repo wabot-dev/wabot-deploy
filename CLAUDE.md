@@ -171,6 +171,29 @@ nothing exercises the thing that has caused nearly every networked bug
 here — *derived state that nothing recomputes when its input arrives
 over the network*.
 
+**A test does not touch the machine.** Run as root on the VM node, the
+suite once left all of this behind:
+
+- `wabot0` up with a test's key and peers;
+- interfaces named for test copies on two real projects' bridges, with
+  addresses from those projects' ranges and masquerade rules of their own;
+- a container in the node's containerd;
+- files in the node's own directory.
+
+Every one of those calls fails quietly for anyone but root, which is why
+nobody had seen it, and each later run added more. Each boundary refuses
+under `cfg!(test)` now:
+
+- the overlay's netlink, `tunnel::apply`;
+- every program `runtime::network` runs;
+- `Containerd::connect`;
+- `Config::default()`'s data directory, which is under `/dev/null`.
+
+The firewall is armed instead, because the recovery verb needs it outside
+`serve`. Anything new that reaches the machine needs the same.
+`scripts/vm.sh suite` is how to know: it runs the tests as root on the VM
+node, says what they changed, and it should be nothing.
+
 **The ledger records; it does not decide.** Install steps are
 convergent — each one asks about the thing, not about the history. This
 rule was learned three times, and a fourth outside `install`:
@@ -327,6 +350,7 @@ still have to run on a node — see the rule below.
 scripts/vm.sh up          # an Alpine VM under Lima, this machine's architecture
 scripts/vm.sh deploy      # build for it; `install --self-signed` the first time, replace after
 scripts/vm.sh root …      # a root shell, or one command as root
+scripts/vm.sh suite       # the tests as root on the node, and what they changed on it
 scripts/vm.sh reset       # throw it away
 ```
 
@@ -474,14 +498,6 @@ happened:
   refused with a sentence rather than starting a copy on an empty
   directory.
 - A service created under an organisation's quota runs with no ceiling.
-- The suite run as root inside the VM still changes the node in two ways
-  the firewall's arming does not cover. `tunnel::ensure` brings up
-  `wabot0` with a test's address and peer, so `doctor` reports a peer no
-  row explains. The `Deployer`'s tests write their copies' `hosts`,
-  `config` and log files under `Config::default()`'s
-  `/var/lib/wabot-deploy`, and those files show up as orphans. As anyone
-  but root, both writes fail quietly. Found 2026-11-14; until it is
-  fixed, remove the interface and the files after a run.
 - A running container no row claims — what a restore from an older
   backup leaves — is on no page.
 - MySQL is one copy: no read-only copies, and a restore reaches the

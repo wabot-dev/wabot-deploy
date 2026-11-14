@@ -436,8 +436,19 @@ fn difference(existing: &Peer, wanted: &Peer) -> Option<&'static str> {
 /// `spawn_blocking` around each would cost more than it saves. And this
 /// is the half that only exists on Linux, so everything worth testing
 /// on a developer's machine is above the line rather than below it.
+///
+/// A test never crosses it. Tests reach here through a join or a roster
+/// they made up, and as root on Linux — the suite runs that way on the VM
+/// node — this would hand the node's `wabot0` a test's key, address and
+/// peers. On a node that is on an overlay, that is the node falling off
+/// it until something calls this again. It happened on the VM on
+/// 2026-11-14, where the only damage was a peer `doctor` could not
+/// explain.
 #[cfg(target_os = "linux")]
 fn apply(address: &str, private: &str, port: u16, peers: Vec<Peer>) -> Result<(), String> {
+    if cfg!(test) {
+        return Err("a test does not touch the kernel".into());
+    }
     let mut api = WGApi::<Kernel>::new(INTERFACE)
         .map_err(|error| format!("could not open netlink: {error}"))?;
 

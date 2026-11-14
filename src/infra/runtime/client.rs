@@ -136,7 +136,16 @@ impl std::fmt::Debug for Containerd {
 
 impl Containerd {
     /// Connect to the default socket.
+    ///
+    /// Not from a test. The suite ran as root on the VM node, where the
+    /// socket is the node's own containerd, and a test's deployment left a
+    /// container there (`one.web`, 2026-11-14). Under a file, the socket
+    /// cannot exist, so a test is answered as a machine without containerd
+    /// answers it.
     pub async fn connect() -> ClientResult<Self> {
+        if cfg!(test) {
+            return Self::connect_to("/dev/null/containerd.sock").await;
+        }
         Self::connect_to(crate::infra::bootstrap::runtime::SOCKET).await
     }
 
