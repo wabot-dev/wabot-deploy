@@ -164,6 +164,25 @@ impl NodeUiController {
                     owned: projects.iter().filter(|project| project.is_ours()).count(),
                 }
             }
+            NodeTab::Access => Panel::Access {
+                console: crate::infra::repositories::allowlists::of(
+                    &self.state.database,
+                    &crate::domain::values::allowlist::Door::Console,
+                )
+                .await?,
+                registry: crate::infra::repositories::allowlists::of(
+                    &self.state.database,
+                    &crate::domain::values::allowlist::Door::Registry,
+                )
+                .await?,
+                ssh: crate::infra::repositories::allowlists::of(
+                    &self.state.database,
+                    &crate::domain::values::allowlist::Door::Ssh,
+                )
+                .await?,
+                ssh_ports: crate::infra::firewall::ssh_ports().await,
+                refused: crate::infra::firewall::last_error(&self.state.database).await,
+            },
             NodeTab::Dns => {
                 let table = self
                     .state

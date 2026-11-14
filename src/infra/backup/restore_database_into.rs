@@ -57,6 +57,20 @@ pub async fn restore_into(
     .await?;
     crate::infra::repositories::services::set_kind(database, &service.id, source.engine.kind())
         .await?;
+    // **And who may connect is the original's**, for the reason the
+    // credentials are: the clients that reach for the copy are the ones
+    // that reached for the original.
+    let allowlist = crate::infra::repositories::allowlists::of(
+        database,
+        &crate::domain::values::allowlist::Door::Service(original.id.clone()),
+    )
+    .await?;
+    crate::infra::repositories::allowlists::set(
+        database,
+        &crate::domain::values::allowlist::Door::Service(service.id.clone()),
+        &allowlist,
+    )
+    .await?;
     crate::infra::repositories::services::set_memory_limit(
         database,
         &service.id,

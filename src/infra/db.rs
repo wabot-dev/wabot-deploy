@@ -268,6 +268,14 @@ fn migrations() -> Vec<Migration> {
             "0067_database_told_by_owner",
             include_str!("../../migrations/0067_database_told_by_owner.sql"),
         ),
+        Migration::new(
+            "0068_allowlist",
+            include_str!("../../migrations/0068_allowlist.sql"),
+        ),
+        Migration::new(
+            "0069_ssh_allowlist",
+            include_str!("../../migrations/0069_ssh_allowlist.sql"),
+        ),
     ]
 }
 

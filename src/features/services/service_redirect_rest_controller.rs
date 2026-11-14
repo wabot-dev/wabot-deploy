@@ -152,7 +152,14 @@ mod tests {
             .harness
             .post("/projects/my-api/services")
             .header("cookie", cookie)
-            .form(&[("name", "web"), ("image", "docker.io/library/nginx:alpine")])
+            // Open, as every service was before allowlists: what the tests
+            // using this are about is something else, and a closed service
+            // is withheld from edges too old to read its list.
+            .form(&[
+                ("name", "web"),
+                ("image", "docker.io/library/nginx:alpine"),
+                ("allowlist", "0.0.0.0/0\n::/0"),
+            ])
             .send()
             .await;
         crate::infra::network::save(
@@ -343,6 +350,7 @@ mod tests {
             peers: Vec::new(),
             secret: None,
             redirect_to: Some("localhost".into()),
+            allowed: None,
         })
         .expect("payload");
         errand::queue(

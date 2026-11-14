@@ -1,6 +1,8 @@
 use serde::{Deserialize, Serialize};
 use wabot::prelude::*;
 
+use crate::domain::values::allowlist::Allowlist;
+
 /// Make a managed database.
 ///
 /// `memory` is a preset and not a free size: the number also sets the
@@ -30,4 +32,7 @@ pub struct CreateDatabaseRequest {
     /// The node its primary runs on, by id; empty for this one.
     #[serde(default)]
     pub on: String,
+    /// Who may connect to it once it is published. Empty admits nobody.
+    #[serde(skip)]
+    pub allowlist: Allowlist,
 }

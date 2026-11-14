@@ -132,6 +132,12 @@ pub fn render<'a>(page: &'a NewDatabase<'a>) -> impl Renderable + 'a {
                      exists. Services reach it by its name only from that node."))</p>
             }
 
+            // Asked for here, as a service's is: a database published
+            // later is open only to whom was written down now.
+            (crate::shell::components::allowlist_field::field("allowlist", "allowlist",
+                t("Who may connect once it is published"),
+                &crate::domain::values::allowlist::Allowlist::default()))
+
             <div class="actions">
                 <button type="submit">(t("Create database"))</button>
                 <a class="btn btn-ghost" href=(back)>(t("Cancel"))</a>

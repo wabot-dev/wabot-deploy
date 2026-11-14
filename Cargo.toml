@@ -129,6 +129,10 @@ tower = { version = "0.5", features = ["util"] }
 # It is already in the tree through `rustls-platform-verifier`, so naming it
 # costs nothing to build.
 libc = "0.2"
+# The address ranges an allowlist holds. Already in the tree through
+# `reqwest` and `hyper-util`, and a prefix match on both families is the
+# kind of thing written by hand once and wrong in the IPv6 half.
+ipnet = "2"
 
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

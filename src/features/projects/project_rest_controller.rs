@@ -526,6 +526,62 @@ impl ProjectRestController {
         }
     }
 
+    /// Who may reach the project's registry on its own name.
+    #[post("/projects/:project/registry/allowlist")]
+    #[raw]
+    #[middleware(SessionMiddleware)]
+    async fn set_registry_allowlist(&self, request: Request) -> RestResult<Response> {
+        let path = request.uri().path().to_string();
+        let Some((project, allowed, _)) = self.locate(&path).await? else {
+            return Ok(see_other("/?error=no+such+project"));
+        };
+        let here = format!("/projects/{}/settings", project.slug);
+        let Some(account) = signed_in(&self.auth) else {
+            return Ok(see_other("/sign-in"));
+        };
+        let form = match read_form(request).await {
+            Ok(form) => form,
+            Err(response) => return Ok(response),
+        };
+        let asked = match crate::domain::values::allowlist::Allowlist::parse(field(&form, "allowlist")) {
+            Ok(allowlist) => {
+                crate::features::projects::set_registry_allowlist_request::SetRegistryAllowlistRequest {
+                    allowlist,
+                }
+            }
+            Err(reason) => return Ok(back_with_error(&here, &reason)),
+        };
+
+        let set = match crate::domain::authz::node_user::belongs_here(&account) {
+            true => {
+                crate::features::projects::node_user_set_registry_allowlist::run(
+                    &self.state.database,
+                    &self.state.deployer,
+                    &account,
+                    &project,
+                    &allowed,
+                    &asked,
+                )
+                .await
+            }
+            false => {
+                crate::features::projects::tenant_user_set_registry_allowlist::run(
+                    &self.state.database,
+                    &self.state.deployer,
+                    &account,
+                    &project,
+                    &allowed,
+                    &asked,
+                )
+                .await
+            }
+        };
+        match set {
+            Ok(()) => Ok(see_other(&format!("{here}#registry-allowlist"))),
+            Err(reason) => Ok(back_with_error(&here, &reason)),
+        }
+    }
+
     /// Delete a project and, by cascade, its services.
     ///
     /// A POST, so nothing a browser prefetches can trigger it, and the
@@ -1181,6 +1237,94 @@ mod tests {
     }
 
     /// A deployer runs things and owns nothing.
+    /// The list is asked for only beside a name of the project's own: on
+    /// the node's name a push is the node's door, and a card there would be
+    /// a setting nothing reads.
+    #[tokio::test]
+    async fn an_owner_says_who_reaches_the_registry_on_its_own_name() {
+        let console = Console::new().await;
+        let admin = console.signed_in().await;
+        console
+            .harness
+            .post("/projects")
+            .header("cookie", &admin)
+            .form(&[("name", "shared")])
+            .send()
+            .await;
+        let member = console.joined_as(&admin, "deployer").await;
+        let project = projects::find(&console.database, "shared")
+            .await
+            .expect("query")
+            .expect("present");
+        let person = crate::infra::accounts::all(&console.database)
+            .await
+            .expect("query")
+            .into_iter()
+            .find(|account| account.username == "deployer")
+            .expect("joined");
+        access::grant(
+            &console.database,
+            &person.id,
+            &project.id,
+            ProjectRole::Deployer,
+        )
+        .await
+        .expect("granted");
+        let settings = || async {
+            console
+                .harness
+                .get("/projects/shared/settings")
+                .header("cookie", &admin)
+                .send()
+                .await
+                .body
+        };
+        let door = crate::domain::values::allowlist::Door::ProjectRegistry(project.id.clone());
+
+        assert!(!settings().await.contains("/registry/allowlist"));
+        projects::set_registry_domain(
+            &console.database,
+            &project.id,
+            Some("registry.shared.example"),
+        )
+        .await
+        .expect("named");
+        let page = settings().await;
+        assert!(page.contains("/registry/allowlist"), "{page}");
+
+        let save = |cookie: &str, list: &'static str| {
+            let cookie = cookie.to_string();
+            let console = &console;
+            async move {
+                console
+                    .harness
+                    .post("/projects/shared/registry/allowlist")
+                    .header("cookie", &cookie)
+                    .form(&[("allowlist", list)])
+                    .send()
+                    .await
+                    .assert_status(StatusCode::SEE_OTHER);
+            }
+        };
+        save(&member, "0.0.0.0/0\n::/0").await;
+        assert!(
+            crate::infra::repositories::allowlists::of(&console.database, &door)
+                .await
+                .expect("read")
+                .is_empty(),
+            "a deployer does not decide who reaches the registry"
+        );
+
+        save(&admin, "203.0.113.0/24 ci").await;
+        assert_eq!(
+            crate::infra::repositories::allowlists::of(&console.database, &door)
+                .await
+                .expect("read")
+                .text(),
+            "203.0.113.0/24 ci"
+        );
+    }
+
     #[tokio::test]
     async fn a_deployer_may_change_services_but_not_the_project() {
         let console = Console::new().await;

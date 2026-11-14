@@ -113,6 +113,45 @@ impl TenantRestController {
         }
     }
 
+    /// Who may connect to the organisation's console on its domain.
+    #[post("/organisations/:tenant/allowlist")]
+    #[raw]
+    #[middleware(SessionMiddleware)]
+    async fn set_allowlist(&self, request: Request) -> RestResult<Response> {
+        let account = match self.operator() {
+            Ok(account) => account,
+            Err(response) => return Ok(*response),
+        };
+        let path = request.uri().path().to_string();
+        let Some(id) = crate::shell::auth::segments(&path).get(1).cloned() else {
+            return Ok(see_other("/organisations"));
+        };
+        let here = OrganisationTab::Domain.path(id);
+        let form = match read_form(request).await {
+            Ok(form) => form,
+            Err(response) => return Ok(response),
+        };
+        let asked = match crate::domain::values::allowlist::Allowlist::parse(field(&form, "allowlist")) {
+            Ok(allowlist) => crate::features::organisations::set_organisation_allowlist_request::SetOrganisationAllowlistRequest {
+                organisation: id.to_string(),
+                allowlist,
+            },
+            Err(reason) => return Ok(back_with_error(&here, &reason)),
+        };
+
+        match crate::features::organisations::node_user_set_organisation_allowlist::run(
+            &self.state.database,
+            &self.state.deployer,
+            &account,
+            &asked,
+        )
+        .await
+        {
+            Ok(()) => Ok(see_other(&format!("{here}#allowlist"))),
+            Err(reason) => Ok(back_with_error(&here, &reason)),
+        }
+    }
+
     #[post("/organisations/:tenant/quota")]
     #[raw]
     #[middleware(SessionMiddleware)]
@@ -366,6 +405,57 @@ mod tests {
     /// **Shipped otherwise**: nothing was asked, so a typo was stored,
     /// routed and shown as the organisation's console, which never
     /// answered on it. Found on a VM node with `nowhere.invalid`.
+    /// Born closed, like every door made after allowlists: the console on
+    /// its domain answers whom the operator writes down.
+    #[tokio::test]
+    async fn an_organisation_console_lets_in_whom_the_operator_writes_down() {
+        let console = Console::new().await;
+        let cookie = console.signed_in().await;
+        let created = console
+            .harness
+            .post("/organisations")
+            .header("cookie", &cookie)
+            .form(&[("name", "Acme")])
+            .send()
+            .await;
+        let id = created
+            .header("location")
+            .and_then(|to| to.split('/').nth(2))
+            .expect("the organisation's page")
+            .to_string();
+        let door = crate::domain::values::allowlist::Door::Organisation(id.clone());
+        assert!(
+            crate::infra::repositories::allowlists::of(&console.database, &door)
+                .await
+                .expect("read")
+                .is_empty()
+        );
+
+        console
+            .harness
+            .post(&format!("/organisations/{id}/allowlist"))
+            .header("cookie", &cookie)
+            .form(&[("allowlist", "198.51.100.0/24 acme's office")])
+            .send()
+            .await
+            .assert_status(StatusCode::SEE_OTHER);
+        assert_eq!(
+            crate::infra::repositories::allowlists::of(&console.database, &door)
+                .await
+                .expect("read")
+                .text(),
+            "198.51.100.0/24 acme's office"
+        );
+        let page = console
+            .harness
+            .get(&super::OrganisationTab::Domain.path(&id))
+            .header("cookie", &cookie)
+            .send()
+            .await
+            .body;
+        assert!(page.contains("198.51.100.0/24 acme"), "{page}");
+    }
+
     #[tokio::test]
     async fn an_organisation_is_given_only_a_name_that_arrives_here() {
         let console = Console::new().await;

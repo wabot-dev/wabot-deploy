@@ -70,6 +70,7 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
     ("Up to which moment", "Hasta qué momento"),
     ("Use my own image", "Usar mi propia imagen"),
     ("Where it runs, for good: a database is not moved once it exists. Services reach it by its name only from that node.", "Dónde corre, para siempre: una base de datos no se mueve una vez creada. Los servicios la alcanzan por su nombre sólo desde ese nodo."),
+    ("Who may connect once it is published", "Quién puede conectarse cuando se publique"),
     ("With its registry written out. For vector search, ", "Con su registro escrito completo. Para búsqueda vectorial, "),
     ("as far as the archived log went", "hasta donde llegaba el log archivado"),
     ("the moment of the backup", "el momento del backup"),

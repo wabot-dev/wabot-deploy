@@ -14,11 +14,98 @@
 //! compiled into the dispatch.
 
 use std::collections::HashMap;
-use std::net::SocketAddr;
-use std::sync::Arc;
+use std::net::{IpAddr, SocketAddr};
+use std::sync::{Arc, Mutex};
 
 use arc_swap::ArcSwap;
+use ipnet::IpNet;
 use wabot::sqlite::{SqliteDatabase, SqliteResult};
+
+use crate::domain::values::allowlist::{self, Door};
+
+/// Who a route lets in.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Allowed {
+    /// The owner of this name said nothing about it: a node older than
+    /// allowlists, whose names are served as they always were. Only a
+    /// route another node wrote can be this.
+    Unsaid,
+    /// These ranges and nobody else. Empty is nobody.
+    Only(Vec<IpNet>),
+}
+
+impl Allowed {
+    /// Whether a client at `address` may come in. A request whose client
+    /// is not known passes only a door open to everyone.
+    pub fn admits(&self, address: Option<IpAddr>) -> bool {
+        match (self, address) {
+            (Allowed::Unsaid, _) => true,
+            (Allowed::Only(networks), Some(address)) => allowlist::admits(networks, address),
+            (Allowed::Only(networks), None) => allowlist::is_everyone(networks),
+        }
+    }
+
+    #[cfg(test)]
+    fn everyone() -> Self {
+        Allowed::Only(crate::domain::values::allowlist::Allowlist::everyone().networks())
+    }
+}
+
+/// Which of the node's own doors a request on one of its names knocks on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OwnDoor {
+    Console,
+    Registry,
+    /// The network's own calls, which a node answers with a secret it was
+    /// given at enrolment. No list covers them: restricting the console to
+    /// an office would otherwise cut every other node off from this one.
+    Network,
+}
+
+impl OwnDoor {
+    pub fn of(path: &str) -> Self {
+        let under = |prefix: &str| {
+            path == prefix
+                || path
+                    .strip_prefix(prefix)
+                    .is_some_and(|rest| rest.starts_with('/'))
+        };
+        match () {
+            _ if under("/api/network") => OwnDoor::Network,
+            _ if under("/v2") => OwnDoor::Registry,
+            _ => OwnDoor::Console,
+        }
+    }
+}
+
+/// Whether `address` is this machine, read from the kernel now rather
+/// than from the last reload: for a question asked once, before a change
+/// that could shut somebody out.
+pub fn is_this_machine(address: IpAddr) -> bool {
+    let address = address.to_canonical();
+    address.is_loopback()
+        || crate::infra::network::lan::held()
+            .into_iter()
+            .any(|held| IpAddr::V4(held.address) == address)
+}
+
+/// Everything a reload hands the table at once.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Loaded {
+    pub routes: Vec<(String, Upstream, Allowed)>,
+    pub console: Allowed,
+    pub registry: Allowed,
+}
+
+/// One swap's worth: the names, and the two doors on the node's own names.
+/// Together, so a reload cannot be seen half done.
+struct Snapshot {
+    by_host: HashMap<String, (Upstream, Allowed)>,
+    console: Allowed,
+    registry: Allowed,
+    /// The machine's own addresses when the table was loaded.
+    here: Vec<IpAddr>,
+}
 
 /// Where a hostname's traffic goes.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -129,7 +216,14 @@ impl Upstream {
 
 /// Hostname → upstream, replaced whole.
 pub struct RouteTable {
-    by_host: ArcSwap<HashMap<String, Upstream>>,
+    snapshot: ArcSwap<Snapshot>,
+    /// Where each node of the network last called this one from, by node
+    /// id. A copy placed on another node pulls its image from a registry
+    /// here, under that registry's own list, and the operator who wrote
+    /// the list should not have to know where every node dials out from.
+    /// The network's own calls are authenticated, so the address one
+    /// arrived from is one that node really used.
+    network: Mutex<HashMap<String, IpAddr>>,
     /// Where the next request starts looking. Shared across names on
     /// purpose — see [`Upstream::pick`].
     turn: std::sync::atomic::AtomicUsize,
@@ -154,10 +248,99 @@ impl Default for RouteTable {
 impl RouteTable {
     pub fn new() -> Self {
         Self {
-            by_host: ArcSwap::from_pointee(HashMap::new()),
+            snapshot: ArcSwap::from_pointee(Snapshot {
+                by_host: HashMap::new(),
+                console: Allowed::Only(Vec::new()),
+                registry: Allowed::Only(Vec::new()),
+                here: Vec::new(),
+            }),
+            network: Mutex::new(HashMap::new()),
             turn: std::sync::atomic::AtomicUsize::new(0),
             health: Arc::new(super::health::Health::default()),
         }
+    }
+
+    /// What a reload read, swapped in whole.
+    pub fn load(&self, loaded: Loaded) {
+        let by_host = loaded
+            .routes
+            .into_iter()
+            .map(|(host, upstream, allowed)| (normalize(&host), (upstream, allowed)))
+            .collect();
+        let here = crate::infra::network::lan::held()
+            .into_iter()
+            .map(|held| IpAddr::V4(held.address))
+            .collect();
+        self.snapshot.store(Arc::new(Snapshot {
+            by_host,
+            console: loaded.console,
+            registry: loaded.registry,
+            here,
+        }));
+    }
+
+    /// Every door open to everyone, for a test about where a name goes
+    /// rather than who may ask.
+    #[cfg(test)]
+    pub fn replace(&self, routes: impl IntoIterator<Item = (String, Upstream)>) {
+        self.load(Loaded {
+            routes: routes
+                .into_iter()
+                .map(|(host, upstream)| (host, upstream, Allowed::everyone()))
+                .collect(),
+            console: Allowed::everyone(),
+            registry: Allowed::everyone(),
+        });
+    }
+
+    /// Where a name goes, and who may ask.
+    pub fn route(&self, host: &str) -> Option<(Upstream, Allowed)> {
+        let host = normalize(host);
+        let snapshot = self.snapshot.load();
+        if let Some(route) = snapshot.by_host.get(&host) {
+            return Some(route.clone());
+        }
+        let (_, parent) = host.split_once('.')?;
+        snapshot.by_host.get(&format!("*.{parent}")).cloned()
+    }
+
+    /// Who may knock on one of the node's own doors. `None` for the
+    /// network's calls, which no list covers.
+    pub fn own(&self, door: OwnDoor) -> Option<Allowed> {
+        let snapshot = self.snapshot.load();
+        match door {
+            OwnDoor::Console => Some(snapshot.console.clone()),
+            OwnDoor::Registry => Some(snapshot.registry.clone()),
+            OwnDoor::Network => None,
+        }
+    }
+
+    /// Whether `address` is this machine: loopback, or one of the
+    /// addresses it held at the last reload.
+    ///
+    /// Always let in, through every door, for the reason `localhost` is
+    /// never dropped from the console's names: it is how somebody on the
+    /// machine reaches it when everything else is wrong, and what pulls a
+    /// pushed image into containerd.
+    pub fn is_here(&self, address: IpAddr) -> bool {
+        let address = address.to_canonical();
+        address.is_loopback() || self.snapshot.load().here.contains(&address)
+    }
+
+    /// Remember that a node of the network called from `address`.
+    pub fn node_called_from(&self, node: &str, address: IpAddr) {
+        if let Ok(mut seen) = self.network.lock() {
+            seen.insert(node.to_string(), address.to_canonical());
+        }
+    }
+
+    /// Whether a node of the network has called from `address`.
+    pub fn is_a_node(&self, address: IpAddr) -> bool {
+        let address = address.to_canonical();
+        self.network
+            .lock()
+            .map(|seen| seen.values().any(|held| *held == address))
+            .unwrap_or(false)
     }
 
     /// What the prober writes into and the console reads out of.
@@ -172,10 +355,11 @@ impl RouteTable {
     /// question asked five times.
     pub fn upstreams(&self) -> Vec<SocketAddr> {
         let mut all: Vec<SocketAddr> = self
-            .by_host
+            .snapshot
             .load()
+            .by_host
             .values()
-            .filter_map(|upstream| match upstream {
+            .filter_map(|(upstream, _)| match upstream {
                 Upstream::Proxy(addresses) => Some(addresses.clone()),
                 Upstream::ControlPlane
                 | Upstream::Tenant(_)
@@ -205,32 +389,19 @@ impl RouteTable {
         upstream.pick_live(turn, &self.health)
     }
 
+    #[cfg(test)]
     pub fn resolve(&self, host: &str) -> Option<Upstream> {
-        let host = normalize(host);
-        let routes = self.by_host.load();
-        if let Some(upstream) = routes.get(&host) {
-            return Some(upstream.clone());
-        }
-        let (_, parent) = host.split_once('.')?;
-        routes.get(&format!("*.{parent}")).cloned()
-    }
-
-    pub fn replace(&self, routes: impl IntoIterator<Item = (String, Upstream)>) {
-        let map: HashMap<String, Upstream> = routes
-            .into_iter()
-            .map(|(host, upstream)| (normalize(&host), upstream))
-            .collect();
-        self.by_host.store(Arc::new(map));
+        self.route(host).map(|(upstream, _)| upstream)
     }
 
     pub fn hosts(&self) -> Vec<String> {
-        let mut hosts: Vec<String> = self.by_host.load().keys().cloned().collect();
+        let mut hosts: Vec<String> = self.snapshot.load().by_host.keys().cloned().collect();
         hosts.sort();
         hosts
     }
 
     pub fn is_empty(&self) -> bool {
-        self.by_host.load().is_empty()
+        self.snapshot.load().by_host.is_empty()
     }
 }
 
@@ -485,48 +656,114 @@ pub async fn load_all(database: &SqliteDatabase) -> SqliteResult<Vec<(String, Up
 
     Ok(rows
         .into_iter()
-        .filter_map(|(host, kind, addr)| match kind.as_str() {
-            "control_plane" => Some((host, Upstream::ControlPlane)),
-            // A row whose tenant went is dropped rather than served: the
-            // scope is the whole of what the page would be narrowed by,
-            // so serving it unnarrowed is the one outcome that must not
-            // happen. `retain_tenants` is what removes them on purpose.
-            "tenant" => addr.map(|id| (host, Upstream::Tenant(id))),
-            "registry" => addr.map(|id| (host, Upstream::Registry(id))),
-            "redirect" => addr.map(|target| (host, Upstream::Redirect(target))),
-            // Comma-separated, because a route is now *n* replicas.
-            // One that will not parse is dropped and the rest kept: a
-            // service with three copies and one bad row should serve
-            // from the two that are fine, which is the whole reason
-            // there are three.
-            "proxy" => {
-                let addresses: Vec<SocketAddr> = addr
-                    .as_deref()
-                    .unwrap_or_default()
-                    .split(',')
-                    .filter(|part| !part.is_empty())
-                    .filter_map(|part| match part.parse() {
-                        Ok(address) => Some(address),
-                        Err(_) => {
-                            tracing::warn!(%host, part, "upstream skipped: not an address");
-                            None
-                        }
-                    })
-                    .collect();
-                match addresses.is_empty() {
-                    true => {
-                        tracing::warn!(%host, "route skipped: nothing to proxy to");
+        .filter_map(|(host, kind, addr)| upstream_of(&host, &kind, addr).map(|up| (host, up)))
+        .collect())
+}
+
+/// Every enabled route with who may reach it, and the node's own two
+/// doors: what the edge swaps in whole.
+///
+/// A door nobody wrote a list for is closed. That is not a gap: every
+/// door that existed before allowlists was opened by the migration that
+/// added them, and every one made since was given a list when it was made.
+pub async fn load(database: &SqliteDatabase) -> SqliteResult<Loaded> {
+    type Row = (
+        String,
+        String,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+    );
+    let rows: Vec<Row> = database
+        .read(|connection| {
+            connection
+                .prepare(
+                    "SELECT \"host\", \"upstream_kind\", \"upstream_addr\", \"service_id\", \
+                            \"allowed\" \
+                     FROM route WHERE \"enabled\" = 1 ORDER BY \"host\"",
+                )?
+                .query_map([], |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                    ))
+                })?
+                .collect()
+        })
+        .await?;
+    let doors = crate::infra::repositories::allowlists::all(database).await?;
+    let list = |door: &Door| Allowed::Only(doors.get(door).cloned().unwrap_or_default());
+
+    let routes = rows
+        .into_iter()
+        .filter_map(|(host, kind, addr, service_id, carried)| {
+            let upstream = upstream_of(&host, &kind, addr)?;
+            let allowed = match (&upstream, service_id, carried) {
+                (Upstream::ControlPlane, _, _) => list(&Door::Console),
+                (Upstream::Tenant(id), _, _) => list(&Door::Organisation(id.clone())),
+                (Upstream::Registry(id), _, _) => list(&Door::ProjectRegistry(id.clone())),
+                (_, Some(service), _) => list(&Door::Service(service)),
+                (_, None, Some(carried)) => {
+                    Allowed::Only(crate::infra::repositories::allowlists::uncarried(&carried))
+                }
+                (_, None, None) => Allowed::Unsaid,
+            };
+            Some((host, upstream, allowed))
+        })
+        .collect();
+    Ok(Loaded {
+        routes,
+        console: list(&Door::Console),
+        registry: list(&Door::Registry),
+    })
+}
+
+/// One row's upstream, or `None` for a row that cannot be served.
+fn upstream_of(host: &str, kind: &str, addr: Option<String>) -> Option<Upstream> {
+    match kind {
+        "control_plane" => Some(Upstream::ControlPlane),
+        // A row whose tenant went is dropped rather than served: the
+        // scope is the whole of what the page would be narrowed by,
+        // so serving it unnarrowed is the one outcome that must not
+        // happen. `retain_tenants` is what removes them on purpose.
+        "tenant" => addr.map(Upstream::Tenant),
+        "registry" => addr.map(Upstream::Registry),
+        "redirect" => addr.map(Upstream::Redirect),
+        // Comma-separated, because a route is now *n* replicas.
+        // One that will not parse is dropped and the rest kept: a
+        // service with three copies and one bad row should serve
+        // from the two that are fine, which is the whole reason
+        // there are three.
+        "proxy" => {
+            let addresses: Vec<SocketAddr> = addr
+                .as_deref()
+                .unwrap_or_default()
+                .split(',')
+                .filter(|part| !part.is_empty())
+                .filter_map(|part| match part.parse() {
+                    Ok(address) => Some(address),
+                    Err(_) => {
+                        tracing::warn!(%host, part, "upstream skipped: not an address");
                         None
                     }
-                    false => Some((host, Upstream::Proxy(addresses))),
+                })
+                .collect();
+            match addresses.is_empty() {
+                true => {
+                    tracing::warn!(%host, "route skipped: nothing to proxy to");
+                    None
                 }
+                false => Some(Upstream::Proxy(addresses)),
             }
-            other => {
-                tracing::warn!(%host, kind = other, "route skipped: unknown upstream kind");
-                None
-            }
-        })
-        .collect())
+        }
+        other => {
+            tracing::warn!(%host, kind = other, "route skipped: unknown upstream kind");
+            None
+        }
+    }
 }
 
 /// Write a route, replacing whatever held that hostname.
@@ -539,6 +776,31 @@ pub async fn upsert(
     host: &str,
     upstream: &Upstream,
     service_id: Option<&str>,
+) -> SqliteResult<()> {
+    write(database, host, upstream, service_id, None).await
+}
+
+/// Write a route this node answers for another node, with who that node
+/// says may reach it. `None` is an owner that said nothing.
+///
+/// In the same statement as the route, so a reload can never see the name
+/// without its list — which would serve it to everyone for that moment.
+pub async fn upsert_for_other(
+    database: &SqliteDatabase,
+    host: &str,
+    upstream: &Upstream,
+    allowed: Option<&[IpNet]>,
+) -> SqliteResult<()> {
+    let carried = allowed.map(crate::infra::repositories::allowlists::carried);
+    write(database, host, upstream, None, carried).await
+}
+
+async fn write(
+    database: &SqliteDatabase,
+    host: &str,
+    upstream: &Upstream,
+    service_id: Option<&str>,
+    allowed: Option<String>,
 ) -> SqliteResult<()> {
     let host = normalize(host);
     let (kind, addr) = match upstream {
@@ -568,15 +830,16 @@ pub async fn upsert(
             connection.execute(
                 "INSERT INTO route \
                    (\"host\", \"upstream_kind\", \"upstream_addr\", \"service_id\", \
-                    \"enabled\", \"updated_at\") \
-                 VALUES (?1, ?2, ?3, ?4, 1, ?5) \
+                    \"enabled\", \"updated_at\", \"allowed\") \
+                 VALUES (?1, ?2, ?3, ?4, 1, ?5, ?6) \
                  ON CONFLICT (\"host\") DO UPDATE SET \
                    \"upstream_kind\" = excluded.\"upstream_kind\", \
                    \"upstream_addr\" = excluded.\"upstream_addr\", \
                    \"service_id\" = excluded.\"service_id\", \
                    \"enabled\" = 1, \
-                   \"updated_at\" = excluded.\"updated_at\"",
-                (host, kind, addr, service_id, now),
+                   \"updated_at\" = excluded.\"updated_at\", \
+                   \"allowed\" = excluded.\"allowed\"",
+                (host, kind, addr, service_id, now, allowed),
             )?;
             Ok(())
         })
@@ -880,6 +1143,92 @@ mod tests {
         let routes = load_all(&database).await.expect("load");
         assert_eq!(routes.len(), 1, "the good route survived: {routes:?}");
         assert_eq!(routes[0].0, "good.example.com");
+    }
+
+    /// Where each route's list comes from: a local service's from its own
+    /// door, a name served for another node from what that node carried,
+    /// and nothing at all from an owner older than allowlists.
+    #[tokio::test]
+    async fn every_route_is_loaded_with_the_list_of_what_it_reaches() {
+        use crate::domain::values::allowlist::Allowlist;
+        let database = crate::infra::db::open_in_memory().await.expect("open");
+        let office: Vec<IpNet> = vec!["203.0.113.5/32".parse().expect("a range")];
+
+        upsert(&database, "shop.example", &proxy(8080), Some("svc-shop"))
+            .await
+            .expect("upsert");
+        crate::infra::repositories::allowlists::set(
+            &database,
+            &Door::Service("svc-shop".into()),
+            &Allowlist::parse("203.0.113.5").expect("parsed"),
+        )
+        .await
+        .expect("set");
+        upsert(&database, "closed.example", &proxy(8081), Some("svc-new"))
+            .await
+            .expect("upsert");
+        upsert_for_other(&database, "far.example", &proxy(8082), Some(&office))
+            .await
+            .expect("upsert");
+        upsert_for_other(&database, "shut.example", &proxy(8083), Some(&[]))
+            .await
+            .expect("upsert");
+        upsert_for_other(&database, "old.example", &proxy(8084), None)
+            .await
+            .expect("upsert");
+
+        let loaded = load(&database).await.expect("load");
+        let allowed = |host: &str| {
+            loaded
+                .routes
+                .iter()
+                .find(|(name, _, _)| name == host)
+                .map(|(_, _, allowed)| allowed.clone())
+                .expect("loaded")
+        };
+        assert_eq!(allowed("shop.example"), Allowed::Only(office.clone()));
+        assert_eq!(
+            allowed("closed.example"),
+            Allowed::Only(Vec::new()),
+            "a door nobody wrote a list for is closed"
+        );
+        assert_eq!(allowed("far.example"), Allowed::Only(office));
+        assert_eq!(allowed("shut.example"), Allowed::Only(Vec::new()));
+        assert_eq!(allowed("old.example"), Allowed::Unsaid);
+        assert!(
+            loaded
+                .console
+                .admits(Some("198.51.100.1".parse().expect("ip"))),
+            "the console a node is upgraded from stays open"
+        );
+
+        // And a name taken back by a local service forgets what another
+        // node said about it.
+        upsert(&database, "old.example", &proxy(8084), Some("svc-new"))
+            .await
+            .expect("upsert");
+        let loaded = load(&database).await.expect("load");
+        assert!(loaded.routes.iter().any(
+            |(name, _, allowed)| name == "old.example" && *allowed == Allowed::Only(Vec::new())
+        ));
+    }
+
+    #[test]
+    fn the_nodes_own_name_is_told_apart_by_the_path() {
+        for (path, door) in [
+            ("/", OwnDoor::Console),
+            ("/projects/shop", OwnDoor::Console),
+            ("/v2", OwnDoor::Registry),
+            ("/v2/", OwnDoor::Registry),
+            ("/v2/shop/api/manifests/latest", OwnDoor::Registry),
+            ("/v2x", OwnDoor::Console),
+            ("/api/network/errands", OwnDoor::Network),
+            ("/api/network", OwnDoor::Network),
+            ("/api/networks", OwnDoor::Console),
+            ("/api/tokens", OwnDoor::Console),
+        ] {
+            assert_eq!(OwnDoor::of(path), door, "{path}");
+        }
     }
 
     #[tokio::test]

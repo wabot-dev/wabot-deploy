@@ -5,6 +5,7 @@
 //! way to keep them agreeing is to give them one copy of the code that
 //! decides.
 
+pub mod allowlist;
 pub mod backup;
 pub mod clean;
 pub mod containerd;
@@ -90,6 +91,22 @@ pub enum Command {
         /// Whose. Matched the way signing in matches it — case-insensitive.
         #[arg(value_name = "USERNAME")]
         username: String,
+    },
+
+    /// Say who may connect to the console, the registry or SSH, from the
+    /// machine itself.
+    ///
+    /// The way back from a list that shut its author out: an address that
+    /// changed, or SSH closed and then the console too. Without a door,
+    /// every list is printed; without addresses, that door's. `everyone`
+    /// and `nobody` are lists of their own.
+    Allowlist {
+        #[arg(value_enum)]
+        door: Option<allowlist::Which>,
+        /// Addresses or ranges, one per argument — `"203.0.113.5 office"`
+        /// keeps its note — or `everyone`, or `nobody`.
+        #[arg(value_name = "ADDRESS")]
+        addresses: Vec<String>,
     },
 
     /// Copy everything this node would need to be itself again.
@@ -399,6 +416,19 @@ mod tests {
     /// The way back in takes a name, because a node has more than one
     /// account and a reset with no argument would be a coin toss about
     /// whose password just changed.
+    #[test]
+    fn allowlist_takes_a_door_and_what_it_lets_in() {
+        let cli = Cli::parse_from(["wabot-deploy", "allowlist", "ssh", "everyone"]);
+        assert!(matches!(
+            cli.command,
+            Command::Allowlist { door: Some(allowlist::Which::Ssh), addresses }
+                if addresses == ["everyone"]
+        ));
+        let cli = Cli::parse_from(["wabot-deploy", "allowlist"]);
+        assert!(matches!(cli.command, Command::Allowlist { door: None, .. }));
+        assert!(Cli::try_parse_from(["wabot-deploy", "allowlist", "kitchen"]).is_err());
+    }
+
     #[test]
     fn passwd_takes_whose() {
         let cli = Cli::parse_from(["wabot-deploy", "passwd", "jorge"]);

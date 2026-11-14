@@ -6,6 +6,7 @@ use crate::domain::entities::project::Project;
 use crate::domain::entities::replica::Replica;
 use crate::domain::entities::service::Service;
 use crate::domain::entities::volume::Volume;
+use crate::domain::values::allowlist::Allowlist;
 use crate::features::databases::database_cards_component;
 use crate::features::services::service_push_component::Push;
 use crate::features::services::texts::t;
@@ -16,6 +17,7 @@ use crate::features::services::{
 use crate::infra::edge::policy::Policy;
 use crate::infra::network::errand::Record;
 use crate::infra::network::Node;
+use crate::shell::components::allowlist_field;
 use crate::shell::components::node_certificate::{source_word, CertificateCells};
 use crate::shell::layouts::layout;
 
@@ -42,6 +44,7 @@ pub enum Tab {
     Environment,
     Resources,
     Network,
+    Access,
     Storage,
     Replicas,
     Logs,
@@ -58,6 +61,7 @@ impl Tab {
             Tab::Environment => "environment",
             Tab::Resources => "resources",
             Tab::Network => "network",
+            Tab::Access => "access",
             Tab::Storage => "storage",
             Tab::Replicas => "replicas",
             Tab::Logs => "logs",
@@ -72,6 +76,7 @@ impl Tab {
             Tab::Environment => t("Environment"),
             Tab::Resources => t("Resources"),
             Tab::Network => t("Network"),
+            Tab::Access => t("Access"),
             Tab::Storage => t("Storage"),
             Tab::Replicas => t("Replicas"),
             Tab::Logs => t("Logs"),
@@ -86,6 +91,7 @@ impl Tab {
             Tab::Environment,
             Tab::Resources,
             Tab::Network,
+            Tab::Access,
             Tab::Storage,
             Tab::Replicas,
             Tab::Logs,
@@ -109,8 +115,16 @@ impl Tab {
         };
         // Where the copies go is a decision only the node that placed
         // them can make. A service that arrived on an errand has none to
-        // offer, so the tab would be a page with nothing on it.
+        // offer, so the tab would be a page with nothing on it. Who may
+        // connect is the same: the owner's list travels with its names.
         if service.is_ours() {
+            let after = match service.kind.is_managed() {
+                true => Tab::Database,
+                false => Tab::Network,
+            };
+            if let Some(at) = tabs.iter().position(|tab| *tab == after) {
+                tabs.insert(at + 1, Tab::Access);
+            }
             tabs.push(Tab::Replicas);
         }
         // **Including a database.** This was gated to plain containers
@@ -162,6 +176,14 @@ pub enum Panel {
         project_settings: String,
     },
     Logs,
+    Access {
+        allowlist: Allowlist,
+        /// The nodes serving its names that would ignore the list, and so
+        /// are not given them while it is not everyone.
+        withheld: Vec<String>,
+        /// Why the kernel's rules could not be written, the last time.
+        refused: Option<String>,
+    },
     Environment {
         env_text: String,
         history: Vec<Revision>,
@@ -344,6 +366,42 @@ pub fn render<'a>(page: &'a ServiceSettings<'a>) -> impl Renderable + 'a {
                     // the name in full, because the question here is "what
                     // do I push to".
                     (service_push_component::push_target(push, project_settings))
+                </section>
+            }
+            Panel::Access { allowlist, withheld, refused } => {
+                <section class="stack" id="access">
+                    <p class="card-label">(t("Who may connect"))</p>
+                    <form method="post" action=(format!("{base}/allowlist")) class="card stack">
+                        (allowlist_field::saved("allowlist", "allowlist", t("Addresses and ranges"),
+                            allowlist))
+                        @if service.kind.is_managed() {
+                            <p class="field-hint">(t("Who may connect to its published port. With its \
+                                 primary on another node the port is still opened here and carried \
+                                 there, so this is where the list applies. Services of its project \
+                                 reach it by name whatever this says."))</p>
+                        } @else {
+                            <p class="field-hint">(t("Every name of this service, on every node that \
+                                 serves it, and every port it publishes. Takes effect at once, with no \
+                                 deployment."))</p>
+                        }
+                        <p class="field-hint">(t("On a published port it applies to new connections: \
+                             one already open stays open. And a refused one is dropped rather than \
+                             answered, so the client waits until it gives up."))</p>
+                        @if let Some(reason) = refused {
+                            <p class="note">(t("The kernel's rules could not be written, so SSH and \
+                                 published ports are not guarded: "))<span class="mono">(reason)</span></p>
+                        }
+                        (allowlist_field::always_let_in())
+                        @if !withheld.is_empty() {
+                            <p class="note">(t("Its names are withheld from these nodes, which run \
+                                 a version that would ignore this list and let everyone in. They serve \
+                                 them again once they are updated:"))" "
+                                 <span class="mono">(withheld.join(", "))</span></p>
+                        }
+                        <div class="actions">
+                            <button type="submit">(t("Save"))</button>
+                        </div>
+                    </form>
                 </section>
             }
             Panel::Logs => {

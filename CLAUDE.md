@@ -418,6 +418,12 @@ A separate subject, with its own documents and its own decisions:
   MySQL on top of `service` and `replica`.
 - [`docs/naming.md`](docs/naming.md) — how a name is derived and which
   authority can sign it.
+- [`docs/allowlists.md`](docs/allowlists.md) — who may connect through
+  each door: the node's console and registry, an organisation's console, a
+  project's registry, every service's names and published ports, and SSH.
+  What is always let in, how a list travels with a name to the nodes
+  serving it, the kernel's chain, and the way back from a list that shut
+  its author out.
 - [`docs/dns.md`](docs/dns.md) — the nodes as authoritative name
   servers: the `dns` capability (off until turned on), zones and records
   as a project's resource, which nodes answer for each zone, and the names
@@ -468,6 +474,14 @@ happened:
   refused with a sentence rather than starting a copy on an empty
   directory.
 - A service created under an organisation's quota runs with no ceiling.
+- The suite run as root inside the VM still changes the node in two ways
+  the firewall's arming does not cover. `tunnel::ensure` brings up
+  `wabot0` with a test's address and peer, so `doctor` reports a peer no
+  row explains. The `Deployer`'s tests write their copies' `hosts`,
+  `config` and log files under `Config::default()`'s
+  `/var/lib/wabot-deploy`, and those files show up as orphans. As anyone
+  but root, both writes fail quietly. Found 2026-11-14; until it is
+  fixed, remove the interface and the files after a run.
 - A running container no row claims — what a restore from an older
   backup leaves — is on no page.
 - MySQL is one copy: no read-only copies, and a restore reaches the
@@ -533,3 +547,19 @@ locks the account at five an hour — and the lock is per account, so one
 moved name takes every other name on the node with it. `acme::ensure`
 asks before it spends anything, after the freshness check so a certificate
 that needs nothing costs no lookup.
+
+**An empty allowlist lets nobody in.** Decided by Jorge on 2026-11-14:
+"everyone" is the two lines `0.0.0.0/0` and `::/0`, written down by
+somebody, and a service or database is born with the list its form was
+given. So a service a test makes through the repository, or through a form
+with no `allowlist`, is closed — and `tell_edges` withholds a closed name
+from an edge whose version is older than `errand::ALLOWLISTS_SINCE` or
+unknown, which is every test node that does not set one. A test about
+something else opens its service; it does not lean on the default.
+
+**The firewall writes nothing unless it is armed.** SSH and published
+ports are guarded by iptables rules in a chain of their own
+(`infra::firewall`), and only `serve` and `wabot-deploy allowlist` arm it.
+That is what lets the suite run as root inside the VM without rewriting
+the node's firewall. A test that needs the rules tests `render`, never
+`converge`.

@@ -60,6 +60,9 @@ fn main() -> std::process::ExitCode {
             Command::Join { token } => cli::join::run(config, &token).await,
             Command::SetupToken => cli::setup_token::run(config).await,
             Command::Passwd { username } => cli::passwd::run(config, &username).await,
+            Command::Allowlist { door, addresses } => {
+                cli::allowlist::run(config, door, &addresses).await
+            }
             Command::Backup { out } => cli::backup::run(config, out).await,
             Command::Clean { apply, volumes } => cli::clean::run(config, apply, volumes).await,
             Command::LogWriter { path } => cli::log_writer::run(path),

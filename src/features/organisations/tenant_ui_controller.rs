@@ -186,7 +186,13 @@ impl TenantUiController {
             _ => Vec::new(),
         };
         let panel = match tab {
-            OrganisationTab::Domain => Panel::Domain,
+            OrganisationTab::Domain => Panel::Domain {
+                allowlist: crate::infra::repositories::allowlists::of(
+                    &self.state.database,
+                    &crate::domain::values::allowlist::Door::Organisation(tenant.id.clone()),
+                )
+                .await?,
+            },
             OrganisationTab::Owner => Panel::Owner { owners: &owners },
             OrganisationTab::Quota => Panel::Quota,
             OrganisationTab::Danger => Panel::Danger {

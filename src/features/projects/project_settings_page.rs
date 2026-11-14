@@ -1,6 +1,7 @@
 //! A project's settings: its push tokens, and deleting it.
 
 use crate::features::projects::texts::t;
+use crate::shell::components::allowlist_field;
 use crate::shell::layouts::layout;
 use hypertext::prelude::*;
 
@@ -12,6 +13,7 @@ pub struct ProjectSettings<'a> {
     pub tokens: &'a [crate::domain::entities::push_token::PushToken],
     pub registry_host: Option<&'a str>,
     pub registry_domain: Option<&'a str>,
+    pub registry_allowlist: &'a crate::domain::values::allowlist::Allowlist,
     pub query_error: Option<&'a str>,
 }
 
@@ -57,6 +59,29 @@ pub fn render<'a>(page: &'a ProjectSettings<'a>) -> impl Renderable + 'a {
                 </form>
             }
         </section>
+
+        // Only with a name of its own: on the node's name, a push is the
+        // node's registry door and the node's list decides.
+        @if page.registry_domain.is_some() {
+            <section class="card stack" id="registry-allowlist">
+                <p class="card-label">(t("Who may reach its registry"))</p>
+                @if allowed.may_administer() {
+                    <form method="post" action=(format!("{here}/registry/allowlist")) class="stack">
+                        (allowlist_field::saved("registry-allowlist", "allowlist",
+                            t("Addresses and ranges"), page.registry_allowlist))
+                        <p class="field-hint">(t("A push and a pull on its own name. The nodes of the \
+                             network that run its copies are let in to pull whatever it says."))</p>
+                        (allowlist_field::always_let_in())
+                        <div class="actions">
+                            <button type="submit">(t("Save"))</button>
+                        </div>
+                    </form>
+                } @else {
+                    (allowlist_field::state(page.registry_allowlist))
+                    <pre class="mono">(page.registry_allowlist.text())</pre>
+                }
+            </section>
+        }
 
         <section class="card stack">
             <div class="split">

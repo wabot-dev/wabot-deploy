@@ -323,6 +323,54 @@ pub async fn run(config: Config, config_path: &Path) -> anyhow::Result<i32> {
     }
 
     println!();
+    println!("allowlists");
+    for (name, door) in [
+        ("console", crate::domain::values::allowlist::Door::Console),
+        ("registry", crate::domain::values::allowlist::Door::Registry),
+        ("ssh", crate::domain::values::allowlist::Door::Ssh),
+    ] {
+        match crate::infra::repositories::allowlists::of(&database, &door).await {
+            Ok(list) => println!("  {name:<9} {}", crate::cli::allowlist::summary(&list)),
+            Err(error) => {
+                println!("  {name:<9} unreadable: {error}");
+                problems += 1;
+            }
+        }
+    }
+    // What the kernel holds, asked of the kernel: a node that rebooted and
+    // has not started yet has rows saying a port is closed and nothing
+    // closing it.
+    let gates = crate::infra::firewall::gates(&database)
+        .await
+        .unwrap_or_default();
+    let restricted = gates
+        .iter()
+        .filter(|gate| !crate::domain::values::allowlist::is_everyone(&gate.networks))
+        .count();
+    println!(
+        "  ports     {} guarded by the kernel, {restricted} of them not open to everyone",
+        gates.len()
+    );
+    match crate::infra::firewall::in_force() {
+        Ok(()) => println!(
+            "  kernel    {} is jumped to from mangle PREROUTING",
+            crate::infra::firewall::CHAIN
+        ),
+        Err(_) if restricted == 0 => {
+            println!("  kernel    no rules, and none needed: every guarded port is open")
+        }
+        Err(reason) => {
+            println!("  kernel    NO RULES — those ports are open to everyone: {reason}");
+            problems += 1;
+        }
+    }
+    if let Some(reason) = crate::infra::firewall::last_error(&database).await {
+        println!("  last failure writing them:");
+        println!("    {reason}");
+        problems += 1;
+    }
+
+    println!();
     println!("dns");
     let answers_dns = crate::infra::network::capability::provides(
         &database,

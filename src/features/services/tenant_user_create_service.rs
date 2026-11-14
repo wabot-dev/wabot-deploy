@@ -52,6 +52,13 @@ pub async fn run(
     )
     .await
     .map_err(|error| error.to_string())?;
+    crate::infra::repositories::allowlists::set(
+        database,
+        &crate::domain::values::allowlist::Door::Service(service.id.clone()),
+        &asked.allowlist,
+    )
+    .await
+    .map_err(|error| error.to_string())?;
 
     Ok(ServiceCreatedResponse {
         service_id: service.id,
@@ -121,6 +128,7 @@ mod tests {
             image: String::new(),
             env: String::new(),
             on: on.into(),
+            allowlist: Default::default(),
         };
 
         let made = super::run(database, &organisation.admin, &asked("api", "nd-far"), &[])

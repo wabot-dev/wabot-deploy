@@ -10,6 +10,7 @@ use wabot::rest::axum::http::{header, StatusCode};
 use wabot::rest::axum::response::Response;
 use wabot::rest::RestResult;
 
+use crate::domain::values::allowlist::Allowlist;
 use crate::infra::repositories::access;
 use crate::infra::repositories::services;
 
@@ -187,6 +188,10 @@ impl ServiceRestController {
             Ok(env) => env,
             Err(message) => return Ok(back_with_error(&form_url, &message)),
         };
+        let allowlist = match Allowlist::parse(field(&form, "allowlist")) {
+            Ok(allowlist) => allowlist,
+            Err(message) => return Ok(back_with_error(&form_url, &message)),
+        };
 
         // Built here and validated here: the use case is handed a
         // request whose *shape* is already right, and asks only the
@@ -197,6 +202,7 @@ impl ServiceRestController {
             image: field(&form, "image").to_string(),
             env: field(&form, "env").to_string(),
             on: field(&form, "on").to_string(),
+            allowlist,
         };
         if let Err(reason) = asked.validate() {
             return Ok(back_with_error(&form_url, &reason.to_string()));
@@ -774,6 +780,60 @@ impl ServiceRestController {
             return Ok(back_with_error(&here, &reason));
         }
         Ok(see_other(&format!("{here}#logs")))
+    }
+
+    /// Who may connect to this service, as a whole list.
+    #[post("/projects/:project/services/:service/allowlist")]
+    #[raw]
+    #[middleware(SessionMiddleware)]
+    async fn set_allowlist(&self, request: Request) -> RestResult<Response> {
+        let path = request.uri().path().to_string();
+        let Some((project, service, _)) = self.locate(&path).await? else {
+            return Ok(see_other("/?error=no+such+service"));
+        };
+        let here = Tab::Access.path(&project.slug, &service.slug);
+
+        let Some(account) = signed_in(&self.auth) else {
+            return Ok(see_other("/sign-in"));
+        };
+        let form = match read_form(request).await {
+            Ok(form) => form,
+            Err(response) => return Ok(response),
+        };
+        let asked = match Allowlist::parse(field(&form, "allowlist")) {
+            Ok(allowlist) => {
+                crate::features::services::set_service_allowlist_request::SetServiceAllowlistRequest {
+                    allowlist,
+                }
+            }
+            Err(reason) => return Ok(back_with_error(&here, &reason)),
+        };
+        let outcome = match crate::domain::authz::node_user::belongs_here(&account) {
+            true => {
+                crate::features::services::node_user_set_service_allowlist::run(
+                    &self.state.database,
+                    &self.state.deployer,
+                    &account,
+                    &service,
+                    &asked,
+                )
+                .await
+            }
+            false => {
+                crate::features::services::tenant_user_set_service_allowlist::run(
+                    &self.state.database,
+                    &self.state.deployer,
+                    &account,
+                    &service,
+                    &asked,
+                )
+                .await
+            }
+        };
+        if let Err(reason) = outcome {
+            return Ok(back_with_error(&here, &reason));
+        }
+        Ok(see_other(&format!("{here}#access")))
     }
 
     /// Change the environment, and redeploy with it.
@@ -2580,6 +2640,97 @@ mod tests {
             .expect("replicas");
         assert_eq!(copies.len(), 1);
         assert_eq!(copies[0].node_id.as_deref(), Some("nd-elsewhere1"));
+    }
+
+    /// Decided by Jorge: a service is born with the list its form was
+    /// given, and a form left empty makes one nobody can reach.
+    #[tokio::test]
+    async fn a_service_is_born_with_the_list_its_form_was_given() {
+        let console = Console::new().await;
+        let cookie = console.signed_in().await;
+        let project = placed_service(&console, &cookie).await.project_id;
+        let made = |name: &'static str, allowlist: &'static str| {
+            let (console, cookie, project) = (&console, &cookie, &project);
+            async move {
+                console
+                    .harness
+                    .post("/projects/shared/services")
+                    .header("cookie", cookie)
+                    .form(&[
+                        ("name", name),
+                        ("image", "docker.io/library/nginx:alpine"),
+                        ("allowlist", allowlist),
+                    ])
+                    .send()
+                    .await
+                    .assert_status(StatusCode::SEE_OTHER);
+                services::in_project(&console.database, project, name)
+                    .await
+                    .expect("query")
+            }
+        };
+        let list_of = |service: &crate::domain::entities::service::Service| {
+            let (database, door) = (
+                &console.database,
+                crate::domain::values::allowlist::Door::Service(service.id.clone()),
+            );
+            async move { crate::infra::repositories::allowlists::of(database, &door).await }
+        };
+
+        let api = made("api", "203.0.113.5 office\n198.51.100.0/24")
+            .await
+            .expect("made");
+        assert_eq!(
+            list_of(&api).await.expect("read").text(),
+            "203.0.113.5 office\n198.51.100.0/24"
+        );
+
+        let closed = made("closed", "").await.expect("made");
+        assert!(list_of(&closed).await.expect("read").is_empty());
+
+        assert!(
+            made("typo", "203.0.113.500").await.is_none(),
+            "a line that is not an address makes nothing"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_access_tab_saves_the_whole_list_and_shows_it_back() {
+        let console = Console::new().await;
+        let cookie = console.signed_in().await;
+        let service = placed_service(&console, &cookie).await;
+
+        console
+            .harness
+            .post("/projects/shared/services/web/allowlist")
+            .header("cookie", &cookie)
+            .form(&[("allowlist", "192.0.2.0/24 the office\n2001:db8::/32")])
+            .send()
+            .await
+            .assert_status(StatusCode::SEE_OTHER);
+        assert_eq!(
+            crate::infra::repositories::allowlists::of(
+                &console.database,
+                &crate::domain::values::allowlist::Door::Service(service.id.clone()),
+            )
+            .await
+            .expect("read")
+            .text(),
+            "192.0.2.0/24 the office\n2001:db8::/32"
+        );
+
+        let page = console
+            .harness
+            .get(&Tab::Access.path("shared", "web"))
+            .header("cookie", &cookie)
+            .send()
+            .await
+            .body;
+        assert!(page.contains("192.0.2.0/24 the office"), "{page}");
+        assert!(
+            page.contains("/projects/shared/services/web/allowlist"),
+            "{page}"
+        );
     }
 
     /// The only copy moves by its own row, and the node it goes to is told
@@ -5156,7 +5307,14 @@ mod tests {
             .harness
             .post(&format!("/projects/{slug}/services"))
             .header("cookie", cookie)
-            .form(&[("name", "web"), ("image", "docker.io/library/nginx:alpine")])
+            // Open, as every service was before allowlists: what the tests
+            // using this are about is something else, and a closed service
+            // is withheld from edges too old to read its list.
+            .form(&[
+                ("name", "web"),
+                ("image", "docker.io/library/nginx:alpine"),
+                ("allowlist", "0.0.0.0/0\n::/0"),
+            ])
             .send()
             .await;
         "/projects/my-api/services/web".to_string()
@@ -5448,6 +5606,7 @@ mod tests {
             peers: Vec::new(),
             secret: None,
             redirect_to: None,
+            allowed: None,
         })
         .expect("payload");
         crate::infra::network::errand::queue(

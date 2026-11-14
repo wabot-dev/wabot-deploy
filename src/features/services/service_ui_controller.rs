@@ -953,6 +953,42 @@ impl ServiceUiController {
                 }
             }
             Tab::Logs => Panel::Logs,
+            Tab::Access => {
+                let allowlist = crate::infra::repositories::allowlists::of(
+                    &self.state.database,
+                    &crate::domain::values::allowlist::Door::Service(service.id.clone()),
+                )
+                .await?;
+                // The same rule `tell_edges` applies, read off the same
+                // rows, so the page names exactly the nodes it skipped.
+                let mut withheld: Vec<String> = Vec::new();
+                if !allowlist.is_everyone() {
+                    let nodes = crate::infra::network::all(&self.state.database).await?;
+                    for (_, node_id) in crate::infra::repositories::edges::of_service(
+                        &self.state.database,
+                        &service.id,
+                    )
+                    .await?
+                    {
+                        let Some(node) = nodes.iter().find(|node| node.id == node_id) else {
+                            continue;
+                        };
+                        if !node.is_self
+                            && !crate::infra::network::errand::reads_allowlists(
+                                node.version.as_deref(),
+                            )
+                            && !withheld.contains(&node.name)
+                        {
+                            withheld.push(node.name.clone());
+                        }
+                    }
+                }
+                Panel::Access {
+                    allowlist,
+                    withheld,
+                    refused: crate::infra::firewall::last_error(&self.state.database).await,
+                }
+            }
             Tab::Environment => Panel::Environment {
                 env_text: service
                     .env

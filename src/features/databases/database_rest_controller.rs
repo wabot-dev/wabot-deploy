@@ -293,6 +293,13 @@ impl DatabaseRestController {
                 _ => Some(field(&form, "image").to_string()),
             },
             on: field(&form, "on").to_string(),
+            allowlist: match crate::domain::values::allowlist::Allowlist::parse(field(
+                &form,
+                "allowlist",
+            )) {
+                Ok(allowlist) => allowlist,
+                Err(message) => return Ok(back_with_error(&here, &message)),
+            },
         };
         if let Err(reason) = asked.validate() {
             return Ok(back_with_error(&here, &reason.to_string()));

@@ -3,7 +3,9 @@ use hypertext::prelude::*;
 use crate::domain::entities::account::Account;
 use crate::domain::entities::tenant::Tenant;
 use crate::domain::policies::presets;
+use crate::domain::values::allowlist::Allowlist;
 use crate::features::organisations::texts::t;
+use crate::shell::components::allowlist_field;
 use crate::shell::layouts::layout;
 
 /// The four things the node's operator decides about an organisation.
@@ -63,7 +65,9 @@ impl OrganisationTab {
 }
 
 pub enum Panel<'a> {
-    Domain,
+    Domain {
+        allowlist: Allowlist,
+    },
     Owner {
         owners: &'a [Account],
     },
@@ -110,7 +114,7 @@ pub fn render<'a>(page: &'a OrganisationSettings<'a>) -> impl Renderable + 'a {
         }
 
         @match &page.panel {
-            Panel::Domain => {
+            Panel::Domain { allowlist } => {
                 <section class="stack" id="domain">
                     <p class="card-label">(t("Domain"))</p>
                     <form method="post" action=(format!("{base}/domain")) class="card stack">
@@ -126,6 +130,19 @@ pub fn render<'a>(page: &'a OrganisationSettings<'a>) -> impl Renderable + 'a {
                              else's."))</p>
                         <p class="field-hint">(t("Empty takes the console away. Its projects and \
                              its people stay; there is nowhere to administer them from."))</p>
+                        <div class="actions">
+                            <button type="submit">(t("Save"))</button>
+                        </div>
+                    </form>
+                </section>
+                <section class="stack" id="allowlist">
+                    <p class="card-label">(t("Who may connect"))</p>
+                    <form method="post" action=(format!("{base}/allowlist")) class="card stack">
+                        (allowlist_field::saved("allowlist", "allowlist", t("Addresses and ranges"),
+                            allowlist))
+                        <p class="field-hint">(t("Who reaches its console on its domain. Its \
+                             services have lists of their own, set by its people."))</p>
+                        (allowlist_field::always_let_in())
                         <div class="actions">
                             <button type="submit">(t("Save"))</button>
                         </div>

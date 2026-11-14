@@ -289,6 +289,35 @@ pub struct Edge {
     /// the redirect it was not told about, and nothing broken.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub redirect_to: Option<String>,
+    /// Who may reach the name, as the owner's list says: addresses and
+    /// ranges, and empty for nobody.
+    ///
+    /// `None` is an owner older than allowlists, and its names are served
+    /// as they were — which is not the same as an empty list. Reading
+    /// absent as empty would close every name the moment an edge updated
+    /// ahead of its owner. The other direction is the dangerous one: an
+    /// edge older than allowlists does not read this and serves everyone,
+    /// so the owner sends a restricted name only to an edge that reads it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allowed: Option<Vec<String>>,
+}
+
+/// The first release whose edges read [`Edge::allowed`].
+pub const ALLOWLISTS_SINCE: &str = "0.35.0";
+
+/// Whether a node reporting `version` reads [`Edge::allowed`]. A version
+/// nobody reported, or one that does not parse, is taken for one that
+/// does not: guessing wrong that way withholds a name, the other way
+/// serves it to everyone.
+pub fn reads_allowlists(version: Option<&str>) -> bool {
+    use crate::infra::update::github::Version;
+    match (
+        version.and_then(Version::parse),
+        Version::parse(ALLOWLISTS_SINCE),
+    ) {
+        (Some(version), Some(since)) => version >= since,
+        _ => false,
+    }
 }
 
 /// One co-edge of a name, and everything needed to reach it.
@@ -596,6 +625,7 @@ pub async fn withdraw_name(
         peers: Vec::new(),
         secret: None,
         redirect_to: None,
+        allowed: None,
     })
     .unwrap_or_default();
     queue(database, node_id, Kind::Edge, &payload).await

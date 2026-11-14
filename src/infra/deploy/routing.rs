@@ -350,7 +350,7 @@ pub async fn sync(
     routes::retain_registries(database, &registries).await?;
 
     if let Some(table) = table {
-        table.replace(routes::load_all(database).await?);
+        table.load(routes::load(database).await?);
         tracing::info!(hosts = table.hosts().join(", "), "routes reloaded");
     }
     Ok(hosts.len())

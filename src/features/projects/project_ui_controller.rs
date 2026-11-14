@@ -273,6 +273,11 @@ impl ProjectUiController {
             &project.id,
         )
         .await?;
+        let registry_allowlist = crate::infra::repositories::allowlists::of(
+            &self.state.database,
+            &crate::domain::values::allowlist::Door::ProjectRegistry(project.id.clone()),
+        )
+        .await?;
 
         let members = access::members(&self.state.database, &project.id).await?;
         let all_projects = access::projects_for(&self.state.database, &account).await?;
@@ -296,6 +301,7 @@ impl ProjectUiController {
             tokens: &tokens,
             registry_host: Some(registry_host.as_str()),
             registry_domain: registry_domain.as_deref(),
+            registry_allowlist: &registry_allowlist,
             query_error: query.error.as_deref(),
         };
         let body = crate::shell::texts::language::scoped(account.language, || {

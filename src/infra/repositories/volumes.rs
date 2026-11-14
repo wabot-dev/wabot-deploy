@@ -267,6 +267,11 @@ mod tests {
         header.as_old_mut().name[..raw_name.len()].copy_from_slice(raw_name.as_bytes());
         header.set_size(body.len() as u64);
         header.set_mode(0o644);
+        // Every archive `tar` writes has an owner. Without one, run as root
+        // — where ownership is kept — the unpack fails on a field no real
+        // archive leaves empty, and the suite failed on the VM as root only.
+        header.set_uid(0);
+        header.set_gid(0);
         header.set_entry_type(tar::EntryType::Regular);
         header.set_cksum();
         archive.append(&header, body).expect("appended");

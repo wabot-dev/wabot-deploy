@@ -63,6 +63,7 @@ mod tests {
             peers: Vec::new(),
             secret: None,
             redirect_to: None,
+            allowed: None,
         })
         .expect("payload");
         errand::queue(database, node, errand::Kind::Edge, &payload)

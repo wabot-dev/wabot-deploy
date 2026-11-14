@@ -61,6 +61,13 @@ pub async fn run(
     .run(database)
     .await
     .map_err(|error| error.to_string())?;
+    crate::infra::repositories::allowlists::set(
+        database,
+        &crate::domain::values::allowlist::Door::Service(service.id.clone()),
+        &asked.allowlist,
+    )
+    .await
+    .map_err(|error| error.to_string())?;
 
     Ok((project, service))
 }
@@ -88,6 +95,7 @@ mod tests {
             memory: String::new(),
             image: Some(image.into()),
             on: String::new(),
+            allowlist: Default::default(),
         };
 
         let refused = super::run(

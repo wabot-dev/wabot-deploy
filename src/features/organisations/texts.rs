@@ -37,6 +37,7 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
     ("What it has taken", "Lo que ha tomado"),
     ("Where its console answers, and the suffix its service names hang off. It has to point at this node, and it cannot be one of this node's own names — the console an operator fixes things from must not be reachable only through somebody else's.", "Dónde responde su consola, y el sufijo del que cuelgan los nombres de sus servicios. Tiene que apuntar a este nodo, y no puede ser uno de los nombres propios de este nodo — la consola desde la que un operador arregla las cosas no puede alcanzarse solo a través de la de otro."),
     ("Where its people sign in, and the suffix its service names hang off.", "Dónde entra su gente, y el sufijo del que cuelgan los nombres de sus servicios."),
+    ("Who reaches its console on its domain. Its services have lists of their own, set by its people.", "Quién alcanza su consola en su dominio. Sus servicios tienen listas propias, que pone su gente."),
     ("Who this node is shared out to.", "Entre quiénes se reparte este nodo."),
 ];
 

@@ -199,6 +199,56 @@ impl NodeRestController {
         Ok(crate::shell::auth::see_other(&format!("{here}#reserves")))
     }
 
+    /// Who may connect to this console and to the registry under its name.
+    #[post("/node/allowlists")]
+    #[raw]
+    #[middleware(SessionMiddleware)]
+    async fn set_allowlists(&self, request: Request) -> RestResult<Response> {
+        let here = &NodeTab::Access.path();
+        let Some(account) = signed_in(&self.auth) else {
+            return Ok(crate::shell::auth::see_other("/sign-in"));
+        };
+        if !crate::domain::authz::node_user::manages_the_machine(&account) {
+            return Ok(crate::shell::auth::see_other("/"));
+        }
+        let client = crate::infra::edge::client_address(&request);
+        let form = match crate::shell::auth::read_form(request).await {
+            Ok(form) => form,
+            Err(response) => return Ok(response),
+        };
+        let parse = |name: &str| {
+            crate::domain::values::allowlist::Allowlist::parse(crate::shell::auth::field(
+                &form, name,
+            ))
+        };
+        let asked = match (parse("console"), parse("registry"), parse("ssh")) {
+            (Ok(console), Ok(registry), Ok(ssh)) => {
+                crate::features::node::set_node_allowlists_request::SetNodeAllowlistsRequest {
+                    console,
+                    registry,
+                    ssh,
+                    client,
+                }
+            }
+            (Err(reason), _, _) | (_, Err(reason), _) | (_, _, Err(reason)) => {
+                return Ok(crate::shell::auth::back_with_error(here, &reason))
+            }
+        };
+
+        if let Err(reason) = crate::features::node::node_user_set_node_allowlists::run(
+            &self.state.database,
+            &self.state.deployer,
+            &account,
+            &asked,
+        )
+        .await
+        {
+            return Ok(crate::shell::auth::back_with_error(here, &reason));
+        }
+
+        Ok(crate::shell::auth::see_other(&format!("{here}#allowlists")))
+    }
+
     #[post("/node/capabilities")]
     #[raw]
     #[middleware(SessionMiddleware)]
@@ -607,6 +657,7 @@ mod tests {
             for (form, name) in [
                 ("/node/certificate", "certificate"),
                 ("/node/capabilities", "capabilities"),
+                ("/node/allowlists", "allowlists"),
                 ("/node/reserves", "reserves"),
                 ("/node/backups", "backups"),
             ] {
@@ -620,6 +671,7 @@ mod tests {
             vec![
                 ("certificate", "domain"),
                 ("capabilities", "allows"),
+                ("allowlists", "access"),
                 ("reserves", "resources"),
                 // The tab is `backup` and what it submits to is
                 // `backups`: a GET view and a POST can share a path, but

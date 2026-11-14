@@ -1,6 +1,8 @@
 //! The form that makes a service.
 
+use crate::domain::values::allowlist::Allowlist;
 use crate::features::services::texts::t;
+use crate::shell::components::allowlist_field;
 use crate::shell::layouts::layout;
 use hypertext::prelude::*;
 
@@ -60,6 +62,12 @@ pub fn render<'a>(page: &'a NewService<'a>) -> impl Renderable + 'a {
                       placeholder="KEY=value"></textarea>
             <p class="field-hint">(t("One KEY=value per line. Everything after the first = is \
                  the value, so a value may contain one."))</p>
+
+            // **Asked for here, and born with it.** Decided by Jorge: an
+            // empty list admits nobody, so a service is open only to whom
+            // somebody wrote down when making it.
+            (allowlist_field::field("allowlist", "allowlist", t("Who may connect to its names and published ports"),
+                &Allowlist::default()))
 
             <div class="actions">
                 <button type="submit">(t("Create service"))</button>

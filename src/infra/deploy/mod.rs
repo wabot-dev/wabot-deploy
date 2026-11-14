@@ -375,6 +375,11 @@ impl Deployer {
         self
     }
 
+    /// The live table the listener reads, when there is one.
+    pub fn routes(&self) -> Option<&Arc<crate::infra::edge::routes::RouteTable>> {
+        self.routes.as_ref()
+    }
+
     /// Hand the deployer the certificate loop's doorbell, so a service
     /// given a hostname does not wait out the renewal interval for a
     /// certificate nobody asked for on its behalf.
@@ -398,6 +403,10 @@ impl Deployer {
             tracing::error!(%error, "could not update the routes");
         }
 
+        // The doors the kernel guards change with the same things: a list
+        // saved, a port published, a service gone.
+        crate::infra::firewall::converge(&self.database).await;
+
         // The routes and the certificates answer for the same names, so
         // whatever changed one has to let the other look again.
         if let Some(wake) = &self.certificates {
@@ -414,6 +423,30 @@ impl Deployer {
         // container, and a container that moved is a name that points
         // somewhere else.
         self.sync_hosts().await;
+    }
+
+    /// The doors put back as the rows say: the kernel's rules written
+    /// again if something took them away, and the edge's lists reloaded
+    /// when they changed under it — which is how `wabot-deploy allowlist`,
+    /// run as another process, reaches this one.
+    pub async fn converge_doors(&self, seen: &mut Option<String>) {
+        crate::infra::firewall::heal(&self.database).await;
+        let Some(table) = &self.routes else {
+            return;
+        };
+        let Ok(lists) = crate::infra::repositories::allowlists::all(&self.database).await else {
+            return;
+        };
+        let mut lists: Vec<_> = lists.into_iter().collect();
+        lists.sort();
+        let now = format!("{lists:?}");
+        if seen.as_ref().is_some_and(|before| *before != now) {
+            match crate::infra::edge::routes::load(&self.database).await {
+                Ok(loaded) => table.load(loaded),
+                Err(error) => tracing::warn!(%error, "could not reload the edge's allowlists"),
+            }
+        }
+        *seen = Some(now);
     }
 
     /// Rewrite every local container's `/etc/hosts` from the rows.
@@ -892,6 +925,9 @@ impl Deployer {
 
         let ports = ports::of_service(&self.database, &service.id).await?;
         let published = self.published_ports(service, replica).await?;
+        // A published port is open the moment its container is, so the
+        // list that guards it goes into the kernel first.
+        crate::infra::firewall::converge(&self.database).await;
         // Before the container, and before the network is even torn
         // down on a failure: a bind of a directory that is not there
         // fails inside the shim, where the message is about a mount
@@ -2856,6 +2892,23 @@ impl Deployer {
             crate::infra::repositories::redirects::of_service(&self.database, &service.id)
                 .await
                 .unwrap_or_default();
+        let list = match crate::infra::repositories::allowlists::of(
+            &self.database,
+            &crate::domain::values::allowlist::Door::Service(service.id.clone()),
+        )
+        .await
+        {
+            Ok(list) => list,
+            Err(error) => {
+                tracing::warn!(%error, service = %service.slug, "could not read who may reach it");
+                return;
+            }
+        };
+        let carried: Vec<String> = list
+            .networks()
+            .iter()
+            .map(crate::domain::values::allowlist::written)
+            .collect();
 
         for (hostname, node_id) in &chosen {
             // This node's own choice needs no errand: it does not poll
@@ -2876,19 +2929,49 @@ impl Deployer {
                 continue;
             }
 
-            let payload = match serde_json::to_value(crate::infra::network::errand::Edge {
-                hostname: hostname.clone(),
-                upstreams: upstreams.clone(),
-                peers: co_edges(&chosen, &nodes, hostname, node_id, mine.as_deref()),
-                secret: crate::infra::repositories::edges::secret_for(&self.database, hostname)
-                    .await
-                    .ok()
-                    .flatten(),
-                redirect_to: redirects
-                    .iter()
-                    .find(|redirect| &redirect.hostname == hostname)
-                    .map(|redirect| redirect.target.clone()),
-            }) {
+            // **An edge that would ignore the list is not given the name.**
+            // One older than allowlists does not read the field and serves
+            // everyone, so a restricted name is withdrawn from it instead —
+            // under the same subject, so the withdrawal replaces the order
+            // to serve and is not queued again on every pass. A name open
+            // to everyone loses nothing there, and is sent as before.
+            let reads_lists = nodes
+                .iter()
+                .find(|node| &node.id == node_id)
+                .is_some_and(|node| {
+                    crate::infra::network::errand::reads_allowlists(node.version.as_deref())
+                });
+            let edge = match list.is_everyone() || reads_lists {
+                true => crate::infra::network::errand::Edge {
+                    hostname: hostname.clone(),
+                    upstreams: upstreams.clone(),
+                    peers: co_edges(&chosen, &nodes, hostname, node_id, mine.as_deref()),
+                    secret: crate::infra::repositories::edges::secret_for(&self.database, hostname)
+                        .await
+                        .ok()
+                        .flatten(),
+                    redirect_to: redirects
+                        .iter()
+                        .find(|redirect| &redirect.hostname == hostname)
+                        .map(|redirect| redirect.target.clone()),
+                    allowed: Some(carried.clone()),
+                },
+                false => {
+                    tracing::info!(
+                        node = %node_id, %hostname,
+                        "withdrawn: that node would serve the name to everyone"
+                    );
+                    crate::infra::network::errand::Edge {
+                        hostname: hostname.clone(),
+                        upstreams: Vec::new(),
+                        peers: Vec::new(),
+                        secret: None,
+                        redirect_to: None,
+                        allowed: None,
+                    }
+                }
+            };
+            let payload = match serde_json::to_value(edge) {
                 Ok(payload) => payload,
                 Err(error) => {
                     tracing::warn!(%error, "could not build an edge instruction");
@@ -5519,6 +5602,129 @@ mod tests {
     /// A managed database owned here, with a standby on a node that has
     /// agreed to keep data, and this node on the overlay so the errand can
     /// say where the primary answers.
+    /// What the last edge errand queued for `node` said.
+    async fn last_edge(
+        database: &SqliteDatabase,
+        node: &str,
+    ) -> crate::infra::network::errand::Edge {
+        let errands = crate::infra::network::errand::waiting(database, node)
+            .await
+            .expect("errands");
+        let edge = errands
+            .into_iter()
+            .rev()
+            .find(|errand| errand.kind == crate::infra::network::errand::Kind::Edge)
+            .expect("an edge errand");
+        serde_json::from_value(edge.payload).expect("an edge payload")
+    }
+
+    /// An edge older than allowlists does not read the list and would
+    /// serve the name to everyone, so a restricted name is taken from it
+    /// rather than sent. Once it reports a version that reads the list it
+    /// is sent with it; and a name open to everyone loses nothing on an
+    /// old edge, so it is sent there as before.
+    #[tokio::test]
+    async fn a_restricted_name_is_sent_only_to_an_edge_that_reads_the_list() {
+        use crate::domain::values::allowlist::{Allowlist, Door};
+        let database = crate::infra::db::open_in_memory().await.expect("open");
+        crate::infra::network::ensure_self(&database, &crate::infra::config::Config::default())
+            .await
+            .expect("self");
+        let mut edge = crate::infra::network::Node {
+            update_note: None,
+            version: None,
+            wanted_version: None,
+            usage: None,
+            draining_at: None,
+            capacity: None,
+            id: "nd-edge".into(),
+            name: "edge.example".into(),
+            kind: crate::infra::network::Kind::Public,
+            endpoint: Some("edge.example:443".into()),
+            public_key: Some("0hEr0DzTvMDTRfPPmYFCVCQ1cA0nnUnP+2fFqZBBBGQ=".into()),
+            overlay_ip: Some("10.42.0.9".into()),
+            is_self: false,
+            last_seen_at: None,
+            allows: vec![crate::domain::values::capability::Capability::Edge],
+            ca_pem: None,
+        };
+        crate::infra::network::save(&database, &edge)
+            .await
+            .expect("the edge");
+        let project = crate::infra::repositories::projects::create(&database, "demo")
+            .await
+            .expect("project");
+        let service = crate::infra::repositories::services::create(
+            &database,
+            &project.id,
+            "web",
+            "docker.io/library/nginx:alpine",
+            &[],
+        )
+        .await
+        .expect("service");
+        ports::create(
+            &database,
+            &service.id,
+            80,
+            false,
+            Some("web.example.com"),
+            &["nd-edge".to_string()],
+        )
+        .await
+        .expect("port");
+        let door = Door::Service(service.id.clone());
+        crate::infra::repositories::allowlists::set(
+            &database,
+            &door,
+            &Allowlist::parse("203.0.113.5 office").expect("parsed"),
+        )
+        .await
+        .expect("set");
+        let deployer = Deployer::new(
+            std::sync::Arc::new(database.clone()),
+            &crate::infra::config::Config::default(),
+        );
+
+        deployer.tell_edges(&service).await;
+        let told = last_edge(&database, "nd-edge").await;
+        assert_eq!(told.allowed, None, "withdrawn: {told:?}");
+        assert!(told.upstreams.is_empty());
+
+        edge.version = Some("0.35.0".into());
+        crate::infra::network::save(&database, &edge)
+            .await
+            .expect("updated");
+        deployer.tell_edges(&service).await;
+        assert_eq!(
+            last_edge(&database, "nd-edge").await.allowed,
+            Some(vec!["203.0.113.5".to_string()])
+        );
+
+        edge.version = None;
+        crate::infra::network::save(&database, &edge)
+            .await
+            .expect("an older one");
+        crate::infra::repositories::allowlists::set(&database, &door, &Allowlist::everyone())
+            .await
+            .expect("set");
+        deployer.tell_edges(&service).await;
+        assert_eq!(
+            last_edge(&database, "nd-edge").await.allowed,
+            Some(vec!["0.0.0.0/0".to_string(), "::/0".to_string()])
+        );
+    }
+
+    #[test]
+    fn only_a_version_that_reads_allowlists_is_taken_for_one() {
+        use crate::infra::network::errand::reads_allowlists;
+        assert!(reads_allowlists(Some("0.35.0")));
+        assert!(reads_allowlists(Some("v1.0.0")));
+        assert!(!reads_allowlists(Some("0.34.9")));
+        assert!(!reads_allowlists(None));
+        assert!(!reads_allowlists(Some("main")));
+    }
+
     async fn database_with_a_standby_elsewhere() -> (SqliteDatabase, Project, Service) {
         let database = crate::infra::db::open_in_memory().await.expect("open");
         let project = crate::infra::repositories::projects::create(&database, "db-test")

@@ -198,6 +198,11 @@ pub async fn run(config: Config) -> anyhow::Result<i32> {
     let dns_config = config.clone();
     let delegation_database = database.clone();
 
+    // Before anything starts a container: a published port is open the
+    // moment its container is, and its list has to be in the kernel first.
+    crate::infra::firewall::arm();
+    crate::infra::firewall::heal(&database).await;
+
     let outcome = ProjectRunner::new(container.clone())
         // Reconciling is a *service*, not a startup step.
         //
@@ -420,6 +425,22 @@ pub async fn run(config: Config) -> anyhow::Result<i32> {
         // name, the certificate — sent again when it changed here. Ten
         // seconds, the pace of the restarts above, because the port a
         // primary answers on arrives on a report and a client waits on it.
+        // The allowlists the kernel enforces, written again if anything
+        // took them away, and the edge's reloaded if another process — the
+        // recovery verb — changed them.
+        .service_with_cancel("doors", {
+            let deployer = deployer.clone();
+            move |cancel| async move {
+                let mut seen = None;
+                loop {
+                    deployer.converge_doors(&mut seen).await;
+                    tokio::select! {
+                        _ = cancel.cancelled() => return Ok::<(), anyhow::Error>(()),
+                        _ = tokio::time::sleep(std::time::Duration::from_secs(10)) => {}
+                    }
+                }
+            }
+        })
         .service_with_cancel("databases-elsewhere", {
             let deployer = deployer.clone();
             move |cancel| async move {

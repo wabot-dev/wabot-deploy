@@ -1,5 +1,6 @@
 use hypertext::prelude::*;
 
+use crate::domain::values::allowlist::Allowlist;
 use crate::domain::values::capability::Capability;
 use crate::features::backups::node_backup_component;
 use crate::features::dns::dns_response::DnsResponse;
@@ -11,7 +12,9 @@ use crate::infra::backup::Manifest;
 use crate::infra::edge::policy::Policy;
 use crate::infra::node::memory::Snapshot;
 use crate::shell::components::node_certificate::{CertificateCells, CertificateState};
-use crate::shell::components::{node_capabilities, node_certificate, node_settings_cards};
+use crate::shell::components::{
+    allowlist_field, node_capabilities, node_certificate, node_settings_cards,
+};
 use crate::shell::layouts::layout;
 
 /// The five things this machine can be told about itself.
@@ -19,6 +22,7 @@ use crate::shell::layouts::layout;
 pub enum NodeTab {
     Domain,
     Allows,
+    Access,
     Dns,
     Resources,
     Backup,
@@ -29,6 +33,7 @@ impl NodeTab {
         match self {
             NodeTab::Domain => "domain",
             NodeTab::Allows => "allows",
+            NodeTab::Access => "access",
             NodeTab::Dns => "dns",
             NodeTab::Resources => "resources",
             NodeTab::Backup => "backup",
@@ -42,16 +47,18 @@ impl NodeTab {
             // says so.
             NodeTab::Domain => t("Domain"),
             NodeTab::Allows => t("Capabilities"),
+            NodeTab::Access => t("Access"),
             NodeTab::Dns => t("DNS"),
             NodeTab::Resources => t("Resources"),
             NodeTab::Backup => t("Backup"),
         }
     }
 
-    pub fn all() -> [NodeTab; 5] {
+    pub fn all() -> [NodeTab; 6] {
         [
             NodeTab::Domain,
             NodeTab::Allows,
+            NodeTab::Access,
             // Beside the switch that turns it on: what this node answers
             // as, and the zones it holds that are no project's here.
             NodeTab::Dns,
@@ -106,6 +113,15 @@ pub enum Panel {
         /// somebody reads before clicking is worth more than the same
         /// sentence after.
         owned: usize,
+    },
+    Access {
+        console: Allowlist,
+        registry: Allowlist,
+        ssh: Allowlist,
+        /// What `sshd -T` says it listens on.
+        ssh_ports: Vec<u16>,
+        /// Why the kernel's rules could not be written, the last time.
+        refused: Option<String>,
     },
     Dns {
         dns: DnsResponse,
@@ -184,6 +200,43 @@ pub fn render<'a>(page: &'a NodeSettings<'a>) -> impl Renderable + 'a {
             }
             Panel::Allows { provides, reachable, owns, owned } => {
                 (node_capabilities::capabilities_card(provides, *reachable, *owns, *owned))
+            }
+            Panel::Access { console, registry, ssh, ssh_ports, refused } => {
+                <section class="stack" id="allowlists">
+                    <p class="card-label">(t("Who may connect"))</p>
+                    <form method="post" action="/node/allowlists" class="card stack">
+                        @if let Some(reason) = refused {
+                            <p class="note">(t("The kernel's rules could not be written, so SSH and \
+                                 published ports are not guarded: "))<span class="mono">(reason)</span></p>
+                        }
+                        (allowlist_field::saved("console-allowlist", "console", t("This console"),
+                            console))
+                        <p class="field-hint">(t("The console and its API, on this node's own names. \
+                             The other nodes of the network reach this one whatever it says. A list \
+                             that does not hold the address you are saving it from is refused: it \
+                             would lock you out."))</p>
+
+                        (allowlist_field::saved("registry-allowlist", "registry",
+                            t("The registry under this node's name"), registry))
+                        <p class="field-hint">(t("Every /v2 path on this node's own names: what a \
+                             push and a pull reach. A node of the network that has called this one \
+                             is let in to pull the images it runs."))</p>
+
+                        (allowlist_field::saved("ssh-allowlist", "ssh", t("SSH"), ssh))
+                        <p class="field-hint">(t("Its port, as sshd reports it: "))
+                            <span class="mono">(ssh_ports.iter().map(u16::to_string).collect::<Vec<_>>().join(", "))</span></p>
+                        <p class="field-hint">(t("Empty closes it. A list applies to new connections: a \
+                             session already open stays open, so closing it from inside one does not \
+                             end it. If this and the console both shut you out, the machine's own \
+                             terminal — your provider's serial console — opens it again:"))</p>
+                        <code class="mono">"wabot-deploy allowlist ssh everyone"</code>
+
+                        (allowlist_field::always_let_in())
+                        <div class="actions">
+                            <button type="submit">(t("Save"))</button>
+                        </div>
+                    </form>
+                </section>
             }
             Panel::Dns { dns } => {
                 (dns_status_component::status_card(

@@ -1545,9 +1545,18 @@ async fn serve_name(
         Some(target) => crate::infra::edge::routes::Upstream::Redirect(target.clone()),
         None => crate::infra::edge::routes::Upstream::Proxy(upstreams),
     };
-    crate::infra::edge::routes::upsert(database, &edge.hostname, &upstream, None)
-        .await
-        .map_err(|error| error.to_string())?;
+    let allowed: Option<Vec<ipnet::IpNet>> = edge
+        .allowed
+        .as_ref()
+        .map(|lines| crate::infra::repositories::allowlists::uncarried(&lines.join(",")));
+    crate::infra::edge::routes::upsert_for_other(
+        database,
+        &edge.hostname,
+        &upstream,
+        allowed.as_deref(),
+    )
+    .await
+    .map_err(|error| error.to_string())?;
 
     reload_routes(container).await;
 
@@ -2502,6 +2511,7 @@ mod tests {
                 }],
                 secret: Some("the-shared-secret".into()),
                 redirect_to: None,
+                allowed: None,
             },
         )
         .await
@@ -2548,6 +2558,7 @@ mod tests {
             peers: Vec::new(),
             secret: None,
             redirect_to: Some("teresaasprilla.com".into()),
+            allowed: None,
         };
         serve_name(
             &database,
@@ -2590,6 +2601,56 @@ mod tests {
             .is_empty());
     }
 
+    /// A name served for another node keeps the list that node sent, an
+    /// empty one closes it, and an owner that sent none — one older than
+    /// allowlists — has its name served as it was.
+    #[tokio::test]
+    async fn a_name_served_for_another_node_keeps_the_list_it_came_with() {
+        use crate::infra::edge::routes::Allowed;
+        let database = crate::infra::db::open_in_memory().await.expect("open");
+        let edge = |hostname: &str, allowed: Option<Vec<String>>| errand::Edge {
+            hostname: hostname.into(),
+            upstreams: vec!["10.42.0.3:30000".into()],
+            peers: Vec::new(),
+            secret: None,
+            redirect_to: None,
+            allowed,
+        };
+        for told in [
+            edge("office.example", Some(vec!["203.0.113.5".into()])),
+            edge("shut.example", Some(Vec::new())),
+            edge("old.example", None),
+        ] {
+            serve_name(
+                &database,
+                &Config::default(),
+                &Container::new(),
+                "nd-owner",
+                told,
+            )
+            .await
+            .expect("served");
+        }
+
+        let loaded = crate::infra::edge::routes::load(&database)
+            .await
+            .expect("load");
+        let allowed = |host: &str| {
+            loaded
+                .routes
+                .iter()
+                .find(|(name, _, _)| name == host)
+                .map(|(_, _, allowed)| allowed.clone())
+                .expect("served")
+        };
+        assert_eq!(
+            allowed("office.example"),
+            Allowed::Only(vec!["203.0.113.5/32".parse().expect("a range")])
+        );
+        assert_eq!(allowed("shut.example"), Allowed::Only(Vec::new()));
+        assert_eq!(allowed("old.example"), Allowed::Unsaid);
+    }
+
     /// and choosing silently would make the wrong backend look right.
     #[tokio::test]
     async fn a_name_is_served_for_one_authority_and_the_second_is_told_who_has_it() {
@@ -2600,6 +2661,7 @@ mod tests {
             peers: Vec::new(),
             secret: None,
             redirect_to: None,
+            allowed: None,
         };
 
         serve_name(
@@ -2672,6 +2734,7 @@ mod tests {
                 peers: Vec::new(),
                 secret: None,
                 redirect_to: None,
+                allowed: None,
             },
         )
         .await

@@ -202,6 +202,7 @@ impl RemoteNodeRestController {
             Ok(node) => node,
             Err(response) => return Ok(response),
         };
+        self.heard_from(&request, &node);
 
         match errand::waiting(&self.database, &node).await {
             Ok(waiting) => Ok(json(StatusCode::OK, &waiting)),
@@ -553,6 +554,7 @@ impl RemoteNodeRestController {
             Ok(node) => node,
             Err(response) => return Ok(response),
         };
+        self.heard_from(&request, &node);
 
         let Ok(bytes) = wabot::rest::axum::body::to_bytes(request.into_body(), MAX_BODY).await
         else {
@@ -891,6 +893,19 @@ impl RemoteNodeRestController {
                     .ok(),
             },
         ))
+    }
+}
+
+impl RemoteNodeRestController {
+    /// Remember where a member that just proved who it is dialled from,
+    /// so a registry here lets it pull whatever list the operator wrote.
+    fn heard_from(&self, request: &Request, node: &str) {
+        let Some(address) = crate::infra::edge::client_address(request) else {
+            return;
+        };
+        if let Some(routes) = self.deployer.routes() {
+            routes.node_called_from(node, address);
+        }
     }
 }
 

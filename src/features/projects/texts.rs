@@ -6,6 +6,7 @@
 //! has to.
 
 pub(crate) const TABLE: &[(&str, &str)] = &[
+    ("A push and a pull on its own name. The nodes of the network that run its copies are let in to pull whatever it says.", "Un push y un pull en su propio nombre. Los nodos de la red que corren sus copias entran a tirar diga lo que diga."),
     ("Create project", "Crear proyecto"),
     ("Create token", "Crear token"),
     ("Delete project", "Borrar proyecto"),
@@ -22,6 +23,7 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
     ("Somebody who already has an account on this node — adding them here does not create one. A new person is invited from Settings, People.", "Alguien que ya tiene cuenta en este nodo — añadirla aquí no crea ninguna. A una persona nueva se la invita desde Ajustes, Personas."),
     ("The slug is derived from the name, and it is what hostnames and containerd labels are built from.", "El slug se deriva del nombre, y es con lo que se construyen los nombres de host y las etiquetas de containerd."),
     ("This node owns nothing, by its own setting. It runs what other nodes ask it to run; anything that arrives that way is administered from the node that sent it.", "Este nodo no es dueño de nada, por decisión propia. Corre lo que otros nodos le piden correr; lo que llega así se administra desde el nodo que lo envió."),
+    ("Who may reach its registry", "Quién puede alcanzar su registry"),
     ("You are: ", "Tu rol: "),
     ("never used", "sin usar"),
 ];

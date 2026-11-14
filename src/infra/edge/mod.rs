@@ -41,7 +41,7 @@ use wabot::sqlite::SqliteDatabase;
 
 use certs::CertResolver;
 use proxy::Proxy;
-use routes::{RouteTable, Upstream};
+use routes::{Allowed, OwnDoor, RouteTable, Upstream};
 
 /// Everything the edge needs on the request path.
 #[derive(Clone)]
@@ -95,7 +95,7 @@ pub async fn build(
     let resolver = Arc::new(CertResolver::new());
     resolver.replace(&certs::load_all(database).await?)?;
 
-    table.replace(routes::load_all(database).await?);
+    table.load(routes::load(database).await?);
 
     // With no routes configured, every hostname reaches the control
     // plane. A fresh node has to be usable at whatever address the
@@ -259,14 +259,40 @@ async fn acme_challenge(
 async fn dispatch(State(state): State<EdgeState>, request: Request) -> Response {
     let host = host_of(&request);
 
-    let upstream = match host.as_deref().and_then(|host| state.routes.resolve(host)) {
-        Some(upstream) => upstream,
-        None if state.default_to_control_plane => Upstream::ControlPlane,
+    let (upstream, allowed) = match host.as_deref().and_then(|host| state.routes.route(host)) {
+        Some(route) => route,
+        None if state.default_to_control_plane => (Upstream::ControlPlane, Allowed::Unsaid),
         None => {
             tracing::debug!(host = host.unwrap_or_default(), "no route");
             return not_found();
         }
     };
+
+    // **Who may ask, before anything answers.** The node's own names carry
+    // two doors and the network's calls, told apart by the path; every
+    // other name is one door.
+    let client = client_address(&request);
+    let (allowed, registry) = match &upstream {
+        Upstream::ControlPlane => {
+            let door = OwnDoor::of(request.uri().path());
+            (state.routes.own(door), door == OwnDoor::Registry)
+        }
+        Upstream::Registry(_) => (Some(allowed), true),
+        _ => (Some(allowed), false),
+    };
+    if let Some(allowed) = allowed {
+        let trusted = client.is_some_and(|address| {
+            state.routes.is_here(address) || (registry && state.routes.is_a_node(address))
+        });
+        if !trusted && !allowed.admits(client) {
+            tracing::debug!(
+                host = host.unwrap_or_default(),
+                client = ?client,
+                "refused: not on the allowlist"
+            );
+            return forbidden(client);
+        }
+    }
 
     match upstream {
         // The same in-process router, with the scope stamped on the
@@ -426,6 +452,33 @@ async fn redirect_to_https(State(state): State<HttpState>, request: Request) -> 
         Ok(value) => (StatusCode::PERMANENT_REDIRECT, [(header::LOCATION, value)]).into_response(),
         Err(_) => (StatusCode::BAD_REQUEST, "bad Host").into_response(),
     }
+}
+
+/// The address the client connected from, as the listener saw it.
+/// The address the connection came from, as the kernel saw it.
+///
+/// Never a header: `X-Forwarded-For` is whatever the client wrote, and
+/// this is asked before letting somebody in or letting them change who is.
+pub fn client_address(request: &Request) -> Option<std::net::IpAddr> {
+    request
+        .extensions()
+        .get::<wabot::rest::axum::extract::ConnectInfo<SocketAddr>>()
+        .map(|info| info.0.ip().to_canonical())
+}
+
+/// The address is in the answer because it is the one thing the person
+/// refused needs in order to be let in, and the one thing they may not
+/// know: what their network looks like from here.
+fn forbidden(client: Option<std::net::IpAddr>) -> Response {
+    let who = client
+        .map(|address| address.to_string())
+        .unwrap_or_else(|| "this address".to_string());
+    (
+        StatusCode::FORBIDDEN,
+        [(header::CONTENT_TYPE, "application/json")],
+        format!(r#"{{"error":{{"message":"{who} is not on this name's allowlist"}}}}"#),
+    )
+        .into_response()
 }
 
 fn not_found() -> Response {
@@ -649,7 +702,9 @@ mod tests {
 
     #[tokio::test]
     async fn with_no_routes_everything_reaches_the_control_plane() {
-        let response = harness(state(true))
+        let state = state(true);
+        state.routes.replace([]);
+        let response = harness(state)
             .get("/whoami")
             .header("host", "anything.example.com")
             .send()
@@ -684,6 +739,224 @@ mod tests {
             "the 404 says why: {}",
             response.body
         );
+    }
+
+    fn only(ranges: &[&str]) -> Allowed {
+        Allowed::Only(crate::infra::repositories::allowlists::uncarried(
+            &ranges.join(","),
+        ))
+    }
+
+    /// Ask `app` for `path` on `host`, from `client` as the listener would
+    /// have seen it.
+    async fn ask(app: &Router, host: &str, path: &str, client: Option<&str>) -> Response {
+        use tower::ServiceExt;
+        let mut request = Request::builder()
+            .uri(path)
+            .header("host", host)
+            .body(wabot::rest::axum::body::Body::empty())
+            .expect("request");
+        if let Some(client) = client {
+            let address: std::net::IpAddr = client.parse().expect("an address");
+            request
+                .extensions_mut()
+                .insert(wabot::rest::axum::extract::ConnectInfo(SocketAddr::new(
+                    address, 50000,
+                )));
+        }
+        app.clone().oneshot(request).await.expect("answered")
+    }
+
+    /// The whole feature in one name: on the list comes in, off it is
+    /// refused before anything behind the name hears about it, and told
+    /// which address was refused — the one thing needed to be let in.
+    #[tokio::test]
+    async fn a_name_answers_only_the_addresses_on_its_list() {
+        let state = state(false);
+        state.routes.load(routes::Loaded {
+            routes: vec![(
+                "acme.example".into(),
+                Upstream::Tenant("tnt-acme".into()),
+                only(&["203.0.113.0/24"]),
+            )],
+            console: only(&[]),
+            registry: only(&[]),
+        });
+        let app = Router::new().fallback(dispatch).with_state(state);
+
+        let admitted = ask(&app, "acme.example", "/whoami", Some("203.0.113.9")).await;
+        assert_eq!(admitted.status(), StatusCode::OK);
+
+        let refused = ask(&app, "acme.example", "/whoami", Some("198.51.100.4")).await;
+        assert_eq!(refused.status(), StatusCode::FORBIDDEN);
+        let body = wabot::rest::axum::body::to_bytes(refused.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        assert!(
+            String::from_utf8_lossy(&body).contains("198.51.100.4"),
+            "the refusal names the address: {}",
+            String::from_utf8_lossy(&body)
+        );
+    }
+
+    /// The node's own name is two doors and the network's calls. The
+    /// registry under it has its own list, and `/api/network` has none —
+    /// or closing the console to an office would cut every other node off.
+    #[tokio::test]
+    async fn the_nodes_own_name_is_the_console_the_registry_and_the_network() {
+        let state = state(false);
+        state.routes.load(routes::Loaded {
+            routes: vec![(
+                "node.example".into(),
+                Upstream::ControlPlane,
+                only(&["0.0.0.0/0"]),
+            )],
+            console: only(&["203.0.113.5"]),
+            registry: only(&["198.51.100.0/24"]),
+        });
+        let app = Router::new().fallback(dispatch).with_state(state);
+
+        for (path, client, expected) in [
+            ("/whoami", "203.0.113.5", StatusCode::OK),
+            ("/whoami", "198.51.100.7", StatusCode::FORBIDDEN),
+            ("/v2", "198.51.100.7", StatusCode::NOT_FOUND),
+            ("/v2/a/b/manifests/x", "203.0.113.5", StatusCode::FORBIDDEN),
+            ("/v2x", "198.51.100.7", StatusCode::FORBIDDEN),
+            ("/api/network/errands", "192.0.2.80", StatusCode::NOT_FOUND),
+        ] {
+            let response = ask(&app, "node.example", path, Some(client)).await;
+            assert_eq!(response.status(), expected, "{path} from {client}");
+        }
+    }
+
+    /// The machine itself gets in through every door: it is how somebody
+    /// on it reaches the console when everything else is wrong.
+    #[tokio::test]
+    async fn the_machine_itself_is_never_refused() {
+        let state = state(false);
+        state.routes.load(routes::Loaded {
+            routes: vec![("node.example".into(), Upstream::ControlPlane, only(&[]))],
+            console: only(&[]),
+            registry: only(&[]),
+        });
+        let app = Router::new().fallback(dispatch).with_state(state);
+
+        for client in ["127.0.0.1", "::1"] {
+            let response = ask(&app, "node.example", "/whoami", Some(client)).await;
+            assert_eq!(response.status(), StatusCode::OK, "{client}");
+        }
+    }
+
+    /// A node of the network pulls images from a registry here, so a node
+    /// that has called is let through a registry's door — and through no
+    /// other.
+    #[tokio::test]
+    async fn a_node_of_the_network_reaches_a_registry_and_nothing_else() {
+        let state = state(false);
+        state.routes.load(routes::Loaded {
+            routes: vec![
+                ("node.example".into(), Upstream::ControlPlane, only(&[])),
+                (
+                    "registry.acme.example".into(),
+                    Upstream::Registry("prj-acme".into()),
+                    only(&[]),
+                ),
+            ],
+            console: only(&[]),
+            registry: only(&[]),
+        });
+        state
+            .routes
+            .node_called_from("nd-far", "192.0.2.80".parse().expect("an address"));
+        let app = Router::new().fallback(dispatch).with_state(state);
+
+        for (host, path, expected) in [
+            ("registry.acme.example", "/whoami", StatusCode::OK),
+            ("node.example", "/v2", StatusCode::NOT_FOUND),
+            ("node.example", "/whoami", StatusCode::FORBIDDEN),
+        ] {
+            let response = ask(&app, host, path, Some("192.0.2.80")).await;
+            assert_eq!(response.status(), expected, "{host}{path}");
+        }
+        let stranger = ask(&app, "registry.acme.example", "/whoami", Some("192.0.2.81")).await;
+        assert_eq!(stranger.status(), StatusCode::FORBIDDEN);
+    }
+
+    /// A name another node asked this one to serve keeps the list it came
+    /// with; an owner older than allowlists said nothing, and its names are
+    /// served as they were. A request whose client is unknown passes only a
+    /// door open to everyone.
+    #[tokio::test]
+    async fn an_owner_that_said_nothing_is_served_as_before_and_nobody_is_nobody() {
+        let state = state(false);
+        state.routes.load(routes::Loaded {
+            routes: vec![
+                (
+                    "old.example".into(),
+                    Upstream::Tenant("t".into()),
+                    Allowed::Unsaid,
+                ),
+                (
+                    "shut.example".into(),
+                    Upstream::Tenant("t".into()),
+                    only(&[]),
+                ),
+                (
+                    "open.example".into(),
+                    Upstream::Tenant("t".into()),
+                    only(&["0.0.0.0/0", "::/0"]),
+                ),
+            ],
+            console: only(&[]),
+            registry: only(&[]),
+        });
+        let app = Router::new().fallback(dispatch).with_state(state);
+
+        for (host, client, expected) in [
+            ("old.example", Some("198.51.100.4"), StatusCode::OK),
+            ("shut.example", Some("198.51.100.4"), StatusCode::FORBIDDEN),
+            ("open.example", Some("2001:db8::7"), StatusCode::OK),
+            ("open.example", None, StatusCode::OK),
+            ("shut.example", None, StatusCode::FORBIDDEN),
+        ] {
+            let response = ask(&app, host, "/whoami", client).await;
+            assert_eq!(response.status(), expected, "{host} from {client:?}");
+        }
+    }
+
+    /// Through a real listener, which is what puts the client's address on
+    /// the request. The name is closed to everybody, and a connection from
+    /// this machine still comes in — which it can only do if the listener
+    /// said where it came from: unknown passes only an open door.
+    #[tokio::test]
+    async fn a_real_connection_arrives_with_the_address_it_came_from() {
+        let upstream = echo_upstream().await;
+        let state = state(false);
+        state.routes.load(routes::Loaded {
+            routes: vec![(
+                "app.example.com".into(),
+                Upstream::Proxy(vec![upstream]),
+                only(&[]),
+            )],
+            console: only(&[]),
+            registry: only(&[]),
+        });
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let address = listener.local_addr().expect("addr");
+        let cancel = Cancel::new();
+        let router = Router::new().fallback(dispatch).with_state(state);
+        let config = RestServerConfig::new(address).with_shutdown(cancel.clone());
+        tokio::spawn(async move { serve_on(listener, router, config).await });
+
+        let mut client = TcpStream::connect(address).await.expect("connect");
+        client
+            .write_all(b"GET / HTTP/1.1\r\nhost: app.example.com\r\nconnection: close\r\n\r\n")
+            .await
+            .expect("write");
+        let mut response = String::new();
+        client.read_to_string(&mut response).await.expect("read");
+        assert!(response.starts_with("HTTP/1.1 200"), "got: {response}");
+        cancel.cancel();
     }
 
     /// A container that is not listening must read as 502, not as a

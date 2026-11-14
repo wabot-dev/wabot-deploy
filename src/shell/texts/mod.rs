@@ -273,6 +273,8 @@ mod tests {
         // URL and in a `docker push` — CLAUDE.md's rule that a slug is
         // not prose, applied to the column that heads a list of them.
         "Slug",
+        // The protocol, as `ssh` and every provider's panel say it.
+        "SSH",
         "Swap",
         "TCP",
         "TTL",
