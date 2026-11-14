@@ -439,7 +439,10 @@ impl ServiceUiController {
             &observed,
             deploying,
             crate::features::services::service_state_component::where_it_runs(&placements),
-            crate::features::services::service_state_component::elsewhere_of(&placements),
+            crate::features::services::service_state_component::elsewhere_of(
+                service.desired_state,
+                &placements,
+            ),
         );
         // The tab, because every use of this link is about the image or
         // the tag: a bare `/settings` is a redirect now, and sending

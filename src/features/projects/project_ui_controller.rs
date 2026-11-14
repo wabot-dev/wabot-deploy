@@ -169,7 +169,7 @@ impl ProjectUiController {
                 &observed,
                 deploying.contains(&service.id),
                 where_it_runs,
-                elsewhere_of(&placements),
+                elsewhere_of(service.desired_state, &placements),
             );
             rows.push((
                 service,

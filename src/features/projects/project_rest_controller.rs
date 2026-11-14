@@ -176,7 +176,7 @@ impl ProjectRestController {
                                 &observed,
                                 busy,
                                 where_it_runs(&placements),
-                                elsewhere_of(&placements),
+                                elsewhere_of(service.desired_state, &placements),
                             ),
                         );
                     }

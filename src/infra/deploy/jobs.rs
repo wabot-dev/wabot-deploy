@@ -47,6 +47,8 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 use wabot::prelude::*;
 
+use crate::domain::entities::project::Project;
+use crate::domain::entities::service::Service;
 use crate::infra::repositories::projects;
 use crate::infra::repositories::releases;
 use crate::infra::repositories::replicas;
@@ -116,37 +118,34 @@ impl DeployHandler {
             return Ok(());
         };
 
-        // Every copy of it lives on another node. Nothing to deploy and
-        // nothing wrong — the same shape as a service deleted while the
-        // job waited, and for the same reason: retrying cannot make a
-        // replica appear here, so a job that fails on it fails for ever
-        // and fills the journal with an ERROR for a node that is doing
-        // exactly what it was told.
-        if replicas::here_for(&self.database, &service.id)
+        // Every copy of it on another node is still `deploy`'s to handle:
+        // it tells those nodes to run it. This returned before reaching it,
+        // so Deploy on the owner did nothing for a service placed entirely
+        // elsewhere (Jorge, `nubo-testing` on node-0, 2026-11-14).
+        let nothing_here = replicas::here_for(&self.database, &service.id)
             .await
             .map_err(|error| AsyncError::Handler(error.to_string()))?
-            .is_none()
-        {
-            // The routes still have to be recomputed, and this is
-            // exactly the moment they are wrong: a service whose last
-            // copy just left this node has a route pointing at a
-            // container that is gone. Returning without it left the
-            // name proxying to an address nothing answers on — which is
-            // worse than the ERROR this replaced, because it fails
-            // silently.
+            .is_none();
+        let outcome = self.carry_out(&project, &service, &data).await;
+        // A service whose last copy just left this node has a route
+        // pointing at a container that is gone.
+        if nothing_here {
             self.deployer.sync_routes().await;
-            tracing::info!(
-                service = %service.slug,
-                "every copy of this service runs on another node; nothing to deploy here"
-            );
-            return Ok(());
         }
+        outcome
+    }
 
+    async fn carry_out(
+        &self,
+        project: &Project,
+        service: &Service,
+        data: &DeployService,
+    ) -> Result<(), AsyncError> {
         match &data.release_id {
             None => {
                 let outcome = self
                     .deployer
-                    .deploy(&project, &service)
+                    .deploy(project, service)
                     .await
                     .map(|_| ())
                     // The reason is already on the service row —
@@ -184,7 +183,7 @@ impl DeployHandler {
                     tracing::warn!(release = %id, "no such release for this service");
                     return Ok(());
                 };
-                self.deployer.deploy_release(&service, &release).await;
+                self.deployer.deploy_release(service, &release).await;
                 Ok(())
             }
         }
@@ -222,4 +221,53 @@ pub async fn deploying(container: &Container) -> std::collections::BTreeSet<Stri
                 .map(str::to_string)
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::domain::entities::service::DesiredState;
+
+    /// Deploy on the owner of a service placed entirely on another node did
+    /// nothing: the job returned before `deploy`, which is what tells that
+    /// node to run it (Jorge, `nubo-testing` on node-0, 2026-11-14).
+    #[tokio::test]
+    async fn deploying_a_service_placed_entirely_elsewhere_tells_that_node_to_run_it() {
+        let (database, _, service) = super::super::tests::placed_elsewhere().await;
+        let database = Arc::new(database);
+        services::set_desired_state(&database, &service.id, DesiredState::Stopped)
+            .await
+            .expect("stopped");
+        let handler = DeployHandler {
+            deployer: Arc::new(super::super::Deployer::new(
+                database.clone(),
+                &crate::infra::config::Config::default(),
+            )),
+            database: database.clone(),
+            container: Container::new(),
+        };
+
+        handler
+            .handle(DeployService {
+                service_id: service.id.clone(),
+                release_id: None,
+            })
+            .await
+            .expect("deployed");
+
+        let told = crate::infra::network::errand::waiting(&database, "nd-far")
+            .await
+            .expect("errands")
+            .pop()
+            .expect("the far node was told nothing");
+        assert_eq!(told.payload["running"], serde_json::json!(true));
+        assert_eq!(
+            services::find(&database, &service.id)
+                .await
+                .expect("query")
+                .expect("there")
+                .desired_state,
+            DesiredState::Running
+        );
+    }
 }

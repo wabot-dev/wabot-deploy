@@ -157,12 +157,20 @@ pub fn where_it_runs(placements: &[crate::domain::entities::replica::Replica]) -
 /// Two answers rather than one, because the page must not invent an
 /// outcome nobody reported: a copy elsewhere is only known to be up once
 /// that node has said so, which it does when it collects.
+///
+/// And two more for a service its owner stopped, because both of the
+/// first offer Stop: once stopped, neither page had a way to start it
+/// again (Jorge, `nubo-testing` on node-0, 2026-11-14).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Elsewhere {
     /// Some copy on another node has reported an address.
     Running,
     /// Placed, and nothing has come back about it yet.
     Silent,
+    /// Stopped by its owner, and some copy still reports an address.
+    Lingering,
+    /// Stopped by its owner.
+    Stopped,
 }
 
 /// What the copies on other nodes amount to, when none of them is here.
@@ -172,16 +180,22 @@ pub enum Elsewhere {
 /// the project's list, its stream, and the service's own page — and a
 /// badge that disagreed with itself between a first paint and the swap
 /// that followed is the failure `StateCell` exists to prevent.
-pub fn elsewhere_of(placements: &[crate::domain::entities::replica::Replica]) -> Option<Elsewhere> {
+pub fn elsewhere_of(
+    desired: crate::domain::entities::service::DesiredState,
+    placements: &[crate::domain::entities::replica::Replica],
+) -> Option<Elsewhere> {
     let live = placements.iter().filter(|replica| !replica.evicted());
     if live.clone().any(|replica| replica.is_here()) {
         return None;
     }
     let mut away = live.filter(|replica| !replica.is_here()).peekable();
     away.peek()?;
-    match away.any(|replica| replica.address.is_some()) {
-        true => Some(Elsewhere::Running),
-        false => Some(Elsewhere::Silent),
+    let stopped = desired == crate::domain::entities::service::DesiredState::Stopped;
+    match (stopped, away.any(|replica| replica.address.is_some())) {
+        (false, true) => Some(Elsewhere::Running),
+        (false, false) => Some(Elsewhere::Silent),
+        (true, true) => Some(Elsewhere::Lingering),
+        (true, false) => Some(Elsewhere::Stopped),
     }
 }
 
@@ -246,6 +260,24 @@ pub fn state_cell(
                 badge: "badge badge-info",
                 dot: "dot dot-info dot-pulse",
                 action: "stop",
+                busy: false,
+                address: address.clone(),
+                whereabouts: whereabouts.clone(),
+            },
+            Some(Elsewhere::Lingering) => StateCell {
+                word: "Still running on that node".into(),
+                badge: "badge badge-warning",
+                dot: "dot dot-warning",
+                action: "deploy",
+                busy: false,
+                address: address.clone(),
+                whereabouts: whereabouts.clone(),
+            },
+            Some(Elsewhere::Stopped) => StateCell {
+                word: "Not running".into(),
+                badge: "badge",
+                dot: "",
+                action: "deploy",
                 busy: false,
                 address: address.clone(),
                 whereabouts: whereabouts.clone(),
@@ -396,6 +428,18 @@ mod tests {
                 Some(Elsewhere::Running),
             ),
             state_cell(&Observed::Absent, false, nowhere(), Some(Elsewhere::Silent)),
+            state_cell(
+                &Observed::Absent,
+                false,
+                nowhere(),
+                Some(Elsewhere::Lingering),
+            ),
+            state_cell(
+                &Observed::Absent,
+                false,
+                nowhere(),
+                Some(Elsewhere::Stopped),
+            ),
             state_cell(
                 &Observed::Running {
                     pid: 1,
@@ -563,5 +607,63 @@ mod tests {
         // placing copies, and a row showing the new state beside the
         // old count is half-updated.
         assert_eq!(running.whereabouts.say(), "2 replicas · 1 elsewhere");
+    }
+
+    /// Every copy on another node, and its owner stopped it: both pages
+    /// offered only Stop, so there was no way to start it again — and a
+    /// copy that went on running after the stop kept it reading "Running
+    /// elsewhere" (Jorge, `nubo-testing` on node-0, 2026-11-14).
+    #[test]
+    fn a_service_its_owner_stopped_offers_deploy_wherever_its_copies_run() {
+        use crate::domain::entities::service::DesiredState;
+
+        let copy = |here: bool, address: Option<&str>| crate::domain::entities::replica::Replica {
+            id: "rp-1".into(),
+            service_id: "svc-1".into(),
+            node_id: (!here).then(|| "nd-far".to_string()),
+            slot: 1,
+            address: address.map(str::to_string),
+            overlay_port: None,
+            last_error: None,
+            evicted_at: None,
+            reserved_host: None,
+            memory_bytes: None,
+            disk_bytes: None,
+            cpu_millicores: None,
+            following: None,
+            wal_held: None,
+            placed_by: None,
+            placed_note: None,
+        };
+        let cell = |desired, placed: &[crate::domain::entities::replica::Replica]| {
+            state_cell(
+                &Observed::Absent,
+                false,
+                where_it_runs(placed),
+                elsewhere_of(desired, placed),
+            )
+        };
+
+        let lingering = cell(DesiredState::Stopped, &[copy(false, Some("10.42.3.7"))]);
+        assert_eq!(lingering.action, "deploy");
+        assert_eq!(lingering.word, "Still running on that node");
+
+        let stopped = cell(DesiredState::Stopped, &[copy(false, None)]);
+        assert_eq!(stopped.action, "deploy");
+        assert_eq!(stopped.word, "Not running");
+
+        assert_eq!(
+            cell(DesiredState::Running, &[copy(false, Some("10.42.3.7"))]).action,
+            "stop"
+        );
+        assert_eq!(
+            cell(DesiredState::Running, &[copy(false, None)]).action,
+            "stop"
+        );
+        assert_eq!(
+            elsewhere_of(DesiredState::Stopped, &[copy(true, None)]),
+            None,
+            "a copy here is answered by containerd"
+        );
     }
 }

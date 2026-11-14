@@ -5161,7 +5161,7 @@ mod tests {
 
     /// A service, a node that has agreed to run containers for us, and a
     /// copy placed there.
-    async fn placed_elsewhere() -> (SqliteDatabase, Project, Service) {
+    pub(super) async fn placed_elsewhere() -> (SqliteDatabase, Project, Service) {
         let database = crate::infra::db::open_in_memory().await.expect("open");
         let project = crate::infra::repositories::projects::create(&database, "shared")
             .await
