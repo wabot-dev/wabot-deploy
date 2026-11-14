@@ -663,7 +663,7 @@ impl ServiceUiController {
                 crate::infra::deploy::logs::history(
                     &self.state.config.node.data_dir,
                     container,
-                    512 * 1024,
+                    crate::infra::network::api::MAX_LOG,
                 )
                 .map(|text| crate::infra::deploy::logs::Chunk {
                     text,
@@ -799,27 +799,31 @@ impl ServiceUiController {
         // One stream, for the copy being read. The island needs to know
         // which — a page that opened the wrong slot's stream would show
         // a log that did not match the one it rendered.
-        let body = match slot.filter(|_| here) {
-            Some(slot) => wabot::ui::hypertext::island(
-                "logs-live",
-                &serde_json::json!({
-                    "project": for_island,
-                    "service": service_for_island,
-                    "slot": slot,
-                    "from": from,
-                    "following": crate::shell::texts::language::scoped(account.language, || {
-                        t("Following").to_string()
-                    }),
-                    "reconnecting": crate::shell::texts::language::scoped(account.language, || {
-                        t("Reconnecting…").to_string()
-                    }),
+        //
+        // Hosted with no props for a copy on another machine: nothing to
+        // follow, but the island is also what opens the log at its end.
+        let props = match slot.filter(|_| here) {
+            Some(slot) => serde_json::json!({
+                "project": for_island,
+                "service": service_for_island,
+                "slot": slot,
+                "from": from,
+                "following": crate::shell::texts::language::scoped(account.language, || {
+                    t("Following").to_string()
                 }),
-                hypertext::Raw::dangerously_create(&body),
-            )
-            .render()
-            .into_inner(),
-            None => body,
+                "reconnecting": crate::shell::texts::language::scoped(account.language, || {
+                    t("Reconnecting…").to_string()
+                }),
+            }),
+            None => serde_json::json!({}),
         };
+        let body = wabot::ui::hypertext::island(
+            "logs-live",
+            &props,
+            hypertext::Raw::dangerously_create(&body),
+        )
+        .render()
+        .into_inner();
 
         Ok(frame.render(body).into_view().into())
     }

@@ -135,7 +135,7 @@ pub struct LogWanted {
 /// The same ceiling the local page reads with, so the two views are the
 /// same size — and well under `call::ask_node`'s own bound, which is
 /// what stops a far node's answer being this one's memory problem.
-pub(crate) const MAX_LOG: usize = 512 * 1024;
+pub(crate) const MAX_LOG: usize = 128 * 1024;
 
 /// What a joined node asks its authority to do.
 ///

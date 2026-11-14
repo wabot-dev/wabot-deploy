@@ -534,6 +534,11 @@
   // adds what arrives *after* that render, starting from the offset the
   // page was built at.
   wabot.island('logs-live', function (host, props) {
+    // The end is the present, so a log opens there — on a reload, after a
+    // swap, and for a copy on another machine, which has nothing to follow.
+    var end = host.querySelector('[data-logs-end]');
+    if (end) end.scrollTop = end.scrollHeight;
+
     if (!props || !props.project || !props.service) return null;
     var out = host.querySelector('[data-logs-out]');
     var state = host.querySelector('[data-logs-state]');

@@ -2018,6 +2018,10 @@ mod tests {
             "nothing says whether it is following: {html}"
         );
         assert!(page.has_island("logs-live"), "{html}");
+        assert!(
+            html.contains("data-logs-end"),
+            "the log opens at its newest line: {html}"
+        );
     }
 
     /// `?slot=2` answered with a page of JSON: a query parameter is
@@ -2117,6 +2121,10 @@ mod tests {
             html.contains("no row for the one holding that copy"),
             "the page has to say why it could not ask: {html}"
         );
+        // It opened at the top — the oldest line it had — while the newest
+        // is what somebody came for (Jorge, `nubo-testing`, 2026-11-14).
+        assert!(page.has_island("logs-live"), "{html}");
+        assert!(html.contains("data-logs-end"), "{html}");
     }
 
     /// A slot number in a query string must not be a way to read a

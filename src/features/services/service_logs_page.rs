@@ -227,9 +227,9 @@ pub fn render<'a>(page: &'a Logs<'a>) -> impl Renderable + 'a {
                         // No `data-logs-out`: the island polls this node's own
                         // endpoint, and there is nothing of this copy here to
                         // poll for.
-                        <pre class="log">(page.text)</pre>
+                        <pre class="log" data-logs-end>(page.text)</pre>
                     } @else {
-                        <pre class="log" data-logs-out
+                        <pre class="log" data-logs-out data-logs-end
                              data-slot=(slot)
                              data-from=(page.from)>(page.text)</pre>
                     }

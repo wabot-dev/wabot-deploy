@@ -689,16 +689,14 @@ details[open] > summary { margin-bottom: var(--sp-4); }
    on the screen while the text moves inside it — a log that grew the
    page would push everything else off and put the newest line wherever
    the window happened to end.
-   `pre-wrap`, not `pre`: a stack trace or a long SQL statement wraps
-   rather than making the whole panel scroll sideways, and a horizontal
-   scrollbar under a live feed is a thing nobody ever reaches for. */
+   `pre`, and the panel scrolls sideways. It was `pre-wrap`, and a long
+   line wrapped into what read as two — a log is one event per line, and
+   somebody scanning one counts lines (Jorge, 2026-11-14). */
 .log {
   margin: 0;
   max-height: 60vh;
-  overflow-y: auto;
-  overflow-x: hidden;
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
+  overflow: auto;
+  white-space: pre;
   font-family: var(--font-mono);
   font-size: var(--fs-sm);
   line-height: 1.5;
