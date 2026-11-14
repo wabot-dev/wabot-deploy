@@ -948,6 +948,7 @@ async fn send_to(database: &SqliteDatabase, stored: &StoredCert, node: &str) {
         name: stored.domain.clone(),
         cert_pem: stored.cert_pem.clone(),
         key_pem: stored.key_pem.clone(),
+        database: false,
     }) {
         Ok(payload) => payload,
         Err(error) => {
@@ -2408,6 +2409,7 @@ mod tests {
             version: "17",
             memory_limit: 256 * 1024 * 1024,
             image: None,
+            on: None,
         }
         .run(&database)
         .await

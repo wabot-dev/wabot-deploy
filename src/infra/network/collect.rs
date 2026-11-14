@@ -794,9 +794,9 @@ async fn carry_out(
                 crate::domain::values::capability::Capability::Store,
             )
             .await?;
-            let standby: errand::Standby = serde_json::from_value(order.payload)
+            let told: errand::Database = serde_json::from_value(order.payload)
                 .map_err(|error| format!("that is not a database errand: {error}"))?;
-            hold_standby(database, config, container, authority, standby).await
+            hold_database(database, config, container, authority, told).await
         }
         Kind::Edge => {
             let edge: errand::Edge = serde_json::from_value(order.payload)
@@ -1269,34 +1269,44 @@ async fn host_service(
 /// **The primary's address is stored, not derived.** This node has no
 /// row for the primary and never will; what it has is what it was told.
 /// See migration `0031`.
-async fn hold_standby(
+async fn hold_database(
     database: &SqliteDatabase,
     config: &Config,
     container: &Container,
     authority: &str,
-    standby: errand::Standby,
+    told: errand::Database,
 ) -> Result<(), String> {
-    if crate::domain::entities::database::Engine::parse(&standby.engine)
-        != crate::domain::entities::database::Engine::Postgres
-    {
+    let engine = crate::domain::entities::database::Engine::parse(&told.engine);
+    if !crate::domain::entities::database::Engine::OFFERED.contains(&engine) {
         return Err(format!(
             "a copy of a {} database is not something this node can hold",
-            standby.engine
+            told.engine
         ));
     }
-    if standby.slots.contains(&standby.primary_slot) {
-        // The one instruction this node must refuse rather than obey.
-        // A second primary is two databases taking writes under one
-        // name, and nothing downstream could reconcile them.
+    let holds_the_primary = told.slots.contains(&told.primary_slot);
+    let holds_a_standby = told.slots.iter().any(|slot| *slot != told.primary_slot);
+    if engine == crate::domain::entities::database::Engine::Mysql && holds_a_standby {
+        return Err("a MySQL database has no read-only copies to hold".into());
+    }
+    // Two ways for one instruction to describe a second primary, and both
+    // are refused rather than obeyed: two databases taking writes under
+    // one name is something nothing downstream could reconcile. A primary
+    // told to follow somebody is one; a standby told to follow nobody, on
+    // a node not holding the primary, would come up as the other.
+    if holds_the_primary && !told.primary.is_empty() {
         return Err(format!(
-            "slot {} is the primary's, and a primary is not something to place here",
-            standby.primary_slot
+            "slot {} is the primary's, and a primary follows nobody — this instruction \
+             names {} for it to follow",
+            told.primary_slot, told.primary
         ));
     }
-    if let (Some(username), Some(secret)) = (&standby.username, &standby.secret) {
+    if holds_a_standby && !holds_the_primary && told.primary.is_empty() {
+        return Err("a read-only copy was sent with no primary to follow".into());
+    }
+    if let (Some(username), Some(secret)) = (&told.username, &told.secret) {
         registry_credentials::set(
             database,
-            &standby.registry,
+            &told.registry,
             &Credential {
                 username: username.clone(),
                 secret: secret.clone(),
@@ -1306,8 +1316,8 @@ async fn hold_standby(
         .map_err(|error| error.to_string())?;
     }
 
-    let project = ensure_project(database, &standby.project, authority).await?;
-    let slug = crate::domain::values::slug::Slug::of(&standby.service);
+    let project = ensure_project(database, &told.project, authority).await?;
+    let slug = crate::domain::values::slug::Slug::of(&told.service);
     let slug = slug.as_str();
     let existing = services::in_project(database, &project.id, slug)
         .await
@@ -1315,7 +1325,7 @@ async fn hold_standby(
 
     let service = match existing {
         Some(service) => {
-            services::set_image(database, &service.id, &standby.image)
+            services::set_image(database, &service.id, &told.image)
                 .await
                 .map_err(|error| error.to_string())?;
             service
@@ -1324,8 +1334,8 @@ async fn hold_standby(
             let made = crate::infra::repositories::services::create(
                 database,
                 &project.id,
-                &standby.service,
-                &standby.image,
+                &told.service,
+                &told.image,
                 &[],
             )
             .await
@@ -1337,17 +1347,13 @@ async fn hold_standby(
         }
     };
 
-    services::set_kind(
-        database,
-        &service.id,
-        crate::domain::entities::service::Kind::Postgres,
-    )
-    .await
-    .map_err(|error| error.to_string())?;
-    services::set_memory_limit(database, &service.id, Some(standby.memory_limit))
+    services::set_kind(database, &service.id, engine.kind())
         .await
         .map_err(|error| error.to_string())?;
-    databases::adopt(database, &service.id, &standby)
+    services::set_memory_limit(database, &service.id, Some(told.memory_limit))
+        .await
+        .map_err(|error| error.to_string())?;
+    databases::adopt(database, &service.id, &told)
         .await
         .map_err(|error| error.to_string())?;
 
@@ -1362,7 +1368,7 @@ async fn hold_standby(
             database,
             &service.id,
             crate::domain::policies::postgres::VOLUME,
-            crate::domain::policies::postgres::DATA_MOUNT,
+            engine.data_mount(),
         )
         .await
         .map_err(|error| error.to_string())?;
@@ -1371,27 +1377,21 @@ async fn hold_standby(
         .await
         .map_err(|error| error.to_string())?;
     if declared.is_empty() {
-        ports::create(
-            database,
-            &service.id,
-            crate::domain::policies::postgres::PORT,
-            false,
-            None,
-            &[],
-        )
-        .await
-        .map_err(|error| error.to_string())?;
+        ports::create(database, &service.id, engine.port(), false, None, &[])
+            .await
+            .map_err(|error| error.to_string())?;
     }
 
-    replicas::ensure_slots(database, &service.id, &standby.slots)
+    replicas::ensure_slots(database, &service.id, &told.slots)
         .await
         .map_err(|error| error.to_string())?;
-    stop_unnamed(database, config, &project, &service, &standby.slots).await?;
+    stop_unnamed(database, config, &project, &service, &told.slots).await?;
 
-    if standby.slots.is_empty() {
-        // Nothing left to hold. The rows go, and so does the copy —
-        // which for a standby is safe in a way it would not be for a
-        // primary: every row of it is still on the node that owns it.
+    if told.slots.is_empty() {
+        // Nothing left to hold. The rows go, and so does the copy. Safe
+        // for a primary held here too, because the owner never moves one:
+        // the only instruction that empties the primary's node is the
+        // database being deleted, where losing it is what was asked.
         services::delete(database, &service.id)
             .await
             .map_err(|error| error.to_string())?;
@@ -1402,7 +1402,7 @@ async fn hold_standby(
     // the database again resumes from the copy on this disk rather than
     // seeding a new one over the network — which for a database is the
     // difference between a restart and a base backup.
-    if !standby.running {
+    if !told.running {
         return match container.try_resolve::<crate::infra::deploy::Deployer>() {
             Ok(deployer) => deployer
                 .stop(&project, &service)
@@ -1428,9 +1428,10 @@ async fn hold_standby(
 
     tracing::info!(
         service = %service.slug,
-        slots = ?standby.slots,
-        primary = %standby.primary,
-        "an errand asked this node to hold a standby"
+        slots = ?told.slots,
+        primary = %told.primary,
+        holds_the_primary,
+        "an errand asked this node to hold copies of a database"
     );
     Ok(())
 }
@@ -1570,6 +1571,9 @@ async fn keep_certificate(
     authority: &str,
     certificate: errand::Certificate,
 ) -> Result<(), String> {
+    if certificate.database {
+        return keep_database_certificate(database, container, authority, certificate).await;
+    }
     let holder = crate::infra::network::claimed_by(database, &certificate.name)
         .await
         .map_err(|error| error.to_string())?;
@@ -1595,6 +1599,72 @@ async fn keep_certificate(
         resolver.replace(&all).map_err(|error| error.to_string())?;
     }
     tracing::info!(name = %certificate.name, %authority, "serving a certificate sent by another node");
+    Ok(())
+}
+
+/// The certificate a database's primary presents here, from the node that
+/// owns it.
+///
+/// Admitted only for a database that node placed here, under the name this
+/// node computes for it — so no node hands another's database a
+/// certificate, and one for a name that changed waits for the instruction
+/// that changed it rather than being kept under the old one. Refused, it is
+/// sent again: `queue_if_changed` repeats a refusal.
+///
+/// Handed to the running server by the renewal pass, which signals it,
+/// after the authorities inside this node's containers are rewritten — a
+/// client here has to hold the owner's before the server presents what the
+/// owner signed.
+async fn keep_database_certificate(
+    database: &SqliteDatabase,
+    container: &Container,
+    authority: &str,
+    certificate: errand::Certificate,
+) -> Result<(), String> {
+    let projects = crate::infra::repositories::projects::all(database)
+        .await
+        .map_err(|error| error.to_string())?;
+    let mut held = false;
+    for service in services::all(database, None)
+        .await
+        .map_err(|error| error.to_string())?
+        .into_iter()
+        .filter(|service| service.kind.is_managed())
+        .filter(|service| service.origin_node_id.as_deref() == Some(authority))
+    {
+        let Some(project) = projects.iter().find(|p| p.id == service.project_id) else {
+            continue;
+        };
+        let names = crate::infra::deploy::certificate_names(database, project, &service).await;
+        if names.first() == Some(&certificate.name) {
+            held = true;
+            break;
+        }
+    }
+    if !held {
+        return Err(format!(
+            "this node holds no database called {} for the node that sent its certificate",
+            certificate.name
+        ));
+    }
+    let stored = crate::infra::edge::certs::received(
+        &certificate.name,
+        &certificate.cert_pem,
+        &certificate.key_pem,
+    )
+    .map_err(|error| error.to_string())?;
+    crate::infra::edge::certs::save(database, &stored)
+        .await
+        .map_err(|error| error.to_string())?;
+    if let Ok(deployer) = container.try_resolve::<crate::infra::deploy::Deployer>() {
+        tokio::spawn(async move {
+            deployer.sync_hosts().await;
+            if let Err(error) = deployer.refresh_certificates().await {
+                tracing::warn!(%error, "could not hand a database its certificate");
+            }
+        });
+    }
+    tracing::info!(name = %certificate.name, %authority, "keeping a database certificate sent by its owner");
     Ok(())
 }
 
@@ -2621,13 +2691,13 @@ mod tests {
         );
     }
 
-    /// The one instruction a node must refuse rather than obey.
+    /// The instruction a node must refuse rather than obey.
     ///
     /// Two primaries is two databases taking writes under one name, and
     /// nothing downstream could reconcile them — not the replication
-    /// slot, not the reader, not the operator. A `database` errand only
-    /// ever asks for standbys, so naming the primary's slot in it is a
-    /// mistake on the sending side and this is where it stops.
+    /// slot, not the reader, not the operator. Holding the primary is an
+    /// ordinary request now; holding it while being told to follow
+    /// somebody describes a second one.
     #[tokio::test]
     async fn an_errand_that_asks_for_a_second_primary_is_refused() {
         let database = crate::infra::db::open_in_memory().await.expect("open");
@@ -2666,7 +2736,7 @@ mod tests {
         .await
         .expect_err("refused");
 
-        assert!(error.contains("not something to place here"), "{error}");
+        assert!(error.contains("a primary follows nobody"), "{error}");
         assert!(
             services::all(&database, None)
                 .await
@@ -2676,9 +2746,275 @@ mod tests {
         );
     }
 
+    /// The other half of the same mistake: a read-only copy with nothing
+    /// to follow comes up as a primary of its own.
+    #[tokio::test]
+    async fn a_standby_sent_with_no_primary_is_refused() {
+        let database = crate::infra::db::open_in_memory().await.expect("open");
+        crate::infra::network::capability::grant(
+            &database,
+            "nd-a",
+            &[crate::domain::values::capability::Capability::Store],
+        )
+        .await
+        .expect("grant");
+
+        let error = carry_out(
+            &database,
+            &Config::default(),
+            &Container::new(),
+            "nd-a",
+            Errand {
+                id: "er-1".into(),
+                kind: Kind::Database,
+                payload: database_errand("postgres", "17", &[2], "", &[]),
+            },
+        )
+        .await
+        .expect_err("refused");
+
+        assert!(error.contains("no primary to follow"), "{error}");
+        assert!(services::all(&database, None)
+            .await
+            .expect("services")
+            .is_empty());
+    }
+
+    /// A primary placed here by its owner, for either engine: the rows the
+    /// deploy path reads to initialise one rather than to follow one.
+    ///
+    /// The receiving node refused the primary's slot until 0.34.0, so a
+    /// primary moved off its node was stopped where it ran and started
+    /// nowhere — `nubo-testing-db` on node-0, "Waiting for that node" for
+    /// ever.
+    #[tokio::test]
+    async fn an_errand_for_the_primary_makes_a_database_that_follows_nobody() {
+        for (engine, version, port, mount) in [
+            (
+                "postgres",
+                "17",
+                crate::domain::policies::postgres::PORT,
+                crate::domain::policies::postgres::DATA_MOUNT,
+            ),
+            (
+                "mysql",
+                "8.4",
+                crate::domain::policies::mysql::PORT,
+                crate::domain::policies::mysql::DATA_MOUNT,
+            ),
+        ] {
+            let database = crate::infra::db::open_in_memory().await.expect("open");
+            crate::infra::network::capability::grant(
+                &database,
+                "nd-a",
+                &[crate::domain::values::capability::Capability::Store],
+            )
+            .await
+            .expect("grant");
+
+            carry_out(
+                &database,
+                &Config::default(),
+                &Container::new(),
+                "nd-a",
+                Errand {
+                    id: "er-1".into(),
+                    kind: Kind::Database,
+                    payload: database_errand(engine, version, &[1], "", &["10.42.0.1/32"]),
+                },
+            )
+            .await
+            .unwrap_or_else(|error| panic!("{engine}: {error}"));
+
+            let service = services::all(&database, None)
+                .await
+                .expect("services")
+                .pop()
+                .expect("one");
+            assert_eq!(service.kind.engine().map(|e| e.as_str()), Some(engine));
+            let row = crate::infra::repositories::databases::of_service(&database, &service.id)
+                .await
+                .expect("query")
+                .expect("an engine row");
+            assert_eq!(row.primary_endpoint, None, "{engine}");
+            assert_eq!(
+                row.role_of(1),
+                crate::domain::policies::postgres::Role::Primary
+            );
+            assert_eq!(
+                row.replication_from,
+                Some(vec!["10.42.0.1/32".to_string()]),
+                "{engine}"
+            );
+            assert_eq!(
+                ports::of_service(&database, &service.id)
+                    .await
+                    .expect("ports")
+                    .first()
+                    .map(|declared| declared.container_port),
+                Some(port),
+                "{engine}"
+            );
+            assert_eq!(
+                crate::infra::repositories::volumes::of_service(&database, &service.id)
+                    .await
+                    .expect("volumes")
+                    .first()
+                    .map(|volume| volume.path.clone()),
+                Some(mount.to_string()),
+                "{engine}"
+            );
+            assert_eq!(
+                replicas::of_service(&database, &service.id)
+                    .await
+                    .expect("replicas")
+                    .iter()
+                    .map(|replica| replica.slot)
+                    .collect::<Vec<_>>(),
+                vec![1]
+            );
+        }
+    }
+
+    fn database_errand(
+        engine: &str,
+        version: &str,
+        slots: &[u32],
+        primary: &str,
+        replication_from: &[&str],
+    ) -> serde_json::Value {
+        serde_json::json!({
+            "project": "shared", "service": "orders",
+            "image": format!("docker.io/library/{engine}:{version}"),
+            "registry": "docker.io",
+            "memory_limit": 268435456u64,
+            "engine": engine, "version": version,
+            "database_name": "orders", "admin_user": "orders",
+            "admin_password": "a", "replication_user": "r",
+            "replication_password": "b",
+            "primary": primary,
+            "slots": slots,
+            "primary_slot": 1,
+            "replication_from": replication_from,
+            "running": false,
+        })
+    }
+
+    /// What the owner decides about a database travels with it: the name
+    /// somebody chose there, that it is published there, and the
+    /// certificate its page shows — kept here under that name, presented as
+    /// it came, and taken only from the node that placed the database.
+    #[tokio::test]
+    async fn a_primary_held_here_answers_to_the_owners_name_with_the_owners_certificate() {
+        let database = crate::infra::db::open_in_memory().await.expect("open");
+        for node in ["nd-a", "nd-b"] {
+            crate::infra::network::capability::grant(
+                &database,
+                node,
+                &[crate::domain::values::capability::Capability::Store],
+            )
+            .await
+            .expect("grant");
+        }
+        let mut payload = database_errand("postgres", "17", &[1], "", &[]);
+        payload["name"] = serde_json::json!("db.shop.example");
+        payload["published"] = serde_json::json!(true);
+        carry_out(
+            &database,
+            &Config::default(),
+            &Container::new(),
+            "nd-a",
+            Errand {
+                id: "er-1".into(),
+                kind: Kind::Database,
+                payload,
+            },
+        )
+        .await
+        .expect("held");
+
+        let service = services::all(&database, None)
+            .await
+            .expect("services")
+            .pop()
+            .expect("one");
+        let row = crate::infra::repositories::databases::of_service(&database, &service.id)
+            .await
+            .expect("query")
+            .expect("an engine row");
+        assert_eq!(row.owner_name.as_deref(), Some("db.shop.example"));
+        assert!(
+            row.owner_published,
+            "so pg_hba admits clients from outside the project"
+        );
+        let project = crate::infra::repositories::projects::all(&database)
+            .await
+            .expect("projects")
+            .pop()
+            .expect("one");
+        let names = crate::infra::deploy::certificate_names(&database, &project, &service).await;
+        assert_eq!(names.first().map(String::as_str), Some("db.shop.example"));
+        assert!(
+            names.contains(&"db-ro.shop.example".to_string()),
+            "{names:?}"
+        );
+
+        let owner = crate::infra::db::open_in_memory().await.expect("open");
+        let signed = crate::infra::edge::certs::ensure_self_signed(&owner, &names[0], &names)
+            .await
+            .expect("signed by the owner");
+        let certificate = serde_json::json!({
+            "name": "db.shop.example",
+            "cert_pem": signed.cert_pem,
+            "key_pem": signed.key_pem,
+            "database": true,
+        });
+
+        let refused = carry_out(
+            &database,
+            &Config::default(),
+            &Container::new(),
+            "nd-b",
+            Errand {
+                id: "er-2".into(),
+                kind: Kind::Certificate,
+                payload: certificate.clone(),
+            },
+        )
+        .await
+        .expect_err("not the node that placed it");
+        assert!(refused.contains("holds no database called"), "{refused}");
+
+        carry_out(
+            &database,
+            &Config::default(),
+            &Container::new(),
+            "nd-a",
+            Errand {
+                id: "er-3".into(),
+                kind: Kind::Certificate,
+                payload: certificate,
+            },
+        )
+        .await
+        .expect("kept");
+        let presented = crate::infra::deploy::database_certificate(&database, &names)
+            .await
+            .expect("a certificate");
+        assert_eq!(
+            presented.cert_pem, signed.cert_pem,
+            "presented as it came, not reissued by this node's authority"
+        );
+        assert_eq!(
+            presented.source,
+            crate::infra::edge::certs::Source::Received
+        );
+    }
+
     /// MySQL has no read-only copies yet, so a node that sends a copy of
     /// one is a mistake on the sending side: it would be deployed here as
-    /// a standby this node cannot make.
+    /// a standby this node cannot make. Its primary is another matter —
+    /// see the test above.
     #[tokio::test]
     async fn an_errand_for_a_copy_of_a_mysql_database_is_refused() {
         let database = crate::infra::db::open_in_memory().await.expect("open");
@@ -2717,7 +3053,10 @@ mod tests {
         .await
         .expect_err("refused");
 
-        assert!(error.contains("mysql"), "{error}");
+        assert!(
+            error.contains("MySQL database has no read-only copies"),
+            "{error}"
+        );
         assert!(services::all(&database, None)
             .await
             .expect("services")

@@ -340,6 +340,23 @@ pub fn backups_only_card() -> impl Renderable {
     }
 }
 
+/// What going back means for a database whose primary runs on another
+/// node: its log is archived there and its backups are taken there, so
+/// an archive measured here would be one that does not exist.
+pub fn kept_elsewhere_card(node: &str) -> impl Renderable + '_ {
+    rsx! {
+        <section class="card stack" id="recovery">
+            <div class="split">
+                <p class="card-label">(t("Going back"))</p>
+                <span class="badge">(t("Kept elsewhere"))</span>
+            </div>
+            <p class="field-hint">(t("It runs on "))<span class="mono">(node)</span>(t(", which \
+                 archives its log and takes its backups: a backup run there includes it, \
+                 and that is where its window is and where it is restored from."))</p>
+        </section>
+    }
+}
+
 pub fn window_card<'a>(
     window: &'a crate::infra::backup::Window,
     stuck: Option<crate::infra::repositories::wal_archive::Waiting>,

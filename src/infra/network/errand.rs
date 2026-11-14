@@ -306,15 +306,14 @@ pub struct Peer {
     pub ca_pem: String,
 }
 
-/// The arguments of a [`Kind::Database`] errand: hold a copy here.
+/// The arguments of a [`Kind::Database`] errand: hold these copies here.
 ///
 /// Everything the far node needs and nothing it can look up. It has
 /// never heard of this database, and — unlike a `host` errand — it
-/// cannot work out the one thing that matters most from its own rows:
-/// **where the primary answers**. That address is on the sending node's
-/// overlay, and the port came out of that node's own port space.
+/// cannot work out from its own rows **where the primary answers**, nor,
+/// when it holds the primary, **who may follow it**.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Standby {
+pub struct Database {
     pub project: String,
     pub service: String,
     /// Pinned by whoever queued it, like a `host` errand's.
@@ -343,15 +342,22 @@ pub struct Standby {
     pub replication_user: String,
     pub replication_password: String,
 
-    /// Where the primary answers, as `host:port` — the sending node's
-    /// overlay address and a port bound to it. Never a container's own:
-    /// a bridge address names a different container on every machine,
-    /// which is the rule phase 7 already learned.
+    /// Where the primary answers, as `host:port` — an overlay address and
+    /// a port bound to it. Never a container's own: a bridge address
+    /// names a different container on every machine, which is the rule
+    /// phase 7 already learned. Empty when the receiving node holds the
+    /// primary itself.
     pub primary: String,
-    /// Which copies to hold, in the **service's** numbering. Never the
-    /// primary's slot: this errand only ever asks for standbys.
+    /// Which copies to hold, in the **service's** numbering. The
+    /// primary's slot among them is the receiving node's to run as the
+    /// primary; an older node refuses that with a sentence.
     pub slots: Vec<u32>,
     pub primary_slot: u32,
+    /// Who may follow the primary, as CIDRs: the overlay address of every
+    /// other node holding a standby. Read only by the node holding the
+    /// primary, whose rows say nothing about where the standbys are.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub replication_from: Vec<String>,
     /// The **owner's** domain, so the copy answers to the database's own
     /// qualified name rather than to one built from the holding node's.
     ///
@@ -361,6 +367,17 @@ pub struct Standby {
     /// a qualified name. Absent when the owner has no domain.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub qualified_domain: Option<String>,
+    /// The name itself, chosen or derived, as the owner computes it. A
+    /// chosen one lives on the owner's port row, which never travels, and
+    /// `qualified_domain` can only rebuild the derived one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// The owner publishes it on a port: one it opens on itself, which the
+    /// name resolves to, and forwards here over the overlay. Read only by
+    /// the node holding the primary, which has to admit clients that do not
+    /// come from inside the project.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub published: bool,
 
     /// Whether the database is meant to be running. The same field a
     /// `host` errand carries and for the same reason — a stopped service
@@ -399,6 +416,15 @@ pub struct Certificate {
     pub name: String,
     pub cert_pem: String,
     pub key_pem: String,
+    /// For a database this node holds a copy of, rather than a name it
+    /// answers for as an edge — so it is `store` that admits it, and the
+    /// copy that serves it rather than the edge.
+    ///
+    /// Its own instruction rather than a field of the database's, because
+    /// every database instruction redeploys the copy, and a renewal handed
+    /// to a running server is a signal where a redeployment is a restart.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub database: bool,
 }
 
 impl std::fmt::Debug for Certificate {
@@ -541,7 +567,12 @@ pub fn consent_for(
                 .unwrap_or(false);
             (!withdrawing).then_some(crate::domain::values::capability::Capability::Dns)
         }
-        Kind::Certificate => Some(crate::domain::values::capability::Capability::Edge),
+        Kind::Certificate => match serde_json::from_value::<Certificate>(payload.clone()) {
+            Ok(certificate) if certificate.database => {
+                Some(crate::domain::values::capability::Capability::Store)
+            }
+            _ => Some(crate::domain::values::capability::Capability::Edge),
+        },
         Kind::Unknown => None,
     }
 }
@@ -1305,6 +1336,37 @@ mod tests {
             .expect("query")
             .expect("there");
         assert!(!record.failed(), "the late failure overwrote the outcome");
+    }
+
+    /// A database's certificate is admitted by the grant that admitted the
+    /// database. Asking for `edge` would refuse it on a node that keeps data
+    /// and answers for no names — which is what a private node holding a
+    /// primary is — and the primary would present a certificate the owner's
+    /// page never showed.
+    #[test]
+    fn a_database_certificate_needs_store_and_an_edge_one_still_needs_edge() {
+        use crate::domain::values::capability::Capability;
+        let certificate = |database: bool| {
+            serde_json::to_value(Certificate {
+                name: "db.shop.example".into(),
+                cert_pem: "c".into(),
+                key_pem: "k".into(),
+                database,
+            })
+            .expect("encodes")
+        };
+        assert_eq!(
+            consent_for(Kind::Certificate, &certificate(true)),
+            Some(Capability::Store)
+        );
+        assert_eq!(
+            consent_for(Kind::Certificate, &certificate(false)),
+            Some(Capability::Edge)
+        );
+        assert!(
+            certificate(false).get("database").is_none(),
+            "an edge's instruction reads the same to a node that predates the field"
+        );
     }
 
     /// The node reading an errand is running a different version than

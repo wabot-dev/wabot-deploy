@@ -4118,6 +4118,7 @@ mod tests {
             version: "17",
             memory_limit: 256 * 1024 * 1024,
             image: None,
+            on: None,
         }
         .run(&console.database)
         .await
@@ -4162,6 +4163,7 @@ mod tests {
             version: "8.4",
             memory_limit: 256 * 1024 * 1024,
             image: None,
+            on: None,
         }
         .run(&console.database)
         .await
@@ -4201,6 +4203,80 @@ mod tests {
         assert_eq!(after.memory_limit, Some(256 * 1024 * 1024));
     }
 
+    /// A database's primary stays on the node it was made on, in both
+    /// directions. Moving it used to stop the copy here and start nothing
+    /// there: the receiving node refused to hold a primary, and the page
+    /// read "Waiting for that node" for ever — `nubo-testing-db`, on the
+    /// test nodes.
+    #[tokio::test]
+    async fn a_database_primary_is_not_moved_and_its_row_offers_no_node() {
+        let console = Console::new().await;
+        let cookie = console.signed_in().await;
+        service(&console, &cookie).await;
+        a_node_elsewhere(&console).await;
+        let mut keeps_data = crate::infra::network::find(&console.database, "nd-elsewhere1")
+            .await
+            .expect("query")
+            .expect("there");
+        keeps_data.allows = vec![crate::domain::values::capability::Capability::Store];
+        crate::infra::network::save(&console.database, &keeps_data)
+            .await
+            .expect("node");
+        let project = crate::infra::repositories::projects::find(&console.database, "my-api")
+            .await
+            .expect("query")
+            .expect("made");
+
+        for (name, made_on, moved_to) in [
+            ("Here", None, "nd-elsewhere1"),
+            ("There", Some("nd-elsewhere1"), ""),
+        ] {
+            let (made, _) = crate::features::databases::create_database_command::CreateDatabase {
+                project_id: &project.id,
+                name,
+                engine: crate::domain::entities::database::Engine::Postgres,
+                version: "17",
+                memory_limit: 256 * 1024 * 1024,
+                image: None,
+                on: made_on,
+            }
+            .run(&console.database)
+            .await
+            .expect("database");
+            let base = format!("/projects/my-api/services/{}", made.slug);
+
+            let page = console
+                .harness
+                .get(&format!("{base}/settings/replicas"))
+                .header("cookie", &cookie)
+                .send()
+                .await
+                .body;
+            assert!(!page.contains("name=\"slot-1\""), "{name}: {page}");
+
+            let response = console
+                .harness
+                .post(&format!("{base}/placement"))
+                .header("cookie", &cookie)
+                .form(&[("replicas", "1"), ("new-on", ""), ("slot-1", moved_to)])
+                .send()
+                .await;
+            assert!(
+                response
+                    .header("location")
+                    .unwrap_or_default()
+                    .contains("error="),
+                "{name}: the primary was moved"
+            );
+            let primary =
+                crate::infra::repositories::replicas::in_slot(&console.database, &made.id, 1)
+                    .await
+                    .expect("query")
+                    .expect("there");
+            assert_eq!(primary.node_id.as_deref(), made_on, "{name}");
+        }
+    }
+
     /// Settings offered a Postgres 64 MB that the new-database form did not,
     /// which read as a size the form had lost. One floor now, on both — and
     /// a database made at 64 MB before it keeps that size through a save
@@ -4222,6 +4298,7 @@ mod tests {
             version: "17",
             memory_limit: 256 * 1024 * 1024,
             image: None,
+            on: None,
         }
         .run(&console.database)
         .await
@@ -4386,6 +4463,7 @@ mod tests {
             version: "17",
             memory_limit: crate::domain::policies::presets::LADDER[1],
             image: None,
+            on: None,
         }
         .run(&console.database)
         .await
@@ -4918,6 +4996,7 @@ mod tests {
             version: "17",
             memory_limit: crate::domain::policies::presets::LADDER[1],
             image: None,
+            on: None,
         }
         .run(&console.database)
         .await
@@ -5201,6 +5280,7 @@ mod tests {
             version: "17",
             memory_limit: 256 * 1024 * 1024,
             image: None,
+            on: None,
         }
         .run(&console.database)
         .await
@@ -5824,6 +5904,7 @@ mod tests {
             version: "17",
             memory_limit: 256 * 1024 * 1024,
             image: None,
+            on: None,
         }
         .run(&console.database)
         .await

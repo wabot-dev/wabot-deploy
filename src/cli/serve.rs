@@ -415,6 +415,24 @@ pub async fn run(config: Config) -> anyhow::Result<i32> {
                 }
             }
         })
+        // A database whose primary runs on another node: its published port
+        // opened here and carried there, and what that node presents — the
+        // name, the certificate — sent again when it changed here. Ten
+        // seconds, the pace of the restarts above, because the port a
+        // primary answers on arrives on a report and a client waits on it.
+        .service_with_cancel("databases-elsewhere", {
+            let deployer = deployer.clone();
+            move |cancel| async move {
+                loop {
+                    deployer.forward_published().await;
+                    deployer.dispatch_held_elsewhere().await;
+                    tokio::select! {
+                        _ = cancel.cancelled() => return Ok::<(), anyhow::Error>(()),
+                        _ = tokio::time::sleep(std::time::Duration::from_secs(10)) => {}
+                    }
+                }
+            }
+        })
         // A renewed certificate reaching a running database.
         //
         // Its own loop rather than a step of the certificate loop: that

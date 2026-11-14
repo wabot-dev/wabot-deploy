@@ -27,6 +27,17 @@ impl RestoreDatabase<'_> {
         if !self.service.kind.is_managed() {
             return Err("that service is not a managed database".into());
         }
+        if let Some(node) =
+            crate::infra::repositories::databases::primary_elsewhere(database, &self.service.id)
+                .await
+                .map_err(|error| error.to_string())?
+        {
+            return Err(format!(
+                "it runs on {}, which takes its backups and archives its log — there is nothing \
+                 of it on this machine to restore from",
+                node.name
+            ));
+        }
 
         crate::infra::backup::restore_one(
             config,

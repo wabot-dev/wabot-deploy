@@ -292,6 +292,7 @@ impl DatabaseRestController {
                 "" => None,
                 _ => Some(field(&form, "image").to_string()),
             },
+            on: field(&form, "on").to_string(),
         };
         if let Err(reason) = asked.validate() {
             return Ok(back_with_error(&here, &reason.to_string()));
@@ -471,6 +472,7 @@ mod tests {
             version: "17",
             memory_limit: 256 * 1024 * 1024,
             image: None,
+            on: None,
         }
         .run(&database)
         .await
@@ -564,6 +566,7 @@ mod tests {
             version: "17",
             memory_limit: 256 * 1024 * 1024,
             image: None,
+            on: None,
         }
         .run(&database)
         .await
@@ -650,6 +653,7 @@ mod tests {
             version: "17",
             memory_limit: 256 * 1024 * 1024,
             image: None,
+            on: None,
         }
         .run(&database)
         .await
@@ -1004,6 +1008,7 @@ mod tests {
             version: "17",
             memory_limit: 128 * 1024 * 1024,
             image: None,
+            on: None,
         }
         .run(&console.database)
         .await
@@ -1063,6 +1068,7 @@ mod tests {
             version: "17",
             memory_limit: 256 * 1024 * 1024,
             image: None,
+            on: None,
         }
         .run(&console.database)
         .await
@@ -1212,6 +1218,7 @@ mod tests {
             version: "17",
             memory_limit: 256 * 1024 * 1024,
             image: None,
+            on: None,
         }
         .run(&console.database)
         .await
@@ -1348,6 +1355,7 @@ mod tests {
             version: "17",
             memory_limit: 256 * 1024 * 1024,
             image: None,
+            on: None,
         }
         .run(&console.database)
         .await

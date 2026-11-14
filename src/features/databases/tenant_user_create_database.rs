@@ -32,6 +32,23 @@ pub async fn run(
     let memory_limit = crate::domain::policies::presets::parse(&asked.memory)?
         .unwrap_or(crate::features::databases::create_database_command::DEFAULT_PRESET);
 
+    let on = match asked.on.trim() {
+        "" => None,
+        id => match crate::infra::network::candidates_for(
+            database,
+            crate::domain::values::capability::Capability::Store,
+        )
+        .await
+        .map_err(|error| error.to_string())?
+        .into_iter()
+        .find(|node| node.id == id)
+        {
+            Some(node) if node.is_self => None,
+            Some(node) => Some(node.id),
+            None => return Err("that node has not agreed to keep data for this one".into()),
+        },
+    };
+
     let (service, _) = crate::features::databases::create_database_command::CreateDatabase {
         project_id: &project.id,
         name: &asked.name,
@@ -39,6 +56,7 @@ pub async fn run(
         version: &asked.version,
         memory_limit,
         image: asked.image.as_deref(),
+        on: on.as_deref(),
     }
     .run(database)
     .await
@@ -69,6 +87,7 @@ mod tests {
             version: "17".into(),
             memory: String::new(),
             image: Some(image.into()),
+            on: String::new(),
         };
 
         let refused = super::run(

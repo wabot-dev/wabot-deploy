@@ -41,6 +41,8 @@ pub fn placement_card<'a>(
     // be collected, so a copy that has been told reads apart from one
     // that has not.
     queued: &'a [String],
+    // A database's primary, which stays on the node it was made on.
+    primary: Option<u32>,
 ) -> impl Renderable + 'a {
     let action = format!(
         "/projects/{}/services/{}/placement",
@@ -63,11 +65,16 @@ pub fn placement_card<'a>(
                             <tr>
                                 <td class="mono">("#")(replica.slot)</td>
                                 <td>
-                                    <select name=(format!("slot-{}", replica.slot))>
-                                        @for node in nodes {
-                                            (node_option(node, replica))
-                                        }
-                                    </select>
+                                    @if primary == Some(replica.slot) {
+                                        <span>(node_name(replica, nodes))</span>
+                                        <span class="tile-detail">" · "(t("primary, stays here"))</span>
+                                    } @else {
+                                        <select name=(format!("slot-{}", replica.slot))>
+                                            @for node in nodes {
+                                                (node_option(node, replica))
+                                            }
+                                        </select>
+                                    }
                                 </td>
                                 <td data-replica=(&replica.id)>
                                     (placement_state(

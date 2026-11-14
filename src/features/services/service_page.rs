@@ -46,6 +46,8 @@ pub struct Engine<'a> {
     /// measures is the archive, which can be there with no base copy to
     /// replay onto.
     pub restorable: bool,
+    /// The node running its primary, when that is not this one.
+    pub held_on: Option<&'a str>,
 }
 
 pub struct ServiceDetail<'a> {
@@ -191,7 +193,9 @@ pub fn render<'a>(page: &'a ServiceDetail<'a>) -> impl Renderable + 'a {
             // because it is a fact about this database rather than about
             // the node — even though what decides it is a switch on the
             // node's page, which is why the card says so when it is off.
-            @if engine.row.engine == crate::domain::entities::database::Engine::Mysql {
+            @if let Some(node) = engine.held_on {
+                (database_cards_component::kept_elsewhere_card(node))
+            } @else if engine.row.engine == crate::domain::entities::database::Engine::Mysql {
                 (database_cards_component::backups_only_card())
             } @else {
                 (database_cards_component::window_card(engine.window, engine.stuck, engine.elsewhere))

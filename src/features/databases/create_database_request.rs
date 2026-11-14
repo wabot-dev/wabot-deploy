@@ -27,4 +27,7 @@ pub struct CreateDatabaseRequest {
     /// hide it.
     #[serde(default)]
     pub image: Option<String>,
+    /// The node its primary runs on, by id; empty for this one.
+    #[serde(default)]
+    pub on: String,
 }

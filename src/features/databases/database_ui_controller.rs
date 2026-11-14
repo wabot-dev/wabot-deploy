@@ -55,10 +55,25 @@ impl DatabaseUiController {
         .allowing(allowed);
 
         layout::head("Create database");
+        let (here, elsewhere): (Vec<_>, Vec<_>) = crate::infra::network::candidates_for(
+            &self.state.database,
+            crate::domain::values::capability::Capability::Store,
+        )
+        .await?
+        .into_iter()
+        .partition(|node| node.is_self);
+        let here = match here.into_iter().next() {
+            Some(node) => Some(node.name),
+            None => crate::infra::network::me(&self.state.database)
+                .await?
+                .map(|node| node.name),
+        };
         let page = crate::features::databases::new_database_page::NewDatabase {
             action: &action,
             back: &back,
             query_error: query.error.as_deref(),
+            here: here.as_deref(),
+            elsewhere: &elsewhere,
         };
         let body = crate::shell::texts::language::scoped(account.language, || {
             crate::features::databases::new_database_page::render(&page)

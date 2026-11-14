@@ -21,6 +21,7 @@
 pub mod database;
 pub mod dns;
 pub mod edge_withdrawals;
+pub mod forwards;
 pub mod hosts;
 pub mod jobs;
 pub mod logs;
@@ -525,10 +526,50 @@ impl Deployer {
                     // whoever is going to read it.
                     let entries = hosts::entries_for(&named, &addresses, &project.slug, &id);
                     hosts::write(data_dir, &id, &entries)?;
+                    // Rewritten beside the names, and only where a deployment
+                    // already placed one: who signs what a name answers with
+                    // changes when the names do, and a running container
+                    // reads the file at its next connection.
+                    let authorities = database::config_dir(data_dir, &id).join("ca.crt");
+                    if authorities.exists() {
+                        if let Ok(pem) = self.authorities_for(service).await {
+                            std::fs::write(&authorities, pem)?;
+                        }
+                    }
                 }
             }
         }
         Ok(())
+    }
+
+    /// The authorities a container here verifies with: this node's, and
+    /// that of the node that placed it, when another did.
+    ///
+    /// That node's databases present that node's certificates wherever
+    /// their primary runs — its page shows them, and a client outside is
+    /// handed its authority to verify them — and a service it placed here
+    /// is the only kind that reaches one of them by name, being in the same
+    /// project.
+    async fn authorities_for(
+        &self,
+        service: &Service,
+    ) -> Result<String, crate::infra::edge::certs::CertError> {
+        let mut pem = crate::infra::edge::certs::ca_certificate_pem(&self.database).await?;
+        let theirs = match &service.origin_node_id {
+            Some(origin) => crate::infra::network::find(&self.database, origin)
+                .await
+                .ok()
+                .flatten()
+                .and_then(|node| node.ca_pem),
+            None => None,
+        };
+        if let Some(theirs) = theirs.filter(|theirs| !pem.contains(theirs.trim())) {
+            if !pem.ends_with('\n') {
+                pem.push('\n');
+            }
+            pem.push_str(&theirs);
+        }
+        Ok(pem)
     }
 
     /// Start (or restart) every copy of a service that runs here.
@@ -747,8 +788,19 @@ impl Deployer {
         replica: &Replica,
     ) -> DeployResult<Vec<PortMapping>> {
         let ports = ports::of_service(&self.database, &service.id).await?;
+        // A database is published on its primary and nowhere else. A
+        // standby given the same host port took writes it refuses, and
+        // with the primary on another node it would have answered on the
+        // port the owner forwards from, ahead of the forward.
+        let a_standby = match service.kind.is_managed() {
+            true => databases::of_service(&self.database, &service.id)
+                .await?
+                .is_some_and(|row| row.primary_slot != replica.slot),
+            false => false,
+        };
         let published: Vec<PortMapping> = ports
             .iter()
+            .filter(|_| !a_standby)
             .filter_map(|port| {
                 Some(PortMapping {
                     host_port: port.host_port?,
@@ -888,7 +940,7 @@ impl Deployer {
         // Into the same directory a managed engine's files arrive in, so
         // there is one destination and one mount. Two binds on `/etc/wabot`
         // would be a race about which one wins.
-        match crate::infra::edge::certs::ca_certificate_pem(&self.database).await {
+        match self.authorities_for(service).await {
             Ok(pem) => {
                 let dir = database::config_dir(&self.config.node.data_dir, &id);
                 std::fs::create_dir_all(&dir)?;
@@ -2344,8 +2396,136 @@ impl Deployer {
         self.standbys(service, also).await;
     }
 
+    /// A primary held on another node said something new — the port it
+    /// answers on, most of all, which nothing here could know before it
+    /// deployed there.
+    ///
+    /// The standbys elsewhere are told where to follow, and the id of a
+    /// service with a standby here that could not start without it comes
+    /// back, for the caller to queue its deployment: a deployment that
+    /// failed is not one `watch` starts again.
+    pub async fn primary_reported(
+        &self,
+        node: &str,
+        state: &crate::infra::network::api::ReplicaState,
+    ) -> Option<String> {
+        let project = crate::infra::repositories::projects::all(&self.database)
+            .await
+            .ok()?
+            .into_iter()
+            .find(|project| project.name == state.project)?;
+        let service = services::in_project(
+            &self.database,
+            &project.id,
+            crate::domain::values::slug::Slug::of(&state.service).as_str(),
+        )
+        .await
+        .ok()??;
+        let row = databases::of_service(&self.database, &service.id)
+            .await
+            .ok()??;
+        let placements = replicas::of_service(&self.database, &service.id)
+            .await
+            .ok()?;
+        let held_there = placements.iter().any(|replica| {
+            replica.slot == row.primary_slot && replica.node_id.as_deref() == Some(node)
+        });
+        if state.slot != row.primary_slot || !held_there {
+            return None;
+        }
+        self.dispatch_standbys(&service).await;
+        placements
+            .iter()
+            .any(|replica| {
+                replica.is_here()
+                    && replica.slot != row.primary_slot
+                    && !replica.evicted()
+                    && replica.address.is_none()
+            })
+            .then(|| service.id.clone())
+    }
+
     async fn dispatch_standbys(&self, service: &Service) {
         self.standbys(service, &Default::default()).await;
+    }
+
+    /// Carry every database this node publishes, whose primary runs on
+    /// another node, to where it runs. See `forwards`.
+    pub async fn forward_published(&self) {
+        let wanted = match self.forwards_wanted().await {
+            Ok(wanted) => wanted,
+            Err(error) => {
+                tracing::warn!(%error, "could not read which databases to forward");
+                return;
+            }
+        };
+        for (port, reason) in forwards::forwards().converge(&wanted).await {
+            tracing::warn!(port, %reason, "could not open the port of a database published here");
+        }
+    }
+
+    async fn forwards_wanted(
+        &self,
+    ) -> DeployResult<std::collections::BTreeMap<u16, std::net::SocketAddr>> {
+        let nodes = crate::infra::network::all(&self.database)
+            .await
+            .map_err(|error| DeployError::Refused(error.to_string()))?;
+        let mut wanted = std::collections::BTreeMap::new();
+        for service in services::all(&self.database, None).await? {
+            if !service.kind.is_managed() || !service.is_ours() {
+                continue;
+            }
+            let Some(published) = ports::of_service(&self.database, &service.id)
+                .await?
+                .into_iter()
+                .find_map(|port| port.host_port)
+            else {
+                continue;
+            };
+            let Some(row) = databases::of_service(&self.database, &service.id).await? else {
+                continue;
+            };
+            let Some(primary) = replicas::in_slot(&self.database, &service.id, row.primary_slot)
+                .await?
+                .filter(|primary| !primary.evicted())
+            else {
+                continue;
+            };
+            let (Some(node_id), Some(port)) = (&primary.node_id, primary.overlay_port) else {
+                continue;
+            };
+            let Some(overlay) = nodes
+                .iter()
+                .find(|node| &node.id == node_id)
+                .and_then(|node| node.overlay_ip.as_deref())
+            else {
+                continue;
+            };
+            if let Ok(target) = format!("{overlay}:{port}").parse() {
+                wanted.insert(published, target);
+            }
+        }
+        Ok(wanted)
+    }
+
+    /// Tell every node holding a primary for this one what it holds, again.
+    ///
+    /// What that node presents is decided here — the name, whether it is
+    /// published, the certificate — and the certificate renews here with
+    /// nothing else happening to the database, so nothing else would send
+    /// it. `queue_if_changed` makes a pass that changes nothing free.
+    pub async fn dispatch_held_elsewhere(&self) {
+        let Ok(services) = services::all(&self.database, None).await else {
+            return;
+        };
+        for service in services {
+            if !service.kind.is_managed() || !service.is_ours() {
+                continue;
+            }
+            if let Ok(Some(_)) = databases::primary_elsewhere(&self.database, &service.id).await {
+                self.dispatch_standbys(&service).await;
+            }
+        }
     }
 
     async fn standbys(&self, service: &Service, also: &std::collections::BTreeSet<String>) {
@@ -2968,27 +3148,36 @@ impl Deployer {
     }
 
     /// Where this database's primary can be reached **from another
-    /// node**: this node's overlay address, and the port bound to it.
+    /// node**: the overlay address of the node holding it, and the port
+    /// bound to it there.
     ///
     /// Never the container's own address. A bridge subnet is identical
     /// on every node, so a container address names a different container
     /// on each machine that reads it — the rule phase 7 already learned
     /// the hard way.
+    ///
+    /// `None` for a primary elsewhere until its node has reported the
+    /// port, which came out of that node's own port space.
     async fn primary_overlay(&self, service: &Service) -> DeployResult<Option<(String, u16)>> {
         let Some(row) = databases::of_service(&self.database, &service.id).await? else {
             return Ok(None);
         };
-        let Some(overlay) = self.overlay_address().await else {
-            return Ok(None);
-        };
-        let primary = replicas::of_service(&self.database, &service.id)
+        let Some(primary) = replicas::of_service(&self.database, &service.id)
             .await?
             .into_iter()
-            .find(|replica| replica.slot == row.primary_slot && replica.is_here());
-
-        Ok(primary
-            .and_then(|replica| replica.overlay_port)
-            .map(|port| (overlay, port)))
+            .find(|replica| replica.slot == row.primary_slot)
+        else {
+            return Ok(None);
+        };
+        let overlay = match &primary.node_id {
+            None => self.overlay_address().await,
+            Some(node_id) => crate::infra::network::find(&self.database, node_id)
+                .await
+                .ok()
+                .flatten()
+                .and_then(|node| node.overlay_ip),
+        };
+        Ok(overlay.zip(primary.overlay_port))
     }
 
     /// Notice a renewed certificate and hand it to the servers running
@@ -3020,37 +3209,21 @@ impl Deployer {
             let Some(primary) = names.first() else {
                 continue;
             };
-            // What the store holds, or a new leaf from the node's CA.
-            //
             // Read from **where the certificate came from** rather than
             // from the policy: `source` exists because the renewal loop
             // used to read `issuer` as a decision and silently replaced
-            // anything it did not recognise. ACME's and a file's belong
-            // to whoever keeps them fresh; ours is ours to reissue, and
-            // `ensure_self_signed` is convergent — it returns the stored
-            // one untouched while it is fresh and still covers the
-            // names.
+            // anything it did not recognise. See `database_certificate`.
             //
             // Without this a self-signed database certificate simply
             // expired: nothing else on the node reissues one, because a
             // database's internal name is not a name the edge was asked
             // to serve.
-            use crate::infra::edge::certs::Source;
-            let stored = match crate::infra::edge::certs::load(&self.database, primary).await {
-                Ok(Some(found)) if matches!(found.source, Source::Acme | Source::File) => found,
-                _ => match crate::infra::edge::certs::ensure_self_signed(
-                    &self.database,
-                    primary,
-                    &names,
-                )
-                .await
-                {
-                    Ok(issued) => issued,
-                    Err(error) => {
-                        tracing::warn!(name = %primary, %error, "could not issue a certificate");
-                        continue;
-                    }
-                },
+            let stored = match database_certificate(&self.database, &names).await {
+                Ok(stored) => stored,
+                Err(error) => {
+                    tracing::warn!(name = %primary, %error, "could not issue a certificate");
+                    continue;
+                }
             };
 
             for replica in replicas::of_service(&self.database, &service.id).await? {
@@ -3225,27 +3398,10 @@ impl Deployer {
         names: &[String],
         container_id: &str,
     ) -> DeployResult<()> {
-        let Some(primary) = names.first() else {
-            return Err(DeployError::Refused(
-                "a database needs a name to have a certificate for".into(),
-            ));
-        };
         let data_dir = &self.config.node.data_dir;
-
-        // What the store holds for this name, or a leaf from the node's
-        // CA. `ensure_self_signed` is convergent: it reissues only when
-        // the names change or expiry is near.
-        //
-        // Only ACME's and a file's are taken as they are, which is the rule
-        // `refresh_certificates` follows: ours is ours to reissue, and
-        // taking any stored row installed one whose names had changed.
-        use crate::infra::edge::certs::Source;
-        let stored = match crate::infra::edge::certs::load(&self.database, primary).await {
-            Ok(Some(found)) if matches!(found.source, Source::Acme | Source::File) => found,
-            _ => crate::infra::edge::certs::ensure_self_signed(&self.database, primary, names)
-                .await
-                .map_err(|error| DeployError::Refused(error.to_string()))?,
-        };
+        let stored = database_certificate(&self.database, names)
+            .await
+            .map_err(|error| DeployError::Refused(error.to_string()))?;
         database::write_tls(data_dir, container_id, &stored.cert_pem, &stored.key_pem)?;
         let engine = service.kind.engine().unwrap_or(Engine::Postgres);
         if engine == Engine::Mysql {
@@ -4077,10 +4233,11 @@ impl Deployer {
 
         let replication_from = replication_sources(&row, &placements, &nodes, net);
 
-        let published = ports::of_service(&self.database, &service.id)
-            .await?
-            .iter()
-            .any(|port| port.host_port.is_some());
+        let published = row.owner_published
+            || ports::of_service(&self.database, &service.id)
+                .await?
+                .iter()
+                .any(|port| port.host_port.is_some());
 
         // Said out loud, because the two are the same image and the
         // same page and they are not the same container: one accepts
@@ -4351,22 +4508,46 @@ fn primary_port(ports: &[Port]) -> Option<u16> {
     with_hostname.or_else(|| ports.iter().map(|port| port.container_port).min())
 }
 
-/// The names a database's certificate has to cover.
+/// What a database presents for these names.
 ///
-/// The short ones a container in the project would use, and the
-/// qualified one that is also the public name — the only one a public
-/// authority can sign, and so the only one that verifies when the policy
-/// for it is `Acme`.
+/// What the store holds when somebody else keeps it fresh — an authority,
+/// a file, or the owner that sent it to the node holding its primary — and
+/// a leaf from this node's authority otherwise. Ours is ours to reissue, and
+/// `ensure_self_signed` is convergent: it returns the stored one untouched
+/// while it is fresh and still covers the names.
 ///
-/// A free function because the certificate loop needs the same answer
-/// and has no `Deployer`: a database's names are not names the edge was
-/// asked to serve, so anything reasoning about what this node still
-/// wants a certificate for has to ask here too.
-pub async fn certificate_names(
+/// One function for the three places that ask — a deployment, the renewal
+/// pass and the instruction to a node holding the primary — because two of
+/// them deciding differently installed a certificate whose names had
+/// changed.
+pub async fn database_certificate(
+    database: &SqliteDatabase,
+    names: &[String],
+) -> Result<crate::infra::edge::certs::StoredCert, crate::infra::edge::certs::CertError> {
+    use crate::infra::edge::certs::Source;
+    let Some(primary) = names.first() else {
+        return Err(crate::infra::edge::certs::CertError::Invalid(
+            "a database needs a name to have a certificate for".into(),
+        ));
+    };
+    match crate::infra::edge::certs::load(database, primary).await {
+        Ok(Some(found))
+            if matches!(found.source, Source::Acme | Source::File | Source::Received) =>
+        {
+            Ok(found)
+        }
+        _ => crate::infra::edge::certs::ensure_self_signed(database, primary, names).await,
+    }
+}
+
+/// The name a database answers to from outside its project: chosen, told
+/// or derived, in that order. `None` when there is nothing to derive one
+/// from, which leaves it the short names alone.
+pub async fn qualified_database_name(
     database: &SqliteDatabase,
     project: &Project,
     service: &Service,
-) -> Vec<String> {
+) -> Option<String> {
     // The **owner's** domain when this copy is held for somebody else. A
     // certificate for a name built from this machine's domain would be a
     // name no client writes: the database is not this node's, and
@@ -4392,7 +4573,7 @@ pub async fn certificate_names(
     // they could — one function, so the certificate covers exactly what
     // `/etc/hosts` resolves. Two builders of this drifted once already and
     // the failure was a client dialling a name no certificate held.
-    let qualified = crate::infra::deploy::database::qualified_name(
+    crate::infra::deploy::database::qualified_name(
         database,
         service,
         &project.slug,
@@ -4400,7 +4581,26 @@ pub async fn certificate_names(
     )
     .await
     .ok()
-    .flatten();
+    .flatten()
+}
+
+/// The names a database's certificate has to cover.
+///
+/// The short ones a container in the project would use, and the
+/// qualified one that is also the public name — the only one a public
+/// authority can sign, and so the only one that verifies when the policy
+/// for it is `Acme`.
+///
+/// A free function because the certificate loop needs the same answer
+/// and has no `Deployer`: a database's names are not names the edge was
+/// asked to serve, so anything reasoning about what this node still
+/// wants a certificate for has to ask here too.
+pub async fn certificate_names(
+    database: &SqliteDatabase,
+    project: &Project,
+    service: &Service,
+) -> Vec<String> {
+    let qualified = qualified_database_name(database, project, service).await;
     let mut names = Vec::new();
 
     // Both names, and the read pool's is not optional: a client
@@ -4656,16 +4856,19 @@ fn replication_sources(
             .filter(|other| row.role_of(other.slot) == postgres::Role::Standby)
             .filter(|other| !other.evicted())
     };
-    let mut from: Vec<String> = standbys()
-        .filter_map(|other| other.node_id.as_deref())
-        .filter_map(|node_id| {
-            nodes
-                .iter()
-                .find(|node| node.id == node_id)
-                .and_then(|node| node.overlay_ip.clone())
-                .map(|address| format!("{address}/32"))
-        })
-        .collect();
+    let mut from: Vec<String> = match &row.replication_from {
+        Some(told) => told.clone(),
+        None => standbys()
+            .filter_map(|other| other.node_id.as_deref())
+            .filter_map(|node_id| {
+                nodes
+                    .iter()
+                    .find(|node| node.id == node_id)
+                    .and_then(|node| node.overlay_ip.clone())
+                    .map(|address| format!("{address}/32"))
+            })
+            .collect(),
+    };
     from.push(format!("{}/32", net.gateway()));
     if standbys().any(|other| other.is_here()) {
         from.push(net.subnet());
@@ -4705,6 +4908,9 @@ mod tests {
             owner_domain: None,
             restored_from: None,
             recovery_target: None,
+            replication_from: None,
+            owner_name: None,
+            owner_published: false,
         };
         let replica = |slot: u32, node_id: Option<&str>| Replica {
             id: format!("rp-{slot}"),
@@ -4924,6 +5130,318 @@ mod tests {
         (database, project, service)
     }
 
+    async fn a_far_node(database: &SqliteDatabase, id: &str, overlay: &str, ca: Option<&str>) {
+        crate::infra::network::save(
+            database,
+            &crate::infra::network::Node {
+                update_note: None,
+                version: None,
+                wanted_version: None,
+                usage: None,
+                draining_at: None,
+                capacity: None,
+                id: id.into(),
+                name: format!("{id}.example"),
+                kind: crate::infra::network::Kind::Private,
+                overlay_ip: Some(overlay.into()),
+                public_key: None,
+                endpoint: None,
+                allows: vec![crate::domain::values::capability::Capability::Store],
+                last_seen_at: None,
+                is_self: false,
+                ca_pem: ca.map(str::to_string),
+            },
+        )
+        .await
+        .expect("node");
+    }
+
+    /// A database published here whose primary runs elsewhere is carried
+    /// to the port that node reported, and only once it has: a forward to
+    /// a port nobody bound is a client that hangs. One whose primary runs
+    /// here is the portmap plugin's, and forwarding it as well would be two
+    /// owners for one port.
+    #[tokio::test]
+    async fn a_database_published_here_is_carried_to_the_node_running_its_primary() {
+        let database = crate::infra::db::open_in_memory().await.expect("open");
+        crate::infra::network::ensure_self(&database, &crate::infra::config::Config::default())
+            .await
+            .expect("self");
+        a_far_node(&database, "nd-far", "10.42.0.9", None).await;
+        let project = crate::infra::repositories::projects::create(&database, "shop")
+            .await
+            .expect("project");
+        let deployer = Deployer::new(
+            std::sync::Arc::new(database.clone()),
+            &crate::infra::config::Config::default(),
+        );
+        let mut published = Vec::new();
+        for (name, on) in [("elsewhere", Some("nd-far")), ("here", None)] {
+            let (service, _) =
+                crate::features::databases::create_database_command::CreateDatabase {
+                    project_id: &project.id,
+                    name,
+                    engine: crate::domain::entities::database::Engine::Postgres,
+                    version: "17",
+                    memory_limit: 256 * 1024 * 1024,
+                    image: None,
+                    on,
+                }
+                .run(&database)
+                .await
+                .expect("created");
+            let port = ports::of_service(&database, &service.id)
+                .await
+                .expect("ports")
+                .pop()
+                .expect("its port");
+            published.push((
+                service,
+                ports::set_published(&database, &port.id, true)
+                    .await
+                    .expect("published")
+                    .expect("a host port"),
+            ));
+        }
+
+        assert!(
+            deployer.forwards_wanted().await.expect("read").is_empty(),
+            "nothing to carry to before the primary has said where it answers"
+        );
+
+        let primary = replicas::in_slot(&database, &published[0].0.id, 1)
+            .await
+            .expect("query")
+            .expect("the primary");
+        replicas::set_overlay_port(&database, &primary.id, Some(30005))
+            .await
+            .expect("what the report wrote");
+        assert_eq!(
+            deployer.forwards_wanted().await.expect("read"),
+            std::collections::BTreeMap::from([(
+                published[0].1,
+                "10.42.0.9:30005".parse().expect("address")
+            )])
+        );
+    }
+
+    /// A database answers on its published port from its primary alone.
+    /// A standby given the same port refused the writes sent to it, and on
+    /// a node whose primary runs elsewhere it would have answered ahead of
+    /// the forward to the primary.
+    #[tokio::test]
+    async fn a_standby_is_not_given_the_published_port() {
+        let database = crate::infra::db::open_in_memory().await.expect("open");
+        let project = crate::infra::repositories::projects::create(&database, "shop")
+            .await
+            .expect("project");
+        let (service, _) = crate::features::databases::create_database_command::CreateDatabase {
+            project_id: &project.id,
+            name: "orders",
+            engine: crate::domain::entities::database::Engine::Postgres,
+            version: "17",
+            memory_limit: 256 * 1024 * 1024,
+            image: None,
+            on: None,
+        }
+        .run(&database)
+        .await
+        .expect("created");
+        replicas::ensure_count(&database, &service.id, 2, None)
+            .await
+            .expect("a standby here");
+        let port = ports::of_service(&database, &service.id)
+            .await
+            .expect("ports")
+            .pop()
+            .expect("its port");
+        let host_port = ports::set_published(&database, &port.id, true)
+            .await
+            .expect("published")
+            .expect("a host port");
+        let deployer = Deployer::new(
+            std::sync::Arc::new(database.clone()),
+            &crate::infra::config::Config::default(),
+        );
+
+        for (slot, answers) in [(1, true), (2, false)] {
+            let replica = replicas::in_slot(&database, &service.id, slot)
+                .await
+                .expect("query")
+                .expect("there");
+            let mapped = deployer
+                .published_ports(&service, &replica)
+                .await
+                .expect("ports")
+                .iter()
+                .any(|mapping| mapping.host_port == host_port);
+            assert_eq!(mapped, answers, "slot {slot}");
+        }
+    }
+
+    /// A container another node placed here verifies with that node's
+    /// authority too, because that node's databases present what it signed
+    /// wherever their primary runs. One of this node's own does not trust a
+    /// stranger's authority for nothing.
+    #[tokio::test]
+    async fn a_container_placed_by_another_node_holds_its_authority_too() {
+        let database = crate::infra::db::open_in_memory().await.expect("open");
+        let theirs = "-----BEGIN CERTIFICATE-----\nTHEIRS\n-----END CERTIFICATE-----\n";
+        a_far_node(&database, "nd-far", "10.42.0.9", Some(theirs)).await;
+        let project = crate::infra::repositories::projects::create(&database, "shop")
+            .await
+            .expect("project");
+        let ours = services::create(
+            &database,
+            &project.id,
+            "web",
+            "docker.io/library/nginx:alpine",
+            &[],
+        )
+        .await
+        .expect("ours");
+        let placed = services::create(
+            &database,
+            &project.id,
+            "api",
+            "docker.io/library/nginx:alpine",
+            &[],
+        )
+        .await
+        .expect("placed");
+        services::set_origin(&database, &placed.id, "nd-far")
+            .await
+            .expect("origin");
+        let placed = services::find(&database, &placed.id)
+            .await
+            .expect("query")
+            .expect("there");
+        let deployer = Deployer::new(
+            std::sync::Arc::new(database.clone()),
+            &crate::infra::config::Config::default(),
+        );
+        let mine = crate::infra::edge::certs::ca_certificate_pem(&database)
+            .await
+            .expect("this node's");
+
+        let bundle = deployer.authorities_for(&placed).await.expect("bundle");
+        assert!(bundle.contains(mine.trim()), "{bundle}");
+        assert!(bundle.contains("THEIRS"), "{bundle}");
+        assert_eq!(deployer.authorities_for(&ours).await.expect("own"), mine);
+    }
+
+    /// The address of a primary held elsewhere arrives on a report, and it
+    /// is what both kinds of standby were waiting for: one on a third node
+    /// is told where to follow, and one here that refused to start without
+    /// it comes back to be deployed — a failed deployment is not one
+    /// `watch` starts again, so nothing else would.
+    #[tokio::test]
+    async fn the_port_a_primary_elsewhere_reports_reaches_its_standbys() {
+        let database = crate::infra::db::open_in_memory().await.expect("open");
+        crate::infra::network::ensure_self(&database, &crate::infra::config::Config::default())
+            .await
+            .expect("self");
+        let mut me = crate::infra::network::me(&database)
+            .await
+            .expect("query")
+            .expect("there");
+        me.overlay_ip = Some("10.42.0.1".into());
+        crate::infra::network::save(&database, &me)
+            .await
+            .expect("saved");
+        for (id, overlay) in [("nd-far", "10.42.0.9"), ("nd-third", "10.42.0.7")] {
+            crate::infra::network::save(
+                &database,
+                &crate::infra::network::Node {
+                    update_note: None,
+                    version: None,
+                    wanted_version: None,
+                    usage: None,
+                    draining_at: None,
+                    capacity: None,
+                    id: id.into(),
+                    name: format!("{id}.example"),
+                    kind: crate::infra::network::Kind::Private,
+                    overlay_ip: Some(overlay.into()),
+                    public_key: None,
+                    endpoint: None,
+                    allows: vec![crate::domain::values::capability::Capability::Store],
+                    last_seen_at: None,
+                    is_self: false,
+                    ca_pem: None,
+                },
+            )
+            .await
+            .expect("node");
+        }
+        let project = crate::infra::repositories::projects::create(&database, "shop")
+            .await
+            .expect("project");
+        let (service, _) = crate::features::databases::create_database_command::CreateDatabase {
+            project_id: &project.id,
+            name: "orders",
+            engine: crate::domain::entities::database::Engine::Postgres,
+            version: "17",
+            memory_limit: 256 * 1024 * 1024,
+            image: None,
+            on: Some("nd-far"),
+        }
+        .run(&database)
+        .await
+        .expect("created");
+        replicas::ensure_count(&database, &service.id, 2, Some("nd-third"))
+            .await
+            .expect("a standby on a third node");
+        replicas::ensure_count(&database, &service.id, 3, None)
+            .await
+            .expect("a standby here");
+        let deployer = Deployer::new(
+            std::sync::Arc::new(database.clone()),
+            &crate::infra::config::Config::default(),
+        );
+
+        let primary = replicas::in_slot(&database, &service.id, 1)
+            .await
+            .expect("query")
+            .expect("the primary");
+        replicas::set_overlay_port(&database, &primary.id, Some(30005))
+            .await
+            .expect("what the report wrote");
+        let state = crate::infra::network::api::ReplicaState {
+            project: "shop".into(),
+            service: "orders".into(),
+            slot: 1,
+            address: Some("10.88.0.2".into()),
+            overlay_port: Some(30005),
+            error: None,
+            evicted: false,
+            memory: None,
+            disk: None,
+            cpu: None,
+        };
+
+        assert_eq!(
+            deployer.primary_reported("nd-far", &state).await,
+            Some(service.id.clone()),
+            "the standby here is handed back to be deployed"
+        );
+        let told = crate::infra::network::errand::waiting(&database, "nd-third")
+            .await
+            .expect("errands")
+            .pop()
+            .expect("the standby on the third node was told");
+        assert_eq!(
+            told.payload["primary"],
+            serde_json::json!("10.42.0.9:30005")
+        );
+
+        assert_eq!(
+            deployer.primary_reported("nd-third", &state).await,
+            None,
+            "a node not holding the primary does not speak for it"
+        );
+    }
+
     /// **A stop has to travel.** Stopping a service took down the copies
     /// on this node and said nothing to the machines running the others,
     /// so a service the console showed as stopped went on serving traffic
@@ -5013,6 +5531,7 @@ mod tests {
             version: "17",
             memory_limit: 256 * 1024 * 1024,
             image: None,
+            on: None,
         }
         .run(&database)
         .await

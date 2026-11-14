@@ -792,6 +792,12 @@ pub async fn qualified_name(
     {
         return Ok(Some(chosen));
     }
+    if let Some(told) = crate::infra::repositories::databases::of_service(database, &service.id)
+        .await?
+        .and_then(|row| row.owner_name)
+    {
+        return Ok(Some(told));
+    }
     Ok(suffix.map(|domain| format!("{}.{project_slug}.{domain}", service.slug)))
 }
 
@@ -897,6 +903,9 @@ mod tests {
             owner_domain: None,
             restored_from: None,
             recovery_target: None,
+            replication_from: None,
+            owner_name: None,
+            owner_published: false,
         }
     }
 

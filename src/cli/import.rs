@@ -197,6 +197,7 @@ mod tests {
             version: "8.4",
             memory_limit: 256 * 1024 * 1024,
             image: None,
+            on: None,
         }
         .run(rows)
         .await

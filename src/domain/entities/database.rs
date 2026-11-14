@@ -182,8 +182,26 @@ pub struct Database {
     /// `None` on the node that owns the database: it derives the
     /// address from its own rows, and a stored copy would be a second
     /// answer able to go stale. `Some` on a node holding a standby,
-    /// which has no row for the primary and never will.
+    /// which has no row for the primary and never will. `None` too on a
+    /// node holding the primary for somebody else: it follows nobody.
     pub primary_endpoint: Option<String>,
+    /// Who may follow the primary, as CIDRs, when this node was told.
+    ///
+    /// `None` where the replica rows can answer it, which is the owner.
+    /// `Some` on a node holding the primary for somebody else, whose rows
+    /// name its own slots and nothing about where the standbys are.
+    pub replication_from: Option<Vec<String>>,
+    /// The name it answers to, as the owner computes it.
+    ///
+    /// `None` on the owner, which derives it or reads the one somebody
+    /// chose off its port row. `Some` on a node holding a copy for it: a
+    /// chosen name never travels with the port row, so without this the
+    /// copy answered to the derived name while the owner's page said
+    /// otherwise.
+    pub owner_name: Option<String>,
+    /// Whether the owner publishes it on a port, which it opens on itself
+    /// and forwards here. `false` on the owner, whose port row says.
+    pub owner_published: bool,
     /// Whose domain the qualified name is built from.
     ///
     /// `None` is this node's own. `Some` on a copy held for somebody

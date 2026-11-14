@@ -144,6 +144,7 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
     ("Run a service there", "Ejecutar un servicio allí"),
     ("Run this node's containers there", "Ejecutar allí los contenedores de este nodo"),
     ("Running", "Corriendo"),
+    ("Runs on", "Corre en"),
     ("Save", "Guardar"),
     ("Save domain", "Guardar dominio"),
     ("Served by", "Servido por"),

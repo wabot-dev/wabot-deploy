@@ -719,6 +719,7 @@ mod tests {
             version: "17",
             memory_limit: 256 * 1024 * 1024,
             image: None,
+            on: None,
         }
         .run(&database)
         .await

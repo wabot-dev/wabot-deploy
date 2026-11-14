@@ -26,8 +26,9 @@ pub const REPLICATION_USER: &str = "wabot_replication";
 pub async fn adopt(
     database: &SqliteDatabase,
     service_id: &str,
-    told: &crate::infra::network::errand::Standby,
+    told: &crate::infra::network::errand::Database,
 ) -> PlatformResult<()> {
+    let holds_the_primary = told.slots.contains(&told.primary_slot);
     let row = (
         service_id.to_string(),
         Engine::parse(&told.engine).as_str().to_string(),
@@ -38,8 +39,12 @@ pub async fn adopt(
         told.replication_user.clone(),
         told.replication_password.clone(),
         i64::from(told.primary_slot),
-        told.primary.clone(),
+        (!holds_the_primary && !told.primary.is_empty()).then(|| told.primary.clone()),
         told.qualified_domain.clone(),
+        holds_the_primary
+            .then(|| serde_json::to_string(&told.replication_from).unwrap_or_default()),
+        told.name.clone(),
+        holds_the_primary && told.published,
     );
     database
         .write(move |connection| {
@@ -48,14 +53,16 @@ pub async fn adopt(
                    (\"service_id\", \"engine\", \"version\", \"admin_user\", \
                     \"admin_password\", \"database_name\", \"replication_user\", \
                     \"replication_password\", \"primary_slot\", \"primary_endpoint\", \
-                    \"owner_domain\", \"created_at\") \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12) \
+                    \"owner_domain\", \"replication_from\", \"owner_name\", \"owner_published\", \
+                    \"created_at\") \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15) \
                  ON CONFLICT(\"service_id\") DO UPDATE SET \
                    \"engine\" = ?2, \"version\" = ?3, \"admin_user\" = ?4, \
                    \"admin_password\" = ?5, \"database_name\" = ?6, \
                    \"replication_user\" = ?7, \"replication_password\" = ?8, \
                    \"primary_slot\" = ?9, \"primary_endpoint\" = ?10, \
-                   \"owner_domain\" = ?11",
+                   \"owner_domain\" = ?11, \"replication_from\" = ?12, \
+                   \"owner_name\" = ?13, \"owner_published\" = ?14",
                 (
                     row.0,
                     row.1,
@@ -68,6 +75,9 @@ pub async fn adopt(
                     row.8,
                     row.9,
                     row.10,
+                    row.11,
+                    row.12,
+                    row.13,
                     now_ms(),
                 ),
             )?;
@@ -93,6 +103,26 @@ pub async fn of_service(
         })
         .await?)
 }
+/// The node holding this database's primary, when it is not this one.
+pub async fn primary_elsewhere(
+    database: &SqliteDatabase,
+    service_id: &str,
+) -> PlatformResult<Option<crate::infra::network::Node>> {
+    let Some(row) = of_service(database, service_id).await? else {
+        return Ok(None);
+    };
+    let Some(node_id) =
+        crate::infra::repositories::replicas::in_slot(database, service_id, row.primary_slot)
+            .await?
+            .and_then(|replica| replica.node_id)
+    else {
+        return Ok(None);
+    };
+    crate::infra::network::find(database, &node_id)
+        .await
+        .map_err(|error| crate::domain::errors::PlatformError::Refused(error.to_string()))
+}
+
 /// When this node first held the database's row.
 pub async fn created_at(
     database: &SqliteDatabase,
@@ -127,13 +157,19 @@ fn decode(row: &Row<'_>) -> wabot::sqlite::rusqlite::Result<Database> {
         owner_domain: row.get(10)?,
         restored_from: row.get(11)?,
         recovery_target: row.get(12)?,
+        replication_from: row
+            .get::<_, Option<String>>(13)?
+            .and_then(|text| serde_json::from_str(&text).ok()),
+        owner_name: row.get(14)?,
+        owner_published: row.get(15)?,
     })
 }
 
 const COLUMNS: &str = "\"service_id\", \"engine\", \"version\", \"admin_user\", \
                        \"admin_password\", \"database_name\", \"replication_user\", \
                        \"replication_password\", \"primary_slot\", \"primary_endpoint\", \
-                       \"owner_domain\", \"restored_from\", \"recovery_target\"";
+                       \"owner_domain\", \"restored_from\", \"recovery_target\", \
+                       \"replication_from\", \"owner_name\", \"owner_published\"";
 
 #[cfg(test)]
 mod tests {
@@ -168,6 +204,7 @@ mod tests {
             version: "17",
             memory_limit: 128 * 1024 * 1024,
             image: None,
+            on: None,
         }
         .run(&database)
         .await
@@ -219,6 +256,7 @@ mod tests {
             version: "8.4",
             memory_limit: 256 * 1024 * 1024,
             image: None,
+            on: None,
         }
         .run(&database)
         .await
@@ -259,6 +297,7 @@ mod tests {
                 version,
                 memory_limit,
                 image: None,
+                on: None,
             };
             let error = ask(refused).run(&database).await.expect_err("refused");
             assert!(error.to_string().contains("or more"), "{error}");
@@ -280,6 +319,7 @@ mod tests {
             version: "17",
             memory_limit: 256 * 1024 * 1024,
             image: None,
+            on: None,
         }
         .run(&database)
         .await
@@ -300,6 +340,7 @@ mod tests {
             version: "17",
             memory_limit: 128 * 1024 * 1024,
             image: None,
+            on: None,
         }
         .run(&database)
         .await
@@ -325,6 +366,7 @@ mod tests {
             version: "16",
             memory_limit: 256 * 1024 * 1024,
             image: None,
+            on: None,
         }
         .run(&database)
         .await
@@ -375,6 +417,7 @@ mod tests {
             version: "17",
             memory_limit: 256 * 1024 * 1024,
             image: None,
+            on: None,
         }
         .run(&database)
         .await
@@ -439,6 +482,220 @@ mod tests {
         );
     }
 
+    async fn a_node(database: &SqliteDatabase, id: &str, overlay: &str) {
+        crate::infra::network::save(
+            database,
+            &crate::infra::network::Node {
+                update_note: None,
+                version: None,
+                wanted_version: None,
+                usage: None,
+                draining_at: None,
+                capacity: None,
+                id: id.into(),
+                name: format!("{id}.example"),
+                kind: crate::infra::network::Kind::Private,
+                overlay_ip: Some(overlay.into()),
+                public_key: None,
+                endpoint: None,
+                allows: vec![crate::domain::values::capability::Capability::Store],
+                last_seen_at: None,
+                is_self: false,
+                ca_pem: None,
+            },
+        )
+        .await
+        .expect("node");
+    }
+
+    /// A primary made on another node is that node's to start, and it
+    /// needs no address to do it — so it is told at once. Its standbys
+    /// need its address, which only exists once it has deployed there and
+    /// said so, so they are told nothing until then.
+    ///
+    /// Before this the dispatch returned at the first line for any
+    /// database whose primary was not here, and `nubo-testing-db` read
+    /// "Waiting for that node" for ever: nothing had been sent to it.
+    #[tokio::test]
+    async fn a_primary_elsewhere_is_told_at_once_and_its_standbys_once_it_answers() {
+        let (database, project_id) = project().await;
+        crate::infra::node::settings::set_domain(&database, Some("node.example"))
+            .await
+            .expect("domain");
+        crate::infra::network::ensure_self(&database, &crate::infra::config::Config::default())
+            .await
+            .expect("self");
+        let mut me = crate::infra::network::me(&database)
+            .await
+            .expect("query")
+            .expect("there");
+        me.overlay_ip = Some("10.42.0.1".into());
+        crate::infra::network::save(&database, &me)
+            .await
+            .expect("saved");
+        a_node(&database, "nd-far", "10.42.0.9").await;
+        a_node(&database, "nd-third", "10.42.0.7").await;
+
+        let (service, _) = CreateDatabase {
+            project_id: &project_id,
+            name: "orders",
+            engine: crate::domain::entities::database::Engine::Postgres,
+            version: "17",
+            memory_limit: 256 * 1024 * 1024,
+            image: None,
+            on: Some("nd-far"),
+        }
+        .run(&database)
+        .await
+        .expect("created");
+        replicas::ensure_count(&database, &service.id, 2, Some("nd-third"))
+            .await
+            .expect("a standby on a third node");
+        replicas::ensure_count(&database, &service.id, 3, None)
+            .await
+            .expect("a standby here");
+        let port = ports::of_service(&database, &service.id)
+            .await
+            .expect("ports")
+            .pop()
+            .expect("its port");
+        ports::set_hostname(&database, &port.id, Some("db.shop.example"))
+            .await
+            .expect("named");
+        ports::set_published(&database, &port.id, true)
+            .await
+            .expect("published");
+
+        dispatch(
+            &database,
+            &service,
+            None,
+            Some("node.example".into()),
+            &Default::default(),
+        )
+        .await
+        .expect("dispatched");
+
+        let errands = crate::infra::network::errand::waiting(&database, "nd-far")
+            .await
+            .expect("errands");
+        let kinds: Vec<_> = errands.iter().map(|errand| errand.kind).collect();
+        assert_eq!(
+            kinds,
+            [
+                crate::infra::network::errand::Kind::Database,
+                crate::infra::network::errand::Kind::Certificate
+            ],
+            "the database before its certificate, which is refused for a database not held"
+        );
+        let told = &errands[0];
+        assert_eq!(told.payload["slots"], serde_json::json!([1]));
+        assert_eq!(told.payload["primary"], serde_json::json!(""));
+        assert_eq!(
+            told.payload["replication_from"],
+            serde_json::json!(["10.42.0.1/32", "10.42.0.7/32"]),
+            "both standbys have to be admitted by a primary that knows neither"
+        );
+        assert_eq!(
+            told.payload["name"],
+            serde_json::json!("db.shop.example"),
+            "a chosen name lives on a port row here, which never travels"
+        );
+        assert_eq!(told.payload["published"], serde_json::json!(true));
+        let certificate = &errands[1].payload;
+        assert_eq!(certificate["name"], serde_json::json!("db.shop.example"));
+        assert_eq!(certificate["database"], serde_json::json!(true));
+        let signed = crate::infra::edge::certs::load(&database, "db.shop.example")
+            .await
+            .expect("query")
+            .expect("signed here");
+        assert_eq!(
+            certificate["cert_pem"],
+            serde_json::json!(signed.cert_pem),
+            "what the page here shows is what the primary there presents"
+        );
+        assert!(
+            crate::infra::network::errand::waiting(&database, "nd-third")
+                .await
+                .expect("errands")
+                .is_empty(),
+            "a standby told to follow nowhere comes up as a primary of its own"
+        );
+
+        dispatch(
+            &database,
+            &service,
+            Some(("10.42.0.9".into(), 30005)),
+            Some("node.example".into()),
+            &Default::default(),
+        )
+        .await
+        .expect("dispatched again");
+
+        let told = crate::infra::network::errand::waiting(&database, "nd-third")
+            .await
+            .expect("errands")
+            .pop()
+            .expect("the standby was told once there was somewhere to follow");
+        assert_eq!(told.payload["slots"], serde_json::json!([2]));
+        assert_eq!(
+            told.payload["primary"],
+            serde_json::json!("10.42.0.9:30005")
+        );
+        assert!(told.payload.get("replication_from").is_none());
+        assert!(
+            told.payload.get("published").is_none(),
+            "only the primary answers on the published port"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_database_is_made_only_on_a_node_that_agreed_to_keep_data() {
+        let (database, project_id) = project().await;
+        a_node(&database, "nd-far", "10.42.0.9").await;
+        let mut host_only = crate::infra::network::find(&database, "nd-far")
+            .await
+            .expect("query")
+            .expect("there");
+        host_only.id = "nd-host".into();
+        host_only.overlay_ip = Some("10.42.0.8".into());
+        host_only.allows = vec![crate::domain::values::capability::Capability::Host];
+        crate::infra::network::save(&database, &host_only)
+            .await
+            .expect("node");
+        let ask = |name: &'static str, on: &'static str| CreateDatabase {
+            project_id: &project_id,
+            name,
+            engine: crate::domain::entities::database::Engine::Mysql,
+            version: "8.4",
+            memory_limit: 256 * 1024 * 1024,
+            image: None,
+            on: Some(on),
+        };
+
+        let error = ask("refused", "nd-host")
+            .run(&database)
+            .await
+            .expect_err("refused");
+        assert!(error.to_string().contains("keep data"), "{error}");
+        assert!(services::all(&database, Some(&project_id))
+            .await
+            .expect("services")
+            .is_empty());
+
+        let (made, _) = ask("orders", "nd-far").run(&database).await.expect("made");
+        let first = replicas::of_service(&database, &made.id)
+            .await
+            .expect("replicas")
+            .pop()
+            .expect("its first copy");
+        assert_eq!(first.node_id.as_deref(), Some("nd-far"));
+        assert_eq!(
+            first.reserved_host, None,
+            "an address in this node's bridge names nothing on the node running it"
+        );
+    }
+
     /// This guards a bug that reached both nodes: `qualified_domain`
     /// was read off the errand into the parameter tuple and then left
     /// out of the column list, so the copy went on naming itself under
@@ -455,12 +712,13 @@ mod tests {
             version: "17",
             memory_limit: 256 * 1024 * 1024,
             image: None,
+            on: None,
         }
         .run(&database)
         .await
         .expect("created");
 
-        let mut told = crate::infra::network::errand::Standby {
+        let mut told = crate::infra::network::errand::Database {
             project: "db-test".into(),
             service: "orders".into(),
             image: "docker.io/library/postgres:17".into(),
@@ -478,10 +736,22 @@ mod tests {
             primary: "10.42.0.1:30002".into(),
             slots: vec![3],
             primary_slot: 1,
+            replication_from: Vec::new(),
             qualified_domain: Some("owner.example".into()),
+            name: None,
+            published: false,
             running: true,
         };
         adopt(&database, &service.id, &told).await.expect("adopt");
+        assert_eq!(
+            of_service(&database, &service.id)
+                .await
+                .expect("query")
+                .expect("there")
+                .replication_from,
+            None,
+            "a node holding only standbys derives nothing from a list"
+        );
 
         let found = of_service(&database, &service.id)
             .await
@@ -502,6 +772,26 @@ mod tests {
             .expect("there");
         assert_eq!(found.owner_domain.as_deref(), Some("elsewhere.example"));
         assert_eq!(found.primary_endpoint.as_deref(), Some("10.42.0.1:30007"));
+
+        // And then asked to hold the primary as well: it follows nobody,
+        // and admits the standbys it was told about.
+        told.slots = vec![1];
+        told.primary = String::new();
+        told.replication_from = vec!["10.42.0.1/32".into(), "10.42.0.3/32".into()];
+        adopt(&database, &service.id, &told)
+            .await
+            .expect("the primary");
+
+        let found = of_service(&database, &service.id)
+            .await
+            .expect("query")
+            .expect("there");
+        assert_eq!(found.primary_endpoint, None);
+        assert_eq!(
+            found.replication_from,
+            Some(vec!["10.42.0.1/32".into(), "10.42.0.3/32".into()])
+        );
+        assert_eq!(found.role_of(1), postgres::Role::Primary);
     }
 
     /// A version this node does not offer is a pull that fails minutes
@@ -517,6 +807,7 @@ mod tests {
             version: "9.6",
             memory_limit: 128 * 1024 * 1024,
             image: None,
+            on: None,
         }
         .run(&database)
         .await
@@ -542,6 +833,7 @@ mod tests {
             version: "17",
             memory_limit: 100,
             image: None,
+            on: None,
         }
         .run(&database)
         .await
@@ -561,6 +853,7 @@ mod tests {
             version: "17",
             memory_limit: 128 * 1024 * 1024,
             image: None,
+            on: None,
         }
         .run(&database)
         .await
@@ -601,6 +894,7 @@ mod tests {
             version: "17",
             memory_limit: 128 * 1024 * 1024,
             image: None,
+            on: None,
         }
         .run(&database)
         .await

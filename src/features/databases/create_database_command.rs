@@ -23,6 +23,10 @@ pub struct CreateDatabase<'a> {
     pub version: &'a str,
     pub memory_limit: u64,
     pub image: Option<&'a str>,
+    /// The node its primary runs on, by id; `None` for this one. Fixed
+    /// from here on: nothing moves a primary, because moving one that
+    /// holds data is a switchover nobody has built.
+    pub on: Option<&'a str>,
 }
 
 impl CreateDatabase<'_> {
@@ -79,12 +83,31 @@ impl CreateDatabase<'_> {
             }
         };
 
-        let service = crate::infra::repositories::services::create(
+        if let Some(node) = self.on {
+            let Some(row) = crate::infra::network::find(database, node)
+                .await
+                .map_err(|error| PlatformError::Refused(error.to_string()))?
+            else {
+                return Err(PlatformError::Refused("no such node".into()));
+            };
+            if !row
+                .allows
+                .contains(&crate::domain::values::capability::Capability::Store)
+            {
+                return Err(PlatformError::Refused(format!(
+                    "{} has not agreed to keep data for this node",
+                    row.name
+                )));
+            }
+        }
+
+        let service = crate::infra::repositories::services::create_on(
             database,
             self.project_id,
             self.name,
             &image,
             &[],
+            self.on,
         )
         .await?;
 
@@ -147,6 +170,9 @@ impl CreateDatabase<'_> {
             owner_domain: None,
             restored_from: None,
             recovery_target: None,
+            replication_from: None,
+            owner_name: None,
+            owner_published: false,
         };
 
         let stored = row.clone();
@@ -178,8 +204,10 @@ impl CreateDatabase<'_> {
         // The address the connection string names. Allocated now rather
         // than at the first deployment, because the page shows it before
         // anything has started.
-        for replica in
-            crate::infra::repositories::replicas::of_service(database, &service.id).await?
+        for replica in crate::infra::repositories::replicas::of_service(database, &service.id)
+            .await?
+            .into_iter()
+            .filter(|replica| replica.is_here())
         {
             crate::infra::repositories::replicas::reserve_host(
                 database,

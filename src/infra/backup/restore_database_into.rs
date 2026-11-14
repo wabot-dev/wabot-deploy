@@ -95,6 +95,9 @@ pub async fn restore_into(
         owner_domain: None,
         restored_from: Some(from.to_string()),
         recovery_target: target.map(str::to_string),
+        replication_from: None,
+        owner_name: None,
+        owner_published: false,
     };
 
     let stored = row.clone();
@@ -151,6 +154,7 @@ mod tests {
             version: "17",
             memory_limit: 256 * 1024 * 1024,
             image: Some("docker.io/pgvector/pgvector:pg17-trixie"),
+            on: None,
         }
         .run(&database)
         .await
@@ -198,6 +202,7 @@ mod tests {
                 version,
                 memory_limit: 256 * 1024 * 1024,
                 image: None,
+                on: None,
             }
             .run(&database)
             .await

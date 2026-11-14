@@ -1064,9 +1064,10 @@ exist, and the row records no recovery target, because none was replayed.
 
 ### Refused, with a sentence
 
-- A second copy, or a copy on another node: "MySQL runs as one copy, on
-  this node". A database errand for a MySQL copy is refused at the far end
-  too, for a node older than this one that could send one.
+- A second copy: "a MySQL database runs as one copy". The one copy can
+  be made on another node (see "A primary on another node"), and a
+  database errand for a MySQL read-only copy is refused at the far end,
+  for a node older than this one that could send one.
 - A ceiling under 256 MB, when it is made and when it is resized.
 - A database or user name MySQL already uses — `root`, `mysql`, `sys`,
   the two schemas and the node's own user — gets `db_` in front. User
@@ -1176,3 +1177,136 @@ Measured inside Ghost's container with its own driver: by name with the
 authority it connects; without the authority it is refused (`self-signed
 certificate in certificate chain`); by address it is refused (the name is
 not on the certificate). So the check is real, not only the encryption.
+
+## A primary on another node
+
+Asked for by Jorge on 2026-11-13, after `nubo-testing-db` sat at
+"Waiting for that node" on node-l1. Its primary had been moved there from
+the placement form, and three things were true at once: the dispatcher
+returned at its first line for any database whose primary was not here,
+the collector refused an errand for the primary's slot, and the form
+offered a node for that row anyway. The copy here stopped and nothing
+started there.
+
+Three decisions, his:
+
+- **The node is chosen when it is made, and fixed.** The new-database
+  form has a "Runs on" select listing the nodes that granted `store`.
+  After that the primary's row on the placement form names its node and
+  offers no other, and the POST refuses a move in either direction.
+  Moving a primary that holds data is a switchover — a standby caught up,
+  writes stopped, the standby promoted — and none of that exists.
+- **Both engines.** A MySQL database is still one copy, but that copy can
+  be on any node that keeps data.
+- **Reached by name only from that node.** `/etc/hosts` lists the copies
+  a node holds, so services on the node running the primary resolve it
+  and services anywhere else do not. That is the same limit a read pool
+  already has, naming's phase 4.
+
+### How it travels
+
+The errand that used to be `Standby` is `Database` now, and says three
+things it did not:
+
+- `slots` may include the primary's. A node told it holds the primary
+  makes a database that follows nobody, and is refused if it is also
+  given somebody to follow.
+- `primary` is empty for that node. A standby sent with an empty
+  `primary` is refused rather than started, because a standby told to
+  follow nowhere comes up as a primary of its own.
+- `replication_from` is who the primary's `pg_hba` admits: the overlay
+  `/32` of every node holding a standby. The holder has none of the
+  owner's rows to work it out from, so it keeps what it was told
+  (`database.replication_from`, migration 0067). `NULL` means derive it,
+  which is what every database this node owns does.
+
+The order is the one "The ordering problem" describes, with the primary
+first. The holder is told at once, because starting a primary needs no
+address. Its standbys need its overlay port, which exists only once it
+has deployed there and said so on a report, so they are told nothing
+until then. `Deployer::primary_reported` is what that report calls: it
+dispatches again, and hands back a standby **on the owner** that refused
+to start for want of somewhere to follow, so it is deployed. `watch`
+would not start it, because a deployment that failed is not one that
+restarts.
+
+### The name, the port and the certificate stay the owner's
+
+Asked for by Jorge the same day: whatever works on a database whose
+primary runs on the owner has to work on one whose primary runs
+elsewhere. All three settings stay on the owner's page and in the owner's
+rows, as before. What changed is that each one now reaches the machine
+running the primary, by whichever route fits it:
+
+- **The name.** The owner computes it, chosen or derived, and sends it as
+  `name`. The holder keeps it as `database.owner_name`, and
+  `qualified_name` reads it after a chosen hostname and before the
+  derivation. That puts it into `/etc/hosts` and the certificate from one
+  place. `qualified_domain` alone could only rebuild the derived name,
+  because a chosen one lives on the owner's port row and that row never
+  travels.
+- **The certificate.** The owner decides it, as it does for a primary of
+  its own: ordered from an authority, read from a file, or signed by its
+  own authority (`deploy::database_certificate`, the one function all
+  three callers use). It travels as a `Certificate` errand with
+  `database: true`, which `store` admits rather than `edge`. The holder
+  keeps it only for a database that node placed there, under the name it
+  computes itself, as `Source::Received`, which is never reissued. So the
+  issuer and the expiry on the owner's page are the ones a client meets,
+  and `/ca.crt` on the owner is the authority that verifies it. It is its
+  own errand because every database errand redeploys the copy, while a
+  renewal reaches a running server as a signal, the way it does at home.
+- **Trusting it from inside.** A service the owner placed on the holder
+  is the only kind that reaches the database by name, since it is in the
+  same project. So a container placed by another node gets that node's
+  authority in `/etc/wabot/ca.crt` beside the holder's own
+  (`authorities_for`). `write_hosts` rewrites the file wherever a
+  deployment already put one, so a container started before the database
+  arrived trusts it without a redeploy. And a certificate kept from its
+  owner runs the hosts pass before the renewal pass, so the authority is
+  in place before the server presents what it signed.
+- **The published port.** It is opened on the owner, because the name
+  resolves there, and node-l1 has no public address at all. The number is
+  the one the owner allocates for any published database. Every
+  connection is carried over the overlay to the port the holder binds for
+  its copies (`deploy::forwards`). That is a listener in this process
+  rather than a DNAT rule, so it leaves with the process, and what it
+  copies is TLS the server negotiates end to end. The holder is told
+  `published`, so its `pg_hba` admits clients from outside the project:
+  they arrive from the owner's overlay address. MySQL's users are `'%'`
+  and need nothing.
+- **A standby no longer gets the published port.** `published_ports`
+  mapped it onto every copy here. A standby took writes it refuses, and
+  with the primary elsewhere a standby on the owner would have answered
+  on the forwarded port ahead of the forward.
+
+The `databases-elsewhere` loop in `serve` runs every ten seconds. It
+converges the forwards and dispatches every database whose primary is
+elsewhere again. That is what carries a renewal, a rename or a toggled
+publication, and `queue_if_changed` makes a pass that changes nothing
+free. A rename or a toggled publication changes the database errand, so
+the holder redeploys the copy. Publishing restarts a primary at home too,
+because the port mapping is on its container.
+
+### What stays the holder's
+
+**Backups and the log.** The holder archives the log and takes the
+backups, and a backup run there includes it. The owner's page puts a
+sentence in place of the window and the restore form, and the restore
+command refuses with the same sentence. On the holder, where the copy is
+a local replica, both work as they do for any database.
+
+### Not run on a node
+
+All of it passes the gate, and none of it has run between two machines:
+- a primary created on a remote node;
+- its `pg_hba` admitting a standby on a third;
+- the owner's own standby starting on the report;
+- the forward of a published port over the overlay;
+- a certificate signed by the owner, presented by the holder and verified
+  by a service the owner placed there.
+
+The VM cannot do it alone, because it is one node. `nubo-testing-db`
+should come up once node-0 and node-l1 both run this. Its row already
+names node-l1, and the data directory left on node-0 is an orphan, from a
+database that was empty.

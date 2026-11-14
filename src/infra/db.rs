@@ -264,6 +264,10 @@ fn migrations() -> Vec<Migration> {
             "0066_dns_record_acme_challenge",
             include_str!("../../migrations/0066_dns_record_acme_challenge.sql"),
         ),
+        Migration::new(
+            "0067_database_told_by_owner",
+            include_str!("../../migrations/0067_database_told_by_owner.sql"),
+        ),
     ]
 }
 

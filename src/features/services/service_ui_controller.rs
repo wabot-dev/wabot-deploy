@@ -259,6 +259,13 @@ impl ServiceUiController {
                     .ok()
                     .map(|address| address.to_string())
             }
+            // A primary on another node has no address in this node's
+            // bridge, and what the card waits on is whether it has run —
+            // which the address that node reported says.
+            (Some(row), None) => placements
+                .iter()
+                .find(|replica| replica.slot == row.primary_slot && !replica.is_here())
+                .and_then(|replica| replica.address.clone()),
             _ => None,
         };
 
@@ -378,17 +385,24 @@ impl ServiceUiController {
                 }),
             false => None,
         };
-        let restorable = service.kind.engine().is_some_and(|engine| {
-            elsewhere.is_some()
-                || crate::infra::backup::taken(&self.state.config.node.data_dir)
-                    .iter()
-                    .any(|(path, _)| {
-                        path.join("volumes")
-                            .join(format!("{}.{}", project.slug, service.slug))
-                            .join(engine.backup_file())
-                            .exists()
-                    })
-        });
+        let held_on = crate::infra::repositories::databases::primary_elsewhere(
+            &self.state.database,
+            &service.id,
+        )
+        .await?
+        .map(|node| node.name);
+        let restorable = held_on.is_none()
+            && service.kind.engine().is_some_and(|engine| {
+                elsewhere.is_some()
+                    || crate::infra::backup::taken(&self.state.config.node.data_dir)
+                        .iter()
+                        .any(|(path, _)| {
+                            path.join("volumes")
+                                .join(format!("{}.{}", project.slug, service.slug))
+                                .join(engine.backup_file())
+                                .exists()
+                        })
+            });
         // What this service keeps, which is a row per volume and a
         // directory per copy of it.
         let volumes =
@@ -493,6 +507,7 @@ impl ServiceUiController {
                     stuck,
                     elsewhere: elsewhere.as_deref(),
                     restorable,
+                    held_on: held_on.as_deref(),
                 }),
             releases: &releases,
             push: push.as_ref(),
@@ -1066,6 +1081,12 @@ impl ServiceUiController {
                 }
             }
             Tab::Replicas => Panel::Replicas {
+                primary: crate::infra::repositories::databases::of_service(
+                    &self.state.database,
+                    &service.id,
+                )
+                .await?
+                .map(|row| row.primary_slot),
                 placements: crate::infra::repositories::replicas::of_service(
                     &self.state.database,
                     &service.id,

@@ -53,10 +53,9 @@ impl SetServicePlacement<'_> {
                 .fields
                 .iter()
                 .any(|(key, node)| key.starts_with("slot-") && !node.trim().is_empty());
-        if self.service.kind == Kind::Mysql
-            && (elsewhere || self.replicas.trim().parse::<u32>().unwrap_or(1) != 1)
+        if self.service.kind == Kind::Mysql && self.replicas.trim().parse::<u32>().unwrap_or(1) != 1
         {
-            return Err("a MySQL database runs as one copy, on this node: \
+            return Err("a MySQL database runs as one copy: \
                  read-only copies are not built for it yet"
                 .into());
         }
@@ -91,6 +90,27 @@ impl SetServicePlacement<'_> {
                 (wanted.as_deref() != replica.node_id.as_deref()).then_some((replica, wanted))
             })
             .collect();
+
+        // A database's primary stays where it was made. Moving one that
+        // holds data is a switchover — a standby caught up, writes
+        // stopped, the standby promoted — and none of that exists, so the
+        // move used to stop the copy here and start nothing there.
+        if let Some(row) =
+            crate::infra::repositories::databases::of_service(on.database, &self.service.id)
+                .await
+                .map_err(|error| error.to_string())?
+        {
+            if moves
+                .iter()
+                .any(|(replica, _)| replica.slot == row.primary_slot)
+            {
+                return Err(format!(
+                    "#{} is the primary, and a primary stays on the node it was made on: \
+                     moving one that holds data is not something this node can do yet",
+                    row.primary_slot
+                ));
+            }
+        }
 
         let wanted: u32 = self.replicas.trim().parse().unwrap_or(1);
         if !(1..=16).contains(&wanted) {

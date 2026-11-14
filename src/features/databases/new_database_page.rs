@@ -12,6 +12,10 @@ pub struct NewDatabase<'a> {
     pub action: &'a str,
     pub back: &'a str,
     pub query_error: Option<&'a str>,
+    /// What this node is called, for the first choice.
+    pub here: Option<&'a str>,
+    /// The other nodes that agreed to keep data for this one.
+    pub elsewhere: &'a [crate::infra::network::Node],
 }
 
 pub fn render<'a>(page: &'a NewDatabase<'a>) -> impl Renderable + 'a {
@@ -114,6 +118,18 @@ pub fn render<'a>(page: &'a NewDatabase<'a>) -> impl Renderable + 'a {
                         }
                     }
                 </div>
+            }
+
+            @if !page.elsewhere.is_empty() {
+                <label for="on">(t("Runs on"))</label>
+                <select id="on" name="on">
+                    <option value="" selected>(page.here.unwrap_or(t("this node")))</option>
+                    @for node in page.elsewhere {
+                        <option value=(&node.id)>(&node.name)</option>
+                    }
+                </select>
+                <p class="field-hint">(t("Where it runs, for good: a database is not moved once it \
+                     exists. Services reach it by its name only from that node."))</p>
             }
 
             <div class="actions">

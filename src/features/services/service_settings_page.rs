@@ -208,6 +208,8 @@ pub enum Panel {
         nodes: Vec<Node>,
         silent: Vec<String>,
         queued: Vec<String>,
+        /// The slot of a database's primary, whose node is not offered.
+        primary: Option<u32>,
     },
     Danger,
 }
@@ -766,10 +768,10 @@ pub fn render<'a>(page: &'a ServiceSettings<'a>) -> impl Renderable + 'a {
                     </form>
                 </section>
             }
-            Panel::Replicas { placements, nodes, silent, queued } => {
+            Panel::Replicas { placements, nodes, silent, queued, primary } => {
                 @if service.is_ours() {
                     (service_placement_component::placement_card(
-                        project, service, placements, nodes, silent, queued))
+                        project, service, placements, nodes, silent, queued, *primary))
                 }
             }
             Panel::Danger => {

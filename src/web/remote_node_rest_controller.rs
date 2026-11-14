@@ -603,7 +603,20 @@ impl RemoteNodeRestController {
         let mut recorded = 0;
         for state in &report.replicas {
             match record(&self.database, &node, state).await {
-                Ok(true) => recorded += 1,
+                Ok(true) => {
+                    recorded += 1;
+                    if let Some(service_id) = self.deployer.primary_reported(&node, state).await {
+                        let command = crate::infra::deploy::jobs::DeployService {
+                            service_id,
+                            release_id: None,
+                        };
+                        if let Err(error) =
+                            wabot::async_jobs::run_command(&self.container, &command).await
+                        {
+                            tracing::warn!(%error, "could not queue a standby's deployment");
+                        }
+                    }
+                }
                 Ok(false) => {}
                 Err(error) => return Ok(unreadable(error)),
             }

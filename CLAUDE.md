@@ -470,10 +470,15 @@ happened:
 - A service created under an organisation's quota runs with no ceiling.
 - A running container no row claims — what a restore from an older
   backup leaves — is on no page.
-- MySQL is one copy on its own node: no read-only copies, nothing across
-  nodes, and a restore reaches the moment of a backup. The grants the
-  replica phase needs are already on every one — `docs/databases.md`,
-  "MySQL".
+- MySQL is one copy: no read-only copies, and a restore reaches the
+  moment of a backup. The grants the replica phase needs are already on
+  every one — `docs/databases.md`, "MySQL".
+- A database whose primary was made on another node is reached by name
+  only from services on that node. Its backups and restores are that
+  node's. Nothing moves a primary once it exists. Its name, published port
+  and certificate are the owner's, as at home: the port is forwarded from
+  the owner over the overlay. None of it has run between two machines yet
+  — `docs/databases.md`, "A primary on another node".
 
 All four, and the rest of what the VM walk of 2026-10-14 left, with how
 to reproduce each and how to re-test what it fixed:

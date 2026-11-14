@@ -7,18 +7,20 @@ use crate::domain::entities::database::Database;
 use crate::domain::entities::service::Service;
 use crate::domain::errors::{PlatformError, PlatformResult};
 use crate::infra::repositories::databases::of_service;
-/// Tell every node holding a standby of this database what to hold.
+/// Tell every other node holding a copy of this database what to hold.
 ///
-/// **Recomputed, not emitted.** The port the primary answers on comes
-/// out of this node's own port space and is assigned when the primary
-/// deploys, so an errand written at the moment somebody clicked would
-/// carry an address that did not exist yet. This is called after
-/// anything that could have settled it, and `queue_if_changed` makes
-/// calling it often free.
+/// **Recomputed, not emitted.** The port the primary answers on is
+/// assigned when it deploys — here, or on the node holding it, which
+/// sends it home on a report — so an errand written at the moment
+/// somebody clicked would carry an address that did not exist yet. This
+/// is called after anything that could have settled it, and
+/// `queue_if_changed` makes calling it often free.
 ///
-/// Nothing is queued while the primary has no address: a standby told to
-/// follow nowhere would come up as a primary of its own, holding a copy
-/// of somebody's data and accepting writes into it.
+/// The node holding the primary is told at once: it needs no address to
+/// start. A node holding only standbys is told nothing while the primary
+/// has no address: a standby told to follow nowhere would come up as a
+/// primary of its own, holding a copy of somebody's data and accepting
+/// writes into it.
 pub async fn dispatch(
     database: &SqliteDatabase,
     service: &Service,
@@ -45,9 +47,6 @@ pub async fn dispatch(
     if !service.is_ours() || row.primary_endpoint.is_some() {
         return Ok(0);
     }
-    let Some((host, port)) = primary else {
-        return Ok(0);
-    };
 
     let project = crate::infra::repositories::projects::find(database, &service.project_id)
         .await?
@@ -72,14 +71,22 @@ pub async fn dispatch(
         let Some(node_id) = &replica.node_id else {
             continue;
         };
-        if replica.slot == row.primary_slot {
-            continue;
-        }
         by_node
             .entry(node_id.clone())
             .or_default()
             .push(replica.slot);
     }
+
+    let primary_node = placements
+        .iter()
+        .find(|replica| replica.slot == row.primary_slot)
+        .and_then(|replica| replica.node_id.clone());
+    let followers = followers(database, &row, &placements, primary_node.as_deref()).await?;
+    let name = crate::infra::deploy::qualified_database_name(database, &project, service).await;
+    let published = crate::infra::repositories::ports::of_service(database, &service.id)
+        .await?
+        .iter()
+        .any(|port| port.host_port.is_some());
 
     // The same function the placement form offers nodes with, so what
     // was offerable and what is dispatchable cannot drift apart — they
@@ -122,14 +129,31 @@ pub async fn dispatch(
             continue;
         }
 
+        let holds_the_primary = slots.contains(&row.primary_slot);
+        let holds_a_standby = slots.iter().any(|slot| *slot != row.primary_slot);
+        let endpoint = match (&primary, holds_the_primary) {
+            (_, true) => String::new(),
+            (Some((host, port)), false) => format!("{host}:{port}"),
+            (None, false) if holds_a_standby => continue,
+            (None, false) => String::new(),
+        };
+
         let payload = instruction(
             &project.name,
             service,
             &row,
-            &format!("{host}:{port}"),
             &domain,
-            slots,
-            running == crate::domain::entities::service::DesiredState::Running,
+            Holding {
+                primary: endpoint,
+                slots,
+                running: running == crate::domain::entities::service::DesiredState::Running,
+                replication_from: match holds_the_primary {
+                    true => followers.clone(),
+                    false => Vec::new(),
+                },
+                name: name.clone(),
+                published: holds_the_primary && published,
+            },
         )?;
 
         let queued = crate::infra::network::errand::queue_if_changed(
@@ -145,11 +169,97 @@ pub async fn dispatch(
         .map_err(|error| PlatformError::Refused(error.to_string()))?;
 
         if queued.is_some() {
-            tracing::info!(service = %service.slug, node = %node_id, "asked a node to hold a standby");
+            tracing::info!(
+                service = %service.slug,
+                node = %node_id,
+                holds_the_primary,
+                "asked a node to hold copies of a database"
+            );
             sent += 1;
+        }
+        // After the database's own instruction, which is what makes the
+        // copy there something a certificate can be for.
+        if holds_the_primary {
+            send_certificate(database, &project, service, &node_id).await?;
         }
     }
     Ok(sent)
+}
+
+/// The certificate the primary presents, to the node running it.
+///
+/// Decided here, by the node whose page shows it — ordered from an
+/// authority, read from a file, or signed by this node — so the issuer and
+/// the expiry on that page are the ones a client meets, and a client given
+/// this node's authority verifies it. Its own instruction, because a
+/// database's redeploys the copy and a renewal is a signal, not a restart.
+async fn send_certificate(
+    database: &SqliteDatabase,
+    project: &crate::domain::entities::project::Project,
+    service: &Service,
+    node_id: &str,
+) -> PlatformResult<()> {
+    let names = crate::infra::deploy::certificate_names(database, project, service).await;
+    let stored = crate::infra::deploy::database_certificate(database, &names)
+        .await
+        .map_err(|error| PlatformError::Refused(error.to_string()))?;
+    let payload = serde_json::to_value(crate::infra::network::errand::Certificate {
+        name: stored.domain.clone(),
+        cert_pem: stored.cert_pem.clone(),
+        key_pem: stored.key_pem.clone(),
+        database: true,
+    })
+    .map_err(|error| PlatformError::Refused(error.to_string()))?;
+    let queued = crate::infra::network::errand::queue_if_changed(
+        database,
+        node_id,
+        crate::infra::network::errand::Kind::Certificate,
+        &format!("database-certificate:{}", service.id),
+        &payload,
+    )
+    .await
+    .map_err(|error| PlatformError::Refused(error.to_string()))?;
+    if queued.is_some() {
+        tracing::info!(service = %service.slug, node = %node_id, "sent a database its certificate");
+    }
+    Ok(())
+}
+
+/// Who may follow a primary held on another node: the overlay address of
+/// every node holding a standby, this one included.
+///
+/// The node holding the primary admits its own standbys by its bridge, as
+/// any primary does, so it is left out.
+async fn followers(
+    database: &SqliteDatabase,
+    row: &Database,
+    placements: &[crate::domain::entities::replica::Replica],
+    primary_node: Option<&str>,
+) -> PlatformResult<Vec<String>> {
+    if primary_node.is_none() {
+        return Ok(Vec::new());
+    }
+    let nodes = crate::infra::network::all(database)
+        .await
+        .map_err(|error| PlatformError::Refused(error.to_string()))?;
+    let mut from: Vec<String> = placements
+        .iter()
+        .filter(|replica| replica.slot != row.primary_slot && !replica.evicted())
+        .filter(|replica| replica.node_id.as_deref() != primary_node)
+        .filter_map(|replica| {
+            nodes
+                .iter()
+                .find(|node| match &replica.node_id {
+                    Some(id) => &node.id == id,
+                    None => node.is_self,
+                })
+                .and_then(|node| node.overlay_ip.clone())
+        })
+        .map(|address| format!("{address}/32"))
+        .collect();
+    from.sort();
+    from.dedup();
+    Ok(from)
 }
 /// One instruction, for one node and one set of slots.
 ///
@@ -162,12 +272,18 @@ fn instruction(
     project: &str,
     service: &Service,
     row: &Database,
-    primary: &str,
     domain: &Option<String>,
-    slots: Vec<u32>,
-    running: bool,
+    holding: Holding,
 ) -> PlatformResult<serde_json::Value> {
-    serde_json::to_value(crate::infra::network::errand::Standby {
+    let Holding {
+        primary,
+        slots,
+        running,
+        replication_from,
+        name,
+        published,
+    } = holding;
+    serde_json::to_value(crate::infra::network::errand::Database {
         project: project.to_string(),
         service: service.name.clone(),
         image: service.image.clone(),
@@ -190,24 +306,37 @@ fn instruction(
         admin_password: row.admin_password.clone(),
         replication_user: row.replication_user.clone(),
         replication_password: row.replication_password.clone(),
-        primary: primary.to_string(),
+        primary,
         slots,
         primary_slot: row.primary_slot,
+        replication_from,
         // The owner's, because the copy has to answer to the *database's*
         // qualified name rather than to one built from the domain of
         // whichever machine is holding it.
         qualified_domain: domain.clone(),
+        name,
+        published,
         running,
     })
     .map_err(|error| PlatformError::Refused(error.to_string()))
 }
+
+/// What one node is told it holds, apart from the database itself.
+struct Holding {
+    primary: String,
+    slots: Vec<u32>,
+    running: bool,
+    replication_from: Vec<String>,
+    name: Option<String>,
+    published: bool,
+}
 /// Tell every node holding a copy of this database to let it go.
 ///
 /// `slots: []`, which the holding node reads as "this is not yours to
-/// keep any more": it stops the copy and deletes its own rows. Safe for a
-/// standby in a way it would never be for a primary — every row of it is
-/// on the node that owns it — and it is the one instruction a deletion
-/// can mean.
+/// keep any more": it stops the copy and deletes its own rows. It is the
+/// one instruction a deletion can mean, and the only one that reaches the
+/// node holding a primary with nothing for it to keep — a primary is
+/// never moved.
 ///
 /// **It has to leave before the rows it is built from do**, and it is the
 /// one instruction in this system with no second chance: every other one
@@ -245,10 +374,15 @@ pub async fn withdraw(
         &project.name,
         service,
         &row,
-        &endpoint,
         &domain,
-        Vec::new(),
-        false,
+        Holding {
+            primary: endpoint,
+            slots: Vec::new(),
+            running: false,
+            replication_from: Vec::new(),
+            name: None,
+            published: false,
+        },
     )?;
 
     let mut sent = 0;
