@@ -618,11 +618,14 @@ impl Deployer {
     /// replica on this node" — and it was wrong in the way a page shows:
     /// the service exists, it runs, and the one thing its owner could not
     /// do was start it again after stopping it, because the only door
-    /// refused before reaching the nodes that hold it.
+    /// refused before reaching the nodes that hold it. `None` too when the
+    /// service was stopped after `asked_at`, which is when somebody asked
+    /// for this deployment.
     pub async fn deploy(
         &self,
         project: &Project,
         service: &Service,
+        asked_at: Option<i64>,
     ) -> DeployResult<Option<Ipv4Addr>> {
         // **One deployment of a service at a time.**
         //
@@ -653,6 +656,23 @@ impl Deployer {
             use wabot::async_jobs::Locker;
             deploy_lock().acquire(&service.id).await
         };
+
+        // Asked under the lock: a deployment queued behind another is still
+        // waiting here when the stop arrives. And asked of the moment, not of
+        // the state, because a stopped service is what Deploy starts.
+        let stopped_since_asked = match asked_at {
+            Some(asked_at) => {
+                services::stopped_since(&self.database, &service.id, asked_at).await?
+            }
+            None => false,
+        };
+        if stopped_since_asked {
+            tracing::info!(
+                service = %service.slug,
+                "stopped after this deployment was asked for; not deployed"
+            );
+            return Ok(None);
+        }
 
         // **Nothing to run yet.** A service created without an image is
         // waiting for the first push to its own repository, and there is
@@ -1274,10 +1294,10 @@ impl Deployer {
 
         match current {
             Some(release) => {
-                self.deploy_release(service, &release).await;
+                self.deploy_release(service, &release, None).await;
                 true
             }
-            None => self.deploy(project, service).await.is_ok(),
+            None => self.deploy(project, service, None).await.is_ok(),
         }
     }
 
@@ -1287,7 +1307,12 @@ impl Deployer {
     /// under: a tag moves, and a deployment that resolved one again at
     /// run time would not be the release anybody chose. This is also
     /// what makes a rollback a rollback.
-    pub async fn deploy_release(&self, service: &Service, release: &Release) {
+    pub async fn deploy_release(
+        &self,
+        service: &Service,
+        release: &Release,
+        asked_at: Option<i64>,
+    ) {
         let Ok(Some(project)) =
             crate::infra::repositories::projects::find(&self.database, &service.project_id).await
         else {
@@ -1304,7 +1329,7 @@ impl Deployer {
             ..service.clone()
         };
 
-        if self.deploy(&project, &pinned).await.is_ok() {
+        if self.deploy(&project, &pinned, asked_at).await.is_ok() {
             if let Err(error) = releases::mark_deployed(&self.database, &release.id).await {
                 tracing::error!(%error, "could not record which release is running");
             }
@@ -5689,6 +5714,58 @@ mod tests {
         )
         .await
         .expect("the stop that waited never let go");
+    }
+
+    /// A deployment waiting behind another for the service's lock was
+    /// asked for before a stop that came while it waited, and then started
+    /// the service anyway: it set `running` once it had the lock and told
+    /// the other nodes so. Asking whether it was stopped before taking its
+    /// turn is asking too early.
+    #[tokio::test]
+    async fn a_deployment_queued_behind_another_does_not_start_what_was_stopped_while_it_waited() {
+        use wabot::async_jobs::Locker;
+        let (database, project, service) = placed_elsewhere().await;
+        let deployer = Deployer::new(
+            std::sync::Arc::new(database.clone()),
+            &crate::infra::config::Config::default(),
+        );
+        let deploying = deploy_lock().acquire(&service.id).await;
+        let queued = tokio::spawn({
+            let (deployer, project, service) = (deployer.clone(), project.clone(), service.clone());
+            let asked_at = crate::infra::clock::distinct_now_ms();
+            async move { deployer.deploy(&project, &service, Some(asked_at)).await }
+        });
+        for _ in 0..8 {
+            tokio::task::yield_now().await;
+        }
+
+        deployer.stop(&project, &service).await.expect("stopped");
+        drop(deploying);
+        let deployed = tokio::time::timeout(std::time::Duration::from_secs(5), queued)
+            .await
+            .expect("the queued deployment never had its turn")
+            .expect("joined");
+
+        assert!(matches!(deployed, Ok(None)), "{deployed:?}");
+        assert_eq!(
+            services::find(&database, &service.id)
+                .await
+                .expect("query")
+                .expect("there")
+                .desired_state,
+            DesiredState::Stopped,
+        );
+        let told = crate::infra::network::errand::waiting(&database, "nd-far")
+            .await
+            .expect("errands");
+        assert!(
+            told.iter()
+                .all(|errand| errand.payload["running"] == serde_json::json!(false)),
+            "the far node was told to run it again: {:?}",
+            told.iter()
+                .map(|errand| &errand.payload)
+                .collect::<Vec<_>>()
+        );
     }
 
     /// Deleting a service has to reach the machines running its copies,

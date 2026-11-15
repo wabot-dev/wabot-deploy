@@ -63,6 +63,22 @@ pub struct DeployService {
     /// A release to pin, for deploying an older image — which is what
     /// a rollback is. `None` deploys whatever the service names.
     pub release_id: Option<String>,
+    /// When it was asked for, so that a stop made after it stands. Without
+    /// it the retry of a deployment that had failed, or one queued behind
+    /// another, started back a service stopped while it waited. `None` in a
+    /// job queued by a version without it.
+    #[serde(default)]
+    pub asked_at: Option<i64>,
+}
+
+impl DeployService {
+    pub fn new(service_id: &str, release_id: Option<&str>) -> Self {
+        Self {
+            service_id: service_id.to_string(),
+            release_id: release_id.map(str::to_string),
+            asked_at: Some(crate::infra::clock::distinct_now_ms()),
+        }
+    }
 }
 
 /// Two retries, at 15 seconds and a minute.
@@ -145,7 +161,7 @@ impl DeployHandler {
             None => {
                 let outcome = self
                     .deployer
-                    .deploy(project, service)
+                    .deploy(project, service, data.asked_at)
                     .await
                     .map(|_| ())
                     // The reason is already on the service row —
@@ -173,20 +189,7 @@ impl DeployHandler {
                     &self.container,
                 )
                 .await;
-
-                // A failure is retried, and the retry is a deployment like
-                // any other: it would start again a service somebody
-                // stopped while this one was failing.
-                match outcome {
-                    Err(_) if matches!(self.deployer.not_wanted(service).await, Ok(true)) => {
-                        tracing::info!(
-                            service = %service.slug,
-                            "stopped while it was deploying; not retried"
-                        );
-                        Ok(())
-                    }
-                    outcome => outcome,
-                }
+                outcome
             }
             Some(id) => {
                 let release = releases::find(&self.database, id)
@@ -196,7 +199,9 @@ impl DeployHandler {
                     tracing::warn!(release = %id, "no such release for this service");
                     return Ok(());
                 };
-                self.deployer.deploy_release(service, &release).await;
+                self.deployer
+                    .deploy_release(service, &release, data.asked_at)
+                    .await;
                 Ok(())
             }
         }
@@ -261,10 +266,7 @@ mod tests {
         };
 
         handler
-            .handle(DeployService {
-                service_id: service.id.clone(),
-                release_id: None,
-            })
+            .handle(DeployService::new(&service.id, None))
             .await
             .expect("deployed");
 
@@ -281,6 +283,50 @@ mod tests {
                 .expect("there")
                 .desired_state,
             DesiredState::Running
+        );
+    }
+
+    /// A deployment that failed is tried again 15 and 60 seconds later,
+    /// and the retry set `running` like any deployment: a service stopped
+    /// in between was started again by a job asked for before the stop.
+    #[tokio::test]
+    async fn the_retry_of_a_deployment_asked_for_before_a_stop_does_not_start_it_again() {
+        let (database, project, service) = super::super::tests::placed_elsewhere().await;
+        let database = Arc::new(database);
+        let deployer = Arc::new(super::super::Deployer::new(
+            database.clone(),
+            &crate::infra::config::Config::default(),
+        ));
+        let handler = DeployHandler {
+            deployer: deployer.clone(),
+            database: database.clone(),
+            container: Container::new(),
+        };
+        let asked = DeployService::new(&service.id, None);
+
+        // Its local half needs a containerd that is not here; the intent
+        // and the errands are written before it.
+        let _ = deployer.stop(&project, &service).await;
+        handler.handle(asked).await.expect("retried");
+
+        assert_eq!(
+            services::find(&database, &service.id)
+                .await
+                .expect("query")
+                .expect("there")
+                .desired_state,
+            DesiredState::Stopped
+        );
+        let told = crate::infra::network::errand::waiting(&database, "nd-far")
+            .await
+            .expect("errands");
+        assert!(
+            told.iter()
+                .all(|errand| errand.payload["running"] == serde_json::json!(false)),
+            "the far node was told to run it again: {:?}",
+            told.iter()
+                .map(|errand| &errand.payload)
+                .collect::<Vec<_>>()
         );
     }
 }

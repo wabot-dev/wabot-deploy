@@ -276,6 +276,10 @@ fn migrations() -> Vec<Migration> {
             "0069_ssh_allowlist",
             include_str!("../../migrations/0069_ssh_allowlist.sql"),
         ),
+        Migration::new(
+            "0070_service_stopped_at",
+            include_str!("../../migrations/0070_service_stopped_at.sql"),
+        ),
     ]
 }
 

@@ -142,16 +142,46 @@ pub async fn set_desired_state(
     state: DesiredState,
 ) -> PlatformResult<()> {
     let id = service_id.to_string();
+    let stopped_at = (state == DesiredState::Stopped).then(crate::infra::clock::distinct_now_ms);
     database
         .write(move |connection| {
             connection.execute(
-                "UPDATE service SET \"desired_state\" = ?2, \"updated_at\" = ?3 WHERE \"id\" = ?1",
-                (id, state.as_str(), now_ms()),
+                "UPDATE service SET \"desired_state\" = ?2, \"updated_at\" = ?3, \
+                 \"stopped_at\" = COALESCE(?4, \"stopped_at\") WHERE \"id\" = ?1",
+                (id, state.as_str(), now_ms(), stopped_at),
             )?;
             Ok(())
         })
         .await?;
     Ok(())
+}
+
+/// Whether the service was stopped after `moment` and is still stopped,
+/// or is gone.
+pub async fn stopped_since(
+    database: &SqliteDatabase,
+    service_id: &str,
+    moment: i64,
+) -> PlatformResult<bool> {
+    let id = service_id.to_string();
+    let row: Option<(String, Option<i64>)> = database
+        .read(move |connection| {
+            connection
+                .query_row(
+                    "SELECT \"desired_state\", \"stopped_at\" FROM service WHERE \"id\" = ?1",
+                    [id],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .optional()
+        })
+        .await?;
+    Ok(match row {
+        None => true,
+        Some((state, stopped_at)) => {
+            state == DesiredState::Stopped.as_str()
+                && stopped_at.is_some_and(|stopped_at| stopped_at > moment)
+        }
+    })
 }
 
 /// Record why a deployment failed, or clear it because one worked.
@@ -701,6 +731,38 @@ mod creating {
                 .desired_state,
             DesiredState::Stopped
         );
+    }
+    #[tokio::test]
+    async fn only_a_stop_after_the_moment_that_still_stands_counts_as_stopped_since() {
+        let (database, project_id) = project().await;
+        let service = crate::infra::repositories::services::create(
+            &database,
+            &project_id,
+            "api",
+            "docker.io/library/nginx:alpine",
+            &[],
+        )
+        .await
+        .expect("created");
+        let stopped_since = |moment| stopped_since(&database, &service.id, moment);
+
+        let before = crate::infra::clock::distinct_now_ms();
+        assert!(!stopped_since(before).await.expect("never stopped"));
+
+        set_desired_state(&database, &service.id, DesiredState::Stopped)
+            .await
+            .expect("stop");
+        let after = crate::infra::clock::distinct_now_ms();
+        assert!(stopped_since(before).await.expect("stopped after"));
+        assert!(!stopped_since(after).await.expect("stopped before"));
+
+        set_desired_state(&database, &service.id, DesiredState::Running)
+            .await
+            .expect("start");
+        assert!(!stopped_since(before).await.expect("started again"));
+
+        delete(&database, &service.id).await.expect("deleted");
+        assert!(stopped_since(after).await.expect("gone"));
     }
     #[tokio::test]
     async fn a_failure_is_recorded_and_cleared() {

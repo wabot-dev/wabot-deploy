@@ -339,7 +339,10 @@ async fn release(
             // push is the event, and a CI run that succeeds should
             // mean the thing is out — not that something will notice
             // eventually.
-            state.deployer.deploy_release(&service, &release).await;
+            state
+                .deployer
+                .deploy_release(&service, &release, None)
+                .await;
         }
     }
 

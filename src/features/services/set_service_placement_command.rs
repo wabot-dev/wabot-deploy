@@ -603,10 +603,7 @@ pub(crate) async fn dispatch_edges(
 }
 
 async fn enqueue(container: &Container, service_id: &str, release_id: Option<&str>) {
-    let command = crate::infra::deploy::jobs::DeployService {
-        service_id: service_id.to_string(),
-        release_id: release_id.map(str::to_string),
-    };
+    let command = crate::infra::deploy::jobs::DeployService::new(service_id, release_id);
     if let Err(error) = wabot::async_jobs::run_command(container, &command).await {
         // Nothing else can report this: there is no job to carry the
         // reason, because making one is what failed.

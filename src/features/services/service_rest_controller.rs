@@ -659,10 +659,7 @@ impl ServiceRestController {
             return Ok(back_with_error(&here, &reason));
         }
 
-        let command = crate::infra::deploy::jobs::DeployService {
-            service_id: service.id.clone(),
-            release_id: None,
-        };
+        let command = crate::infra::deploy::jobs::DeployService::new(&service.id, None);
         if let Err(error) = wabot::async_jobs::run_command(&self.state.container, &command).await {
             tracing::error!(%error, "could not queue the deployment");
         }
@@ -908,10 +905,7 @@ impl ServiceRestController {
             .tell_holders_including(&project, &fresh, &Default::default())
             .await;
 
-        let command = crate::infra::deploy::jobs::DeployService {
-            service_id: service.id.clone(),
-            release_id: None,
-        };
+        let command = crate::infra::deploy::jobs::DeployService::new(&service.id, None);
         if let Err(error) = wabot::async_jobs::run_command(&self.state.container, &command).await {
             tracing::error!(%error, "could not queue the deployment");
         }
@@ -1443,10 +1437,7 @@ impl ServiceRestController {
     /// service row, which is what the page reads — see
     /// [`crate::infra::deploy::jobs`].
     async fn enqueue(&self, service_id: &str, release_id: Option<&str>) {
-        let command = crate::infra::deploy::jobs::DeployService {
-            service_id: service_id.to_string(),
-            release_id: release_id.map(str::to_string),
-        };
+        let command = crate::infra::deploy::jobs::DeployService::new(service_id, release_id);
         if let Err(error) = wabot::async_jobs::run_command(&self.state.container, &command).await {
             // Nothing else can report this: there is no job to carry
             // the reason, because making one is what failed.
@@ -3727,7 +3718,7 @@ mod tests {
             console.database.clone(),
             &crate::infra::config::Config::default(),
         );
-        let _ = deployer.deploy(&found, &stored).await;
+        let _ = deployer.deploy(&found, &stored, None).await;
 
         let stored = services::all(&console.database, None)
             .await

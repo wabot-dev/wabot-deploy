@@ -33,10 +33,7 @@ impl BackupRestController {
             return;
         };
         for service in services.iter().filter(|service| service.kind.is_managed()) {
-            let command = crate::infra::deploy::jobs::DeployService {
-                service_id: service.id.clone(),
-                release_id: None,
-            };
+            let command = crate::infra::deploy::jobs::DeployService::new(&service.id, None);
             if let Err(error) =
                 wabot::async_jobs::run_command(&self.state.container, &command).await
             {

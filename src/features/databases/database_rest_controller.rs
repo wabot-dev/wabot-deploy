@@ -171,10 +171,7 @@ impl DatabaseRestController {
         // Redeployed, because a published port is an iptables rule made
         // when the container joins the network — not something that can be
         // added to one already running.
-        let command = crate::infra::deploy::jobs::DeployService {
-            service_id: service.id.clone(),
-            release_id: None,
-        };
+        let command = crate::infra::deploy::jobs::DeployService::new(&service.id, None);
         if let Err(error) = wabot::async_jobs::run_command(&self.state.container, &command).await {
             tracing::error!(service = %service.id, %error, "could not queue a deployment");
         }
@@ -329,10 +326,7 @@ impl DatabaseRestController {
 
         // Its own job on this node's own queue, which is the same
         // deployment the service page's button queues.
-        let command = crate::infra::deploy::jobs::DeployService {
-            service_id: service.id.clone(),
-            release_id: None,
-        };
+        let command = crate::infra::deploy::jobs::DeployService::new(&service.id, None);
         if let Err(error) = wabot::async_jobs::run_command(&self.state.container, &command).await {
             tracing::error!(%error, "could not queue the deployment");
         }
@@ -407,10 +401,7 @@ impl DatabaseRestController {
             Err(reason) => return Ok(back_with_error(&back, &reason)),
         };
 
-        let command = crate::infra::deploy::jobs::DeployService {
-            service_id: made.service_id.clone(),
-            release_id: None,
-        };
+        let command = crate::infra::deploy::jobs::DeployService::new(&made.service_id, None);
         if let Err(error) = wabot::async_jobs::run_command(&self.state.container, &command).await {
             tracing::error!(service = %made.service_id, %error, "could not queue a deployment");
         }

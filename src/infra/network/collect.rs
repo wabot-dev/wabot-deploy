@@ -1247,10 +1247,7 @@ async fn host_service(
     // Its own job, on its own queue. This is the whole of "deploying is
     // local": the authority asked, and what runs is this node's own
     // deployment, indistinguishable from one somebody clicked here.
-    let command = crate::infra::deploy::jobs::DeployService {
-        service_id: service.id.clone(),
-        release_id: None,
-    };
+    let command = crate::infra::deploy::jobs::DeployService::new(&service.id, None);
     wabot::async_jobs::run_command(container, &command)
         .await
         .map_err(|error| format!("could not queue the deployment: {error}"))?;
@@ -1418,10 +1415,7 @@ async fn hold_database(
         };
     }
 
-    let command = crate::infra::deploy::jobs::DeployService {
-        service_id: service.id.clone(),
-        release_id: None,
-    };
+    let command = crate::infra::deploy::jobs::DeployService::new(&service.id, None);
     wabot::async_jobs::run_command(container, &command)
         .await
         .map_err(|error| format!("could not queue the deployment: {error}"))?;
