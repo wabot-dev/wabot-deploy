@@ -125,6 +125,7 @@ impl Claim {
     }
 }
 
+#[derive(Clone)]
 pub struct Deployer {
     database: Arc<SqliteDatabase>,
     /// Written once at startup and bind-mounted into every container.
@@ -695,10 +696,12 @@ impl Deployer {
 
         let mut first_address = None;
         let mut failure = None;
+        let mut stopped = false;
         for replica in &mine {
             match self.deploy_one(project, service, replica).await {
-                Ok(address) if replica.id == first.id => first_address = Some(address),
-                Ok(_) => {}
+                Ok(Some(address)) if replica.id == first.id => first_address = Some(address),
+                Ok(Some(_)) => {}
+                Ok(None) => stopped = true,
                 Err(error) => failure = Some(error),
             }
         }
@@ -722,6 +725,7 @@ impl Deployer {
         match (first_address, failure) {
             (Some(address), _) => Ok(Some(address)),
             (None, Some(error)) => Err(error),
+            (None, None) if stopped => Ok(None),
             (None, None) => Err(DeployError::Refused(format!(
                 "{} did not start anywhere",
                 service.slug
@@ -739,13 +743,13 @@ impl Deployer {
         project: &Project,
         service: &Service,
         replica: &Replica,
-    ) -> DeployResult<Ipv4Addr> {
+    ) -> DeployResult<Option<Ipv4Addr>> {
         let result = self.try_deploy(project, service, replica).await;
 
         match &result {
             Ok(address) => {
-                replicas::set_address(&self.database, &replica.id, Some(&address.to_string()))
-                    .await?;
+                let address = address.map(|address| address.to_string());
+                replicas::set_address(&self.database, &replica.id, address.as_deref()).await?;
                 replicas::set_last_error(&self.database, &replica.id, None).await?;
             }
             Err(error) => {
@@ -764,7 +768,7 @@ impl Deployer {
         // Only for a managed engine, which is the case where the node
         // wrote the configuration and therefore owes an account of what
         // its own choices did.
-        if result.is_ok() && service.kind.is_managed() {
+        if matches!(result, Ok(Some(_))) && service.kind.is_managed() {
             if let Some(reason) = self.died_saying(project, service, replica).await {
                 replicas::set_last_error(&self.database, &replica.id, Some(&reason)).await?;
             }
@@ -796,6 +800,14 @@ impl Deployer {
             Some(said) => format!("it started and exited {exit_code}: {said}"),
             None => format!("it started and exited {exit_code}, saying nothing"),
         })
+    }
+
+    /// Whether the service has been stopped or deleted since `service`
+    /// was read.
+    async fn not_wanted(&self, service: &Service) -> DeployResult<bool> {
+        Ok(services::find(&self.database, &service.id)
+            .await?
+            .is_none_or(|now| now.desired_state == DesiredState::Stopped))
     }
 
     /// The copies of a service this node is the one running.
@@ -904,12 +916,14 @@ impl Deployer {
         Ok(published)
     }
 
+    /// `None` is a copy that was not started because its service was
+    /// stopped or deleted while this was under way.
     async fn try_deploy(
         &self,
         project: &Project,
         service: &Service,
         replica: &Replica,
-    ) -> DeployResult<Ipv4Addr> {
+    ) -> DeployResult<Option<Ipv4Addr>> {
         let client = Containerd::connect().await?;
         let id = replica.container_id(&project.slug, &service.slug);
 
@@ -1191,6 +1205,28 @@ impl Deployer {
             false => logs::uri(path),
         });
 
+        // The fetch is the long part, and a stop that arrives during it
+        // finds nothing here yet to take down. So the image comes first and
+        // the intent is asked again after it: `nubo-testing` was stopped
+        // six minutes into a pull on node-l1, and the pull then started it
+        // (Jorge, 2026-11-14).
+        if let Err(error) =
+            crate::infra::runtime::images::ensure(&client, &service.image, credential.as_ref())
+                .await
+        {
+            network::detach(&net, &id).await;
+            return Err(error.into());
+        }
+        if self.not_wanted(service).await? {
+            network::detach(&net, &id).await;
+            tracing::info!(
+                service = %service.slug,
+                slot = replica.slot,
+                "stopped while its image was fetched; not started"
+            );
+            return Ok(None);
+        }
+
         match containers::run(
             &client,
             &id,
@@ -1209,7 +1245,7 @@ impl Deployer {
                     %address,
                     "deployed"
                 );
-                Ok(address)
+                Ok(Some(address))
             }
             Err(error) => {
                 // The namespace and the address go back, or the next
@@ -1854,6 +1890,34 @@ impl Deployer {
         self.tell_holders(project, service, Holding::AsPlaced).await;
         self.dispatch_standbys(service).await;
 
+        // Under the lock a deployment holds, or one in flight starts its
+        // container after this took down what was there — which is how
+        // node-l1 went on running `nubo-testing` after node-0 stopped it.
+        // Not waited for when a deployment has it: a pull can take minutes,
+        // and whoever asked is a button or another node's errand.
+        use wabot::async_jobs::Locker;
+        let Some(_free) = deploy_lock().try_acquire(&service.id).await else {
+            tracing::info!(service = %service.slug, "stopping once the deployment in flight lets go");
+            let deployer = self.clone();
+            let (project, service) = (project.clone(), service.clone());
+            tokio::spawn(async move {
+                let _held = deploy_lock().acquire(&service.id).await;
+                // Started again while this waited is a later decision than
+                // the stop, and it stands.
+                if !matches!(deployer.not_wanted(&service).await, Ok(true)) {
+                    return;
+                }
+                match deployer.stop_here(&project, &service).await {
+                    Ok(()) => {
+                        tracing::info!(service = %service.slug, "stopped after its deployment")
+                    }
+                    Err(error) => {
+                        tracing::warn!(service = %service.slug, %error, "stopping after its deployment")
+                    }
+                }
+            });
+            return Ok(());
+        };
         self.stop_here(project, service).await?;
         tracing::info!(service = %service.slug, project = %project.slug, "stopped");
         Ok(())
@@ -5564,6 +5628,67 @@ mod tests {
             serde_json::json!([1]),
             "stopped, and still placed there — `slots: []` would delete it"
         );
+    }
+
+    /// A stop that arrived while a deployment was pulling took down
+    /// nothing — the container did not exist yet — and the deployment then
+    /// started it: node-l1 ran `nubo-testing` for hours after node-0 had
+    /// stopped it (Jorge, 2026-11-14).
+    ///
+    /// So a stop takes its turn on the deployment's lock. It answers at
+    /// once all the same, because whoever asked is a button or another
+    /// node's errand, and a pull can take minutes.
+    #[tokio::test]
+    async fn a_stop_during_a_deployment_takes_its_turn_after_it_without_waiting_for_it() {
+        use wabot::async_jobs::Locker;
+        let (database, project, service) = placed_elsewhere().await;
+        let deployer = Deployer::new(
+            std::sync::Arc::new(database.clone()),
+            &crate::infra::config::Config::default(),
+        );
+        let deploying = deploy_lock().acquire(&service.id).await;
+
+        let answered = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            deployer.stop(&project, &service),
+        )
+        .await
+        .expect("the stop waited for the deployment");
+        assert!(answered.is_ok(), "{answered:?}");
+        assert_eq!(
+            services::find(&database, &service.id)
+                .await
+                .expect("query")
+                .expect("there")
+                .desired_state,
+            DesiredState::Stopped,
+        );
+        let told = crate::infra::network::errand::waiting(&database, "nd-far")
+            .await
+            .expect("errands");
+        assert_eq!(
+            told.len(),
+            1,
+            "the other nodes are told before the turn comes"
+        );
+        assert_eq!(told[0].payload["running"], serde_json::json!(false));
+
+        // The lock is fair: what a deployment lets go of goes to whoever
+        // was waiting, so a stop queued behind it is the next to hold it.
+        for _ in 0..8 {
+            tokio::task::yield_now().await;
+        }
+        drop(deploying);
+        assert!(
+            deploy_lock().try_acquire(&service.id).await.is_none(),
+            "nothing was waiting to take the copies down after the deployment"
+        );
+        tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            deploy_lock().acquire(&service.id),
+        )
+        .await
+        .expect("the stop that waited never let go");
     }
 
     /// Deleting a service has to reach the machines running its copies,

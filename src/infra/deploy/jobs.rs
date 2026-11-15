@@ -173,7 +173,20 @@ impl DeployHandler {
                     &self.container,
                 )
                 .await;
-                outcome
+
+                // A failure is retried, and the retry is a deployment like
+                // any other: it would start again a service somebody
+                // stopped while this one was failing.
+                match outcome {
+                    Err(_) if matches!(self.deployer.not_wanted(service).await, Ok(true)) => {
+                        tracing::info!(
+                            service = %service.slug,
+                            "stopped while it was deploying; not retried"
+                        );
+                        Ok(())
+                    }
+                    outcome => outcome,
+                }
             }
             Some(id) => {
                 let release = releases::find(&self.database, id)
