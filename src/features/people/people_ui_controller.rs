@@ -11,7 +11,7 @@ use crate::infra::repositories::access;
 
 use crate::shell::auth::{signed_in, JoinPage, PageQuery, SessionMiddleware};
 use crate::shell::layouts::layout;
-use crate::shell::layouts::shell::{Area, Frame};
+use crate::shell::layouts::shell::{Frame, Section};
 use crate::shell::state::ConsoleState;
 
 #[injectable]
@@ -47,7 +47,7 @@ impl PeopleUiController {
         let projects = access::projects_for(&self.state.database, &account).await?;
         let now = crate::shell::state::now_ms();
 
-        let frame = Frame::new(&account, Area::Settings, &projects, None, "/people");
+        let frame = Frame::load(&self.state.database, &account, Section::People, "/people").await;
         layout::head("People");
 
         // The account's language, around the render and no wider:

@@ -31,7 +31,7 @@ use crate::infra::repositories::access;
 use crate::infra::repositories::tenants;
 use crate::shell::auth::{signed_in, PageQuery, SessionMiddleware};
 use crate::shell::layouts::layout;
-use crate::shell::layouts::shell::{Area, Frame};
+use crate::shell::layouts::shell::{Frame, Section};
 use crate::shell::state::ConsoleState;
 
 #[derive(Debug, Deserialize, Validate, Default)]
@@ -93,7 +93,13 @@ impl TenantUiController {
             );
         }
 
-        let frame = Frame::new(&account, Area::Settings, &[], None, "/organisations");
+        let frame = Frame::load(
+            &self.state.database,
+            &account,
+            Section::Organisations,
+            "/organisations",
+        )
+        .await;
         let page = crate::features::organisations::node_user_organisations_page::Organisations {
             cards: &cards,
             error: query.error.as_deref(),
@@ -130,13 +136,13 @@ impl TenantUiController {
             .unwrap_or_default();
 
         layout::head(&tenant.name);
-        let frame = Frame::new(
+        let frame = Frame::load(
+            &self.state.database,
             &account,
-            Area::Settings,
-            &[],
-            None,
+            Section::Organisations,
             format!("/organisations/{}", tenant.id),
-        );
+        )
+        .await;
         let page = crate::features::organisations::node_user_organisation_page::Organisation {
             tenant: &tenant,
             owners: &owners,
@@ -207,14 +213,14 @@ impl TenantUiController {
             },
         };
 
-        layout::head("Settings");
-        let frame = Frame::new(
+        layout::head(&tenant.name);
+        let frame = Frame::load(
+            &self.state.database,
             &account,
-            Area::Settings,
-            &[],
-            None,
-            format!("/organisations/{}", tenant.id),
-        );
+            Section::Organisations,
+            tab.path(&tenant.id),
+        )
+        .await;
         let page =
             crate::features::organisations::node_user_organisation_settings_page::OrganisationSettings {
                 tenant: &tenant,

@@ -7,12 +7,11 @@ use serde::Deserialize;
 use wabot::prelude::*;
 use wabot::ui::hypertext::IntoView;
 
-use crate::infra::repositories::access;
 use crate::infra::update::runs::{self};
 
 use crate::shell::auth::{signed_in, SessionMiddleware};
 use crate::shell::layouts::layout;
-use crate::shell::layouts::shell::{Area, Frame};
+use crate::shell::layouts::shell::{Frame, Section};
 use crate::shell::state::ConsoleState;
 
 #[derive(Debug, Deserialize, Validate)]
@@ -35,7 +34,29 @@ pub struct UpdateUiController {
 
 #[ui_controller("/", app)]
 impl UpdateUiController {
+    /// Where the updates area was. It is this machine's Version tab now,
+    /// beside what the node is and what it is set to.
     #[view("/updates")]
+    #[middleware(SessionMiddleware)]
+    async fn updates_moved(&self, query: UpdatesPage) -> UiResult<ViewOutcome> {
+        Ok(Redirect::found(crate::shell::auth::with_error(
+            "/node/version",
+            query.error.as_deref(),
+        ))
+        .into())
+    }
+
+    #[view("/updates/:tag")]
+    #[middleware(SessionMiddleware)]
+    async fn release_moved(&self, query: ReleasePage) -> UiResult<ViewOutcome> {
+        Ok(Redirect::found(crate::shell::auth::with_error(
+            &format!("/node/version/{}", query.tag),
+            query.error.as_deref(),
+        ))
+        .into())
+    }
+
+    #[view("/node/version")]
     #[middleware(SessionMiddleware)]
     async fn index(&self, query: UpdatesPage) -> UiResult<ViewOutcome> {
         let Some(account) = signed_in(&self.auth) else {
@@ -47,7 +68,9 @@ impl UpdateUiController {
             return Ok(Redirect::found("/").into());
         }
 
-        let projects = access::projects_for(&self.state.database, &account).await?;
+        let Some(me) = crate::infra::network::me(&self.state.database).await? else {
+            return Ok(Redirect::found("/nodes").into());
+        };
         let history = runs::recent(&self.state.database, 5)
             .await
             .unwrap_or_else(|error| {
@@ -64,11 +87,18 @@ impl UpdateUiController {
         // to say what version it is and what happened last time.
         let available = crate::infra::update::availability(&self.state.catalogue).await;
 
-        layout::head("Updates");
-        let frame = Frame::new(&account, Area::Settings, &projects, None, "/updates");
+        layout::head(&me.name);
+        let frame = Frame::load(
+            &self.state.database,
+            &account,
+            Section::Nodes,
+            "/node/version",
+        )
+        .await;
         // The account's language, around the render and no wider:
         // the strings are read here, and nothing awaits inside.
         let page = crate::features::updates::node_user_updates_page::Updates {
+            node: &me,
             history: &history,
             latest: latest.as_ref(),
             available: &available,
@@ -86,7 +116,7 @@ impl UpdateUiController {
 
     /// One release, in full — the notes are the reason this page
     /// exists rather than a version number on a button.
-    #[view("/updates/:tag")]
+    #[view("/node/version/:tag")]
     #[middleware(SessionMiddleware)]
     async fn release(&self, query: ReleasePage) -> UiResult<ViewOutcome> {
         let Some(account) = signed_in(&self.auth) else {
@@ -100,7 +130,7 @@ impl UpdateUiController {
             Ok(releases) => releases,
             Err(error) => {
                 let back = format!(
-                    "/updates?{}",
+                    "/node/version?{}",
                     crate::shell::auth::encode("error", &error.to_string())
                 );
                 return Ok(Redirect::found(back).into());
@@ -108,14 +138,19 @@ impl UpdateUiController {
         };
         let Some(release) = crate::infra::update::github::find(&releases, &query.tag).cloned()
         else {
-            return Ok(Redirect::found("/updates").into());
+            return Ok(Redirect::found("/node/version").into());
         };
 
-        let projects = access::projects_for(&self.state.database, &account).await?;
         let current = crate::infra::update::github::Version::current();
 
         layout::head(&format!("wabot-deploy {}", release.version));
-        let frame = Frame::new(&account, Area::Settings, &projects, None, "/updates");
+        let frame = Frame::load(
+            &self.state.database,
+            &account,
+            Section::Nodes,
+            format!("/node/version/{}", release.tag),
+        )
+        .await;
         // The account's language, around the render and no wider:
         // the strings are read here, and nothing awaits inside.
         let page = crate::features::updates::node_user_release_page::ReleaseView {

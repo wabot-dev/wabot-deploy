@@ -21,6 +21,8 @@
 //! visitor gets a *redirect*, and a router-level guard can only
 //! reject. See [`auth`].
 
+pub mod go_page;
+pub mod go_ui_controller;
 pub mod reveal_ui_controller;
 pub mod revealed_page;
 
@@ -90,6 +92,7 @@ pub fn register(
         people_rest_controller::PeopleRestController,
         project_ui_controller::ProjectUiController,
         project_rest_controller::ProjectRestController,
+        go_ui_controller::GoUiController,
         reveal_ui_controller::RevealUiController,
         database_rest_controller::DatabaseRestController,
         database_ui_controller::DatabaseUiController,
@@ -123,6 +126,7 @@ fn shared(container: &Container, pages: Router, forms: Router) -> (Router, Route
     let pages = auth_ui_controller::AuthUiController::register_ui_routes(container, pages);
     let pages = database_ui_controller::DatabaseUiController::register_ui_routes(container, pages);
     let pages = project_ui_controller::ProjectUiController::register_ui_routes(container, pages);
+    let pages = go_ui_controller::GoUiController::register_ui_routes(container, pages);
     let pages = reveal_ui_controller::RevealUiController::register_ui_routes(container, pages);
     let pages = service_ui_controller::ServiceUiController::register_ui_routes(container, pages);
     let pages = service_redirect_ui_controller::ServiceRedirectUiController::register_ui_routes(
@@ -186,8 +190,8 @@ pub fn routes(container: &Container) -> Router {
 ///
 /// **A second router rather than a second branch inside every
 /// handler.** The pages the machine's operator has are not registered
-/// here at all, so `/node`, `/updates` and `/organisations` do not
-/// exist in this frontier — a 404 by construction, which is a stronger
+/// here at all, so `/status`, `/nodes`, `/node` and `/organisations` do
+/// not exist in this frontier — a 404 by construction, which is a stronger
 /// thing than a redirect somebody has to remember to write.
 ///
 /// What it does **not** get is a second answer to "may they": that
@@ -325,7 +329,7 @@ pub(crate) mod tests {
                 ui: wabot::testing::UiHarness::new(router),
                 database,
                 setup_token,
-                node_path: format!("/network/{}", me.id),
+                node_path: format!("/nodes/{}", me.id),
                 data_dir: scratch.path().to_path_buf(),
                 config,
                 _scratch: scratch,
@@ -754,15 +758,22 @@ pub(crate) mod tests {
         let console = Console::new().await;
         let cookie = console.signed_in().await;
 
-        const PAGES: &[&str] = &[
-            "/",
-            "/people",
-            "/organisations",
-            "/network",
-            "/node/domain",
-            "/updates",
+        let pages = [
+            "/status".to_string(),
+            "/projects".to_string(),
+            "/people".to_string(),
+            "/organisations".to_string(),
+            "/nodes".to_string(),
+            "/nodes/invite".to_string(),
+            "/nodes/join".to_string(),
+            console.node_path.clone(),
+            format!("{}/connections", console.node_path),
+            "/node/domain".to_string(),
+            "/node/version".to_string(),
+            "/go".to_string(),
+            "/go?q=nothing-is-called-this".to_string(),
         ];
-        for path in PAGES {
+        for path in &pages {
             let body = console
                 .harness
                 .get(path)
@@ -770,10 +781,15 @@ pub(crate) mod tests {
                 .send()
                 .await
                 .body;
-            // A redirect has no head and needs none.
-            if body.trim().is_empty() {
-                continue;
-            }
+            // **A redirect used to be skipped here**, having no head and
+            // needing none — so when three of these became redirects the
+            // list went on passing while checking half of what it named.
+            // A page on this list that stops being one fails it.
+            assert!(
+                !body.trim().is_empty(),
+                "{path} is on the list of pages and answered nothing — it moved, and the \
+                 list has to follow it"
+            );
             assert!(
                 body.contains(&format!(
                     r#"<link rel="stylesheet" href="{}/wabot.css">"#,
@@ -919,7 +935,7 @@ pub(crate) mod tests {
 
         let before = console
             .harness
-            .get("/")
+            .get("/projects")
             .header("cookie", &cookie)
             .send()
             .await
@@ -933,14 +949,14 @@ pub(crate) mod tests {
             .harness
             .post("/theme")
             .header("cookie", &cookie)
-            .form(&[("theme", "dark"), ("from", "/")])
+            .form(&[("theme", "dark"), ("from", "/projects")])
             .send()
             .await
             .assert_status(StatusCode::SEE_OTHER);
 
         let after = console
             .harness
-            .get("/")
+            .get("/projects")
             .header("cookie", &cookie)
             .send()
             .await
@@ -984,7 +1000,7 @@ pub(crate) mod tests {
         assert_eq!(
             node.island_props("node-live"),
             Some(serde_json::json!({
-                "node": console.node_path.trim_start_matches("/network/"),
+                "node": console.node_path.trim_start_matches("/nodes/"),
             })),
             "the client needs the id to open the stream"
         );
@@ -1002,6 +1018,61 @@ pub(crate) mod tests {
             settings.has_island("node-live"),
             "and its cells still stream: {}",
             settings.html()
+        );
+        // The frame's own: the field that goes to a thing by name is on
+        // every page, and the keyboard's way to it with it.
+        assert!(node.has_island("go"), "{}", node.html());
+        assert!(settings.has_island("go"), "{}", settings.html());
+    }
+
+    /// Every stream a page opens is one the router answers.
+    ///
+    /// **Shipped broken**: the network's pages moved from `/nodes` to
+    /// `/network` and the route for a node's stream moved with them,
+    /// while the island went on opening `/nodes/<id>/live` — a 404 the
+    /// browser retries for ever and shows nobody. The memory meter and
+    /// the certificate's state stood still on a page that looked live,
+    /// and the suite stayed green because it asked the route for its own
+    /// path. Found while moving the pages back.
+    ///
+    /// So this reads the paths out of the script that opens them. A
+    /// stream is refused to a stranger with a status, never a redirect —
+    /// an `EventSource` cannot follow one — so "not 404" is the router
+    /// saying the address exists.
+    #[tokio::test]
+    async fn every_stream_the_script_opens_has_a_route() {
+        let console = Console::new().await;
+        let script = include_str!("../../../assets/console.js");
+
+        let mut asked = 0;
+        for (at, _) in script.match_indices("new EventSource(") {
+            let rest = &script[at + "new EventSource(".len()..];
+            let expression = &rest[..rest.find(");").expect("the call closes")];
+            // The path as a browser would build it, with a name standing
+            // in for each thing the page supplies.
+            let mut path = String::new();
+            for (index, piece) in expression.split('\'').enumerate() {
+                match index % 2 {
+                    1 => path.push_str(piece),
+                    _ if index > 0 && piece.contains("encodeURIComponent") => path.push('x'),
+                    _ => {}
+                }
+            }
+            assert!(
+                path.starts_with('/'),
+                "could not read a path from {expression}"
+            );
+            let response = console.harness.get(&path).send().await;
+            assert_ne!(
+                response.status,
+                StatusCode::NOT_FOUND,
+                "the script opens {path}, and nothing answers there"
+            );
+            asked += 1;
+        }
+        assert!(
+            asked >= 4,
+            "the scan found {asked} streams, so it is reading the script wrong"
         );
     }
 
@@ -1058,7 +1129,7 @@ pub(crate) mod tests {
         let cookie = console.signed_in().await;
         let body = console
             .harness
-            .get("/network")
+            .get("/nodes")
             .header("cookie", &cookie)
             .send()
             .await
@@ -1251,5 +1322,213 @@ pub(crate) mod tests {
             }
         }
         assert!(checked > 0, "no conditional fields on this page");
+    }
+
+    /// A project with one service whose only copy would not start.
+    async fn a_project_with_a_failed_copy(console: &Console, cookie: &str) {
+        console
+            .harness
+            .post("/projects")
+            .header("cookie", cookie)
+            .form(&[("name", "demo")])
+            .send()
+            .await;
+        let project = crate::infra::repositories::projects::all(&console.database)
+            .await
+            .expect("projects")
+            .into_iter()
+            .find(|project| project.slug == "demo")
+            .expect("made");
+        for (slug, fails) in [("api", true), ("worker", false)] {
+            let service = crate::infra::repositories::services::create(
+                &console.database,
+                &project.id,
+                slug,
+                "docker.io/library/nginx:alpine",
+                &[],
+            )
+            .await
+            .expect("service");
+            let replica = crate::infra::repositories::replicas::ensure_here(
+                &console.database,
+                &service.id,
+                1,
+            )
+            .await
+            .expect("a copy")
+            .pop()
+            .expect("one");
+            if fails {
+                crate::infra::repositories::replicas::set_last_error(
+                    &console.database,
+                    &replica.id,
+                    Some("it started and exited 1"),
+                )
+                .await
+                .expect("failed");
+            }
+        }
+    }
+
+    fn list_of(body: &str) -> &str {
+        body.split_once(r#"<div class="side-inner">"#)
+            .map(|(_, rest)| rest.split("</aside>").next().unwrap_or_default())
+            .unwrap_or_else(|| panic!("no list beside the page: {body}"))
+    }
+
+    /// The list beside a page says which things there are, and marks the
+    /// one a copy of which would not start — on the project while it is
+    /// closed, and on the service once the project is open, so the mark
+    /// leads to the thing rather than repeating itself up the tree.
+    ///
+    /// Read off the rows and never asked of the runtime: the list is on
+    /// every page, and a service with nothing wrong carries no mark at
+    /// all rather than a green one nobody checked.
+    #[tokio::test]
+    async fn the_list_marks_what_failed_and_only_that() {
+        let console = Console::new().await;
+        let cookie = console.signed_in().await;
+        a_project_with_a_failed_copy(&console, &cookie).await;
+        macro_rules! list {
+            ($path:expr) => {{
+                let body = console
+                    .harness
+                    .get($path)
+                    .header("cookie", &cookie)
+                    .send()
+                    .await
+                    .body;
+                list_of(&body).to_string()
+            }};
+        }
+        let entry = |list: &str, href: &str| {
+            list.split_once(&format!("href=\"{href}\""))
+                .map(|(_, rest)| rest.split("</a>").next().unwrap_or_default().to_string())
+                .unwrap_or_else(|| panic!("{href} is not in the list: {list}"))
+        };
+
+        let closed = list!("/projects");
+        assert!(
+            entry(&closed, "/projects/demo").contains("Failed"),
+            "{closed}"
+        );
+        assert!(
+            !closed.contains("/projects/demo/services/"),
+            "a project nobody opened shows its services: {closed}"
+        );
+
+        let open = list!("/projects/demo");
+        assert!(
+            !entry(&open, "/projects/demo").contains("Failed"),
+            "the mark is on the project and on its service: {open}"
+        );
+        assert!(
+            entry(&open, "/projects/demo/services/api").contains("Failed"),
+            "{open}"
+        );
+        let healthy = entry(&open, "/projects/demo/services/worker");
+        assert!(
+            !healthy.contains("dot") && !healthy.contains("Failed"),
+            "a service with nothing wrong is marked: {healthy}"
+        );
+    }
+
+    /// A service has the same three tabs on each of its pages, and its
+    /// log is the page that gets the list's width.
+    ///
+    /// Logs and Settings were two buttons on the service's page, and the
+    /// node beside it had tabs: two things of one kind, two patterns. And
+    /// a log is read by the line, so a line cut short by a column of
+    /// names is the wrong trade — the trail above it leads back.
+    #[tokio::test]
+    async fn a_service_has_its_tabs_on_every_page_and_its_log_has_the_width() {
+        let console = Console::new().await;
+        let cookie = console.signed_in().await;
+        a_project_with_a_failed_copy(&console, &cookie).await;
+
+        let base = "/projects/demo/services/api";
+        let settings = format!("{base}/settings/image");
+        for (path, current) in [
+            (base.to_string(), base.to_string()),
+            (format!("{base}/logs"), format!("{base}/logs")),
+            (settings.clone(), settings.clone()),
+        ] {
+            let body = console
+                .harness
+                .get(&path)
+                .header("cookie", &cookie)
+                .send()
+                .await
+                .body;
+            let tabs = body
+                .split_once(r#"<nav class="object-tabs""#)
+                .map(|(_, rest)| rest.split("</nav>").next().unwrap_or_default())
+                .unwrap_or_else(|| panic!("{path} has no tabs: {body}"));
+            for href in [base, &format!("{base}/logs"), &settings] {
+                assert!(
+                    tabs.contains(&format!("href=\"{href}\"")),
+                    "{path} has no tab for {href}: {tabs}"
+                );
+            }
+            assert!(
+                tabs.contains(&format!("href=\"{current}\" class=\"active\"")),
+                "{path} does not say it is the current tab: {tabs}"
+            );
+            let (_, page) = body.split_once("<main>").expect("a page");
+            assert!(
+                !page.contains(
+                    r#"class="btn btn-secondary" href="/projects/demo/services/api/logs""#
+                ),
+                "{path} still offers the log as a button beside its tabs"
+            );
+
+            match path.ends_with("/logs") {
+                true => assert!(
+                    !body.contains("<aside") && body.contains(r#"class="app-body wide""#),
+                    "the log shares its width with the list: {body}"
+                ),
+                false => assert!(
+                    list_of(&body)
+                        .contains(r#"href="/projects/demo/services/api" class="nested active""#),
+                    "{path} does not light its own service in the list"
+                ),
+            }
+        }
+    }
+
+    /// The organisation's console has the doors both share and none of
+    /// the machine's.
+    ///
+    /// The two are two routers, and a page registered on one is a 404 on
+    /// the other by construction — which is the right answer for the
+    /// machine's pages and the wrong one for the page somebody lands on.
+    #[tokio::test]
+    async fn the_organisations_console_has_the_shared_doors_and_none_of_the_machines() {
+        let console = Console::new().await;
+        for path in ["/", "/projects", "/go"] {
+            for (which, harness) in [
+                ("node", &console.harness),
+                ("organisation", &console.tenant),
+            ] {
+                assert_ne!(
+                    harness.get(path).send().await.status,
+                    StatusCode::NOT_FOUND,
+                    "{path} does not exist in the {which}'s console"
+                );
+            }
+        }
+        for path in [
+            "/status",
+            "/nodes",
+            "/node/domain",
+            "/node/version",
+            "/organisations",
+        ] {
+            assert_eq!(
+                console.tenant.get(path).send().await.status,
+                StatusCode::NOT_FOUND,
+                "{path} answers in an organisation's console"
+            );
+        }
     }
 }

@@ -10,7 +10,7 @@ use wabot::ui::hypertext::IntoView;
 use crate::infra::repositories::access;
 use crate::shell::auth::{signed_in, SessionMiddleware};
 use crate::shell::layouts::layout;
-use crate::shell::layouts::shell::{Area, Frame};
+use crate::shell::layouts::shell::{Frame, Section};
 use crate::shell::state::ConsoleState;
 
 #[derive(Debug, Deserialize, Validate)]
@@ -36,7 +36,7 @@ impl DatabaseUiController {
         let Some((project, allowed)) =
             access::find_project(&self.state.database, &account, &query.project).await?
         else {
-            return Ok(Redirect::found("/?error=no+such+project").into());
+            return Ok(Redirect::found("/projects?error=no+such+project").into());
         };
         if !allowed.may_deploy() {
             return Ok(Redirect::found(format!("/projects/{}", project.slug)).into());
@@ -44,15 +44,13 @@ impl DatabaseUiController {
 
         let action = format!("/projects/{}/databases", project.slug);
         let back = format!("/projects/{}", project.slug);
-        let all_projects = access::projects_for(&self.state.database, &account).await?;
-        let frame = Frame::new(
+        let frame = Frame::load(
+            &self.state.database,
             &account,
-            Area::Projects,
-            &all_projects,
-            Some(&project),
+            Section::Projects,
             format!("/projects/{}/databases/new", project.slug),
         )
-        .allowing(allowed);
+        .await;
 
         layout::head("Create database");
         let (here, elsewhere): (Vec<_>, Vec<_>) = crate::infra::network::candidates_for(

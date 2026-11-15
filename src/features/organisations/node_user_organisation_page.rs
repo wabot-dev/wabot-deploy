@@ -4,6 +4,9 @@ use crate::domain::entities::account::Account;
 use crate::domain::entities::project::Project;
 use crate::domain::entities::tenant::Tenant;
 use crate::features::organisations::organisation_quota_component::quota_card;
+use crate::features::organisations::organisation_tabs_component::{
+    organisation_tabs, OrganisationPlace,
+};
 use crate::features::organisations::texts::t;
 use crate::infra::deploy::quotas::Charged;
 use crate::shell::layouts::layout;
@@ -29,16 +32,11 @@ pub fn render<'a>(page: &'a Organisation<'a>) -> impl Renderable + 'a {
     let tenant = page.tenant;
     rsx! {
         (layout::style_tag())
-        <div class="split">
-            <div class="stack-sm">
-                <h1>(&tenant.name)</h1>
-                <p class="slug-preview">(&tenant.slug)</p>
-            </div>
-            <div class="row">
-                <a class="btn btn-secondary"
-                   href=(format!("/organisations/{}/settings", tenant.id))>(t("Settings"))</a>
-            </div>
+        <div class="stack-sm">
+            <h1>(&tenant.name)</h1>
+            <p class="slug-preview">(&tenant.slug)</p>
         </div>
+        (organisation_tabs(tenant, OrganisationPlace::Overview))
         @if let Some(message) = page.error {
             (layout::error_note(message))
         }

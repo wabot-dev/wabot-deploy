@@ -734,6 +734,23 @@ pub fn pair(me: &Node, nodes: &[Node], interface: &Interface) -> Vec<Paired> {
     paired
 }
 
+/// What is happening between this node and each of the others, read
+/// now: the kernel's peers crossed with the rows.
+///
+/// The reason is the kernel's own when the interface cannot be read — a
+/// machine with no WireGuard has a console to find that out on.
+pub async fn paths(database: &SqliteDatabase) -> Result<Vec<Paired>, String> {
+    let interface = observed()?;
+    let me = crate::infra::network::me(database)
+        .await
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "this node has no row of its own".to_string())?;
+    let nodes = crate::infra::network::all(database)
+        .await
+        .map_err(|error| error.to_string())?;
+    Ok(pair(&me, &nodes, &interface))
+}
+
 fn now_seconds() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

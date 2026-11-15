@@ -26,6 +26,29 @@ pub struct AuthUiController {
 
 #[ui_controller("/", app)]
 impl AuthUiController {
+    /// Where somebody lands: what they came to look at.
+    ///
+    /// Whoever runs the machine opens it to see whether it is all right,
+    /// so that is their first page; everybody else has projects and
+    /// nothing else to see. A redirect rather than one address showing
+    /// two pages, so each has a URL of its own and this one can be handed
+    /// to anybody.
+    #[view("/")]
+    #[middleware(SessionMiddleware)]
+    async fn home(&self, query: PageQuery) -> UiResult<ViewOutcome> {
+        let Some(account) = signed_in(&self.auth) else {
+            return Ok(Redirect::found(
+                crate::shell::auth::signed_out_destination(&self.state).await,
+            )
+            .into());
+        };
+        let home = match crate::domain::authz::node_user::manages_the_machine(&account) {
+            true => "/status",
+            false => "/projects",
+        };
+        Ok(Redirect::found(crate::shell::auth::with_error(home, query.error.as_deref())).into())
+    }
+
     /// Create the first administrator.
     ///
     /// Guarded twice over: the page is gone once an account exists, and

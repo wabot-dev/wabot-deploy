@@ -426,7 +426,7 @@ copies. → Out of rotation in about six seconds, and back in on its own
 when it answers. Requests keep succeeding throughout.
 **11.3 A standby that stopped following.** Break replication. → The page
 says `Not following`.
-**11.4 Check for an update.** `/updates`. → Releases, with which one is
+**11.4 Check for an update.** This node's Version tab, `/node/version`. → Releases, with which one is
 running.
 **11.5 Install it.** → Downloads, verifies the checksum, replaces the
 binary, restarts. The previous binary stays at

@@ -3,10 +3,12 @@ use hypertext::prelude::*;
 use crate::domain::entities::project::Project;
 use crate::features::dns::texts::{t, word};
 use crate::features::dns::zones_response::ZonesResponse;
+use crate::features::projects::project_tabs_component::{project_tabs, ProjectPlace};
 use crate::shell::layouts::layout;
 
 pub struct ZonesPage<'a> {
     pub project: &'a Project,
+    pub allowed: crate::domain::values::roles::Access,
     pub zones: &'a ZonesResponse,
     pub error: Option<&'a str>,
 }
@@ -17,13 +19,14 @@ pub fn render<'a>(page: &'a ZonesPage<'a>) -> impl Renderable + 'a {
     rsx! {
         (layout::style_tag())
         <div class="split">
-            <h1>(t("DNS"))</h1>
+            <h1>(&page.project.name)</h1>
             @if zones.editable {
                 <div class="row">
                     <a class="btn" href=(format!("{here}/new"))>(t("Add zone"))</a>
                 </div>
             }
         </div>
+        (project_tabs(page.project, page.allowed, ProjectPlace::Dns))
         @if let Some(message) = page.error {
             (layout::error_note(word(message)))
         }

@@ -7,14 +7,12 @@ use hypertext::prelude::*;
 pub struct Projects<'a> {
     pub projects: &'a [crate::domain::entities::project::Project],
     pub owns: bool,
-    pub concerns: &'a [crate::features::node::concern_response::ConcernResponse],
     pub query_error: Option<&'a str>,
 }
 
 pub fn render<'a>(page: &'a Projects<'a>) -> impl Renderable + 'a {
     let projects = page.projects;
     let owns = page.owns;
-    let concerns = page.concerns;
     rsx! {
             (layout::style_tag())
             <div class="split">
@@ -29,11 +27,6 @@ pub fn render<'a>(page: &'a Projects<'a>) -> impl Renderable + 'a {
             @if let Some(message) = &page.query_error {
                 (layout::error_note(message))
             }
-
-            // Above the list, and only when there is something.
-            // A panel that is always there is part of the
-            // wallpaper by the second week.
-            (crate::features::node::attention_card_component::card(concerns))
 
             @if projects.is_empty() {
                 // No second "Create project" here: the one in the

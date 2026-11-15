@@ -14,7 +14,7 @@ use crate::features::node::node_user_node_settings_page::{NodeTab, Panel};
 use crate::shell::auth::{signed_in, SessionMiddleware};
 use crate::shell::components::node_certificate::CertificateState;
 use crate::shell::layouts::layout;
-use crate::shell::layouts::shell::{Area, Frame};
+use crate::shell::layouts::shell::{Frame, Section};
 use crate::shell::state::ConsoleState;
 
 #[derive(Debug, Deserialize, Validate, Default)]
@@ -34,21 +34,65 @@ pub struct NodeUiController {
 
 #[ui_controller("/", app)]
 impl NodeUiController {
-    /// Where the gear lands.
+    /// Where whoever runs the machine lands.
     ///
-    /// A redirect rather than a page of its own: a landing page whose
-    /// whole content is links to the three pages already in the sidebar
-    /// is a click somebody has to make before doing anything. The nodes
-    /// are what this section is mostly about, so that is where it opens
-    /// — and the sidebar says what else is here.
+    /// Only theirs: a member of one project has no business being told
+    /// about another's certificates, and every source here is node-wide.
+    #[view("/status")]
+    #[middleware(SessionMiddleware)]
+    async fn status(&self, query: NodeSettingsPage) -> UiResult<ViewOutcome> {
+        let Some(account) = signed_in(&self.auth) else {
+            return Ok(Redirect::found("/sign-in").into());
+        };
+        if !crate::domain::authz::node_user::manages_the_machine(&account) {
+            return Ok(Redirect::found("/projects").into());
+        }
+
+        let concerns = crate::features::node::node_user_see_what_needs_attention::run(
+            &self.state.database,
+            &self.state.config,
+            &self.state.deployer,
+            &account,
+        )
+        .await
+        .unwrap_or_default();
+        let nodes = network::all(&self.state.database).await?;
+        let paths = network::tunnel::paths(&self.state.database).await;
+        let memory = self.state.deployer.memory().await;
+        // The filesystem's own two numbers, and not the walk by part: that
+        // is three directory trees, and this is the page somebody lands
+        // on.
+        let disk = crate::infra::node::disk::filesystem(&self.state.config.node.data_dir);
+        let domain = crate::infra::node::settings::domain(&self.state.database).await;
+
+        layout::head("Status");
+        let frame = Frame::load(&self.state.database, &account, Section::Status, "/status").await;
+        let page = crate::features::node::node_user_status_page::Status {
+            node: nodes.iter().find(|node| node.is_self),
+            concerns: &concerns,
+            memory: &memory,
+            disk,
+            domain: domain.as_deref(),
+            links: crate::features::network::node_connections_component::Links {
+                nodes: &nodes,
+                paths: &paths,
+            },
+            error: query.error.as_deref(),
+        };
+        let body = crate::shell::texts::language::scoped(account.language, || {
+            crate::features::node::node_user_status_page::render(&page)
+                .render()
+                .into_inner()
+        });
+
+        Ok(frame.render(body).into_view().into())
+    }
+
+    /// Where the gear used to land. There is no settings area now — what
+    /// can be changed about this machine is a tab of its own page — so a
+    /// link kept from before goes there.
     #[view("/settings")]
     #[middleware(SessionMiddleware)]
-    ///
-    /// **This is the machine's gear, and it only ever opens the
-    /// machine's settings.** Another frontier's console is a different
-    /// router with its own landing — see `console::tenant` — so this
-    /// controller has no second case to carry, which is what keeps the
-    /// two halves separable.
     async fn settings(&self) -> UiResult<ViewOutcome> {
         match signed_in(&self.auth)
             .is_some_and(|account| crate::domain::authz::node_user::manages_the_machine(&account))
@@ -58,16 +102,10 @@ impl NodeUiController {
         }
     }
 
-    /// This machine, and only what is editable about it.
-    ///
-    /// It was `/nodes`, mixed in with the list of every node and the two
-    /// enrolment forms — so "what does this node do" and "what are my
-    /// nodes doing" were one page with one name. Singular here, and the
-    /// list is its own area.
     /// The bare path is not a page: it names the first tab.
     #[view("/node")]
     #[middleware(SessionMiddleware)]
-    async fn this_node_root(&self) -> UiResult<ViewOutcome> {
+    async fn this_node_root(&self, query: NodeSettingsPage) -> UiResult<ViewOutcome> {
         // Nobody signed in goes to sign in, not to the projects list: the
         // three answers are different and `the_nodes_pages_need_a_session`
         // asks every page in the area which one it gives.
@@ -75,7 +113,11 @@ impl NodeUiController {
             return Ok(Redirect::found("/sign-in").into());
         };
         match account.is_admin() {
-            true => Ok(Redirect::found(NodeTab::Domain.path()).into()),
+            true => Ok(Redirect::found(crate::shell::auth::with_error(
+                &NodeTab::Domain.path(),
+                query.error.as_deref(),
+            ))
+            .into()),
             false => Ok(Redirect::found("/").into()),
         }
     }
@@ -98,11 +140,10 @@ impl NodeUiController {
 
         let projects = access::projects_for(&self.state.database, &account).await?;
         let nodes = network::all(&self.state.database).await?;
-        let self_id = nodes
-            .iter()
-            .find(|node| node.is_self)
-            .map(|node| node.id.clone())
-            .unwrap_or_default();
+        let Some(me) = nodes.iter().find(|node| node.is_self) else {
+            return Ok(Redirect::found("/nodes").into());
+        };
+        let self_id = me.id.clone();
 
         // **Only what this tab draws.** All of it used to be read on
         // every render, and the cost is not theoretical: `backup::taken`
@@ -241,9 +282,10 @@ impl NodeUiController {
             },
         };
 
-        layout::head("Node");
-        let frame = Frame::new(&account, Area::Settings, &projects, None, "/node");
+        layout::head(&me.name);
+        let frame = Frame::load(&self.state.database, &account, Section::Nodes, tab.path()).await;
         let page = crate::features::node::node_user_node_settings_page::NodeSettings {
+            node: me,
             tab,
             panel,
             error: query.error.as_deref(),

@@ -11,6 +11,7 @@ use crate::features::databases::database_cards_component;
 use crate::features::services::service_push_component::Push;
 use crate::features::services::service_running_component::Running;
 use crate::features::services::service_state_component::StateCell;
+use crate::features::services::service_tabs_component::{service_tabs, ServicePlace};
 use crate::features::services::texts::t;
 use crate::features::services::{
     service_placement_component, service_ports_component, service_push_component,
@@ -56,7 +57,6 @@ pub struct ServiceDetail<'a> {
     pub allowed: Access,
     pub error: Option<&'a str>,
 
-    pub logs_path: &'a str,
     /// The image tab, because every use of this link is about the image
     /// or the tag: a bare `/settings` is a redirect, and sending somebody
     /// through one to reach a named section is a hop that exists only
@@ -98,25 +98,11 @@ pub fn render<'a>(page: &'a ServiceDetail<'a>) -> impl Renderable + 'a {
     let path = format!("/projects/{}/services/{}", project.slug, service.slug);
     rsx! {
         (layout::style_tag())
-        <div class="split">
-            <div class="stack-sm">
-                <h1>(&service.name)</h1>
-            </div>
-            <div class="row">
-                // Beside Settings, because "what is it saying" is read as
-                // often as "how is it configured" — and until now the only
-                // answer to the first was the one line kept on the row
-                // after it died.
-                <a class="btn btn-secondary" href=(page.logs_path)>(t("Logs"))</a>
-                @if page.allowed.may_deploy() {
-                    <a class="btn btn-secondary" href=(page.settings_path)>(t("Settings"))</a>
-                }
-                // No "Back to project" here: the breadcrumb's arrow above
-                // already goes there, and one thing must not be doable two
-                // ways — a second control for it reads as a second
-                // destination. Reported by Jorge.
-            </div>
-        </div>
+        <h1>(&service.name)</h1>
+        // Tabs where two buttons were: Logs and Settings are places this
+        // service has, like the ones a node has, and one pattern learned
+        // once reads everywhere.
+        (service_tabs(&project.slug, service, page.allowed.may_deploy(), ServicePlace::Overview))
 
         @if let Some(message) = page.error {
             (layout::error_note(message))

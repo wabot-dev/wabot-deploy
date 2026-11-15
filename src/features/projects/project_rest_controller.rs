@@ -230,7 +230,7 @@ impl ProjectRestController {
     async fn add_member(&self, request: Request) -> RestResult<Response> {
         let path = request.uri().path().to_string();
         let Some((project, allowed, _)) = self.locate(&path).await? else {
-            return Ok(see_other("/?error=no+such+project"));
+            return Ok(see_other("/projects?error=no+such+project"));
         };
         // Back to the page the form is on. It used to be the project
         // overview, which is where these forms lived.
@@ -282,7 +282,7 @@ impl ProjectRestController {
     async fn remove_member(&self, request: Request) -> RestResult<Response> {
         let path = request.uri().path().to_string();
         let Some((project, allowed, segments)) = self.locate(&path).await? else {
-            return Ok(see_other("/?error=no+such+project"));
+            return Ok(see_other("/projects?error=no+such+project"));
         };
         // Back to the page the form is on. It used to be the project
         // overview, which is where these forms lived.
@@ -347,7 +347,7 @@ impl ProjectRestController {
         };
         match access::find_project(&self.state.database, &account, slug).await? {
             Some((project, _)) => Ok(see_other(&format!("/projects/{}", project.slug))),
-            None => Ok(see_other("/?error=no+such+project")),
+            None => Ok(see_other("/projects?error=no+such+project")),
         }
     }
 
@@ -358,7 +358,7 @@ impl ProjectRestController {
     async fn create_token(&self, request: Request) -> RestResult<Response> {
         let path = request.uri().path().to_string();
         let Some((project, allowed, _)) = self.locate(&path).await? else {
-            return Ok(see_other("/?error=no+such+project"));
+            return Ok(see_other("/projects?error=no+such+project"));
         };
         // Back to the page the form is on. It used to be the project
         // overview, which is where these forms lived.
@@ -433,7 +433,7 @@ impl ProjectRestController {
     async fn revoke_token(&self, request: Request) -> RestResult<Response> {
         let path = request.uri().path().to_string();
         let Some((project, allowed, segments)) = self.locate(&path).await? else {
-            return Ok(see_other("/?error=no+such+project"));
+            return Ok(see_other("/projects?error=no+such+project"));
         };
         // Back to the page the form is on. It used to be the project
         // overview, which is where these forms lived.
@@ -480,7 +480,7 @@ impl ProjectRestController {
     async fn set_registry(&self, request: Request) -> RestResult<Response> {
         let path = request.uri().path().to_string();
         let Some((project, allowed, _)) = self.locate(&path).await? else {
-            return Ok(see_other("/?error=no+such+project"));
+            return Ok(see_other("/projects?error=no+such+project"));
         };
         let here = format!("/projects/{}/settings", project.slug);
         let Some(account) = signed_in(&self.auth) else {
@@ -533,7 +533,7 @@ impl ProjectRestController {
     async fn set_registry_allowlist(&self, request: Request) -> RestResult<Response> {
         let path = request.uri().path().to_string();
         let Some((project, allowed, _)) = self.locate(&path).await? else {
-            return Ok(see_other("/?error=no+such+project"));
+            return Ok(see_other("/projects?error=no+such+project"));
         };
         let here = format!("/projects/{}/settings", project.slug);
         let Some(account) = signed_in(&self.auth) else {
@@ -674,7 +674,7 @@ mod tests {
 
         let list = console
             .harness
-            .get("/")
+            .get("/projects")
             .header("cookie", &member)
             .send()
             .await
@@ -692,7 +692,10 @@ mod tests {
             .header("cookie", &member)
             .send()
             .await;
-        assert_eq!(page.header("location"), Some("/?error=no+such+project"));
+        assert_eq!(
+            page.header("location"),
+            Some("/projects?error=no+such+project")
+        );
 
         // And so does deleting it.
         console
@@ -796,7 +799,7 @@ mod tests {
 
         let list = console
             .harness
-            .get("/")
+            .get("/projects")
             .header("cookie", &admin)
             .send()
             .await
@@ -860,21 +863,21 @@ mod tests {
         assert!(body.contains("Danger zone"), "an owner sees it: {body}");
     }
 
-    /// The landing page says what needs somebody, and says nothing when
-    /// nothing does.
+    /// Where whoever runs the machine lands says what needs them, and
+    /// says so when nothing does.
     ///
-    /// The second half is the property that makes the first worth
-    /// anything: a panel that is always on the page is wallpaper by the
-    /// second week, and the day it has something to say it says it in
-    /// the same place it said "all well".
+    /// It was a panel above the list of projects, absent when there was
+    /// nothing — right there, where an empty card was wallpaper. On the
+    /// page whose whole question is "is anything wrong", silence is not
+    /// an answer, so the same place says "nothing" in words.
     #[tokio::test]
-    async fn the_landing_page_says_what_needs_somebody() {
+    async fn the_status_page_says_what_needs_somebody() {
         let console = Console::new().await;
         let cookie = console.signed_in().await;
 
         let quiet = console
             .harness
-            .get("/")
+            .get("/status")
             .header("cookie", &cookie)
             .send()
             .await
@@ -886,8 +889,8 @@ mod tests {
         let disk = crate::infra::node::disk::filesystem(&console.data_dir);
         match crate::domain::policies::disk::nearly_full(disk.total, disk.available) {
             false => assert!(
-                !quiet.contains("Needs you"),
-                "nothing is wrong, so there is no panel: {quiet}"
+                quiet.contains("Nothing does."),
+                "nothing is wrong, and the page does not say so: {quiet}"
             ),
             true => assert!(
                 !quiet.contains("A copy will not start"),
@@ -932,7 +935,7 @@ mod tests {
 
         let loud = console
             .harness
-            .get("/")
+            .get("/status")
             .header("cookie", &cookie)
             .send()
             .await
@@ -1503,7 +1506,7 @@ mod tests {
 
         let body = console
             .harness
-            .get("/")
+            .get("/projects")
             .header("cookie", &cookie)
             .send()
             .await
@@ -1581,7 +1584,7 @@ mod tests {
         response.assert_status(StatusCode::FOUND);
         assert!(response
             .header("location")
-            .is_some_and(|to| to.starts_with("/?error=")));
+            .is_some_and(|to| to.starts_with("/projects?error=")));
     }
 
     #[tokio::test]
@@ -1678,7 +1681,7 @@ mod tests {
     async fn listing(console: &Console, cookie: &str) -> String {
         console
             .harness
-            .get("/")
+            .get("/projects")
             .header("cookie", cookie)
             .send()
             .await

@@ -9,6 +9,7 @@ use crate::domain::entities::volume::Volume;
 use crate::domain::values::allowlist::Allowlist;
 use crate::features::databases::database_cards_component;
 use crate::features::services::service_push_component::Push;
+use crate::features::services::service_tabs_component::{service_tabs, ServicePlace};
 use crate::features::services::texts::t;
 use crate::features::services::{
     service_placement_component, service_ports_component, service_push_component,
@@ -75,11 +76,11 @@ impl Tab {
             Tab::Database => t("Database"),
             Tab::Environment => t("Environment"),
             Tab::Resources => t("Resources"),
-            Tab::Network => t("Network"),
-            Tab::Access => t("Access"),
+            Tab::Network => t("Ports and names"),
+            Tab::Access => t("Who may connect"),
             Tab::Storage => t("Storage"),
             Tab::Replicas => t("Replicas"),
-            Tab::Logs => t("Logs"),
+            Tab::Logs => t("Log retention"),
             Tab::Danger => t("Danger"),
         }
     }
@@ -252,15 +253,10 @@ pub fn render<'a>(page: &'a ServiceSettings<'a>) -> impl Renderable + 'a {
     let (project, service, base) = (page.project, page.service, page.base);
     rsx! {
         (layout::style_tag())
-        <div class="split">
-            <div class="stack-sm">
-                <h1>(t("Settings"))</h1>
-            </div>
-            // No "Back to service" here either: the breadcrumb above
-            // already goes there. Third time this pattern was reported, so
-            // there is now a test that fails on the fourth — see
-            // `no_page_offers_a_way_back_the_breadcrumb_already_is`.
-        </div>
+        <h1>(&service.name)</h1>
+        // Reaching this page at all takes the right to deploy, so the
+        // tab it is under is always offered.
+        (service_tabs(&project.slug, service, true, ServicePlace::Settings))
 
         // Links, not buttons and not script: each tab is a page.
         // `aria-current` rather than only a class, because "which one am I

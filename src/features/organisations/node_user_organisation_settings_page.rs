@@ -4,6 +4,9 @@ use crate::domain::entities::account::Account;
 use crate::domain::entities::tenant::Tenant;
 use crate::domain::policies::presets;
 use crate::domain::values::allowlist::Allowlist;
+use crate::features::organisations::organisation_tabs_component::{
+    organisation_tabs, OrganisationPlace,
+};
 use crate::features::organisations::texts::t;
 use crate::shell::components::allowlist_field;
 use crate::shell::layouts::layout;
@@ -94,9 +97,10 @@ pub fn render<'a>(page: &'a OrganisationSettings<'a>) -> impl Renderable + 'a {
     rsx! {
         (layout::style_tag())
         <div class="stack-sm">
-            <h1>(t("Settings"))</h1>
-            <p class="slug-preview">(&tenant.name)</p>
+            <h1>(&tenant.name)</h1>
+            <p class="slug-preview">(&tenant.slug)</p>
         </div>
+        (organisation_tabs(tenant, OrganisationPlace::Settings))
 
         <nav class="tabs" aria-label=(t("Settings"))>
             @for entry in OrganisationTab::all() {

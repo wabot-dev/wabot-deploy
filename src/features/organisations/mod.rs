@@ -10,6 +10,7 @@ pub mod node_user_set_organisation_allowlist;
 pub mod node_user_set_organisation_domain;
 pub mod node_user_set_organisation_quota;
 pub mod organisation_quota_component;
+pub mod organisation_tabs_component;
 pub mod person_invited_into_organisation_response;
 pub mod set_organisation_allowlist_request;
 pub mod tenant_rest_controller;

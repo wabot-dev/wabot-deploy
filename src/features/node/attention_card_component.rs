@@ -23,34 +23,36 @@ use crate::features::node::texts::t;
 pub fn card(concerns: &[ConcernResponse]) -> impl Renderable + '_ {
     rsx! {
         @if !concerns.is_empty() {
-            <section class="stack">
+            <div class="stack">
                 <p class="card-label">(t("Needs you"))</p>
-                <div class="card">
-                    <table>
-                        <tbody>
-                            @for concern in concerns {
-                                <tr>
-                                    <td>
-                                        <span class=(concern.weight.badge())>
-                                            <span class=(concern.weight.dot())></span>
-                                            (crate::features::node::texts::word(&concern.what))
-                                        </span>
-                                    </td>
+                // One block each rather than a row of a table: the reason
+                // is a sentence, and a table gave it a column — which on
+                // a phone ran off the edge of the screen with the link
+                // that acts on it.
+                <div class="card stack-sm">
+                    @for concern in concerns {
+                        <div class="concern">
+                            <div class="split">
+                                <div class="row-wrap">
+                                    <span class=(concern.weight.badge())>
+                                        <span class=(concern.weight.dot())></span>
+                                        (crate::features::node::texts::word(&concern.what))
+                                    </span>
                                     // Somebody's own string, or the
                                     // machine's: never translated, like
                                     // every hostname and slug here.
-                                    <td class="mono">(&concern.which)</td>
-                                    <td class="tile-detail">(&concern.why)</td>
-                                    <td>
-                                        <a class="btn btn-ghost btn-sm"
-                                           href=(&concern.go)>(t("Look"))</a>
-                                    </td>
-                                </tr>
+                                    <span class="mono">(&concern.which)</span>
+                                </div>
+                                <a class="btn btn-ghost btn-sm"
+                                   href=(&concern.go)>(t("Look"))</a>
+                            </div>
+                            @if !concern.why.is_empty() {
+                                <p class="tile-detail">(&concern.why)</p>
                             }
-                        </tbody>
-                    </table>
+                        </div>
+                    }
                 </div>
-            </section>
+            </div>
         }
     }
 }

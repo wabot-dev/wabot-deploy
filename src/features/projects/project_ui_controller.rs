@@ -14,7 +14,7 @@ use crate::infra::repositories::services;
 
 use crate::shell::auth::{signed_in, PageQuery, SessionMiddleware};
 use crate::shell::layouts::layout;
-use crate::shell::layouts::shell::{Area, Frame};
+use crate::shell::layouts::shell::{Frame, Section};
 use crate::shell::state::ConsoleState;
 
 #[derive(Debug, Deserialize, Validate)]
@@ -31,8 +31,8 @@ pub struct ProjectUiController {
 
 #[ui_controller("/", app)]
 impl ProjectUiController {
-    /// Everything on this node, and what state the node is in.
-    #[view("/")]
+    /// Every project this account reaches.
+    #[view("/projects")]
     #[middleware(SessionMiddleware)]
     async fn index(&self, query: PageQuery) -> UiResult<ViewOutcome> {
         let Some(account) = signed_in(&self.auth) else {
@@ -47,32 +47,22 @@ impl ProjectUiController {
         // somebody adds a page that forgets to narrow.
         let projects = access::projects_for(&self.state.database, &account).await?;
 
-        // What needs somebody, read once for the page they land on. An
-        // administrator's view: a member of one project has no business
-        // being told about another's certificates, and every source here
-        // is node-wide.
-        let concerns = crate::features::node::node_user_see_what_needs_attention::run(
-            &self.state.database,
-            &self.state.config,
-            &self.state.deployer,
-            &account,
-        )
-        .await
-        .unwrap_or_default();
-
         // Whether this node originates work of its own. A node that does
         // not is somewhere resources live: it runs what it was asked to
         // run and makes nothing.
         let owns = crate::infra::network::capability::owns(&self.state.database).await;
 
         layout::head("Projects");
-        let frame = Frame::new(&account, Area::Projects, &projects, None, "/");
-        // The account's language, around the render and no wider:
-        // the strings are read here, and nothing awaits inside.
+        let frame = Frame::load(
+            &self.state.database,
+            &account,
+            Section::Projects,
+            "/projects",
+        )
+        .await;
         let page = crate::features::projects::projects_page::Projects {
             projects: &projects,
             owns,
-            concerns: &concerns,
             query_error: query.error.as_deref(),
         };
         let body = crate::shell::texts::language::scoped(account.language, || {
@@ -97,10 +87,14 @@ impl ProjectUiController {
             return Ok(Redirect::found("/projects").into());
         }
 
-        let projects = access::projects_for(&self.state.database, &account).await?;
-
         layout::head("Create project");
-        let frame = Frame::new(&account, Area::Projects, &projects, None, "/projects/new");
+        let frame = Frame::load(
+            &self.state.database,
+            &account,
+            Section::Projects,
+            "/projects/new",
+        )
+        .await;
         // The account's language, around the render and no wider:
         // the strings are read here, and nothing awaits inside.
         let page = crate::features::projects::new_project_page::NewProject {
@@ -129,7 +123,7 @@ impl ProjectUiController {
         let Some((project, allowed)) =
             access::find_project(&self.state.database, &account, &query.project).await?
         else {
-            return Ok(Redirect::found("/?error=no+such+project").into());
+            return Ok(Redirect::found("/projects?error=no+such+project").into());
         };
         let services = services::all(&self.state.database, Some(&project.id)).await?;
         let new_service = format!("/projects/{}/services/new", project.slug);
@@ -178,18 +172,10 @@ impl ProjectUiController {
             ));
         }
 
-        let all_projects = access::projects_for(&self.state.database, &account).await?;
         let path = format!("/projects/{}", project.slug);
 
         layout::head(&project.name);
-        let frame = Frame::new(
-            &account,
-            Area::Projects,
-            &all_projects,
-            Some(&project),
-            path,
-        )
-        .allowing(allowed);
+        let frame = Frame::load(&self.state.database, &account, Section::Projects, path).await;
         // The account's language, around the render and no wider:
         // the strings are read here, and nothing awaits inside.
         let page = crate::features::projects::project_page::ProjectView {
@@ -244,7 +230,7 @@ impl ProjectUiController {
         let Some((project, allowed)) =
             access::find_project(&self.state.database, &account, &query.project).await?
         else {
-            return Ok(Redirect::found("/?error=no+such+project").into());
+            return Ok(Redirect::found("/projects?error=no+such+project").into());
         };
         let here = format!("/projects/{}", project.slug);
         // A viewer may look at this project and change nothing on this
@@ -280,15 +266,13 @@ impl ProjectUiController {
         .await?;
 
         let members = access::members(&self.state.database, &project.id).await?;
-        let all_projects = access::projects_for(&self.state.database, &account).await?;
-        let frame = Frame::new(
+        let frame = Frame::load(
+            &self.state.database,
             &account,
-            Area::Projects,
-            &all_projects,
-            Some(&project),
+            Section::Projects,
             format!("{here}/settings"),
         )
-        .allowing(allowed);
+        .await;
 
         layout::head(&format!("{} settings", project.name));
         // The account's language, around the render and no wider:

@@ -187,8 +187,60 @@ mod tests {
             .header("cookie", &cookie)
             .send()
             .await;
-        home.assert_ok();
-        assert!(home.body.contains("Projects"), "{}", home.body);
+        assert_eq!(home.header("location"), Some("/status"));
+    }
+
+    /// Somebody lands on what they came to look at: the machine for
+    /// whoever runs it, their projects for everybody else. And what a
+    /// page was about to tell them arrives with them.
+    #[tokio::test]
+    async fn the_root_sends_each_account_to_its_own_first_page() {
+        let console = Console::new().await;
+        let admin = console.signed_in().await;
+        let member = console.joined_as(&admin, "member").await;
+
+        for (cookie, home) in [(&admin, "/status"), (&member, "/projects")] {
+            let landed = console
+                .harness
+                .get("/")
+                .header("cookie", cookie)
+                .send()
+                .await;
+            assert_eq!(landed.header("location"), Some(home));
+            let page = console
+                .harness
+                .get(home)
+                .header("cookie", cookie)
+                .send()
+                .await;
+            page.assert_ok();
+        }
+
+        let refused = console
+            .harness
+            .get("/?error=sign+out+first")
+            .header("cookie", &member)
+            .send()
+            .await;
+        let location = refused.header("location").unwrap_or_default().to_string();
+        assert_eq!(location, "/projects?error=sign+out+first");
+        let page = console
+            .harness
+            .get(&location)
+            .header("cookie", &member)
+            .send()
+            .await
+            .body;
+        assert!(page.contains("sign out first"), "{page}");
+
+        // A member who types the operator's page is sent to their own.
+        let status = console
+            .harness
+            .get("/status")
+            .header("cookie", &member)
+            .send()
+            .await;
+        assert_eq!(status.header("location"), Some("/projects"));
     }
 
     /// The token is spent on use. A second setup — with the same token

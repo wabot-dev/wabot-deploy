@@ -1,5 +1,6 @@
 //! One project: what runs in it, and what needs attention.
 
+use crate::features::projects::project_tabs_component::{project_tabs, ProjectPlace};
 use crate::features::projects::texts::t;
 use crate::shell::layouts::layout;
 use hypertext::prelude::*;
@@ -42,6 +43,7 @@ pub fn render<'a>(page: &'a ProjectView<'a>) -> impl Renderable + 'a {
                     </div>
                 }
             </div>
+            (project_tabs(project, allowed, ProjectPlace::Overview))
             @if let Some(message) = &page.query_error {
                 (layout::error_note(message))
             }

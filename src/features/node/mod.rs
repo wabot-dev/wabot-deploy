@@ -11,6 +11,7 @@ pub mod node_user_set_certificate_source;
 pub mod node_user_set_node_allowlists;
 pub mod node_user_set_node_domain;
 pub mod node_user_set_reserves;
+pub mod node_user_status_page;
 pub mod set_capabilities_request;
 pub mod set_node_allowlists_request;
 pub mod texts;

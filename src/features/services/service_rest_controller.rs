@@ -173,11 +173,11 @@ impl ServiceRestController {
         // the trade for being able to answer with a 303.
         let path = request.uri().path().to_string();
         let Some(slug) = crate::shell::auth::project_slug(&path) else {
-            return Ok(see_other("/?error=no+such+project"));
+            return Ok(see_other("/projects?error=no+such+project"));
         };
         let Some((project, _)) = access::find_project(&self.state.database, &account, slug).await?
         else {
-            return Ok(see_other("/?error=no+such+project"));
+            return Ok(see_other("/projects?error=no+such+project"));
         };
         let form_url = format!("/projects/{}/services/new", project.slug);
         let form = match read_form(request).await {
@@ -259,7 +259,7 @@ impl ServiceRestController {
     async fn add_port(&self, request: Request) -> RestResult<Response> {
         let path = request.uri().path().to_string();
         let Some((project, service, _)) = self.locate(&path).await? else {
-            return Ok(see_other("/?error=no+such+service"));
+            return Ok(see_other("/projects?error=no+such+service"));
         };
         // Back to the page the form is on, not the one it used to
         // share with the service's state.
@@ -395,7 +395,7 @@ impl ServiceRestController {
         let path = request.uri().path().to_string();
         let segments = crate::shell::auth::segments(&path);
         let Some((project, service, _)) = self.locate(&path).await? else {
-            return Ok(see_other("/?error=no+such+service"));
+            return Ok(see_other("/projects?error=no+such+service"));
         };
         // Back to the page the form is on, not the one it used to
         // share with the service's state.
@@ -453,7 +453,7 @@ impl ServiceRestController {
     async fn add_volume(&self, request: Request) -> RestResult<Response> {
         let path = request.uri().path().to_string();
         let Some((project, service, _)) = self.locate(&path).await? else {
-            return Ok(see_other("/?error=no+such+service"));
+            return Ok(see_other("/projects?error=no+such+service"));
         };
         let here = format!(
             "/projects/{}/services/{}/settings/storage",
@@ -510,7 +510,7 @@ impl ServiceRestController {
         let path = request.uri().path().to_string();
         let segments = crate::shell::auth::segments(&path);
         let Some((project, service, _)) = self.locate(&path).await? else {
-            return Ok(see_other("/?error=no+such+service"));
+            return Ok(see_other("/projects?error=no+such+service"));
         };
         let here = format!(
             "/projects/{}/services/{}/settings/storage",
@@ -561,7 +561,7 @@ impl ServiceRestController {
         let path = request.uri().path().to_string();
         let segments = crate::shell::auth::segments(&path);
         let Some((project, service, back)) = self.locate(&path).await? else {
-            return Ok(see_other("/?error=no+such+service"));
+            return Ok(see_other("/projects?error=no+such+service"));
         };
         let here = format!("/projects/{}/services/{}", project.slug, service.slug);
         let _ = back;
@@ -618,7 +618,7 @@ impl ServiceRestController {
     async fn set_image(&self, request: Request) -> RestResult<Response> {
         let path = request.uri().path().to_string();
         let Some((project, service, _)) = self.locate(&path).await? else {
-            return Ok(see_other("/?error=no+such+service"));
+            return Ok(see_other("/projects?error=no+such+service"));
         };
         let here = format!(
             "/projects/{}/services/{}/settings/image",
@@ -673,7 +673,7 @@ impl ServiceRestController {
     async fn tracking(&self, request: Request) -> RestResult<Response> {
         let path = request.uri().path().to_string();
         let Some((project, service, _)) = self.locate(&path).await? else {
-            return Ok(see_other("/?error=no+such+service"));
+            return Ok(see_other("/projects?error=no+such+service"));
         };
         // Back to the page the form is on, not the one it used to
         // share with the service's state.
@@ -737,7 +737,7 @@ impl ServiceRestController {
     async fn log_timestamps(&self, request: Request) -> RestResult<Response> {
         let path = request.uri().path().to_string();
         let Some((project, service, _)) = self.locate(&path).await? else {
-            return Ok(see_other("/?error=no+such+service"));
+            return Ok(see_other("/projects?error=no+such+service"));
         };
         let here = format!(
             "/projects/{}/services/{}/settings/logs",
@@ -786,7 +786,7 @@ impl ServiceRestController {
     async fn set_allowlist(&self, request: Request) -> RestResult<Response> {
         let path = request.uri().path().to_string();
         let Some((project, service, _)) = self.locate(&path).await? else {
-            return Ok(see_other("/?error=no+such+service"));
+            return Ok(see_other("/projects?error=no+such+service"));
         };
         let here = Tab::Access.path(&project.slug, &service.slug);
 
@@ -918,7 +918,7 @@ impl ServiceRestController {
     async fn set_env(&self, request: Request) -> RestResult<Response> {
         let path = request.uri().path().to_string();
         let Some((project, service, _)) = self.locate(&path).await? else {
-            return Ok(see_other("/?error=no+such+service"));
+            return Ok(see_other("/projects?error=no+such+service"));
         };
         // Back to the page the form is on, not the one it used to
         // share with the service's state.
@@ -985,7 +985,7 @@ impl ServiceRestController {
         let path = request.uri().path().to_string();
         let segments = crate::shell::auth::segments(&path);
         let Some((project, service, _)) = self.locate(&path).await? else {
-            return Ok(see_other("/?error=no+such+service"));
+            return Ok(see_other("/projects?error=no+such+service"));
         };
         // Back to the page the form is on, not the one it used to
         // share with the service's state.
@@ -1062,7 +1062,7 @@ impl ServiceRestController {
     async fn deploy(&self, request: Request) -> RestResult<Response> {
         let path = request.uri().path().to_string();
         let Some((project, service, back)) = self.locate(&path).await? else {
-            return Ok(see_other("/?error=no+such+service"));
+            return Ok(see_other("/projects?error=no+such+service"));
         };
         let back = returning_to(request, &back).await;
 
@@ -1081,7 +1081,7 @@ impl ServiceRestController {
     async fn stop(&self, request: Request) -> RestResult<Response> {
         let path = request.uri().path().to_string();
         let Some((project, service, back)) = self.locate(&path).await? else {
-            return Ok(see_other("/?error=no+such+service"));
+            return Ok(see_other("/projects?error=no+such+service"));
         };
         let back = returning_to(request, &back).await;
 
@@ -3535,7 +3535,7 @@ mod tests {
         // this a boundary rather than a hidden button.
         let location = response.header("location").unwrap_or_default();
         assert!(
-            location.starts_with("/?error="),
+            location.starts_with("/projects?error="),
             "a foreign service was changed from here: {location}"
         );
 

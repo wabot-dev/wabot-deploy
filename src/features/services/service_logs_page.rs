@@ -1,6 +1,7 @@
 use hypertext::prelude::*;
 
 use crate::features::services::service_push_component::urlencode;
+use crate::features::services::service_tabs_component::{service_tabs, ServicePlace};
 use crate::features::services::texts::t;
 use crate::infra::deploy::logs::{Found, Line};
 use crate::shell::layouts::layout;
@@ -13,8 +14,8 @@ pub const PER_PAGE: usize = 50;
 
 pub struct Logs<'a> {
     pub project_slug: &'a str,
-    pub service_slug: &'a str,
-    pub service_name: &'a str,
+    pub service: &'a crate::domain::entities::service::Service,
+    pub may_deploy: bool,
 
     /// The copies with a log that can be read at all, and the one being
     /// read. `slot` is `None` only when there is nothing to read.
@@ -60,7 +61,7 @@ impl Logs<'_> {
     fn logs_path(&self) -> String {
         format!(
             "/projects/{}/services/{}/logs",
-            self.project_slug, self.service_slug
+            self.project_slug, self.service.slug
         )
     }
 }
@@ -69,13 +70,12 @@ pub fn render<'a>(page: &'a Logs<'a>) -> impl Renderable + 'a {
     let path = page.logs_path();
     rsx! {
             (layout::style_tag())
-            // Title and copy tabs on one line, the shape every other page
-            // here uses for a heading and its controls — and the tabs belong
-            // beside it rather than in a row of their own, because they
-            // select what the panel below shows.
+            <h1>(&page.service.name)</h1>
+            (service_tabs(page.project_slug, page.service, page.may_deploy, ServicePlace::Logs))
+            // What this is and which copy on one line: the copies select
+            // what the panel below shows.
             <div class="split">
                 <div class="stack-sm">
-                    <h1>(page.service_name)</h1>
                     // **This said the opposite of what happens.** It
                     // described `prepare`, which truncated on every
                     // deployment, and `resume` replaced that precisely

@@ -247,6 +247,17 @@ pub fn back_with_error(location: &str, message: &str) -> Response {
     see_other(&format!("{location}?{encoded}"))
 }
 
+/// A location, with the refusal a page was carrying when it has one.
+///
+/// For a page that moved: a link kept from before lands on the thing it
+/// named, and what it was about to say arrives with it.
+pub fn with_error(location: &str, error: Option<&str>) -> String {
+    match error {
+        Some(message) => format!("{location}?{}", encode("error", message)),
+        None => location.to_string(),
+    }
+}
+
 /// A path split into its parts.
 ///
 /// `#[raw]` endpoints get the whole request and no extracted path

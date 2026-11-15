@@ -48,7 +48,7 @@ impl NetworkRestController {
         if !crate::domain::authz::node_user::manages_the_machine(&account) {
             return Ok(crate::shell::auth::see_other("/"));
         }
-        let here = "/network/invite";
+        let here = "/nodes/invite";
 
         let form = match crate::shell::auth::read_form(request).await {
             Ok(form) => form,
@@ -81,7 +81,7 @@ impl NetworkRestController {
         // history and every refresh.
         let nonce = self.state.reveals.stash(token);
         Ok(crate::shell::auth::see_other(&format!(
-            "/network/invite/shown?{}",
+            "/nodes/invite/shown?{}",
             form_urlencoded::Serializer::new(String::new())
                 .append_pair("nonce", &nonce)
                 .finish()
@@ -113,7 +113,7 @@ impl NetworkRestController {
         if !crate::domain::authz::node_user::manages_the_machine(&account) {
             return Ok(crate::shell::auth::see_other("/"));
         }
-        let here = "/network/join";
+        let here = "/nodes/join";
 
         let form = match crate::shell::auth::read_form(request).await {
             Ok(form) => form,
@@ -181,12 +181,12 @@ impl NetworkRestController {
             .await
             {
                 return Ok(crate::shell::auth::back_with_error(
-                    "/network/invite",
+                    "/nodes/invite",
                     &reason,
                 ));
             }
         }
-        Ok(crate::shell::auth::see_other("/network/invite"))
+        Ok(crate::shell::auth::see_other("/nodes/invite"))
     }
 
     /// Take a node out of service, or put it back.
@@ -213,13 +213,13 @@ impl NetworkRestController {
 
         let path = request.uri().path().to_string();
         let Some(id) = crate::shell::auth::segments(&path).get(1).cloned() else {
-            return Ok(crate::shell::auth::see_other("/network"));
+            return Ok(crate::shell::auth::see_other("/nodes"));
         };
         let form = match crate::shell::auth::read_form(request).await {
             Ok(form) => form,
             Err(response) => return Ok(response),
         };
-        let here = format!("/network/{id}");
+        let here = format!("/nodes/{id}/settings");
 
         use crate::features::network::node_drained_response::NodeDrainedResponse;
         match crate::features::network::node_user_drain_node::run(
@@ -263,10 +263,10 @@ impl NetworkRestController {
             )
             .await
             {
-                return Ok(crate::shell::auth::back_with_error("/network", &reason));
+                return Ok(crate::shell::auth::back_with_error("/nodes", &reason));
             }
         }
-        Ok(crate::shell::auth::see_other("/network"))
+        Ok(crate::shell::auth::see_other("/nodes"))
     }
 
     /// Stop taking instructions from a node.
@@ -294,10 +294,10 @@ impl NetworkRestController {
             )
             .await
             {
-                return Ok(crate::shell::auth::back_with_error("/network", &reason));
+                return Ok(crate::shell::auth::back_with_error("/nodes", &reason));
             }
         }
-        Ok(crate::shell::auth::see_other("/network"))
+        Ok(crate::shell::auth::see_other("/nodes"))
     }
 
     /// What this node agrees to do for one other node.
@@ -322,14 +322,14 @@ impl NetworkRestController {
             .get(1)
             .map(|id| id.to_string())
         else {
-            return Ok(crate::shell::auth::see_other("/network"));
+            return Ok(crate::shell::auth::see_other("/nodes"));
         };
         let form = match crate::shell::auth::read_form(request).await {
             Ok(form) => form,
             Err(response) => return Ok(response),
         };
 
-        let here = format!("/network/{id}");
+        let here = format!("/nodes/{id}/settings");
         let asked = crate::features::network::set_grants_request::SetGrantsRequest {
             node: id.to_string(),
             agreed: crate::shell::auth::capabilities_ticked(&form, ""),
@@ -368,13 +368,13 @@ impl NetworkRestController {
             .get(1)
             .map(|id| id.to_string())
         else {
-            return Ok(crate::shell::auth::see_other("/network"));
+            return Ok(crate::shell::auth::see_other("/nodes"));
         };
         let form = match crate::shell::auth::read_form(request).await {
             Ok(form) => form,
             Err(response) => return Ok(response),
         };
-        let here = format!("/network/{id}");
+        let here = format!("/nodes/{id}/version");
         match crate::features::network::node_user_set_wanted_version::run(
             &self.state.database,
             &account,
@@ -410,13 +410,13 @@ impl NetworkRestController {
             .get(1)
             .map(|id| id.to_string())
         else {
-            return Ok(crate::shell::auth::see_other("/network"));
+            return Ok(crate::shell::auth::see_other("/nodes"));
         };
         let form = match crate::shell::auth::read_form(request).await {
             Ok(form) => form,
             Err(response) => return Ok(response),
         };
-        let here = format!("/network/{id}");
+        let here = format!("/nodes/{id}/version");
         let action = match crate::shell::auth::field(&form, "action") {
             "restart" => network::errand::Action::Restart,
             "back-up" => network::errand::Action::BackUp,
@@ -452,7 +452,7 @@ impl NetworkRestController {
     /// `#[raw]`, because the body is a stream that never ends and the
     /// JSON path buffers a value. The stream stops when the browser
     /// disconnects — the send fails, and the task ends with it.
-    #[get("/network/:node/live")]
+    #[get("/nodes/:node/live")]
     #[raw]
     #[middleware(SessionMiddleware)]
     async fn live_stream(&self, request: Request) -> RestResult<Response> {
@@ -898,18 +898,21 @@ mod tests {
         }
     }
 
-    /// The network is where you look; `/node` is what you change.
+    /// The nodes are things you look at; what can be changed about this
+    /// machine is a tab of its own page.
     ///
-    /// They were one page called `/nodes`, so "how are my nodes" and
-    /// "what does this machine do" had the same URL and the same word in
-    /// the nav — and adding a node meant minting a token on one page and
-    /// watching for it on the same one. Asked for by Jorge, who was not
-    /// sure of the shape; this is the shape.
+    /// They were one page called `/nodes` first, so "how are my nodes"
+    /// and "what does this machine do" had the same URL — then two areas
+    /// of the header, Network and Settings, which left checking this node
+    /// and configuring it in different places with nothing joining them.
+    /// Now the list is `/nodes`, each node has tabs, and this one's
+    /// Settings tab is `/node`: an address that names nobody, so it is the
+    /// same on every machine.
     ///
-    /// The two old paths still answer, because a bookmark is somebody's
-    /// and the plural named the list.
+    /// Every path that was a page still answers, because a bookmark is
+    /// somebody's.
     #[tokio::test]
-    async fn looking_at_the_network_and_configuring_this_node_are_two_places() {
+    async fn the_nodes_are_a_list_and_this_ones_settings_are_a_tab_of_its_page() {
         let console = Console::new().await;
         let cookie = console.signed_in().await;
         macro_rules! get {
@@ -923,50 +926,85 @@ mod tests {
             };
         }
 
-        // The old paths are redirects, and each goes where its name did.
+        for (old, now) in [
+            ("/network", "/nodes"),
+            ("/network/invite", "/nodes/invite"),
+            ("/network/join", "/nodes/join"),
+            ("/settings", "/node"),
+            ("/node", "/node/domain"),
+            ("/updates", "/node/version"),
+        ] {
+            assert_eq!(
+                get!(old).header("location"),
+                Some(now),
+                "{old} was a page and no longer answers"
+            );
+        }
         assert_eq!(
-            get!("/nodes").header("location"),
-            Some("/network"),
-            "the plural named the list"
+            get!(&console.node_path.replace("/nodes/", "/network/")).header("location"),
+            Some(console.node_path.as_str()),
+            "a node's old address goes to the node"
         );
+        // And what an old page was about to say arrives with it.
         assert_eq!(
-            get!("/settings").header("location"),
-            Some("/node"),
-            "and the gear lands on this machine"
+            get!("/network?error=it+was+refused").header("location"),
+            Some("/nodes?error=it+was+refused")
         );
 
-        let network = get!("/network").body;
-        // The list, and the two things that change what is on it — in the
-        // side nav, which is where this area's own column was empty. They
-        // were buttons in the page's header first, and an empty sidebar
-        // beside them was the thing Jorge saw.
-        let sidebar = network
+        let nodes = get!("/nodes").body;
+        // The two things that change what is on the list are buttons
+        // beside it. They were links in the navigation, which is a list
+        // of places, and neither is somewhere anybody stays.
+        let (_, main) = nodes.split_once("<main>").expect("a page");
+        assert!(
+            main.contains(r#"href="/nodes/invite""#) && main.contains(r#"href="/nodes/join""#),
+            "the list does not offer to add to itself: {main}"
+        );
+        let column = nodes
             .split_once(r#"<div class="side-inner">"#)
             .map(|(_, rest)| rest.split("</aside>").next().unwrap_or_default())
-            .expect("a sidebar");
+            .expect("the list of nodes beside the page");
         assert!(
-            sidebar.contains("/network/invite") && sidebar.contains("/network/join"),
-            "the network area's column is empty: {sidebar}"
+            !column.contains("/nodes/invite") && !column.contains("/nodes/join"),
+            "an action is listed among the nodes: {column}"
         );
-        // And none of the switches: those are settings.
+        assert!(column.contains(&console.node_path), "{column}");
+        // And none of the switches: those are this machine's settings.
         assert!(
-            !network.contains("/node/capabilities"),
-            "the capability switch is on the list: {network}"
-        );
-        assert!(
-            !network.contains("/node/certificate"),
-            "and so is the certificate: {network}"
+            !nodes.contains("/node/capabilities") && !nodes.contains("/node/certificate"),
+            "a setting of this machine is on the list: {nodes}"
         );
 
-        // `/node` is a redirect to its first tab, and the two forms are on
-        // two of them since Jorge asked for tabs here as well.
-        assert_eq!(get!("/node").header("location"), Some("/node/domain"));
+        // This machine's page has the four tabs every node has, and its
+        // Settings and Version are the ones at `/node`.
+        let me = get!(&console.node_path).body;
+        let tabs = me
+            .split_once(r#"<nav class="object-tabs""#)
+            .map(|(_, rest)| rest.split("</nav>").next().unwrap_or_default())
+            .expect("a node has tabs");
+        for href in [
+            console.node_path.clone(),
+            format!("{}/connections", console.node_path),
+            "/node/version".to_string(),
+            "/node/domain".to_string(),
+        ] {
+            assert!(
+                tabs.contains(&format!("href=\"{href}\"")),
+                "no tab for {href}: {tabs}"
+            );
+        }
+
         let certificate = get!("/node/domain").body;
         assert!(certificate.contains("/node/certificate"), "{certificate}");
         let allows = get!("/node/allows").body;
         assert!(allows.contains("/node/capabilities"), "{allows}");
-        // Nothing that adds a node: these pages are about the one machine.
         for body in [&certificate, &allows] {
+            // The settings are drawn under the node they are of: its
+            // name, and the same tabs with Settings the current one.
+            assert!(
+                body.contains(r#"<a href="/node/domain" class="active""#),
+                "this machine's settings are not a tab of its page: {body}"
+            );
             assert!(
                 !body.contains("/network/enrol"),
                 "the invite form is in settings: {body}"
@@ -981,8 +1019,8 @@ mod tests {
         // here, because this node has neither an endpoint nor a domain —
         // so `enrol_card` deliberately renders the refusal instead. What
         // this pins is that the page is the card's home.
-        assert!(get!("/network/invite").body.contains("Invite a node"));
-        assert!(get!("/network/join").body.contains("name=\"token\""));
+        assert!(get!("/nodes/invite").body.contains("Invite a node"));
+        assert!(get!("/nodes/join").body.contains("name=\"token\""));
     }
 
     #[tokio::test]
@@ -992,12 +1030,12 @@ mod tests {
 
         let body = console
             .harness
-            .get("/network")
+            .get("/nodes")
             .header("cookie", &cookie)
             .send()
             .await
             .body;
-        assert!(body.contains("Network"), "{body}");
+        assert!(body.contains("<h1>Nodes</h1>"), "{body}");
         assert!(
             body.contains(&console.node_path),
             "the node links to itself: {body}"
@@ -1028,12 +1066,12 @@ mod tests {
 
         let response = console
             .harness
-            .get("/network/somewhere-else")
+            .get("/nodes/somewhere-else")
             .header("cookie", &cookie)
             .send()
             .await;
         response.assert_status(StatusCode::FOUND);
-        assert_eq!(response.header("location"), Some("/network"));
+        assert_eq!(response.header("location"), Some("/nodes"));
     }
 
     /// The bug this island replaced: an inline `<script>` in the view
@@ -1087,7 +1125,7 @@ mod tests {
 
         let body = console
             .harness
-            .get("/network/invite")
+            .get("/nodes/invite")
             .header("cookie", &cookie)
             .send()
             .await
@@ -1173,7 +1211,7 @@ mod tests {
         // has been minted stays on the page that minted them, which is
         // where the arrow goes back to.
         assert!(
-            body.contains("/network/invite"),
+            body.contains("/nodes/invite"),
             "no way back to the page that minted it: {body}"
         );
 
@@ -1184,7 +1222,7 @@ mod tests {
         // a test that passes because it found the wrong thing.
         let again = console
             .harness
-            .get("/network/invite")
+            .get("/nodes/invite")
             .header("cookie", &cookie)
             .send()
             .await
@@ -1217,7 +1255,7 @@ mod tests {
 
         let listed = console
             .harness
-            .get("/network/invite")
+            .get("/nodes/invite")
             .header("cookie", &cookie)
             .send()
             .await
@@ -1288,31 +1326,47 @@ mod tests {
         );
     }
 
-    /// A joined node's page is what is known about it, not this node's
+    /// A joined node's pages are what is known about it, not this node's
     /// figures under somebody else's name. It has no memory reading and
-    /// no certificate, and nothing has asked it anything.
+    /// no certificate; what it has is where it is on the network, what
+    /// this node decided about it, and what it was asked.
     #[tokio::test]
-    async fn a_joined_nodes_page_shows_what_is_known_and_no_more() {
+    async fn a_joined_nodes_pages_show_what_is_known_and_no_more() {
         let console = Console::new().await;
         let cookie = console.signed_in().await;
         joined(&console, "nd-elsewhere1").await;
+        macro_rules! page {
+            ($path:expr) => {
+                console
+                    .harness
+                    .get($path)
+                    .header("cookie", &cookie)
+                    .send()
+                    .await
+                    .body
+            };
+        }
 
-        let body = console
-            .harness
-            .get("/network/nd-elsewhere1")
-            .header("cookie", &cookie)
-            .send()
-            .await
-            .body;
-        assert!(body.contains("10.42.0.9"), "its address: {body}");
-        assert!(body.contains("on the overlay at"), "{body}");
-        assert!(body.contains("Forget"), "and a way to stop listing it");
+        let overview = page!("/nodes/nd-elsewhere1");
         assert!(
-            !body.contains("Save domain") && !body.contains("data-cell=\"summary\""),
-            "it rendered this node's own cards: {body}"
+            !overview.contains("Save domain") && !overview.contains("data-cell=\"summary\""),
+            "it rendered this node's own cards: {overview}"
         );
+        // The same four tabs this machine has, each under its own id:
+        // nothing about another node lives at `/node`.
+        let tabs = overview
+            .split_once(r#"<nav class="object-tabs""#)
+            .map(|(_, rest)| rest.split("</nav>").next().unwrap_or_default())
+            .expect("a node has tabs");
+        for tab in ["", "/connections", "/version", "/settings"] {
+            assert!(
+                tabs.contains(&format!("href=\"/nodes/nd-elsewhere1{tab}\"")),
+                "no tab at {tab:?}: {tabs}"
+            );
+        }
+        assert!(!tabs.contains("href=\"/node/"), "{tabs}");
 
-        // It has a stream now, and only the errands are in it: a node
+        // It has a stream, and only the errands are in it: a node
         // collects on a fifteen-second timer, so "waiting to be
         // collected" is exactly the badge somebody watches after
         // pressing the button. Memory and certificates stay behind
@@ -1326,9 +1380,95 @@ mod tests {
         // see `errands_are_reported_for_the_node_they_were_sent_to`
         // for the contents, which is the part worth pinning anyway.
         assert!(
-            body.contains("data-island=\"node-live\""),
-            "a joined node's page follows its errands: {body}"
+            overview.contains("data-island=\"node-live\""),
+            "a joined node's page follows its errands: {overview}"
         );
+
+        let connections = page!("/nodes/nd-elsewhere1/connections");
+        assert!(
+            connections.contains("10.42.0.9"),
+            "its address: {connections}"
+        );
+        assert!(connections.contains("on the overlay at"), "{connections}");
+        // One tunnel, the one between the two: this node knows nothing
+        // of the ones that node keeps with anybody else.
+        assert!(
+            connections.contains("Between this node and it"),
+            "{connections}"
+        );
+
+        let settings = page!("/nodes/nd-elsewhere1/settings");
+        assert!(
+            settings.contains("/network/forget/nd-elsewhere1"),
+            "a way to stop listing it: {settings}"
+        );
+        assert!(
+            settings.contains("/network/nd-elsewhere1/grants")
+                && settings.contains("/network/nd-elsewhere1/drain"),
+            "what this node decides about it: {settings}"
+        );
+
+        let version = page!("/nodes/nd-elsewhere1/version");
+        assert!(version.contains("Keeping it up to date"), "{version}");
+    }
+
+    /// Each form on a joined node's pages comes back to the tab it is
+    /// on. A save that lands on another tab is a save that hides what
+    /// it did.
+    #[tokio::test]
+    async fn a_form_about_another_node_comes_back_to_its_own_tab() {
+        let console = Console::new().await;
+        let cookie = console.signed_in().await;
+        joined(&console, "nd-elsewhere1").await;
+
+        // What marks the card each form is in. The two about its release
+        // are drawn only for a node that agreed to be managed from here,
+        // which this one has not — the card that says so is where the
+        // refusal has to land.
+        let grants = "/network/nd-elsewhere1/grants";
+        let drain = "/network/nd-elsewhere1/drain";
+        for (action, form, tab, card) in [
+            ("grants", vec![("host", "1")], "settings", grants),
+            ("drain", vec![("draining", "off")], "settings", drain),
+            (
+                "version",
+                vec![("version", "")],
+                "version",
+                "Keeping it up to date",
+            ),
+            (
+                "command",
+                vec![("action", "nonsense")],
+                "version",
+                "Keeping it up to date",
+            ),
+        ] {
+            let response = console
+                .harness
+                .post(&format!("/network/nd-elsewhere1/{action}"))
+                .header("cookie", &cookie)
+                .form(&form)
+                .send()
+                .await;
+            let location = response.header("location").unwrap_or_default().to_string();
+            let page = location.split(['?', '#']).next().unwrap_or_default();
+            assert_eq!(
+                page,
+                format!("/nodes/nd-elsewhere1/{tab}"),
+                "{action} came back to {location}"
+            );
+            let body = console
+                .harness
+                .get(page)
+                .header("cookie", &cookie)
+                .send()
+                .await
+                .body;
+            assert!(
+                body.contains(card),
+                "{action} came back to a page its form is not on"
+            );
+        }
     }
 
     /// What the joined node's page shows about each instruction, and
@@ -1395,7 +1535,7 @@ mod tests {
 
         let body = console
             .harness
-            .get("/network")
+            .get("/nodes")
             .header("cookie", &cookie)
             .send()
             .await
@@ -1435,7 +1575,7 @@ mod tests {
 
         let body = console
             .harness
-            .get("/network")
+            .get("/nodes")
             .header("cookie", &cookie)
             .send()
             .await
@@ -1443,8 +1583,11 @@ mod tests {
         // Scoped to that node's own card: "Invite a node" is a
         // heading on this page, and an assertion over the whole body
         // would be one that passes or fails on the wrong text.
-        let card = body
-            .split_once("/network/nd-elsewhere1")
+        // And to the page: the list beside it names the node too, and
+        // says nothing about how it is reached.
+        let (_, page) = body.split_once("<main>").expect("a page");
+        let card = page
+            .split_once("/nodes/nd-elsewhere1")
             .map(|(_, rest)| rest.split("</a>").next().unwrap_or_default())
             .expect("the node is listed");
 
@@ -1468,14 +1611,20 @@ mod tests {
 
         let body = console
             .harness
-            .get("/network")
+            .get("/nodes")
             .header("cookie", &cookie)
             .send()
             .await
             .body;
-        let mine = body.find(&console.node_path).expect("this node is listed");
-        let theirs = body.find("/network/nd-elsewhere1").expect("and the other");
-        assert!(mine < theirs, "this node is not the first card");
+        // In the page's cards, and in the list beside them: the two are
+        // drawn from one order, and each is checked on its own because a
+        // match found in the other would pass for the wrong reason.
+        let (column, page) = body.split_once("<main>").expect("a page");
+        for (where_, part) in [("list", column), ("cards", page)] {
+            let mine = part.find(&console.node_path).expect("this node is listed");
+            let theirs = part.find("/nodes/nd-elsewhere1").expect("and the other");
+            assert!(mine < theirs, "this node is not first in the {where_}");
+        }
     }
 
     /// The reason this form exists: a node that is already installed
@@ -1488,7 +1637,7 @@ mod tests {
 
         let body = console
             .harness
-            .get("/network/join")
+            .get("/nodes/join")
             .header("cookie", &cookie)
             .send()
             .await
@@ -1516,7 +1665,7 @@ mod tests {
 
         response.assert_status(StatusCode::SEE_OTHER);
         let location = response.header("location").unwrap_or_default();
-        assert!(location.starts_with("/network/join?error="), "{location}");
+        assert!(location.starts_with("/nodes/join?error="), "{location}");
         assert!(
             !location.contains("wdj1"),
             "the token came back in the URL: {location}"
@@ -1595,11 +1744,17 @@ mod tests {
         console.signed_in().await;
 
         for path in [
-            "/network",
-            "/network/invite",
-            "/network/join",
+            "/status",
+            "/nodes",
+            "/nodes/invite",
+            "/nodes/join",
             "/node",
+            "/node/domain",
+            "/node/version",
             &console.node_path,
+            &format!("{}/connections", console.node_path),
+            &format!("{}/version", console.node_path),
+            &format!("{}/settings", console.node_path),
         ] {
             let response = console.harness.get(path).send().await;
             assert_eq!(

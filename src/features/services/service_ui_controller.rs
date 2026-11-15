@@ -20,7 +20,7 @@ use crate::infra::repositories::services;
 
 use crate::shell::auth::{signed_in, SessionMiddleware};
 use crate::shell::layouts::layout;
-use crate::shell::layouts::shell::{Area, Frame};
+use crate::shell::layouts::shell::{Frame, Section};
 use crate::shell::state::ConsoleState;
 
 #[derive(Debug, Deserialize, Validate)]
@@ -107,7 +107,7 @@ impl ServiceUiController {
         let Some((project, allowed)) =
             access::find_project(&self.state.database, &account, &query.project).await?
         else {
-            return Ok(Redirect::found("/?error=no+such+project").into());
+            return Ok(Redirect::found("/projects?error=no+such+project").into());
         };
         if !allowed.may_deploy() {
             return Ok(Redirect::found(format!("/projects/{}", project.slug)).into());
@@ -115,15 +115,13 @@ impl ServiceUiController {
 
         let action = format!("/projects/{}/services", project.slug);
         let back = format!("/projects/{}", project.slug);
-        let all_projects = access::projects_for(&self.state.database, &account).await?;
-        let frame = Frame::new(
+        let frame = Frame::load(
+            &self.state.database,
             &account,
-            Area::Projects,
-            &all_projects,
-            Some(&project),
+            Section::Projects,
             format!("/projects/{}/services/new", project.slug),
         )
-        .allowing(allowed);
+        .await;
 
         layout::head("Create service");
         // The account's language, around the render and no wider:
@@ -173,7 +171,7 @@ impl ServiceUiController {
         let Some((project, allowed)) =
             access::find_project(&self.state.database, &account, &query.project).await?
         else {
-            return Ok(Redirect::found("/?error=no+such+project").into());
+            return Ok(Redirect::found("/projects?error=no+such+project").into());
         };
         let Some(service) =
             services::in_project(&self.state.database, &project.id, &query.service).await?
@@ -449,7 +447,6 @@ impl ServiceUiController {
         // somebody through one to reach a named section is a hop that
         // exists only because the caller did not say what it wanted.
         let settings = Tab::Image.path(&project.slug, &service.slug);
-        let logs = format!("/projects/{}/services/{}/logs", project.slug, service.slug);
         let domain = crate::infra::node::settings::domain(&self.state.database).await;
         let exposure = crate::features::services::service_ports_component::exposure(
             &service,
@@ -464,15 +461,13 @@ impl ServiceUiController {
             registry.as_deref(),
         );
 
-        let all_projects = access::projects_for(&self.state.database, &account).await?;
-        let frame = Frame::new(
+        let frame = Frame::load(
+            &self.state.database,
             &account,
-            Area::Projects,
-            &all_projects,
-            Some(&project),
+            Section::Projects,
             format!("/projects/{}/services/{}", project.slug, service.slug),
         )
-        .allowing(allowed);
+        .await;
 
         layout::head(&service.name);
         let running = crate::features::services::service_running_component::Running {
@@ -487,7 +482,6 @@ impl ServiceUiController {
             service: &service,
             allowed,
             error: query.error.as_deref(),
-            logs_path: &logs,
             settings_path: &settings,
             cell: &cell,
             observed_running: matches!(observed, crate::infra::deploy::Observed::Running { .. }),
@@ -562,7 +556,7 @@ impl ServiceUiController {
         let Some((project, allowed)) =
             access::find_project(&self.state.database, &account, &query.project).await?
         else {
-            return Ok(Redirect::found("/?error=no+such+project").into());
+            return Ok(Redirect::found("/projects?error=no+such+project").into());
         };
         let Some(service) =
             services::in_project(&self.state.database, &project.id, &query.service).await?
@@ -750,30 +744,25 @@ impl ServiceUiController {
         };
         let elsewhere = !away.is_empty();
 
-        let all_projects = access::projects_for(&self.state.database, &account).await?;
-        let frame = Frame::new(
+        let frame = Frame::load(
+            &self.state.database,
             &account,
-            Area::Projects,
-            &all_projects,
-            Some(&project),
+            Section::Projects,
             format!("/projects/{}/services/{}/logs", project.slug, service.slug),
         )
-        .allowing(allowed);
+        .await
+        .wide();
 
         layout::head(&format!("{} logs", service.name));
-        let (project_slug, service_slug, service_name) = (
-            project.slug.clone(),
-            service.slug.clone(),
-            service.name.clone(),
-        );
+        let (project_slug, service_slug) = (project.slug.clone(), service.slug.clone());
         let (for_island, service_for_island) = (project_slug.clone(), service_slug.clone());
         // Read before the render takes `holder`: the island below is for
         // a copy on this machine and nothing else.
         let here = holder.is_none();
         let logs = crate::features::services::service_logs_page::Logs {
             project_slug: &project_slug,
-            service_slug: &service_slug,
-            service_name: &service_name,
+            service: &service,
+            may_deploy: allowed.may_deploy(),
             readable: &readable,
             slot,
             holder: holder.as_deref(),
@@ -847,7 +836,7 @@ impl ServiceUiController {
         let Some((project, _)) =
             access::find_project(&self.state.database, &account, &query.project).await?
         else {
-            return Ok(Redirect::found("/?error=no+such+project").into());
+            return Ok(Redirect::found("/projects?error=no+such+project").into());
         };
         let Some(service) =
             services::in_project(&self.state.database, &project.id, &query.service).await?
@@ -867,7 +856,7 @@ impl ServiceUiController {
         let Some((project, allowed)) =
             access::find_project(&self.state.database, &account, &query.project).await?
         else {
-            return Ok(Redirect::found("/?error=no+such+project").into());
+            return Ok(Redirect::found("/projects?error=no+such+project").into());
         };
         let Some(service) =
             services::in_project(&self.state.database, &project.id, &query.service).await?
@@ -1155,15 +1144,13 @@ impl ServiceUiController {
             Tab::Danger => Panel::Danger,
         };
 
-        let all_projects = access::projects_for(&self.state.database, &account).await?;
-        let frame = Frame::new(
+        let frame = Frame::load(
+            &self.state.database,
             &account,
-            Area::Projects,
-            &all_projects,
-            Some(&project),
-            format!("{here}/settings"),
+            Section::Projects,
+            tab.path(&project.slug, &service.slug),
         )
-        .allowing(allowed);
+        .await;
 
         layout::head(&format!("{} settings", service.name));
         let page = crate::features::services::service_settings_page::ServiceSettings {

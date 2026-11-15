@@ -26,7 +26,6 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
     ("Broken part way", "Rota a medias"),
     ("Call the copy", "Nombre de la copia"),
     ("Connection string", "Cadena de conexión"),
-    ("Connections", "Conexiones"),
     ("Database name", "Nombre de la base"),
     ("Download the authority", "Descargar la autoridad"),
     ("Engine", "Motor"),

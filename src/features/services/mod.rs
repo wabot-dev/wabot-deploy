@@ -49,6 +49,7 @@ pub mod service_rest_controller;
 pub mod service_running_component;
 pub mod service_settings_page;
 pub mod service_state_component;
+pub mod service_tabs_component;
 pub mod service_ui_controller;
 pub mod set_service_allowlist_command;
 pub mod set_service_allowlist_request;

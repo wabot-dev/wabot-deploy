@@ -1,4 +1,4 @@
-// The console's two islands, registered with the framework runtime.
+// The console's islands, registered with the framework runtime.
 //
 // The console renders complete and works with this file absent: every
 // form submits, every rule it enforces is enforced again on the
@@ -72,6 +72,28 @@
       node.required = holds(form, parse(node.dataset.requiredWhen)) && !node.hidden;
     });
   }
+
+  // ---- go to a thing by name -------------------------------------------
+  //
+  // The field in the header is a form that submits on its own. This adds
+  // the keyboard's way to it and nothing else: the search is the
+  // server's, so there is no list here to keep in step with it.
+
+  wabot.island('go', function (host) {
+    var field = host.querySelector('input[name="q"]');
+    if (!field) return null;
+    var onKey = function (event) {
+      if ((event.metaKey || event.ctrlKey) && String(event.key).toLowerCase() === 'k') {
+        event.preventDefault();
+        field.focus();
+        field.select();
+      }
+    };
+    document.addEventListener('keydown', onKey);
+    return function () {
+      document.removeEventListener('keydown', onKey);
+    };
+  });
 
   wabot.island('fields', function (host) {
     var form = host.querySelector('form');

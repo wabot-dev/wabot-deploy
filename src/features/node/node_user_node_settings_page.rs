@@ -12,6 +12,7 @@ use crate::infra::backup::Manifest;
 use crate::infra::edge::policy::Policy;
 use crate::infra::node::memory::Snapshot;
 use crate::shell::components::node_certificate::{CertificateCells, CertificateState};
+use crate::shell::components::node_header::{node_header, NodePlace};
 use crate::shell::components::{
     allowlist_field, node_capabilities, node_certificate, node_settings_cards,
 };
@@ -47,8 +48,8 @@ impl NodeTab {
             // says so.
             NodeTab::Domain => t("Domain"),
             NodeTab::Allows => t("Capabilities"),
-            NodeTab::Access => t("Access"),
-            NodeTab::Dns => t("DNS"),
+            NodeTab::Access => t("Who may connect"),
+            NodeTab::Dns => t("DNS server"),
             NodeTab::Resources => t("Resources"),
             NodeTab::Backup => t("Backup"),
         }
@@ -155,6 +156,7 @@ pub enum Panel {
 }
 
 pub struct NodeSettings<'a> {
+    pub node: &'a crate::infra::network::Node,
     pub tab: NodeTab,
     pub panel: Panel,
     pub error: Option<&'a str>,
@@ -163,15 +165,12 @@ pub struct NodeSettings<'a> {
 pub fn render<'a>(page: &'a NodeSettings<'a>) -> impl Renderable + 'a {
     rsx! {
         (layout::style_tag())
-        <h1>(t("Node"))</h1>
+        (node_header(page.node, NodePlace::Settings))
 
-        // No tagline. The tabs say what is here a word each, and a
-        // sentence between the title and them was a line Jorge read once
-        // and then had to scroll past on every visit — asked for and
-        // removed.
-        //
-        // Links, the same shape a service's settings use.
-        <nav class="tabs" aria-label=(t("Node"))>
+        // The sections of its settings, under the tabs of the node
+        // itself: one URL each, so a section can be linked and read with
+        // scripting off.
+        <nav class="tabs" aria-label=(t("Settings"))>
             @for entry in NodeTab::all() {
                 @if entry == page.tab {
                     <a href=(entry.path()) class="tab active"

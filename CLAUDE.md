@@ -237,9 +237,9 @@ shipped as bugs before anyone noticed:
 
 So client behaviour goes through `wabot.island(id, mount)` and a
 `<wabot-island>` host, which the runtime re-hydrates after every swap
-and tears down when the host leaves. `assets/console.js` registers six:
-`fields`, `copy`, `project-live`, `updates-live`, `node-live` and
-`logs-live`. Prefer declarative — the markup carries `data-when` /
+and tears down when the host leaves. `assets/console.js` registers
+seven: `go`, `fields`, `copy`, `project-live`, `updates-live`,
+`node-live` and `logs-live`. Prefer declarative — the markup carries `data-when` /
 `data-required-when`, so a new dependent field is an attribute rather
 than another script.
 
@@ -289,6 +289,18 @@ The console follows the Wabot design system: no borders, no shadows, no
 hover state changes, primary actions are black, brand orange is for
 highlights only, sentence case, no emoji as iconography. Status is a
 coloured dot plus a word.
+
+**Everything is a thing, and a thing has a page with tabs.** The rail
+says what kinds there are, the list beside it says which ones, and the
+page is the one somebody chose — Overview first, Settings last. The
+header holds a field that goes to a thing by name and nothing that
+navigates. There is no settings area: this machine's are a tab of its
+own page among the nodes, at `/node`, which names nobody and so is the
+same address on every machine. A new page takes its frame from
+`Frame::load` with the section it is in, and a new kind of thing gets
+its tabs from `shell::components::object_tabs`. The reasoning, the map
+from every old path and what is still open:
+[`docs/navigation.md`](docs/navigation.md).
 
 **`assets/wabot.css` is ours.** It came down here so a node never needs
 a CDN, and *that is also what makes it the place to correct*. Nothing

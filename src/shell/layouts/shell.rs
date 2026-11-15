@@ -1,30 +1,29 @@
 //! The frame every signed-in page sits in.
 //!
-//! Topbar, side nav, project selector — the same shape as wabot
-//! console, so somebody who knows one knows this. What differs is
-//! underneath: this renders on the server with no client router, so
-//! "which link is current" is decided here from the request's path
-//! rather than by a runtime watching history.
+//! Three columns, each answering one question and none of them changing
+//! shape: the rail says what kinds of thing there are, the list says
+//! which ones, and the page is the one somebody chose. The header holds
+//! what belongs to the session — a way to jump by name, the language, the
+//! theme, the way out — and no navigation.
 //!
-//! ## The selector is a form, not a dropdown that navigates
+//! It replaced a header that picked an area and a sidebar that changed
+//! with it, which left two bars sharing one job by a rule nothing on the
+//! screen stated. See `docs/navigation.md`.
 //!
-//! A `<select>` that routes on change needs JavaScript. A `<select>`
-//! inside a form with a submit button works with none, and on a
-//! console whose whole job is to still work when things are broken,
-//! that is the right side of the trade.
+//! Rendered on the server with no client router, so "which link is
+//! current" is decided here from the request's path.
 
 use hypertext::prelude::*;
+use wabot::sqlite::SqliteDatabase;
 
 use crate::domain::entities::account::Account;
-use crate::domain::entities::project::Project;
 use crate::domain::values::theme::Theme;
 
 use crate::shell::assets;
 use crate::shell::texts::language::t;
 
 impl Theme {
-    /// What to put in `data-theme`. Empty for `System`: no attribute
-    /// means the media query decides, which is the whole point.
+    /// Empty for `System`: no attribute means the media query decides.
     fn attribute(self) -> &'static str {
         match self {
             Self::System => "",
@@ -41,23 +40,16 @@ impl Theme {
         }
     }
 
-    /// The icon for the state it is *in*, not the one it goes to.
-    ///
-    /// A control that pictured its destination would be read as a
-    /// status by everybody who did not already know it was a button —
-    /// the sun would mean "this is light" to most people looking at a
-    /// dark page.
+    /// The icon for the state it is *in*: one picturing its destination
+    /// reads as a status to everybody who does not know it is a button.
     fn icon(self) -> &'static str {
         match self {
-            // Unreachable through the control, and kept for the
-            // account that has never pressed it. See `toggle`.
             Self::System => MONITOR,
             Self::Light => SUN,
             Self::Dark => MOON,
         }
     }
 
-    /// Said out loud, because an icon on its own is not.
     fn title(self) -> String {
         let goes_to = match self {
             Self::Dark => Self::Light,
@@ -79,166 +71,300 @@ const ARROW_LEFT: &str = r#"<svg width="22" height="22" viewBox="0 0 24 24" fill
 
 const SIGN_OUT: &str = r#"<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" x2="9" y1="12" y2="12"/></svg>"#;
 
-const GEAR: &str = r#"<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.6a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9v0a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>"#;
+/// The rail's five, drawn here on the grid and stroke the others use. The
+/// design system ships no icons, so these are the console's own; each
+/// sits above its word, because an icon alone is a guess.
+const ICON_STATUS: &str = r#"<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>"#;
 
-/// Which top-level area a page belongs to. Decides what the side nav
-/// shows and which top link is lit.
+const ICON_PROJECTS: &str = r#"<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.7-.9L9.6 3.9A2 2 0 0 0 7.9 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2z"/></svg>"#;
+
+const ICON_NODES: &str = r#"<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="2" width="20" height="8" rx="2"/><rect x="2" y="14" width="20" height="8" rx="2"/><path d="M6 6h.01M6 18h.01"/></svg>"#;
+
+const ICON_ORGANISATIONS: &str = r#"<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="4" y="2" width="16" height="20" rx="2"/><path d="M9 22v-4h6v4M8 6h.01M12 6h.01M16 6h.01M8 10h.01M12 10h.01M16 10h.01M8 14h.01M12 14h.01M16 14h.01"/></svg>"#;
+
+const ICON_PEOPLE: &str = r#"<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75"/></svg>"#;
+
+const ICON_SEARCH: &str = r#"<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>"#;
+
+/// The kinds of thing this console holds, which is what the rail lists.
+///
+/// Things, and no "Settings": what can be changed about a node, a
+/// project, a service or an organisation is a tab of that thing's own
+/// page, so the word means one thing wherever it appears.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Area {
+pub enum Section {
+    Status,
     Projects,
-    /// The nodes and how they relate: what is on the network, what each
-    /// one is doing, and adding to it.
-    ///
-    /// Its own word in the header because it answers a question somebody
-    /// asks while things are running — "is that node all right" — where
-    /// Settings answers one asked once. It used to be an item inside
-    /// Settings, which meant checking a node and configuring this one
-    /// were the same place, and adding a node was a trip between two
-    /// pages that had the same name.
-    Network,
-    /// Everything editable about this installation: this machine, the
-    /// people, the updates. One word in the header instead of three,
-    /// because they are one question — "how is this set up" — and none of
-    /// them is somewhere anybody spends the day.
-    Settings,
+    Nodes,
+    Organisations,
+    People,
+    /// The page a search lands on, which is under none of them.
+    Search,
+}
+
+impl Section {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Status => t("Status"),
+            Self::Projects => t("Projects"),
+            Self::Nodes => t("Nodes"),
+            Self::Organisations => t("Organisations"),
+            Self::People => t("People"),
+            Self::Search => t("Go to"),
+        }
+    }
+
+    fn href(self) -> &'static str {
+        match self {
+            Self::Status => "/status",
+            Self::Projects => "/projects",
+            Self::Nodes => "/nodes",
+            Self::Organisations => "/organisations",
+            Self::People => "/people",
+            Self::Search => "/go",
+        }
+    }
+
+    fn icon(self) -> &'static str {
+        match self {
+            Self::Status => ICON_STATUS,
+            Self::Projects => ICON_PROJECTS,
+            Self::Nodes => ICON_NODES,
+            Self::Organisations => ICON_ORGANISATIONS,
+            Self::People | Self::Search => ICON_PEOPLE,
+        }
+    }
+}
+
+/// What the list says about one of its entries, beyond its name.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Mark {
+    /// A copy of it would not start. Read off the rows, never asked of
+    /// the runtime: the list is drawn on every page, and a green dot here
+    /// would be a health check nobody ran.
+    Failed,
+    ThisNode,
+}
+
+/// One line of the list: a thing somebody can open.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Entry {
+    pub href: String,
+    pub label: String,
+    pub mark: Option<Mark>,
+    /// Inside the entry above it: a service under its project.
+    pub nested: bool,
+}
+
+impl Entry {
+    pub fn new(href: impl Into<String>, label: impl Into<String>) -> Self {
+        Self {
+            href: href.into(),
+            label: label.into(),
+            mark: None,
+            nested: false,
+        }
+    }
+
+    pub fn marked(mut self, mark: Option<Mark>) -> Self {
+        self.mark = mark;
+        self
+    }
+
+    pub fn nested(mut self) -> Self {
+        self.nested = true;
+        self
+    }
 }
 
 /// Everything the frame needs to draw itself.
-///
-/// Owned, not borrowed. The frame names the current project in the
-/// nav while the page draws that same project, and two `rsx!` closures
-/// borrowing one value is a fight the compiler wins — for a handful of
-/// short strings, copying is cheaper than the lifetime.
 pub struct Frame {
     pub username: String,
-    /// Whether to offer the node's own pages at all.
+    /// Whether they run the machine, which is what the rail's node-wide
+    /// sections are offered on.
     pub admin: bool,
-    /// Whether they administer whatever scope they are in.
-    ///
-    /// **Not the same as `admin`**, and the nav is where the difference
-    /// shows: an organisation's administrator manages their own people
-    /// and nothing about the machine, so Settings has to appear for them
-    /// with one link under it. Driving both off `admin` gave them a page
-    /// that worked and no way to reach it.
+    /// Whether they administer whatever scope they are in. **Not the same
+    /// as `admin`**: an organisation's administrator manages its people
+    /// and nothing about the machine.
     pub scope_admin: bool,
-    pub area: Area,
-    /// Every project, as (slug, name), for the selector.
-    pub projects: Vec<(String, String)>,
-    /// The slug of the one this page is about, if any.
-    pub current: Option<String>,
-    /// The request's path, for deciding which link is current.
+    pub section: Section,
     pub path: String,
-    /// Whether the current project's own links are worth offering.
-    /// The nav is where somebody looks for what they can do, so
-    /// offering an action they will be refused is the nav lying.
-    pub deploy: bool,
+    pub list: Vec<Entry>,
+    /// This machine among the nodes, as `(id, name)`: its settings live
+    /// at `/node`, a path that names nobody.
+    pub this_node: Option<(String, String)>,
+    /// The page wants the list's width for itself.
+    pub wide: bool,
     pub theme: Theme,
     pub language: crate::domain::values::language::Language,
 }
 
-/// The last segment of a path when it names an action rather than a
-/// thing.
-///
-/// Translated, because these are the only words in a trail that are
-/// prose — the rest are names somebody typed or ids a machine made.
+/// The last segment of a path when it names an action or a tab rather
+/// than a thing.
 fn verb(segment: &str) -> Option<String> {
     Some(match segment {
         "new" => t("New").to_string(),
         "settings" => t("Settings").to_string(),
         "logs" => t("Logs").to_string(),
-        "join" => t("Join").to_string(),
-        // A secret shown once, on a page of its own. A verb, so the
-        // trail ends here and the arrow points at the page that minted
-        // it — which is where somebody goes next either way.
+        "connections" => t("Connections").to_string(),
+        "version" => t("Version").to_string(),
+        "join" => t("Join a network").to_string(),
         "shown" => t("Shown once").to_string(),
         _ => return None,
     })
 }
 
-/// What to call a collection that is a page in its own right, when it
-/// is one.
+/// What to call a collection nested under a thing, when it is a page.
 ///
-/// `None` covers two cases and they are the same case: a collection
-/// nested under something — `/projects/x/services` — and `/projects`
-/// itself, whose listing lives at `/`. Neither is a route, and a crumb
-/// linking to one is a link to a 404. A test found this by walking every
-/// shape rather than by anybody noticing.
+/// `None` for the ones that are not — `/projects/x/services` — because a
+/// crumb linking to one is a link to a 404, and for the rail's own, whose
+/// crumb is the root of every trail under them.
 fn collection(segment: &str) -> Option<String> {
     Some(match segment {
-        // Singular, and not `network`: the area's own crumb already links
-        // the list, so answering for it here would put "Red / Nodos"
-        // above a node with the same destination twice.
-        "node" => t("Node").to_string(),
-        "people" => t("People").to_string(),
-        "updates" => t("Updates").to_string(),
-        // A project's DNS is a page, so its crumb links there: the zones
-        // are what a zone's page came out of.
         "zones" => t("DNS").to_string(),
         _ => return None,
     })
 }
 
 impl Frame {
-    /// The frame for a page, from what every view already has.
-    pub fn new(
-        account: &Account,
-        area: Area,
-        projects: &[Project],
-        current: Option<&Project>,
-        path: impl Into<String>,
-    ) -> Self {
+    /// The frame with nothing in its list, for a page that has none and
+    /// for a test.
+    pub fn new(account: &Account, section: Section, path: impl Into<String>) -> Self {
         Self {
             username: account.username.clone(),
             admin: account.is_admin(),
             scope_admin: account.administers_scope(),
-            area,
-            projects: projects
-                .iter()
-                .map(|project| (project.slug.clone(), project.name.clone()))
-                .collect(),
-            current: current.map(|project| project.slug.clone()),
+            section,
             path: path.into(),
-            deploy: false,
-            // Off the account, which every view already loaded to
-            // decide what it may show. No cookie, no request-scoped
-            // channel from the middleware, and the choice follows the
-            // person to whatever machine they open this on.
+            list: Vec::new(),
+            this_node: None,
+            wide: false,
             theme: account.theme,
             language: account.language,
         }
     }
 
-    /// What the person may do in the project this page is about.
-    pub fn allowing(mut self, access: crate::domain::values::roles::Access) -> Self {
-        self.deploy = access.may_deploy();
+    /// The frame for a page, with the list its section shows.
+    ///
+    /// It reads what it draws, so a page hands over nothing but where it
+    /// is. A list that could not be read is an empty column and never a
+    /// page that does not render: this console is opened when the node is
+    /// unwell.
+    pub async fn load(
+        database: &SqliteDatabase,
+        account: &Account,
+        section: Section,
+        path: impl Into<String>,
+    ) -> Self {
+        let mut frame = Self::new(account, section, path);
+        match section {
+            Section::Projects => frame.list = projects_list(database, account, &frame.path).await,
+            Section::Nodes if frame.admin => {
+                let nodes = crate::infra::network::all(database)
+                    .await
+                    .unwrap_or_default();
+                frame.this_node = nodes
+                    .iter()
+                    .find(|node| node.is_self)
+                    .map(|node| (node.id.clone(), node.name.clone()));
+                frame.list = nodes
+                    .iter()
+                    .map(|node| {
+                        Entry::new(format!("/nodes/{}", node.id), &node.name)
+                            .marked(node.is_self.then_some(Mark::ThisNode))
+                    })
+                    .collect();
+            }
+            Section::Organisations if frame.admin => {
+                frame.list = crate::infra::repositories::tenants::all(database)
+                    .await
+                    .unwrap_or_default()
+                    .iter()
+                    .map(|tenant| Entry::new(format!("/organisations/{}", tenant.id), &tenant.name))
+                    .collect();
+            }
+            _ => {}
+        }
+        frame
+    }
+
+    /// For a page that needs the room: a log is read by the line, and a
+    /// line cut short by a column of names is the wrong trade.
+    pub fn wide(mut self) -> Self {
+        self.wide = true;
         self
+    }
+
+    /// Where the brand goes: what this account came to look at.
+    fn home(&self) -> &'static str {
+        match self.admin {
+            true => Section::Status.href(),
+            false => Section::Projects.href(),
+        }
+    }
+
+    /// What this account's rail offers. A section they would be turned
+    /// away from is not listed: the rail is where somebody looks for what
+    /// there is.
+    fn sections(&self) -> Vec<Section> {
+        match (self.admin, self.scope_admin) {
+            (true, _) => vec![
+                Section::Status,
+                Section::Projects,
+                Section::Nodes,
+                Section::Organisations,
+                Section::People,
+            ],
+            (false, true) => vec![Section::Projects, Section::People],
+            (false, false) => vec![Section::Projects],
+        }
+    }
+
+    fn shows_list(&self) -> bool {
+        !self.wide && !self.list.is_empty()
+    }
+
+    /// The path the list should light for this page. This machine's
+    /// settings and version are at `/node`, and belong to its entry.
+    fn listed_path(&self) -> String {
+        match (&self.this_node, self.path.as_str()) {
+            (Some((id, _)), path) if path == "/node" || path.starts_with("/node/") => {
+                format!("/nodes/{id}")
+            }
+            _ => self.path.clone(),
+        }
     }
 
     /// The whole frame, with the page's own markup inside it.
     ///
-    /// Takes the body already rendered. Nesting the page's `rsx!`
-    /// inside the frame's would have both of them borrowing the same
-    /// project at once — one to name it in the nav, the other to draw
-    /// it — and the closure `rsx!` builds captures by move. Rendering
-    /// first ends the page's borrow before the frame takes its own.
+    /// Takes the body already rendered: nesting the page's `rsx!` inside
+    /// the frame's would have both borrowing the same values at once, and
+    /// the closure `rsx!` builds captures by move.
     pub fn render(&self, inner: String) -> impl Renderable + '_ {
-        // The frame's own words, in the account's language. The page
-        // inside it is already a rendered string by the time it gets
-        // here — each view scopes its own, because that is where its
-        // strings are read. See `language::scoped`.
         let language = self.language;
         let top =
             crate::shell::texts::language::scoped(language, || self.topbar().render().into_inner());
-        let side = crate::shell::texts::language::scoped(language, || {
-            self.sidebar().render().into_inner()
-        });
+        let rail =
+            crate::shell::texts::language::scoped(language, || self.rail().render().into_inner());
+        let list = match self.shows_list() {
+            true => crate::shell::texts::language::scoped(language, || {
+                self.listing().render().into_inner()
+            }),
+            false => String::new(),
+        };
         let crumbs =
             crate::shell::texts::language::scoped(language, || self.crumbs().render().into_inner());
+        let body = match (self.shows_list(), self.wide) {
+            (true, _) => "app-body has-list",
+            (false, true) => "app-body wide",
+            (false, false) => "app-body",
+        };
         rsx! {
             <div class="app-shell" data-theme=(self.theme.attribute())>
                 (hypertext::Raw::dangerously_create(&top))
-                <div class="app-body">
-                    (hypertext::Raw::dangerously_create(&side))
+                <div class=(body)>
+                    (hypertext::Raw::dangerously_create(&rail))
+                    (hypertext::Raw::dangerously_create(&list))
                     <main>
                         (hypertext::Raw::dangerously_create(&crumbs))
                         (hypertext::Raw::dangerously_create(&inner))
@@ -250,27 +376,13 @@ impl Frame {
 
     /// Where this page sits, and the way back out of it.
     ///
-    /// Rendered by the frame rather than by each view, and **derived
-    /// from the path** rather than passed in. Both of those are the same
-    /// decision: a trail every view has to remember to supply is a trail
-    /// some view does not have, and the frame already knows the path
-    /// because it decides which nav link is current from it.
-    ///
-    /// The way back is the crumb before the last — **always**, because
-    /// that is what a parent is. So the control is an arrow rather than
-    /// a word: spelling its destination out put "Projects" on the bar
-    /// twice, once in the button and once in the crumb it points at,
-    /// which is not an edge case but every page one level deep. The name
-    /// lives in the tooltip, where it costs no room and still answers
-    /// "where does this go".
-    ///
-    /// An icon button rather than a bare glyph, for the hit area: a `←`
-    /// sitting against a text link is a few pixels wide and next to
-    /// something much easier to hit by accident.
+    /// Derived from the path rather than passed in: a trail every view
+    /// has to remember to supply is a trail some view does not have. The
+    /// way back is the crumb before the last, so the control is an arrow
+    /// with the name in its tooltip — spelling it out printed the parent
+    /// twice on every page one level deep.
     fn crumbs(&self) -> impl Renderable + '_ {
         let trail = self.trail();
-        // Nothing to show on a root page: a single crumb naming the page
-        // you are looking at is furniture.
         let show = trail.len() > 1;
         let parent = match trail.len() {
             0 | 1 => None,
@@ -290,9 +402,6 @@ impl Frame {
                     <ol>
                         @for (index, (label, href)) in trail.iter().enumerate() {
                             <li>
-                                // The last one is where you are. A link
-                                // to the page you are on is a link that
-                                // teaches somebody it does nothing.
                                 @if index + 1 == trail.len() {
                                     <span aria-current="page">(label)</span>
                                 } @else if let Some(href) = href {
@@ -308,37 +417,32 @@ impl Frame {
         }
     }
 
-    /// The trail, as `(label, href)` from the root to this page.
+    /// The trail, as `(label, href)` from the section to this page.
     ///
-    /// The path is read in **`collection/id` pairs**, so `projects` and
-    /// `services` are not crumbs of their own — `/projects/x/services`
-    /// is not a page, and a crumb linking to it would be a link to a
-    /// 404. What is left over at the end is a verb (`new`, `settings`),
-    /// which is the current page and needs no link.
+    /// The path is read in **`collection/id` pairs**, so `services` is not
+    /// a crumb of its own — `/projects/x/services` is not a page. What is
+    /// left over at the end is a verb or a tab, which is the current page.
     fn trail(&self) -> Vec<(String, Option<String>)> {
+        let mut trail = vec![(
+            self.section.label().to_string(),
+            Some(self.section.href().to_string()),
+        )];
         let segments: Vec<&str> = self.path.split('/').filter(|s| !s.is_empty()).collect();
-        let mut trail = vec![match self.area {
-            Area::Projects => (t("Projects").to_string(), Some("/".to_string())),
-            Area::Network => (t("Network").to_string(), Some("/network".to_string())),
-            Area::Settings => (t("Settings").to_string(), None),
-        }];
+
+        if segments.first() == Some(&"node") {
+            self.this_machine(&segments, &mut trail);
+            return trail;
+        }
 
         let mut index = 0;
         while index < segments.len() {
             let segment = segments[index];
-            // A verb ends the trail: it is what this page *does*, and
-            // there is nothing under it.
             if let Some(label) = verb(segment) {
                 trail.push((label, None));
                 return trail;
             }
-            // A collection and the thing inside it. The href is the
-            // whole prefix, which is the page that thing has.
             let id = match segments.get(index + 1) {
                 Some(id) if verb(id).is_none() => id,
-                // A collection with nothing usable under it. Some are
-                // pages — `/nodes` — and the nested ones are not, so a
-                // crumb appears only for the ones that answer.
                 _ => {
                     if let Some(label) = collection(segment) {
                         trail.push((label, Some(format!("/{}", segments[..=index].join("/")))));
@@ -347,20 +451,6 @@ impl Frame {
                     continue;
                 }
             };
-            // The collection first, when it is a page of its own.
-            //
-            // Without this a pair swallowed it: `/nodes/nd-abc` read as
-            // "Settings / nd-abc", so the list the node came out of was
-            // not in the trail — and since "Settings" names an area
-            // rather than a page and carries no href, the way-back arrow
-            // had nothing to point at either. Every settings page one
-            // level deep was like that, and the only route back was the
-            // button each of those pages happens to draw for itself.
-            //
-            // `collection` answers `None` for `projects` and `services`,
-            // which is what keeps this from doubling the root crumb on a
-            // project page or linking to `/…/services`, which is not a
-            // page.
             if let Some(label) = collection(segment) {
                 trail.push((label, Some(format!("/{}", segments[..=index].join("/")))));
             }
@@ -373,73 +463,53 @@ impl Frame {
         trail
     }
 
-    /// What to call one thing in the trail.
-    ///
-    /// A project is named rather than slugged when the frame knows the
-    /// name — it holds every project for the selector — because the
-    /// name is what somebody typed. Everything else is its slug or its
-    /// id, unchanged: those are what the rows and the terminal call it,
-    /// and prettifying an id is how a page stops matching `ctr`.
-    fn label_for(&self, collection: &str, id: &str) -> String {
-        match collection {
-            // The network's own sub-pages are words, not ids. Without
-            // this the crumb read `invite` — lowercase, English, and
-            // sitting between two translated ones. Reported by Jorge
-            // from a page whose breadcrumb was otherwise right.
-            "network" if id == "invite" => t("Invite a node").to_string(),
-            "projects" => self
-                .projects
-                .iter()
-                .find(|(slug, _)| slug == id)
-                .map(|(_, name)| name.clone())
-                .unwrap_or_else(|| id.to_string()),
-            _ => id.to_string(),
+    /// `/node/…`, which is this machine's settings and its version: under
+    /// its own name among the nodes, though the path carries no id.
+    fn this_machine(&self, segments: &[&str], trail: &mut Vec<(String, Option<String>)>) {
+        if let Some((id, name)) = &self.this_node {
+            trail.push((name.clone(), Some(format!("/nodes/{id}"))));
         }
+        match segments.get(1) {
+            Some(&"version") => {
+                trail.push((t("Version").to_string(), Some("/node/version".to_string())));
+                if let Some(tag) = segments.get(2) {
+                    trail.push((tag.to_string(), None));
+                }
+            }
+            _ => trail.push((t("Settings").to_string(), None)),
+        }
+    }
+
+    /// What to call one thing in the trail: its name when the list knows
+    /// it, because the name is what somebody typed, and otherwise its id
+    /// unchanged — prettifying one is how a page stops matching `ctr`.
+    fn label_for(&self, collection: &str, id: &str) -> String {
+        if collection == "nodes" && id == "invite" {
+            return t("Invite a node").to_string();
+        }
+        let href = format!("/{collection}/{id}");
+        self.list
+            .iter()
+            .find(|entry| entry.href == href)
+            .map(|entry| entry.label.clone())
+            .unwrap_or_else(|| id.to_string())
     }
 
     fn topbar(&self) -> impl Renderable + '_ {
         rsx! {
             <header class="topbar">
-                <a class="brand" href="/">
+                <a class="brand" href=(self.home())>
                     <img
                         src=(format!("{}/wabot-logo.png", assets::MOUNT))
                         alt="Wabot" width="20" height="20">
                     <span>("wabot-deploy")</span>
                 </a>
-                <nav>
-                    <a href="/" class=(current(self.area == Area::Projects))>(t("Projects"))</a>
-                    // The network is beside Projects rather than inside
-                    // Settings: looking at a node is something somebody
-                    // does while work is running, and it used to share a
-                    // word with the page that configures this machine.
-                    @if self.admin {
-                        <a href="/network"
-                           class=(current(self.area == Area::Network))>(t("Network"))</a>
-                    }
-                    // The people and what this runs on belong to whoever
-                    // runs the node. A member has projects and nothing
-                    // else to see here.
-                    @if self.scope_admin {
-                        <a href="/settings" class=(current(self.area == Area::Settings))
-                           title=(t("Settings"))>
-                            (hypertext::Raw::dangerously_create(GEAR))
-                            <span>(t("Settings"))</span>
-                        </a>
-                    }
-                </nav>
+                (self.search())
                 <div class="topbar-right">
                     (self.languages())
                     (self.toggle())
-                    // A form, not a link: signing out changes state,
-                    // and a GET that changes state is one a prefetcher
-                    // can fire.
-                    //
-                    // An icon, with the account's name in its tooltip.
-                    // The name used to sit in the bar as a label of its
-                    // own, which spent room on something nobody needs to
-                    // read twice a day — and it is still the thing you
-                    // want to check before pressing *this* button, so it
-                    // moved into the one place you look at first.
+                    // A form, not a link: signing out changes state, and
+                    // a GET that changes state is one a prefetcher fires.
                     <form method="post" action="/sign-out">
                         <button class="btn btn-ghost btn-icon" type="submit"
                                 title=(format!("{} · {}", t("Sign out"), self.username))
@@ -452,11 +522,29 @@ impl Frame {
         }
     }
 
-    /// English or Spanish, in the two letters somebody scans for.
+    /// Jump to a thing by its name.
     ///
+    /// A form that submits with scripting off; the island around it only
+    /// adds the keyboard's way to the field.
+    fn search(&self) -> impl Renderable + '_ {
+        let form = rsx! {
+            <form method="get" action="/go" class="go" role="search">
+                (hypertext::Raw::dangerously_create(ICON_SEARCH))
+                <input type="search" name="q" autocomplete="off"
+                       placeholder=(t("Go to…")) aria-label=(t("Go to"))>
+            </form>
+        }
+        .render()
+        .into_inner();
+        wabot::ui::hypertext::island(
+            "go",
+            &serde_json::json!({}),
+            hypertext::Raw::dangerously_create(&form),
+        )
+    }
+
     /// A word rather than a flag: a flag is a country and a language is
-    /// not one — Spanish is not Spain's, and picking any flag for
-    /// English starts an argument the console does not need to have.
+    /// not one.
     fn languages(&self) -> impl Renderable + '_ {
         rsx! {
             <form method="post" action="/language">
@@ -472,18 +560,10 @@ impl Frame {
 
     /// Light or dark, and nothing else.
     ///
-    /// `System` is still the stored default — an account that has never
-    /// pressed this follows the machine, which is the answer that keeps
-    /// up when it switches at sunset — but it is not one of the two
-    /// things the control offers.
-    ///
-    /// Which leaves a problem worth the trouble: while an account is on
-    /// `System`, the **server cannot know** whether that machine is
-    /// light or dark, and the icon is supposed to show the state you
-    /// are in. So both are rendered and the media query picks. CSS
-    /// knows what the server does not, and this console has to work
-    /// with scripting off anyway. After one press the answer is stored
-    /// and only one button is drawn.
+    /// While an account is on `System` the **server cannot know** which
+    /// the machine is, and the icon shows the state you are in — so both
+    /// are rendered and the media query picks. After one press the answer
+    /// is stored and one button is drawn.
     fn toggle(&self) -> impl Renderable + '_ {
         rsx! {
             <form method="post" action="/theme">
@@ -511,174 +591,136 @@ impl Frame {
         }
     }
 
-    fn sidebar(&self) -> impl Renderable + '_ {
+    fn rail(&self) -> impl Renderable + '_ {
         rsx! {
-            <aside class="sidebar">
-                // The column and the nav inside it are two elements
-                // because they do different jobs while the page
-                // scrolls: the column holds the full-height background,
-                // the inner box follows along. See `.side-inner`.
-                <div class="side-inner">
-                    @if self.area == Area::Projects {
-                        (self.selector())
-                        @if let Some(slug) = &self.current {
-                            (self.project_nav(slug))
+            <nav class="rail" aria-label=(t("Sections"))>
+                <div class="rail-inner">
+                    @for section in self.sections() {
+                        @if section == self.section {
+                            <a href=(section.href()) class="active" aria-current="true">
+                                (hypertext::Raw::dangerously_create(section.icon()))
+                                <span>(section.label())</span>
+                            </a>
+                        } @else {
+                            <a href=(section.href())>
+                                (hypertext::Raw::dangerously_create(section.icon()))
+                                <span>(section.label())</span>
+                            </a>
                         }
                     }
-                    @if self.area == Area::Network {
-                        <p class="side-label">(t("Network"))</p>
-                        <nav>
-                            // The list first, then the two things that
-                            // change what is on it. They were buttons in
-                            // the page's own header, which left this
-                            // column empty on the one area that had
-                            // somewhere to put them.
-                            //
-                            // Both are always offered, including on a node
-                            // that cannot mint a token: `enrol_card` is
-                            // written to *say why not*, so the link leads
-                            // to an answer rather than to a refusal. That
-                            // is the difference from hiding Settings from
-                            // a member, who would be bounced with nothing.
-                            <a href="/network"
-                               class=(current(self.path == "/network"))>(t("Nodes"))</a>
-                            <a href="/network/invite"
-                               class=(current(self.path == "/network/invite"))>(
-                                   t("Invite a node")
-                               )</a>
-                            <a href="/network/join"
-                               class=(current(self.path == "/network/join"))>(
-                                   t("Join a network")
-                               )</a>
-                        </nav>
-                    }
-                    @if self.area == Area::Settings {
-                        <p class="side-label">(t("Settings"))</p>
-                        <nav>
-                            // Singular, and it means this machine. The
-                            // plural was the list, which is its own area
-                            // now — this is the one node whose settings
-                            // are here to change.
-                            // `starts_with("/node")` and not `==`: the
-                            // page is `/node/<tab>` now. `/network` does
-                            // not match it — `net` is not `nod` — which is
-                            // luck rather than design, so it is written
-                            // down here before somebody adds `/nodes`
-                            // back.
-                            @if self.admin {
-                                <a href="/node"
-                                   class=(current(self.path.starts_with("/node")))>(t("Node"))</a>
-                            }
-                            // The one link both frontiers have. An
-                            // organisation's administrator manages its
-                            // people; the machine's manages the
-                            // machine's — one page, narrowed by the
-                            // scope the request arrived in.
-                            <a href="/people"
-                               class=(current(self.path == "/people"))>(t("People"))</a>
-                            // **The shell is the one shared thing that
-                            // has to name both halves**, because a
-                            // navigation is a list of pages that exist.
-                            // It is two lines, and removing tenancy is
-                            // removing one of them — which is why the
-                            // separability guard in `console` covers the
-                            // controllers and deliberately not this.
-                            @if self.admin {
-                                <a href="/organisations"
-                                   class=(current(self.path == "/organisations"))>(
-                                       t("Organisations")
-                                   )</a>
-                                <a href="/updates"
-                                   class=(current(self.path == "/updates"))>(t("Updates"))</a>
-                            }
-                        </nav>
-                    }
+                </div>
+            </nav>
+        }
+    }
+
+    fn listing(&self) -> impl Renderable + '_ {
+        let here = self.listed_path();
+        let inside = self
+            .list
+            .iter()
+            .any(|entry| entry.nested && within(&here, &entry.href));
+        rsx! {
+            <aside class="side-list" aria-label=(self.section.label())>
+                // The column carries the background the height of the
+                // page; the box inside it is what stays put.
+                <div class="side-inner">
+                    <p class="side-label">(self.section.label())</p>
+                    <nav>
+                        @for entry in &self.list {
+                            <a href=(&entry.href) class=(entry_class(entry, &here, inside))>
+                                <span class="side-name">(&entry.label)</span>
+                                @match entry.mark {
+                                    Some(Mark::Failed) => {
+                                        <span class="side-mark failed">
+                                            <span class="dot dot-danger"></span>(t("Failed"))
+                                        </span>
+                                    }
+                                    Some(Mark::ThisNode) => {
+                                        <span class="side-mark">(t("this node"))</span>
+                                    }
+                                    None => {}
+                                }
+                            </a>
+                        }
+                    </nav>
                 </div>
             </aside>
         }
     }
-
-    /// The project switcher.
-    fn selector(&self) -> impl Renderable + '_ {
-        rsx! {
-            <form method="post" action="/select-project" class="workspace-field">
-                <label class="side-label" for="project">(t("Project"))</label>
-                <div class="workspace">
-                    <select id="project" name="project">
-                        // Same trap as everywhere else `selected` is
-                        // written: it is boolean by presence, so with
-                        // more than one project the browser took the
-                        // last and this named the wrong one.
-                        @for (slug, name) in &self.projects {
-                            @if self.current.as_deref() == Some(slug.as_str()) {
-                                <option value=(slug) selected>(name)</option>
-                            } @else {
-                                <option value=(slug)>(name)</option>
-                            }
-                        }
-                    </select>
-                    <button class="btn btn-secondary btn-sm" type="submit">(t("Go"))</button>
-                </div>
-                @if self.projects.is_empty() {
-                    <p class="side-hint">(t("No projects yet."))</p>
-                }
-            </form>
-        }
-    }
-
-    /// The project's own pages.
-    ///
-    /// It grew when the overview was split: people and settings used to
-    /// be cards below the services, found by scrolling past the thing
-    /// everybody actually came for. A nav is where somebody looks for a
-    /// page, which is the argument for putting them here rather than
-    /// behind a button on the overview.
-    fn project_nav(&self, slug: &str) -> impl Renderable + '_ {
-        let base = format!("/projects/{slug}");
-        let settings = format!("{base}/settings");
-        let zones = format!("{base}/zones");
-
-        rsx! {
-            <nav>
-                <a href=(&base) class=(current(self.path == base))>(t("Overview"))</a>
-                // A project's domains are a place of their own, like its
-                // settings, and unlike them readable by anybody in it.
-                <a href=(&zones)
-                   class=(current(self.path.starts_with(&zones)))>(t("DNS"))</a>
-                // Places, and nothing else. "Create service" was
-                // neither — it was a button wearing a nav item's
-                // clothes, sitting in the list of pages you can be *on*
-                // while never being one you stay on. It belongs beside
-                // the services it adds to, which is the overview.
-                //
-                // People moved into settings: who is in a project is a
-                // setting of the project, and it was a page holding one
-                // table.
-                @if self.deploy {
-                    <a href=(&settings)
-                       class=(current(self.path == settings))>(t("Settings"))</a>
-                }
-            </nav>
-        }
-    }
 }
 
-/// `class="active"`, or nothing.
+/// The projects this account reaches, with the services of the one the
+/// page is in.
 ///
-/// An empty string rather than an absent attribute: `rsx!` wants a
-/// value, and `class=""` renders as nothing a stylesheet can match.
-fn current(active: bool) -> &'static str {
-    if active {
-        "active"
-    } else {
-        ""
+/// Only that one is opened: an operator hosting several organisations
+/// has more services than a column holds, and the ones somebody jumps
+/// between are the ones beside the page they are on.
+async fn projects_list(database: &SqliteDatabase, account: &Account, path: &str) -> Vec<Entry> {
+    let projects = crate::infra::repositories::access::projects_for(database, account)
+        .await
+        .unwrap_or_default();
+    let services = crate::infra::repositories::services::all(database, None)
+        .await
+        .unwrap_or_default();
+    let failed: Vec<String> = crate::infra::repositories::replicas::here(database)
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|replica| replica.failure().is_some())
+        .map(|replica| replica.service_id)
+        .collect();
+
+    let mut list = Vec::new();
+    for project in &projects {
+        let href = format!("/projects/{}", project.slug);
+        let open = within(path, &href);
+        let inside: Vec<_> = services
+            .iter()
+            .filter(|service| service.project_id == project.id)
+            .collect();
+        let any_failed = inside.iter().any(|service| failed.contains(&service.id));
+        list.push(
+            Entry::new(&href, &project.name).marked((any_failed && !open).then_some(Mark::Failed)),
+        );
+        if open {
+            for service in inside {
+                list.push(
+                    Entry::new(format!("{href}/services/{}", service.slug), &service.name)
+                        .marked(failed.contains(&service.id).then_some(Mark::Failed))
+                        .nested(),
+                );
+            }
+        }
+    }
+    list
+}
+
+/// Whether `path` is `href` or a page under it.
+fn within(path: &str, href: &str) -> bool {
+    path == href
+        || path
+            .strip_prefix(href)
+            .is_some_and(|rest| rest.starts_with('/'))
+}
+
+/// How one entry of the list is drawn for the page being shown.
+///
+/// A project with one of its services open is where you are without being
+/// the page you are on, so it is marked open and the service is the one
+/// that is lit — two lit rows would be two answers to "where am I".
+fn entry_class(entry: &Entry, here: &str, inside: bool) -> &'static str {
+    match (entry.nested, within(here, &entry.href), inside) {
+        (true, true, _) => "nested active",
+        (true, false, _) => "nested",
+        (false, true, true) => "open",
+        (false, true, false) => "active",
+        (false, false, _) => "",
     }
 }
 
-/// The shell's own layout. Colour, type and radii come from the design
-/// system's tokens — this is arrangement, which is the console's
-/// business. No borders, no shadows: separation is background
-/// contrast.
+/// The frame's own layout. Colour, type and radii come from the design
+/// system's tokens — this is arrangement. No borders, no shadows:
+/// separation is background contrast.
 pub const CSS: &str = r#"
 /* Block flow rather than a grid of two rows. A sticky element cannot
    leave its containing block, and a grid item's block is its grid
@@ -687,15 +729,14 @@ pub const CSS: &str = r#"
 .app-shell { min-height: 100vh; }
 .app-body {
   display: grid;
-  grid-template-columns: 15rem minmax(0, 1fr);
+  grid-template-columns: 5.5rem minmax(0, 1fr);
   min-height: calc(100vh - 3.25rem);
 }
+.app-body.has-list { grid-template-columns: 5.5rem 15rem minmax(0, 1fr); }
+
 /* A page title is a label, not a headline. The design system's `h1`
-   is `--fs-4xl` — a marketing size — and next to 15px body text it
-   reads as a banner. wabot console uses `--fs-3xl` for the same job,
-   but its titles are words like "Services" while these are hostnames,
-   so this goes one step further down and lets a long one break rather
-   than push the page sideways. */
+   is a marketing size, and these are hostnames: one step further down,
+   and a long one breaks rather than pushing the page sideways. */
 .app-body > main h1 {
   font-size: var(--fs-2xl);
   margin: 0;
@@ -712,22 +753,24 @@ pub const CSS: &str = r#"
   flex-direction: column;
   gap: var(--sp-6);
 }
+.app-body.wide > main { max-width: 90rem; }
 
 .topbar {
   position: sticky;
   top: 0;
   z-index: 3;
-  /* The row template used to set this. Block flow does not, and a
-     topbar that sizes to its content is a topbar that changes height
-     between pages. */
+  /* Block flow does not set this, and a topbar that sizes to its
+     content is a topbar that changes height between pages. */
   height: 3.25rem;
   display: flex;
   align-items: center;
+  justify-content: flex-start;
   gap: var(--sp-5);
   padding: 0 var(--sp-5);
   background: rgb(var(--c-bg-sunken));
 }
 .topbar .brand {
+  flex: none;
   display: inline-flex;
   align-items: center;
   gap: var(--sp-2);
@@ -736,43 +779,81 @@ pub const CSS: &str = r#"
   color: rgb(var(--c-fg));
   text-decoration: none;
 }
-.topbar nav { display: flex; gap: var(--sp-1); }
-.topbar nav a {
-  padding: 0.35rem var(--sp-3);
-  border-radius: var(--r-md);
-  font-size: var(--fs-sm);
-  color: rgb(var(--c-fg-muted));
-  text-decoration: none;
-}
-.topbar nav a.active {
-  background: rgb(var(--c-bg-raised));
-  color: rgb(var(--c-fg));
-  font-weight: 500;
-}
 .topbar-right {
+  flex: none;
   margin-left: auto;
   display: flex;
   align-items: center;
   gap: var(--sp-3);
 }
-.who { color: rgb(var(--c-fg-muted)); font-size: var(--fs-sm); }
 
-.sidebar {
-  background: rgb(var(--c-bg-sunken));
-  padding: var(--sp-5) var(--sp-3);
+/* Jump by name. The field is the form: the icon sits inside its box,
+   which is why the box is the form's and the input has none. */
+.go {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  width: min(22rem, 100%);
+  min-width: 0;
+  padding: 0 var(--sp-3);
+  border-radius: var(--r-md);
+  background: rgb(var(--c-bg-raised));
+  color: rgb(var(--c-fg-muted));
 }
-/* The column stays stretched so its background runs the height of the
-   page; the nav inside it is what sticks. Sticking the column itself
-   needs `align-self: start`, which collapses it to the height of the
-   links and takes the background with it. */
+.go svg { flex: none; }
+.go input,
+[data-theme='dark'] .go input {
+  flex: 1;
+  min-width: 0;
+  padding: 0.4rem 0;
+  font-size: var(--fs-sm);
+  background: transparent;
+  box-shadow: none;
+}
+.go:focus-within { box-shadow: 0 0 0 2px rgb(var(--c-focus) / 0.45); }
+
+/* The rail: what kinds of thing there are. Each is its icon over its
+   word, because an icon alone is a guess. */
+.rail { background: rgb(var(--c-bg-sunken)); padding: var(--sp-3) var(--sp-2); }
+.rail-inner {
+  position: sticky;
+  top: calc(3.25rem + var(--sp-3));
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+}
+.rail a {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--sp-1);
+  padding: var(--sp-2) 2px;
+  border-radius: var(--r-md);
+  font-size: var(--fs-xs);
+  line-height: 1.2;
+  text-align: center;
+  color: rgb(var(--c-fg-muted));
+  text-decoration: none;
+}
+.rail a.active {
+  background: rgb(var(--c-bg-raised));
+  color: rgb(var(--c-fg));
+  font-weight: 500;
+}
+
+/* The list: which ones. The column stays stretched so its background
+   runs the height of the page; the box inside it is what sticks.
+   Sticking the column itself needs `align-self: start`, which collapses
+   it to the height of the links and takes the background with it. */
+.side-list { background: rgb(var(--c-bg-raised)); padding: var(--sp-5) var(--sp-3); }
 .side-inner {
   position: sticky;
   top: calc(3.25rem + var(--sp-5));
   display: flex;
   flex-direction: column;
-  gap: var(--sp-5);
-  /* A project list longer than the viewport scrolls in place rather
-     than pushing the links below the fold, where sticky cannot help. */
+  gap: var(--sp-2);
+  /* A list longer than the viewport scrolls in place rather than
+     pushing its end below the fold, where sticky cannot help. */
   max-height: calc(100vh - 3.25rem - calc(var(--sp-5) * 2));
   overflow-y: auto;
 }
@@ -784,55 +865,102 @@ pub const CSS: &str = r#"
   padding: 0 var(--sp-3);
   margin: 0 0 var(--sp-2);
 }
-.side-hint {
-  padding: 0 var(--sp-3);
-  margin: var(--sp-2) 0 0;
-  font-size: var(--fs-sm);
-  color: rgb(var(--c-fg-faint));
-}
-.sidebar nav { display: flex; flex-direction: column; gap: 2px; }
-.sidebar nav a {
+.side-list nav { display: flex; flex-direction: column; gap: 2px; }
+.side-list nav a {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-2);
   padding: 0.45rem var(--sp-3);
   border-radius: var(--r-md);
   font-size: var(--fs-sm);
   color: rgb(var(--c-fg-body));
   text-decoration: none;
 }
-.sidebar nav a.active {
-  background: rgb(var(--c-bg-raised));
+.side-list nav a.nested { padding-left: var(--sp-6); }
+.side-list nav a.open { color: rgb(var(--c-fg)); font-weight: 500; }
+.side-list nav a.active {
+  background: rgb(var(--c-bg-sunken));
   color: rgb(var(--c-fg));
   font-weight: 500;
 }
+.side-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.side-mark {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+  font-size: var(--fs-xs);
+  font-weight: 400;
+  color: rgb(var(--c-fg-muted));
+}
+.side-mark.failed { color: rgb(var(--c-danger-fg)); }
 
-.workspace { display: flex; gap: var(--sp-2); align-items: center; }
-.workspace select {
-  background: rgb(var(--c-bg-contrast));
+/* The tabs of one thing: what it is, what is particular to it, and its
+   settings last. A strip with the current one raised, so it does not
+   read as the row of chips a settings page has under it. */
+.object-tabs {
+  display: flex;
+  gap: 2px;
+  width: fit-content;
+  max-width: 100%;
+  padding: 3px;
+  border-radius: var(--r-md);
+  background: rgb(var(--c-bg-sunken));
+  overflow-x: auto;
+}
+.object-tabs a {
+  flex: none;
+  padding: 0.4rem var(--sp-4);
+  border-radius: 6px;
   font-size: var(--fs-sm);
-  padding: 0.4rem var(--sp-3);
+  font-weight: 500;
+  color: rgb(var(--c-fg-muted));
+  text-decoration: none;
+  white-space: nowrap;
+}
+.object-tabs a.active {
+  background: rgb(var(--c-bg-raised));
+  color: rgb(var(--c-fg));
 }
 
-@media (max-width: 60rem) {
-  /* Block flow again, and for the same reason as `.app-shell`: stacked
-     in a grid the strip's area is its own row, which leaves it nothing
-     to slide against. */
-  .app-body { display: block; min-height: 0; }
-  .sidebar {
-    position: sticky;
-    top: 3.25rem;
-    z-index: 2;
-    padding: var(--sp-3) var(--sp-4);
-    overflow-x: auto;
+/* A laptop: the list gives its width back to the page, and the trail
+   above the title is the way to what it listed. */
+@media (max-width: 70rem) {
+  .app-body.has-list { grid-template-columns: 5.5rem minmax(0, 1fr); }
+  .side-list { display: none; }
+}
+
+/* A phone: the rail goes to the bottom, under the thumb. Block flow
+   again, for the same reason as `.app-shell`. */
+@media (max-width: 48rem) {
+  .app-body,
+  .app-body.has-list { display: block; min-height: 0; }
+  .rail {
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 3;
+    padding: var(--sp-1) var(--sp-2) calc(var(--sp-1) + env(safe-area-inset-bottom, 0px));
   }
-  .side-inner {
+  .rail-inner {
     position: static;
     flex-direction: row;
-    align-items: end;
-    gap: var(--sp-4);
-    max-height: none;
-    overflow-y: visible;
+    justify-content: space-around;
   }
-  .sidebar nav { flex-direction: row; }
-  .app-body > main { padding: var(--sp-6) var(--sp-4) var(--sp-10); }
+  .rail a { flex: 1 1 0; min-width: 0; }
+  .app-body > main { padding: var(--sp-6) var(--sp-4) calc(var(--sp-12) + 4rem); }
+  .topbar { gap: var(--sp-3); padding: 0 var(--sp-3); }
+  .topbar .brand span { display: none; }
+  .topbar-right { gap: var(--sp-1); }
+  /* A table wider than a phone scrolls inside itself. Left to the page
+     it pushes everything sideways, and the bar fixed to the bottom is
+     then wider than the screen it is fixed to. */
+  .app-body > main table { display: block; overflow-x: auto; }
+  /* A title and its buttons take a line each when one line will not
+     hold both. Squeezed onto one, the title broke inside a word. */
+  .app-body > main .split { flex-wrap: wrap; }
 }
 "#;
 
@@ -840,10 +968,119 @@ pub const CSS: &str = r#"
 mod tests {
     use super::*;
 
+    fn account(role: crate::domain::values::roles::NodeRole, tenant: Option<&str>) -> Account {
+        Account {
+            theme: Theme::System,
+            id: "a".into(),
+            username: "someone".into(),
+            tenant_id: tenant.map(str::to_string),
+            role,
+            language: crate::domain::values::language::Language::En,
+        }
+    }
+
+    fn operator() -> Account {
+        account(crate::domain::values::roles::NodeRole::Admin, None)
+    }
+
+    fn rendered(frame: &Frame) -> String {
+        frame.render(String::new()).render().into_inner()
+    }
+
+    fn between<'a>(html: &'a str, open: &str, close: &str) -> &'a str {
+        let (_, after) = html
+            .split_once(open)
+            .unwrap_or_else(|| panic!("no {open} in {html}"));
+        after
+            .split_once(close)
+            .unwrap_or_else(|| panic!("{open} never closes"))
+            .0
+    }
+
+    /// The complaint this frame answers: two bars shared the navigation
+    /// by a rule nothing on the screen stated. The header holds what
+    /// belongs to the session and links to no section.
     #[test]
-    fn only_the_current_link_is_marked() {
-        assert_eq!(current(true), "active");
-        assert_eq!(current(false), "");
+    fn the_header_does_not_navigate() {
+        let html = rendered(&Frame::new(&operator(), Section::Projects, "/projects"));
+        let header = between(&html, "<header", "</header>");
+        for section in [
+            Section::Projects,
+            Section::Nodes,
+            Section::Organisations,
+            Section::People,
+        ] {
+            assert!(
+                !header.contains(&format!("href=\"{}\"", section.href())),
+                "the header links to {}: {header}",
+                section.href()
+            );
+        }
+        assert!(header.contains("action=\"/go\""), "{header}");
+    }
+
+    /// The rail is the same on every page: it lights where you are and
+    /// offers everything else, whichever section the page is in.
+    #[test]
+    fn the_rail_does_not_change_with_the_page() {
+        let links = |section, path: &str| {
+            let html = rendered(&Frame::new(&operator(), section, path));
+            between(&html, "<nav class=\"rail\"", "</nav>")
+                .matches("href=")
+                .count()
+        };
+        assert_eq!(links(Section::Status, "/status"), 5);
+        assert_eq!(links(Section::Projects, "/projects/x/services/y"), 5);
+        assert_eq!(links(Section::Nodes, "/node/domain"), 5);
+    }
+
+    /// What somebody would be turned away from is not offered. An
+    /// organisation's administrator has projects and people; a member has
+    /// projects; neither is shown the machine's sections.
+    #[test]
+    fn the_rail_offers_only_what_the_account_can_open() {
+        use crate::domain::values::roles::NodeRole;
+        let rail = |account: &Account| {
+            let html = rendered(&Frame::new(account, Section::Projects, "/projects"));
+            between(&html, "<nav class=\"rail\"", "</nav>").to_string()
+        };
+
+        let tenant_admin = rail(&account(NodeRole::Admin, Some("t-1")));
+        assert!(
+            tenant_admin.contains("href=\"/projects\""),
+            "{tenant_admin}"
+        );
+        assert!(tenant_admin.contains("href=\"/people\""), "{tenant_admin}");
+        for hidden in ["/status", "/nodes", "/organisations"] {
+            assert!(
+                !tenant_admin.contains(&format!("href=\"{hidden}\"")),
+                "an organisation's administrator is offered {hidden}"
+            );
+        }
+
+        let member = rail(&account(NodeRole::Member, None));
+        assert_eq!(member.matches("href=").count(), 1, "{member}");
+        assert!(member.contains("href=\"/projects\""), "{member}");
+    }
+
+    /// The brand goes to what the account came to look at: the node for
+    /// whoever runs it, their projects for everybody else.
+    #[test]
+    fn the_brand_goes_home() {
+        use crate::domain::values::roles::NodeRole;
+        let brand = |account: &Account| {
+            let html = rendered(&Frame::new(account, Section::Projects, "/projects"));
+            between(&html, "<a class=\"brand\"", ">").to_string()
+        };
+        assert!(brand(&operator()).contains("href=\"/status\""));
+        assert!(brand(&account(NodeRole::Member, None)).contains("href=\"/projects\""));
+        assert!(brand(&account(NodeRole::Admin, Some("t-1"))).contains("href=\"/projects\""));
+    }
+
+    fn with_list(section: Section, path: &str, list: Vec<Entry>) -> Frame {
+        let mut frame = Frame::new(&operator(), section, path);
+        frame.list = list;
+        frame
     }
 
     /// `.side-inner` is what stays put while the page scrolls — the
@@ -851,28 +1088,118 @@ mod tests {
     /// content of its own reads as removable, and removing it costs
     /// nothing visible until somebody scrolls.
     #[test]
-    fn the_side_nav_sits_in_the_box_that_sticks() {
-        let account = Account {
-            theme: Theme::System,
-            id: "a".into(),
-            username: "someone".into(),
-            tenant_id: None,
-            role: crate::domain::values::roles::NodeRole::Admin,
-            language: crate::domain::values::language::Language::En,
-        };
-        let frame = Frame::new(&account, Area::Settings, &[], None, "/people");
-        let html = frame.render(String::new()).render().into_inner();
-
-        let (_, after) = html
-            .split_once(r#"class="side-inner""#)
-            .expect("the sidebar wraps its nav in the sticky box");
-        let (inside, _) = after
-            .split_once("</aside>")
-            .expect("and the box closes with the column");
-        assert!(
-            inside.contains(r#"href="/people""#),
-            "the links are inside it: {inside}"
+    fn the_list_sits_in_the_box_that_sticks() {
+        let frame = with_list(
+            Section::Projects,
+            "/projects/shop",
+            vec![Entry::new("/projects/shop", "Shop")],
         );
+        let html = rendered(&frame);
+        let inside = between(&html, r#"class="side-inner""#, "</aside>");
+        assert!(inside.contains(r#"href="/projects/shop""#), "{inside}");
+    }
+
+    /// One row is lit. On a service's page that is the service; its
+    /// project is open around it, and lighting both would be two answers
+    /// to "where am I".
+    #[test]
+    fn one_entry_of_the_list_is_where_you_are() {
+        let list = vec![
+            Entry::new("/projects/shop", "Shop"),
+            Entry::new("/projects/shop/services/orders", "orders").nested(),
+            Entry::new("/projects/shop/services/ledger", "ledger").nested(),
+            Entry::new("/projects/shopping", "Shopping"),
+        ];
+        let lit = |path: &str| {
+            let html = rendered(&with_list(Section::Projects, path, list.clone()));
+            let column = between(&html, "<aside", "</aside>").to_string();
+            (
+                column.matches("active").count(),
+                column.contains(r#"class="open""#),
+            )
+        };
+        assert_eq!(lit("/projects/shop"), (1, false));
+        assert_eq!(lit("/projects/shop/settings"), (1, false));
+        assert_eq!(lit("/projects/shop/services/orders/logs"), (1, true));
+        assert_eq!(lit("/projects/shop/services/new"), (1, false));
+        assert_eq!(lit("/projects/new"), (0, false));
+    }
+
+    /// `/projects/shop` is not under `/projects/sho`, and `/projects/shop`
+    /// does not light `/projects/shopping`.
+    #[test]
+    fn a_page_is_under_an_entry_by_whole_segments() {
+        assert!(within("/projects/shop", "/projects/shop"));
+        assert!(within("/projects/shop/settings", "/projects/shop"));
+        assert!(!within("/projects/shopping", "/projects/shop"));
+        assert!(!within("/projects", "/projects/shop"));
+    }
+
+    /// A state in the list is a word beside its dot. A colour alone says
+    /// nothing to somebody who cannot tell two of them apart.
+    #[test]
+    fn a_mark_in_the_list_is_a_word() {
+        let frame = with_list(
+            Section::Projects,
+            "/projects",
+            vec![Entry::new("/projects/shop", "Shop").marked(Some(Mark::Failed))],
+        );
+        let html = rendered(&frame);
+        let mark = between(&html, r#"class="side-mark failed""#, "</a>");
+        assert!(mark.contains("Failed"), "{mark}");
+    }
+
+    /// A page that asked for the width gets it: the list is not drawn,
+    /// and the trail is what leads back to what it listed.
+    #[test]
+    fn a_wide_page_has_no_list() {
+        let frame = with_list(
+            Section::Projects,
+            "/projects/shop/services/orders/logs",
+            vec![Entry::new("/projects/shop", "Shop")],
+        )
+        .wide();
+        let html = rendered(&frame);
+        assert!(!html.contains("<aside"), "{html}");
+        assert!(html.contains(r#"class="app-body wide""#), "{html}");
+        assert!(html.contains(r#"<nav class="crumbs""#), "{html}");
+    }
+
+    /// This machine's settings are at `/node`, which names nobody — and
+    /// they are its own entry's page, so that entry is the one lit and
+    /// the trail runs through its name.
+    #[test]
+    fn this_machines_settings_belong_to_its_entry() {
+        let mut frame = with_list(
+            Section::Nodes,
+            "/node/domain",
+            vec![
+                Entry::new("/nodes/nd-self", "node-0").marked(Some(Mark::ThisNode)),
+                Entry::new("/nodes/nd-other", "node-1"),
+            ],
+        );
+        frame.this_node = Some(("nd-self".into(), "node-0".into()));
+
+        assert_eq!(
+            frame.trail(),
+            vec![
+                ("Nodes".to_string(), Some("/nodes".to_string())),
+                ("node-0".to_string(), Some("/nodes/nd-self".to_string())),
+                ("Settings".to_string(), None),
+            ]
+        );
+        let html = rendered(&frame);
+        let column = between(&html, "<aside", "</aside>");
+        let lit = between(column, r#"class="active""#, "</a>");
+        assert!(lit.contains("node-0"), "{column}");
+
+        frame.path = "/node/version/v0.9.0".into();
+        let release = frame.trail();
+        assert_eq!(
+            release[2],
+            ("Version".to_string(), Some("/node/version".to_string()))
+        );
+        assert_eq!(release[3], ("v0.9.0".to_string(), None));
     }
 
     /// The shapes a trail takes, and the one it must never take.
@@ -883,34 +1210,23 @@ mod tests {
     /// no crumb.
     #[test]
     fn a_trail_never_links_to_a_path_that_is_not_a_page() {
-        let account = Account {
-            theme: Theme::System,
-            id: "a".into(),
-            username: "someone".into(),
-            tenant_id: None,
-            role: crate::domain::values::roles::NodeRole::Admin,
-            language: crate::domain::values::language::Language::En,
-        };
-        let project = Project {
-            id: "prj-1".into(),
-            name: "Database test".into(),
-            slug: "db-test".into(),
-            created_at: 0,
-            origin_node_id: None,
-            tenant_id: None,
+        let trail_for = |section, path: &str| {
+            with_list(
+                section,
+                path,
+                vec![
+                    Entry::new("/projects/db-test", "Database test"),
+                    Entry::new("/nodes/nd-abc", "node-1"),
+                ],
+            )
+            .trail()
         };
 
-        let trail_for = |area, path: &str| {
-            Frame::new(&account, area, std::slice::from_ref(&project), None, path).trail()
-        };
-
-        // A project is named rather than slugged: the name is what
-        // somebody typed, and the frame already knows it.
-        let project_page = trail_for(Area::Projects, "/projects/db-test");
+        let project_page = trail_for(Section::Projects, "/projects/db-test");
         assert_eq!(
             project_page,
             vec![
-                ("Projects".to_string(), Some("/".to_string())),
+                ("Projects".to_string(), Some("/projects".to_string())),
                 (
                     "Database test".to_string(),
                     Some("/projects/db-test".to_string())
@@ -918,71 +1234,78 @@ mod tests {
             ]
         );
 
-        let service = trail_for(Area::Projects, "/projects/db-test/services/orders");
-        assert_eq!(
-            service.last().expect("a last crumb").0,
-            "orders",
-            "the page you are on comes last"
-        );
+        let service = trail_for(Section::Projects, "/projects/db-test/services/orders");
+        assert_eq!(service.last().expect("a last crumb").0, "orders");
         assert_eq!(service.len(), 3, "{service:?}");
 
-        let settings = trail_for(Area::Projects, "/projects/db-test/services/orders/settings");
+        let settings = trail_for(
+            Section::Projects,
+            "/projects/db-test/services/orders/settings/image",
+        );
         assert_eq!(
             settings.last().expect("last"),
             &("Settings".to_string(), None)
         );
 
-        // A verb has nothing under it, so it is where the trail stops.
-        let new = trail_for(Area::Projects, "/projects/new");
+        let new = trail_for(Section::Projects, "/projects/new");
         assert_eq!(new.last().expect("last"), &("New".to_string(), None));
 
-        // A collection that *is* a page keeps its own crumb.
-        let node = trail_for(Area::Settings, "/node");
+        let zone = trail_for(Section::Projects, "/projects/db-test/zones/example.com");
         assert_eq!(
-            node.last().expect("last"),
-            &("Node".to_string(), Some("/node".to_string()))
+            zone[2],
+            (
+                "DNS".to_string(),
+                Some("/projects/db-test/zones".to_string())
+            )
         );
 
-        // A node's own page is in the network, and the area's crumb is
-        // what leads back to the list.
-        //
-        // It read "Settings / nd-abc" — the wrong area lit in the header,
-        // and no way back either, since "Settings" names an area and
-        // carries no href for the arrow to use. Reported by Jorge from
-        // the page. The area answers with a link now, so `collection`
-        // deliberately says nothing about `network`: a crumb for the list
-        // would be the same destination twice in one trail.
-        let one_node = trail_for(Area::Network, "/network/nd-abc");
+        // A node is named, like a project: the list knows it.
+        let one_node = trail_for(Section::Nodes, "/nodes/nd-abc/connections");
         assert_eq!(
             one_node,
             vec![
-                ("Network".to_string(), Some("/network".to_string())),
-                ("nd-abc".to_string(), Some("/network/nd-abc".to_string())),
-            ],
-            "an id is not prettified, and the area is the way back"
+                ("Nodes".to_string(), Some("/nodes".to_string())),
+                ("node-1".to_string(), Some("/nodes/nd-abc".to_string())),
+                ("Connections".to_string(), None),
+            ]
+        );
+        // And an id the list does not know is not prettified.
+        assert_eq!(
+            trail_for(Section::Nodes, "/nodes/nd-gone")[1].0,
+            "nd-gone".to_string()
+        );
+
+        let invite = trail_for(Section::Nodes, "/nodes/invite/shown");
+        assert_eq!(invite[1].0, "Invite a node");
+        assert_eq!(invite.last().expect("last").0, "Shown once");
+        assert_eq!(
+            trail_for(Section::Nodes, "/nodes/join")
+                .last()
+                .expect("last")
+                .0,
+            "Join a network"
         );
 
         // What the arrow reads: the crumb before the last, which has to
         // be somewhere it can go.
-        for (area, path) in [
-            (Area::Network, "/network/nd-abc"),
-            (Area::Settings, "/updates/v0.9.0"),
+        for (section, path) in [
+            (Section::Nodes, "/nodes/nd-abc"),
+            (Section::Projects, "/projects/db-test/services/orders/logs"),
+            (Section::People, "/people/shown"),
+            (Section::Organisations, "/organisations/t-1/settings/domain"),
         ] {
-            let trail = trail_for(area, path);
+            let trail = trail_for(section, path);
             let parent = &trail[trail.len() - 2];
-            assert!(parent.1.is_some(), "{path} has no way back: {:?}", trail);
+            assert!(parent.1.is_some(), "{path} has no way back: {trail:?}");
         }
 
-        // The rule, over every shape at once: no crumb points at a
-        // collection with nothing after it.
         for path in [
             "/projects/db-test",
             "/projects/db-test/services/orders",
             "/projects/db-test/services/orders/settings",
             "/projects/db-test/databases/new",
-            "/network/nd-abc",
         ] {
-            for (label, href) in trail_for(Area::Projects, path) {
+            for (label, href) in trail_for(Section::Projects, path) {
                 let Some(href) = href else { continue };
                 assert!(
                     !href.ends_with("/services") && !href.ends_with("/databases"),
@@ -992,59 +1315,42 @@ mod tests {
         }
     }
 
-    /// A page at the root of an area shows no trail: one crumb naming
+    /// A page at the root of a section shows no trail: one crumb naming
     /// the page you are looking at is furniture.
     #[test]
-    fn the_root_of_an_area_has_nothing_to_show() {
-        let account = Account {
-            theme: Theme::System,
-            id: "a".into(),
-            username: "someone".into(),
-            tenant_id: None,
-            role: crate::domain::values::roles::NodeRole::Admin,
-            language: crate::domain::values::language::Language::En,
-        };
-        let frame = Frame::new(&account, Area::Projects, &[], None, "/");
-        assert_eq!(frame.trail().len(), 1);
-        assert!(
-            !frame
-                .render(String::new())
-                .render()
-                .into_inner()
-                .contains("class=\"crumbs\""),
-            "the bar is drawn on a page that has nowhere to go back to"
-        );
+    fn the_root_of_a_section_has_nothing_to_show() {
+        for (section, path) in [
+            (Section::Status, "/status"),
+            (Section::Projects, "/projects"),
+            (Section::Nodes, "/nodes"),
+            (Section::People, "/people"),
+        ] {
+            let frame = Frame::new(&operator(), section, path);
+            assert_eq!(frame.trail().len(), 1, "{path}");
+            assert!(
+                !rendered(&frame).contains("class=\"crumbs\""),
+                "{path} draws a bar with nowhere to go back to"
+            );
+        }
     }
 
     /// The bar names its destination once.
     ///
     /// The back control's target is always the crumb beside it — that
     /// is what a parent is — so a control that spelled its destination
-    /// out printed `Projects   Projects / db-test`. Not an edge case:
-    /// every page one level deep. It is an arrow with the name in its
-    /// tooltip now, and this is the test that keeps it one.
+    /// out printed `Projects   Projects / db-test`. It is an arrow with
+    /// the name in its tooltip, and this is the test that keeps it one.
     #[test]
     fn the_way_back_does_not_repeat_the_crumb_it_points_at() {
-        let account = Account {
-            theme: Theme::System,
-            id: "a".into(),
-            username: "someone".into(),
-            tenant_id: None,
-            role: crate::domain::values::roles::NodeRole::Admin,
-            language: crate::domain::values::language::Language::En,
-        };
-        let frame = Frame::new(&account, Area::Projects, &[], None, "/projects/db-test");
-        let html = frame.render(String::new()).render().into_inner();
-
-        let (_, after) = html.split_once(r#"<nav class="crumbs""#).expect("a trail");
-        let (bar, _) = after.split_once("</nav>").expect("it closes");
+        let frame = Frame::new(&operator(), Section::Projects, "/projects/db-test");
+        let html = rendered(&frame);
+        let bar = between(&html, r#"<nav class="crumbs""#, "</nav>");
 
         assert_eq!(
             bar.matches(">Projects<").count(),
             1,
             "the parent is named twice in the bar: {bar}"
         );
-        // The name is still answerable — it moved into the tooltip.
         assert!(bar.contains(r#"title="Back to Projects""#), "{bar}");
         assert!(bar.contains("db-test"), "and the page you are on: {bar}");
     }

@@ -16,7 +16,6 @@ pub fn render<'a>(page: &'a ReleaseView<'a>) -> impl Renderable + 'a {
     let current = page.current;
     rsx! {
         (layout::style_tag())
-        <p class="crumb"><a href="/updates">(t("Updates"))</a></p>
         <h1>(&release.name)</h1>
         <p class="tagline">
             (&release.tag)

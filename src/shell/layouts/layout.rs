@@ -263,22 +263,6 @@ button[data-wabot-state="failed"]:not(.btn-icon)::after {
 
 .narrow { max-width: 30rem; }
 
-.topbar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--sp-4);
-  padding: var(--sp-4) var(--sp-6);
-  background: rgb(var(--c-bg-sunken));
-}
-.brand {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--sp-3);
-  font-weight: 600;
-  color: rgb(var(--c-fg));
-  text-decoration: none;
-}
 .who { color: rgb(var(--c-fg-muted)); font-size: var(--fs-sm); }
 
 /* A control that is only its icon. Square, so it reads as one thing to
@@ -329,10 +313,6 @@ button[data-wabot-state="failed"]:not(.btn-icon)::after {
   .when-light { display: none; }
   .when-dark { display: inline-flex; }
 }
-
-/* The gear beside its word in the top nav. The word stays: an icon
-   alone in a two-item nav is a guess, and there is room for both. */
-.topbar nav a { display: inline-flex; align-items: center; gap: var(--sp-2); }
 
 /* Who is in a project, and what they may do. Two fields and a button,
    each labelled — the row of three bare controls it replaces read as a
@@ -776,6 +756,25 @@ details[open] > summary { margin-bottom: var(--sp-4); }
 @media (max-width: 40rem) {
   .crumbs { flex-wrap: wrap; gap: var(--sp-2); }
 }
+
+/* One thing that needs somebody: what and which on a line, the reason
+   under it. A block of its own on the page's canvas, so two of them are
+   two things without a rule between them. */
+.concern {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  padding: var(--sp-3);
+  border-radius: var(--r-md);
+  background: rgb(var(--c-bg));
+}
+.concern .tile-detail { overflow-wrap: anywhere; }
+
+/* A table wider than the screen scrolls inside its own box. Left to the
+   page, it pushes everything sideways — the fixed bar at the bottom of a
+   phone included. */
+.scroll-x { overflow-x: auto; }
+.scroll-x table { white-space: nowrap; }
 
 .empty {
   padding: var(--sp-10) 0;

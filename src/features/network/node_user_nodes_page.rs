@@ -1,14 +1,16 @@
 use hypertext::prelude::*;
 
 use crate::domain::values::capability::Capability;
+use crate::features::network::node_connections_component::{tunnel_badge, Links};
 use crate::features::network::texts::t;
 use crate::features::network::{node_enrolment_component, node_usage_component};
 use crate::infra::network::token::JoinToken;
 use crate::infra::network::{Authority, Node};
 use crate::shell::layouts::layout;
 
-pub struct Network<'a> {
+pub struct Nodes<'a> {
     pub nodes: &'a [Node],
+    pub links: Links<'a>,
     pub authorities: &'a [Authority],
     /// What each authority was actually agreed to. A row saying only
     /// "takes instructions from" would hide the difference between a
@@ -18,7 +20,7 @@ pub struct Network<'a> {
     pub error: Option<&'a str>,
 }
 
-impl Network<'_> {
+impl Nodes<'_> {
     fn held(&self, node_id: &str) -> &[Capability] {
         self.agreed
             .iter()
@@ -28,10 +30,19 @@ impl Network<'_> {
     }
 }
 
-pub fn render<'a>(page: &'a Network<'a>) -> impl Renderable + 'a {
+pub fn render<'a>(page: &'a Nodes<'a>) -> impl Renderable + 'a {
     rsx! {
         (layout::style_tag())
-        <h1>(t("Network"))</h1>
+        <div class="split">
+            <h1>(t("Nodes"))</h1>
+            // The two things that change what is on this list, beside
+            // it. They were links in the navigation, which is a list of
+            // places — and neither is somewhere anybody stays.
+            <div class="row">
+                <a class="btn btn-secondary" href="/nodes/join">(t("Join a network"))</a>
+                <a class="btn" href="/nodes/invite">(t("Invite a node"))</a>
+            </div>
+        </div>
         <p class="tagline">(t("This node, and the ones that have agreed to take \
              instructions from it."))</p>
         @if let Some(message) = page.error {
@@ -44,7 +55,7 @@ pub fn render<'a>(page: &'a Network<'a>) -> impl Renderable + 'a {
 
         <div class="grid">
             @for node in page.nodes {
-                <a class="card tile" href=(format!("/network/{}", node.id))>
+                <a class="card tile" href=(format!("/nodes/{}", node.id))>
                     <div class="split">
                         <p class="tile-name">(&node.name)</p>
                         @if node.is_self {
@@ -52,13 +63,11 @@ pub fn render<'a>(page: &'a Network<'a>) -> impl Renderable + 'a {
                                 <span class="dot dot-success"></span>(t("Serving"))
                             </span>
                         } @else {
-                            // Not "up": nothing has asked it anything, so
-                            // the only fact here is that it joined. A
-                            // green dot would be this page inventing a
-                            // health check it does not run.
-                            <span class="badge badge-info">
-                                <span class="dot dot-info"></span>(t("Joined"))
-                            </span>
+                            // What the kernel says about the tunnel to
+                            // it, and nothing warmer: a green dot for a
+                            // node nobody has heard from would be this
+                            // page inventing a health check.
+                            (tunnel_badge(page.links.path_to(node)))
                         }
                     </div>
                     <p class="tile-detail">

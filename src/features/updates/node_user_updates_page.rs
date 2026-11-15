@@ -4,9 +4,11 @@ use crate::features::updates::texts::t;
 use crate::infra::update::github::Release;
 use crate::infra::update::notes::{Block, Inline};
 use crate::infra::update::runs::{Run, Status};
+use crate::shell::components::node_header::{node_header, NodePlace};
 use crate::shell::layouts::layout;
 
 pub struct Updates<'a> {
+    pub node: &'a crate::infra::network::Node,
     pub history: &'a [Run],
     pub latest: Option<&'a Run>,
     pub available:
@@ -21,7 +23,7 @@ pub fn render<'a>(page: &'a Updates<'a>) -> impl Renderable + 'a {
     let available = page.available;
     rsx! {
     (layout::style_tag())
-    <h1>(t("Updates"))</h1>
+    (node_header(page.node, NodePlace::Version))
     <p class="tagline">(t("This node installs a release when you ask it to, and never \
          on its own. Installing one restarts the node; the containers \
          on it keep running."))</p>
@@ -127,7 +129,7 @@ pub(crate) fn release_card(
             <div class="split">
                 <div class="stack-sm">
                     <p class="tile-name">
-                        <a href=(format!("/updates/{}", release.tag))>(&release.name)</a>
+                        <a href=(format!("/node/version/{}", release.tag))>(&release.name)</a>
                     </p>
                     <p class="tile-detail">
                         (&release.tag)

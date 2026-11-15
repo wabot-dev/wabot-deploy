@@ -16,6 +16,7 @@ pub mod people_card_component;
 pub mod project_page;
 pub mod project_rest_controller;
 pub mod project_settings_page;
+pub mod project_tabs_component;
 pub mod project_ui_controller;
 pub mod projects_page;
 pub mod remove_project_member_command;

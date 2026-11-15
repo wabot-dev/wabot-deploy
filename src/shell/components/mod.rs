@@ -4,4 +4,6 @@ pub mod allowlist_field;
 pub mod mark;
 pub mod node_capabilities;
 pub mod node_certificate;
+pub mod node_header;
 pub mod node_settings_cards;
+pub mod object_tabs;

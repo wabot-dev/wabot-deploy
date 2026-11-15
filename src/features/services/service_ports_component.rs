@@ -130,7 +130,7 @@ pub fn port_form<'a>(
                                          route one it could not check. The node needs a \
                                          domain before anything can be served over HTTPS."))</p>
                                     @if admin {
-                                        <a class="btn btn-secondary btn-sm" href="/node">(t("Set the node's domain"))</a>
+                                        <a class="btn btn-secondary btn-sm" href="/node/domain">(t("Set the node's domain"))</a>
                                     } @else {
                                         <p class="field-hint">(t("Ask whoever runs this node to set one."))</p>
                                     }

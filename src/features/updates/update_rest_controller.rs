@@ -87,8 +87,11 @@ impl UpdateRestController {
         )
         .await
         {
-            Ok(()) => Ok(crate::shell::auth::see_other("/updates")),
-            Err(reason) => Ok(crate::shell::auth::back_with_error("/updates", &reason)),
+            Ok(()) => Ok(crate::shell::auth::see_other("/node/version")),
+            Err(reason) => Ok(crate::shell::auth::back_with_error(
+                "/node/version",
+                &reason,
+            )),
         }
     }
 
@@ -119,11 +122,16 @@ impl UpdateRestController {
         .await
         {
             Ok(started) => started,
-            Err(reason) => return Ok(crate::shell::auth::back_with_error("/updates", &reason)),
+            Err(reason) => {
+                return Ok(crate::shell::auth::back_with_error(
+                    "/node/version",
+                    &reason,
+                ))
+            }
         };
 
         Ok(crate::shell::auth::see_other(&format!(
-            "/updates?{}",
+            "/node/version?{}",
             crate::shell::auth::encode(
                 "started",
                 &format!(
@@ -153,7 +161,7 @@ mod tests {
 
         let body = console
             .harness
-            .get("/updates")
+            .get("/node/version")
             .header("cookie", &cookie)
             .send()
             .await
@@ -163,7 +171,36 @@ mod tests {
             body.contains(crate::infra::update::VERSION),
             "says what is running"
         );
-        assert!(body.contains("Updates"), "{body}");
+        // Under this machine's own name, as its Version tab: there is no
+        // updates area to be in.
+        assert!(
+            body.contains(r#"<a href="/node/version" class="active""#),
+            "{body}"
+        );
+    }
+
+    /// The updates area is this machine's Version tab, and a link kept
+    /// from before — to the list or to one release's notes — lands there.
+    #[tokio::test]
+    async fn the_old_updates_pages_go_to_the_version_tab() {
+        let console = Console::new().await;
+        let cookie = console.signed_in().await;
+        for (old, now) in [
+            ("/updates", "/node/version"),
+            ("/updates/v0.9.0", "/node/version/v0.9.0"),
+            (
+                "/updates?error=it+was+refused",
+                "/node/version?error=it+was+refused",
+            ),
+        ] {
+            let response = console
+                .harness
+                .get(old)
+                .header("cookie", &cookie)
+                .send()
+                .await;
+            assert_eq!(response.header("location"), Some(now), "{old}");
+        }
     }
 
     #[tokio::test]
@@ -174,7 +211,7 @@ mod tests {
 
         let response = console
             .harness
-            .get("/updates")
+            .get("/node/version")
             .header("cookie", &member)
             .send()
             .await;
@@ -223,7 +260,7 @@ mod tests {
 
         response.assert_status(StatusCode::SEE_OTHER);
         let location = response.header("location").unwrap_or_default();
-        assert!(location.starts_with("/updates?error="), "{location}");
+        assert!(location.starts_with("/node/version?error="), "{location}");
         assert!(runs::latest(&console.database)
             .await
             .expect("read")
@@ -250,7 +287,7 @@ mod tests {
 
         let body = console
             .harness
-            .get("/updates")
+            .get("/node/version")
             .header("cookie", &cookie)
             .send()
             .await

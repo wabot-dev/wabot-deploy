@@ -15,7 +15,7 @@ use crate::infra::accounts::{self, invitations};
 use crate::infra::repositories::access;
 use crate::shell::auth::{signed_in, JoinPage, PageQuery, SessionMiddleware};
 use crate::shell::layouts::layout;
-use crate::shell::layouts::shell::{Area, Frame};
+use crate::shell::layouts::shell::{Frame, Section};
 use crate::shell::state::ConsoleState;
 
 #[injectable]
@@ -58,7 +58,7 @@ impl TenantPeopleUiController {
             .collect();
 
         layout::head("People");
-        let frame = Frame::new(&account, Area::Settings, &projects, None, "/people");
+        let frame = Frame::load(&self.state.database, &account, Section::People, "/people").await;
         let page = crate::features::people::tenant_user_people_page::People {
             people: &people,
             live: &live,

@@ -31,7 +31,7 @@ use wabot::ui::hypertext::IntoView;
 
 use crate::shell::auth::{signed_in, SessionMiddleware};
 use crate::shell::layouts::layout;
-use crate::shell::layouts::shell::{Area, Frame};
+use crate::shell::layouts::shell::{Frame, Section};
 use crate::shell::state::ConsoleState;
 use crate::web::console::revealed_page::{Revealed, What};
 
@@ -66,31 +66,24 @@ impl RevealUiController {
     /// to "where was I", and the arrow's destination is the breadcrumb's
     /// to compute, so `back` is written to agree with it rather than
     /// chosen freely.
-    #[allow(clippy::too_many_arguments)]
     async fn show(
         &self,
         account: &crate::domain::entities::account::Account,
         nonce: Option<&str>,
         here: &str,
         back: &str,
-        area: Area,
-        project: Option<&str>,
+        section: Section,
         what: impl FnOnce() -> WhatKind,
     ) -> UiResult<ViewOutcome> {
-        // Read before the secret is taken: a lookup that failed after it
-        // would spend the only showing on an error page. And read at all,
-        // because the frame drew an empty picker saying there were no
-        // projects, on the page for a token into one of them.
-        let projects =
-            crate::infra::repositories::access::projects_for(&self.state.database, account).await?;
+        // Drawn before the secret is taken: nothing that could go wrong
+        // after it may spend the only showing on an error page.
+        let frame = Frame::load(&self.state.database, account, section, here.to_string()).await;
         let Some(secret) = nonce.and_then(|nonce| self.state.reveals.take(nonce)) else {
             return Ok(Redirect::found(back.to_string()).into());
         };
         let kind = what();
-        let current = project.and_then(|slug| projects.iter().find(|one| one.slug == slug));
 
         layout::head("Shown once");
-        let frame = Frame::new(account, area, &projects, current, here.to_string());
         let page = Revealed {
             what: kind.borrow(),
             secret: &secret,
@@ -127,7 +120,7 @@ impl WhatKind {
 #[ui_controller("/", app)]
 impl RevealUiController {
     /// A token for a node that is not here yet.
-    #[view("/network/invite/shown")]
+    #[view("/nodes/invite/shown")]
     #[middleware(SessionMiddleware)]
     async fn join_token(&self, query: ShownPage) -> UiResult<ViewOutcome> {
         let Some(account) = signed_in(&self.auth) else {
@@ -139,10 +132,9 @@ impl RevealUiController {
         self.show(
             &account,
             query.nonce.as_deref(),
-            "/network/invite/shown",
-            "/network/invite",
-            Area::Network,
-            None,
+            "/nodes/invite/shown",
+            "/nodes/invite",
+            Section::Nodes,
             || WhatKind::JoinToken,
         )
         .await
@@ -170,8 +162,7 @@ impl RevealUiController {
             query.nonce.as_deref(),
             &here,
             &back,
-            Area::Settings,
-            None,
+            Section::Organisations,
             || WhatKind::InvitationInto(tenant.name),
         )
         .await
@@ -189,8 +180,7 @@ impl RevealUiController {
             query.nonce.as_deref(),
             "/people/shown",
             "/people",
-            Area::Settings,
-            None,
+            Section::People,
             || WhatKind::Invitation,
         )
         .await
@@ -213,8 +203,7 @@ impl RevealUiController {
             query.nonce.as_deref(),
             &here,
             &back,
-            Area::Projects,
-            Some(&query.id),
+            Section::Projects,
             || WhatKind::PushToken,
         )
         .await

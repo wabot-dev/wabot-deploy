@@ -67,7 +67,7 @@ pub fn review_card<'a>(
 
                 <div class="actions">
                     <button type="submit">(t("Join"))</button>
-                    <a class="btn btn-ghost" href="/network">(t("Cancel"))</a>
+                    <a class="btn btn-ghost" href="/nodes/join">(t("Cancel"))</a>
                 </div>
             </form>
         </section>

@@ -363,7 +363,7 @@ impl DatabaseRestController {
             )
             .await?
         else {
-            return Ok(see_other("/?error=no+such+service"));
+            return Ok(see_other("/projects?error=no+such+service"));
         };
         let form = match read_form(request).await {
             Ok(form) => form,

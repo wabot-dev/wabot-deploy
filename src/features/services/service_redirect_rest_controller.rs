@@ -26,7 +26,7 @@ impl ServiceRedirectRestController {
     async fn add(&self, request: Request) -> RestResult<Response> {
         let path = request.uri().path().to_string();
         let Some((project, service, _)) = locate_for(&self.state, &self.auth, &path).await? else {
-            return Ok(see_other("/?error=no+such+service"));
+            return Ok(see_other("/projects?error=no+such+service"));
         };
         let Some(account) = signed_in(&self.auth) else {
             return Ok(see_other("/sign-in"));
@@ -85,7 +85,7 @@ impl ServiceRedirectRestController {
     async fn remove(&self, request: Request) -> RestResult<Response> {
         let path = request.uri().path().to_string();
         let Some((project, service, _)) = locate_for(&self.state, &self.auth, &path).await? else {
-            return Ok(see_other("/?error=no+such+service"));
+            return Ok(see_other("/projects?error=no+such+service"));
         };
         let Some(account) = signed_in(&self.auth) else {
             return Ok(see_other("/sign-in"));

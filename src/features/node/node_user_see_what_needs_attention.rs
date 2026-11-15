@@ -219,10 +219,12 @@ async fn certificates_that_would_not_issue(
                 .await
                 .unwrap_or_else(|| "this node".into()),
             why: first_line(&reason),
-            go: "/network".into(),
+            go: "/node/domain".into(),
         });
     }
 
+    let services = crate::infra::repositories::services::all(state.database, None).await?;
+    let projects = crate::infra::repositories::projects::all(state.database).await?;
     for port in crate::infra::repositories::ports::all(state.database).await? {
         let Some(hostname) = &port.hostname else {
             continue;
@@ -236,7 +238,20 @@ async fn certificates_that_would_not_issue(
             what: "A certificate would not issue".into(),
             which: hostname.clone(),
             why: first_line(reason),
-            go: "/network".into(),
+            // The tab the name was typed on, which is where its
+            // certificate is chosen. A name whose service is gone has
+            // only the list to go to.
+            go: services
+                .iter()
+                .find(|service| service.id == port.service_id)
+                .and_then(|service| {
+                    let project = projects.iter().find(|p| p.id == service.project_id)?;
+                    Some(format!(
+                        "/projects/{}/services/{}/settings/network",
+                        project.slug, service.slug
+                    ))
+                })
+                .unwrap_or_else(|| "/projects".into()),
         });
     }
     Ok(())
@@ -271,7 +286,7 @@ async fn errands_that_were_refused(state: &Sources<'_>, concerns: &mut Vec<Conce
             what: "An instruction was refused".into(),
             which: name,
             why: first_line(reason),
-            go: "/network".into(),
+            go: format!("/nodes/{}", record.node_id),
         });
     }
 }
@@ -334,8 +349,8 @@ async fn what_nothing_claims(state: &Sources<'_>, concerns: &mut Vec<ConcernResp
         // reported alongside the false count, and a separate fault from
         // it.
         go: match crate::infra::network::me(state.database).await {
-            Ok(Some(me)) => format!("/network/{}", me.id),
-            _ => "/network".into(),
+            Ok(Some(me)) => format!("/nodes/{}", me.id),
+            _ => "/nodes".into(),
         },
     });
 }
@@ -422,8 +437,8 @@ async fn a_disk_nearly_full(state: &Sources<'_>, concerns: &mut Vec<ConcernRespo
             crate::infra::node::memory::human(disk.total)
         ),
         go: match crate::infra::network::me(state.database).await {
-            Ok(Some(me)) => format!("/network/{}", me.id),
-            _ => "/network".into(),
+            Ok(Some(me)) => format!("/nodes/{}", me.id),
+            _ => "/nodes".into(),
         },
     });
 }
@@ -493,7 +508,7 @@ async fn nodes_this_one_cannot_reach(state: &Sources<'_>, concerns: &mut Vec<Con
 
     for paired in crate::infra::network::tunnel::pair(&me, &nodes, &interface) {
         use crate::infra::network::tunnel::Path;
-        let go = format!("/network/{}", paired.node_id);
+        let go = format!("/nodes/{}/connections", paired.node_id);
         // Written out rather than through a variable: the guard below
         // checks that each of these words appears in this file as a
         // literal, which is what stops a wording drifting away from its
@@ -526,7 +541,7 @@ async fn nodes_this_one_cannot_reach(state: &Sources<'_>, concerns: &mut Vec<Con
             what: "Two nodes claim one address".into(),
             which: String::new(),
             why: said,
-            go: "/network".into(),
+            go: "/nodes".into(),
         });
     }
 }
@@ -601,7 +616,7 @@ mod tests {
                 what: "Storage nothing claims".into(),
                 which: "3".into(),
                 why: String::new(),
-                go: "/network".into(),
+                go: "/nodes".into(),
             },
             ConcernResponse {
                 weight: Weight::Wrong,
