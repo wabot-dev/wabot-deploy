@@ -18,7 +18,7 @@
 
 use std::net::SocketAddr;
 
-use hyper::header::{HeaderValue, CONNECTION, HOST, UPGRADE};
+use hyper::header::{HeaderValue, CONNECTION, COOKIE, HOST, UPGRADE};
 use hyper::{Request, Response, StatusCode};
 use hyper_util::client::legacy::connect::HttpConnector;
 use hyper_util::client::legacy::Client;
@@ -214,6 +214,12 @@ fn rewrite(upstream: SocketAddr, request: Request<Body>) -> Option<Request<Body>
     parts.version = hyper::Version::HTTP_11;
 
     strip_hop_by_hop(&mut parts.headers);
+    // HTTP/2 lets a browser send one `cookie` field per cookie, and Safari
+    // does. HTTP/1.1 allows a single `Cookie` line: sent as several, the
+    // server joins them with ", " like any repeated header, and the
+    // application reads one cookie that swallowed the rest. RFC 9113
+    // §8.2.3 says the joining is ours to do, with "; ".
+    merge_cookie_fields(&mut parts.headers);
     // The client's own authority reaches the container, whichever
     // protocol it arrived by.
     //
@@ -346,6 +352,23 @@ fn strip_hop_by_hop(headers: &mut hyper::HeaderMap) {
     }
     for name in listed {
         headers.remove(name.as_str());
+    }
+}
+
+fn merge_cookie_fields(headers: &mut hyper::HeaderMap) {
+    let joined = {
+        let fields: Vec<&[u8]> = headers
+            .get_all(COOKIE)
+            .iter()
+            .map(HeaderValue::as_bytes)
+            .collect();
+        if fields.len() < 2 {
+            return;
+        }
+        fields.join(&b"; "[..])
+    };
+    if let Ok(value) = HeaderValue::from_bytes(&joined) {
+        headers.insert(COOKIE, value);
     }
 }
 
@@ -552,6 +575,37 @@ mod tests {
             rewritten.headers().get("x-forwarded-host").unwrap(),
             "example.com"
         );
+    }
+
+    /// Cookies that arrived as separate HTTP/2 fields leave as one line.
+    ///
+    /// Safari sends each cookie in its own `cookie` field. Forwarded as
+    /// they were, the container got three `Cookie:` lines, Puma joined them
+    /// with ", ", and Rack — which splits only on ";" — read a single `_ga`
+    /// cookie with the session glued to its value. Every form on the
+    /// application failed its CSRF check, and only from Safari. Reported by
+    /// Jorge, on Nubo.
+    #[test]
+    fn cookies_sent_as_separate_http2_fields_reach_the_upstream_as_one() {
+        let upstream = SocketAddr::from(([127, 0, 0, 1], 8080));
+        let mut request = request(&[
+            ("cookie", "_ga=GA1.1"),
+            ("cookie", "_ga_X=GS1.1"),
+            ("cookie", "_nubo_session=abc"),
+        ]);
+        *request.version_mut() = hyper::Version::HTTP_2;
+
+        let rewritten = rewrite(upstream, request).expect("rewrite");
+        let fields: Vec<_> = rewritten.headers().get_all(COOKIE).iter().collect();
+        assert_eq!(fields, ["_ga=GA1.1; _ga_X=GS1.1; _nubo_session=abc"]);
+    }
+
+    #[test]
+    fn a_single_cookie_field_reaches_the_upstream_untouched() {
+        let upstream = SocketAddr::from(([127, 0, 0, 1], 8080));
+        let rewritten = rewrite(upstream, request(&[("cookie", "a=1; b=2")])).expect("rewrite");
+        let fields: Vec<_> = rewritten.headers().get_all(COOKIE).iter().collect();
+        assert_eq!(fields, ["a=1; b=2"]);
     }
 
     /// And with neither, the address being dialled is all there is.

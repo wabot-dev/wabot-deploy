@@ -113,12 +113,19 @@ pub async fn revoke(database: &SqliteDatabase, token: &str) -> AccountResult<()>
 /// Hand-parsed because pulling a cookie crate for one header is a
 /// dependency for a `split`. Cookies are `a=1; b=2`, and a value can
 /// contain `=` — so the split is on the *first* one only.
+///
+/// Every `cookie` field is read, not the first: over HTTP/2 a browser may
+/// send one field per cookie, and the console is served over HTTP/2.
 pub fn from_headers(headers: &HeaderMap) -> Option<String> {
-    let header = headers.get(COOKIE)?.to_str().ok()?;
-    header.split(';').find_map(|pair| {
-        let (name, value) = pair.trim().split_once('=')?;
-        (name == COOKIE_NAME).then(|| value.to_string())
-    })
+    headers
+        .get_all(COOKIE)
+        .iter()
+        .filter_map(|field| field.to_str().ok())
+        .flat_map(|field| field.split(';'))
+        .find_map(|pair| {
+            let (name, value) = pair.trim().split_once('=')?;
+            (name == COOKIE_NAME).then(|| value.to_string())
+        })
 }
 
 /// The `Set-Cookie` that starts a session.
@@ -232,6 +239,20 @@ mod tests {
         absent.insert(COOKIE, "theme=dark".parse().unwrap());
         assert_eq!(from_headers(&absent), None);
         assert_eq!(from_headers(&HeaderMap::new()), None);
+    }
+
+    /// Safari over HTTP/2 sends each cookie in a field of its own, and
+    /// the session was only looked for in the first. The edge proxy had
+    /// the same fault and it broke every form on Nubo; here it waits for a
+    /// second cookie on the console's host — one set with `Domain=` by a
+    /// sibling site is enough — and then signs the operator out on every
+    /// request.
+    #[test]
+    fn the_cookie_is_found_in_any_of_several_fields() {
+        let mut headers = HeaderMap::new();
+        headers.append(COOKIE, "_ga=GA1.1".parse().unwrap());
+        headers.append(COOKIE, format!("{COOKIE_NAME}=abc123").parse().unwrap());
+        assert_eq!(from_headers(&headers), Some("abc123".to_string()));
     }
 
     /// A base64-ish token can contain `=`, so splitting on every one
