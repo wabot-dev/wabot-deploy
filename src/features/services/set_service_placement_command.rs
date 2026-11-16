@@ -403,6 +403,9 @@ async fn dispatch(
     // more, and it is the one that most needs telling.
     let mut continue_managed = false;
     let touched_all = touched.clone();
+    // The digest, not the tag: a node pulls a tag once, and what it
+    // pulled stays what that name means there — see `Deployer::deploy`.
+    let released = deployer.released(service).await;
     for node_id in touched {
         // Every slot that node holds, in the service's numbering:
         // a node running two copies is told about both in one
@@ -435,7 +438,7 @@ async fn dispatch(
             continue_managed = true;
             continue;
         }
-        if let Err(error) = send_there(database, project, service, &node_id, by, slots).await {
+        if let Err(error) = send_there(database, project, &released, &node_id, by, slots).await {
             // Reported and not fatal: the other placements are
             // still worth making, and the page shows a replica
             // nobody has answered for.

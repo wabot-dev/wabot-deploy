@@ -2524,6 +2524,60 @@ mod tests {
         );
     }
 
+    /// A copy placed on another node is sent the release it should run,
+    /// not the tag the service watches: a node pulls a tag once, and that
+    /// picture is what the name means there from then on.
+    #[tokio::test]
+    async fn a_copy_placed_elsewhere_is_sent_the_current_releases_digest() {
+        let console = Console::new().await;
+        let cookie = console.signed_in().await;
+        let service = placed_service(&console, &cookie).await;
+        services::set_image(
+            &console.database,
+            &service.id,
+            "hub.example.com/shared/web:latest",
+        )
+        .await
+        .expect("watching a tag");
+        let release = crate::infra::repositories::releases::record(
+            &console.database,
+            &service.id,
+            "hub.example.com/shared/web:latest",
+            "sha256:current",
+            crate::domain::entities::release::Source::Push,
+        )
+        .await
+        .expect("pushed");
+        crate::infra::repositories::releases::mark_deployed(&console.database, &release.id)
+            .await
+            .expect("deployed");
+        a_node_elsewhere(&console).await;
+
+        console
+            .harness
+            .post("/projects/shared/services/web/placement")
+            .header("cookie", &cookie)
+            .form(&[("replicas", "1"), ("slot-1", "nd-elsewhere1")])
+            .send()
+            .await
+            .assert_status(StatusCode::SEE_OTHER);
+
+        let waiting = crate::infra::network::errand::waiting(&console.database, "nd-elsewhere1")
+            .await
+            .expect("waiting");
+        let images: Vec<_> = waiting
+            .iter()
+            .filter_map(|errand| errand.payload["image"].as_str())
+            .collect();
+        assert!(!images.is_empty(), "the node was told nothing");
+        assert!(
+            images
+                .iter()
+                .all(|image| *image == "hub.example.com/shared/web@sha256:current"),
+            "{images:?}"
+        );
+    }
+
     async fn a_node_elsewhere(console: &Console) {
         crate::infra::network::save(
             &console.database,

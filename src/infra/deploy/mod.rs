@@ -697,6 +697,18 @@ impl Deployer {
             return Ok(None);
         }
 
+        // **A deployment nobody chose a release for runs the current one,
+        // never what the tag says now.** The tag moves with every push,
+        // including one nobody deployed, and a restart reads the release:
+        // so a deploy by tag ran one image and the next boot brought back
+        // another. Worse on a node holding a copy: it was told the tag, and
+        // `images::ensure` pulls nothing for a name it already has, so it
+        // ran whatever it had first pulled under it. node-0 told node-l1
+        // `nubo-testing:latest` on every start, and the copy came up older
+        // than the release node-0 was on (Jorge, 2026-11-16).
+        let released = self.released(service).await;
+        let service = &released;
+
         let mine = self.mine(service).await?;
         let Some(first) = mine.first().cloned() else {
             services::set_desired_state(&self.database, &service.id, DesiredState::Running).await?;
@@ -1279,25 +1291,26 @@ impl Deployer {
     }
 
     /// Bring a service back to what it was running.
-    ///
-    /// Its release when it has one, and its image reference only when
-    /// it does not. The difference matters the moment a tag moves: a
-    /// restart that resolved the tag again would quietly bring in
-    /// whatever was pushed since, which is exactly what a release
-    /// exists to prevent.
     async fn restore(&self, project: &Project, service: &Service) -> bool {
-        let current = releases::of_service(&self.database, &service.id)
-            .await
-            .unwrap_or_default()
-            .into_iter()
-            .find(|release| release.deployed_at.is_some());
+        self.deploy(project, service, None).await.is_ok()
+    }
 
-        match current {
-            Some(release) => {
-                self.deploy_release(service, &release, None).await;
-                true
-            }
-            None => self.deploy(project, service, None).await.is_ok(),
+    /// The service pointed at its current release, when it has one.
+    ///
+    /// What every door that runs or describes a service without naming a
+    /// release asks: a deployment, a restart, and the instruction another
+    /// node runs a copy from. The row's `image` keeps naming the tag it
+    /// watches, because that is what the next push is matched against.
+    pub async fn released(&self, service: &Service) -> Service {
+        let releases = releases::of_service(&self.database, &service.id)
+            .await
+            .unwrap_or_default();
+        match Release::current(&releases, &service.image) {
+            Some(release) => Service {
+                image: release.pinned(),
+                ..service.clone()
+            },
+            None => service.clone(),
         }
     }
 
@@ -2480,17 +2493,7 @@ impl Deployer {
     /// One copy, from the image its service last deployed, and what a
     /// deployment does after it: the routes, and where the standbys dial.
     async fn restart_copy(&self, project: &Project, service: &Service, replica: &Replica) -> bool {
-        let image = releases::of_service(&self.database, &service.id)
-            .await
-            .unwrap_or_default()
-            .into_iter()
-            .find(|release| release.deployed_at.is_some())
-            .map(|release| release.pinned())
-            .unwrap_or_else(|| service.image.clone());
-        let pinned = Service {
-            image,
-            ..service.clone()
-        };
+        let pinned = self.released(service).await;
         let outcome = {
             use wabot::async_jobs::Locker;
             let _held = deploy_lock().acquire(&service.id).await;
@@ -3144,6 +3147,11 @@ impl Deployer {
         if service.kind.is_managed() || !service.is_ours() {
             return;
         }
+        // A digest, whoever called. The boot's reconcile and a stop hand
+        // over the row, which names a tag, and a node told a tag runs
+        // whatever it first pulled under that name.
+        let released = self.released(service).await;
+        let service = &released;
         let Some(registry) =
             crate::domain::values::image_reference::ImageReference::parse(&service.image)
                 .ok()
@@ -5652,6 +5660,94 @@ mod tests {
             waiting[0].payload["slots"],
             serde_json::json!([1]),
             "stopped, and still placed there — `slots: []` would delete it"
+        );
+    }
+
+    async fn pushed_twice(database: &SqliteDatabase, service: &Service) {
+        services::set_image(database, &service.id, "registry.example/web:latest")
+            .await
+            .expect("watching a tag");
+        let older = releases::record(
+            database,
+            &service.id,
+            "registry.example/web:latest",
+            "sha256:older",
+            crate::domain::entities::release::Source::Push,
+        )
+        .await
+        .expect("first push");
+        releases::mark_deployed(database, &older.id)
+            .await
+            .expect("deployed");
+        releases::record(
+            database,
+            &service.id,
+            "registry.example/web:latest",
+            "sha256:newer",
+            crate::domain::entities::release::Source::Push,
+        )
+        .await
+        .expect("a second push nobody deployed");
+    }
+
+    async fn image_told_to_far(database: &SqliteDatabase) -> Vec<String> {
+        crate::infra::network::errand::waiting(database, "nd-far")
+            .await
+            .expect("errands")
+            .into_iter()
+            .map(|errand| errand.payload["image"].as_str().unwrap_or("").to_string())
+            .collect()
+    }
+
+    /// A node holding a copy is told the release, not the tag, when the
+    /// owner boots.
+    ///
+    /// The boot's reconcile handed the row to `tell_holders`, so node-0
+    /// told node-l1 `nubo-testing:latest` every time it started. node-l1
+    /// pulls nothing for a name it already has, and the copy came up older
+    /// than the release node-0 was on (Jorge, 2026-11-16).
+    #[tokio::test]
+    async fn a_node_holding_a_copy_is_told_the_releases_digest_when_the_owner_boots() {
+        let (database, _, service) = placed_elsewhere().await;
+        pushed_twice(&database, &service).await;
+        let deployer = Deployer::new(
+            std::sync::Arc::new(database.clone()),
+            &crate::infra::config::Config::default(),
+        );
+
+        deployer.reconcile().await.expect("reconciled");
+
+        assert_eq!(
+            image_told_to_far(&database).await,
+            ["registry.example/web@sha256:older"]
+        );
+    }
+
+    /// Deploy with no release named runs the current release, not what the
+    /// tag points at since.
+    ///
+    /// With auto-deploy off a push moves the tag and records a release
+    /// nobody deployed. Deploy used to run the tag, mark nothing, and the
+    /// next restart brought the marked release back: two images, depending
+    /// on which door had been used last.
+    #[tokio::test]
+    async fn deploy_with_no_release_named_runs_the_current_release_not_the_newest_push() {
+        let (database, project, service) = placed_elsewhere().await;
+        pushed_twice(&database, &service).await;
+        let row = services::find(&database, &service.id)
+            .await
+            .expect("query")
+            .expect("there");
+        let deployer = Deployer::new(
+            std::sync::Arc::new(database.clone()),
+            &crate::infra::config::Config::default(),
+        );
+
+        deployer.deploy(&project, &row, None).await.expect("told");
+
+        assert_eq!(
+            image_told_to_far(&database).await,
+            ["registry.example/web@sha256:older"]
         );
     }
 
