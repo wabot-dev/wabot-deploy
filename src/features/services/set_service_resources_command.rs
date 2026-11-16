@@ -44,6 +44,11 @@ impl SetServiceResources<'_> {
                          size it takes",
                         presets::label(engine.floor())
                     ),
+                    Engine::Valkey => format!(
+                        "{} is the smallest size Valkey takes: an idle server and the room its \
+                         writes need take most of anything less",
+                        presets::label(engine.floor())
+                    ),
                     _ => format!(
                         "{} is the smallest size PostgreSQL takes: in less, the kernel can kill \
                          initdb before it finishes, and a database is not given a size it could \

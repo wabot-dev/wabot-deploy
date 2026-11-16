@@ -103,6 +103,15 @@ pub struct ContainerRequest {
     /// `None` is what every container had until there were presets: no
     /// ceiling, and one process can take the machine.
     pub memory_limit: Option<u64>,
+    /// Where the kernel starts reclaiming and slowing the container down,
+    /// below `memory_limit`.
+    ///
+    /// Dirty page cache counts against the ceiling and cannot be dropped
+    /// until it is written back. A Valkey store taking a burst of writes
+    /// was killed with a third of its memory in dirty AOF pages that nothing
+    /// had started writing; with this below the ceiling the kernel throttled
+    /// the writer instead, at every size measured.
+    pub memory_high: Option<u64>,
     /// The most CPU this container may have, in **millicores** — a
     /// thousand is one core, and 2500 is two and a half.
     ///
@@ -177,7 +186,11 @@ pub fn build(image: &ImageConfig, request: &ContainerRequest) -> SpecResult<Spec
         .masked_paths(masked_paths())
         .readonly_paths(readonly_paths());
     if request.memory_limit.is_some() || request.cpu_millicores.is_some() {
-        linux = linux.resources(resources(request.memory_limit, request.cpu_millicores)?);
+        linux = linux.resources(resources(
+            request.memory_limit,
+            request.memory_high,
+            request.cpu_millicores,
+        )?);
     }
     let linux = linux
         .build()
@@ -287,6 +300,7 @@ pub const DEFAULT_SHM: u64 = 64 * 1024 * 1024;
 /// the first is invisible until everything on the node is slow.
 fn resources(
     memory_limit: Option<u64>,
+    memory_high: Option<u64>,
     cpu_millicores: Option<u32>,
 ) -> SpecResult<oci_spec::runtime::LinuxResources> {
     let mut resources = LinuxResourcesBuilder::default();
@@ -302,6 +316,13 @@ fn resources(
                 .build()
                 .map_err(|error| SpecError::Build(error.to_string()))?,
         );
+        // cgroup v2 only, which `preflight` refuses to install without.
+        if let Some(high) = memory_high.filter(|high| (*high as i64) < limit) {
+            resources = resources.unified(std::collections::HashMap::from([(
+                "memory.high".to_string(),
+                high.to_string(),
+            )]));
+        }
     }
 
     if let Some(millicores) = cpu_millicores.filter(|millicores| *millicores > 0) {
@@ -998,6 +1019,33 @@ mod tests {
             Some(134_217_728),
             "memory + swap equal to memory is what no swap means"
         );
+    }
+
+    #[test]
+    fn the_kernel_pushes_back_below_the_ceiling_and_never_above_it() {
+        let unified = |memory_high| {
+            build(
+                &nginx(),
+                &ContainerRequest {
+                    memory_limit: Some(128 * 1024 * 1024),
+                    memory_high,
+                    ..Default::default()
+                },
+            )
+            .expect("spec")
+            .linux()
+            .as_ref()
+            .and_then(|linux| linux.resources().clone())
+            .and_then(|resources| resources.unified().clone())
+        };
+        assert_eq!(
+            unified(Some(112 * 1024 * 1024))
+                .and_then(|unified| unified.get("memory.high").cloned())
+                .as_deref(),
+            Some("117440512")
+        );
+        assert_eq!(unified(Some(128 * 1024 * 1024)), None);
+        assert_eq!(unified(None), None);
     }
 
     /// No preset is still the old behaviour, deliberately: every

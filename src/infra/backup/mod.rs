@@ -874,6 +874,12 @@ pub async fn restore_one(
     else {
         return Err(NotRestored::NoSuchDatabase(service_slug.to_string()));
     };
+    if !row.mode.keeps_data() {
+        return Err(NotRestored::Refused(format!(
+            "{} is a cache: it keeps nothing, so no backup holds it",
+            source.slug
+        )));
+    }
 
     // Which backup can reach that moment. Anything else is a restore
     // that lands somewhere the operator did not ask for — see
@@ -1368,6 +1374,14 @@ async fn back_up_engines(
         };
         let container = format!("{}.{}", project.slug, service.slug);
         let destination = into.join("volumes").join(&container);
+        if let Ok(Some(row)) =
+            crate::infra::repositories::databases::of_service(database, &service.id).await
+        {
+            if !row.mode.keeps_data() {
+                println!("  database    {container} — a cache, which keeps nothing to copy");
+                continue;
+            }
+        }
 
         match deployer
             .back_up_engine(project, service, &destination)

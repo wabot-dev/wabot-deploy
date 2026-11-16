@@ -3,7 +3,7 @@
 
 use wabot::sqlite::SqliteDatabase;
 
-use crate::domain::entities::database::{Database, Engine};
+use crate::domain::entities::database::{Database, Engine, Mode};
 use crate::domain::entities::service::Service;
 use crate::domain::errors::{PlatformError, PlatformResult};
 use crate::domain::policies::presets;
@@ -20,6 +20,7 @@ pub struct CreateDatabase<'a> {
     pub project_id: &'a str,
     pub name: &'a str,
     pub engine: Engine,
+    pub mode: Mode,
     pub version: &'a str,
     pub memory_limit: u64,
     pub image: Option<&'a str>,
@@ -44,6 +45,12 @@ impl CreateDatabase<'_> {
                 self.version
             )));
         }
+        if self.mode == Mode::Cache && engine != Engine::Valkey {
+            return Err(PlatformError::Refused(format!(
+                "{} keeps what it holds; only Valkey can be made as a cache",
+                engine.label()
+            )));
+        }
         if !presets::LADDER.contains(&self.memory_limit) {
             return Err(PlatformError::Refused(
                 "that is not one of the sizes on offer".into(),
@@ -54,6 +61,12 @@ impl CreateDatabase<'_> {
                 Engine::Mysql => format!(
                     "MySQL is not started in {}: the kernel kills it while it is still \
                      initialising, however it is tuned — choose {} or more",
+                    presets::label(self.memory_limit),
+                    presets::label(engine.floor())
+                ),
+                Engine::Valkey => format!(
+                    "Valkey is not started in {}: an idle server and the room its writes \
+                     need take most of it — choose {} or more",
                     presets::label(self.memory_limit),
                     presets::label(engine.floor())
                 ),
@@ -99,6 +112,19 @@ impl CreateDatabase<'_> {
                     row.name
                 )));
             }
+            if engine == Engine::Valkey
+                && !crate::infra::network::errand::knows_valkey(row.version.as_deref())
+            {
+                return Err(PlatformError::Refused(format!(
+                    "{} runs {}, which does not know Valkey — it would refuse the database \
+                     and it would wait there for ever. Update it to {} or later first",
+                    row.name,
+                    row.version
+                        .as_deref()
+                        .unwrap_or("a version it has not reported"),
+                    crate::infra::network::errand::VALKEY_SINCE
+                )));
+            }
         }
 
         let service = crate::infra::repositories::services::create_on(
@@ -126,13 +152,15 @@ impl CreateDatabase<'_> {
 
         // The volume is what makes it a database rather than a container
         // that forgets. Nothing else on the node declares one yet.
-        crate::infra::repositories::volumes::create(
-            database,
-            &service.id,
-            crate::domain::policies::postgres::VOLUME,
-            engine.data_mount(),
-        )
-        .await?;
+        if self.mode.keeps_data() {
+            crate::infra::repositories::volumes::create(
+                database,
+                &service.id,
+                crate::domain::policies::postgres::VOLUME,
+                engine.data_mount(),
+            )
+            .await?;
+        }
 
         // Declared and not published: the node has to know what the
         // container listens on to bind anything for it — an overlay port
@@ -152,6 +180,7 @@ impl CreateDatabase<'_> {
         let row = Database {
             service_id: service.id.clone(),
             engine,
+            mode: self.mode,
             version: self.version.to_string(),
             admin_user: identifier.clone(),
             admin_password: wabot::prelude::password::generate(24),
@@ -182,8 +211,8 @@ impl CreateDatabase<'_> {
                     "INSERT INTO database \
                        (\"service_id\", \"engine\", \"version\", \"admin_user\", \
                         \"admin_password\", \"database_name\", \"replication_user\", \
-                        \"replication_password\", \"primary_slot\", \"created_at\") \
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                        \"replication_password\", \"primary_slot\", \"created_at\", \"mode\") \
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
                     (
                         stored.service_id,
                         stored.engine.as_str(),
@@ -195,6 +224,7 @@ impl CreateDatabase<'_> {
                         stored.replication_password,
                         stored.primary_slot,
                         now_ms(),
+                        stored.mode.as_str(),
                     ),
                 )?;
                 Ok(())
@@ -227,10 +257,146 @@ impl CreateDatabase<'_> {
         tracing::info!(
             service = %service.slug,
             engine = engine.as_str(),
+            mode = self.mode.as_str(),
             version = self.version,
             limit = presets::label(self.memory_limit),
             "created a database"
         );
         Ok((service, row))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    async fn far_node(database: &SqliteDatabase, version: Option<&str>) {
+        crate::infra::network::ensure_self(database, &crate::infra::config::Config::default())
+            .await
+            .expect("self");
+        crate::infra::network::save(
+            database,
+            &crate::infra::network::Node {
+                update_note: None,
+                version: version.map(str::to_string),
+                wanted_version: None,
+                usage: None,
+                draining_at: None,
+                capacity: None,
+                id: "nd-far".into(),
+                name: "far.example".into(),
+                kind: crate::infra::network::Kind::Private,
+                overlay_ip: Some("10.42.0.9".into()),
+                public_key: None,
+                endpoint: None,
+                allows: vec![crate::domain::values::capability::Capability::Store],
+                last_seen_at: None,
+                is_self: false,
+                ca_pem: None,
+            },
+        )
+        .await
+        .expect("node");
+    }
+
+    fn valkey<'a>(project_id: &'a str, mode: Mode, on: Option<&'a str>) -> CreateDatabase<'a> {
+        CreateDatabase {
+            project_id,
+            name: "sessions",
+            engine: Engine::Valkey,
+            mode,
+            version: "9.1",
+            memory_limit: 64 * 1024 * 1024,
+            image: None,
+            on,
+        }
+    }
+
+    /// A node older than the engine reads the row as one it does not know,
+    /// so the copy would be sent, refused there, and wait for ever on a
+    /// page that says it was placed.
+    #[tokio::test]
+    async fn valkey_is_not_placed_on_a_node_that_does_not_know_it() {
+        let database = crate::infra::db::open_in_memory().await.expect("open");
+        let project = crate::infra::repositories::projects::create(&database, "shop")
+            .await
+            .expect("project");
+
+        for version in [None, Some("0.36.2")] {
+            far_node(&database, version).await;
+            let refused = valkey(&project.id, Mode::Store, Some("nd-far"))
+                .run(&database)
+                .await
+                .expect_err("too old")
+                .to_string();
+            assert!(
+                refused.contains(crate::infra::network::errand::VALKEY_SINCE),
+                "{refused}"
+            );
+        }
+
+        far_node(&database, Some(crate::infra::network::errand::VALKEY_SINCE)).await;
+        valkey(&project.id, Mode::Store, Some("nd-far"))
+            .run(&database)
+            .await
+            .expect("a node that knows it");
+    }
+
+    #[tokio::test]
+    async fn a_cache_is_made_with_nothing_to_keep_data_in_and_a_store_with_a_volume() {
+        let database = crate::infra::db::open_in_memory().await.expect("open");
+        let project = crate::infra::repositories::projects::create(&database, "shop")
+            .await
+            .expect("project");
+
+        let (cache, row) = valkey(&project.id, Mode::Cache, None)
+            .run(&database)
+            .await
+            .expect("a cache");
+        assert_eq!(row.mode, Mode::Cache);
+        assert!(
+            crate::infra::repositories::volumes::of_service(&database, &cache.id)
+                .await
+                .expect("volumes")
+                .is_empty()
+        );
+        let read = crate::infra::repositories::databases::of_service(&database, &cache.id)
+            .await
+            .expect("query")
+            .expect("row");
+        assert_eq!(read.mode, Mode::Cache, "and it reads back as one");
+
+        let (store, _) = CreateDatabase {
+            name: "queue",
+            ..valkey(&project.id, Mode::Store, None)
+        }
+        .run(&database)
+        .await
+        .expect("a store");
+        assert_eq!(
+            crate::infra::repositories::volumes::of_service(&database, &store.id)
+                .await
+                .expect("volumes")
+                .len(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn only_valkey_can_be_a_cache() {
+        let database = crate::infra::db::open_in_memory().await.expect("open");
+        let project = crate::infra::repositories::projects::create(&database, "shop")
+            .await
+            .expect("project");
+        let refused = CreateDatabase {
+            engine: Engine::Postgres,
+            version: "17",
+            memory_limit: 256 * 1024 * 1024,
+            ..valkey(&project.id, Mode::Cache, None)
+        }
+        .run(&database)
+        .await
+        .expect_err("a postgres that forgets");
+        assert!(refused.to_string().contains("only Valkey"), "{refused}");
     }
 }

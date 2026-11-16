@@ -41,15 +41,23 @@ async fn load(
     from: &Path,
 ) -> Result<String, String> {
     let (project, service) = find(rows, named, true).await?;
+    let deployer = crate::infra::deploy::Deployer::new(Arc::new(rows.clone()), config);
+    if service.kind == crate::domain::entities::service::Kind::Valkey {
+        println!(
+            "placing {} for {}/{}…",
+            from.display(),
+            project.slug,
+            service.slug
+        );
+        return deployer.place_valkey_dump(&project, &service, from).await;
+    }
     println!(
         "loading {} into {}/{}…",
         from.display(),
         project.slug,
         service.slug
     );
-    let tables = crate::infra::deploy::Deployer::new(Arc::new(rows.clone()), config)
-        .import_dump(&project, &service, from)
-        .await?;
+    let tables = deployer.import_dump(&project, &service, from).await?;
     Ok(format!(
         "loaded: {}/{} holds {tables} table(s)",
         project.slug, service.slug
@@ -198,6 +206,7 @@ mod tests {
             memory_limit: 256 * 1024 * 1024,
             image: None,
             on: None,
+            mode: crate::domain::entities::database::Mode::Store,
         }
         .run(rows)
         .await

@@ -285,6 +285,7 @@ impl DatabaseRestController {
             engine: engine.to_string(),
             version: field(&form, &format!("{engine}_version")).to_string(),
             memory: field(&form, &format!("{engine}_memory")).to_string(),
+            mode: field(&form, &format!("{engine}_mode")).to_string(),
             image: match field(&form, "custom_image") {
                 "" => None,
                 _ => Some(field(&form, "image").to_string()),
@@ -471,6 +472,7 @@ mod tests {
             memory_limit: 256 * 1024 * 1024,
             image: None,
             on: None,
+            mode: crate::domain::entities::database::Mode::Store,
         }
         .run(&database)
         .await
@@ -565,6 +567,7 @@ mod tests {
             memory_limit: 256 * 1024 * 1024,
             image: None,
             on: None,
+            mode: crate::domain::entities::database::Mode::Store,
         }
         .run(&database)
         .await
@@ -652,6 +655,7 @@ mod tests {
             memory_limit: 256 * 1024 * 1024,
             image: None,
             on: None,
+            mode: crate::domain::entities::database::Mode::Store,
         }
         .run(&database)
         .await
@@ -1007,6 +1011,7 @@ mod tests {
             memory_limit: 128 * 1024 * 1024,
             image: None,
             on: None,
+            mode: crate::domain::entities::database::Mode::Store,
         }
         .run(&console.database)
         .await
@@ -1067,6 +1072,7 @@ mod tests {
             memory_limit: 256 * 1024 * 1024,
             image: None,
             on: None,
+            mode: crate::domain::entities::database::Mode::Store,
         }
         .run(&console.database)
         .await
@@ -1217,6 +1223,7 @@ mod tests {
             memory_limit: 256 * 1024 * 1024,
             image: None,
             on: None,
+            mode: crate::domain::entities::database::Mode::Store,
         }
         .run(&console.database)
         .await
@@ -1354,6 +1361,7 @@ mod tests {
             memory_limit: 256 * 1024 * 1024,
             image: None,
             on: None,
+            mode: crate::domain::entities::database::Mode::Store,
         }
         .run(&console.database)
         .await

@@ -18,7 +18,7 @@ use std::path::{Path, PathBuf};
 use crate::domain::entities::database::{Database, Engine};
 
 use crate::domain::policies::presets;
-use crate::domain::policies::{mysql, postgres};
+use crate::domain::policies::{mysql, postgres, valkey};
 use crate::infra::runtime::spec::BindMount;
 
 /// Everything the deploy path adds to the request for this copy.
@@ -47,6 +47,7 @@ pub struct Preparation {
     /// The version the row was made as, which the image is asked to
     /// agree with before anything is started from it.
     pub version: String,
+    pub memory_high: Option<u64>,
 }
 
 /// What this copy is, as the rows describe it.
@@ -124,8 +125,146 @@ impl Plan<'_> {
 pub fn prepare(plan: &Plan<'_>) -> std::io::Result<Preparation> {
     match plan.database.engine {
         Engine::Mysql => prepare_mysql(plan),
+        Engine::Valkey => prepare_valkey(plan),
         Engine::Postgres | Engine::Unknown => prepare_postgres(plan),
     }
+}
+
+fn prepare_valkey(plan: &Plan<'_>) -> std::io::Result<Preparation> {
+    let conf = config_dir(plan.data_dir, plan.container_id);
+    std::fs::create_dir_all(&conf)?;
+    std::fs::write(
+        conf.join(valkey::CONFIG_FILE),
+        valkey::config(plan.database.mode, plan.limit(), postgres::CONFIG_MOUNT),
+    )?;
+    std::fs::write(
+        conf.join(valkey::ACL_FILE),
+        valkey::acl(
+            &plan.database.admin_user,
+            &plan.database.admin_password,
+            &plan.database.replication_user,
+            &plan.database.replication_password,
+        ),
+    )?;
+
+    let volume = valkey_volume(plan.data_dir, plan.container_id);
+    let mut mounts = vec![BindMount {
+        source: conf,
+        destination: postgres::CONFIG_MOUNT.to_string(),
+        read_only: true,
+    }];
+    // A cache has no volume to keep data in, and its certificate is still
+    // written where a volume would be: mounted for that alone, and it writes
+    // nothing beside it.
+    if !plan.database.mode.keeps_data() {
+        std::fs::create_dir_all(&volume)?;
+        mounts.push(BindMount {
+            source: volume.clone(),
+            destination: valkey::DATA_MOUNT.to_string(),
+            read_only: false,
+        });
+    }
+
+    if plan.database.mode.keeps_data() {
+        let pending = volume.join(valkey::PENDING_IMPORT);
+        if pending.exists() {
+            seed_valkey(&volume, &pending)?;
+            std::fs::remove_file(&pending)?;
+        } else if let Some(restoring) = &plan.restoring {
+            if !valkey_seeded(&volume) {
+                seed_valkey(&volume, &restoring.base.join(valkey::DUMP_FILE))?;
+            }
+        }
+    }
+
+    Ok(Preparation {
+        args: vec![format!(
+            "{}/{}",
+            postgres::CONFIG_MOUNT,
+            valkey::CONFIG_FILE
+        )],
+        env: Vec::new(),
+        mounts,
+        shm_size: None,
+        role: plan.role,
+        primary_endpoint: None,
+        restoring: None,
+        max_connections: valkey::MAX_CLIENTS,
+        version: plan.database.version.clone(),
+        memory_high: Some(valkey::memory_high(plan.limit())),
+    })
+}
+
+/// Make the AOF start from one RDB, replacing whatever AOF was there.
+///
+/// Built beside the old one and renamed over it, and the source is removed
+/// by the caller only afterwards: a deployment that stops part way finds the
+/// source still there and does it again.
+fn seed_valkey(volume: &Path, rdb: &Path) -> std::io::Result<()> {
+    let fresh = volume.join(format!("{}.new", valkey::AOF_DIR));
+    remove_dir_if_there(&fresh)?;
+    std::fs::create_dir_all(&fresh)?;
+    private(&fresh, 0o700)?;
+    std::fs::copy(rdb, fresh.join(valkey::AOF_BASE))?;
+    private(&fresh.join(valkey::AOF_BASE), 0o600)?;
+    std::fs::write(fresh.join(valkey::AOF_MANIFEST), valkey::manifest())?;
+    private(&fresh.join(valkey::AOF_MANIFEST), 0o600)?;
+    remove_dir_if_there(&volume.join(valkey::AOF_DIR))?;
+    match std::fs::remove_file(volume.join(valkey::DUMP_FILE)) {
+        Err(error) if error.kind() != std::io::ErrorKind::NotFound => return Err(error),
+        _ => {}
+    }
+    std::fs::rename(&fresh, volume.join(valkey::AOF_DIR))
+}
+
+/// The modes Valkey gives its own files, under the entrypoint's umask. A
+/// copy keeps its source's, and a backup's dump is readable by anyone on
+/// the machine.
+fn private(path: &Path, mode: u32) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode))?;
+    }
+    #[cfg(not(unix))]
+    let _ = (path, mode);
+    Ok(())
+}
+
+fn remove_dir_if_there(path: &Path) -> std::io::Result<()> {
+    match std::fs::remove_dir_all(path) {
+        Err(error) if error.kind() != std::io::ErrorKind::NotFound => Err(error),
+        _ => Ok(()),
+    }
+}
+
+fn valkey_seeded(volume: &Path) -> bool {
+    volume
+        .join(valkey::AOF_DIR)
+        .join(valkey::AOF_MANIFEST)
+        .exists()
+}
+
+fn valkey_volume(data_dir: &Path, container_id: &str) -> PathBuf {
+    crate::infra::repositories::volumes::directory(data_dir, container_id, postgres::VOLUME)
+}
+
+/// Whether a restore into this copy has put its backup in place, after which
+/// the backup is nothing to it and a retention pass may remove it.
+pub fn valkey_restored(data_dir: &Path, container_id: &str) -> bool {
+    valkey_seeded(&valkey_volume(data_dir, container_id))
+}
+
+/// Leave a dump for this copy's next deployment to start from.
+///
+/// Written under another name and renamed, so a deployment never reads half
+/// of one.
+pub fn place_valkey_import(data_dir: &Path, container_id: &str, rdb: &Path) -> std::io::Result<()> {
+    let volume = valkey_volume(data_dir, container_id);
+    let part = volume.join(format!("{}.part", valkey::PENDING_IMPORT));
+    std::fs::copy(rdb, &part)?;
+    private(&part, 0o600)?;
+    std::fs::rename(&part, volume.join(valkey::PENDING_IMPORT))
 }
 
 fn prepare_mysql(plan: &Plan<'_>) -> std::io::Result<Preparation> {
@@ -192,6 +331,7 @@ fn prepare_mysql(plan: &Plan<'_>) -> std::io::Result<Preparation> {
         restoring: None,
         max_connections: mysql::tuning(plan.limit()).max_connections,
         version: plan.database.version.clone(),
+        memory_high: None,
     })
 }
 
@@ -367,6 +507,7 @@ fn prepare_postgres(plan: &Plan<'_>) -> std::io::Result<Preparation> {
         restoring: plan.restoring.clone(),
         max_connections: postgres::tuning(plan.limit()).max_connections,
         version: plan.database.version.clone(),
+        memory_high: None,
     })
 }
 
@@ -892,6 +1033,7 @@ mod tests {
         Database {
             service_id: "svc-1".into(),
             engine: Engine::Postgres,
+            mode: crate::domain::entities::database::Mode::Store,
             version: "17".into(),
             admin_user: "orders".into(),
             admin_password: "secret".into(),
@@ -1182,5 +1324,136 @@ mod tests {
         prepare(&plan(dir.path(), "demo.db", &row, postgres::Role::Primary)).expect("prepared");
         discard(dir.path(), "demo.db");
         assert!(!config_dir(dir.path(), "demo.db").exists());
+    }
+
+    fn valkey(mode: crate::domain::entities::database::Mode) -> Database {
+        Database {
+            engine: Engine::Valkey,
+            version: "9.1".into(),
+            mode,
+            ..database()
+        }
+    }
+
+    #[test]
+    fn a_valkey_server_reads_its_settings_and_users_from_files_the_node_wrote() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let row = valkey(crate::domain::entities::database::Mode::Store);
+        let prepared =
+            prepare(&plan(dir.path(), "demo.db", &row, postgres::Role::Primary)).expect("prepared");
+
+        assert_eq!(prepared.args, vec!["/etc/wabot/valkey.conf".to_string()]);
+        assert!(prepared.env.is_empty(), "nothing secret in the environment");
+        let conf = config_dir(dir.path(), "demo.db");
+        let users = std::fs::read_to_string(conf.join(valkey::ACL_FILE)).expect("users");
+        assert!(users.contains("user orders on #"), "{users}");
+        assert!(!users.contains("secret"), "{users}");
+        assert!(prepared.mounts.iter().any(|mount| {
+            mount.destination == "/etc/wabot" && mount.read_only && mount.source == conf
+        }));
+        assert_eq!(
+            prepared.memory_high,
+            Some(valkey::memory_high(128 * 1024 * 1024))
+        );
+    }
+
+    /// A cache has no volume row, so nothing else would mount the directory
+    /// its certificate is written into, and a server told to read
+    /// `/data/tls/server.key` would not start.
+    #[test]
+    fn a_cache_is_given_the_directory_its_certificate_is_in_and_a_store_is_not() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let at_data = |mode| {
+            let row = valkey(mode);
+            prepare(&plan(dir.path(), "demo.db", &row, postgres::Role::Primary))
+                .expect("prepared")
+                .mounts
+                .iter()
+                .any(|mount| mount.destination == valkey::DATA_MOUNT)
+        };
+        assert!(at_data(crate::domain::entities::database::Mode::Cache));
+        assert!(
+            !at_data(crate::domain::entities::database::Mode::Store),
+            "a store's volume row mounts it already"
+        );
+    }
+
+    #[test]
+    fn a_restored_valkey_starts_from_the_backup_once_and_never_again() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let backup = dir.path().join("backups/1/volumes/shop.cache");
+        std::fs::create_dir_all(&backup).expect("backup dir");
+        std::fs::write(backup.join(valkey::DUMP_FILE), b"REDIS0011first").expect("dump");
+        let row = Database {
+            restored_from: Some(backup.display().to_string()),
+            ..valkey(crate::domain::entities::database::Mode::Store)
+        };
+        let mut plan = plan(dir.path(), "demo.db", &row, postgres::Role::Restoring);
+        plan.restoring = Some(Restoring {
+            base: backup.clone(),
+            archive: dir.path().join("wal"),
+            target: None,
+        });
+        prepare(&plan).expect("prepared");
+
+        let aof = valkey_volume(dir.path(), "demo.db").join(valkey::AOF_DIR);
+        assert_eq!(
+            std::fs::read(aof.join(valkey::AOF_BASE)).expect("base"),
+            b"REDIS0011first"
+        );
+        assert_eq!(
+            std::fs::read_to_string(aof.join(valkey::AOF_MANIFEST)).expect("manifest"),
+            valkey::manifest()
+        );
+        assert!(valkey_restored(dir.path(), "demo.db"));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode =
+                |path: &Path| std::fs::metadata(path).expect("there").permissions().mode() & 0o777;
+            assert_eq!(mode(&aof), 0o700, "nobody else on the machine lists it");
+            assert_eq!(mode(&aof.join(valkey::AOF_BASE)), 0o600, "nor reads it");
+        }
+
+        std::fs::write(aof.join("appendonly.aof.1.incr.aof"), b"written since").expect("writes");
+        std::fs::write(backup.join(valkey::DUMP_FILE), b"REDIS0011second").expect("newer");
+        prepare(&plan).expect("prepared again");
+        assert!(
+            aof.join("appendonly.aof.1.incr.aof").exists(),
+            "what was written after the restore is kept"
+        );
+        assert_eq!(
+            std::fs::read(aof.join(valkey::AOF_BASE)).expect("base"),
+            b"REDIS0011first"
+        );
+    }
+
+    #[test]
+    fn an_imported_dump_replaces_the_aof_at_the_next_deployment_and_is_consumed() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let row = valkey(crate::domain::entities::database::Mode::Store);
+        let volume = valkey_volume(dir.path(), "demo.db");
+        std::fs::create_dir_all(volume.join(valkey::AOF_DIR)).expect("an aof");
+        std::fs::write(volume.join(valkey::AOF_DIR).join("old.incr.aof"), b"old").expect("old");
+        std::fs::write(volume.join(valkey::DUMP_FILE), b"REDIS0011stale").expect("stale");
+        let source = dir.path().join("upload.rdb");
+        std::fs::write(&source, b"REDIS0011imported").expect("upload");
+
+        place_valkey_import(dir.path(), "demo.db", &source).expect("placed");
+        assert!(volume.join(valkey::PENDING_IMPORT).exists());
+        prepare(&plan(dir.path(), "demo.db", &row, postgres::Role::Primary)).expect("prepared");
+
+        let aof = volume.join(valkey::AOF_DIR);
+        assert_eq!(
+            std::fs::read(aof.join(valkey::AOF_BASE)).expect("base"),
+            b"REDIS0011imported"
+        );
+        assert!(!aof.join("old.incr.aof").exists(), "the old AOF is gone");
+        assert!(
+            !volume.join(valkey::DUMP_FILE).exists(),
+            "and so is a dump Valkey would otherwise prefer to nothing"
+        );
+        assert!(!volume.join(valkey::PENDING_IMPORT).exists(), "consumed");
+        assert!(!volume.join(format!("{}.new", valkey::AOF_DIR)).exists());
     }
 }

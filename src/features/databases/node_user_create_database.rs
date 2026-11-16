@@ -57,6 +57,7 @@ pub async fn run(
         memory_limit,
         image: asked.image.as_deref(),
         on: on.as_deref(),
+        mode: crate::domain::entities::database::Mode::parse(&asked.mode),
     }
     .run(database)
     .await

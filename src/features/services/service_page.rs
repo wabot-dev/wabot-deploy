@@ -181,8 +181,10 @@ pub fn render<'a>(page: &'a ServiceDetail<'a>) -> impl Renderable + 'a {
             // node's page, which is why the card says so when it is off.
             @if let Some(node) = engine.held_on {
                 (database_cards_component::kept_elsewhere_card(node))
-            } @else if engine.row.engine == crate::domain::entities::database::Engine::Mysql {
-                (database_cards_component::backups_only_card())
+            } @else if !engine.row.mode.keeps_data() {
+                (database_cards_component::cache_card())
+            } @else if engine.row.engine != crate::domain::entities::database::Engine::Postgres {
+                (database_cards_component::backups_only_card(engine.row.engine))
             } @else {
                 (database_cards_component::window_card(engine.window, engine.stuck, engine.elsewhere))
             }

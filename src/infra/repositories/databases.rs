@@ -3,7 +3,7 @@
 use wabot::sqlite::rusqlite::{OptionalExtension, Row};
 use wabot::sqlite::SqliteDatabase;
 
-use crate::domain::entities::database::{Database, Engine};
+use crate::domain::entities::database::{Database, Engine, Mode};
 use crate::domain::errors::PlatformResult;
 use crate::infra::clock::now_ms;
 
@@ -45,6 +45,7 @@ pub async fn adopt(
             .then(|| serde_json::to_string(&told.replication_from).unwrap_or_default()),
         told.name.clone(),
         holds_the_primary && told.published,
+        Mode::parse(&told.mode).as_str().to_string(),
     );
     database
         .write(move |connection| {
@@ -54,15 +55,15 @@ pub async fn adopt(
                     \"admin_password\", \"database_name\", \"replication_user\", \
                     \"replication_password\", \"primary_slot\", \"primary_endpoint\", \
                     \"owner_domain\", \"replication_from\", \"owner_name\", \"owner_published\", \
-                    \"created_at\") \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15) \
+                    \"created_at\", \"mode\") \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16) \
                  ON CONFLICT(\"service_id\") DO UPDATE SET \
                    \"engine\" = ?2, \"version\" = ?3, \"admin_user\" = ?4, \
                    \"admin_password\" = ?5, \"database_name\" = ?6, \
                    \"replication_user\" = ?7, \"replication_password\" = ?8, \
                    \"primary_slot\" = ?9, \"primary_endpoint\" = ?10, \
                    \"owner_domain\" = ?11, \"replication_from\" = ?12, \
-                   \"owner_name\" = ?13, \"owner_published\" = ?14",
+                   \"owner_name\" = ?13, \"owner_published\" = ?14, \"mode\" = ?16",
                 (
                     row.0,
                     row.1,
@@ -79,6 +80,7 @@ pub async fn adopt(
                     row.12,
                     row.13,
                     now_ms(),
+                    row.14,
                 ),
             )?;
             Ok(())
@@ -162,6 +164,7 @@ fn decode(row: &Row<'_>) -> wabot::sqlite::rusqlite::Result<Database> {
             .and_then(|text| serde_json::from_str(&text).ok()),
         owner_name: row.get(14)?,
         owner_published: row.get(15)?,
+        mode: Mode::parse(&row.get::<_, String>(16)?),
     })
 }
 
@@ -169,7 +172,7 @@ const COLUMNS: &str = "\"service_id\", \"engine\", \"version\", \"admin_user\", 
                        \"admin_password\", \"database_name\", \"replication_user\", \
                        \"replication_password\", \"primary_slot\", \"primary_endpoint\", \
                        \"owner_domain\", \"restored_from\", \"recovery_target\", \
-                       \"replication_from\", \"owner_name\", \"owner_published\"";
+                       \"replication_from\", \"owner_name\", \"owner_published\", \"mode\"";
 
 #[cfg(test)]
 mod tests {
@@ -205,6 +208,7 @@ mod tests {
             memory_limit: 128 * 1024 * 1024,
             image: None,
             on: None,
+            mode: crate::domain::entities::database::Mode::Store,
         }
         .run(&database)
         .await
@@ -257,6 +261,7 @@ mod tests {
             memory_limit: 256 * 1024 * 1024,
             image: None,
             on: None,
+            mode: crate::domain::entities::database::Mode::Store,
         }
         .run(&database)
         .await
@@ -298,6 +303,7 @@ mod tests {
                 memory_limit,
                 image: None,
                 on: None,
+                mode: crate::domain::entities::database::Mode::Store,
             };
             let error = ask(refused).run(&database).await.expect_err("refused");
             assert!(error.to_string().contains("or more"), "{error}");
@@ -320,6 +326,7 @@ mod tests {
             memory_limit: 256 * 1024 * 1024,
             image: None,
             on: None,
+            mode: crate::domain::entities::database::Mode::Store,
         }
         .run(&database)
         .await
@@ -341,6 +348,7 @@ mod tests {
             memory_limit: 128 * 1024 * 1024,
             image: None,
             on: None,
+            mode: crate::domain::entities::database::Mode::Store,
         }
         .run(&database)
         .await
@@ -367,6 +375,7 @@ mod tests {
             memory_limit: 256 * 1024 * 1024,
             image: None,
             on: None,
+            mode: crate::domain::entities::database::Mode::Store,
         }
         .run(&database)
         .await
@@ -418,6 +427,7 @@ mod tests {
             memory_limit: 256 * 1024 * 1024,
             image: None,
             on: None,
+            mode: crate::domain::entities::database::Mode::Store,
         }
         .run(&database)
         .await
@@ -544,6 +554,7 @@ mod tests {
             memory_limit: 256 * 1024 * 1024,
             image: None,
             on: Some("nd-far"),
+            mode: crate::domain::entities::database::Mode::Store,
         }
         .run(&database)
         .await
@@ -671,6 +682,7 @@ mod tests {
             memory_limit: 256 * 1024 * 1024,
             image: None,
             on: Some(on),
+            mode: crate::domain::entities::database::Mode::Store,
         };
 
         let error = ask("refused", "nd-host")
@@ -713,6 +725,7 @@ mod tests {
             memory_limit: 256 * 1024 * 1024,
             image: None,
             on: None,
+            mode: crate::domain::entities::database::Mode::Store,
         }
         .run(&database)
         .await
@@ -728,6 +741,7 @@ mod tests {
             memory_limit: 256 * 1024 * 1024,
             engine: "postgres".into(),
             version: "17".into(),
+            mode: "store".into(),
             database_name: "orders".into(),
             admin_user: "orders".into(),
             admin_password: "secret".into(),
@@ -808,6 +822,7 @@ mod tests {
             memory_limit: 128 * 1024 * 1024,
             image: None,
             on: None,
+            mode: crate::domain::entities::database::Mode::Store,
         }
         .run(&database)
         .await
@@ -834,6 +849,7 @@ mod tests {
             memory_limit: 100,
             image: None,
             on: None,
+            mode: crate::domain::entities::database::Mode::Store,
         }
         .run(&database)
         .await
@@ -854,6 +870,7 @@ mod tests {
             memory_limit: 128 * 1024 * 1024,
             image: None,
             on: None,
+            mode: crate::domain::entities::database::Mode::Store,
         }
         .run(&database)
         .await
@@ -895,6 +912,7 @@ mod tests {
             memory_limit: 128 * 1024 * 1024,
             image: None,
             on: None,
+            mode: crate::domain::entities::database::Mode::Store,
         }
         .run(&database)
         .await

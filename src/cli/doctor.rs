@@ -1013,6 +1013,12 @@ fn machine_and_runtime(config: &Config) -> usize {
     if !cgroup_memory_works() {
         problems += 1;
     }
+    // Not counted: it matters only to a Valkey store, and a node updated
+    // without running `install` again would otherwise read as broken.
+    println!(
+        "  kernel      {}",
+        crate::infra::bootstrap::kernel::describe(crate::infra::bootstrap::kernel::overcommit())
+    );
     problems
 }
 

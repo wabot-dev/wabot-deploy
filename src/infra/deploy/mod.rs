@@ -43,7 +43,7 @@ use crate::domain::entities::port::Port;
 use crate::domain::entities::project::Project;
 use crate::domain::entities::release::Release;
 use crate::domain::entities::replica::Replica;
-use crate::domain::policies::{mysql, postgres};
+use crate::domain::policies::{mysql, postgres, valkey};
 use crate::infra::repositories::databases;
 use crate::infra::repositories::ports;
 use crate::infra::repositories::releases;
@@ -1102,6 +1102,7 @@ impl Deployer {
             resolv_conf: Some(self.resolv_conf.clone()),
             mounts,
             memory_limit: service.memory_limit,
+            memory_high: prepared.as_ref().and_then(|prepared| prepared.memory_high),
             cpu_millicores: service.cpu_millicores,
             // What this container is being published on, written on it.
             // Reconciliation reads it back and compares — the one thing
@@ -3460,6 +3461,11 @@ impl Deployer {
         replica: &Replica,
         id: &str,
     ) -> Result<(), String> {
+        // Valkey reads the files again on its own, every
+        // `TLS_RELOAD_SECONDS`, and ignores a hang-up.
+        if service.kind == Kind::Valkey {
+            return Ok(());
+        }
         if service.kind != Kind::Mysql {
             return containers::signal(client, id, 1)
                 .await
@@ -3541,6 +3547,17 @@ impl Deployer {
         crate::infra::runtime::images::ensure(client, &service.image, credential).await?;
         let config = crate::infra::runtime::images::config(client, &service.image).await?;
         let engine = service.kind.engine().unwrap_or(Engine::Postgres);
+        if let Some(other) = engine.other_engine_in(&config.env) {
+            return Err(DeployError::Refused(format!(
+                "{} is {other}, and this database was made as {} — the node runs {}'s own \
+                 tools against it, which that image does not have, so nothing was started. \
+                 Make it again with an image built on {}'s",
+                service.image,
+                engine.label(),
+                engine.label(),
+                engine.label(),
+            )));
+        }
         match engine.other_version_in(&config.env, version) {
             None => Ok(()),
             Some(runs) => Err(DeployError::Refused(format!(
@@ -3745,6 +3762,35 @@ impl Deployer {
                     .await
                     .map(|_| Some(crate::infra::node::disk::used(into).bytes));
             }
+            Engine::Valkey => {
+                if !row.mode.keeps_data() {
+                    return Err("a cache keeps nothing to back up".into());
+                }
+                let request = ContainerRequest {
+                    command: valkey::dump_into(&address, valkey::PORT, &row.replication_user),
+                    env: vec![(
+                        valkey::PASSWORD_VARIABLE.to_string(),
+                        row.replication_password.clone(),
+                    )],
+                    mounts: vec![BindMount {
+                        source: into.to_path_buf(),
+                        destination: valkey::BACKUP_MOUNT.to_string(),
+                        read_only: false,
+                    }],
+                    ..Default::default()
+                };
+                return self
+                    .run_client(
+                        &client,
+                        service,
+                        "valkey-cli",
+                        &id,
+                        &request,
+                        BACKUP_DEADLINE,
+                    )
+                    .await
+                    .map(|_| Some(crate::infra::node::disk::used(into).bytes));
+            }
             Engine::Unknown => return Err("an engine this node does not know".into()),
         }
 
@@ -3810,6 +3856,9 @@ impl Deployer {
             return Err(
                 "it was made by a newer node, with an engine this one does not know".into(),
             );
+        }
+        if row.engine == Engine::Valkey {
+            return Err("a Valkey dump is placed for its next deployment, not loaded".into());
         }
         let primary = replicas::of_service(&self.database, &service.id)
             .await
@@ -3946,6 +3995,105 @@ impl Deployer {
             )
             .await?,
         )
+    }
+
+    /// Leave an RDB for a Valkey store that holds nothing, for its next
+    /// deployment to start from.
+    ///
+    /// Placed rather than loaded: an RDB is read by the server when it
+    /// starts, and only the deploy path knows the server is stopped. Asked
+    /// first of the running server, because only it knows whether it is
+    /// empty — and refused for a format this Valkey cannot read, which would
+    /// otherwise be a server that will not start.
+    pub async fn place_valkey_dump(
+        &self,
+        project: &Project,
+        service: &Service,
+        file: &std::path::Path,
+    ) -> Result<String, String> {
+        let row = databases::of_service(&self.database, &service.id)
+            .await
+            .map_err(|error| error.to_string())?
+            .ok_or("that service is not a managed database")?;
+        if !row.mode.keeps_data() {
+            return Err(format!(
+                "{} is a cache: it keeps nothing, so there is nothing to load into",
+                service.slug
+            ));
+        }
+        let primary = replicas::of_service(&self.database, &service.id)
+            .await
+            .map_err(|error| error.to_string())?
+            .into_iter()
+            .find(|replica| {
+                replica.slot == row.primary_slot && replica.is_here() && !replica.evicted()
+            })
+            .ok_or("it does not run on this node, which is where a dump is placed")?;
+        let address = primary
+            .address
+            .clone()
+            .ok_or("it has no address yet: deploy it, and place the dump once it runs")?;
+        let file =
+            std::fs::canonicalize(file).map_err(|error| format!("{}: {error}", file.display()))?;
+        let mut header = [0u8; 9];
+        std::io::Read::read_exact(
+            &mut std::fs::File::open(&file)
+                .map_err(|error| format!("{}: {error}", file.display()))?,
+            &mut header,
+        )
+        .map_err(|_| format!("{} is too short to be an RDB file", file.display()))?;
+        match valkey::rdb_format(&header) {
+            None => return Err(format!("{} is not an RDB file", file.display())),
+            Some(format) if format > valkey::NEWEST_FORMAT => {
+                return Err(format!(
+                    "{} is RDB format {format}, which Redis 7.4 and later write; Valkey {} \
+                     reads up to format {}. A dump from Valkey, or from Redis 7.2 or earlier, \
+                     loads",
+                    file.display(),
+                    row.version,
+                    valkey::NEWEST_FORMAT
+                ))
+            }
+            Some(_) => {}
+        }
+
+        let client = Containerd::connect().await.map_err(|e| e.to_string())?;
+        let id = primary.container_id(&project.slug, &service.slug);
+        let asked = ContainerRequest {
+            command: valkey::keyspace(&address, valkey::PORT, &row.replication_user),
+            env: vec![(
+                valkey::PASSWORD_VARIABLE.to_string(),
+                row.replication_password.clone(),
+            )],
+            ..Default::default()
+        };
+        let said = self
+            .run_client(
+                &client,
+                service,
+                "valkey-cli",
+                &format!("{id}.count"),
+                &asked,
+                ASK_DEADLINE,
+            )
+            .await?;
+        let keys = valkey::keys_in(&said)
+            .ok_or_else(|| format!("valkey-cli did not say how many keys there are: {said}"))?;
+        if keys > 0 {
+            return Err(format!(
+                "{} already holds {keys} key(s). A dump is loaded only into an empty one: one \
+                 loaded over another is two datasets mixed into something that looks right",
+                service.slug
+            ));
+        }
+
+        database::place_valkey_import(&self.config.node.data_dir, &id, &file)
+            .map_err(|error| error.to_string())?;
+        Ok(format!(
+            "placed: deploy {}/{} again and it starts from the dump. Anything written to it \
+             before then is replaced by it",
+            project.slug, service.slug
+        ))
     }
 
     /// Ask every primary here what its standbys are doing, and write it
@@ -4375,16 +4523,23 @@ impl Deployer {
                     service.slug
                 )))
             }
-            (Engine::Mysql, postgres::Role::Standby) => {
+            (engine, postgres::Role::Standby) if !engine.has_standbys() => {
                 return Err(DeployError::Refused(format!(
-                    "slot {} of {} would be a read-only copy, and MySQL has none yet",
-                    replica.slot, service.slug
+                    "slot {} of {} would be a read-only copy, and {} has none yet",
+                    replica.slot,
+                    service.slug,
+                    engine.label()
                 )))
             }
             // Once the load has happened the backup is nothing to this copy,
             // and a retention pass may already have removed it.
             (Engine::Mysql, postgres::Role::Restoring)
                 if database::mysql_restored(&self.config.node.data_dir, &container_id) =>
+            {
+                postgres::Role::Primary
+            }
+            (Engine::Valkey, postgres::Role::Restoring)
+                if database::valkey_restored(&self.config.node.data_dir, &container_id) =>
             {
                 postgres::Role::Primary
             }
@@ -5077,6 +5232,7 @@ mod tests {
         let row = crate::domain::entities::database::Database {
             service_id: "svc-1".into(),
             engine: crate::domain::entities::database::Engine::Postgres,
+            mode: crate::domain::entities::database::Mode::Store,
             version: "17".into(),
             admin_user: "orders".into(),
             admin_password: "x".into(),
@@ -5366,6 +5522,7 @@ mod tests {
                     memory_limit: 256 * 1024 * 1024,
                     image: None,
                     on,
+                    mode: crate::domain::entities::database::Mode::Store,
                 }
                 .run(&database)
                 .await
@@ -5423,6 +5580,7 @@ mod tests {
             memory_limit: 256 * 1024 * 1024,
             image: None,
             on: None,
+            mode: crate::domain::entities::database::Mode::Store,
         }
         .run(&database)
         .await
@@ -5565,6 +5723,7 @@ mod tests {
             memory_limit: 256 * 1024 * 1024,
             image: None,
             on: Some("nd-far"),
+            mode: crate::domain::entities::database::Mode::Store,
         }
         .run(&database)
         .await
@@ -6036,6 +6195,7 @@ mod tests {
             memory_limit: 256 * 1024 * 1024,
             image: None,
             on: None,
+            mode: crate::domain::entities::database::Mode::Store,
         }
         .run(&database)
         .await

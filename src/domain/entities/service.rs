@@ -64,6 +64,7 @@ pub enum Kind {
     Container,
     Postgres,
     Mysql,
+    Valkey,
     /// A kind from a newer node. Held and refused rather than parsed
     /// into a panic — the same shape `errand::Kind` uses, and for the
     /// same reason: a row outlives the version that wrote it.
@@ -76,6 +77,7 @@ impl Kind {
             Kind::Container => "container",
             Kind::Postgres => "postgres",
             Kind::Mysql => "mysql",
+            Kind::Valkey => "valkey",
             Kind::Unknown => "unknown",
         }
     }
@@ -85,6 +87,7 @@ impl Kind {
             "container" => Kind::Container,
             "postgres" => Kind::Postgres,
             "mysql" => Kind::Mysql,
+            "valkey" => Kind::Valkey,
             _ => Kind::Unknown,
         }
     }
@@ -94,6 +97,7 @@ impl Kind {
         match self {
             Kind::Postgres => Some(Engine::Postgres),
             Kind::Mysql => Some(Engine::Mysql),
+            Kind::Valkey => Some(Engine::Valkey),
             Kind::Container | Kind::Unknown => None,
         }
     }

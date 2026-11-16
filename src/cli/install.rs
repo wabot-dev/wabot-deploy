@@ -103,6 +103,15 @@ pub async fn run(mut config: Config, config_path: &Path, args: InstallArgs) -> a
     }
 
     if !args.no_system {
+        // Not a ledger step: a node updated in place never runs `install`
+        // again, so a step would read as pending on it for ever. `doctor`
+        // reports the kernel's own answer instead, and a failure here does
+        // not stop a node that runs fine without it.
+        println!("  kernel settings…");
+        match crate::infra::bootstrap::kernel::ensure() {
+            Ok(detail) => println!("    {detail}"),
+            Err(error) => println!("    not changed: {error}"),
+        }
         step(&database, Step::Binary, "the binary", || {
             Ok(match crate::infra::bootstrap::service::install_binary()? {
                 true => format!(

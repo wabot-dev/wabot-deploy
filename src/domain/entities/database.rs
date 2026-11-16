@@ -9,13 +9,14 @@
 use serde::Serialize;
 
 use crate::domain::entities::service::Kind;
-use crate::domain::policies::{mysql, postgres};
+use crate::domain::policies::{mysql, postgres, valkey};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Engine {
     Postgres,
     Mysql,
+    Valkey,
     /// A row written by a newer node. Held and refused, never parsed
     /// into a panic.
     Unknown,
@@ -25,12 +26,13 @@ pub enum Engine {
 // refuses it before anything is started, and Postgres is what every row
 // before a second engine was.
 impl Engine {
-    pub const OFFERED: [Engine; 2] = [Engine::Postgres, Engine::Mysql];
+    pub const OFFERED: [Engine; 3] = [Engine::Postgres, Engine::Mysql, Engine::Valkey];
 
     pub fn as_str(self) -> &'static str {
         match self {
             Engine::Postgres => "postgres",
             Engine::Mysql => "mysql",
+            Engine::Valkey => "valkey",
             Engine::Unknown => "unknown",
         }
     }
@@ -41,6 +43,7 @@ impl Engine {
         match self {
             Engine::Postgres => "PostgreSQL",
             Engine::Mysql => "MySQL",
+            Engine::Valkey => "Valkey",
             Engine::Unknown => "unknown",
         }
     }
@@ -49,6 +52,7 @@ impl Engine {
         match text {
             "postgres" => Engine::Postgres,
             "mysql" => Engine::Mysql,
+            "valkey" => Engine::Valkey,
             _ => Engine::Unknown,
         }
     }
@@ -57,6 +61,7 @@ impl Engine {
         match self {
             Engine::Postgres => Kind::Postgres,
             Engine::Mysql => Kind::Mysql,
+            Engine::Valkey => Kind::Valkey,
             Engine::Unknown => Kind::Unknown,
         }
     }
@@ -64,6 +69,7 @@ impl Engine {
     pub fn image_for(self, version: &str) -> String {
         match self {
             Engine::Mysql => mysql::image_for(version),
+            Engine::Valkey => valkey::image_for(version),
             Engine::Postgres | Engine::Unknown => postgres::image_for(version),
         }
     }
@@ -71,6 +77,7 @@ impl Engine {
     pub fn versions(self) -> &'static [&'static str] {
         match self {
             Engine::Mysql => &mysql::VERSIONS,
+            Engine::Valkey => &valkey::VERSIONS,
             Engine::Postgres | Engine::Unknown => &postgres::VERSIONS,
         }
     }
@@ -78,6 +85,7 @@ impl Engine {
     pub fn default_version(self) -> &'static str {
         match self {
             Engine::Mysql => mysql::DEFAULT_VERSION,
+            Engine::Valkey => valkey::DEFAULT_VERSION,
             Engine::Postgres | Engine::Unknown => postgres::DEFAULT_VERSION,
         }
     }
@@ -95,14 +103,36 @@ impl Engine {
             "{}=",
             match self {
                 Engine::Mysql => mysql::MAJOR_VARIABLE,
+                Engine::Valkey => valkey::VERSION_VARIABLE,
                 Engine::Postgres | Engine::Unknown => postgres::MAJOR_VARIABLE,
             }
         );
         image_env
             .iter()
             .find_map(|line| line.strip_prefix(variable.as_str()))
-            .filter(|declared| *declared != version)
+            .filter(|declared| {
+                *declared != version && !declared.starts_with(&format!("{version}."))
+            })
             .map(str::to_string)
+    }
+
+    /// Another engine's image, named by what it declares: a Redis image under
+    /// a Valkey row carries neither the tools the node runs against it nor a
+    /// licence this node offers to tenants.
+    pub fn other_engine_in(self, image_env: &[String]) -> Option<&'static str> {
+        let declares = |variable: &str| {
+            image_env
+                .iter()
+                .any(|line| line.starts_with(&format!("{variable}=")))
+        };
+        match self {
+            Engine::Valkey
+                if declares(valkey::REDIS_VARIABLE) && !declares(valkey::VERSION_VARIABLE) =>
+            {
+                Some("Redis")
+            }
+            _ => None,
+        }
     }
 
     /// The smallest ceiling a database of this engine is given — made,
@@ -113,6 +143,7 @@ impl Engine {
     pub fn floor(self) -> u64 {
         match self {
             Engine::Mysql => mysql::FLOOR,
+            Engine::Valkey => valkey::FLOOR,
             Engine::Postgres | Engine::Unknown => postgres::INITDB_FLOOR,
         }
     }
@@ -120,6 +151,7 @@ impl Engine {
     pub fn port(self) -> u16 {
         match self {
             Engine::Mysql => mysql::PORT,
+            Engine::Valkey => valkey::PORT,
             Engine::Postgres | Engine::Unknown => postgres::PORT,
         }
     }
@@ -127,6 +159,7 @@ impl Engine {
     pub fn data_mount(self) -> &'static str {
         match self {
             Engine::Mysql => mysql::DATA_MOUNT,
+            Engine::Valkey => valkey::DATA_MOUNT,
             Engine::Postgres | Engine::Unknown => postgres::DATA_MOUNT,
         }
     }
@@ -134,6 +167,7 @@ impl Engine {
     pub fn tls_dir(self) -> &'static str {
         match self {
             Engine::Mysql => mysql::TLS_DIR,
+            Engine::Valkey => valkey::TLS_DIR,
             Engine::Postgres | Engine::Unknown => postgres::TLS_DIR,
         }
     }
@@ -142,6 +176,7 @@ impl Engine {
     pub fn server_user(self) -> &'static str {
         match self {
             Engine::Mysql => mysql::SERVER_USER,
+            Engine::Valkey => valkey::SERVER_USER,
             Engine::Postgres | Engine::Unknown => "postgres",
         }
     }
@@ -151,15 +186,57 @@ impl Engine {
     pub fn backup_file(self) -> &'static str {
         match self {
             Engine::Mysql => mysql::DUMP_FILE,
+            Engine::Valkey => valkey::DUMP_FILE,
             Engine::Postgres | Engine::Unknown => postgres::BASE_FILE,
         }
+    }
+
+    /// Whether a second copy, read-only, is something this engine has.
+    pub fn has_standbys(self) -> bool {
+        matches!(self, Engine::Postgres)
     }
 
     pub fn identifier(self, slug: &str, node_user: &str) -> String {
         match self {
             Engine::Mysql => mysql::identifier(&identifier(slug), node_user),
+            Engine::Valkey => valkey::identifier(&identifier(slug), node_user),
             Engine::Postgres | Engine::Unknown => identifier(slug),
         }
+    }
+}
+
+/// What a database keeps when its container stops: everything, or nothing.
+///
+/// Chosen when it is made and never changed, because one direction deletes
+/// data: Valkey loads any `dump.rdb` it finds whatever its settings say, so a
+/// store turned into a cache would have to have its disk emptied.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Mode {
+    Store,
+    Cache,
+}
+
+impl Mode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Mode::Store => "store",
+            Mode::Cache => "cache",
+        }
+    }
+
+    /// Anything that is not a cache is a store: a row older than modes, or one
+    /// from a newer node, keeps its data rather than being read as something
+    /// that may lose it.
+    pub fn parse(text: &str) -> Self {
+        match text {
+            "cache" => Mode::Cache,
+            _ => Mode::Store,
+        }
+    }
+
+    pub fn keeps_data(self) -> bool {
+        self == Mode::Store
     }
 }
 
@@ -167,6 +244,7 @@ impl Engine {
 pub struct Database {
     pub service_id: String,
     pub engine: Engine,
+    pub mode: Mode,
     /// The major version, as the image tags spell it.
     pub version: String,
     pub admin_user: String,
@@ -322,5 +400,58 @@ mod tests {
             Engine::Postgres.other_version_in(&env("MYSQL_MAJOR=8.4"), "17"),
             None
         );
+    }
+
+    /// Read off `valkey:9.1-alpine`, which declares the release and not the
+    /// series the row keeps.
+    #[test]
+    fn a_valkey_release_belongs_to_its_series_and_not_to_another() {
+        let env = |line: &str| vec![line.to_string()];
+        assert_eq!(
+            Engine::Valkey.other_version_in(&env("VALKEY_VERSION=9.1.3"), "9.1"),
+            None
+        );
+        assert_eq!(
+            Engine::Valkey.other_version_in(&env("VALKEY_VERSION=9.10.0"), "9.1"),
+            Some("9.10.0".to_string())
+        );
+        assert_eq!(
+            Engine::Valkey.other_version_in(&env("VALKEY_VERSION=8.1.4"), "9.1"),
+            Some("8.1.4".to_string())
+        );
+    }
+
+    #[test]
+    fn a_redis_image_is_named_under_a_valkey_row_and_a_valkey_one_is_not() {
+        let env = |lines: &[&str]| {
+            lines
+                .iter()
+                .map(|line| line.to_string())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            Engine::Valkey.other_engine_in(&env(&["REDIS_VERSION=8.10.3"])),
+            Some("Redis")
+        );
+        assert_eq!(
+            Engine::Valkey.other_engine_in(&env(&["VALKEY_VERSION=9.1.3"])),
+            None
+        );
+        assert_eq!(Engine::Valkey.other_engine_in(&env(&[])), None);
+        assert_eq!(
+            Engine::Postgres.other_engine_in(&env(&["REDIS_VERSION=8.10.3"])),
+            None
+        );
+    }
+
+    #[test]
+    fn only_a_row_that_says_cache_may_lose_its_data() {
+        assert_eq!(Mode::parse("cache"), Mode::Cache);
+        assert_eq!(Mode::parse("store"), Mode::Store);
+        assert_eq!(Mode::parse(""), Mode::Store);
+        assert_eq!(Mode::parse("tiered"), Mode::Store);
+        for mode in [Mode::Store, Mode::Cache] {
+            assert_eq!(Mode::parse(mode.as_str()), mode);
+        }
     }
 }

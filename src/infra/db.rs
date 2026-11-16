@@ -280,6 +280,10 @@ fn migrations() -> Vec<Migration> {
             "0070_service_stopped_at",
             include_str!("../../migrations/0070_service_stopped_at.sql"),
         ),
+        Migration::new(
+            "0071_database_mode",
+            include_str!("../../migrations/0071_database_mode.sql"),
+        ),
     ]
 }
 

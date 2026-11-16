@@ -10,8 +10,9 @@
 //! screenshot. Markup rather than script, so it works with scripting
 //! off like everything else here.
 
+use crate::domain::entities::database::Mode;
 use crate::domain::policies::presets;
-use crate::domain::policies::{mysql, postgres};
+use crate::domain::policies::{mysql, postgres, valkey};
 use crate::features::databases::texts::t;
 use hypertext::prelude::*;
 
@@ -40,6 +41,33 @@ pub fn sizes_table() -> impl Renderable {
                         <td class="mono">(format!("{} MB", postgres::tuning(rung).shared_buffers_mb))</td>
                         <td class="mono">(format!("{} MB", postgres::tuning(rung).work_mem_mb))</td>
                         <td class="mono">(postgres::tuning(rung).max_connections.to_string())</td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    }
+}
+
+/// What a Valkey of each size may hold, which is not the size: a store
+/// keeps room for the copy its fork makes, and both keep room for the
+/// server itself.
+pub fn valkey_sizes_table() -> impl Renderable {
+    let megabytes = |bytes: u64| format!("{} MB", bytes / (1024 * 1024));
+    rsx! {
+        <table>
+            <thead>
+                <tr>
+                    <th>(t("Memory"))</th>
+                    <th>(t("Data, as a store"))</th>
+                    <th>(t("Data, as a cache"))</th>
+                </tr>
+            </thead>
+            <tbody>
+                @for rung in presets::LADDER.into_iter().filter(|rung| *rung >= Engine::Valkey.floor()) {
+                    <tr>
+                        <td>(presets::label(rung))</td>
+                        <td class="mono">(megabytes(valkey::maxmemory(Mode::Store, rung)))</td>
+                        <td class="mono">(megabytes(valkey::maxmemory(Mode::Cache, rung)))</td>
                     </tr>
                 }
             </tbody>
@@ -133,7 +161,7 @@ pub fn restore_card<'a>(
                 <label for="restore-at">(t("Up to which moment"))</label>
                 <input id="restore-at" name="at" type="text" autocomplete="off" class="mono"
                        value="" placeholder=(&latest)>
-                @if engine == Engine::Mysql {
+                @if engine != Engine::Postgres {
                     <p class="field-hint">(t("UTC: 2026-08-16 14:32. The copy is the newest \
                          backup taken at or before it — nothing between two backups can be \
                          reached. Empty means the newest backup there is."))</p>
@@ -149,7 +177,7 @@ pub fn restore_card<'a>(
                 <p class="field-hint">(t("A new database in this project, with the same \
                      credentials and its own name. The original keeps running and keeps its \
                      data — this is a copy beside it, and deleting it later costs nothing."))</p>
-                @if engine == Engine::Mysql {
+                @if engine != Engine::Postgres {
                     <p class="field-hint">(t("It loads the backup at its first deployment, which \
                          starts as soon as you press this. Until the load finishes it accepts no \
                          connections, and a large database takes as long as its dump takes to \
@@ -232,27 +260,40 @@ impl Strings {
         // public one the client's own trust store is what checks it, and
         // naming a file that a laptop does not have would be a string that
         // fails for the one reader most likely to paste it.
+        // A `rediss://` string has no parameter every client reads for an
+        // authority, so Valkey's names none: the certificate card says where
+        // the file is.
         let suffix = match (row.engine, signs_here) {
+            (Engine::Valkey, _) => "",
             (Engine::Mysql, true) => "?ssl-mode=VERIFY_IDENTITY&ssl-ca=/etc/wabot/ca.crt",
             (Engine::Mysql, false) => "?ssl-mode=VERIFY_IDENTITY",
             (_, true) => "?sslmode=verify-full&sslrootcert=/etc/wabot/ca.crt",
             (_, false) => "?sslmode=verify-full",
         };
-        let url = match row.engine {
-            Engine::Mysql => mysql::connection_url,
-            _ => postgres::connection_url,
-        };
         let dsn = |host: &str| {
-            format!(
-                "{}{suffix}",
-                url(
+            let url = match row.engine {
+                Engine::Valkey => valkey::connection_url(
+                    &row.admin_user,
+                    &row.admin_password,
+                    host,
+                    row.engine.port(),
+                ),
+                Engine::Mysql => mysql::connection_url(
                     &row.admin_user,
                     &row.admin_password,
                     host,
                     row.engine.port(),
                     &row.database_name,
-                )
-            )
+                ),
+                _ => postgres::connection_url(
+                    &row.admin_user,
+                    &row.admin_password,
+                    host,
+                    row.engine.port(),
+                    &row.database_name,
+                ),
+            };
+            format!("{url}{suffix}")
         };
         // Longest first is how `certificate_names` orders them: the
         // qualified name, then the bare slug, then slug and project. So the
@@ -308,11 +349,12 @@ impl Strings {
 
         Some(Self {
             primary: offer(long_of(false), dsn(&primary_short)),
-            // MySQL has no read-only copies, so its pool name reaches the
-            // one copy there is and a string for it would promise more.
-            pool: match row.engine {
-                Engine::Mysql => Vec::new(),
-                _ => offer(long_of(true), dsn(&pool_short)),
+            // An engine with no read-only copies has a pool name that
+            // reaches the one copy there is, and a string for it would
+            // promise more.
+            pool: match row.engine.has_standbys() {
+                false => Vec::new(),
+                true => offer(long_of(true), dsn(&pool_short)),
             },
         })
     }
@@ -326,16 +368,38 @@ impl Strings {
 /// What going back means for a database whose log is not kept: a
 /// restore lands on a backup, and the card says so rather than measuring
 /// an archive that does not exist.
-pub fn backups_only_card() -> impl Renderable {
+pub fn backups_only_card(engine: Engine) -> impl Renderable {
     rsx! {
         <section class="card stack" id="recovery">
             <div class="split">
                 <p class="card-label">(t("Going back"))</p>
                 <span class="badge">(t("Backups only"))</span>
             </div>
-            <p class="field-hint">(t("MySQL's binary log is not kept, so a restore reaches the \
-                 moment a backup was taken and nothing between two of them. The node's Backup \
-                 tab is where they are scheduled, or taken now."))</p>
+            @if engine == Engine::Valkey {
+                <p class="field-hint">(t("A backup is a snapshot of everything it holds, so a \
+                     restore reaches the moment one was taken and nothing between two of them. \
+                     The node's Backup tab is where they are scheduled, or taken now."))</p>
+            } @else {
+                <p class="field-hint">(t("MySQL's binary log is not kept, so a restore reaches the \
+                     moment a backup was taken and nothing between two of them. The node's Backup \
+                     tab is where they are scheduled, or taken now."))</p>
+            }
+        </section>
+    }
+}
+
+/// What going back means for a cache: nothing, and the card says so before
+/// somebody looks for a backup that was never taken.
+pub fn cache_card() -> impl Renderable {
+    rsx! {
+        <section class="card stack" id="recovery">
+            <div class="split">
+                <p class="card-label">(t("Going back"))</p>
+                <span class="badge">(t("Keeps nothing"))</span>
+            </div>
+            <p class="field-hint">(t("It is a cache: nothing it holds is written to disk, a \
+                 restart empties it, and no backup includes it. When it is full it drops what \
+                 was used least long ago."))</p>
         </section>
     }
 }
@@ -518,8 +582,23 @@ pub fn database_card<'a>(
                 </span>
             </div>
             <dl class="kv">
-                <dt>(t("Database name"))</dt>
-                <dd class="mono">(&row.database_name)</dd>
+                @if row.engine == Engine::Valkey {
+                    <dt>(t("Keeps"))</dt>
+                    @if row.mode.keeps_data() {
+                        <dd>(t("Everything, as a store: a write is on disk within a second"))</dd>
+                    } @else {
+                        <dd>(t("Nothing, as a cache: a restart empties it"))</dd>
+                    }
+                    <dt>(t("Holds up to"))</dt>
+                    <dd>(
+                        memory_limit
+                            .map(|limit| format!("{} MB", valkey::maxmemory(row.mode, limit) / (1024 * 1024)))
+                            .unwrap_or_default()
+                    )</dd>
+                } @else {
+                    <dt>(t("Database name"))</dt>
+                    <dd class="mono">(&row.database_name)</dd>
+                }
                 <dt>(t("User"))</dt>
                 <dd class="mono">(&row.admin_user)</dd>
                 <dt>(t("Memory"))</dt>
@@ -542,8 +621,8 @@ pub fn database_card<'a>(
                             .as_deref()
                             .map(|moment| format!("{moment} UTC"))
                             .unwrap_or_else(|| match row.engine {
-                                Engine::Mysql => t("the moment of the backup").to_string(),
-                                _ => t("as far as the archived log went").to_string(),
+                                Engine::Postgres => t("as far as the archived log went").to_string(),
+                                _ => t("the moment of the backup").to_string(),
                             })
                     )</dd>
                 }

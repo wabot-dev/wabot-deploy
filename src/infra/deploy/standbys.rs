@@ -301,6 +301,7 @@ fn instruction(
             .unwrap_or(crate::domain::policies::presets::SMALLEST),
         engine: row.engine.as_str().to_string(),
         version: row.version.clone(),
+        mode: row.mode.as_str().to_string(),
         database_name: row.database_name.clone(),
         admin_user: row.admin_user.clone(),
         admin_password: row.admin_password.clone(),

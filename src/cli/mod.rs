@@ -174,17 +174,19 @@ pub enum Command {
     /// database, or an archive into a service's volume.
     ///
     /// For moving here. A database is loaded as its own admin, and one that
-    /// already holds tables is refused rather than mixed with it. An
-    /// archive is unpacked into every copy of the volume on this node, and
-    /// an entry that would land outside it is skipped and named.
+    /// already holds tables is refused rather than mixed with it. A Valkey
+    /// store takes an RDB the same way, empty or not at all, and starts
+    /// from it at its next deployment. An archive is unpacked into every
+    /// copy of the volume on this node, and an entry that would land
+    /// outside it is skipped and named.
     Import {
         /// Which database or service, by the name the console shows — or
         /// `<project>/<name>` when two projects have one by that name.
         #[arg(value_name = "SERVICE")]
         service: String,
 
-        /// The dump (`.sql`, `.sql.gz`), or with `--volume` the archive
-        /// (`.tar`, `.tar.gz`).
+        /// The dump (`.sql`, `.sql.gz`, or `.rdb` for Valkey), or with
+        /// `--volume` the archive (`.tar`, `.tar.gz`).
         #[arg(long, value_name = "FILE")]
         from: PathBuf,
 

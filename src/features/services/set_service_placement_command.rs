@@ -3,7 +3,7 @@ use std::collections::BTreeSet;
 use wabot::sqlite::SqliteDatabase;
 
 use crate::domain::entities::project::Project;
-use crate::domain::entities::service::{Kind, Service};
+use crate::domain::entities::service::Service;
 use crate::infra::deploy::quotas;
 use crate::infra::deploy::Deployer;
 use crate::infra::repositories::replicas;
@@ -53,11 +53,18 @@ impl SetServicePlacement<'_> {
                 .fields
                 .iter()
                 .any(|(key, node)| key.starts_with("slot-") && !node.trim().is_empty());
-        if self.service.kind == Kind::Mysql && self.replicas.trim().parse::<u32>().unwrap_or(1) != 1
+        if let Some(engine) = self
+            .service
+            .kind
+            .engine()
+            .filter(|engine| !engine.has_standbys())
         {
-            return Err("a MySQL database runs as one copy: \
-                 read-only copies are not built for it yet"
-                .into());
+            if self.replicas.trim().parse::<u32>().unwrap_or(1) != 1 {
+                return Err(format!(
+                    "a {} database runs as one copy: read-only copies are not built for it yet",
+                    engine.label()
+                ));
+            }
         }
         // The errand that places a copy elsewhere carries no volumes.
         if elsewhere

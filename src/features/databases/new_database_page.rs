@@ -60,6 +60,18 @@ pub fn render<'a>(page: &'a NewDatabase<'a>) -> impl Renderable + 'a {
                     </select>
                 </div>
             }
+            <div class="stack-sm" data-when="engine=valkey">
+                <label for="valkey-mode">(t("Keeps"))</label>
+                <select id="valkey-mode" name="valkey_mode">
+                    <option value="store" selected>(t("Everything, as a store"))</option>
+                    <option value="cache">(t("Nothing, as a cache"))</option>
+                </select>
+                <p class="field-hint">(t("A store writes every change to disk within a second and \
+                     is backed up with the node's other databases. A cache writes nothing: a \
+                     restart empties it, and when it is full it drops what was used least long \
+                     ago. Chosen once — it is not changed after."))</p>
+            </div>
+
             <p class="field-hint">(t("The image is pulled from Docker Hub. The major version \
                  is fixed once the database exists: changing it is a data migration, not \
                  an image change."))</p>
@@ -106,6 +118,14 @@ pub fn render<'a>(page: &'a NewDatabase<'a>) -> impl Renderable + 'a {
                                  smallest size it takes, and its connections are counted against the \
                                  ceiling."))</p>
                             (crate::features::databases::database_cards_component::mysql_sizes_table())
+                        }
+                        Engine::Valkey => {
+                            <p class="field-hint">(t("A ceiling on the container, and what it may hold \
+                                 is less than that: the server takes some of it, and a store keeps room \
+                                 for the copy a backup makes of everything it holds. Writing past what \
+                                 a store may hold is refused; a cache drops keys instead. 64 MB is the \
+                                 smallest size it takes."))</p>
+                            (crate::features::databases::database_cards_component::valkey_sizes_table())
                         }
                         _ => {
                             <p class="field-hint">(t("A ceiling on the container and the engine's own \

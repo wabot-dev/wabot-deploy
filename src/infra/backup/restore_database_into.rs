@@ -43,6 +43,12 @@ pub async fn restore_into(
     from: &str,
     target: Option<&str>,
 ) -> PlatformResult<(Service, Database)> {
+    if !source.mode.keeps_data() {
+        return Err(crate::domain::errors::PlatformError::Refused(format!(
+            "{} is a cache: it keeps nothing, so no backup holds it",
+            original.slug
+        )));
+    }
     let memory_limit = original
         .memory_limit
         .unwrap_or(0)
@@ -97,6 +103,7 @@ pub async fn restore_into(
     let row = Database {
         service_id: service.id.clone(),
         engine: source.engine,
+        mode: source.mode,
         version: source.version.clone(),
         // The original's, so the string somebody already has opens it.
         admin_user: source.admin_user.clone(),
@@ -122,8 +129,8 @@ pub async fn restore_into(
                    (\"service_id\", \"engine\", \"version\", \"admin_user\", \
                     \"admin_password\", \"database_name\", \"replication_user\", \
                     \"replication_password\", \"primary_slot\", \"restored_from\", \
-                    \"recovery_target\", \"created_at\") \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+                    \"recovery_target\", \"created_at\", \"mode\") \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
                 (
                     stored.service_id,
                     stored.engine.as_str(),
@@ -137,6 +144,7 @@ pub async fn restore_into(
                     stored.restored_from,
                     stored.recovery_target,
                     now_ms(),
+                    stored.mode.as_str(),
                 ),
             )?;
             Ok(())
@@ -169,6 +177,7 @@ mod tests {
             memory_limit: 256 * 1024 * 1024,
             image: Some("docker.io/pgvector/pgvector:pg17-trixie"),
             on: None,
+            mode: crate::domain::entities::database::Mode::Store,
         }
         .run(&database)
         .await
@@ -195,6 +204,57 @@ mod tests {
         assert_eq!(stored.memory_limit, original.memory_limit);
     }
 
+    #[tokio::test]
+    async fn a_valkey_store_is_restored_as_a_store_and_a_cache_is_not_restored() {
+        let database = crate::infra::db::open_in_memory().await.expect("open");
+        let project = crate::infra::repositories::projects::create(&database, "demo")
+            .await
+            .expect("project");
+        let made = |name, mode| CreateDatabase {
+            project_id: &project.id,
+            name,
+            engine: Engine::Valkey,
+            version: "9.1",
+            memory_limit: 64 * 1024 * 1024,
+            image: None,
+            on: None,
+            mode,
+        };
+        let (store, row) = made("Queue", crate::domain::entities::database::Mode::Store)
+            .run(&database)
+            .await
+            .expect("store");
+        let (_, copied) = super::restore_into(
+            &database,
+            &row,
+            &store,
+            &project.id,
+            "queue-restored",
+            "/backups/1/volumes/demo.queue",
+            None,
+        )
+        .await
+        .expect("restored");
+        assert_eq!(copied.mode, crate::domain::entities::database::Mode::Store);
+
+        let (cache, row) = made("Sessions", crate::domain::entities::database::Mode::Cache)
+            .run(&database)
+            .await
+            .expect("cache");
+        let refused = super::restore_into(
+            &database,
+            &row,
+            &cache,
+            &project.id,
+            "sessions-restored",
+            "/backups/1/volumes/demo.sessions",
+            None,
+        )
+        .await
+        .expect_err("nothing to restore");
+        assert!(refused.to_string().contains("cache"), "{refused}");
+    }
+
     /// An original with no ceiling was restored into 64 MB, which is under
     /// both floors — and for MySQL a copy the kernel kills on its first
     /// start, however it is tuned.
@@ -217,6 +277,7 @@ mod tests {
                 memory_limit: 256 * 1024 * 1024,
                 image: None,
                 on: None,
+                mode: crate::domain::entities::database::Mode::Store,
             }
             .run(&database)
             .await

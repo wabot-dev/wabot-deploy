@@ -2410,6 +2410,7 @@ mod tests {
             memory_limit: 256 * 1024 * 1024,
             image: None,
             on: None,
+            mode: crate::domain::entities::database::Mode::Store,
         }
         .run(&database)
         .await

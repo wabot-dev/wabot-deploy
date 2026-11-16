@@ -1282,8 +1282,11 @@ async fn hold_database(
     }
     let holds_the_primary = told.slots.contains(&told.primary_slot);
     let holds_a_standby = told.slots.iter().any(|slot| *slot != told.primary_slot);
-    if engine == crate::domain::entities::database::Engine::Mysql && holds_a_standby {
-        return Err("a MySQL database has no read-only copies to hold".into());
+    if !engine.has_standbys() && holds_a_standby {
+        return Err(format!(
+            "a {} database has no read-only copies to hold",
+            engine.label()
+        ));
     }
     // Two ways for one instruction to describe a second primary, and both
     // are refused rather than obeyed: two databases taking writes under
@@ -1356,10 +1359,12 @@ async fn hold_database(
 
     // The volume and the port, which the deploy path reads rather than
     // assumes. Both convergent: a second errand finds them there.
-    if crate::infra::repositories::volumes::of_service(database, &service.id)
-        .await
-        .map_err(|error| error.to_string())?
-        .is_empty()
+    let keeps_data = crate::domain::entities::database::Mode::parse(&told.mode).keeps_data();
+    if keeps_data
+        && crate::infra::repositories::volumes::of_service(database, &service.id)
+            .await
+            .map_err(|error| error.to_string())?
+            .is_empty()
     {
         crate::infra::repositories::volumes::create(
             database,

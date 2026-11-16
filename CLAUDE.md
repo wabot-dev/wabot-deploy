@@ -450,8 +450,8 @@ A separate subject, with its own documents and its own decisions:
 - [`docs/network.md`](docs/network.md) — the plan and the record for
   enrolment, the overlay, errands, capabilities, edges, the census and
   node management. **Read its "What it is for" before the phases.**
-- [`docs/databases.md`](docs/databases.md) — managed PostgreSQL and
-  MySQL on top of `service` and `replica`.
+- [`docs/databases.md`](docs/databases.md) — managed PostgreSQL, MySQL
+  and Valkey on top of `service` and `replica`.
 - [`docs/naming.md`](docs/naming.md) — how a name is derived and which
   authority can sign it.
 - [`docs/allowlists.md`](docs/allowlists.md) — who may connect through
@@ -515,6 +515,10 @@ happened:
 - MySQL is one copy: no read-only copies, and a restore reaches the
   moment of a backup. The grants the replica phase needs are already on
   every one — `docs/databases.md`, "MySQL".
+- Valkey is one copy too, and its "Runs on" has not run between two
+  machines. A store's container gets `memory.high` 16 MB under its
+  ceiling, without which dirty AOF pages got it killed at 64 and 128 MB —
+  `docs/databases.md`, "Valkey".
 - A database whose primary was made on another node is reached by name
   only from services on that node. Its backups and restores are that
   node's. Nothing moves a primary once it exists. Its name, published port

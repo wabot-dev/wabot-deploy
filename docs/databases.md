@@ -1310,3 +1310,330 @@ The VM cannot do it alone, because it is one node. `nubo-testing-db`
 should come up once node-0 and node-l1 both run this. Its row already
 names node-l1, and the data directory left on node-0 is an orphan, from a
 database that was empty.
+
+## Valkey
+
+Asked for on 2026-11-16 as "Redis or Valkey", decided by Jorge the same
+day, and built the same day: phases 1 to 6 ran on the VM node, and phase
+7 does not run between two machines yet. The decisions are his. Where
+the measurements changed the plan, this section says what the plan was
+and why it is not that any more.
+
+### Why Valkey and not Redis
+
+This platform makes databases **for tenants**, and that is the use Redis's
+licences police. 7.4 to 7.x are RSALv2 or SSPLv1 only: the first forbids
+offering it to third parties as a service, and the second would ask for
+the source of the whole platform. 8.0 added AGPLv3 as a third choice,
+which running the official image unmodified satisfies, but it is a
+licence many adopters' lawyers refuse, and it would be inherited by
+anybody running this. Valkey is BSD-3 and needs no reading.
+
+Their clients cannot tell the two apart: both speak RESP2 and RESP3, and
+the protocol and the configuration are the 7.2 fork's. So Redis is not
+a second engine waiting to happen. If anybody ever needs it, it is an
+image line, and the licence becomes the choice of whoever picks it.
+
+### Scope: one primary and its backups
+
+The same scope as MySQL's first phase: made from the console, sized from
+the ladder, TLS on its own name, a connection string, the fixed address,
+a published port, a nightly backup, a restore into a copy, and `import`.
+A read-only copy is refused with a sentence, on the form and by the node
+that would hold it (`Engine::has_standbys`), even though `replicaof`
+would make Valkey the easiest of the three engines to replicate.
+
+"Runs on" is offered, as for the other two: the one copy can be made on
+another node that granted `store`, chosen when it is made, fixed after,
+and reached by name only from that node. **A cache needs `store` too.**
+It writes nothing to disk, but sessions and tokens are somebody's data
+held in memory, which is exactly what `store` asks a node to agree to.
+
+**A node too old to know the engine is refused, not hidden.** It would
+parse the row as `Engine::Unknown`, refuse it, and the database would
+wait for that node for ever. `errand::VALKEY_SINCE` is `0.37.0`, and
+`CreateDatabase` refuses a node reporting less, or nothing, with a
+sentence naming its version. The plan said the select would leave such a
+node out. It is one select for all three engines, and filtering it per
+engine would need a select per engine; a refusal that names the version
+was the cheaper truth. The errand carries the mode, and an owner older
+than modes sends none, which the holder reads as a store.
+
+### Two modes, chosen when it is made and never changed
+
+| | cache | store |
+|---|---|---|
+| volume | none | `/data` |
+| persistence | none (`save ""`, `appendonly no`) | AOF `everysec`, no snapshots |
+| when full | `allkeys-lru`: the least used key goes | `noeviction`: the write is refused |
+| backups, restore, `import` | none; the page says a restart empties it | nightly, into a copy, into an empty one |
+| for | anything that can be rebuilt | queues (BullMQ, Sidekiq, Celery), sessions that must survive |
+
+**A queue needs the store.** In the cache mode it loses jobs on every
+restart, and evicts them when memory fills. AOF `everysec` loses at most
+a second if the node dies.
+
+**A store takes no snapshots either** (`save ""`). The plan had AOF and
+RDB snapshots. The AOF already holds everything, its base is an RDB, and
+every snapshot is one more fork under a ceiling that has to leave room
+for each fork — the ladder below is that room.
+
+**The mode is fixed** because one of its two changes destroys data.
+Valkey loads any `dump.rdb` it finds at start, whatever its persistence
+settings say, so turning a store into a cache would mean deleting the
+disk from a setting. To change the mode, somebody makes another one. The
+page says which mode a Valkey is in and offers no change. A row older
+than modes, or one with a mode this node does not know, is a store:
+reading it as something that may lose data is the wrong way to be wrong.
+
+Both, measured on the VM node at 64 MB, filled past what they hold:
+
+- The **cache** took 60 MB of writes into 36 MB, dropped 25,347 keys and
+  stayed at 36 MB. The cgroup recorded no `high`, `max` or `oom` event,
+  and its directory holds the certificate and nothing else.
+- The **store** took 30 MB into 19 MB, refused 20,903 of the writes with
+  Valkey's own `OOM command not allowed`, evicted nothing, and kept all
+  14,098 keys across a restart.
+
+**A cache still mounts a directory.** Its certificate is written where a
+volume would be, and with no volume row nothing else mounts it, so a
+server told to read `/data/tls/server.key` would not start. It is
+mounted for that alone.
+
+### The image and the version
+
+`docker.io/valkey/valkey:9.1-alpine`, and `9.1` only. It is the first
+release that reloads its TLS certificate by itself
+(`tls-auto-reload-interval 60`), so the node writes a renewed one and
+does not signal: a hang-up does nothing to it. 8.x would mean building
+the reload by hand, as MySQL needed.
+
+The image declares `VALKEY_VERSION=9.1.3` — the release, where a row
+keeps the series. `other_version_in` takes `9.1.x` as `9.1` and
+`9.10.0` as something else.
+
+**A custom image is offered, but only one derived from Valkey**, with
+`valkey-bundle` (JSON, Bloom, search) as the case it is for. An image
+that declares `REDIS_VERSION` and no `VALKEY_VERSION` is refused at
+deployment with a sentence on the page, measured with
+`redis:8-alpine`: the node runs `valkey-cli` against it, which a Redis
+image does not carry, and the licence is the one this section turned
+down.
+
+### Who may connect
+
+**TLS always**, as for Postgres and MySQL: `port 0`, `tls-port 6379`, and
+the connection string is `rediss://`. A plaintext port inside the
+project was considered and not taken: projects are not isolated
+(`FORWARD` accepts everything), so a password sent in the clear on the
+bridge is readable from another tenant's container. Measured: a
+plaintext client is reset, and a client verifying against the node's
+authority by the long name gets `PONG`.
+
+Three settings were traps, each for a reason the other engines already
+taught:
+
+- **`tls-auth-clients` defaults to `yes`, which demands a client
+  certificate** from every client. It is `no`: the password is the
+  credential, and TLS gives the encryption and the server's identity.
+- **`tls-ca-cert-file` is not set.** The plan named the node's authority
+  there, because MySQL with none could not verify its own certificate
+  and refused a reload over it. Valkey without it starts, serves and
+  reloads, so it is one file fewer that can be missing.
+- **A key the server cannot read.** The one-shot `chown` runs by name for
+  `valkey`, resolved inside the image, and the image's entrypoint gives
+  everything under `/data` to `valkey` before it drops root.
+
+**The application's user has a name**, derived from the slug the way
+`engine.identifier` derives the others, with `db_` in front of a slug
+that is `default` or the node's own user. The `default` user is written
+out as off, because an `aclfile` that leaves it out gets it back with no
+password and every command. Measured: no user and `default` are both
+refused. The connection string says the user:
+`rediss://<user>:<password>@<name>:6379/0`. It names no authority file,
+because no `rediss://` parameter is read by every client; the
+certificate card says where the file is.
+
+**It can do everything except administer the server:** `+@all -@admin
++config|get ~* &*`. That is every data command, `FLUSHDB`, `KEYS`,
+`INFO`, pub/sub and scripts. `CONFIG GET` is given back because
+libraries read the eviction policy (BullMQ warns when it is not
+`noeviction`). Measured: `CONFIG SET` and `ACL LIST` are refused with
+`NOPERM`, and `CONFIG GET maxmemory` answers. `&*` is spelled out because
+the default for channels is now to grant none.
+
+**The node's own user** has only what the backup and the import's count
+need: `+auth +hello +ping +info +sync +psync +replconf`, no keys and no
+channels. The operator may change the application's password, and that
+night's backup must not fail for it.
+
+**Passwords never go on the command line.** The host's `ps` reads every
+container process's arguments. The users go in an `aclfile` with their
+passwords as SHA-256, the settings in a config file, both written by the
+node and mounted read-only at `/etc/wabot`. Valkey refuses `user` lines
+in the config file when an `aclfile` is set, so the users are in exactly
+one of the two. `valkey-cli` reads the node's password from
+`REDISCLI_AUTH`.
+
+**`maxclients` is 992**, not Valkey's 10,000. A container gets 1,024
+open files and Valkey keeps 32 for itself; asked for 10,000, it cut
+itself to 992 at start with a warning that it could not raise the limit.
+The config now says what the server will do.
+
+### The ladder, measured
+
+**64 MB is the floor for both modes**, which needed one thing the plan
+did not have: `memory.high`.
+
+Without it, a store at 64 MB taking a burst of writes was killed, and
+so, in some runs, was one at 128 MB. `maxmemory` was not the problem:
+the kill came with 36 MB of the 64 in **dirty AOF pages that nothing had
+started writing back**. Page cache is charged to the cgroup, dirty pages
+cannot be dropped until they are written, and with swap off the kernel
+reached the ceiling before writeback reached the disk.
+
+With `memory.high` 16 MB under the ceiling, the kernel throttles the
+writer and reclaims there instead. The same burst, with a backup
+(`valkey-cli --rdb`) in the middle of it, client in a container of its
+own:
+
+| rung | holds as a store | peak | holds as a cache | peak |
+|---|---|---|---|---|
+| 64 MB | 19 MB | 48–49 MB, seven runs | 36 MB | 40–45 MB |
+| 128 MB | 44 MB | 112–114 MB, four runs | 84 MB | 89–94 MB |
+| 256 MB | 96 MB | 236 MB | 180 MB | 192 MB |
+| 512 MB | 198 MB | 460 MB | 372 MB | 388 MB |
+| 1 GB | 403 MB | 739 MB | 756 MB | 782 MB |
+
+No kill, every backup exited 0, every server was still running. 2 and
+4 GB are not measured: the VM has 2 GB. Their numbers are the same
+arithmetic, and the arithmetic is what the table above agrees with.
+
+`policies::valkey` says it: of the ceiling less 16 MB, a store holds two
+fifths and a cache three quarters. **Two fifths** because the AOF
+rewrite and the backup both fork, and a fork under writes copies nearly
+every page it holds. **Three quarters** because a cache never forks.
+`memory.high` is written on the container through the spec's `unified`
+block (`ContainerRequest::memory_high`), which is cgroup v2 only — and
+`preflight` refuses to install without it. The form shows what each
+rung holds in each mode, because the number in the selector is the
+ceiling and not that.
+
+### `vm.overcommit_memory`
+
+**`install` sets it to 1**: it writes `/etc/sysctl.d/90-wabot-deploy.conf`,
+applies it, and asks the kernel and the file rather than the ledger
+whether it is already done. It refuses under `cfg!(test)`. With 0, the
+kernel's default, the backup's fork can fail with `ENOMEM` on a node
+with little free memory and no swap, and that night has no backup. It
+is a setting for the whole machine, which is acceptable because the
+machine is wabot-deploy's. The cgroup's ceiling is what bounds a
+container, and this does not change it.
+
+**It is not a ledger step.** It was one, and the VM showed what that
+does: `doctor` printed `kernel pending — run install` as a problem on a
+node that had simply been updated, which is every node, since the
+updater never runs `install`. So `install` does it on every run, prints
+what it did, and carries on if it cannot. `doctor` prints what
+`/proc/sys/vm/overcommit_memory` says, with the cost and the command
+when it is not 1, and does not count it: it matters only to a Valkey
+store. Measured on the VM: set to 0, `install` wrote both and said so;
+run again, it said it was already 1.
+
+### Backups, restore and `import`
+
+**A backup** is `valkey-cli --tls --rdb` from a one-shot container of the
+same image on the host's network, as the node's user, written into a
+mount and judged by its exit code — the shape `pg_basebackup` and
+`mysqldump` already have. Not gzipped: an RDB is already compressed.
+5,001 small keys made 101 kB. The server's log says `Killing running
+RDB child` afterwards: the transfer is diskless, the client hangs up the
+moment it has the whole payload, and the server kills the child that
+sent it. A restore from that dump loaded every key.
+
+**A cache is skipped** with a line saying so, rather than counted as a
+backup that failed. A restore of a cache is refused before any backup
+is looked for.
+
+**A restore cannot just put `dump.rdb` in place.** Measured: Valkey with
+`appendonly yes` and only a `dump.rdb` ignores the dump and starts empty.
+So the node makes an AOF out of it: the dump becomes
+`appendonlydir/appendonly.aof.1.base.rdb` beside a one-line manifest,
+built in `appendonlydir.new` and renamed over whatever was there. A
+deployment that finds the manifest does not seed again, which is also
+how `prepare_engine` knows the copy is a primary now. Measured on the
+VM: the copy loaded 5,001 keys from its base, and a key written after
+the restore survived the next deployment. The seeded files are made
+`0600` in a `0700` directory, because a copy keeps its source's mode
+and a backup's dump is readable by anyone on the machine.
+
+**`import`**: `wabot-deploy import <valkey> --from dump.rdb`, **only into
+an empty one** — every numbered database, from `INFO keyspace` as the
+node's user — and refused for a cache. It does not load anything. It
+reads the file's header, refuses a format newer than 11 or a file that
+is not an RDB, counts the keys of the running server, and leaves the
+file in the volume as `.wabot-import.rdb`, written under another name
+and renamed. The next deployment seeds the AOF from it, exactly as a
+restore does, and removes it. It says so: `placed: deploy shop/imported
+again and it starts from the dump`. Measured: a Redis 8.10 RDB says
+format 15, and Valkey 9.1 stops on it with `Can't handle RDB format
+version 15` — Redis 7.4 moved to 12, so a dump from Redis 7.2 or
+earlier, or from Valkey, is what loads.
+
+### Refused, with a sentence
+
+Asked of the VM node and answered with its sentence:
+
+- An image that is Redis.
+- `import` into a Valkey that holds keys, into a cache, of an RDB
+  format Valkey does not read, or of a file that is not an RDB.
+
+Stated by a test, and not yet asked of a node:
+
+- A second copy.
+- A cache made with anything but Valkey.
+- A restore of a cache.
+
+A ceiling under the floor cannot be asked for: 64 MB is the smallest
+rung.
+- A node in "Runs on" too old to know the engine.
+
+### Phases
+
+1. **The engine on paper.** Done: `Engine::Valkey`, `Kind::Valkey`,
+   `Mode`, migration 0071, and `policies::valkey`, whose tests state each
+   trap above as a claim.
+2. **`install` and `doctor`** for `vm.overcommit_memory`. Done, and not
+   as a ledger step.
+3. **A store on the VM.** Done: made from the form with scripting off,
+   reached over TLS by name with the node's authority, refused in the
+   clear and without the user, the ladder measured.
+4. **A cache on the VM.** Done: the same, with nothing on disk and no
+   backup.
+5. **Backup and restore.** Done, with the AOF question answered: it has
+   to be seeded.
+6. **`import`.** Done, with the Redis-format question answered: 7.4 and
+   later are refused.
+7. **"Runs on"** and its version gate. Built and tested, not run: like
+   the rest of "A primary on another node", it does not run between two
+   machines until node-0 and node-l1 both run it.
+
+Every sentence the form and the page add has its Spanish. "Valkey" is a
+product name and is not translated.
+
+### Not measured on a node
+
+- **A resize.** The VM had promised all its memory to the services of
+  other projects, and the node refused 128 MB with its usual sentence.
+  The numbers a resize writes are the ones the table above measured,
+  and the path is every engine's.
+- **2 and 4 GB.**
+- **A renewal handed to a running server.** The reload was measured by
+  hand against a container; the node's renewal loop has not yet handed
+  one over.
+
+### Not decided yet
+
+- Changing the application's password from the console.
+- Read-only copies, and the failover they make possible.
+- Whether `allkeys-lru` should ever be `allkeys-lfu`, or a choice.

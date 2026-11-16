@@ -57,6 +57,7 @@ pub async fn run(
         memory_limit,
         image: asked.image.as_deref(),
         on: on.as_deref(),
+        mode: crate::domain::entities::database::Mode::parse(&asked.mode),
     }
     .run(database)
     .await
@@ -93,6 +94,7 @@ mod tests {
             engine: "postgres".into(),
             version: "17".into(),
             memory: String::new(),
+            mode: String::new(),
             image: Some(image.into()),
             on: String::new(),
             allowlist: Default::default(),

@@ -4323,6 +4323,7 @@ mod tests {
             memory_limit: 256 * 1024 * 1024,
             image: None,
             on: None,
+            mode: crate::domain::entities::database::Mode::Store,
         }
         .run(&console.database)
         .await
@@ -4368,6 +4369,7 @@ mod tests {
             memory_limit: 256 * 1024 * 1024,
             image: None,
             on: None,
+            mode: crate::domain::entities::database::Mode::Store,
         }
         .run(&console.database)
         .await
@@ -4407,6 +4409,58 @@ mod tests {
         assert_eq!(after.memory_limit, Some(256 * 1024 * 1024));
     }
 
+    #[tokio::test]
+    async fn a_valkey_database_stays_one_copy_as_a_store_and_as_a_cache() {
+        let console = Console::new().await;
+        let cookie = console.signed_in().await;
+        service(&console, &cookie).await;
+        let project = crate::infra::repositories::projects::find(&console.database, "my-api")
+            .await
+            .expect("query")
+            .expect("made");
+        for (name, mode) in [
+            ("Queue", crate::domain::entities::database::Mode::Store),
+            ("Sessions", crate::domain::entities::database::Mode::Cache),
+        ] {
+            let (made, _) = crate::features::databases::create_database_command::CreateDatabase {
+                project_id: &project.id,
+                name,
+                engine: crate::domain::entities::database::Engine::Valkey,
+                version: "9.1",
+                memory_limit: 64 * 1024 * 1024,
+                image: None,
+                on: None,
+                mode,
+            }
+            .run(&console.database)
+            .await
+            .expect("database");
+
+            let response = console
+                .harness
+                .post(&format!(
+                    "/projects/my-api/services/{}/placement",
+                    made.slug
+                ))
+                .header("cookie", &cookie)
+                .form(&[("replicas", "2"), ("new-on", "")])
+                .send()
+                .await;
+            assert!(
+                response
+                    .header("location")
+                    .unwrap_or_default()
+                    .contains("Valkey"),
+                "{name}: a second copy was not refused by name"
+            );
+            let copies =
+                crate::infra::repositories::replicas::of_service(&console.database, &made.id)
+                    .await
+                    .expect("query");
+            assert_eq!(copies.len(), 1, "{name}");
+        }
+    }
+
     /// A database's primary stays on the node it was made on, in both
     /// directions. Moving it used to stop the copy here and start nothing
     /// there: the receiving node refused to hold a primary, and the page
@@ -4443,6 +4497,7 @@ mod tests {
                 memory_limit: 256 * 1024 * 1024,
                 image: None,
                 on: made_on,
+                mode: crate::domain::entities::database::Mode::Store,
             }
             .run(&console.database)
             .await
@@ -4503,6 +4558,7 @@ mod tests {
             memory_limit: 256 * 1024 * 1024,
             image: None,
             on: None,
+            mode: crate::domain::entities::database::Mode::Store,
         }
         .run(&console.database)
         .await
@@ -4668,6 +4724,7 @@ mod tests {
             memory_limit: crate::domain::policies::presets::LADDER[1],
             image: None,
             on: None,
+            mode: crate::domain::entities::database::Mode::Store,
         }
         .run(&console.database)
         .await
@@ -5201,6 +5258,7 @@ mod tests {
             memory_limit: crate::domain::policies::presets::LADDER[1],
             image: None,
             on: None,
+            mode: crate::domain::entities::database::Mode::Store,
         }
         .run(&console.database)
         .await
@@ -5492,6 +5550,7 @@ mod tests {
             memory_limit: 256 * 1024 * 1024,
             image: None,
             on: None,
+            mode: crate::domain::entities::database::Mode::Store,
         }
         .run(&console.database)
         .await
@@ -6117,6 +6176,7 @@ mod tests {
             memory_limit: 256 * 1024 * 1024,
             image: None,
             on: None,
+            mode: crate::domain::entities::database::Mode::Store,
         }
         .run(&console.database)
         .await

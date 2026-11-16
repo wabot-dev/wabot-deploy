@@ -305,16 +305,28 @@ pub struct Edge {
 /// The first release whose edges read [`Edge::allowed`].
 pub const ALLOWLISTS_SINCE: &str = "0.35.0";
 
+/// The first release that knows the Valkey engine. An older node reads the
+/// row as an engine it does not know and refuses it, so a database placed
+/// there waits for that node for ever.
+pub const VALKEY_SINCE: &str = "0.37.0";
+
 /// Whether a node reporting `version` reads [`Edge::allowed`]. A version
 /// nobody reported, or one that does not parse, is taken for one that
 /// does not: guessing wrong that way withholds a name, the other way
 /// serves it to everyone.
 pub fn reads_allowlists(version: Option<&str>) -> bool {
+    at_least(version, ALLOWLISTS_SINCE)
+}
+
+/// Whether a node reporting `version` can hold a Valkey database, with an
+/// unknown version taken for one that cannot, for the reason above.
+pub fn knows_valkey(version: Option<&str>) -> bool {
+    at_least(version, VALKEY_SINCE)
+}
+
+fn at_least(version: Option<&str>, since: &str) -> bool {
     use crate::infra::update::github::Version;
-    match (
-        version.and_then(Version::parse),
-        Version::parse(ALLOWLISTS_SINCE),
-    ) {
+    match (version.and_then(Version::parse), Version::parse(since)) {
         (Some(version), Some(since)) => version >= since,
         _ => false,
     }
@@ -333,6 +345,10 @@ pub struct Peer {
     pub overlay_ip: String,
     pub public_key: String,
     pub ca_pem: String,
+}
+
+fn store() -> String {
+    "store".to_string()
 }
 
 /// The arguments of a [`Kind::Database`] errand: hold these copies here.
@@ -359,6 +375,10 @@ pub struct Database {
     pub memory_limit: u64,
     pub engine: String,
     pub version: String,
+    /// `store` or `cache`. An owner older than modes sends none, and every
+    /// database it had was a store.
+    #[serde(default = "store")]
+    pub mode: String,
 
     /// The credentials, in full. A standby is seeded by connecting to
     /// the primary as the replication role, and it serves reads to
