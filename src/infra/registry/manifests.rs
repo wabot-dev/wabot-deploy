@@ -29,7 +29,7 @@ use crate::infra::repositories::releases;
 use crate::infra::repositories::services;
 use crate::infra::runtime::content;
 
-use super::blobs::{connect, internal, leased, read_body, session_id};
+use super::blobs::{connect, internal, leased, read_body, session_id, MANIFEST_MAX};
 use super::{Pusher, RegistryState};
 
 /// What this node calls an image somebody pushed.
@@ -430,7 +430,9 @@ async fn create_image(
 /// exactly that way, on the node, with a push that did nothing.
 ///
 /// A digest needs no index at all: the content store is addressed by
-/// it, and sharing that store is the whole design.
+/// it, and sharing that store is the whole design. Its type is read off
+/// the bytes, because containerd checks the bytes against the type it is
+/// told and refuses a mismatch.
 async fn lookup(
     state: &RegistryState,
     name: &str,
@@ -438,16 +440,24 @@ async fn lookup(
 ) -> RestResult<Option<(String, i64, String)>> {
     if reference.starts_with("sha256:") {
         let client = connect().await?;
-        return Ok(content::exists(&client, reference)
+        let Some(size) = content::exists(&client, reference)
             .await
             .map_err(internal)?
-            .map(|size| {
-                (
-                    reference.to_string(),
-                    size,
-                    "application/vnd.oci.image.manifest.v1+json".to_string(),
-                )
-            }));
+            .filter(|size| *size <= MANIFEST_MAX as i64)
+        else {
+            return Ok(None);
+        };
+        let descriptor = Descriptor {
+            digest: reference.to_string(),
+            size,
+            ..Default::default()
+        };
+        let bytes = content::read(&client, &descriptor)
+            .await
+            .map_err(internal)?;
+        return Ok(
+            media_type_of(&bytes).map(|media_type| (reference.to_string(), size, media_type))
+        );
     }
 
     let (repository, tag) = (name.to_string(), reference.to_string());
@@ -465,6 +475,28 @@ async fn lookup(
         })
         .await
         .map_err(internal)
+}
+
+/// What a manifest says it is, or `None` when the bytes are not one.
+///
+/// Its own `mediaType` when it names one; the field is optional in OCI,
+/// so without it an index is told apart by its `manifests`.
+fn media_type_of(bytes: &[u8]) -> Option<String> {
+    #[derive(Deserialize)]
+    struct Shape {
+        #[serde(rename = "mediaType")]
+        media_type: Option<String>,
+        manifests: Option<serde::de::IgnoredAny>,
+        layers: Option<serde::de::IgnoredAny>,
+    }
+
+    let shape: Shape = serde_json::from_slice(bytes).ok()?;
+    match (shape.media_type, shape.manifests, shape.layers) {
+        (Some(declared), _, _) if !declared.is_empty() => Some(declared),
+        (_, Some(_), _) => Some("application/vnd.oci.image.index.v1+json".to_string()),
+        (_, _, Some(_)) => Some("application/vnd.oci.image.manifest.v1+json".to_string()),
+        _ => None,
+    }
 }
 
 /// Record that this repository's tag now names this manifest.
@@ -658,6 +690,53 @@ mod tests {
         )
         .expect("parsed");
         assert_eq!(manifest.referenced(), ["sha256:cfg"]);
+    }
+
+    /// A manifest asked for by digest is answered with the type its bytes
+    /// are, and anything that is not a manifest is not answered as one.
+    ///
+    /// Every digest was called an OCI manifest. BuildKit's provenance makes
+    /// the pushed tag an index, a far copy is given the digest, and node-l1
+    /// refused it with "expected manifest but found index" (`nubo-testing`,
+    /// 2026-11-17).
+    #[test]
+    fn a_manifest_asked_for_by_digest_is_called_what_its_bytes_are() {
+        for (bytes, expected) in [
+            (
+                r#"{"schemaVersion":2,"mediaType":"application/vnd.oci.image.index.v1+json",
+                   "manifests":[{"digest":"sha256:amd64"},{"digest":"sha256:attestation"}]}"#,
+                Some("application/vnd.oci.image.index.v1+json"),
+            ),
+            (
+                r#"{"schemaVersion":2,"manifests":[{"digest":"sha256:amd64"}]}"#,
+                Some("application/vnd.oci.image.index.v1+json"),
+            ),
+            (
+                r#"{"schemaVersion":2,"mediaType":"application/vnd.docker.distribution.manifest.list.v2+json",
+                   "manifests":[{"digest":"sha256:amd64"}]}"#,
+                Some("application/vnd.docker.distribution.manifest.list.v2+json"),
+            ),
+            (
+                r#"{"schemaVersion":2,"mediaType":"application/vnd.docker.distribution.manifest.v2+json",
+                   "config":{"digest":"sha256:cfg"},"layers":[{"digest":"sha256:one"}]}"#,
+                Some("application/vnd.docker.distribution.manifest.v2+json"),
+            ),
+            (
+                r#"{"schemaVersion":2,"config":{"digest":"sha256:cfg"},"layers":[]}"#,
+                Some("application/vnd.oci.image.manifest.v1+json"),
+            ),
+            (
+                r#"{"architecture":"amd64","os":"linux","rootfs":{"type":"layers","diff_ids":[]}}"#,
+                None,
+            ),
+            ("\u{1f}\u{8b}\u{8}\u{0}", None),
+        ] {
+            assert_eq!(
+                media_type_of(bytes.as_bytes()).as_deref(),
+                expected,
+                "{bytes}"
+            );
+        }
     }
 
     /// The registry stored a manifest whose layers it did not have and

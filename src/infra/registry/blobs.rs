@@ -245,12 +245,12 @@ fn refused(error: ClientError) -> RestError {
     }
 }
 
-pub(crate) async fn read_body(request: Request) -> RestResult<Vec<u8>> {
-    // A manifest is kilobytes and a config is smaller. This is not the
-    // path a layer takes — that one streams.
-    const MAX: usize = 32 * 1024 * 1024;
+/// The largest manifest a push may send. A manifest is kilobytes; this is
+/// not the path a layer takes — that one streams.
+pub(crate) const MANIFEST_MAX: usize = 32 * 1024 * 1024;
 
-    wabot::rest::axum::body::to_bytes(request.into_body(), MAX)
+pub(crate) async fn read_body(request: Request) -> RestResult<Vec<u8>> {
+    wabot::rest::axum::body::to_bytes(request.into_body(), MANIFEST_MAX)
         .await
         .map(|bytes| bytes.to_vec())
         .map_err(|error| RestError::Client {
