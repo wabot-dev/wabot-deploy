@@ -135,6 +135,34 @@ impl BucketUiController {
             .collect();
         let reserved = object_stores::reserved(&self.state.database, &service.id).await?;
         let endpoint = self.endpoint(&service).await;
+        let default_name = format!("{}-restored", service.slug);
+        let domain = crate::infra::node::settings::domain(&self.state.database).await;
+        let derived = crate::infra::repositories::project_domain::domain_for(
+            &self.state.database,
+            &project,
+            domain.as_deref(),
+        )
+        .await
+        .map(|suffix| {
+            crate::infra::deploy::dns::suggested_hostname("<name>", &project.slug, &suffix)
+        });
+        let elsewhere = crate::infra::backup::plan::elsewhere(
+            &self.state.database,
+            &self.state.config.node.data_dir,
+        )
+        .await;
+        let container = format!("{}.{}", project.slug, service.slug);
+        let restorable = allowed.may_deploy()
+            && service.is_ours()
+            && (elsewhere.is_some()
+                || crate::infra::backup::taken(&self.state.config.node.data_dir)
+                    .iter()
+                    .any(|(path, _)| {
+                        path.join("volumes")
+                            .join(&container)
+                            .join(crate::domain::policies::garage::DATA_VOLUME)
+                            .exists()
+                    }));
 
         let path = format!(
             "/projects/{}/services/{}/buckets",
@@ -152,6 +180,11 @@ impl BucketUiController {
             reserved,
             disk: service.disk_limit,
             running,
+            restore: restorable.then_some(crate::features::buckets::buckets_page::Restore {
+                default_name: &default_name,
+                derived: derived.as_deref(),
+                elsewhere: elsewhere.as_deref(),
+            }),
         };
         let body = crate::shell::texts::language::scoped(account.language, || {
             crate::features::buckets::buckets_page::render(&page)

@@ -819,7 +819,7 @@ impl std::fmt::Display for NotRestored {
                 path.display()
             ),
             Self::HoldsNoCopy(path) => {
-                write!(f, "{} holds no copy of this database", path.display())
+                write!(f, "{} holds no copy of it", path.display())
             }
             Self::Refused(reason) => write!(f, "{reason}"),
         }
@@ -891,124 +891,13 @@ pub async fn restore_one(
         }
         None => crate::infra::clock::now_ms(),
     };
-    // A backup somebody names, or the ones this node keeps.
-    //
-    // **Both, because a backup that has been moved is still a backup.**
-    // The first version looked only in `backups/`, so taking one with
-    // `--out /root/somewhere` and then trying to restore from it was
-    // answered with "no backup on this node was taken before that
-    // moment" — true, and read in the middle of a recovery as "you have
-    // nothing", by somebody holding the thing in their hand. Found
-    // doing exactly that.
-    let named: Option<(PathBuf, Manifest)> = from.and_then(|path| {
-        let manifest = std::fs::read_to_string(path.join("manifest.json")).ok()?;
-        Some((
-            path.to_path_buf(),
-            serde_json::from_str::<Manifest>(&manifest).ok()?,
-        ))
-    });
-    if let Some(path) = from {
-        if named.is_none() {
-            return Err(NotRestored::NotABackup(path.to_path_buf()));
-        }
-    }
-
     let container = format!("{}.{}", project.slug, source.slug);
     let wanted = Wanted {
         container: &container,
         service: &source.id,
     };
-
-    // A backup somebody named is the whole answer: they are holding it,
-    // and its two failures are about *it* rather than about what this
-    // node has.
-    let (unpacks, taken_at) = match named {
-        Some((path, manifest)) => {
-            if manifest.taken_at > at {
-                return Err(NotRestored::NamedIsNewer(path));
-            }
-            if !holds(&manifest, wanted)
-                || !path
-                    .join("volumes")
-                    .join(&container)
-                    .join(row.engine.backup_file())
-                    .exists()
-            {
-                return Err(NotRestored::HoldsNoCopy(path));
-            }
-            (
-                Destination::Local(path.join("volumes").join(&container)),
-                manifest.taken_at,
-            )
-        }
-        None => {
-            // Here first, because a copy on this disk costs nothing to
-            // read. Only the backups whose volume is really on the disk:
-            // a manifest is a claim, and for a local one the file is the
-            // fact.
-            let here: Vec<(PathBuf, Manifest)> = taken(&config.node.data_dir)
-                .into_iter()
-                .filter(|(path, _)| {
-                    path.join("volumes")
-                        .join(&container)
-                        .join(row.engine.backup_file())
-                        .exists()
-                })
-                .collect();
-
-            match base_for(&here, at, Some(wanted)) {
-                Some((path, manifest)) => (
-                    Destination::Local(path.join("volumes").join(&container)),
-                    manifest.taken_at,
-                ),
-                // **Then wherever this node sends its backups.** With a
-                // destination there is nothing here at all: the local
-                // copy is removed the moment the transfer succeeds, which
-                // is the whole point of having sent it. So a node that
-                // had been backing itself up all week would be told by
-                // the machine that took them that it has none. Jorge
-                // asked exactly this question.
-                None => {
-                    let plan = crate::infra::backup::plan::plan(database).await;
-                    // Anywhere that is not the root just searched — a
-                    // bucket, another machine, or a second disk here.
-                    // Comparing against the root rather than asking
-                    // `is_remote` is the difference between "somewhere
-                    // else" and "on another machine", and only the first
-                    // is the question.
-                    let elsewhere = plan
-                        .destination
-                        .as_deref()
-                        .and_then(|text| Destination::parse(text).ok())
-                        .filter(|destination| {
-                            destination != &Destination::Local(config.node.data_dir.join("backups"))
-                        });
-                    let Some(destination) = elsewhere else {
-                        return Err(refusal(&here, at, config.node.data_dir.join("backups")));
-                    };
-                    // The manifests only — a listing and a few hundred
-                    // bytes each. What is downloaded is one volume,
-                    // later, by the deployment that unpacks it.
-                    let there = crate::infra::backup::destination::index(&destination, config)
-                        .await
-                        .map_err(NotRestored::Refused)?;
-                    match base_for(&there, at, Some(wanted)) {
-                        Some((at_destination, manifest)) => (
-                            at_destination.child(&format!("volumes/{container}")),
-                            manifest.taken_at,
-                        ),
-                        None => {
-                            return Err(refusal(
-                                &there,
-                                at,
-                                std::path::PathBuf::from(destination.display()),
-                            ))
-                        }
-                    }
-                }
-            }
-        }
-    };
+    let (unpacks, taken_at) =
+        find_copy(config, database, wanted, row.engine.backup_file(), at, from).await?;
 
     // Only Postgres replays to a moment. A MySQL copy is the backup as it
     // was taken, and a row saying otherwise would be a promise.
@@ -1035,6 +924,118 @@ pub async fn restore_one(
         from: unpacks.display(),
         taken_at,
         target: target.map(str::to_string),
+    })
+}
+
+/// The backup that holds one service's copy at or before a moment, and
+/// when it was taken: one somebody names, else this node's own, else the
+/// destination its schedule sends them to.
+///
+/// `marker` is what has to be inside the copy for it to count — a
+/// database's dump, a store's data directory — because for a local backup
+/// the manifest is a claim and the file is the fact.
+pub async fn find_copy(
+    config: &Config,
+    database: &wabot::sqlite::SqliteDatabase,
+    wanted: Wanted<'_>,
+    marker: &str,
+    at: i64,
+    from: Option<&Path>,
+) -> Result<(Destination, i64), NotRestored> {
+    // A backup somebody names, or the ones this node keeps.
+    //
+    // **Both, because a backup that has been moved is still a backup.**
+    // The first version looked only in `backups/`, so taking one with
+    // `--out /root/somewhere` and then trying to restore from it was
+    // answered with "no backup on this node was taken before that
+    // moment" — true, and read in the middle of a recovery as "you have
+    // nothing", by somebody holding the thing in their hand. Found
+    // doing exactly that.
+    let named: Option<(PathBuf, Manifest)> = from.and_then(|path| {
+        let manifest = std::fs::read_to_string(path.join("manifest.json")).ok()?;
+        Some((
+            path.to_path_buf(),
+            serde_json::from_str::<Manifest>(&manifest).ok()?,
+        ))
+    });
+    if let Some(path) = from {
+        if named.is_none() {
+            return Err(NotRestored::NotABackup(path.to_path_buf()));
+        }
+    }
+
+    let container = wanted.container;
+
+    // A backup somebody named is the whole answer: they are holding it,
+    // and its two failures are about *it* rather than about what this
+    // node has.
+    Ok(match named {
+        Some((path, manifest)) => {
+            if manifest.taken_at > at {
+                return Err(NotRestored::NamedIsNewer(path));
+            }
+            if !holds(&manifest, wanted)
+                || !path.join("volumes").join(container).join(marker).exists()
+            {
+                return Err(NotRestored::HoldsNoCopy(path));
+            }
+            (
+                Destination::Local(path.join("volumes").join(container)),
+                manifest.taken_at,
+            )
+        }
+        None => {
+            // Here first, because a copy on this disk costs nothing to
+            // read. Only the backups whose volume is really on the disk:
+            // a manifest is a claim, and for a local one the file is the
+            // fact.
+            let here: Vec<(PathBuf, Manifest)> = taken(&config.node.data_dir)
+                .into_iter()
+                .filter(|(path, _)| path.join("volumes").join(container).join(marker).exists())
+                .collect();
+
+            match base_for(&here, at, Some(wanted)) {
+                Some((path, manifest)) => (
+                    Destination::Local(path.join("volumes").join(container)),
+                    manifest.taken_at,
+                ),
+                // **Then wherever this node sends its backups.** With a
+                // destination there is nothing here at all: the local
+                // copy is removed the moment the transfer succeeds, which
+                // is the whole point of having sent it. So a node that
+                // had been backing itself up all week would be told by
+                // the machine that took them that it has none. Jorge
+                // asked exactly this question.
+                None => {
+                    let elsewhere =
+                        crate::infra::backup::plan::elsewhere(database, &config.node.data_dir)
+                            .await
+                            .and_then(|text| Destination::parse(&text).ok());
+                    let Some(destination) = elsewhere else {
+                        return Err(refusal(&here, at, config.node.data_dir.join("backups")));
+                    };
+                    // The manifests only — a listing and a few hundred
+                    // bytes each. What is downloaded is one volume,
+                    // later, by the deployment that unpacks it.
+                    let there = crate::infra::backup::destination::index(&destination, config)
+                        .await
+                        .map_err(NotRestored::Refused)?;
+                    match base_for(&there, at, Some(wanted)) {
+                        Some((at_destination, manifest)) => (
+                            at_destination.child(&format!("volumes/{container}")),
+                            manifest.taken_at,
+                        ),
+                        None => {
+                            return Err(refusal(
+                                &there,
+                                at,
+                                std::path::PathBuf::from(destination.display()),
+                            ))
+                        }
+                    }
+                }
+            }
+        }
     })
 }
 
@@ -1163,7 +1164,7 @@ async fn copy_volumes(
                     println!("  store       {container}  {}", human(bytes));
                     copied.push(Copied {
                         container,
-                        service: None,
+                        service: Some(service.clone()),
                         bytes,
                         how,
                     });

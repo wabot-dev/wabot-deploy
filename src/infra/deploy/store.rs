@@ -71,6 +71,7 @@ mod tests {
             version: garage::DEFAULT_VERSION.into(),
             rpc_secret: "ab".repeat(32),
             admin_token: "admin-token-value".into(),
+            restored_from: None,
         }
     }
 

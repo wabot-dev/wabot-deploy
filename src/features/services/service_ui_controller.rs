@@ -363,24 +363,13 @@ impl ServiceUiController {
         // the search happens when the form is submitted: `restore_one`
         // looks here first and at the destination second.
         let elsewhere = match service.kind.is_database() {
-            true => crate::infra::backup::plan::plan(&self.state.database)
+            true => {
+                crate::infra::backup::plan::elsewhere(
+                    &self.state.database,
+                    &self.state.config.node.data_dir,
+                )
                 .await
-                .destination
-                .filter(|text| {
-                    // Anywhere that is not this node's own root: a bucket,
-                    // another machine over SSH, or a second disk here.
-                    // The same comparison `restore_one` makes, so the card
-                    // is offered exactly when the search has a second
-                    // place to look.
-                    crate::infra::backup::destination::Destination::parse(text)
-                        .map(|destination| {
-                            destination
-                                != crate::infra::backup::destination::Destination::Local(
-                                    self.state.config.node.data_dir.join("backups"),
-                                )
-                        })
-                        .unwrap_or(false)
-                }),
+            }
             false => None,
         };
         let held_on = crate::infra::repositories::databases::primary_elsewhere(

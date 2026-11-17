@@ -514,9 +514,10 @@ happened:
 - A running container no row claims — what a restore from an older
   backup leaves — is on no page.
 - A store of buckets is one copy on the node that made it: no "Runs on",
-  no restoring one store into a new one, and its backup has Garage's
-  ten-minute window between the metadata snapshot and the last block
-  copied. aws-cli, boto3, the JavaScript SDK and rclone ran against one
+  and its backup has Garage's ten-minute window between the metadata
+  snapshot and the last block copied. It restores into a copy beside it,
+  without its keys; a restore from a backup that is only at a destination
+  has not run. aws-cli, boto3, the JavaScript SDK and rclone ran against one
   through the edge; a real browser and ACME have not — `docs/buckets.md`,
   "Where it stands".
 - MySQL is one copy: no read-only copies, and a restore reaches the

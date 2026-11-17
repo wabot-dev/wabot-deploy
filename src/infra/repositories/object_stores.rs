@@ -23,15 +23,36 @@ pub async fn create(database: &SqliteDatabase, store: &ObjectStore) -> PlatformR
         .write(move |connection| {
             connection.execute(
                 "INSERT INTO object_store \
-                   (\"service_id\", \"version\", \"rpc_secret\", \"admin_token\", \"created_at\") \
-                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                   (\"service_id\", \"version\", \"rpc_secret\", \"admin_token\", \
+                    \"restored_from\", \"created_at\") \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
                 (
                     row.service_id,
                     row.version,
                     row.rpc_secret,
                     row.admin_token,
+                    row.restored_from,
                     now_ms(),
                 ),
+            )?;
+            Ok(())
+        })
+        .await?;
+    Ok(())
+}
+
+pub async fn set_restored_from(
+    database: &SqliteDatabase,
+    service_id: &str,
+    from: Option<&str>,
+) -> PlatformResult<()> {
+    let service_id = service_id.to_string();
+    let from = from.map(str::to_string);
+    database
+        .write(move |connection| {
+            connection.execute(
+                "UPDATE object_store SET \"restored_from\" = ?2 WHERE \"service_id\" = ?1",
+                (&service_id, &from),
             )?;
             Ok(())
         })
@@ -48,7 +69,8 @@ pub async fn of_service(
         .read(move |connection| {
             connection
                 .query_row(
-                    "SELECT \"service_id\", \"version\", \"rpc_secret\", \"admin_token\" \
+                    "SELECT \"service_id\", \"version\", \"rpc_secret\", \"admin_token\", \
+                            \"restored_from\" \
                        FROM object_store WHERE \"service_id\" = ?1",
                     [service_id],
                     |row| {
@@ -57,6 +79,7 @@ pub async fn of_service(
                             version: row.get(1)?,
                             rpc_secret: row.get(2)?,
                             admin_token: row.get(3)?,
+                            restored_from: row.get(4)?,
                         })
                     },
                 )

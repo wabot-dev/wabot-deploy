@@ -15,11 +15,16 @@ use hyper_util::rt::TokioExecutor;
 use serde::Deserialize;
 use wabot::sqlite::SqliteDatabase;
 
+use crate::domain::entities::bucket::Bucket;
 use crate::domain::entities::bucket_key::BucketKey;
 use crate::domain::entities::object_store::ObjectStore;
 use crate::domain::policies::garage::{self, Permissions};
+use crate::domain::values::bucket_name::BucketName;
+use crate::domain::values::cors_origin::CorsOrigin;
 
 const TIMEOUT: Duration = Duration::from_secs(30);
+
+const PEER_LIST: &str = "peer_list";
 
 /// How long a store that has just started gets to answer. Garage opens its
 /// metadata and lays out its one node before the API does.
@@ -334,6 +339,46 @@ fn said(bytes: &[u8]) -> String {
     }
 }
 
+/// Put a backup's copy of a store's volume where a restored store will
+/// find it, unless it is there already from a deployment that brought it
+/// and then failed.
+///
+/// Copied beside the volume and renamed into it, so a deployment killed
+/// half-way through the copy leaves no metadata in the volume, and the next
+/// one starts the copy again rather than opening half of it.
+///
+/// The copy carries the original's own list of where its peers were, which
+/// names the original's address. The original is likely still running
+/// there, so the copy starts without the list.
+pub fn bring_volume(copy: &std::path::Path, volume: &std::path::Path) -> std::io::Result<bool> {
+    use std::io::{Error, ErrorKind};
+    let absent_is_fine = |result: std::io::Result<()>| match result {
+        Err(error) if error.kind() != ErrorKind::NotFound => Err(error),
+        _ => Ok(()),
+    };
+    if volume.join(garage::METADATA_DIR).exists() {
+        return Ok(false);
+    }
+    if !copy.join(garage::METADATA_DIR).is_dir() {
+        return Err(Error::new(
+            ErrorKind::NotFound,
+            "the backup's copy holds no metadata directory",
+        ));
+    }
+    let name = volume
+        .file_name()
+        .ok_or_else(|| Error::new(ErrorKind::InvalidInput, "a volume with no name"))?;
+    let staging = volume.with_file_name(format!(".{}.bringing", name.to_string_lossy()));
+    absent_is_fine(std::fs::remove_dir_all(&staging))?;
+    crate::infra::backup::copy_tree(copy, &staging)?;
+    absent_is_fine(std::fs::remove_file(
+        staging.join(garage::METADATA_DIR).join(PEER_LIST),
+    ))?;
+    absent_is_fine(std::fs::remove_dir_all(volume))?;
+    std::fs::rename(&staging, volume)?;
+    Ok(true)
+}
+
 /// Make a copy of a store's volume open as the snapshot Garage just wrote:
 /// the newest one becomes the metadata, the live file and its journal go,
 /// and so do the snapshots, which the copy would otherwise carry twice.
@@ -364,6 +409,102 @@ pub fn carry_newest_snapshot(volume: &std::path::Path) -> std::io::Result<()> {
         metadata.join(garage::METADATA_FILE),
     )?;
     std::fs::remove_dir_all(snapshots)
+}
+
+/// A bucket of a restored copy, as Garage holds it in the backup's
+/// metadata: its maximum, its CORS and its expiry. Never public, because a
+/// public name is the original's, and with no key, by Jorge's decision: two
+/// stores never open with one credential.
+fn adopted(service_id: &str, name: BucketName, info: &serde_json::Value) -> Bucket {
+    let bytes = info["bytes"].as_u64().unwrap_or(0);
+    let max_size = info["quotas"]["maxSize"]
+        .as_u64()
+        .unwrap_or(bytes.max(1024 * 1024));
+    let rules = |key: &str| {
+        info[key]
+            .as_array()
+            .map(|rules| rules.to_vec())
+            .unwrap_or_default()
+    };
+    let cors_origins = rules("corsRules")
+        .iter()
+        .flat_map(|rule| {
+            rule["AllowedOrigin"]
+                .as_array()
+                .map(|origins| origins.to_vec())
+                .unwrap_or_default()
+        })
+        .filter_map(|origin| {
+            origin
+                .as_str()
+                .and_then(|text| CorsOrigin::parse(text).ok())
+        })
+        .collect();
+    let lifecycle = rules("lifecycleRules");
+    let days = |pointer: &str| {
+        lifecycle
+            .iter()
+            .find_map(|rule| rule.pointer(pointer).and_then(|days| days.as_u64()))
+            .and_then(|days| u32::try_from(days).ok())
+            .filter(|days| *days > 0)
+    };
+    Bucket {
+        id: format!("bkt-{}", wabot::prelude::password::generate(12)),
+        service_id: service_id.to_string(),
+        name,
+        max_size,
+        public_hostname: None,
+        cors_origins,
+        expire_days: days("/Expiration/Days"),
+        abort_uploads_days: days("/AbortIncompleteMultipartUpload/DaysAfterInitiation"),
+    }
+}
+
+/// Make rows of the buckets a restored copy holds, then forget where it was
+/// restored from. Its keys are left to the convergence after this, which
+/// deletes every key no row names — which is all of them.
+///
+/// From Garage rather than from the backup's copy of the node's database:
+/// the snapshot is what the copy holds, and the rows have to say that.
+pub async fn adopt(
+    database: &SqliteDatabase,
+    store: &ObjectStore,
+    address: Ipv4Addr,
+) -> Result<usize, String> {
+    let admin = Admin::at(address, &store.admin_token);
+    admin.wait_until_up().await?;
+    let rows = crate::infra::repositories::object_stores::buckets(database, &store.service_id)
+        .await
+        .map_err(|error| error.to_string())?;
+    let mut made = 0;
+    for listed in admin.buckets().await? {
+        let Some(name) = listed
+            .global_aliases
+            .iter()
+            .find_map(|alias| BucketName::parse(alias).ok())
+        else {
+            continue;
+        };
+        if rows.iter().any(|row| row.name == name) {
+            continue;
+        }
+        let info: serde_json::Value = admin
+            .read(
+                Method::GET,
+                &format!("/v2/GetBucketInfo?id={}", listed.id),
+                None,
+            )
+            .await?;
+        let bucket = adopted(&store.service_id, name, &info);
+        crate::infra::repositories::object_stores::create_bucket(database, &bucket)
+            .await
+            .map_err(|error| format!("its bucket {} does not fit: {error}", bucket.name))?;
+        made += 1;
+    }
+    crate::infra::repositories::object_stores::set_restored_from(database, &store.service_id, None)
+        .await
+        .map_err(|error| error.to_string())?;
+    Ok(made)
 }
 
 /// The address of the copy of this store that runs here, if one does.
@@ -531,6 +672,99 @@ mod tests {
     fn write(path: &std::path::Path, text: &str) {
         std::fs::create_dir_all(path.parent().expect("parent")).expect("dir");
         std::fs::write(path, text).expect("write");
+    }
+
+    #[test]
+    fn a_restored_bucket_is_read_back_as_it_was_written_and_is_never_public() {
+        let original = Bucket {
+            id: "bkt-original".into(),
+            service_id: "s-original".into(),
+            name: BucketName::parse("uploads").expect("name"),
+            max_size: 5 * 1024 * 1024 * 1024,
+            public_hostname: Some("assets.shop.example.com".into()),
+            cors_origins: CorsOrigin::parse_lines("https://shop.example.com\n*").expect("origins"),
+            expire_days: Some(30),
+            abort_uploads_days: Some(7),
+        };
+        let mut info = garage::bucket_settings(&original);
+        info["bytes"] = serde_json::json!(1234);
+
+        let restored = adopted("s-copy", original.name.clone(), &info);
+
+        assert_eq!(
+            Bucket {
+                id: restored.id.clone(),
+                ..original.clone()
+            },
+            Bucket {
+                service_id: "s-original".into(),
+                public_hostname: Some("assets.shop.example.com".into()),
+                ..restored.clone()
+            }
+        );
+        assert_eq!(restored.service_id, "s-copy");
+        assert_eq!(restored.public_hostname, None);
+        assert_ne!(restored.id, original.id);
+    }
+
+    #[test]
+    fn a_restored_volume_leaves_the_originals_peers_behind_and_is_not_brought_twice() {
+        let dir = tempfile::tempdir().expect("dir");
+        let copy = dir.path().join("backup").join(garage::DATA_VOLUME);
+        write(
+            &copy.join(garage::METADATA_DIR).join(garage::METADATA_FILE),
+            "metadata",
+        );
+        write(
+            &copy.join(garage::METADATA_DIR).join(PEER_LIST),
+            "the original's address",
+        );
+        write(&copy.join("data").join("ab").join("block"), "an object");
+        let volume = dir
+            .path()
+            .join("volumes")
+            .join("shop.copy")
+            .join(garage::DATA_VOLUME);
+
+        assert!(bring_volume(&copy, &volume).expect("brought"));
+        assert_eq!(
+            std::fs::read_to_string(
+                volume
+                    .join(garage::METADATA_DIR)
+                    .join(garage::METADATA_FILE)
+            )
+            .expect("metadata"),
+            "metadata"
+        );
+        assert!(volume.join("data").join("ab").join("block").exists());
+        assert!(!volume.join(garage::METADATA_DIR).join(PEER_LIST).exists());
+
+        write(
+            &volume
+                .join(garage::METADATA_DIR)
+                .join(garage::METADATA_FILE),
+            "written since",
+        );
+        assert!(!bring_volume(&copy, &volume).expect("already there"));
+        assert_eq!(
+            std::fs::read_to_string(
+                volume
+                    .join(garage::METADATA_DIR)
+                    .join(garage::METADATA_FILE)
+            )
+            .expect("metadata"),
+            "written since"
+        );
+    }
+
+    #[test]
+    fn a_backup_with_no_metadata_in_it_is_not_brought() {
+        let dir = tempfile::tempdir().expect("dir");
+        let copy = dir.path().join("backup").join(garage::DATA_VOLUME);
+        write(&copy.join("data").join("block"), "an object");
+        let volume = dir.path().join("volume");
+        assert!(bring_volume(&copy, &volume).is_err());
+        assert!(!volume.exists());
     }
 
     #[test]

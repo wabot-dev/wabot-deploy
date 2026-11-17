@@ -23,6 +23,18 @@ pub struct Buckets<'a> {
     pub reserved: u64,
     pub disk: Option<u64>,
     pub running: bool,
+    /// Absent when no backup here holds this store and none are sent
+    /// anywhere: the form could only refuse.
+    pub restore: Option<Restore<'a>>,
+}
+
+pub struct Restore<'a> {
+    pub default_name: &'a str,
+    /// The copy's name under this node's domain, with `<name>` for its own.
+    pub derived: Option<&'a str>,
+    /// Where this node sends its backups, when that is not this machine:
+    /// with a schedule and a bucket there is nothing here at all.
+    pub elsewhere: Option<&'a str>,
 }
 
 pub fn render<'a>(page: &'a Buckets<'a>) -> impl Renderable + 'a {
@@ -114,5 +126,54 @@ pub fn render<'a>(page: &'a Buckets<'a>) -> impl Renderable + 'a {
                 </form>
             }
         </section>
+
+        @if let Some(restore) = &page.restore {
+            <section class="stack" id="restore">
+                <p class="card-label">(t("Restore into a copy"))</p>
+                <form method="post"
+                      action=(format!("/projects/{}/stores/{}/restore", page.project.slug, page.service.slug))
+                      class="card stack">
+                    <label for="restore-at">(t("Up to which moment"))</label>
+                    <input id="restore-at" name="at" type="text" autocomplete="off" class="mono" value="">
+                    <p class="field-hint">(t("UTC: 2026-08-16 14:32. The copy is the newest backup taken \
+                         at or before it — nothing between two backups can be reached. Empty means the \
+                         newest backup there is."))</p>
+
+                    <label for="restore-into">(t("Call the copy"))</label>
+                    <input id="restore-into" name="into" type="text" autocomplete="off" class="mono"
+                           value="" placeholder=(restore.default_name)>
+                    <p class="field-hint">(t("A new store in this project, with the original's buckets, \
+                         rules and ceilings, a name and an address of its own, and none of its keys: a \
+                         bucket's are made again on the copy, so no credential opens both. The original \
+                         keeps running and keeps its objects."))</p>
+                    <label for="restore-hostname">(t("Address"))</label>
+                    @if let Some(derived) = restore.derived {
+                        <input id="restore-hostname" name="hostname" type="text" autocomplete="off"
+                               class="mono" placeholder=(derived)>
+                        <p class="field-hint">(t("The name clients reach it at over HTTPS. Empty is the \
+                             one shown, with the store's name in place of <name>. It has to point at \
+                             this node."))</p>
+                    } @else {
+                        <input id="restore-hostname" name="hostname" type="text" autocomplete="off"
+                               class="mono" required>
+                        <p class="field-hint">(t("The name clients reach it at over HTTPS. This node has \
+                             no domain to derive one under, so it has to be typed, and it has to point \
+                             at this node."))</p>
+                    }
+                    <p class="field-hint">(t("It brings its buckets at its first deployment, which starts \
+                         as soon as you press this. None of them is public: a public name stays with the \
+                         original."))</p>
+                    @if let Some(destination) = restore.elsewhere {
+                        <p class="field-hint">(t("The backup is looked for on this machine first, then at "))<span class="mono">(destination)</span>
+                            (t(" — where a schedule sends them, and where they are the only copy once the \
+                             transfer has succeeded. Downloading it is part of that first deployment, so a \
+                             large one takes as long as it takes."))</p>
+                    }
+                    <div class="actions">
+                        <button class="btn btn-secondary" type="submit">(t("Restore into a copy"))</button>
+                    </div>
+                </form>
+            </section>
+        }
     }
 }

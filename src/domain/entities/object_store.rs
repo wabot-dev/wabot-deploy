@@ -7,4 +7,7 @@ pub struct ObjectStore {
     pub version: String,
     pub rpc_secret: String,
     pub admin_token: String,
+    /// The backup a copy restored from one brings its volume from, until
+    /// its buckets are rows again.
+    pub restored_from: Option<String>,
 }

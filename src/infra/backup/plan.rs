@@ -137,6 +137,20 @@ pub const SUNDAY: u8 = 6;
 pub const MIN_KEEP_DAYS: i64 = 1;
 
 /// What this node has decided, or the defaults where it has not said.
+/// Where this node sends its backups, when that is anywhere but its own
+/// root: a bucket, another machine, or a second disk here. Compared against
+/// the root rather than asked `is_remote`, because "somewhere else" is the
+/// question a restore asks when it finds nothing here, and a second disk is
+/// somewhere else without being another machine.
+pub async fn elsewhere(database: &SqliteDatabase, data_dir: &std::path::Path) -> Option<String> {
+    plan(database).await.destination.filter(|text| {
+        crate::infra::backup::destination::Destination::parse(text).is_ok_and(|destination| {
+            destination
+                != crate::infra::backup::destination::Destination::Local(data_dir.join("backups"))
+        })
+    })
+}
+
 pub async fn plan(database: &SqliteDatabase) -> Plan {
     let default = Plan::default();
     Plan {

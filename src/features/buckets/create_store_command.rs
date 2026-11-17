@@ -140,6 +140,7 @@ impl CreateStore<'_> {
                 version: garage::DEFAULT_VERSION.to_string(),
                 rpc_secret: rpc_secret(),
                 admin_token: wabot::prelude::password::generate(40),
+                restored_from: None,
             },
         )
         .await

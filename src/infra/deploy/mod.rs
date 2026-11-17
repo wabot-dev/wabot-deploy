@@ -846,6 +846,9 @@ impl Deployer {
                         service.slug
                     ))
                 })?;
+        if let Some(from) = &row.restored_from {
+            self.bring_store(service, id, from).await?;
+        }
         Ok(Some(store::prepare(
             &self.config.node.data_dir,
             id,
@@ -854,12 +857,55 @@ impl Deployer {
         )?))
     }
 
+    /// A store restored into a copy is made empty, and its volume arrives
+    /// here, before Garage first starts on it. A backup at the schedule's
+    /// destination is fetched first: that is minutes, and a form is not.
+    async fn bring_store(&self, service: &Service, id: &str, from: &str) -> DeployResult<()> {
+        let base = match crate::infra::backup::destination::Destination::parse(from) {
+            Ok(remote) if remote.is_remote() => {
+                let into = database::fetched_dir(&self.config.node.data_dir, id);
+                tracing::info!(service = %service.slug, from = %remote.display(), "fetching a store's backup");
+                crate::infra::backup::destination::fetch_dir(&remote, &into, &self.config)
+                    .await
+                    .map_err(|reason| {
+                        DeployError::Refused(format!(
+                            "the backup could not be fetched from {}: {reason}",
+                            remote.display()
+                        ))
+                    })?
+            }
+            _ => std::path::PathBuf::from(from),
+        };
+        let volume = volumes::directory(
+            &self.config.node.data_dir,
+            id,
+            crate::domain::policies::garage::DATA_VOLUME,
+        );
+        crate::infra::garage::bring_volume(
+            &base.join(crate::domain::policies::garage::DATA_VOLUME),
+            &volume,
+        )
+        .map_err(|error| {
+            DeployError::Refused(format!(
+                "the store's copy in {from} could not be put in place: {error}"
+            ))
+        })?;
+        Ok(())
+    }
+
     async fn converge_store(&self, service: &Service, address: Ipv4Addr) -> Result<(), String> {
         let row =
             crate::infra::repositories::object_stores::of_service(&self.database, &service.id)
                 .await
                 .map_err(|error| error.to_string())?
                 .ok_or("no store row")?;
+        if row.restored_from.is_some() {
+            crate::infra::garage::adopt(&self.database, &row, address)
+                .await
+                .map_err(|reason| {
+                    format!("the restored copy's buckets are not rows yet: {reason}")
+                })?;
+        }
         crate::infra::garage::converge(&self.database, &row, address)
             .await
             .map_err(|reason| {

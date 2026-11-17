@@ -292,6 +292,10 @@ fn migrations() -> Vec<Migration> {
             "0073_public_buckets",
             include_str!("../../migrations/0073_public_buckets.sql"),
         ),
+        Migration::new(
+            "0074_restored_stores",
+            include_str!("../../migrations/0074_restored_stores.sql"),
+        ),
     ]
 }
 
