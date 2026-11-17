@@ -516,8 +516,8 @@ happened:
 - A store of buckets is one copy on the node that made it: no "Runs on",
   no restoring one store into a new one, and its backup has Garage's
   ten-minute window between the metadata snapshot and the last block
-  copied. boto3, the JavaScript SDK, rclone, multipart uploads of
-  hundreds of MB and ACME have not run against one — `docs/buckets.md`,
+  copied. aws-cli, boto3, the JavaScript SDK and rclone ran against one
+  through the edge; a real browser and ACME have not — `docs/buckets.md`,
   "Where it stands".
 - MySQL is one copy: no read-only copies, and a restore reaches the
   moment of a backup. The grants the replica phase needs are already on

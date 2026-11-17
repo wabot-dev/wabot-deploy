@@ -357,9 +357,38 @@ GET, an unsigned GET refused, the quota refusing a 2 MB object in a 1 MB
 bucket with Garage's sentence, CORS and expiry as above, deletion refused
 for a bucket holding an object, a revoked key stopping at once, public
 read as above, `memory.high` at 224 MB under a 256 MB ceiling (11.5 MB in
-use idle), and the backup. **Not measured yet**: boto3, the JavaScript
-SDK and rclone, a range GET, a multipart upload of hundreds of MB, a
-presigned PUT from a browser, and anything with ACME on.
+use idle), and the backup. **Not measured yet**: a real browser, and
+anything with ACME on.
+
+**The clients, measured the same day** (aws-cli 2, boto3 1.35.71,
+`@aws-sdk/client-s3` 3.1170.0, rclone 1.68.2), each through the edge:
+a PUT, a range GET returning exactly its bytes, a multipart upload (300
+MB from aws-cli in 8 s, 50 MB from boto3, 40 MB from the JavaScript SDK,
+30 MB from rclone) coming back byte for byte, a listing with a delimiter
+answering its prefixes, a copy, a batch delete, a presigned GET and PUT.
+Each one without path-style fails exactly as the page says it will, by
+asking DNS for `<bucket>.<store>`. The node's own memory went from 27 to
+30 MB while 300 MB went up and came back down; Garage's container
+touched 226 MB, its `memory.high`, and was not killed.
+
+Two clients need a second setting, and both are about presigned URLs, so
+the page says them beside path-style:
+
+- **boto3 signs a presigned URL with SigV2** (`AWSAccessKeyId`,
+  `Signature`, `Expires`) unless given `signature_version="s3v4"`.
+  Garage reads only SigV4 and answers "does not support anonymous access
+  yet" — 403, for a GET and a PUT alike.
+- **The JavaScript SDK puts a CRC32 into a presigned PUT**
+  (`x-amz-checksum-crc32` and `x-amz-sdk-checksum-algorithm`, signed),
+  computed over the empty body it had when presigning. Every upload to
+  that URL is then refused with `InvalidDigest`.
+  `requestChecksumCalculation: "WHEN_REQUIRED"` leaves it out.
+
+What a browser would see, with `curl` sending its `Origin`: the
+preflight for a presigned PUT answered for a listed origin, and the PUT
+and one part of a multipart upload each answered with `etag` and
+`access-control-expose-headers: ETag`, which is what completing the
+upload in a browser needs.
 
 Every sentence a phase adds has its Spanish in that phase. "Garage" is a
 product name and "bucket" is the word S3 users use in both languages;

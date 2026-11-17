@@ -53,11 +53,15 @@ pub fn render<'a>(page: &'a Buckets<'a>) -> impl Renderable + 'a {
             <table>
                 <tbody>
                     <tr><td>"aws"</td><td class="mono">"aws configure set default.s3.addressing_style path"</td></tr>
-                    <tr><td>"boto3"</td><td class="mono">"Config(s3={\"addressing_style\": \"path\"})"</td></tr>
-                    <tr><td>"@aws-sdk/client-s3"</td><td class="mono">"forcePathStyle: true"</td></tr>
-                    <tr><td>"rclone"</td><td class="mono">"force_path_style = true"</td></tr>
+                    <tr><td>"boto3"</td><td class="mono">"Config(signature_version=\"s3v4\", s3={\"addressing_style\": \"path\"})"</td></tr>
+                    <tr><td>"@aws-sdk/client-s3"</td><td class="mono">"forcePathStyle: true, requestChecksumCalculation: \"WHEN_REQUIRED\""</td></tr>
+                    <tr><td>"rclone"</td><td class="mono">"provider = Other, force_path_style = true"</td></tr>
                 </tbody>
             </table>
+            <p class="field-hint">(t("The other two settings are for presigned URLs. Unless told s3v4, \
+                 boto3 signs one the old way, which the store reads as no signature at all. And the \
+                 JavaScript SDK puts the checksum of an empty body into a presigned upload, so \
+                 anything uploaded to it is refused as not matching."))</p>
         </section>
 
         <section class="card stack" id="buckets">
