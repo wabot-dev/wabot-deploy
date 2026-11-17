@@ -515,8 +515,9 @@ happened:
 - MySQL is one copy: no read-only copies, and a restore reaches the
   moment of a backup. The grants the replica phase needs are already on
   every one — `docs/databases.md`, "MySQL".
-- Valkey is one copy too, and its "Runs on" has not run between two
-  machines. A store's container gets `memory.high` 16 MB under its
+- Valkey is one copy too. Its "Runs on" ran between node-0 and node-l1,
+  but a backup taken there and a client reaching it by name have not
+  been seen. A store's container gets `memory.high` 16 MB under its
   ceiling, without which dirty AOF pages got it killed at 64 and 128 MB —
   `docs/databases.md`, "Valkey".
 - A database whose primary was made on another node is reached by name

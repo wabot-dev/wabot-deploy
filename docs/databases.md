@@ -1315,7 +1315,7 @@ database that was empty.
 
 Asked for on 2026-11-16 as "Redis or Valkey", decided by Jorge the same
 day, and built the same day: phases 1 to 6 ran on the VM node, and phase
-7 does not run between two machines yet. The decisions are his. Where
+7 ran between node-0 and node-l1 on v0.37.0. The decisions are his. Where
 the measurements changed the plan, this section says what the plan was
 and why it is not that any more.
 
@@ -1614,23 +1614,28 @@ rung.
    to be seeded.
 6. **`import`.** Done, with the Redis-format question answered: 7.4 and
    later are refused.
-7. **"Runs on"** and its version gate. Built and tested, not run: like
-   the rest of "A primary on another node", it does not run between two
-   machines until node-0 and node-l1 both run it.
+7. **"Runs on"** and its version gate. Ran on v0.37.0, 2026-11-16: a
+   store made on node-0 with its one copy on node-l1 runs there with its
+   own `/data`, restarted and loaded its AOF from it, and node-0's page
+   shows the copy, its state and its log as read from node-l1. Not yet
+   seen there: a key surviving a restart (it held none), a client by
+   name, or node-l1 taking its backup.
 
 Every sentence the form and the page add has its Spanish. "Valkey" is a
 product name and is not translated.
 
 ### Not measured on a node
 
+A certificate handed to a running server was, on node-l1: two minutes
+after a restart the files changed under it, and its log says `TLS
+materials changed, reloading in background` and, a second later,
+`reloaded successfully`, with no signal and no restart from the node.
+
 - **A resize.** The VM had promised all its memory to the services of
   other projects, and the node refused 128 MB with its usual sentence.
   The numbers a resize writes are the ones the table above measured,
   and the path is every engine's.
 - **2 and 4 GB.**
-- **A renewal handed to a running server.** The reload was measured by
-  hand against a container; the node's renewal loop has not yet handed
-  one over.
 
 ### Not decided yet
 
