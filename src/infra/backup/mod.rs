@@ -985,54 +985,59 @@ pub async fn find_copy(
             )
         }
         None => {
-            // Here first, because a copy on this disk costs nothing to
-            // read. Only the backups whose volume is really on the disk:
-            // a manifest is a claim, and for a local one the file is the
+            // Only the backups whose volume is really on the disk: a
+            // manifest is a claim, and for a local one the file is the
             // fact.
             let here: Vec<(PathBuf, Manifest)> = taken(&config.node.data_dir)
                 .into_iter()
                 .filter(|(path, _)| path.join("volumes").join(container).join(marker).exists())
                 .collect();
-
-            match base_for(&here, at, Some(wanted)) {
-                Some((path, manifest)) => (
+            let local = base_for(&here, at, Some(wanted)).map(|(path, manifest)| {
+                (
                     Destination::Local(path.join("volumes").join(container)),
                     manifest.taken_at,
-                ),
-                // **Then wherever this node sends its backups.** With a
-                // destination there is nothing here at all: the local
-                // copy is removed the moment the transfer succeeds, which
-                // is the whole point of having sent it. So a node that
-                // had been backing itself up all week would be told by
-                // the machine that took them that it has none. Jorge
-                // asked exactly this question.
-                None => {
-                    let elsewhere =
-                        crate::infra::backup::plan::elsewhere(database, &config.node.data_dir)
-                            .await
-                            .and_then(|text| Destination::parse(&text).ok());
-                    let Some(destination) = elsewhere else {
-                        return Err(refusal(&here, at, config.node.data_dir.join("backups")));
-                    };
-                    // The manifests only — a listing and a few hundred
-                    // bytes each. What is downloaded is one volume,
-                    // later, by the deployment that unpacks it.
-                    let there = crate::infra::backup::destination::index(&destination, config)
-                        .await
-                        .map_err(NotRestored::Refused)?;
-                    match base_for(&there, at, Some(wanted)) {
-                        Some((at_destination, manifest)) => (
-                            at_destination.child(&format!("volumes/{container}")),
-                            manifest.taken_at,
-                        ),
-                        None => {
-                            return Err(refusal(
-                                &there,
-                                at,
-                                std::path::PathBuf::from(destination.display()),
-                            ))
-                        }
-                    }
+                )
+            });
+
+            // **And wherever this node sends its backups.** With a
+            // destination there is usually nothing here: the local copy is
+            // removed the moment the transfer succeeds. Asked even when
+            // something is here, because what is here can be a month older
+            // than last night's at the destination — a backup taken before
+            // the schedule was set — and the form promises the newest.
+            let elsewhere = crate::infra::backup::plan::elsewhere(database, &config.node.data_dir)
+                .await
+                .and_then(|text| Destination::parse(&text).ok());
+            let Some(destination) = elsewhere else {
+                return local
+                    .ok_or_else(|| refusal(&here, at, config.node.data_dir.join("backups")));
+            };
+            // The manifests only — a listing and a few hundred bytes each.
+            // What is downloaded is one volume, later, by the deployment
+            // that unpacks it. A destination that does not answer leaves
+            // the copy here, which is what a restore had before it was
+            // asked at all; one with nothing here has nothing else to try.
+            let there = match crate::infra::backup::destination::index(&destination, config).await {
+                Ok(there) => there,
+                Err(reason) => return local.ok_or(NotRestored::Refused(reason)),
+            };
+            let far = base_for(&there, at, Some(wanted)).map(|(at_destination, manifest)| {
+                (
+                    at_destination.child(&format!("volumes/{container}")),
+                    manifest.taken_at,
+                )
+            });
+            // The same backup in both places is read here: it costs nothing.
+            match (local, far) {
+                (Some(local), Some(far)) if far.1 > local.1 => far,
+                (Some(local), _) => local,
+                (None, Some(far)) => far,
+                (None, None) => {
+                    return Err(refusal(
+                        &there,
+                        at,
+                        std::path::PathBuf::from(destination.display()),
+                    ))
                 }
             }
         }
@@ -1544,6 +1549,98 @@ fn human(bytes: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn a_backup_holding(root: &Path, taken_at: i64, container: &str, marker: &str) -> PathBuf {
+        let backup = root
+            .join("nodes")
+            .join("nd-test")
+            .join(taken_at.to_string());
+        std::fs::create_dir_all(backup.join("volumes").join(container).join(marker))
+            .expect("a copy");
+        std::fs::write(
+            backup.join("manifest.json"),
+            serde_json::json!({
+                "format": 1,
+                "taken_by": "wabot-deploy 0.0.0-test",
+                "taken_at": taken_at,
+                "node_id": "nd-test",
+                "node_name": "test",
+                "volumes": [{ "container": container, "bytes": 1, "how": "Consistent" }],
+                "images": [],
+            })
+            .to_string(),
+        )
+        .expect("the manifest");
+        backup
+    }
+
+    /// The first version looked at the destination only when nothing was
+    /// here, so a backup taken before the schedule was set beat last
+    /// night's, under a form that promised the newest.
+    #[tokio::test]
+    async fn the_newest_backup_is_found_whether_it_is_here_or_at_the_destination() {
+        let dir = tempfile::tempdir().expect("dir");
+        let mut config = Config::default();
+        config.node.data_dir = dir.path().join("node");
+        let database = crate::infra::db::open_in_memory().await.expect("open");
+        let away = dir.path().join("second-disk");
+        crate::infra::backup::plan::store(
+            &database,
+            &crate::infra::backup::plan::Plan {
+                destination: Some(away.display().to_string()),
+                ..crate::infra::backup::plan::Plan::default()
+            },
+        )
+        .await
+        .expect("the plan");
+        let wanted = Wanted {
+            container: "shop.files",
+            service: "svc-files",
+        };
+        let now = crate::infra::clock::now_ms();
+        let month_ago = now - 30 * 86_400_000;
+        let last_night = now - 8 * 3_600_000;
+
+        a_backup_holding(
+            &config.node.data_dir.join("backups"),
+            month_ago,
+            "shop.files",
+            "data",
+        );
+        let far = a_backup_holding(&away, last_night, "shop.files", "data");
+        let (from, taken_at) = find_copy(&config, &database, wanted, "data", now, None)
+            .await
+            .expect("found");
+        assert_eq!(taken_at, last_night);
+        assert_eq!(
+            from,
+            Destination::Local(far.join("volumes").join("shop.files"))
+        );
+
+        let (_, taken_at) = find_copy(&config, &database, wanted, "data", last_night - 1, None)
+            .await
+            .expect("found");
+        assert_eq!(
+            taken_at, month_ago,
+            "a moment before last night reaches the older one"
+        );
+
+        let today = now - 3_600_000;
+        let here = a_backup_holding(
+            &config.node.data_dir.join("backups"),
+            today,
+            "shop.files",
+            "data",
+        );
+        let (from, taken_at) = find_copy(&config, &database, wanted, "data", now, None)
+            .await
+            .expect("found");
+        assert_eq!(taken_at, today);
+        assert_eq!(
+            from,
+            Destination::Local(here.join("volumes").join("shop.files"))
+        );
+    }
 
     fn claims(entries: &[(&str, bool)]) -> std::collections::HashMap<String, bool> {
         entries

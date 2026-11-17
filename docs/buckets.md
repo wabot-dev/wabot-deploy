@@ -305,18 +305,22 @@ the Buckets tab — and **without its keys**, decided by Jorge on
 leaked from the original does not open its copy too. What it does:
 
 - The form finds the backup the way a database's restore does, through
-  the same `find_copy`: one at or before the moment, here first and then
-  at the schedule's destination. A manifest entry now names the store's
-  service, so a later store with the same name is not given this one's
-  copy.
+  the same `find_copy`: the newest at or before the moment, here and at
+  the schedule's destination. Both, because the first version looked at
+  the destination only when nothing was here, and a backup taken before
+  the schedule was set then beat last night's — for databases too. A
+  destination that does not answer leaves the one here. A manifest entry
+  now names the store's service, so a later store with the same name is
+  not given this one's copy.
 - `CreateStore` makes the copy with the original's memory, disk and
   allowlist, and a name and address of its own. The row carries
   `restored_from` (migration 0074).
 - At its first deployment, before Garage starts, the volume is copied
   beside its directory and renamed into it, so a deployment killed half
   way leaves no metadata to be mistaken for a finished copy. A backup at
-  the destination is fetched first, with `fetch_dir`, as for a database.
-  The original's `peer_list` is left behind: it names the original's
+  the destination is fetched first, with `fetch_dir`, as for a database,
+  and removed once the volume holds it; a volume already brought is not
+  fetched again. The original's `peer_list` is left behind: it names the original's
   address, and the original is usually still there.
 - Once Garage answers, every bucket it holds becomes a row with its
   quota, CORS origins and expiry read back from `GetBucketInfo`, and
@@ -333,6 +337,19 @@ unknown to the original. The public name stayed with the original, and
 the copy's log shows no attempt to reach it. A moment before every
 backup and a name already taken were each refused with a sentence, and
 left nothing made.
+
+And from the destination, the same day: the node's backups pointed at a
+bucket of that copy (`s3://backups/node`, its endpoint the copy's own
+port 3900), an object put in the original that no backup on the disk
+held, and "Back up now". With two older backups of `shop/files` still on
+the disk, the restore fetched the newest from the bucket, and the object
+was in the copy, and what was fetched was gone from the disk once the
+volume held it.
+
+Every object up to then was smaller than 3 KB, which Garage keeps inside
+its metadata, so no block had made the journey. A 5 MB object did,
+through the bucket: the copy returned it with the same sha256, and a new
+1 MB object written to the copy came back the same.
 
 **What it costs**: a backup is the whole of what is stored. The Backup
 tab already says the size of what it sends.
@@ -391,9 +408,9 @@ GET, an unsigned GET refused, the quota refusing a 2 MB object in a 1 MB
 bucket with Garage's sentence, CORS and expiry as above, deletion refused
 for a bucket holding an object, a revoked key stopping at once, public
 read as above, `memory.high` at 224 MB under a 256 MB ceiling (11.5 MB in
-use idle), the backup, and a restore into a copy ("Backups and restore").
-**Not measured yet**: a real browser, anything with ACME on, and a
-restore from a backup that is only at a destination.
+use idle), the backup, and a restore into a copy, from the disk and from
+a bucket ("Backups and restore"). **Not measured yet**: a real browser,
+and anything with ACME on.
 
 **The clients, measured the same day** (aws-cli 2, boto3 1.35.71,
 `@aws-sdk/client-s3` 3.1170.0, rclone 1.68.2), each through the edge:

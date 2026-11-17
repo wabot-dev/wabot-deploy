@@ -361,7 +361,7 @@ impl ServiceUiController {
         // "have you got one" on every page render would make an unrelated
         // page depend on somebody's network. So the card is offered, and
         // the search happens when the form is submitted: `restore_one`
-        // looks here first and at the destination second.
+        // looks in both places and takes the newer.
         let elsewhere = match service.kind.is_database() {
             true => {
                 crate::infra::backup::plan::elsewhere(

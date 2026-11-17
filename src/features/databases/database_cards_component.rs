@@ -188,8 +188,7 @@ pub fn restore_card<'a>(
                          as long to come up as it took to copy."))</p>
                 }
                 @if let Some(destination) = elsewhere {
-                    <p class="field-hint">(t("The backup is looked for on this machine first, \
-                         then at "))<span class="mono">(destination)</span>
+                    <p class="field-hint">(t("The newest backup is looked for both on this machine and at "))<span class="mono">(destination)</span>
                         (t(" — where a schedule sends them, and where they are the only copy \
                          once the transfer has succeeded. Downloading it is part of that first \
                          deployment, so a large one takes as long as it takes."))</p>

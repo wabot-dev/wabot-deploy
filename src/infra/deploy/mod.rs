@@ -860,8 +860,23 @@ impl Deployer {
     /// A store restored into a copy is made empty, and its volume arrives
     /// here, before Garage first starts on it. A backup at the schedule's
     /// destination is fetched first: that is minutes, and a form is not.
+    ///
+    /// What was fetched is removed once the volume holds it, so it is not
+    /// a second copy of the whole store sitting on the disk; a volume
+    /// already brought is not fetched again for the same reason.
     async fn bring_store(&self, service: &Service, id: &str, from: &str) -> DeployResult<()> {
-        let base = match crate::infra::backup::destination::Destination::parse(from) {
+        let volume = volumes::directory(
+            &self.config.node.data_dir,
+            id,
+            crate::domain::policies::garage::DATA_VOLUME,
+        );
+        if volume
+            .join(crate::domain::policies::garage::METADATA_DIR)
+            .exists()
+        {
+            return Ok(());
+        }
+        let fetched = match crate::infra::backup::destination::Destination::parse(from) {
             Ok(remote) if remote.is_remote() => {
                 let into = database::fetched_dir(&self.config.node.data_dir, id);
                 tracing::info!(service = %service.slug, from = %remote.display(), "fetching a store's backup");
@@ -872,15 +887,14 @@ impl Deployer {
                             "the backup could not be fetched from {}: {reason}",
                             remote.display()
                         ))
-                    })?
+                    })?;
+                Some(into)
             }
-            _ => std::path::PathBuf::from(from),
+            _ => None,
         };
-        let volume = volumes::directory(
-            &self.config.node.data_dir,
-            id,
-            crate::domain::policies::garage::DATA_VOLUME,
-        );
+        let base = fetched
+            .clone()
+            .unwrap_or_else(|| std::path::PathBuf::from(from));
         crate::infra::garage::bring_volume(
             &base.join(crate::domain::policies::garage::DATA_VOLUME),
             &volume,
@@ -890,6 +904,11 @@ impl Deployer {
                 "the store's copy in {from} could not be put in place: {error}"
             ))
         })?;
+        if let Some(fetched) = fetched {
+            if let Err(error) = std::fs::remove_dir_all(&fetched) {
+                tracing::warn!(directory = %fetched.display(), %error, "removing a fetched backup");
+            }
+        }
         Ok(())
     }
 
