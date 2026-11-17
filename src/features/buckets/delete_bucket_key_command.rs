@@ -36,12 +36,7 @@ impl DeleteBucketKey<'_> {
         object_stores::delete_key(database, &self.key.id)
             .await
             .map_err(|error| error.to_string())?;
-        if crate::infra::deploy::stores::held_elsewhere(database, &self.service.id)
-            .await
-            .is_some()
-        {
-            crate::infra::deploy::stores::apply(database, self.service).await?;
-        }
+        crate::infra::deploy::stores::apply(database, self.service).await?;
         Ok(())
     }
 }

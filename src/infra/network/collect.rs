@@ -1644,18 +1644,6 @@ async fn hold_store(
     crate::infra::garage::converge_if_running(database, &service.id)
         .await
         .map_err(|reason| format!("the store did not take its buckets and keys: {reason}"))?;
-    if kept.is_ok() {
-        for replica in replicas::of_service(database, &service.id)
-            .await
-            .map_err(refused)?
-            .into_iter()
-            .filter(|replica| replica.is_here() && replica.last_error.is_some())
-        {
-            replicas::set_last_error(database, &replica.id, None)
-                .await
-                .map_err(refused)?;
-        }
-    }
     kept
 }
 

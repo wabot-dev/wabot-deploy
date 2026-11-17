@@ -806,9 +806,15 @@ impl Deployer {
         // A store converges first, so a store that died says why rather than
         // that its API never answered.
         if let (Ok(Some(address)), true) = (&result, service.kind.is_store()) {
-            if let Err(reason) = self.converge_store(service, *address).await {
-                tracing::warn!(service = %service.slug, %reason, "the store did not converge");
-                replicas::set_last_error(&self.database, &replica.id, Some(&reason)).await?;
+            match self.converge_store(service, *address).await {
+                Ok(None) => {}
+                Ok(Some(lost)) => {
+                    replicas::set_last_error(&self.database, &replica.id, Some(&lost)).await?;
+                }
+                Err(reason) => {
+                    tracing::warn!(service = %service.slug, %reason, "the store did not converge");
+                    replicas::set_last_error(&self.database, &replica.id, Some(&reason)).await?;
+                }
             }
         }
         if matches!(result, Ok(Some(_))) && service.kind.is_managed() {
@@ -913,7 +919,11 @@ impl Deployer {
         Ok(())
     }
 
-    async fn converge_store(&self, service: &Service, address: Ipv4Addr) -> Result<(), String> {
+    async fn converge_store(
+        &self,
+        service: &Service,
+        address: Ipv4Addr,
+    ) -> Result<Option<String>, String> {
         let row =
             crate::infra::repositories::object_stores::of_service(&self.database, &service.id)
                 .await

@@ -307,18 +307,23 @@ impl Admin {
         Ok((minted.access_key_id, secret))
     }
 
-    async fn give_back(&self, key: &BucketKey) -> Result<(), String> {
-        self.call(
-            Method::POST,
-            "/v2/ImportKey",
-            Some(serde_json::json!({
-                "accessKeyId": key.access_key_id,
-                "secretAccessKey": key.secret_key,
-                "name": key.name,
-            })),
-        )
-        .await
-        .map(|_| ())
+    /// `false` for an id Garage has deleted: it keeps the id for ever and
+    /// answers 409, so that a key once revoked cannot be brought back by
+    /// whoever still has its secret.
+    async fn give_back(&self, key: &BucketKey) -> Result<bool, String> {
+        let body = serde_json::json!({
+            "accessKeyId": key.access_key_id,
+            "secretAccessKey": key.secret_key,
+            "name": key.name,
+        });
+        match self.send(Method::POST, "/v2/ImportKey", Some(body)).await? {
+            (409, _) => Ok(false),
+            (status, _) if (200..300).contains(&status) => Ok(true),
+            (status, bytes) => Err(format!(
+                "the store refused /v2/ImportKey ({status}): {}",
+                said(&bytes)
+            )),
+        }
     }
 
     pub async fn delete_key(&self, access_key_id: &str) -> Result<(), String> {
@@ -573,18 +578,34 @@ pub async fn admin_for(database: &SqliteDatabase, service_id: &str) -> Result<Ad
 
 /// The pass, on the copy running here. `Ok(false)` when none runs: the next
 /// deployment converges, and nothing is reachable until it does.
+///
+/// A pass that applied everything clears what the copy's row said, so the
+/// sentence naming a lost key leaves with the key.
 pub async fn converge_if_running(
     database: &SqliteDatabase,
     service_id: &str,
 ) -> Result<bool, String> {
+    use crate::infra::repositories::replicas;
     let Some(address) = running_here(database, service_id).await else {
         return Ok(false);
     };
+    let refused = |error: crate::domain::errors::PlatformError| error.to_string();
     let store = crate::infra::repositories::object_stores::of_service(database, service_id)
         .await
-        .map_err(|error| error.to_string())?
+        .map_err(refused)?
         .ok_or("this service is not a store")?;
-    converge(database, &store, address).await.map(|_| true)
+    let lost = converge(database, &store, address).await?;
+    for replica in replicas::of_service(database, service_id)
+        .await
+        .map_err(refused)?
+        .into_iter()
+        .filter(|replica| replica.is_here() && replica.last_error != lost)
+    {
+        replicas::set_last_error(database, &replica.id, lost.as_deref())
+            .await
+            .map_err(refused)?;
+    }
+    Ok(true)
 }
 
 /// Make Garage hold exactly what the rows say: each bucket with its
@@ -593,11 +614,30 @@ pub async fn converge_if_running(
 /// A bucket Garage holds and no row names is left alone. It may hold objects,
 /// and a backup older than the rows is how one appears; deleting it is a
 /// decision this pass is not in a position to make.
+///
+/// **One pass at a time, reading the rows once Garage answers.** The pass a
+/// deployment runs read them before waiting for Garage to start, which takes
+/// half a minute; a key made in that time had its own pass, and then the
+/// deployment's went on with the rows it had and deleted it. The page showed
+/// a key no store held. With the rows read under the lock, the last pass to
+/// run has every row written before it began.
+///
+/// **A key Garage deleted does not stop the rest**, and is not a failure of
+/// the pass: `Ok(Some(_))` names it, for the copy's row. Such a row stopped
+/// the pass at that key, every time, so no key after it and no bucket's
+/// permissions were applied, a new key was rolled back, and the reason was
+/// Garage's 409 without the key's name. A backup taken before a key was
+/// revoked brings one back.
 pub async fn converge(
     database: &SqliteDatabase,
     store: &ObjectStore,
     address: Ipv4Addr,
-) -> Result<(), String> {
+) -> Result<Option<String>, String> {
+    static ONE_PASS: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+    let admin = Admin::at(address, &store.admin_token);
+    admin.wait_until_up().await?;
+    let _pass = ONE_PASS.lock().await;
+
     let refused = |error: crate::domain::errors::PlatformError| error.to_string();
     let buckets = crate::infra::repositories::object_stores::buckets(database, &store.service_id)
         .await
@@ -606,8 +646,6 @@ pub async fn converge(
         crate::infra::repositories::object_stores::keys_of_store(database, &store.service_id)
             .await
             .map_err(refused)?;
-    let admin = Admin::at(address, &store.admin_token);
-    admin.wait_until_up().await?;
 
     let held = admin.buckets().await?;
     let mut ids = std::collections::BTreeMap::new();
@@ -651,9 +689,12 @@ pub async fn converge(
     }
 
     let held_keys = admin.keys().await?;
+    let mut lost = Vec::new();
     for key in &keys {
-        if !held_keys.iter().any(|held| held.id == key.access_key_id) {
-            admin.give_back(key).await?;
+        if !held_keys.iter().any(|held| held.id == key.access_key_id)
+            && !admin.give_back(key).await?
+        {
+            lost.push(key.access_key_id.as_str());
         }
     }
     for held in &held_keys {
@@ -669,7 +710,10 @@ pub async fn converge(
         let usage: Usage = admin
             .read(Method::GET, &format!("/v2/GetBucketInfo?id={id}"), None)
             .await?;
-        for key in keys.iter().filter(|key| key.bucket_id == bucket.id) {
+        for key in keys
+            .iter()
+            .filter(|key| key.bucket_id == bucket.id && !lost.contains(&key.access_key_id.as_str()))
+        {
             let wanted = garage::permissions(key.access);
             let held = usage
                 .keys
@@ -703,7 +747,25 @@ pub async fn converge(
             }
         }
     }
-    Ok(())
+    if lost.is_empty() {
+        return Ok(None);
+    }
+    let named: Vec<String> = keys
+        .iter()
+        .filter(|key| lost.contains(&key.access_key_id.as_str()))
+        .map(|key| {
+            let bucket = buckets
+                .iter()
+                .find(|bucket| bucket.id == key.bucket_id)
+                .map_or("", |bucket| bucket.name.as_str());
+            format!("“{}” of {bucket} ({})", key.name, key.access_key_id)
+        })
+        .collect();
+    Ok(Some(format!(
+        "Garage has deleted the key {} and never takes a deleted key back, so it opens \
+         nothing: revoke it and make another.",
+        named.join(", ")
+    )))
 }
 
 #[cfg(test)]
