@@ -4,7 +4,7 @@ use crate::domain::entities::project::Project;
 use crate::domain::entities::service::Service;
 use crate::domain::policies::{garage, presets};
 use crate::domain::values::allowlist::Door;
-use crate::features::buckets::create_bucket_command::NOT_A_STORE;
+use crate::features::buckets::create_bucket_command::{DERIVED, NOT_A_STORE};
 use crate::features::buckets::create_store_command::CreateStore;
 use crate::features::buckets::create_store_request::CreateStoreRequest;
 use crate::features::buckets::restore_store_request::RestoreStoreRequest;
@@ -31,6 +31,18 @@ impl RestoreStore<'_> {
     ) -> Result<StoreRestoredResponse, String> {
         if !self.service.kind.is_store() || self.service.project_id != self.project.id {
             return Err(NOT_A_STORE.into());
+        }
+        if !self.service.is_ours() {
+            return Err(DERIVED.into());
+        }
+        if let Some(holder) =
+            crate::infra::deploy::stores::held_elsewhere(database, &self.service.id).await
+        {
+            return Err(format!(
+                "it runs on {}, which takes its backups — there is nothing of it on this machine \
+                 to restore from",
+                holder.name
+            ));
         }
         let at = match self.asked.at.trim() {
             "" => crate::infra::clock::now_ms(),
@@ -75,6 +87,7 @@ impl RestoreStore<'_> {
                     .unwrap_or(crate::features::buckets::create_store_command::DEFAULT_PRESET)
                     .to_string(),
                 disk: presets::size_field(disk),
+                on: String::new(),
                 allowlist,
             },
         }

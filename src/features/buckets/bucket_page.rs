@@ -19,6 +19,8 @@ pub struct BucketView<'a> {
     pub bucket: &'a Bucket,
     pub keys: &'a [BucketKey],
     pub usage: Option<&'a Usage>,
+    /// The node running the store, when that is not this one.
+    pub runs_on: Option<&'a str>,
     pub endpoint: Option<&'a str>,
     pub public_address: Option<&'a str>,
     pub derived_public: Option<&'a str>,
@@ -79,8 +81,17 @@ pub fn render<'a>(page: &'a BucketView<'a>) -> impl Renderable + 'a {
                     <dd>(usage.unfinished_uploads)</dd>
                 }
             </dl>
-            @if page.usage.is_none() {
-                <p class="tile-detail">(t("The store is not running, so what it holds cannot be asked."))</p>
+            @match (page.usage.is_some(), page.runs_on) {
+                (true, Some(node)) => {
+                    <p class="tile-detail">(t("What it holds is what "))<span class="mono">(node)</span>(t(" last reported."))</p>
+                }
+                (false, Some(node)) => {
+                    <p class="tile-detail"><span class="mono">(node)</span>(t(" has not reported what it holds yet."))</p>
+                }
+                (false, None) => {
+                    <p class="tile-detail">(t("The store is not running, so what it holds cannot be asked."))</p>
+                }
+                (true, None) => {}
             }
         </section>
 

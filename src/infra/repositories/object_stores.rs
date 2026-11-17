@@ -41,6 +41,244 @@ pub async fn create(database: &SqliteDatabase, store: &ObjectStore) -> PlatformR
     Ok(())
 }
 
+/// Keep a store another node owns, as its owner last described it, and
+/// say whether anything Garage starts from changed: its version or one of
+/// its secrets, which only a new container picks up.
+pub async fn keep(database: &SqliteDatabase, store: &ObjectStore) -> PlatformResult<bool> {
+    let row = store.clone();
+    Ok(database
+        .write(move |connection| {
+            let held: Option<(String, String, String)> = connection
+                .query_row(
+                    "SELECT \"version\", \"rpc_secret\", \"admin_token\" FROM object_store \
+                      WHERE \"service_id\" = ?1",
+                    [&row.service_id],
+                    |found| Ok((found.get(0)?, found.get(1)?, found.get(2)?)),
+                )
+                .optional()?;
+            let wanted = (
+                row.version.clone(),
+                row.rpc_secret.clone(),
+                row.admin_token.clone(),
+            );
+            if held.as_ref() == Some(&wanted) {
+                return Ok(false);
+            }
+            connection.execute(
+                "INSERT INTO object_store \
+                   (\"service_id\", \"version\", \"rpc_secret\", \"admin_token\", \"created_at\") \
+                 VALUES (?1, ?2, ?3, ?4, ?5) \
+                 ON CONFLICT (\"service_id\") DO UPDATE SET \"version\" = ?2, \
+                   \"rpc_secret\" = ?3, \"admin_token\" = ?4",
+                (&row.service_id, wanted.0, wanted.1, wanted.2, now_ms()),
+            )?;
+            Ok(true)
+        })
+        .await?)
+}
+
+/// Make a store's buckets and keys exactly these, matched by bucket name
+/// and by access key: the ids are each node's own. One transaction, so a
+/// convergence reading half-way cannot see a bucket without its keys and
+/// delete them from Garage.
+///
+/// No room is checked here, unlike `create_bucket`: the owner checked it,
+/// and a node that refused what its owner accepted would hold a store that
+/// is not the one described.
+pub async fn replace_contents(
+    database: &SqliteDatabase,
+    service_id: &str,
+    buckets: Vec<Bucket>,
+    keys: Vec<(String, BucketKey)>,
+) -> PlatformResult<()> {
+    let service_id = service_id.to_string();
+    database
+        .write(move |connection| {
+            let transaction = connection.unchecked_transaction()?;
+            let mut ids: std::collections::BTreeMap<String, String> = Default::default();
+            for bucket in &buckets {
+                let held: Option<String> = transaction
+                    .query_row(
+                        "SELECT \"id\" FROM bucket WHERE \"service_id\" = ?1 AND \"name\" = ?2",
+                        [&service_id, bucket.name.as_str()],
+                        |found| found.get(0),
+                    )
+                    .optional()?;
+                let id = match held {
+                    Some(id) => {
+                        transaction.execute(
+                            "UPDATE bucket SET \"max_size\" = ?2, \"public_hostname\" = ?3, \
+                                    \"cors_origins\" = ?4, \"expire_days\" = ?5, \
+                                    \"abort_uploads_days\" = ?6 \
+                              WHERE \"id\" = ?1",
+                            (
+                                &id,
+                                bucket.max_size as i64,
+                                &bucket.public_hostname,
+                                origins_text(&bucket.cors_origins),
+                                bucket.expire_days,
+                                bucket.abort_uploads_days,
+                            ),
+                        )?;
+                        id
+                    }
+                    None => {
+                        transaction.execute(
+                            "INSERT INTO bucket \
+                               (\"id\", \"service_id\", \"name\", \"max_size\", \"public_hostname\", \
+                                \"cors_origins\", \"expire_days\", \"abort_uploads_days\", \"created_at\") \
+                             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                            (
+                                &bucket.id,
+                                &service_id,
+                                bucket.name.as_str(),
+                                bucket.max_size as i64,
+                                &bucket.public_hostname,
+                                origins_text(&bucket.cors_origins),
+                                bucket.expire_days,
+                                bucket.abort_uploads_days,
+                                now_ms(),
+                            ),
+                        )?;
+                        bucket.id.clone()
+                    }
+                };
+                ids.insert(bucket.name.as_str().to_string(), id);
+            }
+            let named: Vec<String> = ids.values().cloned().collect();
+            let held: Vec<String> = {
+                let mut statement =
+                    transaction.prepare("SELECT \"id\" FROM bucket WHERE \"service_id\" = ?1")?;
+                let rows: wabot::sqlite::rusqlite::Result<Vec<String>> = statement
+                    .query_map([&service_id], |found| found.get(0))?
+                    .collect();
+                rows?
+            };
+            for id in held.iter().filter(|id| !named.contains(id)) {
+                transaction.execute("DELETE FROM bucket WHERE \"id\" = ?1", [id])?;
+            }
+
+            let mut kept = Vec::new();
+            for (bucket, key) in &keys {
+                let Some(bucket_id) = ids.get(bucket) else {
+                    continue;
+                };
+                let updated = transaction.execute(
+                    "UPDATE bucket_key SET \"bucket_id\" = ?2, \"name\" = ?3, \"secret_key\" = ?4, \
+                            \"access\" = ?5 \
+                      WHERE \"access_key_id\" = ?1",
+                    (
+                        &key.access_key_id,
+                        bucket_id,
+                        &key.name,
+                        &key.secret_key,
+                        key.access.as_str(),
+                    ),
+                )?;
+                if updated == 0 {
+                    transaction.execute(
+                        "INSERT INTO bucket_key \
+                           (\"id\", \"bucket_id\", \"name\", \"access_key_id\", \"secret_key\", \
+                            \"access\", \"created_at\") \
+                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                        (
+                            &key.id,
+                            bucket_id,
+                            &key.name,
+                            &key.access_key_id,
+                            &key.secret_key,
+                            key.access.as_str(),
+                            now_ms(),
+                        ),
+                    )?;
+                }
+                kept.push(key.access_key_id.clone());
+            }
+            let held: Vec<String> = {
+                let mut statement = transaction.prepare(
+                    "SELECT k.\"access_key_id\" FROM bucket_key k \
+                       JOIN bucket b ON b.\"id\" = k.\"bucket_id\" WHERE b.\"service_id\" = ?1",
+                )?;
+                let rows: wabot::sqlite::rusqlite::Result<Vec<String>> = statement
+                    .query_map([&service_id], |found| found.get(0))?
+                    .collect();
+                rows?
+            };
+            for access_key_id in held.iter().filter(|id| !kept.contains(id)) {
+                transaction.execute(
+                    "DELETE FROM bucket_key WHERE \"access_key_id\" = ?1",
+                    [access_key_id],
+                )?;
+            }
+            transaction.commit()?;
+            Ok(())
+        })
+        .await?;
+    Ok(())
+}
+
+/// Replace what the node running this store last measured in its buckets.
+pub async fn set_measured(
+    database: &SqliteDatabase,
+    service_id: &str,
+    measured: &[crate::domain::entities::bucket::Measured],
+) -> PlatformResult<()> {
+    let (service_id, measured) = (service_id.to_string(), measured.to_vec());
+    database
+        .write(move |connection| {
+            let transaction = connection.unchecked_transaction()?;
+            transaction.execute(
+                "DELETE FROM bucket_usage WHERE \"service_id\" = ?1",
+                [&service_id],
+            )?;
+            let now = now_ms();
+            for bucket in measured {
+                transaction.execute(
+                    "INSERT INTO bucket_usage \
+                       (\"service_id\", \"name\", \"objects\", \"bytes\", \"unfinished_uploads\", \
+                        \"measured_at\") \
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                    (
+                        &service_id,
+                        bucket.name,
+                        bucket.objects as i64,
+                        bucket.bytes as i64,
+                        bucket.unfinished_uploads as i64,
+                        now,
+                    ),
+                )?;
+            }
+            transaction.commit()?;
+            Ok(())
+        })
+        .await?;
+    Ok(())
+}
+
+pub async fn measured(
+    database: &SqliteDatabase,
+    service_id: &str,
+) -> PlatformResult<Vec<crate::domain::entities::bucket::Measured>> {
+    let service_id = service_id.to_string();
+    Ok(database
+        .read(move |connection| {
+            let mut statement = connection.prepare(
+                "SELECT \"name\", \"objects\", \"bytes\", \"unfinished_uploads\" FROM bucket_usage \
+                  WHERE \"service_id\" = ?1 ORDER BY \"name\"",
+            )?;
+            let rows = statement.query_map([service_id], |row| {
+                Ok(crate::domain::entities::bucket::Measured {
+                    name: row.get(0)?,
+                    objects: row.get::<_, i64>(1)? as u64,
+                    bytes: row.get::<_, i64>(2)? as u64,
+                    unfinished_uploads: row.get::<_, i64>(3)? as u64,
+                })
+            })?;
+            rows.collect()
+        })
+        .await?)
+}
+
 pub async fn set_restored_from(
     database: &SqliteDatabase,
     service_id: &str,
@@ -414,4 +652,137 @@ fn decode_key(row: &Row<'_>) -> wabot::sqlite::rusqlite::Result<BucketKey> {
         secret_key: row.get(4)?,
         access: Access::parse(&row.get::<_, String>(5)?),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    async fn store() -> (SqliteDatabase, crate::domain::entities::service::Service) {
+        use crate::infra::repositories::{projects, services};
+        let database = crate::infra::db::open_in_memory().await.expect("open");
+        let project = projects::create(&database, "shop").await.expect("project");
+        let service = services::create(
+            &database,
+            &project.id,
+            "files",
+            &crate::domain::policies::garage::image_for("2").expect("image"),
+            &[],
+        )
+        .await
+        .expect("service");
+        services::set_disk_limit(&database, &service.id, Some(1024 * 1024 * 1024))
+            .await
+            .expect("disk");
+        create(
+            &database,
+            &ObjectStore {
+                service_id: service.id.clone(),
+                version: "2".into(),
+                rpc_secret: "ab".repeat(32),
+                admin_token: "token".into(),
+                restored_from: None,
+            },
+        )
+        .await
+        .expect("store");
+        (database, service)
+    }
+
+    fn bucket(service_id: &str, name: &str, max_size: u64) -> Bucket {
+        Bucket {
+            id: format!("bkt-{name}"),
+            service_id: service_id.to_string(),
+            name: BucketName::stored(name),
+            max_size,
+            public_hostname: None,
+            cors_origins: Vec::new(),
+            expire_days: None,
+            abort_uploads_days: None,
+        }
+    }
+
+    fn key(access_key_id: &str, name: &str) -> BucketKey {
+        BucketKey {
+            id: format!("bk-{access_key_id}"),
+            bucket_id: String::new(),
+            name: name.to_string(),
+            access_key_id: access_key_id.to_string(),
+            secret_key: "s".repeat(64),
+            access: Access::ReadWrite,
+        }
+    }
+
+    /// What a node keeping somebody's store holds is exactly what the last
+    /// errand said, matched by name: a bucket keeps its row and the objects
+    /// Garage holds under it, and what the owner removed is removed.
+    #[tokio::test]
+    async fn a_stores_contents_become_exactly_what_its_owner_described() {
+        let (database, service) = store().await;
+        replace_contents(
+            &database,
+            &service.id,
+            vec![
+                bucket(&service.id, "uploads", 100),
+                bucket(&service.id, "logs", 100),
+            ],
+            vec![
+                ("uploads".into(), key("GK1", "web")),
+                ("logs".into(), key("GK2", "shipper")),
+            ],
+        )
+        .await
+        .expect("first");
+        let uploads = bucket_named(&database, &service.id, "uploads").await;
+
+        let mut grown = bucket(&service.id, "uploads", 500);
+        grown.id = "bkt-another-id".into();
+        replace_contents(
+            &database,
+            &service.id,
+            vec![grown],
+            vec![("uploads".into(), key("GK1", "web, renamed"))],
+        )
+        .await
+        .expect("second");
+
+        let held = buckets(&database, &service.id).await.expect("buckets");
+        assert_eq!(held.len(), 1, "{held:?}");
+        assert_eq!(held[0].id, uploads.id, "a bucket is matched by its name");
+        assert_eq!(held[0].max_size, 500);
+        let keys = keys_of_store(&database, &service.id).await.expect("keys");
+        assert_eq!(
+            keys.iter()
+                .map(|key| (key.access_key_id.as_str(), key.name.as_str()))
+                .collect::<Vec<_>>(),
+            vec![("GK1", "web, renamed")]
+        );
+    }
+
+    async fn bucket_named(database: &SqliteDatabase, service_id: &str, name: &str) -> Bucket {
+        buckets(database, service_id)
+            .await
+            .expect("buckets")
+            .into_iter()
+            .find(|bucket| bucket.name.as_str() == name)
+            .expect("there")
+    }
+
+    /// A new secret or version is only read by a new container, and a store
+    /// restarted for every errand would cut every upload in flight.
+    #[tokio::test]
+    async fn keeping_a_store_says_whether_what_garage_starts_from_changed() {
+        let (database, service) = store().await;
+        let held = of_service(&database, &service.id)
+            .await
+            .expect("read")
+            .expect("row");
+        assert!(!keep(&database, &held).await.expect("same"));
+        let rotated = ObjectStore {
+            admin_token: "another".into(),
+            ..held
+        };
+        assert!(keep(&database, &rotated).await.expect("rotated"));
+        assert!(!keep(&database, &rotated).await.expect("again"));
+    }
 }

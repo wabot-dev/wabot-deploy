@@ -31,6 +31,7 @@ pub mod restarts;
 pub mod routing;
 pub mod standbys;
 pub mod store;
+pub mod stores;
 pub mod upstreams;
 
 use std::net::Ipv4Addr;
@@ -1043,28 +1044,40 @@ impl Deployer {
                 .iter()
                 .any(|other| !other.is_here() && !other.evicted());
 
+        // **Every one of them, each on its own overlay port.** One port per
+        // copy reached only the first, so a copy elsewhere with two named
+        // ports had both names sent to it — a store's public read arrived
+        // at its S3 port. A database's standby dials the primary on its
+        // first port, and that is still the only one it needs.
         let mut published = published;
-        let reachable = ports
+        let named: Vec<u16> = ports
             .iter()
-            .find(|port| port.hostname.is_some())
-            .or_else(|| match service.is_ours() {
-                true => None,
-                false => ports.first(),
-            })
-            .or_else(|| match dialled_by_a_copy_elsewhere {
-                true => ports.first(),
-                false => None,
-            });
-        if let Some(port) = reachable {
-            // Not on an overlay means nothing elsewhere can reach this
-            // node anyway, so there is nothing to open a port for.
-            if let Some(overlay) = self.overlay_address().await {
+            .filter(|port| port.hostname.is_some())
+            .map(|port| port.container_port)
+            .collect();
+        let mut reachable: Vec<u16> = match (named.is_empty(), service.is_ours()) {
+            (false, _) => named,
+            (true, false) => ports.iter().map(|port| port.container_port).collect(),
+            (true, true) if dialled_by_a_copy_elsewhere => ports
+                .first()
+                .map(|port| port.container_port)
+                .into_iter()
+                .collect(),
+            (true, true) => Vec::new(),
+        };
+        let mut seen = std::collections::BTreeSet::new();
+        reachable.retain(|port| seen.insert(*port));
+        // Not on an overlay means nothing elsewhere can reach this node
+        // anyway, so there is nothing to open a port for.
+        if let (false, Some(overlay)) = (reachable.is_empty(), self.overlay_address().await) {
+            for container_port in reachable {
                 let overlay_port =
-                    replicas::ensure_overlay_port(&self.database, &replica.id).await?;
+                    replicas::ensure_overlay_port_for(&self.database, &replica.id, container_port)
+                        .await?;
                 published.push(PortMapping {
                     host_port: overlay_port,
-                    container_port: port.container_port,
-                    host_ip: Some(overlay),
+                    container_port,
+                    host_ip: Some(overlay.clone()),
                 });
             }
         }
@@ -2147,6 +2160,9 @@ impl Deployer {
         {
             tracing::warn!(service = %service.slug, %error, "letting go of a standby elsewhere");
         }
+        if let Err(error) = crate::infra::deploy::stores::withdraw(&self.database, service).await {
+            tracing::warn!(service = %service.slug, %error, "letting go of a store elsewhere");
+        }
 
         if let Err(error) = self.stop_here(project, service).await {
             tracing::warn!(service = %service.slug, %error, "tearing down");
@@ -2782,7 +2798,19 @@ impl Deployer {
             return;
         };
         for service in services {
-            if !service.kind.is_database() || !service.is_ours() {
+            if !service.is_ours() {
+                continue;
+            }
+            if service.kind.is_store() {
+                if crate::infra::deploy::stores::held_elsewhere(&self.database, &service.id)
+                    .await
+                    .is_some()
+                {
+                    self.dispatch_standbys(&service).await;
+                }
+                continue;
+            }
+            if !service.kind.is_database() {
                 continue;
             }
             if let Ok(Some(_)) = databases::primary_elsewhere(&self.database, &service.id).await {
@@ -2792,6 +2820,14 @@ impl Deployer {
     }
 
     async fn standbys(&self, service: &Service, also: &std::collections::BTreeSet<String>) {
+        if service.kind.is_store() && service.is_ours() {
+            if let Err(error) =
+                crate::infra::deploy::stores::dispatch(&self.database, service, also).await
+            {
+                tracing::warn!(service = %service.slug, %error, "could not tell a node to keep a store");
+            }
+            return;
+        }
         if !service.kind.is_database() || !service.is_ours() {
             return;
         }
@@ -3101,7 +3137,9 @@ impl Deployer {
             tracing::warn!(service = %service.slug, "could not work out who answers for its names");
             return;
         };
-        let upstreams = crate::infra::deploy::upstreams::upstreams(&placements, &nodes);
+        let declared = ports::of_service(&self.database, &service.id)
+            .await
+            .unwrap_or_default();
         let me = nodes.iter().find(|node| node.is_self).map(|node| &*node.id);
         let mine = crate::infra::edge::certs::ca_certificate_pem(&self.database)
             .await
@@ -3138,6 +3176,14 @@ impl Deployer {
             .collect();
 
         for (hostname, node_id) in &chosen {
+            let container_port = declared
+                .iter()
+                .find(|port| port.hostname.as_deref() == Some(&**hostname))
+                .or_else(|| declared.iter().find(|port| port.hostname.is_some()))
+                .map(|port| port.container_port);
+            let upstreams = container_port
+                .map(|port| crate::infra::deploy::upstreams::upstreams(&placements, &nodes, port))
+                .unwrap_or_default();
             // This node's own choice needs no errand: it does not poll
             // itself, and its route comes from the local sync off the same
             // rows.
@@ -5389,6 +5435,7 @@ mod tests {
             slot,
             address: Some(format!("10.42.2.{}", 250 + slot)),
             overlay_port: None,
+            overlay_ports: Default::default(),
             last_error: None,
             evicted_at: None,
             reserved_host: Some(u8::try_from(250 + slot).expect("a host octet")),
@@ -5886,11 +5933,13 @@ mod tests {
             slot: 1,
             address: Some("10.88.0.2".into()),
             overlay_port: Some(30005),
+            overlay_ports: Default::default(),
             error: None,
             evicted: false,
             memory: None,
             disk: None,
             cpu: None,
+            buckets: None,
         };
 
         assert_eq!(

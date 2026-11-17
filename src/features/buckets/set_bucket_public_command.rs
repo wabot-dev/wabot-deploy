@@ -4,7 +4,7 @@ use crate::domain::entities::bucket::Bucket;
 use crate::domain::entities::service::Service;
 use crate::domain::policies::garage;
 use crate::domain::values::hostname::Hostname;
-use crate::features::buckets::create_bucket_command::NOT_A_STORE;
+use crate::features::buckets::create_bucket_command::{DERIVED, NOT_A_STORE};
 use crate::features::buckets::set_bucket_public_request::SetBucketPublicRequest;
 use crate::features::buckets::store_converged_response::StoreConvergedResponse;
 use crate::features::services::add_service_port_command::AddServicePort;
@@ -26,12 +26,15 @@ impl SetBucketPublic<'_> {
         if !self.service.kind.is_store() || self.bucket.service_id != self.service.id {
             return Err(NOT_A_STORE.into());
         }
+        if !self.service.is_ours() {
+            return Err(DERIVED.into());
+        }
         match self.asked.public {
             true => self.open(database).await?,
             false => self.close(database).await?,
         }
         Ok(StoreConvergedResponse::of(
-            crate::infra::garage::converge_if_running(database, &self.service.id).await,
+            crate::infra::deploy::stores::apply(database, self.service).await,
         ))
     }
 

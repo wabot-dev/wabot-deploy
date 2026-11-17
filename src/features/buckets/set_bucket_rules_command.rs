@@ -3,7 +3,7 @@ use wabot::sqlite::SqliteDatabase;
 use crate::domain::entities::bucket::{Bucket, DAYS};
 use crate::domain::entities::service::Service;
 use crate::domain::values::cors_origin::CorsOrigin;
-use crate::features::buckets::create_bucket_command::NOT_A_STORE;
+use crate::features::buckets::create_bucket_command::{DERIVED, NOT_A_STORE};
 use crate::features::buckets::set_bucket_rules_request::SetBucketRulesRequest;
 use crate::features::buckets::store_converged_response::StoreConvergedResponse;
 use crate::infra::repositories::object_stores;
@@ -18,6 +18,9 @@ impl SetBucketRules<'_> {
     pub async fn run(&self, database: &SqliteDatabase) -> Result<StoreConvergedResponse, String> {
         if !self.service.kind.is_store() || self.bucket.service_id != self.service.id {
             return Err(NOT_A_STORE.into());
+        }
+        if !self.service.is_ours() {
+            return Err(DERIVED.into());
         }
         let max_size = crate::domain::policies::presets::parse_bytes(&self.asked.max_size)?
             .ok_or(crate::domain::entities::bucket::NO_ROOM)?;
@@ -36,7 +39,7 @@ impl SetBucketRules<'_> {
             .await
             .map_err(|error| error.to_string())?;
         Ok(StoreConvergedResponse::of(
-            crate::infra::garage::converge_if_running(database, &self.service.id).await,
+            crate::infra::deploy::stores::apply(database, self.service).await,
         ))
     }
 }

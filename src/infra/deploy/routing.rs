@@ -72,7 +72,7 @@ pub fn upstreams_of(
         // A copy that has reported no port yet is unreachable, and an
         // invented address here is a request that hangs rather than one
         // that fails over.
-        let Some(port) = replica.overlay_port else {
+        let Some(port) = reaching(replica, container_port) else {
             continue;
         };
         let overlay = replica
@@ -89,6 +89,22 @@ pub fn upstreams_of(
         }
     }
     upstreams
+}
+
+/// The overlay port that reaches one container port of a copy elsewhere.
+///
+/// A node older than per-port reports sent one port, which reached its
+/// first named port, so that one is all there is to use. One that reports
+/// per port and lists none for this container port does not answer on it,
+/// and the copy is left out rather than sent somebody else's traffic.
+pub fn reaching(
+    replica: &crate::domain::entities::replica::Replica,
+    container_port: u16,
+) -> Option<u16> {
+    match replica.overlay_ports.is_empty() {
+        true => replica.overlay_port,
+        false => replica.overlay_ports.get(&container_port).copied(),
+    }
 }
 
 /// Recompute every route and hand the new set to the edge.
@@ -376,6 +392,27 @@ mod tests {
     }
 
     use super::*;
+
+    /// A copy reports one overlay port per container port, or — from a node
+    /// older than that — one for its first named port. A per-port report
+    /// without the port asked for has nothing listening there, and sending
+    /// the name to another port of the copy would answer it with the wrong
+    /// service.
+    #[tokio::test]
+    async fn a_name_reaches_the_overlay_port_of_its_own_container_port() {
+        let (database, _, service) = node().await;
+        let mut replica = crate::infra::repositories::replicas::of_service(&database, &service)
+            .await
+            .expect("replicas")[0]
+            .clone();
+        replica.overlay_port = Some(30001);
+        assert_eq!(reaching(&replica, 3902), Some(30001));
+
+        replica.overlay_ports = std::collections::BTreeMap::from([(3900, 30001), (3902, 30002)]);
+        assert_eq!(reaching(&replica, 3900), Some(30001));
+        assert_eq!(reaching(&replica, 3902), Some(30002));
+        assert_eq!(reaching(&replica, 80), None);
+    }
 
     /// A node with a name of its own, which is what makes it able to
     /// answer for one. Without the self row nothing here is an edge for

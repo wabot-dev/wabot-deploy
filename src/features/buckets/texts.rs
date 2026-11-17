@@ -5,6 +5,9 @@
 //! has to.
 
 pub(crate) const TABLE: &[(&str, &str)] = &[
+    (" has not reported what each bucket holds yet.", " todavía no ha informado lo que guarda cada bucket."),
+    (" has not reported what it holds yet.", " todavía no ha informado lo que guarda."),
+    (" last reported.", " informó por última vez."),
     (" objects", " objetos"),
     ("3 to 63 lowercase letters, digits and hyphens, starting and ending with a letter or a digit.", "De 3 a 63 letras minúsculas, dígitos y guiones, empezando y terminando con una letra o un dígito."),
     ("A bucket is deleted only when it is empty, and its keys stop working with it. Emptying one is a client's job: the store refuses while anything is in it.", "Un bucket sólo se borra cuando está vacío, y sus claves dejan de funcionar con él. Vaciarlo es trabajo de un cliente: el almacén se niega mientras quede algo dentro."),
@@ -47,8 +50,11 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
     ("The store is not running, so what it holds cannot be asked.", "El almacén no está corriendo, así que no se puede preguntar qué guarda."),
     ("This node runs no stores of buckets. An administrator turns them on in the node's settings, under Capabilities.", "Este nodo no corre almacenes de buckets. Un administrador los activa en los ajustes del nodo, en Capacidades."),
     ("Unfinished uploads", "Subidas sin terminar"),
+    ("What each bucket holds is what ", "Lo que guarda cada bucket es lo que "),
+    ("What it holds is what ", "Lo que guarda es lo que "),
     ("What it is for", "Para qué es"),
     ("What its buckets may hold together. Every bucket is given a maximum, and their sum has to fit here — a full bucket answers its client with an error rather than filling a disk other services share.", "Lo que sus buckets pueden guardar juntos. Cada bucket recibe un máximo, y su suma tiene que caber aquí — un bucket lleno responde a su cliente con un error en vez de llenar un disco que comparten otros servicios."),
+    ("Where Garage runs and its objects are kept, for good: a store is not moved once it exists. Its name is served from this node either way, and its backups are taken where it runs.", "Dónde corre Garage y se guardan sus objetos, para siempre: un store no se mueve una vez que existe. Su nombre se sirve desde este nodo en cualquier caso, y sus copias de seguridad se hacen donde corre."),
     ("path-style: the bucket is the first part of the path", "path-style: el bucket es la primera parte de la ruta"),
     ("up to ", "hasta "),
 ];

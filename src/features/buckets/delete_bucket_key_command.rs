@@ -2,7 +2,7 @@ use wabot::sqlite::SqliteDatabase;
 
 use crate::domain::entities::bucket_key::BucketKey;
 use crate::domain::entities::service::Service;
-use crate::features::buckets::create_bucket_command::NOT_A_STORE;
+use crate::features::buckets::create_bucket_command::{DERIVED, NOT_A_STORE};
 use crate::infra::repositories::object_stores;
 
 pub struct DeleteBucketKey<'a> {
@@ -19,6 +19,9 @@ impl DeleteBucketKey<'_> {
         if !self.service.kind.is_store() {
             return Err(NOT_A_STORE.into());
         }
+        if !self.service.is_ours() {
+            return Err(DERIVED.into());
+        }
         let in_store = object_stores::keys_of_store(database, &self.service.id)
             .await
             .map_err(|error| error.to_string())?
@@ -32,6 +35,13 @@ impl DeleteBucketKey<'_> {
         }
         object_stores::delete_key(database, &self.key.id)
             .await
-            .map_err(|error| error.to_string())
+            .map_err(|error| error.to_string())?;
+        if crate::infra::deploy::stores::held_elsewhere(database, &self.service.id)
+            .await
+            .is_some()
+        {
+            crate::infra::deploy::stores::apply(database, self.service).await?;
+        }
+        Ok(())
     }
 }

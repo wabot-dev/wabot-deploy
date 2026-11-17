@@ -362,14 +362,74 @@ row from a backup or another node is refused with a sentence. Turning it
 on is a sentence that names the engine and its licence.
 
 A node setting rather than a capability: capabilities are favours one
-node grants another, and this is a decision about the machine. "Runs on"
-another node will need that node to have it on, and asks it when it
-comes.
+node grants another, and this is a decision about the machine. A store
+that runs on another node needs the switch on **both**: here, because the
+form lives here, and there, because that is where Garage runs. The owner
+cannot read the other node's switch, so that node refuses the errand, and
+the reason lands on the copy's row, which its report carries home.
+
+## Runs on another node
+
+Asked for by Jorge on 2026-11-17, against my claim that a service with a
+volume cannot run elsewhere: a database is a service with a volume, and
+it has "Runs on". A store is the same case with less in it.
+
+**The node is chosen when the store is made, and kept for ever.** The
+form offers the nodes that agreed to `store` for this one and report
+`errand::STORES_SINCE` (0.38.0) or later; an older one would read the
+errand as an unknown kind and refuse it, and the store would wait there.
+The placement form refuses to move a store, and to make a second copy.
+
+**The owner keeps the rows; the node running it keeps Garage.** Buckets,
+keys, the name, the allowlist and the routes are written on the owner,
+where the console that edits them is. A `Kind::Store` errand carries the
+whole store each time — its secrets, every bucket, every key — and the
+node running it makes its rows exactly that (`replace_contents`), matched
+by bucket name and access key because ids are each node's own. A change to
+buckets or keys is converged into the running Garage; a new image,
+secret, version or ceiling is a deployment. What lands there is derived:
+not editable there (`DERIVED`), evictable there.
+
+**A key is made on the owner, in Garage's shape.** The secret is shown
+once, on the page the request lands on, and the other node answers a
+collection later. So the owner writes `GK` and 24 hex digits, and 64 hex
+digits of secret, and the other node imports it (`ImportKey`, which
+Garage keeps for a key coming back). It works when that node next
+collects, not the moment the page shows it — the one thing that differs
+from a store here.
+
+**Deleting a bucket asks a report.** The owner cannot ask a Garage on
+another machine whether a bucket is empty, so the node running it measures
+every bucket on each report (`ReplicaState::buckets`, three seconds at
+most) and the owner keeps the last answer (`bucket_usage`, migration
+0075). Deletion is refused until that node has reported the bucket, and
+while it reports anything in it. The node asks Garage again when the
+errand arrives, and Garage refuses to delete a bucket holding an object,
+so an upload that came after the report keeps the bucket there, named in
+the errand's error, rather than losing it. The same report is what the
+owner's pages show as each bucket's size.
+
+**Every port of the copy has its own overlay port.** One overlay port per
+copy reached its first named port, so a store elsewhere would have sent
+its public-read name to its S3 port. A copy now binds one per container
+port (`replica.overlay_ports`, migration 0075), reports them, and an edge
+is given the one for its own name's port. The first keeps the copy's old
+`overlay_port`, so an owner older than this still reaches it.
+
+**Its backups are that node's**, as a database's are: the volume is a
+directory there. Its restore card is not offered on the owner, and the
+command refuses with the node's name.
 
 ## Refused, with a sentence
 
-- A store on a node whose switch is off.
-- A second copy.
+- A store on a node whose switch is off — on the owner at the form, and
+  on the node running it on the copy's row.
+- A second copy, and moving the one there is.
+- A store on a node that has not agreed to `store`, or runs a release
+  older than 0.38.0.
+- A change to a store kept here for another node.
+- Deleting a bucket of a store elsewhere before that node has reported
+  it empty.
 - A bucket name that is not one (with the rule), or one the store
   already has.
 - A bucket whose maximum would take the store past its disk ceiling,
@@ -446,15 +506,17 @@ Every sentence a phase adds has its Spanish in that phase. "Garage" is a
 product name and "bucket" is the word S3 users use in both languages;
 neither is translated.
 
+**"Runs on" (2026-11-17).** Written and covered by the gate — the errand
+on both sides, a key made in Garage's shape, deletion by report, the
+refusals, per-port overlay ports. **Not run between two machines yet**:
+the VM is one node and enrolment needs a public certificate, so it waits
+for node-0 and node-l1.
+
 ## Later
 
-- A store whose one copy runs on another node, as "Runs on" does for a
-  database.
 - More than one copy. Garage replicates between its own nodes, and the
   overlay is a network it could use; that is a design of its own.
 - Virtual-hosted style.
-- Usage per bucket on the page — `GetBucketInfo` answers bytes, objects
-  and unfinished uploads.
 
 ## Not decided yet
 

@@ -353,6 +353,7 @@ mod tests {
             slot,
             address: None,
             overlay_port: None,
+            overlay_ports: Default::default(),
             last_error: None,
             evicted_at: None,
             reserved_host: None,

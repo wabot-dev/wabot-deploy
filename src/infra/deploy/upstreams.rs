@@ -7,11 +7,12 @@
 pub fn upstreams(
     placements: &[crate::domain::entities::replica::Replica],
     nodes: &[crate::infra::network::Node],
+    container_port: u16,
 ) -> Vec<String> {
     let mut upstreams = Vec::new();
 
     for replica in placements.iter().filter(|replica| !replica.evicted()) {
-        let Some(port) = replica.overlay_port else {
+        let Some(port) = crate::infra::deploy::routing::reaching(replica, container_port) else {
             continue;
         };
         let overlay = match &replica.node_id {
@@ -60,6 +61,7 @@ mod tests {
             slot,
             address: None,
             overlay_port: port,
+            overlay_ports: Default::default(),
             last_error: None,
             evicted_at: None,
             reserved_host: None,
@@ -88,7 +90,7 @@ mod tests {
             replica(Some("nd-two"), 3, Some(30000)),
         ];
 
-        let upstreams = upstreams(&placements, &nodes);
+        let upstreams = upstreams(&placements, &nodes, 80);
         assert_eq!(
             upstreams,
             vec![
@@ -115,7 +117,7 @@ mod tests {
         let placements = [replica(None, 1, None), replica(None, 2, Some(30001))];
 
         assert_eq!(
-            upstreams(&placements, &nodes),
+            upstreams(&placements, &nodes, 80),
             vec!["10.42.0.1:30001".to_string()]
         );
     }
@@ -127,6 +129,6 @@ mod tests {
         let mut evicted = replica(Some("nd-two"), 1, Some(30000));
         evicted.evicted_at = Some(1);
 
-        assert!(upstreams(&[evicted], &nodes).is_empty());
+        assert!(upstreams(&[evicted], &nodes, 80).is_empty());
     }
 }

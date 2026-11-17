@@ -151,6 +151,7 @@ pub async fn place_by(
         slot,
         address: None,
         overlay_port: None,
+        overlay_ports: Default::default(),
         last_error: None,
         evicted_at: None,
         reserved_host: None,
@@ -364,20 +365,7 @@ pub async fn ensure_overlay_port(database: &SqliteDatabase, id: &str) -> Platfor
         return Ok(existing);
     }
 
-    let taken: Vec<u16> = database
-        .read(|connection| {
-            let mut statement = connection.prepare(
-                "SELECT \"overlay_port\" FROM replica WHERE \"overlay_port\" IS NOT NULL",
-            )?;
-            let ports: wabot::sqlite::rusqlite::Result<Vec<i64>> =
-                statement.query_map([], |row| row.get(0))?.collect();
-            ports
-        })
-        .await?
-        .into_iter()
-        .map(|port| port as u16)
-        .collect();
-
+    let taken = overlay_ports_taken(database).await?;
     let port = OVERLAY_PORT_RANGE
         .clone()
         .find(|candidate| !taken.contains(candidate))
@@ -400,6 +388,95 @@ pub async fn ensure_overlay_port(database: &SqliteDatabase, id: &str) -> Platfor
         })
         .await?;
     Ok(port)
+}
+
+/// Every overlay port this node has handed out, whichever column holds it.
+async fn overlay_ports_taken(database: &SqliteDatabase) -> PlatformResult<Vec<u16>> {
+    let rows: Vec<(Option<i64>, Option<String>)> = database
+        .read(|connection| {
+            let mut statement = connection.prepare(
+                "SELECT \"overlay_port\", \"overlay_ports\" FROM replica \
+                 WHERE \"overlay_port\" IS NOT NULL OR \"overlay_ports\" IS NOT NULL",
+            )?;
+            let rows: wabot::sqlite::rusqlite::Result<Vec<(Option<i64>, Option<String>)>> =
+                statement
+                    .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+                    .collect();
+            rows
+        })
+        .await?;
+    let mut taken = Vec::new();
+    for (single, several) in rows {
+        taken.extend(single.map(|port| port as u16));
+        if let Some(several) = several.and_then(|text| {
+            serde_json::from_str::<std::collections::BTreeMap<u16, u16>>(&text).ok()
+        }) {
+            taken.extend(several.into_values());
+        }
+    }
+    Ok(taken)
+}
+
+/// The overlay port reaching one container port of this copy, allocated the
+/// first time and kept after. The first container port a copy is reached on
+/// takes the copy's own `overlay_port`, so an owner reading only that column
+/// still reaches it.
+pub async fn ensure_overlay_port_for(
+    database: &SqliteDatabase,
+    id: &str,
+    container_port: u16,
+) -> PlatformResult<u16> {
+    let replica = find(database, id)
+        .await?
+        .ok_or_else(|| crate::domain::errors::PlatformError::Refused("that copy is gone".into()))?;
+    if let Some(port) = replica.overlay_ports.get(&container_port) {
+        return Ok(*port);
+    }
+    let port = match replica.overlay_ports.is_empty() {
+        true => ensure_overlay_port(database, id).await?,
+        false => {
+            let taken = overlay_ports_taken(database).await?;
+            OVERLAY_PORT_RANGE
+                .clone()
+                .find(|candidate| !taken.contains(candidate))
+                .ok_or_else(|| {
+                    crate::domain::errors::PlatformError::Refused(
+                        "every overlay port on this node is in use".into(),
+                    )
+                })?
+        }
+    };
+    let mut ports = replica.overlay_ports;
+    ports.insert(container_port, port);
+    set_overlay_ports(database, id, &ports).await?;
+    Ok(port)
+}
+
+/// Written by the node running the copy as it binds them, and by the owner
+/// from that node's report.
+pub async fn set_overlay_ports(
+    database: &SqliteDatabase,
+    id: &str,
+    ports: &std::collections::BTreeMap<u16, u16>,
+) -> PlatformResult<()> {
+    let id = id.to_string();
+    let text =
+        match ports.is_empty() {
+            true => None,
+            false => Some(serde_json::to_string(ports).map_err(|error| {
+                crate::domain::errors::PlatformError::Refused(error.to_string())
+            })?),
+        };
+    database
+        .write(move |connection| {
+            connection.execute(
+                "UPDATE replica SET \"overlay_ports\" = ?2 WHERE \"id\" = ?1",
+                (id, text),
+            )?;
+            Ok(())
+        })
+        .await?;
+    Ok(())
 }
 
 /// Give this copy an address on its project's bridge that will not
@@ -629,7 +706,7 @@ pub async fn remove(database: &SqliteDatabase, id: &str) -> PlatformResult<()> {
 const COLUMNS: &str = "\"id\", \"service_id\", \"node_id\", \"slot\", \"address\", \
                        \"last_error\", \"evicted_at\", \"overlay_port\", \"reserved_host\", \
                        \"memory_bytes\", \"disk_bytes\", \"cpu_millicores\", \"following\", \
-                       \"wal_held\", \"placed_by\", \"placed_note\"";
+                       \"wal_held\", \"placed_by\", \"placed_note\", \"overlay_ports\"";
 
 fn decode(row: &Row<'_>) -> wabot::sqlite::rusqlite::Result<Replica> {
     Ok(Replica {
@@ -653,6 +730,10 @@ fn decode(row: &Row<'_>) -> wabot::sqlite::rusqlite::Result<Replica> {
             .get::<_, Option<String>>(14)?
             .map(|who| Placed::parse(&who)),
         placed_note: row.get(15)?,
+        overlay_ports: row
+            .get::<_, Option<String>>(16)?
+            .and_then(|text| serde_json::from_str(&text).ok())
+            .unwrap_or_default(),
     })
 }
 
@@ -715,6 +796,7 @@ mod tests {
             slot,
             address: None,
             overlay_port: None,
+            overlay_ports: Default::default(),
             last_error: None,
             evicted_at: None,
             reserved_host: None,
@@ -762,6 +844,43 @@ mod tests {
             .expect("port");
         assert_eq!(first, again);
         assert!(OVERLAY_PORT_RANGE.contains(&first), "{first}");
+    }
+
+    /// One overlay port for every container port a copy is reached on, the
+    /// first of them the copy's own. A store elsewhere has an S3 name and a
+    /// name for public reads on two ports, and with one overlay port both
+    /// names reached the first.
+    #[tokio::test]
+    async fn each_container_port_of_a_copy_gets_an_overlay_port_of_its_own() {
+        let (database, service) = service().await;
+        let replica = of_service(&database, &service).await.expect("replicas")[0].clone();
+
+        let s3 = ensure_overlay_port_for(&database, &replica.id, 3900)
+            .await
+            .expect("port");
+        let web = ensure_overlay_port_for(&database, &replica.id, 3902)
+            .await
+            .expect("port");
+        let again = ensure_overlay_port_for(&database, &replica.id, 3902)
+            .await
+            .expect("port");
+
+        assert_ne!(s3, web);
+        assert_eq!(web, again);
+        let held = find(&database, &replica.id)
+            .await
+            .expect("read")
+            .expect("row");
+        assert_eq!(held.overlay_port, Some(s3));
+        assert_eq!(
+            held.overlay_ports,
+            std::collections::BTreeMap::from([(3900, s3), (3902, web)])
+        );
+        let other = ensure_here(&database, &service, 2).await.expect("two")[1].clone();
+        let third = ensure_overlay_port(&database, &other.id)
+            .await
+            .expect("port");
+        assert!(![s3, web].contains(&third), "{third} is already taken");
     }
 
     /// Two copies on one machine cannot share a host port, and they are

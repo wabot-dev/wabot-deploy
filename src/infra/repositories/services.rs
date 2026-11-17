@@ -549,10 +549,12 @@ mod tests {
         use crate::infra::network::errand;
 
         // Which errand carries a copy of each kind, which is the pairing
-        // `holders` and `crate::infra::deploy::standbys::dispatch` make between them.
+        // `holders`, `crate::infra::deploy::standbys::dispatch` and
+        // `crate::infra::deploy::stores::dispatch` make between them.
         for (kind, carried_by) in [
             (Kind::Container, errand::Kind::Host),
             (Kind::Postgres, errand::Kind::Database),
+            (Kind::Garage, errand::Kind::Store),
             (Kind::Unknown, errand::Kind::Database),
         ] {
             assert_eq!(

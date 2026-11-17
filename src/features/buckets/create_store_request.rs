@@ -22,6 +22,9 @@ pub struct CreateStoreRequest {
     pub memory: String,
     #[serde(default)]
     pub disk: String,
+    /// The node it runs on, by id; empty for this one.
+    #[serde(default)]
+    pub on: String,
     #[serde(skip)]
     pub allowlist: Allowlist,
 }

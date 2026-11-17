@@ -57,9 +57,9 @@ fn key_of(path: &str) -> Option<String> {
 /// query has to come before any fragment, and its note is at the top.
 fn landed(here: &str, card: &str, converged: StoreConvergedResponse) -> Response {
     match converged {
-        StoreConvergedResponse::Taken | StoreConvergedResponse::NotRunning => {
-            see_other(&format!("{here}{card}"))
-        }
+        StoreConvergedResponse::Taken
+        | StoreConvergedResponse::NotRunning
+        | StoreConvergedResponse::Sent(_) => see_other(&format!("{here}{card}")),
         StoreConvergedResponse::Refused(reason) => back_with_error(
             here,
             &format!("saved, and the store did not take it yet: {reason}"),

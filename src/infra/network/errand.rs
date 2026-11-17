@@ -79,6 +79,12 @@ pub enum Kind {
     Zone,
     /// Serve this certificate, and its key, for a name you answer for.
     Certificate,
+    /// Keep a store of buckets here, with these buckets and keys.
+    ///
+    /// Its own kind rather than an engine on [`Kind::Database`], whose
+    /// credentials and replication fields mean nothing to Garage. A node
+    /// older than stores refuses an unknown kind with a sentence.
+    Store,
     /// Anything this version does not know about.
     #[serde(other)]
     Unknown,
@@ -94,6 +100,7 @@ impl Kind {
             Self::Command => "command",
             Self::Zone => "zone",
             Self::Certificate => "certificate",
+            Self::Store => "store",
             Self::Unknown => "unknown",
         }
     }
@@ -111,6 +118,7 @@ impl Kind {
             "command" => Self::Command,
             "zone" => Self::Zone,
             "certificate" => Self::Certificate,
+            "store" => Self::Store,
             _ => Self::Unknown,
         }
     }
@@ -305,6 +313,16 @@ pub struct Edge {
 /// The first release whose edges read [`Edge::allowed`].
 pub const ALLOWLISTS_SINCE: &str = "0.35.0";
 
+/// The first release that holds a store of buckets for another node.
+pub const STORES_SINCE: &str = "0.38.0";
+
+/// Whether a node reporting `version` can hold a store, with an unknown
+/// version taken for one that cannot: it would refuse the errand and the
+/// store would wait there for ever.
+pub fn holds_stores(version: Option<&str>) -> bool {
+    at_least(version, STORES_SINCE)
+}
+
 /// The first release that knows the Valkey engine. An older node reads the
 /// row as an engine it does not know and refuses it, so a database placed
 /// there waits for that node for ever.
@@ -435,6 +453,63 @@ pub struct Database {
     /// is a copy nobody is watching.
     #[serde(default = "running")]
     pub running: bool,
+}
+
+/// The arguments of a [`Kind::Store`] errand: keep this store here.
+///
+/// **The whole store, every time**: its secrets, every bucket and every
+/// key, as a zone errand carries its records. The node holding it keeps
+/// nothing of its own about them, so it never holds a version the owner
+/// does not, and a bucket or key the owner removed is removed there by
+/// being absent. Buckets and keys are matched by name, because their ids
+/// are each node's own.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Store {
+    pub project: String,
+    pub service: String,
+    pub image: String,
+    pub version: String,
+    #[serde(default)]
+    pub memory_limit: Option<u64>,
+    #[serde(default)]
+    pub disk_limit: Option<u64>,
+    pub rpc_secret: String,
+    pub admin_token: String,
+    /// Empty takes the store off that node: the owner deleted it.
+    pub slots: Vec<u32>,
+    #[serde(default = "running")]
+    pub running: bool,
+    #[serde(default)]
+    pub buckets: Vec<StoreBucket>,
+    #[serde(default)]
+    pub keys: Vec<StoreKey>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StoreBucket {
+    pub name: String,
+    pub max_size: u64,
+    /// The name it is read at without a signature. The route is the
+    /// owner's; the holder needs it as the bucket's alias in Garage.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub public_hostname: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub cors_origins: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expire_days: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub abort_uploads_days: Option<u32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StoreKey {
+    /// The bucket it opens, by name.
+    pub bucket: String,
+    pub name: String,
+    pub access_key_id: String,
+    pub secret_key: String,
+    /// `read_write` or `read_only`.
+    pub access: String,
 }
 
 /// The arguments of a [`Kind::Zone`] errand: answer DNS for this zone.
@@ -622,6 +697,7 @@ pub fn consent_for(
             }
             _ => Some(crate::domain::values::capability::Capability::Edge),
         },
+        Kind::Store => Some(crate::domain::values::capability::Capability::Store),
         Kind::Unknown => None,
     }
 }
@@ -1417,6 +1493,23 @@ mod tests {
             certificate(false).get("database").is_none(),
             "an edge's instruction reads the same to a node that predates the field"
         );
+    }
+
+    /// A store is somebody's data, as a database is, and a node that agreed
+    /// only to run containers is not keeping it. An older node reads the
+    /// kind as unknown and refuses it with a sentence about versions.
+    #[test]
+    fn a_store_needs_store_and_reads_as_unknown_where_stores_are_not_known() {
+        use crate::domain::values::capability::Capability;
+        assert_eq!(
+            consent_for(Kind::Store, &serde_json::Value::Null),
+            Some(Capability::Store)
+        );
+        assert_eq!(Kind::parse("store"), Kind::Store);
+        assert_eq!(Kind::Store.as_str(), "store");
+        assert!(!holds_stores(Some("0.37.0")));
+        assert!(!holds_stores(None));
+        assert!(holds_stores(Some(STORES_SINCE)));
     }
 
     /// The node reading an errand is running a different version than

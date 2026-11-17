@@ -513,8 +513,9 @@ happened:
 - A service created under an organisation's quota runs with no ceiling.
 - A running container no row claims — what a restore from an older
   backup leaves — is on no page.
-- A store of buckets is one copy on the node that made it: no "Runs on",
-  and its backup has Garage's ten-minute window between the metadata
+- A store of buckets is one copy, on the node chosen when it was made —
+  "Runs on" is written and has not run between two machines. Its backup
+  has Garage's ten-minute window between the metadata
   snapshot and the last block copied. It restores into a copy beside it,
   without its keys. aws-cli, boto3, the JavaScript SDK and rclone ran
   against one through the edge; a real browser and ACME have not —

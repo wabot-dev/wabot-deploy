@@ -9,6 +9,11 @@ use crate::infra::repositories::object_stores;
 
 pub const NOT_A_STORE: &str = "that service is not a store of buckets";
 
+/// The next errand from the owner replaces every bucket and key a node
+/// keeping its store holds, so a change made there would last until then.
+pub const DERIVED: &str = "this store is kept here for the node that owns it, and its buckets \
+                           and keys are changed there";
+
 pub struct CreateBucket<'a> {
     pub service: &'a Service,
     pub asked: &'a CreateBucketRequest,
@@ -22,6 +27,9 @@ impl CreateBucket<'_> {
         if !self.service.kind.is_store() {
             return Err(NOT_A_STORE.into());
         }
+        if !self.service.is_ours() {
+            return Err(DERIVED.into());
+        }
         let name = BucketName::parse(&self.asked.name)?;
         let max_size = crate::domain::policies::presets::parse_bytes(&self.asked.max_size)?
             .ok_or(crate::domain::entities::bucket::NO_ROOM)?;
@@ -34,7 +42,7 @@ impl CreateBucket<'_> {
         object_stores::create_bucket(database, &bucket)
             .await
             .map_err(|error| error.to_string())?;
-        let converged = crate::infra::garage::converge_if_running(database, &self.service.id).await;
+        let converged = crate::infra::deploy::stores::apply(database, self.service).await;
         Ok((bucket, StoreConvergedResponse::of(converged)))
     }
 }
@@ -65,6 +73,52 @@ mod tests {
         }
         .run(database)
         .await
+    }
+
+    /// The Garage holding its objects is on the other node, and that node
+    /// keeps no buckets of its own: what it holds is what it was last told.
+    #[tokio::test]
+    async fn a_bucket_of_a_store_elsewhere_is_sent_to_the_node_keeping_it() {
+        let (database, service) = crate::features::fixtures::store_elsewhere(10 * GB).await;
+        let (_, converged) = make(&database, &service, "uploads", "1 GB")
+            .await
+            .expect("saved");
+        assert_eq!(
+            converged,
+            StoreConvergedResponse::Sent("far.example".into())
+        );
+        let told = crate::features::fixtures::told_far(&database).await;
+        assert_eq!(told.slots, vec![1]);
+        assert_eq!(
+            told.buckets
+                .iter()
+                .map(|b| b.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["uploads"]
+        );
+        assert_eq!(told.buckets[0].max_size, GB);
+    }
+
+    /// The next errand replaces whatever a node keeping somebody's store
+    /// holds, so a bucket made there would last until then.
+    #[tokio::test]
+    async fn a_store_kept_for_another_node_is_not_changed_here() {
+        let (database, service) = store(10 * GB).await;
+        crate::infra::repositories::services::set_origin(&database, &service.id, "nd-owner")
+            .await
+            .expect("origin");
+        let service = crate::infra::repositories::services::find(&database, &service.id)
+            .await
+            .expect("read")
+            .expect("there");
+        let refused = make(&database, &service, "uploads", "1 GB")
+            .await
+            .expect_err("derived");
+        assert_eq!(refused, DERIVED);
+        assert!(object_stores::buckets(&database, &service.id)
+            .await
+            .expect("buckets")
+            .is_empty());
     }
 
     #[tokio::test]

@@ -15,6 +15,11 @@ pub struct NewStore<'a> {
     /// placeholder, so the page says it before anything is typed.
     pub derived: Option<&'a str>,
     pub enabled: bool,
+    /// What this node is called, for the first choice of where it runs.
+    pub here: Option<&'a str>,
+    /// The other nodes that would keep it: those that agreed to keep data
+    /// for this one and run a release that knows stores.
+    pub elsewhere: &'a [crate::infra::network::Node],
 }
 
 pub fn render<'a>(page: &'a NewStore<'a>) -> impl Renderable + 'a {
@@ -71,6 +76,19 @@ pub fn render<'a>(page: &'a NewStore<'a>) -> impl Renderable + 'a {
                 <p class="field-hint">(t("What its buckets may hold together. Every bucket is given a \
                      maximum, and their sum has to fit here — a full bucket answers its client with an \
                      error rather than filling a disk other services share."))</p>
+
+                @if !page.elsewhere.is_empty() {
+                    <label for="on">(t("Runs on"))</label>
+                    <select id="on" name="on">
+                        <option value="" selected>(page.here.unwrap_or(t("this node")))</option>
+                        @for node in page.elsewhere {
+                            <option value=(&node.id)>(&node.name)</option>
+                        }
+                    </select>
+                    <p class="field-hint">(t("Where Garage runs and its objects are kept, for good: a \
+                         store is not moved once it exists. Its name is served from this node either \
+                         way, and its backups are taken where it runs."))</p>
+                }
 
                 (crate::shell::components::allowlist_field::field("allowlist", "allowlist",
                     t("Who may connect"),

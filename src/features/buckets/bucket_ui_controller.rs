@@ -91,7 +91,31 @@ impl BucketUiController {
         Some(self.address(&hostname))
     }
 
-    async fn usage_of(&self, service: &Service, names: &[String]) -> Option<Vec<Option<Usage>>> {
+    async fn usage_of(
+        &self,
+        service: &Service,
+        names: &[String],
+        holder: Option<&crate::infra::deploy::stores::Holder>,
+    ) -> Option<Vec<Option<Usage>>> {
+        if holder.is_some() {
+            let reported = object_stores::measured(&self.state.database, &service.id)
+                .await
+                .ok()?;
+            if reported.is_empty() && !names.is_empty() {
+                return None;
+            }
+            return Some(
+                names
+                    .iter()
+                    .map(|name| {
+                        reported
+                            .iter()
+                            .find(|measured| &measured.name == name)
+                            .map(Usage::reported)
+                    })
+                    .collect(),
+            );
+        }
         let admin = crate::infra::garage::admin_for(&self.state.database, &service.id)
             .await
             .ok()?;
@@ -122,7 +146,9 @@ impl BucketUiController {
             };
         let rows = object_stores::buckets(&self.state.database, &service.id).await?;
         let names: Vec<String> = rows.iter().map(|b| b.name.as_str().to_string()).collect();
-        let usage = self.usage_of(&service, &names).await;
+        let holder =
+            crate::infra::deploy::stores::held_elsewhere(&self.state.database, &service.id).await;
+        let usage = self.usage_of(&service, &names, holder.as_ref()).await;
         let running = usage.is_some();
         let listed: Vec<_> = rows
             .into_iter()
@@ -154,6 +180,7 @@ impl BucketUiController {
         let container = format!("{}.{}", project.slug, service.slug);
         let restorable = allowed.may_deploy()
             && service.is_ours()
+            && holder.is_none()
             && (elsewhere.is_some()
                 || crate::infra::backup::taken(&self.state.config.node.data_dir)
                     .iter()
@@ -180,6 +207,7 @@ impl BucketUiController {
             reserved,
             disk: service.disk_limit,
             running,
+            runs_on: holder.as_ref().map(|holder| holder.name.as_str()),
             restore: restorable.then_some(crate::features::buckets::buckets_page::Restore {
                 default_name: &default_name,
                 derived: derived.as_deref(),
@@ -215,8 +243,14 @@ impl BucketUiController {
             return Ok(Redirect::found(back).into());
         };
         let keys = object_stores::keys(&self.state.database, &bucket.id).await?;
+        let holder =
+            crate::infra::deploy::stores::held_elsewhere(&self.state.database, &service.id).await;
         let usage = self
-            .usage_of(&service, &[bucket.name.as_str().to_string()])
+            .usage_of(
+                &service,
+                &[bucket.name.as_str().to_string()],
+                holder.as_ref(),
+            )
             .await
             .and_then(|mut found| found.pop().flatten());
         let store_hostname = self.store_hostname(&service).await;
@@ -236,6 +270,7 @@ impl BucketUiController {
             bucket: &bucket,
             keys: &keys,
             usage: usage.as_ref(),
+            runs_on: holder.as_ref().map(|holder| holder.name.as_str()),
             endpoint: endpoint.as_deref(),
             public_address: public_address.as_deref(),
             derived_public: derived_public.as_deref(),

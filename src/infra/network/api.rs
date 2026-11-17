@@ -306,6 +306,11 @@ pub struct ReplicaState {
     /// address is on a bridge that is not unique across nodes.
     #[serde(default)]
     pub overlay_port: Option<u16>,
+    /// The overlay port for each container port it is reached on, keyed by
+    /// the container port. Empty from a node older than this, whose one
+    /// `overlay_port` is all there is.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub overlay_ports: std::collections::BTreeMap<u16, u16>,
     /// Why it is not, when it is not.
     #[serde(default)]
     pub error: Option<String>,
@@ -346,6 +351,11 @@ pub struct ReplicaState {
     /// says which is which.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cpu: Option<u32>,
+    /// What each bucket holds, for a store. A measurement like the three
+    /// above. `None` when nobody could ask Garage, which leaves what was
+    /// last measured where it is.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub buckets: Option<Vec<crate::domain::entities::bucket::Measured>>,
 }
 
 /// A refusal, in the shape the other end knows how to print.
@@ -677,6 +687,7 @@ pub(crate) async fn record(
         false => {
             replica.address.as_deref() != state.address.as_deref()
                 || replica.overlay_port != state.overlay_port
+                || replica.overlay_ports != state.overlay_ports
                 || replica.last_error.as_deref() != state.error.as_deref()
         }
     };
@@ -709,6 +720,12 @@ pub(crate) async fn record(
             .map_err(|error| super::NetworkError::Refused(error.to_string()))?;
     }
 
+    if let (false, Some(buckets)) = (state.evicted, &state.buckets) {
+        crate::infra::repositories::object_stores::set_measured(database, &service.id, buckets)
+            .await
+            .map_err(|error| super::NetworkError::Refused(error.to_string()))?;
+    }
+
     if !changed {
         return Ok(false);
     }
@@ -728,6 +745,12 @@ pub(crate) async fn record(
             database,
             &replica.id,
             state.overlay_port,
+        )
+        .await?;
+        crate::infra::repositories::replicas::set_overlay_ports(
+            database,
+            &replica.id,
+            &state.overlay_ports,
         )
         .await?;
         crate::infra::repositories::replicas::set_last_error(
@@ -2256,11 +2279,13 @@ mod tests {
             slot: 2,
             address: Some(address.to_string()),
             overlay_port: Some(30001),
+            overlay_ports: Default::default(),
             error: None,
             evicted: false,
             memory: None,
             disk: None,
             cpu: None,
+            buckets: None,
         };
 
         let first = record(&authority.database, "nd-joining001", &reported("10.42.2.5"))
@@ -2373,11 +2398,13 @@ mod tests {
             slot: 2,
             address: Some("10.42.2.5".into()),
             overlay_port: Some(30001),
+            overlay_ports: Default::default(),
             error: None,
             evicted: false,
             memory: Some(bytes),
             disk: None,
             cpu: None,
+            buckets: None,
         };
 
         assert!(
@@ -2402,6 +2429,92 @@ mod tests {
             Some(2_000),
             "and it is written anyway, or the page shows a stale number"
         );
+    }
+
+    /// What a store's buckets hold reaches its owner only this way, and is
+    /// what deleting one asks. A measurement, so never news; and a report
+    /// that could not ask Garage leaves the last answer where it is.
+    /// A copy that reports per container port is routed per port, and a
+    /// change to those ports is news: the edges hold them.
+    #[tokio::test]
+    async fn what_a_stores_buckets_hold_is_stored_and_its_ports_are_news() {
+        let authority = authority().await;
+        authority
+            .harness
+            .post("/api/network/join")
+            .header("authorization", format!("Bearer {}", authority.secret))
+            .json(&arriving())
+            .send()
+            .await
+            .assert_ok();
+        let placed = placed_there(&authority, 2).await;
+        let measured = |objects: u64| crate::domain::entities::bucket::Measured {
+            name: "uploads".into(),
+            objects,
+            bytes: objects * 100,
+            unfinished_uploads: 0,
+        };
+        let reporting = |buckets: Option<Vec<crate::domain::entities::bucket::Measured>>,
+                         web: u16| ReplicaState {
+            project: "shared".into(),
+            service: "web".into(),
+            slot: 2,
+            address: Some("10.42.2.5".into()),
+            overlay_port: Some(30001),
+            overlay_ports: std::collections::BTreeMap::from([(3900, 30001), (3902, web)]),
+            error: None,
+            evicted: false,
+            memory: None,
+            disk: None,
+            cpu: None,
+            buckets,
+        };
+
+        assert!(record(
+            &authority.database,
+            "nd-joining001",
+            &reporting(Some(vec![measured(1)]), 30002)
+        )
+        .await
+        .expect("recorded"));
+        assert!(
+            !record(
+                &authority.database,
+                "nd-joining001",
+                &reporting(Some(vec![measured(5)]), 30002)
+            )
+            .await
+            .expect("recorded"),
+            "a new count on its own is not news"
+        );
+        assert!(!record(
+            &authority.database,
+            "nd-joining001",
+            &reporting(None, 30002)
+        )
+        .await
+        .expect("recorded"));
+        assert_eq!(
+            crate::infra::repositories::object_stores::measured(&authority.database, &placed)
+                .await
+                .expect("measured"),
+            vec![measured(5)]
+        );
+        assert!(
+            record(
+                &authority.database,
+                "nd-joining001",
+                &reporting(None, 30003)
+            )
+            .await
+            .expect("recorded"),
+            "a port that moved is"
+        );
+        let after = crate::infra::repositories::replicas::in_slot(&authority.database, &placed, 2)
+            .await
+            .expect("query")
+            .expect("there");
+        assert_eq!(after.overlay_ports.get(&3902), Some(&30003));
     }
 
     /// A rate crosses as an answer, and an absent one leaves what is
@@ -2436,11 +2549,13 @@ mod tests {
             slot: 2,
             address: Some("10.42.2.5".into()),
             overlay_port: Some(30001),
+            overlay_ports: Default::default(),
             error: None,
             evicted: false,
             memory: Some(1_000),
             disk: None,
             cpu,
+            buckets: None,
         };
 
         record(&authority.database, "nd-joining001", &reporting(Some(250)))
@@ -2496,11 +2611,13 @@ mod tests {
             slot: 2,
             address: None,
             overlay_port: None,
+            overlay_ports: Default::default(),
             error: None,
             evicted: true,
             memory: None,
             disk: None,
             cpu: None,
+            buckets: None,
         };
 
         assert!(

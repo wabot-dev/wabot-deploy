@@ -23,6 +23,9 @@ pub struct Buckets<'a> {
     pub reserved: u64,
     pub disk: Option<u64>,
     pub running: bool,
+    /// The node running the store, when that is not this one: what each
+    /// bucket holds is then what it last reported.
+    pub runs_on: Option<&'a str>,
     /// Absent when no backup here holds this store and none are sent
     /// anywhere: the form could only refuse.
     pub restore: Option<Restore<'a>>,
@@ -55,6 +58,10 @@ pub fn render<'a>(page: &'a Buckets<'a>) -> impl Renderable + 'a {
             <dl class="kv">
                 <dt>(t("Endpoint"))</dt>
                 <dd class="mono">(page.endpoint.unwrap_or("—"))</dd>
+                @if let Some(node) = page.runs_on {
+                    <dt>(t("Runs on"))</dt>
+                    <dd class="mono">(node)</dd>
+                }
                 <dt>(t("Region"))</dt>
                 <dd class="mono">(garage::REGION)</dd>
                 <dt>(t("Addressing"))</dt>
@@ -83,7 +90,13 @@ pub fn render<'a>(page: &'a Buckets<'a>) -> impl Renderable + 'a {
                     <span class="who">(presets::size_field(page.reserved))" / "(presets::size_field(disk))</span>
                 }
             </div>
-            @if !page.running {
+            @if let Some(node) = page.runs_on {
+                @if page.running {
+                    <p class="tile-detail">(t("What each bucket holds is what "))<span class="mono">(node)</span>(t(" last reported."))</p>
+                } @else {
+                    <p class="tile-detail"><span class="mono">(node)</span>(t(" has not reported what each bucket holds yet."))</p>
+                }
+            } @else if !page.running {
                 <p class="tile-detail">(t("The store is not running, so what each bucket holds cannot \
                      be asked, and keys cannot be made."))</p>
             }

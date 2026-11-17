@@ -66,6 +66,9 @@ impl SetServicePlacement<'_> {
                 ));
             }
         }
+        if self.service.kind.is_store() && self.replicas.trim().parse::<u32>().unwrap_or(1) != 1 {
+            return Err("a store runs as one copy: Garage across nodes is not built for it".into());
+        }
         // The errand that places a copy elsewhere carries no volumes.
         if elsewhere
             && !self.service.kind.is_managed()
@@ -98,6 +101,13 @@ impl SetServicePlacement<'_> {
             })
             .collect();
 
+        if self.service.kind.is_store() && !moves.is_empty() {
+            return Err(
+                "a store stays on the node it was made on: its objects are a directory there, \
+                 and nothing carries them to another"
+                    .into(),
+            );
+        }
         // A database's primary stays where it was made. Moving one that
         // holds data is a switchover — a standby caught up, writes
         // stopped, the standby promoted — and none of that exists, so the

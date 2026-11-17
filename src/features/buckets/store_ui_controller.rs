@@ -53,6 +53,22 @@ impl StoreUiController {
             crate::infra::deploy::dns::suggested_hostname("<name>", &project.slug, &suffix)
         });
         let enabled = crate::infra::node::settings::buckets_enabled(&self.state.database).await;
+        let (here, elsewhere): (Vec<_>, Vec<_>) = crate::infra::network::candidates_for(
+            &self.state.database,
+            crate::domain::values::capability::Capability::Store,
+        )
+        .await?
+        .into_iter()
+        .filter(|node| {
+            node.is_self || crate::infra::network::errand::holds_stores(node.version.as_deref())
+        })
+        .partition(|node| node.is_self);
+        let here = match here.into_iter().next() {
+            Some(node) => Some(node.name),
+            None => crate::infra::network::me(&self.state.database)
+                .await?
+                .map(|node| node.name),
+        };
 
         let action = format!("/projects/{}/stores", project.slug);
         let back = format!("/projects/{}", project.slug);
@@ -70,6 +86,8 @@ impl StoreUiController {
             query_error: query.error.as_deref(),
             derived: derived.as_deref(),
             enabled,
+            here: here.as_deref(),
+            elsewhere: &elsewhere,
         };
         let body = crate::shell::texts::language::scoped(account.language, || {
             crate::features::buckets::new_store_page::render(&page)

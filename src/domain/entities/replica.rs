@@ -19,6 +19,10 @@ pub struct Replica {
     /// copy, for an edge running somewhere else. `None` until something
     /// outside the node needs to reach it. See migration `0022`.
     pub overlay_port: Option<u16>,
+    /// The overlay port reaching each container port of this copy, keyed by
+    /// the container port. `overlay_port` is the first of them; a node older
+    /// than this reports only that one, and this is empty.
+    pub overlay_ports: std::collections::BTreeMap<u16, u16>,
     pub last_error: Option<String>,
     /// Set when the node running it threw it out. The node that placed
     /// it stops asking.

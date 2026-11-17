@@ -98,6 +98,47 @@ impl From<HeldPermissions> for Permissions {
     }
 }
 
+impl Usage {
+    /// What the node running a store elsewhere reported.
+    pub fn reported(measured: &crate::domain::entities::bucket::Measured) -> Self {
+        Self {
+            objects: measured.objects,
+            bytes: measured.bytes,
+            unfinished_uploads: measured.unfinished_uploads,
+            keys: Vec::new(),
+        }
+    }
+}
+
+/// What every bucket of the store running here holds, for the report to its
+/// owner. `None` when the store does not answer within `within`: a report
+/// is sent every few seconds, and a store that hangs must not hold it up.
+pub async fn measure(
+    database: &SqliteDatabase,
+    service_id: &str,
+    within: std::time::Duration,
+) -> Option<Vec<crate::domain::entities::bucket::Measured>> {
+    let admin = admin_for(database, service_id).await.ok()?;
+    let buckets = crate::infra::repositories::object_stores::buckets(database, service_id)
+        .await
+        .ok()?;
+    tokio::time::timeout(within, async {
+        let mut measured = Vec::with_capacity(buckets.len());
+        for bucket in buckets {
+            let usage = admin.usage(bucket.name.as_str()).await.ok()??;
+            measured.push(crate::domain::entities::bucket::Measured {
+                name: bucket.name.as_str().to_string(),
+                objects: usage.objects,
+                bytes: usage.bytes,
+                unfinished_uploads: usage.unfinished_uploads,
+            });
+        }
+        Some(measured)
+    })
+    .await
+    .ok()?
+}
+
 impl Admin {
     pub fn at(address: Ipv4Addr, token: &str) -> Self {
         Self {

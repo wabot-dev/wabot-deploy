@@ -62,6 +62,7 @@ impl CreateStore<'_> {
         let image = garage::image_for(garage::DEFAULT_VERSION)
             .ok_or("this node offers no version of the store's engine")?;
         let refused = |error: crate::domain::errors::PlatformError| error.to_string();
+        let on = self.on(database).await?;
 
         let service = services::create_on(
             database,
@@ -69,7 +70,7 @@ impl CreateStore<'_> {
             &self.asked.name,
             &image,
             &[],
-            None,
+            on.as_deref(),
         )
         .await
         .map_err(refused)?;
@@ -107,6 +108,43 @@ impl CreateStore<'_> {
             &self.project.slug,
             &suffix,
         ))
+    }
+
+    /// Where it runs, for good: the node is chosen here and nothing moves a
+    /// store afterwards, as nothing moves a database's primary.
+    async fn on(&self, database: &SqliteDatabase) -> Result<Option<String>, String> {
+        let id = self.asked.on.trim();
+        if id.is_empty() {
+            return Ok(None);
+        }
+        let node = crate::infra::network::find(database, id)
+            .await
+            .map_err(|error| error.to_string())?
+            .ok_or("no such node")?;
+        if node.is_self {
+            return Ok(None);
+        }
+        if !node
+            .allows
+            .contains(&crate::domain::values::capability::Capability::Store)
+        {
+            return Err(format!(
+                "{} has not agreed to keep data for this node",
+                node.name
+            ));
+        }
+        if !crate::infra::network::errand::holds_stores(node.version.as_deref()) {
+            return Err(format!(
+                "{} runs {}, which does not know stores of buckets — it would refuse the store \
+                 and it would wait there for ever. Update it to {} or later first",
+                node.name,
+                node.version
+                    .as_deref()
+                    .unwrap_or("a version it has not reported"),
+                crate::infra::network::errand::STORES_SINCE
+            ));
+        }
+        Ok(Some(node.id))
     }
 
     async fn fill(
@@ -193,6 +231,7 @@ mod tests {
             hostname: "files.shop.example.com".into(),
             memory: String::new(),
             disk: "10 GB".into(),
+            on: String::new(),
             allowlist: Default::default(),
         }
     }
@@ -246,6 +285,30 @@ mod tests {
         made(&database, &project, &files())
             .await
             .expect_err("no node answers for names in a test");
+        assert!(services::all(&database, Some(&project.id))
+            .await
+            .expect("services")
+            .is_empty());
+    }
+
+    /// A node older than stores reads the errand as an unknown kind and
+    /// refuses it, and the store would wait there for ever.
+    #[tokio::test]
+    async fn a_store_is_not_sent_to_a_node_that_does_not_know_stores() {
+        let (database, project) = project().await;
+        crate::infra::node::settings::set_buckets_enabled(&database, true)
+            .await
+            .expect("on");
+        crate::features::fixtures::far_node(&database, Some("0.37.0")).await;
+        let asked = CreateStoreRequest {
+            on: "nd-far".into(),
+            ..files()
+        };
+        let refused = made(&database, &project, &asked).await.expect_err("old");
+        assert!(
+            refused.contains(crate::infra::network::errand::STORES_SINCE),
+            "{refused}"
+        );
         assert!(services::all(&database, Some(&project.id))
             .await
             .expect("services")

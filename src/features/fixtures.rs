@@ -94,3 +94,63 @@ pub async fn store_in(
         .expect("read")
         .expect("there")
 }
+
+/// Another node on the network, which agreed to keep data for this one and
+/// says it runs `version`.
+pub async fn far_node(database: &SqliteDatabase, version: Option<&str>) {
+    crate::infra::network::ensure_self(database, &crate::infra::config::Config::default())
+        .await
+        .expect("self");
+    crate::infra::network::save(
+        database,
+        &crate::infra::network::Node {
+            update_note: None,
+            version: version.map(str::to_string),
+            wanted_version: None,
+            usage: None,
+            draining_at: None,
+            capacity: None,
+            id: "nd-far".into(),
+            name: "far.example".into(),
+            kind: crate::infra::network::Kind::Private,
+            overlay_ip: Some("10.42.0.9".into()),
+            public_key: None,
+            endpoint: None,
+            allows: vec![crate::domain::values::capability::Capability::Store],
+            last_seen_at: None,
+            is_self: false,
+            ca_pem: None,
+        },
+    )
+    .await
+    .expect("node");
+}
+
+/// `shop/files`, running on `far.example` rather than here.
+pub async fn store_elsewhere(
+    disk: u64,
+) -> (SqliteDatabase, crate::domain::entities::service::Service) {
+    let (database, service) = store_of_buckets(disk).await;
+    far_node(&database, Some(crate::infra::network::errand::STORES_SINCE)).await;
+    let copy = crate::infra::repositories::replicas::of_service(&database, &service.id)
+        .await
+        .expect("replicas")[0]
+        .clone();
+    crate::infra::repositories::replicas::move_to(&database, &copy.id, Some("nd-far"))
+        .await
+        .expect("moved");
+    (database, service)
+}
+
+/// What the newest store errand to `far.example` says it keeps.
+pub async fn told_far(database: &SqliteDatabase) -> crate::infra::network::errand::Store {
+    let record = crate::infra::network::errand::all(database)
+        .await
+        .expect("errands")
+        .into_iter()
+        .find(|record| {
+            record.node_id == "nd-far" && record.kind == crate::infra::network::errand::Kind::Store
+        })
+        .expect("a store errand to the far node");
+    serde_json::from_value(record.payload).expect("a store errand")
+}

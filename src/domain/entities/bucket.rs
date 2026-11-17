@@ -1,7 +1,7 @@
 //! A bucket: a namespace of objects in one store, with who may read it from
 //! a browser and how long what it holds is kept.
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::domain::values::bucket_name::BucketName;
 use crate::domain::values::cors_origin::CorsOrigin;
@@ -26,6 +26,15 @@ pub struct Bucket {
     pub cors_origins: Vec<CorsOrigin>,
     pub expire_days: Option<u32>,
     pub abort_uploads_days: Option<u32>,
+}
+
+/// What one bucket holds, as Garage counted it on the node running it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Measured {
+    pub name: String,
+    pub objects: u64,
+    pub bytes: u64,
+    pub unfinished_uploads: u64,
 }
 
 impl Bucket {

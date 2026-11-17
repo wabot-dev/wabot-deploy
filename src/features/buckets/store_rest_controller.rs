@@ -44,6 +44,7 @@ impl StoreRestController {
             hostname: field(&form, "hostname").to_string(),
             memory: field(&form, "memory").to_string(),
             disk: field(&form, "disk").to_string(),
+            on: field(&form, "on").to_string(),
             allowlist: match crate::domain::values::allowlist::Allowlist::parse(field(
                 &form,
                 "allowlist",

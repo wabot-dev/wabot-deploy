@@ -568,6 +568,7 @@ async fn report_for(
                     slot: replica.slot,
                     address: replica.address.clone(),
                     overlay_port: replica.overlay_port,
+                    overlay_ports: replica.overlay_ports.clone(),
                     error: replica.last_error.clone(),
                     evicted: replica.evicted(),
                     memory: used
@@ -589,6 +590,17 @@ async fn report_for(
                             .get(&replica.container_id(&project.slug, &service.slug))
                             .copied()
                     }),
+                    buckets: match service.kind.is_store() && !replica.evicted() {
+                        true => {
+                            crate::infra::garage::measure(
+                                database,
+                                &service.id,
+                                std::time::Duration::from_secs(3),
+                            )
+                            .await
+                        }
+                        false => None,
+                    },
                 });
             }
         }
@@ -797,6 +809,16 @@ async fn carry_out(
             let told: errand::Database = serde_json::from_value(order.payload)
                 .map_err(|error| format!("that is not a database errand: {error}"))?;
             hold_database(database, config, container, authority, told).await
+        }
+        Kind::Store => {
+            let told: errand::Store = serde_json::from_value(order.payload)
+                .map_err(|error| format!("that is not a store errand: {error}"))?;
+            let named = (told.project.clone(), told.service.clone());
+            let held = hold_store(database, config, container, authority, told).await;
+            if let Err(reason) = &held {
+                note_on_copies(database, authority, &named.0, &named.1, reason).await;
+            }
+            held
         }
         Kind::Edge => {
             let edge: errand::Edge = serde_json::from_value(order.payload)
@@ -1433,6 +1455,289 @@ async fn hold_database(
         "an errand asked this node to hold copies of a database"
     );
     Ok(())
+}
+
+/// Keep a store of buckets for the node that owns it.
+///
+/// **What lands is derived**: the rows say what the owner said, and the next
+/// errand replaces them. A change to buckets or keys alone is converged into
+/// the running Garage, because restarting a store to add a bucket would cut
+/// every upload in flight; a new version, secret, image or ceiling needs a
+/// new container, and gets a deployment.
+async fn hold_store(
+    database: &SqliteDatabase,
+    config: &Config,
+    container: &Container,
+    authority: &str,
+    told: errand::Store,
+) -> Result<(), String> {
+    use crate::domain::policies::garage;
+    let refused = |error: crate::domain::errors::PlatformError| error.to_string();
+
+    let project = ensure_project(database, &told.project, authority).await?;
+    let slug = crate::domain::values::slug::Slug::of(&told.service);
+    let existing = services::in_project(database, &project.id, slug.as_str())
+        .await
+        .map_err(refused)?;
+
+    if told.slots.is_empty() {
+        if let Some(service) = existing {
+            stop_unnamed(database, config, &project, &service, &[]).await?;
+            services::delete(database, &service.id)
+                .await
+                .map_err(refused)?;
+        }
+        return Ok(());
+    }
+    if !garage::is_rpc_secret(&told.rpc_secret) {
+        return Err("that store's secret is not one Garage reads".into());
+    }
+
+    let service = match existing {
+        Some(service) => service,
+        None => {
+            let made = services::create(database, &project.id, &told.service, &told.image, &[])
+                .await
+                .map_err(refused)?;
+            services::set_origin(database, &made.id, authority)
+                .await
+                .map_err(refused)?;
+            made
+        }
+    };
+    let restart = service.image != told.image
+        || service.kind != crate::domain::entities::service::Kind::Garage
+        || service.memory_limit != told.memory_limit
+        || service.disk_limit != told.disk_limit;
+    services::set_image(database, &service.id, &told.image)
+        .await
+        .map_err(refused)?;
+    services::set_kind(
+        database,
+        &service.id,
+        crate::domain::entities::service::Kind::Garage,
+    )
+    .await
+    .map_err(refused)?;
+    services::set_memory_limit(database, &service.id, told.memory_limit)
+        .await
+        .map_err(refused)?;
+    services::set_disk_limit(database, &service.id, told.disk_limit)
+        .await
+        .map_err(refused)?;
+    let secrets = crate::infra::repositories::object_stores::keep(
+        database,
+        &crate::domain::entities::object_store::ObjectStore {
+            service_id: service.id.clone(),
+            version: told.version.clone(),
+            rpc_secret: told.rpc_secret.clone(),
+            admin_token: told.admin_token.clone(),
+            restored_from: None,
+        },
+    )
+    .await
+    .map_err(refused)?;
+
+    if crate::infra::repositories::volumes::of_service(database, &service.id)
+        .await
+        .map_err(refused)?
+        .is_empty()
+    {
+        crate::infra::repositories::volumes::create(
+            database,
+            &service.id,
+            garage::DATA_VOLUME,
+            garage::DATA_MOUNT,
+        )
+        .await
+        .map_err(refused)?;
+    }
+    let declared = ports::of_service(database, &service.id)
+        .await
+        .map_err(refused)?;
+    for port in [garage::S3_PORT, garage::WEB_PORT] {
+        if !declared.iter().any(|held| held.container_port == port) {
+            ports::create(database, &service.id, port, false, None, &[])
+                .await
+                .map_err(refused)?;
+        }
+    }
+
+    let gone: Vec<String> =
+        crate::infra::repositories::object_stores::buckets(database, &service.id)
+            .await
+            .map_err(refused)?
+            .into_iter()
+            .map(|bucket| bucket.name.as_str().to_string())
+            .filter(|name| !told.buckets.iter().any(|told| &told.name == name))
+            .collect();
+    let (buckets, keys) = store_contents(&service.id, &told);
+    crate::infra::repositories::object_stores::replace_contents(
+        database,
+        &service.id,
+        buckets,
+        keys,
+    )
+    .await
+    .map_err(refused)?;
+
+    replicas::ensure_slots(database, &service.id, &told.slots)
+        .await
+        .map_err(refused)?;
+    stop_unnamed(database, config, &project, &service, &told.slots).await?;
+
+    // Checked once the copy's row exists, so the refusal has somewhere to
+    // land that travels home: the owner reads it on its own page.
+    if told.running && !crate::infra::node::settings::buckets_enabled(database).await {
+        return Err(garage::OFF.into());
+    }
+
+    if !told.running {
+        return match container.try_resolve::<crate::infra::deploy::Deployer>() {
+            Ok(deployer) => deployer
+                .stop(&project, &service)
+                .await
+                .map_err(|error| error.to_string()),
+            Err(_) => services::set_desired_state(
+                database,
+                &service.id,
+                crate::domain::entities::service::DesiredState::Stopped,
+            )
+            .await
+            .map_err(refused),
+        };
+    }
+
+    // Garage refuses to delete a bucket that holds an object, so one its
+    // owner deleted on a report that said it was empty, and that took an
+    // upload since, stays here holding it — named, rather than lost.
+    let mut kept = Vec::new();
+    if let (false, Ok(admin)) = (
+        gone.is_empty(),
+        crate::infra::garage::admin_for(database, &service.id).await,
+    ) {
+        for name in &gone {
+            if let Err(reason) = admin.delete_bucket(name).await {
+                kept.push(format!("{name} ({reason})"));
+            }
+        }
+    }
+    let kept = match kept.is_empty() {
+        true => Ok(()),
+        false => Err(format!(
+            "the store kept buckets its owner deleted, because Garage would not delete them: {}",
+            kept.join(", ")
+        )),
+    };
+
+    let running = crate::infra::garage::running_here(database, &service.id)
+        .await
+        .is_some();
+    if restart || secrets || !running {
+        let command = crate::infra::deploy::jobs::DeployService::new(&service.id, None);
+        wabot::async_jobs::run_command(container, &command)
+            .await
+            .map_err(|error| format!("could not queue the deployment: {error}"))?;
+        tracing::info!(service = %service.slug, "an errand asked this node to keep a store");
+        return kept;
+    }
+    crate::infra::garage::converge_if_running(database, &service.id)
+        .await
+        .map_err(|reason| format!("the store did not take its buckets and keys: {reason}"))?;
+    if kept.is_ok() {
+        for replica in replicas::of_service(database, &service.id)
+            .await
+            .map_err(refused)?
+            .into_iter()
+            .filter(|replica| replica.is_here() && replica.last_error.is_some())
+        {
+            replicas::set_last_error(database, &replica.id, None)
+                .await
+                .map_err(refused)?;
+        }
+    }
+    kept
+}
+
+/// Put an errand's refusal on the copies it was about, which is what the
+/// report carries home. An errand's own outcome reaches only the owner's
+/// journal, and a store that never started with the reason only there is a
+/// store that never started for no reason anybody can see.
+async fn note_on_copies(
+    database: &SqliteDatabase,
+    authority: &str,
+    project: &str,
+    service: &str,
+    reason: &str,
+) {
+    let Ok(projects) = crate::infra::repositories::projects::all(database).await else {
+        return;
+    };
+    let Some(project) = projects
+        .into_iter()
+        .find(|held| held.name == project && held.origin_node_id.as_deref() == Some(authority))
+    else {
+        return;
+    };
+    let slug = crate::domain::values::slug::Slug::of(service);
+    let Ok(Some(service)) = services::in_project(database, &project.id, slug.as_str()).await else {
+        return;
+    };
+    for replica in replicas::of_service(database, &service.id)
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|replica| replica.is_here())
+    {
+        let _ = replicas::set_last_error(database, &replica.id, Some(reason)).await;
+    }
+}
+
+/// The rows a store errand describes, with ids of this node's own.
+fn store_contents(
+    service_id: &str,
+    told: &errand::Store,
+) -> (
+    Vec<crate::domain::entities::bucket::Bucket>,
+    Vec<(String, crate::domain::entities::bucket_key::BucketKey)>,
+) {
+    use crate::domain::values::cors_origin::CorsOrigin;
+    let buckets = told
+        .buckets
+        .iter()
+        .map(|bucket| crate::domain::entities::bucket::Bucket {
+            id: format!("bkt-{}", wabot::prelude::password::generate(12)),
+            service_id: service_id.to_string(),
+            name: crate::domain::values::bucket_name::BucketName::stored(&bucket.name),
+            max_size: bucket.max_size,
+            public_hostname: bucket.public_hostname.clone(),
+            cors_origins: bucket
+                .cors_origins
+                .iter()
+                .filter_map(|origin| CorsOrigin::parse(origin).ok())
+                .collect(),
+            expire_days: bucket.expire_days,
+            abort_uploads_days: bucket.abort_uploads_days,
+        })
+        .collect();
+    let keys = told
+        .keys
+        .iter()
+        .map(|key| {
+            (
+                key.bucket.clone(),
+                crate::domain::entities::bucket_key::BucketKey {
+                    id: format!("bk-{}", wabot::prelude::password::generate(12)),
+                    bucket_id: String::new(),
+                    name: key.name.clone(),
+                    access_key_id: key.access_key_id.clone(),
+                    secret_key: key.secret_key.clone(),
+                    access: crate::domain::entities::bucket_key::Access::parse(&key.access),
+                },
+            )
+        })
+        .collect();
+    (buckets, keys)
 }
 
 /// Answer for a name here, proxying to the replicas the errand named.
@@ -3153,6 +3458,181 @@ mod tests {
         .await
         .expect_err("refused");
         assert!(error.contains("has not agreed to `store`"), "{error}");
+    }
+
+    fn store_errand(
+        slots: &[u32],
+        running: bool,
+        buckets: &[&str],
+        keys: &[(&str, &str)],
+    ) -> Errand {
+        Errand {
+            id: format!("er-{}", wabot::prelude::password::generate(8)),
+            kind: Kind::Store,
+            payload: serde_json::json!({
+                "project": "shared", "service": "files",
+                "image": crate::domain::policies::garage::image_for("2").expect("image"),
+                "version": "2",
+                "memory_limit": 268435456u64,
+                "disk_limit": 10737418240u64,
+                "rpc_secret": "ab".repeat(32),
+                "admin_token": "token",
+                "slots": slots,
+                "running": running,
+                "buckets": buckets.iter().map(|name| serde_json::json!({
+                    "name": name, "max_size": 1048576u64,
+                })).collect::<Vec<_>>(),
+                "keys": keys.iter().map(|(bucket, id)| serde_json::json!({
+                    "bucket": bucket, "name": "web", "access_key_id": id,
+                    "secret_key": "s".repeat(64), "access": "read_only",
+                })).collect::<Vec<_>>(),
+            }),
+        }
+    }
+
+    async fn keeping_stores_for(database: &SqliteDatabase, authority: &str) {
+        crate::infra::network::capability::grant(
+            database,
+            authority,
+            &[crate::domain::values::capability::Capability::Store],
+        )
+        .await
+        .expect("grant");
+    }
+
+    /// A store kept for another node is the owner's rows, landed: Garage's
+    /// two ports, its volume, and the buckets and keys the owner wrote —
+    /// and a second errand that no longer names a bucket takes it away.
+    #[tokio::test]
+    async fn a_store_errand_keeps_what_the_owner_wrote_and_nothing_it_removed() {
+        let database = crate::infra::db::open_in_memory().await.expect("open");
+        keeping_stores_for(&database, "nd-a").await;
+        let (config, container) = (Config::default(), Container::new());
+        carry_out(
+            &database,
+            &config,
+            &container,
+            "nd-a",
+            store_errand(&[1], false, &["logs", "uploads"], &[("uploads", "GK1")]),
+        )
+        .await
+        .expect("kept");
+
+        let service = services::all(&database, None)
+            .await
+            .expect("services")
+            .pop()
+            .expect("one");
+        assert_eq!(service.kind, crate::domain::entities::service::Kind::Garage);
+        assert_eq!(service.origin_node_id.as_deref(), Some("nd-a"));
+        let mut declared: Vec<u16> = ports::of_service(&database, &service.id)
+            .await
+            .expect("ports")
+            .iter()
+            .map(|port| port.container_port)
+            .collect();
+        declared.sort();
+        assert_eq!(declared, vec![3900, 3902]);
+        assert_eq!(
+            crate::infra::repositories::volumes::of_service(&database, &service.id)
+                .await
+                .expect("volumes")
+                .len(),
+            1
+        );
+        let names = |database: SqliteDatabase, id: String| async move {
+            let mut names: Vec<String> =
+                crate::infra::repositories::object_stores::buckets(&database, &id)
+                    .await
+                    .expect("buckets")
+                    .into_iter()
+                    .map(|bucket| bucket.name.as_str().to_string())
+                    .collect();
+            names.sort();
+            names
+        };
+        assert_eq!(
+            names(database.clone(), service.id.clone()).await,
+            vec!["logs", "uploads"]
+        );
+
+        carry_out(
+            &database,
+            &config,
+            &container,
+            "nd-a",
+            store_errand(&[1], false, &["uploads"], &[]),
+        )
+        .await
+        .expect("kept again");
+        assert_eq!(
+            names(database.clone(), service.id.clone()).await,
+            vec!["uploads"]
+        );
+        assert!(
+            crate::infra::repositories::object_stores::keys_of_store(&database, &service.id)
+                .await
+                .expect("keys")
+                .is_empty()
+        );
+        assert_eq!(services::all(&database, None).await.expect("all").len(), 1);
+    }
+
+    /// The switch is this machine's operator's, and the owner learns about
+    /// it from the copy's row, which travels home on the next report —
+    /// an errand's own outcome reaches only the owner's journal.
+    #[tokio::test]
+    async fn a_node_with_stores_turned_off_says_so_on_the_copy_it_was_asked_to_keep() {
+        let database = crate::infra::db::open_in_memory().await.expect("open");
+        keeping_stores_for(&database, "nd-a").await;
+        let refused = carry_out(
+            &database,
+            &Config::default(),
+            &Container::new(),
+            "nd-a",
+            store_errand(&[1], true, &[], &[]),
+        )
+        .await
+        .expect_err("off");
+        assert_eq!(refused, crate::domain::policies::garage::OFF);
+        let service = services::all(&database, None)
+            .await
+            .expect("services")
+            .pop()
+            .expect("one");
+        let copies = replicas::of_service(&database, &service.id)
+            .await
+            .expect("replicas");
+        assert_eq!(
+            copies[0].last_error.as_deref(),
+            Some(crate::domain::policies::garage::OFF)
+        );
+    }
+
+    #[tokio::test]
+    async fn a_node_that_only_agreed_to_host_will_not_keep_a_store() {
+        let database = crate::infra::db::open_in_memory().await.expect("open");
+        crate::infra::network::capability::grant(
+            &database,
+            "nd-a",
+            &[crate::domain::values::capability::Capability::Host],
+        )
+        .await
+        .expect("grant");
+        let refused = carry_out(
+            &database,
+            &Config::default(),
+            &Container::new(),
+            "nd-a",
+            store_errand(&[1], false, &[], &[]),
+        )
+        .await
+        .expect_err("refused");
+        assert!(refused.contains("has not agreed to `store`"), "{refused}");
+        assert!(services::all(&database, None)
+            .await
+            .expect("all")
+            .is_empty());
     }
 
     /// A payload that will not parse is a refusal with a reason too,
