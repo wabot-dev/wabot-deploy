@@ -284,6 +284,14 @@ fn migrations() -> Vec<Migration> {
             "0071_database_mode",
             include_str!("../../migrations/0071_database_mode.sql"),
         ),
+        Migration::new(
+            "0072_object_storage",
+            include_str!("../../migrations/0072_object_storage.sql"),
+        ),
+        Migration::new(
+            "0073_public_buckets",
+            include_str!("../../migrations/0073_public_buckets.sql"),
+        ),
     ]
 }
 

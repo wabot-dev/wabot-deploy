@@ -37,7 +37,6 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
     ("Everything, as a store", "Todo, como almacén"),
     ("Everything, as a store: a write is on disk within a second", "Todo, como almacén: una escritura está en disco en menos de un segundo"),
     ("Going back", "Volver atrás"),
-    ("Holds up to", "Guarda hasta"),
     ("Image reference", "Referencia de la imagen"),
     ("It has no address yet. A connection string appears once it has been deployed.", "Todavía no tiene dirección. La cadena de conexión aparece cuando se haya desplegado."),
     ("It is a cache: nothing it holds is written to disk, a restart empties it, and no backup includes it. When it is full it drops what was used least long ago.", "Es una caché: nada de lo que guarda se escribe en disco, un reinicio la vacía y ningún backup la incluye. Cuando se llena descarta lo que lleva más tiempo sin usarse."),

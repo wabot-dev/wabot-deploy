@@ -323,6 +323,25 @@ pub async fn run(config: Config, config_path: &Path) -> anyhow::Result<i32> {
     }
 
     println!();
+    println!("buckets");
+    match crate::infra::node::settings::buckets_enabled(&database).await {
+        false => println!("  off — no store of buckets is made or started here"),
+        true => {
+            println!(
+                "  on — stores run Garage {} (GNU AGPLv3)",
+                crate::domain::policies::garage::RELEASE
+            );
+            let stores = crate::infra::repositories::services::all(&database, None)
+                .await
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|service| service.kind.is_store())
+                .count();
+            println!("  stores     {stores}");
+        }
+    }
+
+    println!();
     println!("allowlists");
     for (name, door) in [
         ("console", crate::domain::values::allowlist::Door::Console),

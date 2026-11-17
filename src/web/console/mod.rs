@@ -35,6 +35,9 @@ use wabot::ui::embedded_assets;
 
 use crate::features::access::{auth_rest_controller, auth_ui_controller};
 use crate::features::backups::backup_rest_controller;
+use crate::features::buckets::{
+    bucket_rest_controller, bucket_ui_controller, store_rest_controller, store_ui_controller,
+};
 use crate::features::databases::{database_rest_controller, database_ui_controller};
 use crate::features::dns::{dns_rest_controller, zone_rest_controller, zone_ui_controller};
 use crate::features::network::{network_rest_controller, network_ui_controller};
@@ -96,6 +99,10 @@ pub fn register(
         reveal_ui_controller::RevealUiController,
         database_rest_controller::DatabaseRestController,
         database_ui_controller::DatabaseUiController,
+        store_ui_controller::StoreUiController,
+        store_rest_controller::StoreRestController,
+        bucket_ui_controller::BucketUiController,
+        bucket_rest_controller::BucketRestController,
         service_ui_controller::ServiceUiController,
         service_rest_controller::ServiceRestController,
         service_redirect_ui_controller::ServiceRedirectUiController,
@@ -126,6 +133,8 @@ fn shared(container: &Container, pages: Router, forms: Router) -> (Router, Route
     let pages = auth_ui_controller::AuthUiController::register_ui_routes(container, pages);
     let pages = database_ui_controller::DatabaseUiController::register_ui_routes(container, pages);
     let pages = project_ui_controller::ProjectUiController::register_ui_routes(container, pages);
+    let pages = store_ui_controller::StoreUiController::register_ui_routes(container, pages);
+    let pages = bucket_ui_controller::BucketUiController::register_ui_routes(container, pages);
     let pages = go_ui_controller::GoUiController::register_ui_routes(container, pages);
     let pages = reveal_ui_controller::RevealUiController::register_ui_routes(container, pages);
     let pages = service_ui_controller::ServiceUiController::register_ui_routes(container, pages);
@@ -137,6 +146,8 @@ fn shared(container: &Container, pages: Router, forms: Router) -> (Router, Route
     let forms = auth_rest_controller::AuthRestController::register_routes(container, forms);
     let forms = database_rest_controller::DatabaseRestController::register_routes(container, forms);
     let forms = project_rest_controller::ProjectRestController::register_routes(container, forms);
+    let forms = store_rest_controller::StoreRestController::register_routes(container, forms);
+    let forms = bucket_rest_controller::BucketRestController::register_routes(container, forms);
     let forms = service_rest_controller::ServiceRestController::register_routes(container, forms);
     let forms = service_redirect_rest_controller::ServiceRedirectRestController::register_routes(
         container, forms,

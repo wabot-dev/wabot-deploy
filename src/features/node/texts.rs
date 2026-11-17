@@ -20,6 +20,7 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
         "A node this one cannot reach",
         "Un nodo que este no alcanza",
     ),
+    ("A store runs Garage, an engine published under the GNU AGPLv3, in a container of its own. Turning this on lets projects here make stores; turning it off stops none that exist, and refuses to start or make one.", "Un almacén corre Garage, un motor publicado bajo la GNU AGPLv3, en un contenedor propio. Activarlo deja que los proyectos de aquí creen almacenes; desactivarlo no detiene ninguno de los que existen, y se niega a arrancar o crear uno."),
     (
         "An instruction was refused",
         "Una instrucción fue rechazada",
@@ -36,6 +37,7 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
     ("Its port, as sshd reports it: ", "Su puerto, según sshd: "),
     ("No way to reach a node", "Sin camino hacia un nodo"),
     ("Nothing does.", "Nada."),
+    ("Run stores of buckets, which speak S3", "Correr almacenes de buckets, que hablan S3"),
     ("SSH", "SSH"),
     ("Storage nothing claims", "Almacenamiento que nadie reclama"),
     ("The console and its API, on this node's own names. The other nodes of the network reach this one whatever it says. A list that does not hold the address you are saving it from is refused: it would lock you out.", "La consola y su API, en los nombres propios de este nodo. Los otros nodos de la red alcanzan a este diga lo que diga. Una lista que no contiene la dirección desde la que la guardas se rechaza: te dejaría fuera."),

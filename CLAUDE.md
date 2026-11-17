@@ -99,10 +99,11 @@ network and the databases" below.
 
 Where the tree stands: `src/` is the six rooms of rule 12 and nothing
 else but `main.rs` and the test-only `tree.rs`. Every feature is a
-folder under `src/features` — `access`, `backups`, `databases`,
-`network`, `node`, `organisations`, `people`, `projects`, `services` and
-`updates`. Every use case's two ends are a request and a response, no
-controller draws, and no import points outward.
+folder under `src/features` — `access`, `backups`, `buckets`,
+`databases`, `dns`, `network`, `node`, `organisations`, `people`,
+`projects`, `services` and `updates`. Every use case's two ends are a
+request and a response, no controller draws, and no import points
+outward.
 `services/service_rest_controller.rs` is still 5,400 lines, tests
 included. No `remote_node_` use case exists yet: a remote node's
 errands are carried out in `infra::network::collect`.
@@ -512,6 +513,12 @@ happened:
 - A service created under an organisation's quota runs with no ceiling.
 - A running container no row claims — what a restore from an older
   backup leaves — is on no page.
+- A store of buckets is one copy on the node that made it: no "Runs on",
+  no restoring one store into a new one, and its backup has Garage's
+  ten-minute window between the metadata snapshot and the last block
+  copied. boto3, the JavaScript SDK, rclone, multipart uploads of
+  hundreds of MB and ACME have not run against one — `docs/buckets.md`,
+  "Where it stands".
 - MySQL is one copy: no read-only copies, and a restore reaches the
   moment of a backup. The grants the replica phase needs are already on
   every one — `docs/databases.md`, "MySQL".

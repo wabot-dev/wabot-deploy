@@ -1,5 +1,6 @@
 pub mod access;
 pub mod backups;
+pub mod buckets;
 pub mod databases;
 pub mod dns;
 #[cfg(test)]

@@ -152,7 +152,7 @@ pub fn render<'a>(page: &'a ServiceDetail<'a>) -> impl Renderable + 'a {
             // protocol on a TCP socket. What it offers is its own three
             // cards — the name, the certificate and the published port —
             // each of which says a true thing this one cannot.
-            @if !service.kind.is_managed() {
+            @if !service.kind.is_database() {
                 (service_ports_component::exposure_card(page.exposure, page.observed_running))
             }
             // Always rendered, empty when there is nothing, and hooked to

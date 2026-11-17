@@ -60,6 +60,9 @@ impl SetServiceResources<'_> {
         }
         let cpu = presets::parse_cores(&self.asked.cpu)?;
         let disk = presets::parse_size(&self.asked.disk)?;
+        if self.service.kind.is_store() {
+            self.fits_a_store(database, memory, disk).await?;
+        }
 
         let copies = replicas::of_service(database, &self.service.id)
             .await
@@ -99,5 +102,37 @@ impl SetServiceResources<'_> {
             .await
             .map_err(|error| error.to_string())?
             .unwrap_or_else(|| self.service.clone()))
+    }
+
+    /// A store's disk is what its buckets' maximums add up against, so it
+    /// keeps one and it does not go under what they already hold.
+    async fn fits_a_store(
+        &self,
+        database: &SqliteDatabase,
+        memory: Option<u64>,
+        disk: Option<u64>,
+    ) -> Result<(), String> {
+        let floor = crate::domain::policies::garage::FLOOR;
+        if memory.is_some_and(|asked| asked < floor) && memory != self.service.memory_limit {
+            return Err(format!(
+                "{} is the smallest size a store takes",
+                presets::label(floor)
+            ));
+        }
+        let held = crate::infra::repositories::object_stores::reserved(database, &self.service.id)
+            .await
+            .map_err(|error| error.to_string())?;
+        match disk {
+            None => {
+                Err("a store's buckets are sized against its disk, so it keeps a disk size".into())
+            }
+            Some(disk) if disk < held => Err(format!(
+                "its buckets may hold up to {} together, so its disk cannot be {} — make a \
+                 bucket smaller or delete one first",
+                presets::size_field(held),
+                presets::size_field(disk)
+            )),
+            Some(_) => Ok(()),
+        }
     }
 }

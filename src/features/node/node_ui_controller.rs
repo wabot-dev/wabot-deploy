@@ -203,6 +203,8 @@ impl NodeUiController {
                         || domain.is_some(),
                     owns: network::capability::owns(&self.state.database).await,
                     owned: projects.iter().filter(|project| project.is_ours()).count(),
+                    buckets: crate::infra::node::settings::buckets_enabled(&self.state.database)
+                        .await,
                 }
             }
             NodeTab::Access => Panel::Access {

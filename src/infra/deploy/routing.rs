@@ -159,7 +159,7 @@ pub async fn sync(
         // `acme::wanted_names` reads, so the certificate is still
         // ordered and still served — by the database itself, on its
         // published port, which is where it was always presented from.
-        if service.kind.is_managed() {
+        if service.kind.is_database() {
             continue;
         }
         // Where each copy of this service answers, wherever it runs.

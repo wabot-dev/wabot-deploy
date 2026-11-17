@@ -87,6 +87,7 @@ pub mod plan;
 pub mod restore_database_into;
 pub mod s3;
 
+use crate::domain::policies::garage;
 use crate::infra::backup::destination::Destination;
 use crate::infra::config::Config;
 use std::path::{Path, PathBuf};
@@ -858,7 +859,7 @@ pub async fn restore_one(
         .map_err(refused)?;
     let Some(source) = services
         .iter()
-        .find(|service| service.slug == service_slug && service.kind.is_managed())
+        .find(|service| service.slug == service_slug && service.kind.is_database())
     else {
         return Err(NotRestored::NoSuchDatabase(service_slug.to_string()));
     };
@@ -1106,14 +1107,21 @@ async fn copy_volumes(
     // directory name: the name carries a project and a service and says
     // nothing about whether anything still runs there or what is
     // inside.
-    let claimed = crate::infra::deploy::Deployer::claimed(database)
-        .await
-        .map(|claims| {
-            claims
-                .into_iter()
-                .map(|claim| (claim.container, claim.managed))
-                .collect::<std::collections::HashMap<_, _>>()
-        });
+    let claims = crate::infra::deploy::Deployer::claimed(database).await;
+    let mut stores = std::collections::HashMap::new();
+    for claim in claims.iter().flatten() {
+        if let Ok(Some(_)) =
+            crate::infra::repositories::object_stores::of_service(database, &claim.service).await
+        {
+            stores.insert(claim.container.clone(), claim.service.clone());
+        }
+    }
+    let claimed = claims.map(|claims| {
+        claims
+            .into_iter()
+            .map(|claim| (claim.container, claim.managed))
+            .collect::<std::collections::HashMap<_, _>>()
+    });
     let mut copied = Vec::new();
     let mut orphans = Vec::new();
 
@@ -1147,6 +1155,22 @@ async fn copy_volumes(
                 orphans.push(container);
                 continue;
             }
+        }
+
+        if let Some(service) = stores.get(&container) {
+            match copy_store(database, service, &entry.path(), &destination).await {
+                Ok((bytes, how)) => {
+                    println!("  store       {container}  {}", human(bytes));
+                    copied.push(Copied {
+                        container,
+                        service: None,
+                        bytes,
+                        how,
+                    });
+                }
+                Err(error) => println!("  store       {container} — could not copy: {error}"),
+            }
+            continue;
         }
 
         match copy_tree(&entry.path(), &destination) {
@@ -1365,7 +1389,7 @@ async fn back_up_engines(
     let mut copied = Vec::new();
     let mut missed = Vec::new();
 
-    for service in services.iter().filter(|service| service.kind.is_managed()) {
+    for service in services.iter().filter(|service| service.kind.is_database()) {
         let Some(project) = projects
             .iter()
             .find(|project| project.id == service.project_id)
@@ -1459,6 +1483,33 @@ fn take(container: &str, claimed: Option<&std::collections::HashMap<String, bool
             None => Take::Skip,
         },
     }
+}
+
+/// A store's metadata is a SQLite file Garage writes as it goes, so a copy
+/// taken mid-write may not open. Garage writes a whole one when asked, and
+/// the copy carries that in place of the live file. The blocks are copied
+/// after it: one deleted in between, Garage keeps for ten minutes before it
+/// goes, and that is the window this copy has.
+///
+/// A store that is not running here writes nothing, so its files are copied
+/// as they lie — and marked as a file copy, because nothing asked Garage.
+async fn copy_store(
+    database: &wabot::sqlite::SqliteDatabase,
+    service: &str,
+    from: &Path,
+    to: &Path,
+) -> std::io::Result<(u64, How)> {
+    let snapshot = match crate::infra::garage::admin_for(database, service).await {
+        Ok(admin) => admin.snapshot().await,
+        Err(reason) => Err(reason.to_string()),
+    };
+    let bytes = copy_tree(from, to)?;
+    if let Err(reason) = snapshot {
+        println!("              no snapshot of its metadata: {reason}");
+        return Ok((bytes, How::CrashConsistent));
+    }
+    crate::infra::garage::carry_newest_snapshot(&to.join(garage::DATA_VOLUME))?;
+    Ok((bytes, How::Consistent))
 }
 
 /// Copy a directory, and say how much it holds.

@@ -15,6 +15,9 @@ pub struct ProjectView<'a> {
     )],
     pub new_service: &'a str,
     pub new_database: &'a str,
+    /// Offered only while the node runs stores: a form that answers every
+    /// submission with "turned off" is a button for a refusal.
+    pub new_store: Option<&'a str>,
     pub query_error: Option<&'a str>,
 }
 
@@ -36,6 +39,9 @@ pub fn render<'a>(page: &'a ProjectView<'a>) -> impl Renderable + 'a {
                         // above: a database is a service of a
                         // particular kind, not a second thing
                         // this page is about.
+                        @if let Some(new_store) = page.new_store {
+                            <a class="btn btn-secondary" href=(new_store)>(t("Create store"))</a>
+                        }
                         <a class="btn btn-secondary" href=(&new_database)>(
                             t("Create database")
                         )</a>

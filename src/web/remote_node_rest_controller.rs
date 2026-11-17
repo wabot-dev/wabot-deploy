@@ -652,7 +652,7 @@ impl RemoteNodeRestController {
                 service = %service.slug,
                 "it holds a copy this node does not claim; sending the placement again"
             );
-            match service.kind.is_managed() {
+            match service.kind.is_database() {
                 true => {
                     self.deployer
                         .dispatch_standbys_including(&service, &also)

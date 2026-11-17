@@ -114,6 +114,8 @@ pub enum Panel {
         /// somebody reads before clicking is worth more than the same
         /// sentence after.
         owned: usize,
+        /// Whether this machine runs stores of buckets.
+        buckets: bool,
     },
     Access {
         console: Allowlist,
@@ -197,8 +199,31 @@ pub fn render<'a>(page: &'a NodeSettings<'a>) -> impl Renderable + 'a {
                 (node_certificate::certificate_island(
                     self_id, cells, state, policy, domain.as_deref(), checked.as_deref()))
             }
-            Panel::Allows { provides, reachable, owns, owned } => {
+            Panel::Allows { provides, reachable, owns, owned, buckets } => {
                 (node_capabilities::capabilities_card(provides, *reachable, *owns, *owned))
+                <section class="stack" id="buckets">
+                    <p class="card-label">(t("Buckets"))</p>
+                    <form method="post" action="/node/buckets" class="card stack">
+                        <label class="check">
+                            @if *buckets {
+                                <input type="checkbox" name="buckets" value="1" checked>
+                            } @else {
+                                <input type="checkbox" name="buckets" value="1">
+                            }
+                            (t("Run stores of buckets, which speak S3"))
+                        </label>
+                        // The licence is named on the switch, never only in
+                        // the documentation: running the engine is the
+                        // operator's decision, and this is where they make it.
+                        <p class="field-hint">(t("A store runs Garage, an engine published under the \
+                             GNU AGPLv3, in a container of its own. Turning this on lets projects \
+                             here make stores; turning it off stops none that exist, and refuses \
+                             to start or make one."))</p>
+                        <div class="actions">
+                            <button class="btn btn-secondary" type="submit">(t("Save"))</button>
+                        </div>
+                    </form>
+                </section>
             }
             Panel::Access { console, registry, ssh, ssh_ports, refused } => {
                 <section class="stack" id="allowlists">

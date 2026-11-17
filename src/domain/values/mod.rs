@@ -6,7 +6,9 @@
 //! life, a value object is just a value that could not be wrong.
 
 pub mod allowlist;
+pub mod bucket_name;
 pub mod capability;
+pub mod cors_origin;
 pub mod hostname;
 pub mod image_reference;
 pub mod language;

@@ -42,6 +42,14 @@ pub struct ShownPage {
 }
 
 #[derive(Debug, Deserialize, Validate, Default)]
+pub struct ShownForBucket {
+    pub project: String,
+    pub service: String,
+    pub bucket: String,
+    pub nonce: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Validate, Default)]
 pub struct ShownForPage {
     pub id: String,
     pub nonce: Option<String>,
@@ -104,6 +112,7 @@ pub enum WhatKind {
     InvitationInto(String),
     Invitation,
     PushToken,
+    BucketKey,
 }
 
 impl WhatKind {
@@ -113,6 +122,7 @@ impl WhatKind {
             WhatKind::InvitationInto(name) => What::InvitationInto(name),
             WhatKind::Invitation => What::Invitation,
             WhatKind::PushToken => What::PushToken,
+            WhatKind::BucketKey => What::BucketKey,
         }
     }
 }
@@ -205,6 +215,29 @@ impl RevealUiController {
             &back,
             Section::Projects,
             || WhatKind::PushToken,
+        )
+        .await
+    }
+
+    /// A key for one bucket of a store.
+    #[view("/projects/:project/services/:service/buckets/:bucket/shown")]
+    #[middleware(SessionMiddleware)]
+    async fn bucket_key(&self, query: ShownForBucket) -> UiResult<ViewOutcome> {
+        let Some(account) = signed_in(&self.auth) else {
+            return Ok(Redirect::found("/sign-in").into());
+        };
+        let back = format!(
+            "/projects/{}/services/{}/buckets/{}",
+            query.project, query.service, query.bucket
+        );
+        let here = format!("{back}/shown");
+        self.show(
+            &account,
+            query.nonce.as_deref(),
+            &here,
+            &back,
+            Section::Projects,
+            || WhatKind::BucketKey,
         )
         .await
     }

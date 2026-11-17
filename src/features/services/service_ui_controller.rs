@@ -234,7 +234,7 @@ impl ServiceUiController {
         // The engine's own row, when this service is one. The card it
         // fills in stands in for the image field and the environment
         // editor, neither of which a managed database has.
-        let engine = match service.kind.is_managed() {
+        let engine = match service.kind.is_database() {
             true => {
                 crate::infra::repositories::databases::of_service(&self.state.database, &service.id)
                     .await?
@@ -285,7 +285,7 @@ impl ServiceUiController {
         // Every name a managed database answers to, from the one function
         // that decides them — the same list the certificate is built from,
         // so the page cannot name something the certificate does not cover.
-        let names = match service.kind.is_managed() {
+        let names = match service.kind.is_database() {
             true => {
                 crate::infra::deploy::certificate_names(&self.state.database, &project, &service)
                     .await
@@ -362,7 +362,7 @@ impl ServiceUiController {
         // page depend on somebody's network. So the card is offered, and
         // the search happens when the form is submitted: `restore_one`
         // looks here first and at the destination second.
-        let elsewhere = match service.kind.is_managed() {
+        let elsewhere = match service.kind.is_database() {
             true => crate::infra::backup::plan::plan(&self.state.database)
                 .await
                 .destination

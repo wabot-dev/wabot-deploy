@@ -1637,7 +1637,7 @@ async fn keep_database_certificate(
         .await
         .map_err(|error| error.to_string())?
         .into_iter()
-        .filter(|service| service.kind.is_managed())
+        .filter(|service| service.kind.is_database())
         .filter(|service| service.origin_node_id.as_deref() == Some(authority))
     {
         let Some(project) = projects.iter().find(|p| p.id == service.project_id) else {

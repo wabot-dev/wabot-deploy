@@ -6,6 +6,7 @@ pub mod node_ui_controller;
 pub mod node_user_node_settings_page;
 pub mod node_user_see_what_needs_attention;
 pub mod node_user_set_acme;
+pub mod node_user_set_buckets;
 pub mod node_user_set_capabilities;
 pub mod node_user_set_certificate_source;
 pub mod node_user_set_node_allowlists;

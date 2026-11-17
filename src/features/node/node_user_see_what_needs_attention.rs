@@ -167,7 +167,7 @@ async fn a_database_with_every_copy_on_one_machine(
         return;
     };
 
-    for service in services.iter().filter(|s| s.kind.is_managed()) {
+    for service in services.iter().filter(|s| s.kind.is_database()) {
         let Ok(copies) =
             crate::infra::repositories::replicas::of_service(state.database, &service.id).await
         else {

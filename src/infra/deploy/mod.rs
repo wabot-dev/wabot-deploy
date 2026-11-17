@@ -30,6 +30,7 @@ pub mod quotas;
 pub mod restarts;
 pub mod routing;
 pub mod standbys;
+pub mod store;
 pub mod upstreams;
 
 use std::net::Ipv4Addr;
@@ -497,7 +498,7 @@ impl Deployer {
             let mut named = Vec::new();
 
             for service in &services {
-                let row = match service.kind.is_managed() {
+                let row = match service.kind.is_database() {
                     true => databases::of_service(&self.database, &service.id).await?,
                     false => None,
                 };
@@ -800,12 +801,70 @@ impl Deployer {
         // Only for a managed engine, which is the case where the node
         // wrote the configuration and therefore owes an account of what
         // its own choices did.
+        //
+        // A store converges first, so a store that died says why rather than
+        // that its API never answered.
+        if let (Ok(Some(address)), true) = (&result, service.kind.is_store()) {
+            if let Err(reason) = self.converge_store(service, *address).await {
+                tracing::warn!(service = %service.slug, %reason, "the store did not converge");
+                replicas::set_last_error(&self.database, &replica.id, Some(&reason)).await?;
+            }
+        }
         if matches!(result, Ok(Some(_))) && service.kind.is_managed() {
             if let Some(reason) = self.died_saying(project, service, replica).await {
                 replicas::set_last_error(&self.database, &replica.id, Some(&reason)).await?;
             }
         }
         result
+    }
+
+    /// Garage's files, from the store's row, when this service is a store.
+    ///
+    /// Refused while the node's switch is off, whatever asked: a store row
+    /// can arrive in a backup or from another node, and neither is somebody
+    /// on this machine deciding to run the engine.
+    async fn prepare_store(
+        &self,
+        service: &Service,
+        id: &str,
+    ) -> DeployResult<Option<store::Prepared>> {
+        if !service.kind.is_store() {
+            return Ok(None);
+        }
+        if !crate::infra::node::settings::buckets_enabled(&self.database).await {
+            return Err(DeployError::Refused(
+                crate::domain::policies::garage::OFF.into(),
+            ));
+        }
+        let row =
+            crate::infra::repositories::object_stores::of_service(&self.database, &service.id)
+                .await?
+                .ok_or_else(|| {
+                    DeployError::Refused(format!(
+                        "{} is a store with no store row, and starting Garage without its secrets \
+                     would be an empty store that looks like it worked",
+                        service.slug
+                    ))
+                })?;
+        Ok(Some(store::prepare(
+            &self.config.node.data_dir,
+            id,
+            &row,
+            service.memory_limit,
+        )?))
+    }
+
+    async fn converge_store(&self, service: &Service, address: Ipv4Addr) -> Result<(), String> {
+        let row =
+            crate::infra::repositories::object_stores::of_service(&self.database, &service.id)
+                .await
+                .map_err(|error| error.to_string())?
+                .ok_or("no store row")?;
+        crate::infra::garage::converge(&self.database, &row, address)
+            .await
+            .map_err(|reason| {
+                format!("Garage started and did not take its buckets and keys: {reason}")
+            })
     }
 
     /// What a container said, if it has already stopped saying it.
@@ -869,7 +928,7 @@ impl Deployer {
         // standby given the same host port took writes it refuses, and
         // with the primary on another node it would have answered on the
         // port the owner forwards from, ahead of the forward.
-        let a_standby = match service.kind.is_managed() {
+        let a_standby = match service.kind.is_database() {
             true => databases::of_service(&self.database, &service.id)
                 .await?
                 .is_some_and(|row| row.primary_slot != replica.slot),
@@ -913,7 +972,7 @@ impl Deployer {
         // the third reason and arrived with them: what has to reach it
         // is not an edge but a standby, dialling the primary to follow
         // it. Same port, same address, same reason it is not `0.0.0.0`.
-        let dialled_by_a_copy_elsewhere = service.kind.is_managed()
+        let dialled_by_a_copy_elsewhere = service.kind.is_database()
             && replicas::of_service(&self.database, &service.id)
                 .await?
                 .iter()
@@ -1052,6 +1111,10 @@ impl Deployer {
         if let Some(prepared) = &prepared {
             mounts.extend(prepared.mounts.iter().cloned());
         }
+        let store = self.prepare_store(service, &id).await?;
+        if let Some(store) = &store {
+            mounts.push(store.mount.clone());
+        }
 
         // An address that will not move, for a container whose address
         // somebody wrote into a connection string. `None` for
@@ -1091,7 +1154,10 @@ impl Deployer {
         }
 
         let request = ContainerRequest {
-            command: Vec::new(),
+            command: store
+                .as_ref()
+                .map(|store| store.command.clone())
+                .unwrap_or_default(),
             args: prepared
                 .as_ref()
                 .map(|prepared| prepared.args.clone())
@@ -1102,7 +1168,10 @@ impl Deployer {
             resolv_conf: Some(self.resolv_conf.clone()),
             mounts,
             memory_limit: service.memory_limit,
-            memory_high: prepared.as_ref().and_then(|prepared| prepared.memory_high),
+            memory_high: prepared
+                .as_ref()
+                .and_then(|prepared| prepared.memory_high)
+                .or(store.as_ref().map(|store| store.memory_high)),
             cpu_millicores: service.cpu_millicores,
             // What this container is being published on, written on it.
             // Reconciliation reads it back and compares — the one thing
@@ -1783,7 +1852,7 @@ impl Deployer {
                     Some(Claim {
                         container: replica.container_id(&project.slug, &service.slug),
                         service: service.id.clone(),
-                        managed: service.kind.is_managed(),
+                        managed: service.kind.is_database(),
                     })
                 })
                 .collect(),
@@ -1881,7 +1950,7 @@ impl Deployer {
         }
 
         let id = replica.container_id(&project.slug, &service.slug);
-        if service.kind.is_managed() {
+        if service.kind.is_database() {
             let primary = databases::of_service(&self.database, &service.id)
                 .await?
                 .map(|row| row.primary_slot);
@@ -2601,7 +2670,7 @@ impl Deployer {
             .map_err(|error| DeployError::Refused(error.to_string()))?;
         let mut wanted = std::collections::BTreeMap::new();
         for service in services::all(&self.database, None).await? {
-            if !service.kind.is_managed() || !service.is_ours() {
+            if !service.kind.is_database() || !service.is_ours() {
                 continue;
             }
             let Some(published) = ports::of_service(&self.database, &service.id)
@@ -2648,7 +2717,7 @@ impl Deployer {
             return;
         };
         for service in services {
-            if !service.kind.is_managed() || !service.is_ours() {
+            if !service.kind.is_database() || !service.is_ours() {
                 continue;
             }
             if let Ok(Some(_)) = databases::primary_elsewhere(&self.database, &service.id).await {
@@ -2658,7 +2727,7 @@ impl Deployer {
     }
 
     async fn standbys(&self, service: &Service, also: &std::collections::BTreeSet<String>) {
-        if !service.kind.is_managed() || !service.is_ours() {
+        if !service.kind.is_database() || !service.is_ours() {
             return;
         }
         let primary = match self.primary_overlay(service).await {
@@ -3380,7 +3449,7 @@ impl Deployer {
         let mut refreshed = 0;
 
         for service in services::all(&self.database, None).await? {
-            if !service.kind.is_managed() {
+            if !service.kind.is_database() {
                 continue;
             }
             let Some(project) = projects.iter().find(|p| p.id == service.project_id) else {
@@ -4129,7 +4198,7 @@ impl Deployer {
         };
         let mut asked = 0;
 
-        for service in services.iter().filter(|service| service.kind.is_managed()) {
+        for service in services.iter().filter(|service| service.kind.is_database()) {
             let Ok(Some(row)) = databases::of_service(&self.database, &service.id).await else {
                 continue;
             };
@@ -4487,7 +4556,7 @@ impl Deployer {
         replica: &Replica,
         net: &ProjectNetwork,
     ) -> DeployResult<Option<database::Preparation>> {
-        if !service.kind.is_managed() {
+        if !service.kind.is_database() {
             return Ok(None);
         }
         let Some(row) = databases::of_service(&self.database, &service.id).await? else {
@@ -4998,7 +5067,7 @@ pub async fn public_names_for(database: &SqliteDatabase, key: &str) -> Vec<Strin
         .await
         .unwrap_or_default();
     for service in services::all(database, None).await.unwrap_or_default() {
-        if !service.kind.is_managed() {
+        if !service.kind.is_database() {
             continue;
         }
         let Some(project) = projects.iter().find(|p| p.id == service.project_id) else {
@@ -5019,7 +5088,7 @@ pub async fn database_certificate_keys(database: &SqliteDatabase) -> DeployResul
     let projects = crate::infra::repositories::projects::all(database).await?;
     let mut keys = Vec::new();
     for service in services::all(database, None).await? {
-        if !service.kind.is_managed() {
+        if !service.kind.is_database() {
             continue;
         }
         let Some(project) = projects.iter().find(|p| p.id == service.project_id) else {

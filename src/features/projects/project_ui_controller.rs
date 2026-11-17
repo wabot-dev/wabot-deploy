@@ -128,6 +128,9 @@ impl ProjectUiController {
         let services = services::all(&self.state.database, Some(&project.id)).await?;
         let new_service = format!("/projects/{}/services/new", project.slug);
         let new_database = format!("/projects/{}/databases/new", project.slug);
+        let new_store = crate::infra::node::settings::buckets_enabled(&self.state.database)
+            .await
+            .then(|| format!("/projects/{}/stores/new", project.slug));
 
         // Asked of containerd, one service at a time. Sequential
         // because a project has a handful of services and each answer
@@ -184,6 +187,7 @@ impl ProjectUiController {
             rows: &rows,
             new_service: &new_service,
             new_database: &new_database,
+            new_store: new_store.as_deref(),
             query_error: query.error.as_deref(),
         };
         let body = crate::shell::texts::language::scoped(account.language, || {

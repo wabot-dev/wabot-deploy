@@ -328,6 +328,31 @@ impl NodeRestController {
         Ok(crate::shell::auth::see_other(here))
     }
 
+    /// Let this machine run stores of buckets, or stop it.
+    #[post("/node/buckets")]
+    #[raw]
+    #[middleware(SessionMiddleware)]
+    async fn set_buckets(&self, request: Request) -> RestResult<Response> {
+        let here = &format!("{}#buckets", NodeTab::Allows.path());
+        let Some(account) = signed_in(&self.auth) else {
+            return Ok(crate::shell::auth::see_other("/sign-in"));
+        };
+        let form = match crate::shell::auth::read_form(request).await {
+            Ok(form) => form,
+            Err(response) => return Ok(response),
+        };
+        if let Err(reason) = crate::features::node::node_user_set_buckets::run(
+            &self.state.database,
+            &account,
+            form.contains_key("buckets"),
+        )
+        .await
+        {
+            return Ok(crate::shell::auth::back_with_error(here, &reason));
+        }
+        Ok(crate::shell::auth::see_other(here))
+    }
+
     /// Choose where this name's certificate comes from.
     ///
     /// The file pair is read and checked *here*, before the choice is

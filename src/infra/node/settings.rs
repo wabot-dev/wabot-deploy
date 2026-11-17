@@ -123,6 +123,20 @@ pub async fn set_archiving(database: &SqliteDatabase, on: bool) -> SqliteResult<
     write(database, ARCHIVING, if on { "on" } else { "off" }).await
 }
 
+const BUCKETS: &str = "buckets.enabled";
+
+/// Whether this node runs stores of buckets. **Off unless somebody said
+/// on**: the engine is under the AGPLv3, and running it is a decision
+/// about the machine rather than a default it arrives with —
+/// `docs/buckets.md`, "The licence".
+pub async fn buckets_enabled(database: &SqliteDatabase) -> bool {
+    matches!(read(database, BUCKETS).await, Ok(Some(value)) if value == "on")
+}
+
+pub async fn set_buckets_enabled(database: &SqliteDatabase, on: bool) -> SqliteResult<()> {
+    write(database, BUCKETS, if on { "on" } else { "off" }).await
+}
+
 /// What this node keeps for itself, in bytes, when the operator has said.
 ///
 /// `None` means the default, which is a fraction *and* a floor — see

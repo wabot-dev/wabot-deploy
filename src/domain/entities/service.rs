@@ -65,6 +65,9 @@ pub enum Kind {
     Postgres,
     Mysql,
     Valkey,
+    /// A store of buckets. Managed, and not a database: no `database` row,
+    /// and its name is routed over HTTP like a container's.
+    Garage,
     /// A kind from a newer node. Held and refused rather than parsed
     /// into a panic — the same shape `errand::Kind` uses, and for the
     /// same reason: a row outlives the version that wrote it.
@@ -78,6 +81,7 @@ impl Kind {
             Kind::Postgres => "postgres",
             Kind::Mysql => "mysql",
             Kind::Valkey => "valkey",
+            Kind::Garage => "garage",
             Kind::Unknown => "unknown",
         }
     }
@@ -88,6 +92,7 @@ impl Kind {
             "postgres" => Kind::Postgres,
             "mysql" => Kind::Mysql,
             "valkey" => Kind::Valkey,
+            "garage" => Kind::Garage,
             _ => Kind::Unknown,
         }
     }
@@ -98,7 +103,7 @@ impl Kind {
             Kind::Postgres => Some(Engine::Postgres),
             Kind::Mysql => Some(Engine::Mysql),
             Kind::Valkey => Some(Engine::Valkey),
-            Kind::Container | Kind::Unknown => None,
+            Kind::Container | Kind::Garage | Kind::Unknown => None,
         }
     }
 
@@ -110,6 +115,18 @@ impl Kind {
     /// would make every one of them wrong.
     pub fn is_managed(self) -> bool {
         !matches!(self, Kind::Container)
+    }
+
+    /// Whether a `database` row stands beside it. A store is managed and
+    /// has none: it is backed up by its own path, has no certificate of its
+    /// own and is routed over HTTP. `Unknown` answers yes, because every
+    /// branch this guards is the more careful one.
+    pub fn is_database(self) -> bool {
+        !matches!(self, Kind::Container | Kind::Garage)
+    }
+
+    pub fn is_store(self) -> bool {
+        matches!(self, Kind::Garage)
     }
 
     /// What a node has to have agreed to before a copy of this can be

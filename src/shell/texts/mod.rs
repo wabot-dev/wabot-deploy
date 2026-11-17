@@ -65,6 +65,7 @@ mod tests {
             ("shown", shown::TABLE),
             ("access", crate::features::access::texts::TABLE),
             ("backups", crate::features::backups::texts::TABLE),
+            ("buckets", crate::features::buckets::texts::TABLE),
             ("databases", crate::features::databases::texts::TABLE),
             ("dns", crate::features::dns::texts::TABLE),
             ("network", crate::features::network::texts::TABLE),
@@ -253,6 +254,8 @@ mod tests {
         // matching. Same rule as a command not being prose. "Region" is
         // translated because it is a word in a sentence, not a value.
         "Access key id",
+        // The word S3 users say in both languages — `docs/buckets.md`.
+        "Buckets",
         "CPU",
         // The protocol, and the field every DNS provider calls this: a
         // record is copied from a provider's screen, and the labels have to

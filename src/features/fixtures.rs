@@ -45,3 +45,43 @@ async fn person(
         .await
         .expect("account")
 }
+
+/// A store of buckets with a disk ceiling, as `CreateStore` would leave it
+/// short of its name: what the bucket and key tests start from.
+pub async fn store_of_buckets(
+    disk: u64,
+) -> (SqliteDatabase, crate::domain::entities::service::Service) {
+    use crate::domain::entities::service::Kind;
+    use crate::infra::repositories::{object_stores, services};
+
+    let database = crate::infra::db::open_in_memory().await.expect("open");
+    let project = crate::infra::repositories::projects::create(&database, "shop")
+        .await
+        .expect("project");
+    let image = crate::domain::policies::garage::image_for("2").expect("image");
+    let service = services::create_on(&database, &project.id, "files", &image, &[], None)
+        .await
+        .expect("service");
+    services::set_kind(&database, &service.id, Kind::Garage)
+        .await
+        .expect("kind");
+    services::set_disk_limit(&database, &service.id, Some(disk))
+        .await
+        .expect("disk");
+    object_stores::create(
+        &database,
+        &crate::domain::entities::object_store::ObjectStore {
+            service_id: service.id.clone(),
+            version: "2".into(),
+            rpc_secret: "ab".repeat(32),
+            admin_token: "token".into(),
+        },
+    )
+    .await
+    .expect("store");
+    let service = services::find(&database, &service.id)
+        .await
+        .expect("read")
+        .expect("there");
+    (database, service)
+}

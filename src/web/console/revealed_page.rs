@@ -36,6 +36,8 @@ pub enum What<'a> {
     Invitation,
     /// A `docker login` for one project's registry.
     PushToken,
+    /// The variables an S3 client reads, for one bucket.
+    BucketKey,
 }
 
 impl What<'_> {
@@ -44,6 +46,7 @@ impl What<'_> {
             What::JoinToken => t("Paste this into the other node"),
             What::InvitationInto(_) | What::Invitation => t("Send this link"),
             What::PushToken => t("Log in with this"),
+            What::BucketKey => t("Give this to the client"),
         }
     }
 }
@@ -59,9 +62,18 @@ pub fn render<'a>(page: &'a Revealed<'a>) -> impl Renderable + 'a {
             // **The one moment it exists in clear.** Said above the
             // secret rather than under it: somebody who reads it after
             // copying has already decided whether to keep it.
-            <p class="field-hint">(t("This is the only time it is shown. What is stored is a \
-                 hash of it, so no page can show it again — copy it now, and make \
-                 another if you lose it."))</p>
+            // A bucket key is the one secret kept in clear: the node gives
+            // it back to a store that lost it, so the sentence about a hash
+            // would be false for it.
+            @if matches!(page.what, What::BucketKey) {
+                <p class="field-hint">(t("This is the only time it is shown. The node keeps it \
+                     only to give it back to the store if the store loses it, and no page shows \
+                     it again — copy it now, and make another if you lose it."))</p>
+            } @else {
+                <p class="field-hint">(t("This is the only time it is shown. What is stored is a \
+                     hash of it, so no page can show it again — copy it now, and make \
+                     another if you lose it."))</p>
+            }
             (copyable(page.secret))
             @match &page.what {
                 What::JoinToken => {
@@ -89,6 +101,11 @@ pub fn render<'a>(page: &'a Revealed<'a>) -> impl Renderable + 'a {
                     <p class="field-hint">(t("Use it as the password wherever this project's \
                          images are pushed from. It is nobody's password: revoking it changes \
                          nothing else."))</p>
+                }
+                What::BucketKey => {
+                    <p class="field-hint">(t("Most S3 clients read these variables as they are. \
+                         The key opens this bucket and no other; revoking it on the bucket's page \
+                         stops it at once."))</p>
                 }
             }
         </section>

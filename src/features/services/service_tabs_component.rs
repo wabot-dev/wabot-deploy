@@ -10,6 +10,7 @@ use crate::shell::components::object_tabs::{object_tabs, ObjectTab};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ServicePlace {
     Overview,
+    Buckets,
     Logs,
     Settings,
 }
@@ -25,14 +26,23 @@ pub fn service_tabs(
     place: ServicePlace,
 ) -> impl Renderable {
     let base = format!("/projects/{project_slug}/services/{}", service.slug);
-    let mut tabs = vec![
-        ObjectTab::new(t("Overview"), &base, place == ServicePlace::Overview),
-        ObjectTab::new(
-            t("Logs"),
-            format!("{base}/logs"),
-            place == ServicePlace::Logs,
-        ),
-    ];
+    let mut tabs = vec![ObjectTab::new(
+        t("Overview"),
+        &base,
+        place == ServicePlace::Overview,
+    )];
+    if service.kind.is_store() {
+        tabs.push(ObjectTab::new(
+            t("Buckets"),
+            format!("{base}/buckets"),
+            place == ServicePlace::Buckets,
+        ));
+    }
+    tabs.push(ObjectTab::new(
+        t("Logs"),
+        format!("{base}/logs"),
+        place == ServicePlace::Logs,
+    ));
     if may_deploy {
         let settings = match Tab::of(service).first() {
             Some(first) => first.path(project_slug, &service.slug),

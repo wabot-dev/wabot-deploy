@@ -5,10 +5,13 @@
 //! `docs/architecture-rules.md` §0.
 
 pub mod account;
+pub mod bucket;
+pub mod bucket_key;
 pub mod config_revision;
 pub mod database;
 pub mod dns_record;
 pub mod dns_zone;
+pub mod object_store;
 pub mod port;
 pub mod project;
 pub mod push_token;

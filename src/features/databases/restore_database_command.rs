@@ -24,7 +24,7 @@ impl RestoreDatabase<'_> {
         database: &Arc<SqliteDatabase>,
         config: &Config,
     ) -> Result<Restored, String> {
-        if !self.service.kind.is_managed() {
+        if !self.service.kind.is_database() {
             return Err("that service is not a managed database".into());
         }
         if let Some(node) =

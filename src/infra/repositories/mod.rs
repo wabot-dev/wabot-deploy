@@ -8,6 +8,7 @@ pub mod allowlists;
 pub mod config_history;
 pub mod databases;
 pub mod edges;
+pub mod object_stores;
 pub mod ports;
 pub mod project_domain;
 pub mod projects;

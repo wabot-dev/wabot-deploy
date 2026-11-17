@@ -12,6 +12,7 @@ pub mod deploy;
 pub mod dns;
 pub mod edge;
 pub mod firewall;
+pub mod garage;
 pub mod ledger;
 pub mod network;
 pub mod node;

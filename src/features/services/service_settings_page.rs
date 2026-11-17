@@ -104,6 +104,16 @@ impl Tab {
 
     /// The tabs this service has, in the order they are shown.
     pub fn of(service: &Service) -> Vec<Tab> {
+        // One copy, on the node that made it, and named in its own place:
+        // no image, no environment, no ports to add and nowhere to move it.
+        if service.kind.is_store() {
+            let mut tabs = vec![Tab::Resources];
+            if service.is_ours() {
+                tabs.push(Tab::Access);
+            }
+            tabs.extend([Tab::Logs, Tab::Danger]);
+            return tabs;
+        }
         let mut tabs = match service.kind.is_managed() {
             true => vec![Tab::Database, Tab::Resources],
             false => vec![
@@ -370,7 +380,7 @@ pub fn render<'a>(page: &'a ServiceSettings<'a>) -> impl Renderable + 'a {
                     <form method="post" action=(format!("{base}/allowlist")) class="card stack">
                         (allowlist_field::saved("allowlist", "allowlist", t("Addresses and ranges"),
                             allowlist))
-                        @if service.kind.is_managed() {
+                        @if service.kind.is_database() {
                             <p class="field-hint">(t("Who may connect to its published port. With its \
                                  primary on another node the port is still opened here and carried \
                                  there, so this is where the list applies. Services of its project \
@@ -571,8 +581,10 @@ pub fn render<'a>(page: &'a ServiceSettings<'a>) -> impl Renderable + 'a {
                                 // the floor: a select missing its value lands on
                                 // "no ceiling", and the next save would lift it.
                                 @for rung in crate::domain::policies::presets::LADDER.into_iter().filter(|rung| {
-                                    *rung >= service.kind.engine().map_or(0, |engine| engine.floor())
-                                        || Some(*rung) == service.memory_limit
+                                    *rung >= match service.kind.is_store() {
+                                        true => crate::domain::policies::garage::FLOOR,
+                                        false => service.kind.engine().map_or(0, |engine| engine.floor()),
+                                    } || Some(*rung) == service.memory_limit
                                 }) {
                                     @if Some(rung) == service.memory_limit {
                                         <option value=(rung.to_string()) selected>(
@@ -831,7 +843,11 @@ pub fn render<'a>(page: &'a ServiceSettings<'a>) -> impl Renderable + 'a {
             Panel::Danger => {
                 <section class="card stack">
                     <p class="card-label">(t("Danger zone"))</p>
-                    @if service.kind.is_managed() {
+                    @if service.kind.is_store() {
+                        <p class="tile-detail">(t("Deleting a store stops it and removes every bucket \
+                             and everything they hold on this node, and every key stops working. \
+                             There is no undo."))</p>
+                    } @else if service.kind.is_managed() {
                         <p class="tile-detail">(t("Deleting a database stops it and removes everything \
                              it stored on this node. There is no undo and there is no backup — a \
                              read-only copy is not one, because a deletion reaches it too."))</p>
@@ -844,7 +860,9 @@ pub fn render<'a>(page: &'a ServiceSettings<'a>) -> impl Renderable + 'a {
                         <label for="confirm">(t("Type the name to confirm: "))(&service.slug)</label>
                         <input id="confirm" name="confirm" type="text" autocomplete="off"
                                class="mono" required placeholder=(&service.slug)>
-                        @if service.kind.is_managed() {
+                        @if service.kind.is_store() {
+                            <button class="btn btn-danger" type="submit">(t("Delete store and its buckets"))</button>
+                        } @else if service.kind.is_managed() {
                             <button class="btn btn-danger" type="submit">(t("Delete database and its data"))</button>
                         } @else {
                             <button class="btn btn-danger" type="submit">(t("Delete service"))</button>
