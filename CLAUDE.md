@@ -495,6 +495,12 @@ happened:
   runs with fewer open files than the file grants.
 - No rollback button for an update — rolling back a migration is not a
   file operation, which is what the database copy is for.
+- **Enrolment needs a public certificate**, so the two VMs cannot join
+  each other and "Runs on" waits for node-0 and node-l1. The plan, not
+  built: the token carries the SHA-256 of the authority's local CA, the
+  join trusts the chain only when that CA matches, and every poll after
+  trusts public roots plus that authority's CA. First check WireGuard
+  between the VMs over `user-v2`. `docs/network.md`, "Enrolment".
 - A wildcard certificate from Let's Encrypt (DNS-01, ordered by the node
   holding the project's zone and sent with its key to the edges) has not
   run against a real authority, nor between two nodes. `docs/dns.md`,
