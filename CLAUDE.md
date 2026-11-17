@@ -365,11 +365,15 @@ scripts/vm.sh deploy      # build for it; `install --self-signed` the first time
 scripts/vm.sh root …      # a root shell, or one command as root
 scripts/vm.sh suite       # the tests as root on the node, and what they changed on it
 scripts/vm.sh reset       # throw it away
+WABOT_VM=wabot-dev-2 scripts/vm.sh …   # a second node, on https://127.0.0.1:9444
 ```
 
 **This is how features are tested now**: a whole node — OpenRC,
 containerd, CNI, the registry a push lands in — on
-`https://localhost:9443`, with ACME off. Run the user's actions against
+`https://localhost:9443`, with ACME off. Each VM has 512 MB, the smallest
+machine somebody would rent, and the two share Lima's `user-v2` network:
+they reach each other as `lima-wabot-dev.internal` and
+`lima-wabot-dev-2.internal`. Run the user's actions against
 it as a browser would, with a session made through `/setup` and the
 token `install` prints; push with `skopeo` inside the VM. Names resolve
 through the VM's `/etc/hosts`, which is what a private network's DNS

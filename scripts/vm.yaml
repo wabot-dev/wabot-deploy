@@ -2,8 +2,10 @@
 # machine's own architecture. `scripts/vm.sh` is what uses it.
 vmType: vz
 cpus: 2
-memory: 2GiB
-disk: 20GiB
+# The smallest machine somebody would rent, which is the one that finds
+# what a test node with room to spare hides. Two of these are a network.
+memory: 512MiB
+disk: 10GiB
 
 images:
   - location: "https://dl-cdn.alpinelinux.org/alpine/v3.21/releases/cloud/nocloud_alpine-3.21.2-aarch64-uefi-cloudinit-r0.qcow2"
@@ -23,6 +25,13 @@ mounts: []
 containerd:
   system: false
   user: false
+
+# A second interface on a network every VM of this machine shares, so
+# two of them reach each other as two nodes would. The first one, Lima's
+# own, gives every VM the same address, and `vzNAT` lets the Mac reach
+# each VM but not one VM another: ARP between them fails.
+networks:
+  - lima: user-v2
 
 # The node's two ports, on ports this machine lets anybody bind, and
 # nothing else: a container a test publishes stays inside the VM.

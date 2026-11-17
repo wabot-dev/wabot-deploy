@@ -11,7 +11,10 @@
 #   scripts/vm.sh down           # stop it, keep it
 #   scripts/vm.sh reset          # throw it away
 #
-# Then https://localhost:9443.
+# Then https://localhost:9443. A second node is the same with
+# WABOT_VM=wabot-dev-2, on https://127.0.0.1:9444 — another host, not only
+# another port, because a browser keeps one cookie jar per host whatever
+# the port, and signing in to one node would sign out of the other.
 #
 # `dev.sh` has no containerd, so every service there reads `unknown` and
 # nothing deploys. This is the rest of a node — OpenRC, containerd, CNI,
@@ -26,6 +29,15 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 VM="${WABOT_VM:-wabot-dev}"
+case "$VM" in
+wabot-dev) HTTPS_PORT=9443 HTTP_PORT=9080 HOST=localhost ;;
+wabot-dev-2) HTTPS_PORT=9444 HTTP_PORT=9081 HOST=127.0.0.1 ;;
+*)
+  HTTPS_PORT="${WABOT_VM_HTTPS_PORT:?a VM of another name needs WABOT_VM_HTTPS_PORT}"
+  HTTP_PORT="${WABOT_VM_HTTP_PORT:?and WABOT_VM_HTTP_PORT}"
+  HOST=localhost
+  ;;
+esac
 # The profile a node runs, not a debug build: that one is half a
 # gigabyte, and hashes a password slowly enough to look like a bug.
 PROFILE="${WABOT_VM_PROFILE:-node}"
@@ -37,7 +49,9 @@ up)
   if limactl list -q 2>/dev/null | grep -qx "$VM"; then
     limactl start "$VM"
   else
-    limactl start --name="$VM" --tty=false scripts/vm.yaml
+    limactl start --name="$VM" --tty=false \
+      --set ".portForwards[0].hostPort = $HTTPS_PORT | .portForwards[1].hostPort = $HTTP_PORT" \
+      scripts/vm.yaml
   fi
   ;;
 
@@ -65,7 +79,7 @@ deploy)
     echo "==> first run: installing"
     root sh -c 'chmod 0755 /tmp/wabot-deploy.new && /tmp/wabot-deploy.new install --self-signed'
     echo
-    echo "    https://localhost:9443 — the token above goes into /setup"
+    echo "    https://$HOST:$HTTPS_PORT — the token above goes into /setup"
   fi
   ;;
 
