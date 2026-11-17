@@ -1532,6 +1532,7 @@ async fn hold_store(
             version: told.version.clone(),
             rpc_secret: told.rpc_secret.clone(),
             admin_token: told.admin_token.clone(),
+            domain: told.domain.clone(),
             restored_from: None,
         },
     )
@@ -1698,6 +1699,7 @@ fn store_contents(
             service_id: service_id.to_string(),
             name: crate::domain::values::bucket_name::BucketName::stored(&bucket.name),
             max_size: bucket.max_size,
+            public: bucket.public || bucket.public_hostname.is_some(),
             public_hostname: bucket.public_hostname.clone(),
             cors_origins: bucket
                 .cors_origins
@@ -1833,9 +1835,16 @@ async fn serve_name(
     // `None` for the service: there is no local service behind this
     // name, and that absence is exactly what stops the local sync from
     // pruning the row — see `routes::retain_proxies`.
-    let upstream = match &edge.redirect_to {
-        Some(target) => crate::infra::edge::routes::Upstream::Redirect(target.clone()),
-        None => crate::infra::edge::routes::Upstream::Proxy(upstreams),
+    let upstream = match (&edge.redirect_to, &edge.s3_public) {
+        (Some(target), _) => crate::infra::edge::routes::Upstream::Redirect(target.clone()),
+        (None, Some(public)) => crate::infra::edge::routes::Upstream::S3 {
+            api: upstreams,
+            public: public
+                .iter()
+                .filter_map(|address| address.parse().ok())
+                .collect(),
+        },
+        (None, None) => crate::infra::edge::routes::Upstream::Proxy(upstreams),
     };
     let allowed: Option<Vec<ipnet::IpNet>> = edge
         .allowed
@@ -2804,6 +2813,7 @@ mod tests {
                 secret: Some("the-shared-secret".into()),
                 redirect_to: None,
                 allowed: None,
+                s3_public: None,
             },
         )
         .await
@@ -2839,6 +2849,57 @@ mod tests {
 
     /// claim rule finally does its job: two nodes pointing one hostname
     /// at different backends is not a conflict anything can resolve,
+    /// A bucket's name served for the node that owns its store reads the
+    /// signature as the owner's edge does, and takes the store's name off
+    /// the air like any other when it is withdrawn.
+    #[tokio::test]
+    async fn a_store_name_served_for_another_node_keeps_its_public_half_until_withdrawn() {
+        let database = crate::infra::db::open_in_memory().await.expect("open");
+        let edge = |upstreams: Vec<String>| errand::Edge {
+            hostname: "uploads.files.example".into(),
+            upstreams,
+            peers: Vec::new(),
+            secret: None,
+            redirect_to: None,
+            allowed: None,
+            s3_public: Some(vec!["10.42.0.3:30002".into()]),
+        };
+        serve_name(
+            &database,
+            &Config::default(),
+            &Container::new(),
+            "nd-owner",
+            edge(vec!["10.42.0.3:30001".into()]),
+        )
+        .await
+        .expect("served");
+        let routes = crate::infra::edge::routes::load_all(&database)
+            .await
+            .expect("routes");
+        assert!(routes.contains(&(
+            "uploads.files.example".into(),
+            crate::infra::edge::routes::Upstream::S3 {
+                api: vec!["10.42.0.3:30001".parse().expect("an address")],
+                public: vec!["10.42.0.3:30002".parse().expect("an address")],
+            }
+        )));
+
+        serve_name(
+            &database,
+            &Config::default(),
+            &Container::new(),
+            "nd-owner",
+            edge(Vec::new()),
+        )
+        .await
+        .expect("withdrawn");
+        assert!(!crate::infra::edge::routes::load_all(&database)
+            .await
+            .expect("routes")
+            .iter()
+            .any(|(host, _)| host == "uploads.files.example"));
+    }
+
     /// A name sent as a redirect is answered with one, and a withdrawal
     /// takes it away like any name held for another node.
     #[tokio::test]
@@ -2851,6 +2912,7 @@ mod tests {
             secret: None,
             redirect_to: Some("teresaasprilla.com".into()),
             allowed: None,
+            s3_public: None,
         };
         serve_name(
             &database,
@@ -2907,6 +2969,7 @@ mod tests {
             secret: None,
             redirect_to: None,
             allowed,
+            s3_public: None,
         };
         for told in [
             edge("office.example", Some(vec!["203.0.113.5".into()])),
@@ -2954,6 +3017,7 @@ mod tests {
             secret: None,
             redirect_to: None,
             allowed: None,
+            s3_public: None,
         };
 
         serve_name(
@@ -3027,6 +3091,7 @@ mod tests {
                 secret: None,
                 redirect_to: None,
                 allowed: None,
+                s3_public: None,
             },
         )
         .await

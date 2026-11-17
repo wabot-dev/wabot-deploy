@@ -18,6 +18,10 @@ pub struct Buckets<'a> {
     pub may_deploy: bool,
     pub error: Option<&'a str>,
     pub endpoint: Option<&'a str>,
+    /// What every bucket is a subdomain of.
+    pub domain: Option<&'a str>,
+    /// A bucket's address with `<name>` for its name, as a client reaches it.
+    pub bucket_address: Option<&'a str>,
     /// With what the running store says each one holds, when it answered.
     pub buckets: &'a [(Bucket, Option<Usage>)],
     pub reserved: u64,
@@ -46,6 +50,7 @@ pub fn render<'a>(page: &'a Buckets<'a>) -> impl Renderable + 'a {
         page.project.slug, page.service.slug
     );
     let left = page.disk.map(|disk| disk.saturating_sub(page.reserved));
+    let endpoint = page.endpoint.unwrap_or("https://…");
     rsx! {
     (layout::style_tag())
         (service_tabs(&page.project.slug, page.service, page.may_deploy, ServicePlace::Buckets))
@@ -64,23 +69,32 @@ pub fn render<'a>(page: &'a Buckets<'a>) -> impl Renderable + 'a {
                 }
                 <dt>(t("Region"))</dt>
                 <dd class="mono">(garage::REGION)</dd>
-                <dt>(t("Addressing"))</dt>
-                <dd>(t("path-style: the bucket is the first part of the path"))</dd>
+                @if let Some(domain) = page.domain {
+                    <dt>(t("Each bucket"))</dt>
+                    <dd class="mono">"<bucket>."(domain)</dd>
+                }
             </dl>
-            <p class="field-hint">(t("Most clients address a bucket as a name of its own unless told \
-                 otherwise. Each has a setting for this:"))</p>
+            <p class="field-hint">(t("A client given the endpoint reaches a bucket either at its own name \
+                 or as the first part of the path, whichever it builds — aws and boto3 build the path, \
+                 the JavaScript SDK the name — and both work. It needs the endpoint and the region and \
+                 nothing else:"))</p>
             <table>
                 <tbody>
-                    <tr><td>"aws"</td><td class="mono">"aws configure set default.s3.addressing_style path"</td></tr>
-                    <tr><td>"boto3"</td><td class="mono">"Config(signature_version=\"s3v4\", s3={\"addressing_style\": \"path\"})"</td></tr>
-                    <tr><td>"@aws-sdk/client-s3"</td><td class="mono">"forcePathStyle: true, requestChecksumCalculation: \"WHEN_REQUIRED\""</td></tr>
-                    <tr><td>"rclone"</td><td class="mono">"provider = Other, force_path_style = true"</td></tr>
+                    <tr><td>"aws"</td><td class="mono">"aws configure set region "(garage::REGION)"; aws s3 ls --endpoint-url "(endpoint)</td></tr>
+                    <tr><td>"boto3"</td><td class="mono">"boto3.client(\"s3\", endpoint_url=\""(endpoint)"\", region_name=\""(garage::REGION)"\")"</td></tr>
+                    <tr><td>"@aws-sdk/client-s3"</td><td class="mono">"new S3Client({ endpoint: \""(endpoint)"\", region: \""(garage::REGION)"\", requestChecksumCalculation: \"WHEN_REQUIRED\" })"</td></tr>
+                    <tr><td>"rclone"</td><td class="mono">"provider = Other, endpoint = "(endpoint)", region = "(garage::REGION)</td></tr>
                 </tbody>
             </table>
-            <p class="field-hint">(t("The other two settings are for presigned URLs. Unless told s3v4, \
-                 boto3 signs one the old way, which the store reads as no signature at all. And the \
-                 JavaScript SDK puts the checksum of an empty body into a presigned upload, so \
-                 anything uploaded to it is refused as not matching."))</p>
+            <p class="field-hint">(t("Requests are signed with signature version 4 only. One signed the \
+                 old way, version 2, is refused with Amazon's own answer: The authorization mechanism \
+                 you have provided is not supported. boto3 presigns that way only in Amazon's oldest \
+                 regions, us-east-1 among them; told this region, it signs with version 4 by itself. A \
+                 request signed for another region is answered with this one: aws and boto3 sign it \
+                 again by themselves, and any other client, or a presigned URL, is refused."))</p>
+            <p class="field-hint">(t("The JavaScript SDK puts the checksum of an empty body into a \
+                 presigned upload, so anything uploaded to it is refused as not matching. \
+                 requestChecksumCalculation above is what stops it."))</p>
         </section>
 
         <section class="card stack" id="buckets">
@@ -123,10 +137,24 @@ pub fn render<'a>(page: &'a Buckets<'a>) -> impl Renderable + 'a {
             @if page.may_deploy && page.service.is_ours() {
                 <form method="post" action=(&base) class="stack">
                     <label for="bucket-name">(t("Name"))</label>
-                    <input id="bucket-name" name="name" type="text" autocomplete="off" class="mono"
-                           required placeholder="uploads">
-                    <p class="field-hint">(t("3 to 63 lowercase letters, digits and hyphens, starting and \
-                         ending with a letter or a digit."))</p>
+                    @if let Some(domain) = page.domain {
+                        <div class="name-under">
+                            <input id="bucket-name" name="name" type="text" autocomplete="off"
+                                   class="mono" required placeholder="uploads">
+                            <span class="suffix">"."(domain)</span>
+                        </div>
+                        <p class="field-hint">(t("The name is the bucket's subdomain, and clients reach \
+                             it at "))<span class="mono">(page.bucket_address.unwrap_or_default())</span>(t(". \
+                             It has to point where the store's domain does, and is checked before the \
+                             bucket is made: one record "))<span class="mono">"*."(domain)</span>(t(" covers \
+                             every bucket of this store. 3 to 63 lowercase letters, digits and hyphens, \
+                             starting and ending with a letter or a digit."))</p>
+                    } @else {
+                        <input id="bucket-name" name="name" type="text" autocomplete="off" class="mono"
+                               required placeholder="uploads">
+                        <p class="field-hint">(t("3 to 63 lowercase letters, digits and hyphens, starting and \
+                             ending with a letter or a digit."))</p>
+                    }
                     <label for="bucket-size">(t("Holds up to"))</label>
                     <input id="bucket-size" name="max_size" type="text" autocomplete="off" required
                            placeholder="5 GB">
@@ -174,8 +202,9 @@ pub fn render<'a>(page: &'a Buckets<'a>) -> impl Renderable + 'a {
                              at this node."))</p>
                     }
                     <p class="field-hint">(t("It brings its buckets at its first deployment, which starts \
-                         as soon as you press this. None of them is public: a public name stays with the \
-                         original."))</p>
+                         as soon as you press this, each named under the copy's address where that name \
+                         points at this node and reached by its path where it does not. None of them is \
+                         public: public reads stay with the original."))</p>
                     @if let Some(destination) = restore.elsewhere {
                         <p class="field-hint">(t("The newest backup is looked for both on this machine and at "))<span class="mono">(destination)</span>
                             (t(" — where a schedule sends them, and where they are the only copy once the \

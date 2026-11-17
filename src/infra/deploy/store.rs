@@ -31,7 +31,7 @@ pub fn prepare(
     let limit = memory_limit.unwrap_or(garage::FLOOR);
     std::fs::write(
         conf.join(garage::CONFIG_FILE),
-        garage::config(limit, postgres::CONFIG_MOUNT),
+        garage::config(limit, postgres::CONFIG_MOUNT, store.domain.as_deref()),
     )?;
     secret(&conf.join(garage::RPC_SECRET_FILE), &store.rpc_secret)?;
     secret(&conf.join(garage::ADMIN_TOKEN_FILE), &store.admin_token)?;
@@ -71,6 +71,7 @@ mod tests {
             version: garage::DEFAULT_VERSION.into(),
             rpc_secret: "ab".repeat(32),
             admin_token: "admin-token-value".into(),
+            domain: Some("files.shop.example.com".into()),
             restored_from: None,
         }
     }

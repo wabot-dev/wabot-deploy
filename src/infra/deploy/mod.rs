@@ -3184,6 +3184,12 @@ impl Deployer {
             .iter()
             .map(crate::domain::values::allowlist::written)
             .collect();
+        let public_buckets = match service.kind.is_store() {
+            true => crate::infra::repositories::object_stores::public_bucket_names(&self.database)
+                .await
+                .unwrap_or_default(),
+            false => Vec::new(),
+        };
 
         for (hostname, node_id) in &chosen {
             let container_port = declared
@@ -3238,6 +3244,19 @@ impl Deployer {
                         .find(|redirect| &redirect.hostname == hostname)
                         .map(|redirect| redirect.target.clone()),
                     allowed: Some(carried.clone()),
+                    s3_public: match service.kind.is_store()
+                        && container_port == Some(crate::domain::policies::garage::S3_PORT)
+                    {
+                        true => Some(match public_buckets.contains(hostname) {
+                            true => crate::infra::deploy::upstreams::upstreams(
+                                &placements,
+                                &nodes,
+                                crate::domain::policies::garage::WEB_PORT,
+                            ),
+                            false => Vec::new(),
+                        }),
+                        false => None,
+                    },
                 },
                 false => {
                     tracing::info!(
@@ -3251,6 +3270,7 @@ impl Deployer {
                         secret: None,
                         redirect_to: None,
                         allowed: None,
+                        s3_public: None,
                     }
                 }
             };

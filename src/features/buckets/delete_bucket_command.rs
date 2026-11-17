@@ -3,6 +3,7 @@ use wabot::sqlite::SqliteDatabase;
 use crate::domain::entities::bucket::Bucket;
 use crate::domain::entities::service::Service;
 use crate::features::buckets::create_bucket_command::{DERIVED, NOT_A_STORE};
+use crate::features::buckets::set_bucket_public_command::{own_port, public_port};
 use crate::infra::repositories::object_stores;
 
 pub struct DeleteBucket<'a> {
@@ -28,21 +29,18 @@ impl DeleteBucket<'_> {
             Some(holder) => self.reported_empty(database, &holder.name).await?,
             None => self.emptied_here(database).await?,
         }
-        if let Some(hostname) = &self.bucket.public_hostname {
-            if let Some(port) = crate::features::buckets::set_bucket_public_command::public_port(
-                database,
-                self.service,
-                hostname,
-            )
-            .await?
-            {
-                crate::features::services::delete_service_port_command::DeleteServicePort {
-                    service: self.service,
-                    port_id: &port,
-                }
-                .run(database)
-                .await?;
+        let public = match &self.bucket.public_hostname {
+            Some(hostname) => public_port(database, self.service, hostname).await?,
+            None => None,
+        };
+        let own = own_port(database, self.service, self.bucket).await?;
+        for port in public.iter().chain(own.iter()) {
+            crate::features::services::delete_service_port_command::DeleteServicePort {
+                service: self.service,
+                port_id: port,
             }
+            .run(database)
+            .await?;
         }
         object_stores::delete_bucket(database, &self.bucket.id)
             .await

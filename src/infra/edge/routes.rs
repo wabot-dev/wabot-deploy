@@ -146,6 +146,13 @@ pub enum Upstream {
     /// A permanent redirect to this hostname, keeping the path and the
     /// query. Answered by the edge itself: nothing behind it runs.
     Redirect(String),
+    /// A store's name or one of its buckets': the S3 API and, for a public
+    /// bucket, its public reads, on two ports behind one name — see
+    /// [`crate::domain::policies::s3`]. `public` is empty for a private one.
+    S3 {
+        api: Vec<SocketAddr>,
+        public: Vec<SocketAddr>,
+    },
 }
 
 impl Upstream {
@@ -162,8 +169,12 @@ impl Upstream {
     pub fn pick(&self, turn: usize) -> Option<SocketAddr> {
         match self {
             Self::ControlPlane | Self::Tenant(_) | Self::Registry(_) | Self::Redirect(_) => None,
-            Self::Proxy(addresses) if addresses.is_empty() => None,
-            Self::Proxy(addresses) => Some(addresses[turn % addresses.len()]),
+            Self::Proxy(addresses) | Self::S3 { api: addresses, .. } if addresses.is_empty() => {
+                None
+            }
+            Self::Proxy(addresses) | Self::S3 { api: addresses, .. } => {
+                Some(addresses[turn % addresses.len()])
+            }
         }
     }
 
@@ -195,7 +206,7 @@ impl Upstream {
     /// a name off the air: health may remove a replica *while another
     /// one is up*, and it may never remove the last.
     pub fn pick_live(&self, turn: usize, health: &super::health::Health) -> Option<SocketAddr> {
-        let Self::Proxy(addresses) = self else {
+        let (Self::Proxy(addresses) | Self::S3 { api: addresses, .. }) = self else {
             return None;
         };
         let live = addresses
@@ -361,6 +372,7 @@ impl RouteTable {
             .values()
             .filter_map(|(upstream, _)| match upstream {
                 Upstream::Proxy(addresses) => Some(addresses.clone()),
+                Upstream::S3 { api, public } => Some([api.clone(), public.clone()].concat()),
                 Upstream::ControlPlane
                 | Upstream::Tenant(_)
                 | Upstream::Registry(_)
@@ -491,7 +503,7 @@ pub async fn retain_proxies(database: &SqliteDatabase, keep: &[String]) -> Sqlit
             let hosts: Vec<String> = connection
                 .prepare(
                     "SELECT \"host\" FROM route \
-                     WHERE \"upstream_kind\" = 'proxy' AND \"service_id\" IS NOT NULL",
+                     WHERE \"upstream_kind\" IN ('proxy', 's3') AND \"service_id\" IS NOT NULL",
                 )?
                 .query_map([], |row| row.get(0))?
                 .collect::<Result<_, _>>()?;
@@ -553,7 +565,7 @@ pub async fn forget_for_other(database: &SqliteDatabase, host: &str) -> SqliteRe
         .write(move |connection| {
             connection.execute(
                 "DELETE FROM route \
-                 WHERE \"host\" = ?1 AND \"upstream_kind\" IN ('proxy', 'redirect') \
+                 WHERE \"host\" = ?1 AND \"upstream_kind\" IN ('proxy', 'redirect', 's3') \
                    AND \"service_id\" IS NULL",
                 [host],
             )
@@ -738,19 +750,7 @@ fn upstream_of(host: &str, kind: &str, addr: Option<String>) -> Option<Upstream>
         // from the two that are fine, which is the whole reason
         // there are three.
         "proxy" => {
-            let addresses: Vec<SocketAddr> = addr
-                .as_deref()
-                .unwrap_or_default()
-                .split(',')
-                .filter(|part| !part.is_empty())
-                .filter_map(|part| match part.parse() {
-                    Ok(address) => Some(address),
-                    Err(_) => {
-                        tracing::warn!(%host, part, "upstream skipped: not an address");
-                        None
-                    }
-                })
-                .collect();
+            let addresses = addresses_of(host, addr.as_deref().unwrap_or_default());
             match addresses.is_empty() {
                 true => {
                     tracing::warn!(%host, "route skipped: nothing to proxy to");
@@ -759,11 +759,48 @@ fn upstream_of(host: &str, kind: &str, addr: Option<String>) -> Option<Upstream>
                 false => Some(Upstream::Proxy(addresses)),
             }
         }
+        "s3" => {
+            let written = addr.unwrap_or_default();
+            let (api, public) = written.split_once('|').unwrap_or((&written, ""));
+            let api = addresses_of(host, api);
+            match api.is_empty() {
+                true => {
+                    tracing::warn!(%host, "route skipped: nothing to proxy to");
+                    None
+                }
+                false => Some(Upstream::S3 {
+                    api,
+                    public: addresses_of(host, public),
+                }),
+            }
+        }
         other => {
             tracing::warn!(%host, kind = other, "route skipped: unknown upstream kind");
             None
         }
     }
+}
+
+fn addresses_of(host: &str, written: &str) -> Vec<SocketAddr> {
+    written
+        .split(',')
+        .filter(|part| !part.is_empty())
+        .filter_map(|part| match part.parse() {
+            Ok(address) => Some(address),
+            Err(_) => {
+                tracing::warn!(%host, part, "upstream skipped: not an address");
+                None
+            }
+        })
+        .collect()
+}
+
+fn written(addresses: &[SocketAddr]) -> String {
+    addresses
+        .iter()
+        .map(|address| address.to_string())
+        .collect::<Vec<_>>()
+        .join(",")
 }
 
 /// Write a route, replacing whatever held that hostname.
@@ -808,15 +845,10 @@ async fn write(
         Upstream::Tenant(id) => ("tenant".to_string(), Some(id.clone())),
         Upstream::Registry(id) => ("registry".to_string(), Some(id.clone())),
         Upstream::Redirect(target) => ("redirect".to_string(), Some(target.clone())),
-        Upstream::Proxy(addresses) => (
-            "proxy".to_string(),
-            Some(
-                addresses
-                    .iter()
-                    .map(|address| address.to_string())
-                    .collect::<Vec<_>>()
-                    .join(","),
-            ),
+        Upstream::Proxy(addresses) => ("proxy".to_string(), Some(written(addresses))),
+        Upstream::S3 { api, public } => (
+            "s3".to_string(),
+            Some(format!("{}|{}", written(api), written(public))),
         ),
     };
     let service_id = service_id.map(str::to_string);
@@ -1246,5 +1278,39 @@ mod tests {
             .expect("disable");
 
         assert!(load_all(&database).await.expect("load").is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_store_name_comes_back_with_both_halves_and_a_private_one_with_none_public() {
+        let database = crate::infra::db::open_in_memory().await.expect("open");
+        let api = |port: u16| SocketAddr::from(([10, 42, 1, 2], port));
+        let public = Upstream::S3 {
+            api: vec![api(3900), api(3901)],
+            public: vec![api(3902)],
+        };
+        let private = Upstream::S3 {
+            api: vec![api(3900)],
+            public: Vec::new(),
+        };
+        upsert(&database, "uploads.files.example", &public, Some("svc"))
+            .await
+            .expect("upsert");
+        upsert(&database, "files.example", &private, Some("svc"))
+            .await
+            .expect("upsert");
+
+        let routes = load_all(&database).await.expect("load");
+        assert_eq!(
+            routes,
+            vec![
+                ("files.example".to_string(), private),
+                ("uploads.files.example".to_string(), public),
+            ]
+        );
+        assert_eq!(
+            retain_proxies(&database, &[]).await.expect("retained"),
+            2,
+            "a store's names are a local service's routes like any other"
+        );
     }
 }

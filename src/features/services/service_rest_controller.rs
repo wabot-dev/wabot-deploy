@@ -5721,6 +5721,7 @@ mod tests {
             secret: None,
             redirect_to: None,
             allowed: None,
+            s3_public: None,
         })
         .expect("payload");
         crate::infra::network::errand::queue(

@@ -28,7 +28,12 @@ Asked for on 2026-11-16, and decided the same day.
   its configuration and converges it to the rows; the engine stores.
 - **Garage.** See "Why Garage" for what else was looked at.
 - **An endpoint per store.** A store is a service with its own HTTPS
-  name, and its buckets are addressed under it, path-style.
+  name, its domain, chosen when it is made and fixed afterwards.
+- **Each bucket is a subdomain of it** (2026-11-17): "tan fácil como en
+  AWS y completamente compatible". A bucket answers at
+  `<bucket>.<domain>`, which is what a client builds unless told
+  otherwise, and the form says so, shows the whole name, and checks that
+  it reaches the node before the bucket exists. The path keeps working.
 - **One key, one bucket.** A key opens a single bucket, to read and
   write or only to read. Revoking one touches nothing else.
 - **The first version has** objects, listings, multipart uploads, batch
@@ -43,7 +48,10 @@ Asked for on 2026-11-16, and decided the same day.
 - **Every bucket has a maximum size**, and a store's buckets add up to
   no more than its disk ceiling.
 - **A bucket is deleted only when it is empty.**
-- **The region is `us-east-1`.**
+- **The region is `wabot`** (2026-11-17), not `us-east-1` — see
+  "Addressing".
+- **Signature version 2 is not supported**, and is refused with
+  Amazon's own sentence rather than read as no signature.
 
 ## Why Garage
 
@@ -182,53 +190,89 @@ reports what Garage answered, not what the row says.
 
 ## Addressing
 
-- **The endpoint is the store's name**, derived as any service's —
-  `<store>.<project>.<node's domain>` — and editable, with its
-  certificate chosen by `edge::policy` as every name's is.
-- **Path-style**: `https://<name>/<bucket>/<key>`. The page shows the
-  setting each common client needs for it (`forcePathStyle: true` in the
-  JavaScript SDK) — measured per client in phase 3, not assumed.
-- **Virtual-hosted style is later.** `<bucket>.<name>` would need a route
-  and a certificate per bucket, or a wildcard, whose DNS-01 path has not
-  run against a real authority (`docs/dns.md`, phase 7).
-- **A region is part of every signature.** `us-east-1`, so a client that
-  was never told one still signs for the right one, rather than Garage's
-  own default, `garage`, which every client would have to be given.
-  Measured per client in phase 3.
+- **The endpoint is the store's domain**, derived as any service's —
+  `<store>.<project>.<node's domain>` — or typed, with its certificate
+  chosen by `edge::policy` as every name's is. It is fixed once the store
+  exists: every bucket's name hangs from it.
+- **Each bucket at its own name**, `<bucket>.<domain>`, with a route
+  and a certificate of its own: a port row on 3900 per bucket, made with
+  the bucket and deleted with it. Garage is told the domain as
+  `root_domain` on both doors, so it finds the bucket from the `Host`.
+  **The path works too**, `https://<domain>/<bucket>/<key>`, and that is
+  what aws-cli and boto3 build when given an endpoint; the JavaScript
+  SDK builds the name. Nothing on the page asks for either.
+- **A name is checked before the bucket exists.** `stores::bucket_name`
+  asks DNS whether `<bucket>.<domain>` reaches a node that can answer
+  for it, as every hostname form does, and refuses with the record to
+  add — one `*.<domain>` covers every bucket of the store. A certificate
+  is never ordered for a name that does not point here. A wildcard
+  certificate would need DNS-01, whose path has not run against a real
+  authority (`docs/dns.md`, phase 7), so each bucket is its own HTTP-01
+  name.
+- **The region is `wabot`.** It was `us-east-1`, so a client never told
+  a region would sign for the right one. That bought a trap: in
+  `us-east-1` boto3 presigns with signature version 2, which Amazon still
+  takes there — for every bucket, whatever its age — and Garage does not.
+  The URL worked on Amazon and failed here. In a region boto3 does not
+  know it signs with version 4. Garage refuses a signature for another
+  region and names its own in the answer; **aws-cli and boto3 sign again
+  for it by themselves** (measured: a 400, then the same request for
+  `wabot`), and any other client, or a presigned URL, is refused at once.
+- **Signature version 2 is refused at the edge**, with Amazon's own 400
+  `InvalidRequest`, "The authorization mechanism you have provided is not
+  supported. Please use AWS4-HMAC-SHA256." Garage read it as no signature
+  and said it does not support anonymous access, which sent somebody to
+  look at their key. Accepting it was considered — verifying HMAC-SHA1
+  with the key's secret and signing again for Garage — and declined.
 - **A bucket name** is S3's rule with one thing taken away: 3 to 63
   characters, lowercase letters, digits and hyphens, starting and ending
-  with a letter or digit. **No dots**: a dotted name cannot be a single
-  label under the store's name, which is what virtual-hosted style will
-  need. Unique within the store, not the node — the store is the
+  with a letter or digit. **No dots**: a dotted name is not a single
+  label under the store's domain, and a certificate for one name would
+  not cover it. Unique within the store, not the node — the store is the
   namespace, which is what an endpoint per store bought.
+- **A bucket made before names** (0.38.0) has none: it is reached by its
+  path. So is a bucket of a restored copy whose name does not point at
+  the node; one that does is named when the copy adopts it.
 
 ## Public read
 
-Garage serves anonymous reads only on its **website endpoint**, port
-3902, choosing the bucket by `Host`. So a public bucket has a name of
-its own routed there — derived `<bucket>.<store's name>`, editable, so
-`assets.example.com` can be one — and reads by key need no signature.
+**One name, as on Amazon.** A public bucket is read without a signature
+at its own name, `<bucket>.<domain>`, where signed requests keep going to
+the API. Garage serves anonymous reads only on its website port, 3902, so
+the edge chooses: a store's names are `Upstream::S3` routes carrying the
+API's upstreams and, for a public bucket, the website's, and
+`policies::s3` reads the request — a signature in the header or the
+query is the API's, an unsigned GET or HEAD of a public bucket is a
+public read, and anything else unsigned (a write, a preflight) goes to
+the API, which refuses or answers it as Amazon does. Garage finds the
+bucket from the name with the same `root_domain`.
+
 What it does not do, and the page says so: list. The website endpoint
 answers objects, not directories, and serves `index.html` for a path
 that ends in `/`.
 
-**One port, several names.** Every public bucket of a store is a name
-on the store's port 3902, and the port table declared a container port
-once per service (`port_service_container`). Migration 0073 keeps that
-for a port with no name and lets named ones share a container port: a
-name is still one service's, by its own index. Garage finds the bucket
-by the full name, because no `root_domain` is configured, so the public
-name is also an alias of the bucket there — which means it has to pass
-Garage's rule for a bucket's name: at most 63 characters, and refused
-with a sentence when it would not.
+**A name of its own beside that is optional** — `cdn.example.com`, the
+way a CDN's name is put in front of a bucket. It is a port row on 3902
+and an alias of the bucket in Garage, so it has to pass Garage's rule
+for a bucket's name: at most 63 characters, and refused with a sentence
+when it would not. It serves objects and nothing else: no S3 client
+reaches a bucket there, on Amazon either. Migration 0073 lets several
+named ports share a container port, which is what makes room for it.
 
-Measured on the VM through the edge: an object read with no signature,
-`index.html` for a path ending in `/`, a listing answered 404, a write
-refused, the S3 endpoint still asking for a signature, and after
-"Make private" the name not answering and the alias gone from Garage.
+Public is a fact of its own since migration 0076 (`bucket.public`);
+before it, a bucket was public exactly when it had that name. An edge on
+another node is told the public half with the name (`Edge::s3_public`);
+one older than 0.39.0 sends every request to the API, where a signed one
+works and a public read is refused.
 
-Turning public read off takes the name away and denies website access,
-in that order. The allowlist applies to the public name as to every name.
+Measured on the VM through the edge (2026-11-17): an object read with no
+signature at the bucket's own name, a HEAD, a listing answered 404, an
+unsigned write refused, a signed listing at the same name still the
+API's, the store's own name still asking for a signature; a second name
+serving the same object; and after "Make private" both refusing.
+
+Turning public read off takes the second name away and then the row, in
+that order. The allowlist applies to every name.
 
 ## CORS
 
@@ -432,6 +476,10 @@ command refuses with the node's name.
   it empty.
 - A bucket name that is not one (with the rule), or one the store
   already has.
+- A bucket whose name, `<bucket>.<domain>`, reaches no node — with the
+  `*.<domain>` record that covers every bucket.
+- A public bucket's own name typed as its second name.
+- A request signed with signature version 2, at the edge, in S3's shape.
 - A bucket whose maximum would take the store past its disk ceiling,
   with the numbers.
 - **Deleting a bucket that holds objects.** Garage refuses it too
@@ -478,13 +526,13 @@ a PUT, a range GET returning exactly its bytes, a multipart upload (300
 MB from aws-cli in 8 s, 50 MB from boto3, 40 MB from the JavaScript SDK,
 30 MB from rclone) coming back byte for byte, a listing with a delimiter
 answering its prefixes, a copy, a batch delete, a presigned GET and PUT.
-Each one without path-style fails exactly as the page says it will, by
-asking DNS for `<bucket>.<store>`. The node's own memory went from 27 to
+Each one without path-style failed then, on 0.38.0, by asking DNS for
+`<bucket>.<store>` — which is now each bucket's name. The node's own memory went from 27 to
 30 MB while 300 MB went up and came back down; Garage's container
 touched 226 MB, its `memory.high`, and was not killed.
 
-Two clients need a second setting, and both are about presigned URLs, so
-the page says them beside path-style:
+Two clients needed a second setting on 0.38.0, both about presigned URLs.
+The first is gone with the region `wabot`; the second is still on the page:
 
 - **boto3 signs a presigned URL with SigV2** (`AWSAccessKeyId`,
   `Signature`, `Expires`) unless given `signature_version="s3v4"`.
@@ -506,6 +554,36 @@ Every sentence a phase adds has its Spanish in that phase. "Garage" is a
 product name and "bucket" is the word S3 users use in both languages;
 neither is translated.
 
+**Each bucket at its own name (2026-11-17).** Measured on the VM with
+nothing but the endpoint and `region = wabot`: aws-cli (path), boto3
+(path: a PUT, a GET, a 20 MB multipart, a listing, a presigned GET and
+PUT), `@aws-sdk/client-s3` 3.1170.0 (`media.files.…`: a PUT, a GET, a
+listing, a presigned PUT and GET), rclone both ways. boto3 told
+`us-east-1` signed again for `wabot`; its presigned URL there is SigV2
+and was refused with Amazon's sentence. The JavaScript SDK without
+`requestChecksumCalculation` still fails a presigned PUT, as the page
+says. A bucket whose name did not resolve was refused with the record;
+a restored copy named the two buckets whose names pointed at it.
+
+**A key made while Garage starts is no longer deleted.** Found on the
+same walk: the deployment's pass read the rows, waited half a minute for
+Garage, and deleted a key made meanwhile — and Garage keeps a deleted
+key's id for ever, so giving it back failed with 409 at every pass after.
+`garage::converge` reads the rows once Garage answers, one pass at a
+time.
+
+**A key Garage deleted no longer stops the store.** Such a row — a
+backup taken before a revoke brings one back — stopped every pass at that
+key: no key after it and no bucket's permissions were applied, a new key
+was rolled back, and the reason was Garage's 409 without the key's name.
+Now the pass applies everything else and the copy's row says "Garage has
+deleted the key “…” of … and never takes a deleted key back, so it opens
+nothing: revoke it and make another"; revoking it runs a pass that clears
+the sentence. Measured on the VM: the key deleted in Garage alone, a
+rules change taken with no error, a good key's permissions put back by
+the same pass, a new key made and opening its bucket, and the sentence
+gone after the revoke.
+
 **"Runs on" (2026-11-17).** Written and covered by the gate — the errand
 on both sides, a key made in Garage's shape, deletion by report, the
 refusals, per-port overlay ports. **Not run between two machines yet**:
@@ -516,7 +594,8 @@ for node-0 and node-l1.
 
 - More than one copy. Garage replicates between its own nodes, and the
   overlay is a network it could use; that is a design of its own.
-- Virtual-hosted style.
+- Changing a store's domain: every bucket's name, route and
+  certificate hang from it.
 
 ## Not decided yet
 

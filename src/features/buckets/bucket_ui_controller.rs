@@ -12,7 +12,7 @@ use crate::domain::entities::project::Project;
 use crate::domain::entities::service::Service;
 use crate::domain::values::roles::Access;
 use crate::infra::garage::Usage;
-use crate::infra::repositories::{access, object_stores, ports, services};
+use crate::infra::repositories::{access, object_stores, services};
 use crate::shell::auth::{signed_in, SessionMiddleware};
 use crate::shell::layouts::layout;
 use crate::shell::layouts::shell::{Frame, Section};
@@ -71,12 +71,10 @@ impl BucketUiController {
     }
 
     async fn store_hostname(&self, service: &Service) -> Option<String> {
-        ports::of_service(&self.state.database, &service.id)
+        object_stores::of_service(&self.state.database, &service.id)
             .await
-            .ok()?
-            .into_iter()
-            .find(|port| port.container_port == crate::domain::policies::garage::S3_PORT)?
-            .hostname
+            .ok()??
+            .domain
     }
 
     fn address(&self, hostname: &str) -> String {
@@ -160,7 +158,11 @@ impl BucketUiController {
             )
             .collect();
         let reserved = object_stores::reserved(&self.state.database, &service.id).await?;
-        let endpoint = self.endpoint(&service).await;
+        let store_domain = self.store_hostname(&service).await;
+        let endpoint = store_domain.as_deref().map(|domain| self.address(domain));
+        let bucket_address = store_domain
+            .as_deref()
+            .map(|domain| self.address(&format!("<name>.{domain}")));
         let default_name = format!("{}-restored", service.slug);
         let domain = crate::infra::node::settings::domain(&self.state.database).await;
         let derived = crate::infra::repositories::project_domain::domain_for(
@@ -203,6 +205,8 @@ impl BucketUiController {
             may_deploy: allowed.may_deploy(),
             error: query.error.as_deref(),
             endpoint: endpoint.as_deref(),
+            domain: store_domain.as_deref(),
+            bucket_address: bucket_address.as_deref(),
             buckets: &listed,
             reserved,
             disk: service.disk_limit,
@@ -253,13 +257,34 @@ impl BucketUiController {
             )
             .await
             .and_then(|mut found| found.pop().flatten());
-        let store_hostname = self.store_hostname(&service).await;
-        let endpoint = store_hostname.as_deref().map(|host| self.address(host));
-        let public_address = bucket
+        let endpoint = self.endpoint(&service).await;
+        let own = match crate::features::buckets::set_bucket_public_command::own_port(
+            &self.state.database,
+            &service,
+            &bucket,
+        )
+        .await
+        {
+            Ok(Some(_)) => crate::features::buckets::set_bucket_public_command::bucket_hostname(
+                &self.state.database,
+                &service,
+                &bucket,
+            )
+            .await
+            .ok()
+            .flatten()
+            .map(|host| self.address(&host)),
+            _ => None,
+        };
+        let address = own.clone().or_else(|| {
+            endpoint
+                .as_deref()
+                .map(|endpoint| format!("{endpoint}/{}", bucket.name))
+        });
+        let also_at = bucket
             .public_hostname
             .as_deref()
             .map(|host| self.address(host));
-        let derived_public = store_hostname.map(|host| format!("{}.{host}", bucket.name));
 
         let path = format!("{back}/{}", bucket.name);
         layout::head(bucket.name.as_str());
@@ -271,9 +296,9 @@ impl BucketUiController {
             keys: &keys,
             usage: usage.as_ref(),
             runs_on: holder.as_ref().map(|holder| holder.name.as_str()),
-            endpoint: endpoint.as_deref(),
-            public_address: public_address.as_deref(),
-            derived_public: derived_public.as_deref(),
+            address: address.as_deref(),
+            own_name: own.is_some(),
+            also_at: also_at.as_deref(),
             may_deploy: allowed.may_deploy(),
             error: query.error.as_deref(),
         };

@@ -308,6 +308,12 @@ pub struct Edge {
     /// so the owner sends a restricted name only to an edge that reads it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub allowed: Option<Vec<String>>,
+    /// For a store's name, where its public reads go — empty for a store's
+    /// own name or a private bucket's — and absent for every other name. An
+    /// edge older than this sends every request to the S3 API, where a
+    /// signed one works and a public read is refused.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub s3_public: Option<Vec<String>>,
 }
 
 /// The first release whose edges read [`Edge::allowed`].
@@ -475,6 +481,10 @@ pub struct Store {
     pub disk_limit: Option<u64>,
     pub rpc_secret: String,
     pub admin_token: String,
+    /// What its buckets are subdomains of, which Garage has to be told to
+    /// find a bucket by the name it was asked at.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub domain: Option<String>,
     /// Empty takes the store off that node: the owner deleted it.
     pub slots: Vec<u32>,
     #[serde(default = "running")]
@@ -489,8 +499,12 @@ pub struct Store {
 pub struct StoreBucket {
     pub name: String,
     pub max_size: u64,
-    /// The name it is read at without a signature. The route is the
-    /// owner's; the holder needs it as the bucket's alias in Garage.
+    /// Absent from an owner on 0.38.0, where a bucket was public exactly
+    /// when it had a name for it.
+    #[serde(default)]
+    pub public: bool,
+    /// A name of its own it is also read at without a signature. The route
+    /// is the owner's; the holder needs it as the bucket's alias in Garage.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub public_hostname: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -722,6 +736,7 @@ pub async fn withdraw_name(
         secret: None,
         redirect_to: None,
         allowed: None,
+        s3_public: None,
     })
     .unwrap_or_default();
     queue(database, node_id, Kind::Edge, &payload).await

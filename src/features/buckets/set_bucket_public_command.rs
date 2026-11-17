@@ -12,8 +12,11 @@ use crate::features::services::add_service_port_request::AddServicePortRequest;
 use crate::features::services::delete_service_port_command::DeleteServicePort;
 use crate::infra::repositories::{object_stores, ports};
 
-pub const NO_STORE_NAME: &str = "the store has no name of its own to derive one under, so the \
-                                 public name has to be typed";
+pub const OWN_NAME: &str = "that is the bucket's own name, where a public bucket is read \
+                            already — leave the field empty, or type another name";
+
+pub const ANOTHER_NAME_FIRST: &str = "it is public already, at a name of its own too — make it \
+                                      private first to give it another";
 
 pub struct SetBucketPublic<'a> {
     pub service: &'a Service,
@@ -38,18 +41,33 @@ impl SetBucketPublic<'_> {
         ))
     }
 
-    /// The name is routed before the row names it, so a name DNS or another
-    /// service refuses leaves the bucket as private as it was.
+    /// Public at its own name with nothing more, as on Amazon. A name of its
+    /// own beside that is routed before the row names it, so a name DNS or
+    /// another service refuses leaves the bucket as it was.
     async fn open(&self, database: &SqliteDatabase) -> Result<(), String> {
-        if let Some(hostname) = &self.bucket.public_hostname {
-            return Err(format!(
-                "it is read at {hostname} already — make it private first to give it another name"
-            ));
-        }
-        let hostname = match self.asked.hostname.trim() {
-            "" => self.derived(database).await?,
-            typed => Hostname::parse(typed).as_str().to_string(),
+        let typed = match self.asked.hostname.trim() {
+            "" => None,
+            typed => Some(Hostname::parse(typed).as_str().to_string()),
         };
+        if let Some(held) = &self.bucket.public_hostname {
+            return match typed.as_deref() {
+                None => Ok(()),
+                Some(typed) if typed == held => Ok(()),
+                Some(_) => Err(ANOTHER_NAME_FIRST.into()),
+            };
+        }
+        let Some(hostname) = typed else {
+            return object_stores::set_public(database, &self.bucket.id, true, None)
+                .await
+                .map_err(|error| error.to_string());
+        };
+        if bucket_hostname(database, self.service, self.bucket)
+            .await?
+            .as_deref()
+            == Some(&*hostname)
+        {
+            return Err(OWN_NAME.into());
+        }
         if !garage::is_alias(&hostname) {
             return Err(garage::NOT_AN_ALIAS.into());
         }
@@ -65,7 +83,7 @@ impl SetBucketPublic<'_> {
         }
         .run(database)
         .await?;
-        object_stores::set_public_hostname(database, &self.bucket.id, Some(&hostname))
+        object_stores::set_public(database, &self.bucket.id, true, Some(&hostname))
             .await
             .map_err(|error| error.to_string())
     }
@@ -73,36 +91,57 @@ impl SetBucketPublic<'_> {
     /// The name goes first and the row after it: a bucket that says it is
     /// private while its name still answers would be the row lying.
     async fn close(&self, database: &SqliteDatabase) -> Result<(), String> {
-        let Some(hostname) = &self.bucket.public_hostname else {
-            return Ok(());
-        };
-        if let Some(port) = public_port(database, self.service, hostname).await? {
-            DeleteServicePort {
-                service: self.service,
-                port_id: &port,
+        if let Some(hostname) = &self.bucket.public_hostname {
+            if let Some(port) = public_port(database, self.service, hostname).await? {
+                DeleteServicePort {
+                    service: self.service,
+                    port_id: &port,
+                }
+                .run(database)
+                .await?;
             }
-            .run(database)
-            .await?;
         }
-        object_stores::set_public_hostname(database, &self.bucket.id, None)
+        object_stores::set_public(database, &self.bucket.id, false, None)
             .await
             .map_err(|error| error.to_string())
     }
-
-    async fn derived(&self, database: &SqliteDatabase) -> Result<String, String> {
-        let store = ports::of_service(database, &self.service.id)
-            .await
-            .map_err(|error| error.to_string())?
-            .into_iter()
-            .find(|port| port.container_port == garage::S3_PORT)
-            .and_then(|port| port.hostname)
-            .ok_or(NO_STORE_NAME)?;
-        Ok(format!("{}.{store}", self.bucket.name))
-    }
 }
 
-/// The port that routes a public bucket's name, found by the name: a store
-/// has one on the website port for each public bucket.
+/// `<bucket>.<domain>`, or nothing for a store with no domain.
+pub async fn bucket_hostname(
+    database: &SqliteDatabase,
+    service: &Service,
+    bucket: &Bucket,
+) -> Result<Option<String>, String> {
+    Ok(object_stores::of_service(database, &service.id)
+        .await
+        .map_err(|error| error.to_string())?
+        .and_then(|store| store.domain)
+        .map(|domain| format!("{}.{domain}", bucket.name.as_str())))
+}
+
+/// The port that routes a bucket's own name, found by the name: one on the
+/// S3 port for each bucket of a store with a domain.
+pub async fn own_port(
+    database: &SqliteDatabase,
+    service: &Service,
+    bucket: &Bucket,
+) -> Result<Option<String>, String> {
+    let Some(hostname) = bucket_hostname(database, service, bucket).await? else {
+        return Ok(None);
+    };
+    Ok(ports::of_service(database, &service.id)
+        .await
+        .map_err(|error| error.to_string())?
+        .into_iter()
+        .find(|port| {
+            port.container_port == garage::S3_PORT && port.hostname.as_deref() == Some(&*hostname)
+        })
+        .map(|port| port.id))
+}
+
+/// The port that routes a public bucket's name of its own, found by the
+/// name: one on the website port for each bucket that has one.
 pub async fn public_port(
     database: &SqliteDatabase,
     service: &Service,
@@ -165,10 +204,12 @@ mod tests {
         assert_eq!(row.public_hostname, None);
     }
 
+    /// As on Amazon: a public bucket is read at the name it already has,
+    /// and nothing has to be typed, routed or ordered for it.
     #[tokio::test]
-    async fn a_store_with_no_name_of_its_own_asks_for_the_public_one() {
+    async fn a_bucket_made_public_with_no_name_typed_is_read_at_its_own() {
         let (database, service, bucket) = uploads().await;
-        let refused = SetBucketPublic {
+        SetBucketPublic {
             service: &service,
             bucket: &bucket,
             asked: &SetBucketPublicRequest {
@@ -177,8 +218,42 @@ mod tests {
             },
         }
         .run(&database)
+        .await
+        .expect("public");
+        let row = object_stores::bucket(&database, &service.id, "uploads")
+            .await
+            .expect("read")
+            .expect("bucket");
+        assert!(row.public);
+        assert_eq!(row.public_hostname, None);
+        assert!(ports::of_service(&database, &service.id)
+            .await
+            .expect("ports")
+            .is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_bucket_is_not_given_its_own_name_a_second_time() {
+        let (database, service, bucket) = uploads().await;
+        let mut store = object_stores::of_service(&database, &service.id)
+            .await
+            .expect("read")
+            .expect("store");
+        store.domain = Some("files.example.com".into());
+        object_stores::keep(&database, &store)
+            .await
+            .expect("domain");
+        let refused = SetBucketPublic {
+            service: &service,
+            bucket: &bucket,
+            asked: &SetBucketPublicRequest {
+                public: true,
+                hostname: "Uploads.Files.Example.com".into(),
+            },
+        }
+        .run(&database)
         .await;
-        assert_eq!(refused.err().as_deref(), Some(NO_STORE_NAME));
+        assert_eq!(refused.err().as_deref(), Some(OWN_NAME));
     }
 
     /// Two public buckets of one store are two names on one container port,
@@ -219,7 +294,7 @@ mod tests {
         )
         .await
         .expect("port");
-        object_stores::set_public_hostname(&database, &bucket.id, Some(hostname))
+        object_stores::set_public(&database, &bucket.id, true, Some(hostname))
             .await
             .expect("public");
         let public = object_stores::bucket(&database, &service.id, "uploads")
@@ -245,5 +320,6 @@ mod tests {
             .expect("read")
             .expect("bucket");
         assert_eq!(row.public_hostname, None);
+        assert!(!row.public);
     }
 }

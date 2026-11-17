@@ -5,6 +5,7 @@ use crate::domain::entities::service::Service;
 use crate::domain::values::bucket_name::BucketName;
 use crate::features::buckets::create_bucket_request::CreateBucketRequest;
 use crate::features::buckets::store_converged_response::StoreConvergedResponse;
+use crate::infra::deploy::stores;
 use crate::infra::repositories::object_stores;
 
 pub const NOT_A_STORE: &str = "that service is not a store of buckets";
@@ -33,6 +34,7 @@ impl CreateBucket<'_> {
         let name = BucketName::parse(&self.asked.name)?;
         let max_size = crate::domain::policies::presets::parse_bytes(&self.asked.max_size)?
             .ok_or(crate::domain::entities::bucket::NO_ROOM)?;
+        let named = stores::bucket_name(database, &self.service.id, &name).await?;
         let bucket = Bucket::new(
             format!("bkt-{}", wabot::prelude::password::generate(12)),
             self.service.id.clone(),
@@ -42,7 +44,17 @@ impl CreateBucket<'_> {
         object_stores::create_bucket(database, &bucket)
             .await
             .map_err(|error| error.to_string())?;
-        let converged = crate::infra::deploy::stores::apply(database, self.service).await;
+        if let Some(named) = named {
+            if let Err(refused) =
+                stores::route_bucket_name(database, &self.service.id, &named).await
+            {
+                if let Err(error) = object_stores::delete_bucket(database, &bucket.id).await {
+                    tracing::error!(bucket = %bucket.name.as_str(), %error, "could not take a refused bucket back");
+                }
+                return Err(refused.to_string());
+            }
+        }
+        let converged = stores::apply(database, self.service).await;
         Ok((bucket, StoreConvergedResponse::of(converged)))
     }
 }
@@ -119,6 +131,46 @@ mod tests {
             .await
             .expect("buckets")
             .is_empty());
+    }
+
+    /// `<bucket>.<domain>` is what a client builds, so a name that reaches
+    /// no node is refused before anything is saved, routed or ordered — and
+    /// the refusal says which record covers every bucket at once.
+    #[tokio::test]
+    async fn a_bucket_whose_name_reaches_no_node_is_refused_naming_the_record_that_would() {
+        let (database, service) = store(10 * GB).await;
+        crate::infra::node::settings::set_domain(&database, Some("localhost"))
+            .await
+            .expect("domain");
+        crate::infra::network::ensure_self(&database, &crate::infra::config::Config::default())
+            .await
+            .expect("self");
+        let mut row = object_stores::of_service(&database, &service.id)
+            .await
+            .expect("read")
+            .expect("store");
+        row.domain = Some("files.shop.invalid".into());
+        object_stores::keep(&database, &row).await.expect("domain");
+
+        let refused = make(&database, &service, "uploads", "1 GB")
+            .await
+            .expect_err("nowhere");
+
+        assert!(
+            refused.starts_with("uploads.files.shop.invalid does not resolve"),
+            "{refused}"
+        );
+        assert!(refused.contains("`*.files.shop.invalid`"), "{refused}");
+        assert!(object_stores::buckets(&database, &service.id)
+            .await
+            .expect("buckets")
+            .is_empty());
+        assert!(
+            crate::infra::repositories::ports::of_service(&database, &service.id)
+                .await
+                .expect("ports")
+                .is_empty()
+        );
     }
 
     #[tokio::test]

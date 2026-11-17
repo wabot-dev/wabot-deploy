@@ -54,9 +54,14 @@ pub const RPC_SECRET_FILE: &str = "rpc_secret";
 
 pub const ADMIN_TOKEN_FILE: &str = "admin_token";
 
-/// So a client never told a region still signs for the one this store
-/// answers to.
-pub const REGION: &str = "us-east-1";
+/// Not one of Amazon's, because in `us-east-1` boto3 presigns with signature
+/// version 2, which Amazon still takes there and Garage does not: the URL
+/// works on Amazon and fails here. In a region boto3 does not know it signs
+/// with version 4. Garage answers a request signed for another region with
+/// the one it expected, which aws and boto3 sign again for by themselves and
+/// any other client is refused by at its first request — at the desk, rather
+/// than in production when a link is first opened. Measured 2026-11-17.
+pub const REGION: &str = "wabot";
 
 pub const FLOOR: u64 = 128 * MB;
 
@@ -95,9 +100,9 @@ const RULE_ID: &str = "wabot";
 /// part to complete the upload, and without it that fails in the browser and
 /// works in `curl`.
 pub fn bucket_settings(bucket: &Bucket) -> serde_json::Value {
-    let website = match bucket.public_hostname {
-        Some(_) => serde_json::json!({ "enabled": true, "indexDocument": INDEX_DOCUMENT }),
-        None => serde_json::json!({ "enabled": false }),
+    let website = match bucket.public {
+        true => serde_json::json!({ "enabled": true, "indexDocument": INDEX_DOCUMENT }),
+        false => serde_json::json!({ "enabled": false }),
     };
     let cors = match bucket.cors_origins.is_empty() {
         true => serde_json::json!([]),
@@ -146,7 +151,14 @@ pub fn command(config_mount: &str) -> Vec<String> {
 ///
 /// SQLite for the metadata because in WAL mode it survives being killed,
 /// which a container under a ceiling sometimes is.
-pub fn config(memory_limit: u64, config_mount: &str) -> String {
+///
+/// With a domain, a bucket is also found by the name it is asked at, as
+/// `<bucket>.<domain>`, on both doors; the path still works on either.
+pub fn config(memory_limit: u64, config_mount: &str, domain: Option<&str>) -> String {
+    let root = |section: &str| match domain {
+        Some(domain) => format!("{section}root_domain = \".{domain}\"\n"),
+        None => section.to_string(),
+    };
     format!(
         "metadata_dir = \"{DATA_MOUNT}/{METADATA_DIR}\"\n\
          data_dir = \"{DATA_MOUNT}/data\"\n\
@@ -157,17 +169,19 @@ pub fn config(memory_limit: u64, config_mount: &str) -> String {
          rpc_secret_file = \"{config_mount}/{RPC_SECRET_FILE}\"\n\
          block_ram_buffer_max = \"{}MiB\"\n\
          \n\
-         [s3_api]\n\
+         {}\
          s3_region = \"{REGION}\"\n\
          api_bind_addr = \"0.0.0.0:{S3_PORT}\"\n\
          \n\
-         [s3_web]\n\
+         {}\
          bind_addr = \"0.0.0.0:{WEB_PORT}\"\n\
          \n\
          [admin]\n\
          api_bind_addr = \"0.0.0.0:{ADMIN_PORT}\"\n\
          admin_token_file = \"{config_mount}/{ADMIN_TOKEN_FILE}\"\n",
         block_buffer(memory_limit) / MB,
+        root("[s3_api]\n"),
+        root("[s3_web]\n"),
     )
 }
 
@@ -277,12 +291,12 @@ mod tests {
         for limit in [FLOOR, 300 * MB, 1000 * MB + 12345] {
             assert_eq!(block_buffer(limit) % MB, 0, "{limit}");
         }
-        assert!(config(300 * MB, "/etc/wabot").contains("block_ram_buffer_max = \"37MiB\""));
+        assert!(config(300 * MB, "/etc/wabot", None).contains("block_ram_buffer_max = \"37MiB\""));
     }
 
     #[test]
     fn the_configuration_names_where_each_secret_is_and_holds_none() {
-        let config = config(FLOOR, "/etc/wabot");
+        let config = config(FLOOR, "/etc/wabot", None);
         assert!(config.contains("rpc_secret_file = \"/etc/wabot/rpc_secret\""));
         assert!(config.contains("admin_token_file = \"/etc/wabot/admin_token\""));
         assert!(!config.contains("rpc_secret ="));
@@ -291,7 +305,7 @@ mod tests {
 
     #[test]
     fn everything_garage_keeps_is_inside_the_volume_a_backup_copies() {
-        let config = config(FLOOR, "/etc/wabot");
+        let config = config(FLOOR, "/etc/wabot", None);
         for key in ["metadata_dir", "data_dir", "metadata_snapshots_dir"] {
             let line = config
                 .lines()
@@ -303,11 +317,28 @@ mod tests {
 
     #[test]
     fn each_door_listens_where_the_node_and_the_edge_reach_it() {
-        let config = config(FLOOR, "/etc/wabot");
+        let config = config(FLOOR, "/etc/wabot", None);
         for port in [S3_PORT, RPC_PORT, WEB_PORT, ADMIN_PORT] {
             assert!(config.contains(&format!("\"0.0.0.0:{port}\"")), "{port}");
         }
         assert!(config.contains(&format!("s3_region = \"{REGION}\"")));
+    }
+
+    #[test]
+    fn a_store_with_a_domain_finds_a_bucket_by_its_name_on_both_doors() {
+        let config = config(FLOOR, "/etc/wabot", Some("files.shop.example.com"));
+        let sections: Vec<&str> = config.split("\n\n").collect();
+        for section in ["[s3_api]", "[s3_web]"] {
+            let body = sections
+                .iter()
+                .find(|body| body.starts_with(section))
+                .unwrap_or_else(|| panic!("{section} missing"));
+            assert!(
+                body.contains("root_domain = \".files.shop.example.com\""),
+                "{body}"
+            );
+        }
+        assert!(!super::config(FLOOR, "/etc/wabot", None).contains("root_domain"));
     }
 
     #[test]
@@ -430,7 +461,7 @@ mod tests {
     #[test]
     fn a_public_bucket_serves_an_index_and_expiry_deletes_by_age() {
         let mut bucket = bucket();
-        bucket.public_hostname = Some("uploads.files.example.com".into());
+        bucket.public = true;
         bucket.set_expiry(Some(30), None).expect("days");
         let settings = bucket_settings(&bucket);
         assert_eq!(

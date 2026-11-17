@@ -351,6 +351,7 @@ mod tests {
             secret: None,
             redirect_to: Some("localhost".into()),
             allowed: None,
+            s3_public: None,
         })
         .expect("payload");
         errand::queue(

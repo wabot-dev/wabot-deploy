@@ -84,6 +84,7 @@ pub async fn store_in(
             version: "2".into(),
             rpc_secret: "ab".repeat(32),
             admin_token: "token".into(),
+            domain: None,
             restored_from: None,
         },
     )

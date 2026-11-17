@@ -499,6 +499,7 @@ fn adopted(service_id: &str, name: BucketName, info: &serde_json::Value) -> Buck
         service_id: service_id.to_string(),
         name,
         max_size,
+        public: false,
         public_hostname: None,
         cors_origins,
         expire_days: days("/Expiration/Days"),
@@ -545,12 +546,32 @@ pub async fn adopt(
         crate::infra::repositories::object_stores::create_bucket(database, &bucket)
             .await
             .map_err(|error| format!("its bucket {} does not fit: {error}", bucket.name))?;
+        name_adopted(database, &store.service_id, &bucket.name).await;
         made += 1;
     }
     crate::infra::repositories::object_stores::set_restored_from(database, &store.service_id, None)
         .await
         .map_err(|error| error.to_string())?;
     Ok(made)
+}
+
+/// A bucket whose name does not reach a node yet is still a bucket, reached
+/// by its path: the copy is not refused for a record somebody has not added.
+async fn name_adopted(database: &SqliteDatabase, service_id: &str, bucket: &BucketName) {
+    let named = match crate::infra::deploy::stores::bucket_name(database, service_id, bucket).await
+    {
+        Ok(Some(named)) => named,
+        Ok(None) => return,
+        Err(reason) => {
+            tracing::warn!(bucket = %bucket.as_str(), %reason, "a restored bucket has no name of its own");
+            return;
+        }
+    };
+    if let Err(error) =
+        crate::infra::deploy::stores::route_bucket_name(database, service_id, &named).await
+    {
+        tracing::warn!(bucket = %bucket.as_str(), %error, "a restored bucket has no name of its own");
+    }
 }
 
 /// The address of the copy of this store that runs here, if one does.
@@ -784,6 +805,7 @@ mod tests {
             service_id: "s-original".into(),
             name: BucketName::parse("uploads").expect("name"),
             max_size: 5 * 1024 * 1024 * 1024,
+            public: true,
             public_hostname: Some("assets.shop.example.com".into()),
             cors_origins: CorsOrigin::parse_lines("https://shop.example.com\n*").expect("origins"),
             expire_days: Some(30),
@@ -801,12 +823,14 @@ mod tests {
             },
             Bucket {
                 service_id: "s-original".into(),
+                public: true,
                 public_hostname: Some("assets.shop.example.com".into()),
                 ..restored.clone()
             }
         );
         assert_eq!(restored.service_id, "s-copy");
         assert_eq!(restored.public_hostname, None);
+        assert!(!restored.public);
         assert_ne!(restored.id, original.id);
     }
 

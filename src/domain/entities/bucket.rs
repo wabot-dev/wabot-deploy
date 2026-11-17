@@ -20,8 +20,11 @@ pub struct Bucket {
     /// Bytes. Garage has quotas per bucket and none per store, so this is
     /// what keeps a full bucket from filling a disk other services share.
     pub max_size: u64,
-    /// The name its objects are read at without a signature. Garage finds
-    /// the bucket by it, so it is also one of the bucket's aliases there.
+    /// Whether its objects are read without a signature, at its own name.
+    pub public: bool,
+    /// A name of its own a public bucket is also read at, such as
+    /// `cdn.example.com`. Garage finds the bucket by it, so it is also one of
+    /// the bucket's aliases there.
     pub public_hostname: Option<String>,
     pub cors_origins: Vec<CorsOrigin>,
     pub expire_days: Option<u32>,
@@ -52,6 +55,7 @@ impl Bucket {
             service_id,
             name,
             max_size,
+            public: false,
             public_hostname: None,
             cors_origins: Vec::new(),
             expire_days: None,

@@ -40,6 +40,63 @@ pub async fn held_elsewhere(database: &SqliteDatabase, service_id: &str) -> Opti
     Some(Holder { id, name })
 }
 
+/// A bucket's own name, `<bucket>.<domain>`, which is what an S3 client
+/// builds unless told otherwise.
+pub struct BucketName {
+    pub hostname: String,
+    /// The nodes it reaches, which are the ones that answer for it.
+    pub edges: Vec<String>,
+}
+
+/// Where a bucket's own name reaches, asked before anything is routed or
+/// ordered for it: a certificate is never ordered for a name that does not
+/// point here. `None` for a store with no domain.
+pub async fn bucket_name(
+    database: &SqliteDatabase,
+    service_id: &str,
+    bucket: &crate::domain::values::bucket_name::BucketName,
+) -> Result<Option<BucketName>, String> {
+    let Some(domain) = object_stores::of_service(database, service_id)
+        .await
+        .map_err(|error| error.to_string())?
+        .and_then(|store| store.domain)
+    else {
+        return Ok(None);
+    };
+    let hostname = format!("{}.{domain}", bucket.as_str());
+    let references = crate::infra::deploy::dns::references(database).await?;
+    let outcome = crate::infra::deploy::dns::resolves_to(&hostname, &references).await;
+    if !outcome.ok() {
+        return Err(format!(
+            "{}. A bucket's name is its subdomain of {domain}: one record `*.{domain}` pointing \
+             where {domain} points covers every bucket of this store.",
+            outcome.explain(&hostname).trim_end_matches('.')
+        ));
+    }
+    Ok(Some(BucketName {
+        hostname,
+        edges: outcome.nodes(),
+    }))
+}
+
+/// Route a bucket's own name, once [`bucket_name`] has said where it reaches.
+pub async fn route_bucket_name(
+    database: &SqliteDatabase,
+    service_id: &str,
+    name: &BucketName,
+) -> PlatformResult<()> {
+    crate::infra::repositories::ports::create(
+        database,
+        service_id,
+        crate::domain::policies::garage::S3_PORT,
+        false,
+        Some(&name.hostname),
+        &name.edges,
+    )
+    .await
+    .map(|_| ())
+}
+
 /// Where a change to a store's rows went.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Applied {
@@ -206,6 +263,7 @@ impl Contents {
                 .map(|bucket| errand::StoreBucket {
                     name: bucket.name.as_str().to_string(),
                     max_size: bucket.max_size,
+                    public: bucket.public,
                     public_hostname: bucket.public_hostname.clone(),
                     cors_origins: bucket
                         .cors_origins
@@ -249,6 +307,7 @@ fn instruction(
         disk_limit: service.disk_limit,
         rpc_secret: store.rpc_secret.clone(),
         admin_token: store.admin_token.clone(),
+        domain: store.domain.clone(),
         slots,
         running: service.desired_state == DesiredState::Running,
         buckets: contents.buckets.clone(),

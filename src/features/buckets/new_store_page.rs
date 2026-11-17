@@ -41,19 +41,23 @@ pub fn render<'a>(page: &'a NewStore<'a>) -> impl Renderable + 'a {
                 <label for="name">(t("Name"))</label>
                 <input id="name" name="name" type="text" autocomplete="off" required autofocus>
 
-                <label for="hostname">(t("Address"))</label>
+                <label for="hostname">(t("Domain"))</label>
                 @if let Some(derived) = page.derived {
                     <input id="hostname" name="hostname" type="text" autocomplete="off"
                            class="mono" placeholder=(derived)>
-                    <p class="field-hint">(t("The name clients reach it at over HTTPS. Empty is the \
-                         one shown, with the store's name in place of <name>. It has to point at \
-                         this node."))</p>
+                    <p class="field-hint">(t("The store's endpoint, and what each of its buckets is a \
+                         subdomain of: a bucket called uploads is reached at uploads.<domain>. Empty is \
+                         the one shown, with the store's name in place of <name>. It has to point at \
+                         this node, and so does every bucket's name — one record *.<domain> covers \
+                         them all. It cannot be changed afterwards."))</p>
                 } @else {
                     <input id="hostname" name="hostname" type="text" autocomplete="off"
                            class="mono" required>
-                    <p class="field-hint">(t("The name clients reach it at over HTTPS. This node has \
-                         no domain to derive one under, so it has to be typed, and it has to point \
-                         at this node."))</p>
+                    <p class="field-hint">(t("The store's endpoint, and what each of its buckets is a \
+                         subdomain of: a bucket called uploads is reached at uploads.<domain>. This node \
+                         has no domain to derive one under, so it has to be typed. It has to point at \
+                         this node, and so does every bucket's name — one record *.<domain> covers \
+                         them all. It cannot be changed afterwards."))</p>
                 }
 
                 <label for="memory">(t("Memory"))</label>

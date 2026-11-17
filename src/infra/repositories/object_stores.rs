@@ -24,14 +24,15 @@ pub async fn create(database: &SqliteDatabase, store: &ObjectStore) -> PlatformR
             connection.execute(
                 "INSERT INTO object_store \
                    (\"service_id\", \"version\", \"rpc_secret\", \"admin_token\", \
-                    \"restored_from\", \"created_at\") \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                    \"restored_from\", \"domain\", \"created_at\") \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
                 (
                     row.service_id,
                     row.version,
                     row.rpc_secret,
                     row.admin_token,
                     row.restored_from,
+                    row.domain,
                     now_ms(),
                 ),
             )?;
@@ -42,35 +43,46 @@ pub async fn create(database: &SqliteDatabase, store: &ObjectStore) -> PlatformR
 }
 
 /// Keep a store another node owns, as its owner last described it, and
-/// say whether anything Garage starts from changed: its version or one of
-/// its secrets, which only a new container picks up.
+/// say whether anything Garage starts from changed: its version, one of
+/// its secrets or the domain its buckets are named under, which only a new
+/// container picks up.
 pub async fn keep(database: &SqliteDatabase, store: &ObjectStore) -> PlatformResult<bool> {
     let row = store.clone();
     Ok(database
         .write(move |connection| {
-            let held: Option<(String, String, String)> = connection
+            type Held = (String, String, String, Option<String>);
+            let held: Option<Held> = connection
                 .query_row(
-                    "SELECT \"version\", \"rpc_secret\", \"admin_token\" FROM object_store \
-                      WHERE \"service_id\" = ?1",
+                    "SELECT \"version\", \"rpc_secret\", \"admin_token\", \"domain\" \
+                       FROM object_store WHERE \"service_id\" = ?1",
                     [&row.service_id],
-                    |found| Ok((found.get(0)?, found.get(1)?, found.get(2)?)),
+                    |found| Ok((found.get(0)?, found.get(1)?, found.get(2)?, found.get(3)?)),
                 )
                 .optional()?;
             let wanted = (
                 row.version.clone(),
                 row.rpc_secret.clone(),
                 row.admin_token.clone(),
+                row.domain.clone(),
             );
             if held.as_ref() == Some(&wanted) {
                 return Ok(false);
             }
             connection.execute(
                 "INSERT INTO object_store \
-                   (\"service_id\", \"version\", \"rpc_secret\", \"admin_token\", \"created_at\") \
-                 VALUES (?1, ?2, ?3, ?4, ?5) \
+                   (\"service_id\", \"version\", \"rpc_secret\", \"admin_token\", \"domain\", \
+                    \"created_at\") \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6) \
                  ON CONFLICT (\"service_id\") DO UPDATE SET \"version\" = ?2, \
-                   \"rpc_secret\" = ?3, \"admin_token\" = ?4",
-                (&row.service_id, wanted.0, wanted.1, wanted.2, now_ms()),
+                   \"rpc_secret\" = ?3, \"admin_token\" = ?4, \"domain\" = ?5",
+                (
+                    &row.service_id,
+                    wanted.0,
+                    wanted.1,
+                    wanted.2,
+                    wanted.3,
+                    now_ms(),
+                ),
             )?;
             Ok(true)
         })
@@ -109,7 +121,7 @@ pub async fn replace_contents(
                         transaction.execute(
                             "UPDATE bucket SET \"max_size\" = ?2, \"public_hostname\" = ?3, \
                                     \"cors_origins\" = ?4, \"expire_days\" = ?5, \
-                                    \"abort_uploads_days\" = ?6 \
+                                    \"abort_uploads_days\" = ?6, \"public\" = ?7 \
                               WHERE \"id\" = ?1",
                             (
                                 &id,
@@ -118,6 +130,7 @@ pub async fn replace_contents(
                                 origins_text(&bucket.cors_origins),
                                 bucket.expire_days,
                                 bucket.abort_uploads_days,
+                                bucket.public,
                             ),
                         )?;
                         id
@@ -126,8 +139,9 @@ pub async fn replace_contents(
                         transaction.execute(
                             "INSERT INTO bucket \
                                (\"id\", \"service_id\", \"name\", \"max_size\", \"public_hostname\", \
-                                \"cors_origins\", \"expire_days\", \"abort_uploads_days\", \"created_at\") \
-                             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                                \"cors_origins\", \"expire_days\", \"abort_uploads_days\", \"public\", \
+                                \"created_at\") \
+                             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
                             (
                                 &bucket.id,
                                 &service_id,
@@ -137,6 +151,7 @@ pub async fn replace_contents(
                                 origins_text(&bucket.cors_origins),
                                 bucket.expire_days,
                                 bucket.abort_uploads_days,
+                                bucket.public,
                                 now_ms(),
                             ),
                         )?;
@@ -308,7 +323,7 @@ pub async fn of_service(
             connection
                 .query_row(
                     "SELECT \"service_id\", \"version\", \"rpc_secret\", \"admin_token\", \
-                            \"restored_from\" \
+                            \"restored_from\", \"domain\" \
                        FROM object_store WHERE \"service_id\" = ?1",
                     [service_id],
                     |row| {
@@ -317,11 +332,29 @@ pub async fn of_service(
                             version: row.get(1)?,
                             rpc_secret: row.get(2)?,
                             admin_token: row.get(3)?,
+                            domain: row.get(5)?,
                             restored_from: row.get(4)?,
                         })
                     },
                 )
                 .optional()
+        })
+        .await?)
+}
+
+/// Every public bucket's own name, `<bucket>.<domain>`: the names whose
+/// unsigned reads are a bucket's public ones.
+pub async fn public_bucket_names(database: &SqliteDatabase) -> PlatformResult<Vec<String>> {
+    Ok(database
+        .read(|connection| {
+            connection
+                .prepare(
+                    "SELECT b.\"name\" || '.' || s.\"domain\" \
+                       FROM bucket b JOIN object_store s ON s.\"service_id\" = b.\"service_id\" \
+                      WHERE b.\"public\" = 1 AND s.\"domain\" IS NOT NULL",
+                )?
+                .query_map([], |row| row.get(0))?
+                .collect()
         })
         .await?)
 }
@@ -426,8 +459,9 @@ pub async fn create_bucket(database: &SqliteDatabase, bucket: &Bucket) -> Platfo
             connection.execute(
                 "INSERT INTO bucket \
                    (\"id\", \"service_id\", \"name\", \"max_size\", \"public_hostname\", \
-                    \"cors_origins\", \"expire_days\", \"abort_uploads_days\", \"created_at\") \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                    \"cors_origins\", \"expire_days\", \"abort_uploads_days\", \"public\", \
+                    \"created_at\") \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
                 (
                     &row.id,
                     &row.service_id,
@@ -437,6 +471,7 @@ pub async fn create_bucket(database: &SqliteDatabase, bucket: &Bucket) -> Platfo
                     origins_text(&row.cors_origins),
                     row.expire_days,
                     row.abort_uploads_days,
+                    row.public,
                     now_ms(),
                 ),
             )?;
@@ -515,9 +550,10 @@ pub async fn set_access_rules(database: &SqliteDatabase, bucket: &Bucket) -> Pla
     Ok(())
 }
 
-pub async fn set_public_hostname(
+pub async fn set_public(
     database: &SqliteDatabase,
     id: &str,
+    public: bool,
     hostname: Option<&str>,
 ) -> PlatformResult<()> {
     let id = id.to_string();
@@ -525,8 +561,8 @@ pub async fn set_public_hostname(
     database
         .write(move |connection| {
             connection.execute(
-                "UPDATE bucket SET \"public_hostname\" = ?2 WHERE \"id\" = ?1",
-                (&id, &hostname),
+                "UPDATE bucket SET \"public\" = ?2, \"public_hostname\" = ?3 WHERE \"id\" = ?1",
+                (&id, public, &hostname),
             )?;
             Ok(())
         })
@@ -622,7 +658,7 @@ fn origins_text(origins: &[CorsOrigin]) -> String {
 }
 
 const BUCKET: &str = "\"id\", \"service_id\", \"name\", \"max_size\", \"public_hostname\", \
-                      \"cors_origins\", \"expire_days\", \"abort_uploads_days\"";
+                      \"cors_origins\", \"expire_days\", \"abort_uploads_days\", \"public\"";
 
 fn decode_bucket(row: &Row<'_>) -> wabot::sqlite::rusqlite::Result<Bucket> {
     let name: String = row.get(2)?;
@@ -631,6 +667,7 @@ fn decode_bucket(row: &Row<'_>) -> wabot::sqlite::rusqlite::Result<Bucket> {
         service_id: row.get(1)?,
         name: BucketName::stored(&name),
         max_size: row.get::<_, i64>(3)? as u64,
+        public: row.get(8)?,
         public_hostname: row.get(4)?,
         cors_origins: CorsOrigin::parse_lines(&row.get::<_, String>(5)?).unwrap_or_default(),
         expire_days: row.get(6)?,
@@ -681,6 +718,7 @@ mod tests {
                 version: "2".into(),
                 rpc_secret: "ab".repeat(32),
                 admin_token: "token".into(),
+                domain: Some("files.shop.example.com".into()),
                 restored_from: None,
             },
         )
@@ -695,6 +733,7 @@ mod tests {
             service_id: service_id.to_string(),
             name: BucketName::stored(name),
             max_size,
+            public: false,
             public_hostname: None,
             cors_origins: Vec::new(),
             expire_days: None,
@@ -784,5 +823,10 @@ mod tests {
         };
         assert!(keep(&database, &rotated).await.expect("rotated"));
         assert!(!keep(&database, &rotated).await.expect("again"));
+        let renamed = ObjectStore {
+            domain: Some("s3.example.com".into()),
+            ..rotated
+        };
+        assert!(keep(&database, &renamed).await.expect("renamed"));
     }
 }

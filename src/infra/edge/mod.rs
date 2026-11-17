@@ -358,7 +358,46 @@ async fn dispatch(State(state): State<EdgeState>, request: Request) -> Response 
             };
             state.proxy.forward(addr, request).await
         }
+        Upstream::S3 {
+            ref api,
+            ref public,
+        } => {
+            use crate::domain::policies::s3;
+            let signature = s3::signature(
+                request
+                    .headers()
+                    .get(header::AUTHORIZATION)
+                    .and_then(|value| value.to_str().ok()),
+                request.uri().query(),
+            );
+            let half =
+                match s3::destination(request.method().as_str(), signature, !public.is_empty()) {
+                    s3::Destination::RefuseV2 => return refused_v2(),
+                    s3::Destination::Api => api,
+                    s3::Destination::Public => public,
+                };
+            let Some(addr) = state.routes.next_upstream(&Upstream::Proxy(half.clone())) else {
+                tracing::warn!("a route with nothing behind it");
+                return not_found();
+            };
+            state.proxy.forward(addr, request).await
+        }
     }
+}
+
+/// In S3's own shape, because what reads it is an S3 client: the message
+/// is what it prints.
+fn refused_v2() -> Response {
+    (
+        StatusCode::BAD_REQUEST,
+        [(header::CONTENT_TYPE, "application/xml")],
+        format!(
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
+             <Error><Code>InvalidRequest</Code><Message>{}</Message></Error>",
+            crate::domain::policies::s3::V2_REFUSED
+        ),
+    )
+        .into_response()
 }
 
 /// Which tenant's console a request arrived at.
@@ -1252,5 +1291,137 @@ mod tests {
         assert!(response.ends_with("plain"), "got: {response}");
 
         cancel.cancel();
+    }
+
+    async fn saying(word: &'static str) -> SocketAddr {
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let address = listener.local_addr().expect("addr");
+        tokio::spawn(async move {
+            while let Ok((stream, _)) = listener.accept().await {
+                tokio::spawn(async move {
+                    let mut reader = BufReader::new(stream);
+                    loop {
+                        let mut line = String::new();
+                        if reader.read_line(&mut line).await.unwrap_or(0) == 0 {
+                            return;
+                        }
+                        if line == "\r\n" || line == "\n" {
+                            break;
+                        }
+                    }
+                    let _ = reader
+                        .into_inner()
+                        .write_all(
+                            format!(
+                                "HTTP/1.1 200 OK\r\ncontent-length: {}\r\n\r\n{word}",
+                                word.len()
+                            )
+                            .as_bytes(),
+                        )
+                        .await;
+                });
+            }
+        });
+        address
+    }
+
+    /// One name for a bucket, as on Amazon: what is signed is the API's and
+    /// what is not is a public read — and a private bucket has none, so the
+    /// API refuses it as Amazon would.
+    #[tokio::test]
+    async fn a_bucket_name_sends_what_is_signed_to_the_api_and_what_is_not_to_its_public_reads() {
+        use tower::ServiceExt;
+        let (api, public) = (saying("api").await, saying("public").await);
+        let state = state(false);
+        state.routes.replace([
+            (
+                "uploads.files.example".to_string(),
+                Upstream::S3 {
+                    api: vec![api],
+                    public: vec![public],
+                },
+            ),
+            (
+                "private.files.example".to_string(),
+                Upstream::S3 {
+                    api: vec![api],
+                    public: Vec::new(),
+                },
+            ),
+        ]);
+        let app = Router::new().fallback(dispatch).with_state(state);
+        let v4 = "AWS4-HMAC-SHA256 Credential=GK1/20261117/wabot/s3/aws4_request";
+        let presigned =
+            "/a.txt?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=GK1&X-Amz-Signature=ab";
+
+        for (host, method, path, authorization, expected) in [
+            ("uploads.files.example", "GET", "/a.txt", None, "public"),
+            ("uploads.files.example", "HEAD", "/a.txt", None, ""),
+            ("uploads.files.example", "GET", "/a.txt", Some(v4), "api"),
+            ("uploads.files.example", "GET", presigned, None, "api"),
+            ("uploads.files.example", "PUT", "/a.txt", None, "api"),
+            ("uploads.files.example", "OPTIONS", "/a.txt", None, "api"),
+            ("private.files.example", "GET", "/a.txt", None, "api"),
+        ] {
+            let mut request = Request::builder()
+                .method(method)
+                .uri(path)
+                .header("host", host);
+            if let Some(authorization) = authorization {
+                request = request.header("authorization", authorization);
+            }
+            let response = app
+                .clone()
+                .oneshot(
+                    request
+                        .body(wabot::rest::axum::body::Body::empty())
+                        .expect("request"),
+                )
+                .await
+                .expect("answered");
+            assert_eq!(response.status(), StatusCode::OK, "{method} {host}{path}");
+            let body = wabot::rest::axum::body::to_bytes(response.into_body(), 1024)
+                .await
+                .expect("body");
+            if method != "HEAD" {
+                assert_eq!(body, expected.as_bytes(), "{method} {host}{path}");
+            }
+        }
+    }
+
+    /// What boto3 sends when it is told nothing in `us-east-1`: refused
+    /// before it reaches Garage, which would call it anonymous.
+    #[tokio::test]
+    async fn a_url_signed_the_old_way_is_refused_with_amazons_sentence() {
+        use tower::ServiceExt;
+        let api = saying("api").await;
+        let state = state(false);
+        state.routes.replace([(
+            "uploads.files.example".to_string(),
+            Upstream::S3 {
+                api: vec![api],
+                public: vec![api],
+            },
+        )]);
+        let app = Router::new().fallback(dispatch).with_state(state);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/a.txt?AWSAccessKeyId=GK1&Signature=c2ln&Expires=1763400000")
+                    .header("host", "uploads.files.example")
+                    .body(wabot::rest::axum::body::Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("answered");
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = wabot::rest::axum::body::to_bytes(response.into_body(), 1024)
+            .await
+            .expect("body");
+        let body = String::from_utf8_lossy(&body);
+        assert!(body.contains("<Code>InvalidRequest</Code>"), "{body}");
+        assert!(body.contains("AWS4-HMAC-SHA256"), "{body}");
     }
 }

@@ -68,8 +68,9 @@ fn landed(here: &str, card: &str, converged: StoreConvergedResponse) -> Response
 }
 
 impl BucketRestController {
-    /// The routes change with the port rows, so the edges are told now
-    /// rather than at the next deployment, which a store does not need.
+    /// The routes change with the bucket, so the edges are told now rather
+    /// than at the next deployment, which a store does not need: a public
+    /// bucket's own name carries its public reads.
     async fn publish(&self, request: Request, public: bool) -> RestResult<Response> {
         let Some(account) = signed_in(&self.auth) else {
             return Ok(see_other("/sign-in"));
@@ -112,9 +113,7 @@ impl BucketRestController {
         };
         match set {
             Ok(converged) => {
-                if public {
-                    self.state.deployer.tell_edges(&service).await;
-                }
+                self.state.deployer.tell_edges(&service).await;
                 self.state.deployer.sync_routes().await;
                 Ok(landed(&here, "#public", converged))
             }
@@ -201,6 +200,8 @@ impl BucketRestController {
         };
         match made {
             Ok((bucket, converged)) => {
+                self.state.deployer.tell_edges(&service).await;
+                self.state.deployer.sync_routes().await;
                 Ok(landed(&format!("{here}/{}", bucket.name), "", converged))
             }
             Err(reason) => Ok(back_with_error(&here, &reason)),
@@ -311,10 +312,13 @@ impl BucketRestController {
             }
         };
         match deleted {
-            Ok(()) => Ok(see_other(&format!(
-                "/projects/{}/services/{}/buckets",
-                project.slug, service.slug
-            ))),
+            Ok(()) => {
+                self.state.deployer.sync_routes().await;
+                Ok(see_other(&format!(
+                    "/projects/{}/services/{}/buckets",
+                    project.slug, service.slug
+                )))
+            }
             Err(reason) => Ok(back_with_error(&here, &reason)),
         }
     }

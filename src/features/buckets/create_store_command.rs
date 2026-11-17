@@ -51,9 +51,13 @@ impl CreateStore<'_> {
             )?,
             typed => typed.to_string(),
         };
-        if crate::domain::values::hostname::Hostname::parse(&hostname).is_wildcard() {
-            return Err("a store answers to one name, and a wildcard is many".into());
+        let parsed = crate::domain::values::hostname::Hostname::parse(&hostname);
+        if parsed.is_wildcard() {
+            return Err(
+                "a store's domain is one name, and its buckets are each a name under it".into(),
+            );
         }
+        let hostname = parsed.as_str().to_string();
         let sized = Sized {
             hostname,
             memory_limit,
@@ -178,6 +182,7 @@ impl CreateStore<'_> {
                 version: garage::DEFAULT_VERSION.to_string(),
                 rpc_secret: rpc_secret(),
                 admin_token: wabot::prelude::password::generate(40),
+                domain: Some(sized.hostname.clone()),
                 restored_from: None,
             },
         )

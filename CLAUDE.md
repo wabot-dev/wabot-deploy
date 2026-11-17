@@ -514,7 +514,10 @@ happened:
 - A running container no row claims — what a restore from an older
   backup leaves — is on no page.
 - A store of buckets is one copy, on the node chosen when it was made —
-  "Runs on" is written and has not run between two machines. Its backup
+  "Runs on" is written and has not run between two machines. Each bucket
+  is `<bucket>.<domain>`, with an HTTP-01 certificate of its own; the
+  domain cannot change once the store exists, and a bucket made on
+  0.38.0 has no name, only its path. Its backup
   has Garage's ten-minute window between the metadata
   snapshot and the last block copied. It restores into a copy beside it,
   without its keys. aws-cli, boto3, the JavaScript SDK and rclone ran

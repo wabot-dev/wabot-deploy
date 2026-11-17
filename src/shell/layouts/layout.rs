@@ -809,6 +809,17 @@ details[open] > summary { margin-bottom: var(--sp-4); }
   font-size: var(--fs-sm);
   color: rgb(var(--c-fg-faint));
 }
+/* A name typed in front of a domain the page already knows, so what is
+   typed and the address it becomes read as one. It wraps under the field
+   on a phone, where a long domain would otherwise push the page sideways. */
+.name-under { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--sp-1) var(--sp-2); }
+.name-under input { flex: 1 1 10rem; min-width: 0; }
+.name-under .suffix {
+  font-family: var(--font-mono);
+  font-size: var(--fs-sm);
+  color: rgb(var(--c-fg-muted));
+  overflow-wrap: anywhere;
+}
 .field-hint {
   margin: calc(var(--sp-1) * -1) 0 var(--sp-4);
   font-size: var(--fs-sm);

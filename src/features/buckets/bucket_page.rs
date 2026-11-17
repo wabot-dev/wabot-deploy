@@ -21,9 +21,12 @@ pub struct BucketView<'a> {
     pub usage: Option<&'a Usage>,
     /// The node running the store, when that is not this one.
     pub runs_on: Option<&'a str>,
-    pub endpoint: Option<&'a str>,
-    pub public_address: Option<&'a str>,
-    pub derived_public: Option<&'a str>,
+    /// Its own name when it has one, and the path under the store's
+    /// otherwise: a bucket made before buckets had names.
+    pub address: Option<&'a str>,
+    pub own_name: bool,
+    /// A name of its own a public bucket is also read at.
+    pub also_at: Option<&'a str>,
     pub may_deploy: bool,
     pub error: Option<&'a str>,
 }
@@ -68,9 +71,9 @@ pub fn render<'a>(page: &'a BucketView<'a>) -> impl Renderable + 'a {
                 </a>
             </div>
             <dl class="kv">
-                @if let Some(endpoint) = page.endpoint {
+                @if let Some(address) = page.address {
                     <dt>(t("Address"))</dt>
-                    <dd class="mono">(endpoint)"/"(bucket.name.as_str())</dd>
+                    <dd class="mono">(address)</dd>
                 }
                 <dt>(t("Holds up to"))</dt>
                 <dd>(presets::size_field(bucket.max_size))</dd>
@@ -141,13 +144,21 @@ pub fn render<'a>(page: &'a BucketView<'a>) -> impl Renderable + 'a {
 
         <section class="card stack" id="public">
             <p class="card-label">(t("Public read"))</p>
-            @if let Some(address) = page.public_address {
+            @if bucket.public {
                 <dl class="kv">
-                    <dt>(t("Read at"))</dt>
-                    <dd class="mono">(address)"/<key>"</dd>
+                    @if let Some(address) = page.address.filter(|_| page.own_name) {
+                        <dt>(t("Read at"))</dt>
+                        <dd class="mono">(address)"/<key>"</dd>
+                    }
+                    @if let Some(also) = page.also_at {
+                        <dt>(t("And at"))</dt>
+                        <dd class="mono">(also)"/<key>"</dd>
+                    }
                 </dl>
-                <p class="tile-detail">(t("Anyone with this address reads an object by its key, \
-                     with no key of their own. It does not list what the bucket holds."))</p>
+                <p class="tile-detail">(t("Anyone reads an object by its key at the bucket's own \
+                     address, with no key of their own, as on Amazon: a request that is signed is \
+                     still the API's. It does not list what the bucket holds, and a path that ends in \
+                     / answers its index.html."))</p>
                 @if editable {
                     <form method="post" action=(format!("{here}/private"))>
                         <button class="btn btn-secondary" type="submit">(t("Make private"))</button>
@@ -157,18 +168,14 @@ pub fn render<'a>(page: &'a BucketView<'a>) -> impl Renderable + 'a {
                 <p class="tile-detail">(t("Private: every request is signed with one of its keys."))</p>
                 @if editable {
                     <form method="post" action=(format!("{here}/public")) class="stack">
-                        <label for="public-name">(t("Name it is read at"))</label>
-                        @if let Some(derived) = page.derived_public {
-                            <input id="public-name" name="hostname" type="text" autocomplete="off"
-                                   class="mono" placeholder=(derived)>
-                        } @else {
-                            <input id="public-name" name="hostname" type="text" autocomplete="off"
-                                   class="mono" required>
-                        }
-                        <p class="field-hint">(t("Empty is the one shown. It has to point at this \
-                             node, and the store's allowlist applies to it as to the store's own \
-                             name. A path that ends in / answers its index.html, and nothing \
-                             answers a listing."))</p>
+                        <label for="public-name">(t("Also at a name of your own"))</label>
+                        <input id="public-name" name="hostname" type="text" autocomplete="off"
+                               class="mono" placeholder="cdn.example.com">
+                        <p class="field-hint">(t("Optional. A public bucket is read at its own address \
+                             already; this is a second name for the same objects, the way a CDN's \
+                             name is put in front of a bucket. It serves objects and nothing else — no \
+                             S3 client reaches the bucket there — it has to point at this node, and the \
+                             store's allowlist applies to it."))</p>
                         <div class="actions">
                             <button class="btn btn-secondary" type="submit">(t("Make public"))</button>
                         </div>

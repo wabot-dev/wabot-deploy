@@ -146,6 +146,10 @@ pub async fn sync(
             .await
             .unwrap_or_default();
 
+    let public_buckets = crate::infra::repositories::object_stores::public_bucket_names(database)
+        .await
+        .unwrap_or_default();
+
     let mut hosts = Vec::new();
     for port in &ports {
         let Some(hostname) = &port.hostname else {
@@ -203,13 +207,28 @@ pub async fn sync(
             continue;
         }
 
-        routes::upsert(
-            database,
-            hostname,
-            &Upstream::Proxy(upstreams),
-            Some(&service.id),
-        )
-        .await?;
+        let upstream = match service.kind.is_store()
+            && port.container_port == crate::domain::policies::garage::S3_PORT
+        {
+            true => Upstream::S3 {
+                api: upstreams,
+                public: match public_buckets.contains(hostname) {
+                    true => upstreams_of(
+                        &placements,
+                        &elsewhere,
+                        &nodes,
+                        &service.id,
+                        crate::domain::policies::garage::WEB_PORT,
+                    )
+                    .into_iter()
+                    .map(|(_, address)| address)
+                    .collect(),
+                    false => Vec::new(),
+                },
+            },
+            false => Upstream::Proxy(upstreams),
+        };
+        routes::upsert(database, hostname, &upstream, Some(&service.id)).await?;
         hosts.push(hostname.clone());
     }
 
@@ -524,6 +543,93 @@ mod tests {
         .await
         .expect("service");
         (database, project.id, service.id)
+    }
+
+    /// A bucket is read at its own name without a signature only while it
+    /// is public; the store's name and a private bucket's take signed
+    /// requests alone, as Amazon's do.
+    #[tokio::test]
+    async fn a_public_buckets_own_name_carries_its_public_reads_and_no_other_does() {
+        use crate::domain::policies::garage;
+        use crate::infra::repositories::object_stores;
+        let (database, _, service) = node().await;
+        crate::infra::repositories::services::set_kind(
+            &database,
+            &service,
+            crate::domain::entities::service::Kind::Garage,
+        )
+        .await
+        .expect("kind");
+        crate::infra::repositories::services::set_disk_limit(&database, &service, Some(1 << 30))
+            .await
+            .expect("disk");
+        object_stores::create(
+            &database,
+            &crate::domain::entities::object_store::ObjectStore {
+                service_id: service.clone(),
+                version: "2".into(),
+                rpc_secret: "ab".repeat(32),
+                admin_token: "token".into(),
+                domain: Some("files.example".into()),
+                restored_from: None,
+            },
+        )
+        .await
+        .expect("store");
+        for (name, public) in [("uploads", true), ("private", false)] {
+            let mut bucket = crate::domain::entities::bucket::Bucket::new(
+                format!("bkt-{name}"),
+                service.clone(),
+                crate::domain::values::bucket_name::BucketName::stored(name),
+                1 << 20,
+            )
+            .expect("bucket");
+            bucket.public = public;
+            object_stores::create_bucket(&database, &bucket)
+                .await
+                .expect("bucket");
+        }
+        for hostname in [
+            "files.example",
+            "uploads.files.example",
+            "private.files.example",
+        ] {
+            ports::create(
+                &database,
+                &service,
+                garage::S3_PORT,
+                false,
+                Some(hostname),
+                &[],
+            )
+            .await
+            .expect("port");
+        }
+        running_at(&database, &service, Some("10.42.1.5")).await;
+
+        let table = Arc::new(RouteTable::new());
+        sync(&database, Some("node.example"), Some(&table))
+            .await
+            .expect("sync");
+
+        let at = |port: u16| SocketAddr::from(([10, 42, 1, 5], port));
+        assert_eq!(
+            table.resolve("uploads.files.example"),
+            Some(Upstream::S3 {
+                api: vec![at(garage::S3_PORT)],
+                public: vec![at(garage::WEB_PORT)],
+            })
+        );
+        for private in ["files.example", "private.files.example"] {
+            assert_eq!(
+                table.resolve(private),
+                Some(Upstream::S3 {
+                    api: vec![at(garage::S3_PORT)],
+                    public: Vec::new(),
+                }),
+                "{private}"
+            );
+        }
     }
 
     /// A project's registry name reaches that project's registry, and

@@ -64,6 +64,7 @@ mod tests {
             secret: None,
             redirect_to: None,
             allowed: None,
+            s3_public: None,
         })
         .expect("payload");
         errand::queue(database, node, errand::Kind::Edge, &payload)
