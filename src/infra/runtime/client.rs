@@ -53,6 +53,8 @@ pub enum ClientError {
         #[source]
         source: tonic::Status,
     },
+    #[error("the bytes being written stopped arriving: {0}")]
+    Interrupted(#[source] std::io::Error),
     #[error("{0}")]
     Other(String),
 }

@@ -115,6 +115,57 @@ pub async fn get(state: &RegistryState, name: &str, reference: &str) -> RestResu
         .expect("a constant response is well-formed"))
 }
 
+/// `GET /v2/<name>/tags/list`, a page at a time when the client asks for
+/// one with `n` and `last`.
+pub async fn tags(state: &RegistryState, name: &str, query: Option<&str>) -> RestResult<Response> {
+    let mut n = None;
+    let mut last = String::new();
+    for (key, value) in form_urlencoded::parse(query.unwrap_or_default().as_bytes()) {
+        match &*key {
+            "n" => n = value.parse::<usize>().ok(),
+            "last" => last = value.into_owned(),
+            _ => {}
+        }
+    }
+
+    let (repository, after) = (name.to_string(), last);
+    let limit = n.map_or(-1, |n| n as i64 + 1);
+    let mut tags: Vec<String> = state
+        .database
+        .read(move |connection| {
+            let mut statement = connection.prepare(
+                "SELECT \"tag\" FROM registry_tag \
+                 WHERE \"repository\" = ?1 AND \"tag\" > ?2 \
+                 ORDER BY \"tag\" LIMIT ?3",
+            )?;
+            let tags: Result<Vec<String>, _> = statement
+                .query_map((repository, after, limit), |row| row.get(0))?
+                .collect();
+            tags
+        })
+        .await
+        .map_err(internal)?;
+
+    let mut response = Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, "application/json")
+        .header("docker-distribution-api-version", "registry/2.0");
+    if let Some(n) = n.filter(|n| tags.len() > *n) {
+        tags.truncate(n);
+        if let Some(last) = tags.last() {
+            response = response.header(
+                header::LINK,
+                format!("</v2/{name}/tags/list?n={n}&last={last}>; rel=\"next\""),
+            );
+        }
+    }
+    Ok(response
+        .body(Body::from(
+            serde_json::json!({ "name": name, "tags": tags }).to_string(),
+        ))
+        .expect("a constant response is well-formed"))
+}
+
 /// `PUT /v2/<name>/manifests/<reference>` — the last request of a push.
 pub async fn put(
     state: &RegistryState,
@@ -634,6 +685,64 @@ mod tests {
                 .contains("sha256:also"),
             "{json}"
         );
+    }
+
+    /// `skopeo inspect` asks for the tags before anything else, and the
+    /// registry answered 404: "Error determining repository tags" for an
+    /// image it had just taken (VM, 2026-11-17).
+    #[tokio::test]
+    async fn a_repositorys_tags_are_listed_in_order_a_page_at_a_time() {
+        use http_body_util::BodyExt;
+        use std::sync::Arc;
+
+        let database = Arc::new(crate::infra::db::open_in_memory().await.expect("open"));
+        let state = RegistryState {
+            database: database.clone(),
+            deployer: Arc::new(crate::infra::deploy::Deployer::new(
+                database.clone(),
+                &crate::infra::config::Config::default(),
+            )),
+        };
+        for (repository, tag) in [
+            ("demo/api", "v2"),
+            ("demo/api", "latest"),
+            ("demo/api", "v1"),
+            ("demo/web", "v9"),
+        ] {
+            remember(&state, repository, tag, "sha256:abc", 1, "application/json")
+                .await
+                .expect("remembered");
+        }
+
+        let listed = |query: Option<&'static str>| {
+            let state = &state;
+            async move {
+                let response = tags(state, "demo/api", query).await.expect("listed");
+                let link = response
+                    .headers()
+                    .get(header::LINK)
+                    .map(|value| value.to_str().unwrap().to_string());
+                let body = response.into_body().collect().await.unwrap().to_bytes();
+                let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+                assert_eq!(json["name"], "demo/api");
+                (json["tags"].clone(), link)
+            }
+        };
+
+        let (all, link) = listed(None).await;
+        assert_eq!(all, serde_json::json!(["latest", "v1", "v2"]));
+        assert_eq!(link, None);
+
+        let (first, link) = listed(Some("n=2")).await;
+        assert_eq!(first, serde_json::json!(["latest", "v1"]));
+        assert_eq!(
+            link.as_deref(),
+            Some("</v2/demo/api/tags/list?n=2&last=v1>; rel=\"next\"")
+        );
+
+        let (rest, link) = listed(Some("n=2&last=v1")).await;
+        assert_eq!(rest, serde_json::json!(["v2"]));
+        assert_eq!(link, None, "nothing after the last page");
     }
 
     #[test]

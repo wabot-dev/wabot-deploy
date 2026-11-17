@@ -76,6 +76,7 @@ impl RegistryRestController {
             return Ok(challenge());
         };
         let path = request.uri().path().to_string();
+        let query = request.uri().query().map(str::to_string);
 
         match Route::of(&path) {
             Some(Route::Blob { name, digest }) => {
@@ -85,6 +86,10 @@ impl RegistryRestController {
             Some(Route::Manifest { name, reference }) => {
                 self.guard(&pusher, &name)?;
                 manifests::get(&self.state, &name, &reference).await
+            }
+            Some(Route::Tags { name }) => {
+                self.guard(&pusher, &name)?;
+                manifests::tags(&self.state, &name, query.as_deref()).await
             }
             _ => Ok(not_found()),
         }

@@ -121,11 +121,21 @@ pub(crate) enum Route {
     Blob { name: String, digest: String },
     /// `/v2/<name>/manifests/<reference>`
     Manifest { name: String, reference: String },
+    /// `/v2/<name>/tags/list`
+    Tags { name: String },
 }
 
 impl Route {
     pub(crate) fn of(path: &str) -> Option<Self> {
         let path = path.strip_prefix("/v2/")?;
+
+        if let Some(name) = path.strip_suffix("/tags/list") {
+            if !name.is_empty() {
+                return Some(Route::Tags {
+                    name: name.to_string(),
+                });
+            }
+        }
 
         if let Some((name, rest)) = split_last(path, "/blobs/uploads/") {
             return Some(if rest.is_empty() {
@@ -327,6 +337,17 @@ mod tests {
                 name: "demo/api".into()
             })
         );
+    }
+
+    #[test]
+    fn a_tags_list_is_told_apart_from_a_manifest() {
+        assert_eq!(
+            Route::of("/v2/demo/team/api/tags/list"),
+            Some(Route::Tags {
+                name: "demo/team/api".into()
+            })
+        );
+        assert_eq!(Route::of("/v2/tags/list"), None, "a name is required");
     }
 
     #[test]

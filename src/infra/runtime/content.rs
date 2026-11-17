@@ -136,6 +136,10 @@ pub async fn written_so_far(client: &Containerd, ref_: &str) -> ClientResult<i64
 /// per chunk: fifty stream set-ups for a 200 MB layer, on a node with
 /// one core also decrypting four parallel uploads. The cost showed up
 /// as TLS handshake timeouts on the connections waiting behind them.
+///
+/// A chunk that is an error ends the write there and is the answer:
+/// what arrived before it stays in the transaction, where a resuming
+/// client finds it.
 pub async fn write_chunks<S>(
     client: &Containerd,
     ref_: &str,
@@ -143,25 +147,82 @@ pub async fn write_chunks<S>(
     chunks: S,
 ) -> ClientResult<i64>
 where
-    S: futures_util::Stream<Item = Vec<u8>> + Send + 'static,
+    S: futures_util::Stream<Item = std::io::Result<Vec<u8>>> + Send + 'static,
 {
-    use std::sync::atomic::{AtomicI64, Ordering};
-    use std::sync::Arc;
+    write(client, ref_, offset, chunks, None).await
+}
 
-    // Where the write got to, shared with the stream that is producing
-    // the messages — the caller needs it back, and the stream is what
-    // knows.
+/// [`write_chunks`], then the commit under `digest`, on the same stream.
+///
+/// Opening a second stream to commit makes containerd resume the
+/// transaction, and resuming reads back and hashes every byte already
+/// written: a whole layer, again, on a one-core node. containerd's own
+/// client sends the commit last on the stream that wrote.
+///
+/// Nothing is committed when a chunk is an error.
+pub async fn write_and_commit<S>(
+    client: &Containerd,
+    ref_: &str,
+    offset: i64,
+    chunks: S,
+    digest: &str,
+    labels: HashMap<String, String>,
+) -> ClientResult<i64>
+where
+    S: futures_util::Stream<Item = std::io::Result<Vec<u8>>> + Send + 'static,
+{
+    let seal = Seal {
+        expected: digest.to_string(),
+        labels,
+    };
+    write(client, ref_, offset, chunks, Some(seal)).await
+}
+
+struct Seal {
+    expected: String,
+    labels: HashMap<String, String>,
+}
+
+async fn write<S>(
+    client: &Containerd,
+    ref_: &str,
+    offset: i64,
+    chunks: S,
+    seal: Option<Seal>,
+) -> ClientResult<i64>
+where
+    S: futures_util::Stream<Item = std::io::Result<Vec<u8>>> + Send + 'static,
+{
+    use futures_util::StreamExt;
+    use std::sync::atomic::{AtomicI64, Ordering};
+    use std::sync::{Arc, Mutex};
+
+    // A write's first message is what names its transaction, so a stream
+    // with no message names nothing and containerd refuses it.
+    let mut chunks = Box::pin(chunks.peekable());
+    let sealing = seal.is_some();
+    if !sealing && chunks.as_mut().peek().await.is_none() {
+        return written_so_far(client, ref_).await;
+    }
+
     let at = Arc::new(AtomicI64::new(offset));
     let counter = at.clone();
+    let broken: Arc<Mutex<Option<std::io::Error>>> = Arc::new(Mutex::new(None));
+    let breaks = broken.clone();
     let ref_owned = ref_.to_string();
 
     let requests = async_stream::stream! {
-        futures_util::pin_mut!(chunks);
-        use futures_util::StreamExt;
-
-        while let Some(data) = chunks.next().await {
-            let size = data.len() as i64;
-            let start = counter.fetch_add(size, Ordering::SeqCst);
+        while let Some(next) = chunks.next().await {
+            let data = match next {
+                Ok(data) => data,
+                Err(error) => {
+                    if let Ok(mut slot) = breaks.lock() {
+                        *slot = Some(error);
+                    }
+                    return;
+                }
+            };
+            let start = counter.fetch_add(data.len() as i64, Ordering::SeqCst);
             yield WriteContentRequest {
                 action: WriteAction::Write as i32,
                 r#ref: ref_owned.clone(),
@@ -170,28 +231,60 @@ where
                 ..Default::default()
             };
         }
+        if let Some(Seal { expected, labels }) = seal {
+            let total = counter.load(Ordering::SeqCst);
+            yield WriteContentRequest {
+                action: WriteAction::Commit as i32,
+                r#ref: ref_owned,
+                total,
+                expected,
+                offset: total,
+                data: Vec::new(),
+                labels,
+            };
+        }
     };
 
-    let mut responses = ContentClient::new(client.channel())
+    let outcome = match ContentClient::new(client.channel())
         .write(client.request(requests))
         .await
-        .map_err(|source| ClientError::Call {
+    {
+        Ok(response) => {
+            let mut responses = response.into_inner();
+            loop {
+                match responses.message().await {
+                    Ok(Some(_)) => {}
+                    Ok(None) => break Ok(()),
+                    Err(status) => break Err(status),
+                }
+            }
+        }
+        Err(status) => Err(status),
+    };
+
+    let interrupted = broken.lock().ok().and_then(|mut slot| slot.take());
+    if let Some(error) = interrupted {
+        return Err(ClientError::Interrupted(error));
+    }
+
+    match outcome {
+        Ok(()) => Ok(at.load(Ordering::SeqCst)),
+        // Somebody pushed this blob already, or it arrived with an image.
+        // Content is addressed by its digest, so the bytes are the same
+        // bytes. Aborted because containerd refuses an expected digest it
+        // has before it looks at the transaction, which would otherwise
+        // keep its copy under the lease for a day.
+        Err(status) if sealing && status.code() == tonic::Code::AlreadyExists => {
+            if let Err(error) = abort(client, ref_).await {
+                tracing::warn!(transaction = %ref_, %error, "a blob already here left its upload behind");
+            }
+            Ok(at.load(Ordering::SeqCst))
+        }
+        Err(source) => Err(ClientError::Call {
             call: "Content.Write",
             source,
-        })?
-        .into_inner();
-
-    while responses
-        .message()
-        .await
-        .map_err(|source| ClientError::Call {
-            call: "Content.Write",
-            source,
-        })?
-        .is_some()
-    {}
-
-    Ok(at.load(Ordering::SeqCst))
+        }),
+    }
 }
 
 /// Close a transaction, storing what was written under `digest`.
@@ -225,72 +318,23 @@ pub async fn commit(
 
     // **In pieces, and in one stream, whatever the caller had.**
     // containerd takes no gRPC message over 16 MB, so a blob handed over
-    // whole — a layer restored from a backup, a registry upload sent in
-    // one request — was refused with "received message larger than max"
-    // from the first layer of any real image. Found on a VM node
-    // restoring a backup: the images it had kept for being the only copy
-    // did not come back. Writing the head on one stream and committing on
-    // a second was then refused at the commit's offset, so the writes and
-    // the commit share a stream, the way containerd's own client sends
-    // them: the commit last, carrying no data, at the total.
-    let ref_owned = ref_.to_string();
-    let expected = digest.to_string();
-    let requests = async_stream::stream! {
-        let mut offset = from;
+    // whole — a layer restored from a backup — was refused with "received
+    // message larger than max" from the first layer of any real image.
+    // Found on a VM node restoring a backup: the images it had kept for
+    // being the only copy did not come back. Writing the head on one
+    // stream and committing on a second was then refused at the commit's
+    // offset, so the writes and the commit share a stream.
+    //
+    // Cut as the stream asks for them, so a restored layer is in memory
+    // once and not twice.
+    let pieces = async_stream::stream! {
         for piece in data.chunks(PIECE) {
-            let size = piece.len() as i64;
-            yield WriteContentRequest {
-                action: WriteAction::Write as i32,
-                r#ref: ref_owned.clone(),
-                offset,
-                data: piece.to_vec(),
-                ..Default::default()
-            };
-            offset += size;
-        }
-        yield WriteContentRequest {
-            action: WriteAction::Commit as i32,
-            r#ref: ref_owned,
-            total,
-            expected,
-            offset,
-            data: Vec::new(),
-            labels,
-        };
-    };
-
-    let result = ContentClient::new(client.channel())
-        .write(client.request(requests))
-        .await;
-
-    let mut stream = match result {
-        Ok(response) => response.into_inner(),
-        // Somebody pushed this blob already, or it arrived with an
-        // image. Content is addressed by its digest, so the bytes are
-        // the same bytes — there is nothing to do and nothing to
-        // report.
-        Err(status) if status.code() == tonic::Code::AlreadyExists => return Ok(()),
-        Err(source) => {
-            return Err(ClientError::Call {
-                call: "Content.Write",
-                source,
-            })
+            yield Ok(piece.to_vec());
         }
     };
-
-    loop {
-        match stream.message().await {
-            Ok(Some(_)) => {}
-            Ok(None) => return Ok(()),
-            Err(status) if status.code() == tonic::Code::AlreadyExists => return Ok(()),
-            Err(source) => {
-                return Err(ClientError::Call {
-                    call: "Content.Write",
-                    source,
-                })
-            }
-        }
-    }
+    write_and_commit(client, ref_, from, pieces, digest, labels)
+        .await
+        .map(|_| ())
 }
 
 /// Throw away a transaction, so the next attempt starts from nothing.
