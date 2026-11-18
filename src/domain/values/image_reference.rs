@@ -115,6 +115,20 @@ impl ImageReference {
         })
     }
 
+    /// The repository, whether the reference names a tag or a digest.
+    pub fn repository(&self) -> Option<String> {
+        match self.0.split_once('@') {
+            Some((repository, _)) if !repository.is_empty() => Some(repository.to_string()),
+            Some(_) => None,
+            None => self.parts().map(|parts| parts.repository),
+        }
+    }
+
+    /// The digest a reference pins, when it pins one.
+    pub fn digest(&self) -> Option<&str> {
+        self.0.split_once('@').map(|(_, digest)| digest)
+    }
+
     /// The registry this reference names, when it names one.
     ///
     /// Without the first condition `alpine:3.23` reads as a registry
@@ -160,6 +174,26 @@ mod tests {
 
     fn parse(reference: &str) -> ImageReference {
         ImageReference::parse(reference).expect("parsed")
+    }
+
+    /// A pinned reference and a tagged one name the same repository, which
+    /// is how a node tells which of the images it holds are one service's.
+    #[test]
+    fn a_digest_and_a_tag_name_the_same_repository() {
+        let pinned = parse("acr.example:5000/nubo/app@sha256:abc");
+        let tagged = parse("acr.example:5000/nubo/app:latest");
+        assert_eq!(
+            pinned.repository().as_deref(),
+            Some("acr.example:5000/nubo/app")
+        );
+        assert_eq!(pinned.repository(), tagged.repository());
+        assert_eq!(pinned.digest(), Some("sha256:abc"));
+        assert_eq!(tagged.digest(), None);
+        assert_eq!(
+            parse("docker.io/library/nginx").repository().as_deref(),
+            Some("docker.io/library/nginx")
+        );
+        assert_eq!(parse("").repository(), None);
     }
 
     #[test]

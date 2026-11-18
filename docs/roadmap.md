@@ -568,7 +568,10 @@ would have:
 The four kinds as they were:
 
 - **Images.** Nothing garbage-collects them. 1.6 GB of containerd on a
-  20 GB test node, which the new disk card now makes visible.
+  20 GB test node, which the new disk card now makes visible. Since
+  2026-11-17 a node keeps a number per service and collects the rest
+  (`infra::deploy::surplus`) — after it found that its own unpacked
+  snapshots had never been held by anything but a container.
 - **Orphan directories.** `doctor` reports all four kinds now — data,
   config, hosts, logs — and removes none. Reporting was the right first
   step; a `doctor --clean`, or a button, is the second.

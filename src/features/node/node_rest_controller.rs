@@ -199,6 +199,44 @@ impl NodeRestController {
         Ok(crate::shell::auth::see_other(&format!("{here}#reserves")))
     }
 
+    #[post("/node/images")]
+    #[raw]
+    #[middleware(SessionMiddleware)]
+    async fn set_images_kept(&self, request: Request) -> RestResult<Response> {
+        let here = &NodeTab::Resources.path();
+        let Some(account) = signed_in(&self.auth) else {
+            return Ok(crate::shell::auth::see_other("/sign-in"));
+        };
+        let form = match crate::shell::auth::read_form(request).await {
+            Ok(form) => form,
+            Err(response) => return Ok(response),
+        };
+        let kept = match crate::shell::auth::field(&form, "kept") {
+            "" => None,
+            number => match number.parse() {
+                Ok(kept) => Some(kept),
+                Err(_) => {
+                    return Ok(crate::shell::auth::back_with_error(
+                        here,
+                        "a number of images, like 2",
+                    ))
+                }
+            },
+        };
+
+        if let Err(reason) = crate::features::node::node_user_set_images_kept::run(
+            &self.state.database,
+            &account,
+            &crate::features::node::set_images_kept_request::SetImagesKeptRequest { kept },
+        )
+        .await
+        {
+            return Ok(crate::shell::auth::back_with_error(here, &reason));
+        }
+
+        Ok(crate::shell::auth::see_other(&format!("{here}#images")))
+    }
+
     /// Who may connect to this console and to the registry under its name.
     #[post("/node/allowlists")]
     #[raw]
@@ -467,6 +505,55 @@ mod tests {
         assert!(refused.contains("error="), "{refused}");
     }
 
+    #[tokio::test]
+    async fn the_images_kept_are_set_from_the_resources_tab() {
+        let console = Console::new().await;
+        let cookie = console.signed_in().await;
+        macro_rules! save {
+            ($kept:expr) => {{
+                let response = console
+                    .harness
+                    .post("/node/images")
+                    .header("cookie", &cookie)
+                    .form(&[("kept", $kept)])
+                    .send()
+                    .await;
+                response.header("location").unwrap_or_default().to_string()
+            }};
+        }
+
+        let saved = save!("4");
+        assert!(saved.ends_with("/node/resources#images"), "{saved}");
+        assert_eq!(
+            crate::infra::node::settings::images_kept(&console.database).await,
+            Some(4)
+        );
+        let page = console
+            .harness
+            .get("/node/resources")
+            .header("cookie", &cookie)
+            .send()
+            .await
+            .body;
+        assert!(page.contains(r#"value="4""#), "{page}");
+
+        for refused in ["two", "0", "-1"] {
+            let location = save!(refused);
+            assert!(location.contains("error="), "{refused}: {location}");
+        }
+        assert_eq!(
+            crate::infra::node::settings::images_kept(&console.database).await,
+            Some(4),
+            "a refused number never reaches the row"
+        );
+
+        save!("");
+        assert_eq!(
+            crate::infra::node::settings::images_kept(&console.database).await,
+            None
+        );
+    }
+
     /// Every capability has a checkbox, because the handler writes a
     /// setting for every one of them.
     ///
@@ -684,6 +771,7 @@ mod tests {
                 ("/node/capabilities", "capabilities"),
                 ("/node/allowlists", "allowlists"),
                 ("/node/reserves", "reserves"),
+                ("/node/images", "images"),
                 ("/node/backups", "backups"),
             ] {
                 if body.contains(form) {
@@ -698,6 +786,7 @@ mod tests {
                 ("capabilities", "allows"),
                 ("allowlists", "access"),
                 ("reserves", "resources"),
+                ("images", "resources"),
                 // The tab is `backup` and what it submits to is
                 // `backups`: a GET view and a POST can share a path, but
                 // a form whose action is the page it sits on reads as a

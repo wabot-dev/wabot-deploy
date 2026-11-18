@@ -83,6 +83,27 @@ pub async fn mark_deployed(database: &SqliteDatabase, release_id: &str) -> Platf
     Ok(())
 }
 
+/// Drop a service's releases of one image, once the image is gone.
+///
+/// Never the one deployed: whatever collected the image, the row saying what
+/// runs is not a thing a tidy-up can take away.
+pub async fn forget_digest(
+    database: &SqliteDatabase,
+    service_id: &str,
+    digest: &str,
+) -> PlatformResult<usize> {
+    let (service_id, digest) = (service_id.to_string(), digest.to_string());
+    Ok(database
+        .write(move |connection| {
+            connection.execute(
+                "DELETE FROM release \
+                 WHERE \"service_id\" = ?1 AND \"digest\" = ?2 AND \"deployed_at\" IS NULL",
+                (service_id, digest),
+            )
+        })
+        .await?)
+}
+
 /// Every release for a service, newest first.
 pub async fn of_service(
     database: &SqliteDatabase,
@@ -202,6 +223,56 @@ mod tests {
 
     use super::*;
     use crate::infra::repositories::services;
+
+    #[tokio::test]
+    async fn an_image_collected_takes_its_releases_and_never_the_running_one() {
+        let (database, service_id) = service().await;
+        for (tag, digest) in [
+            ("latest", "sha256:new"),
+            ("v2", "sha256:new"),
+            ("v1", "sha256:old"),
+        ] {
+            record(
+                &database,
+                &service_id,
+                &format!("node.example/demo/web:{tag}"),
+                digest,
+                Source::Push,
+            )
+            .await
+            .expect("recorded");
+        }
+        let running = record(
+            &database,
+            &service_id,
+            "node.example/demo/web:latest",
+            "sha256:new",
+            Source::Push,
+        )
+        .await
+        .expect("the same row");
+        mark_deployed(&database, &running.id)
+            .await
+            .expect("deployed");
+
+        assert_eq!(
+            forget_digest(&database, &service_id, "sha256:old")
+                .await
+                .expect("forgot"),
+            1
+        );
+        assert_eq!(
+            forget_digest(&database, &service_id, "sha256:new")
+                .await
+                .expect("forgot"),
+            1,
+            "v2 goes and latest, which runs, stays"
+        );
+
+        let left = of_service(&database, &service_id).await.expect("list");
+        assert_eq!(left.len(), 1);
+        assert_eq!(left[0].id, running.id);
+    }
 
     /// The one marked as running, which is what every page shows —
     /// read from the list rather than from a query of its own, because

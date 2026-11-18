@@ -6,6 +6,7 @@
 
 pub mod disk;
 pub mod garage;
+pub mod images;
 pub mod mysql;
 pub mod postgres;
 pub mod presets;

@@ -236,7 +236,16 @@ pub async fn put(
     // Unpacked before anything is deployed from it. A push leaves
     // blobs; a container needs a snapshot, and the failure without
     // this reads as a corrupt image rather than a missing step.
-    if let Err(error) = crate::infra::runtime::images::unpack(&client, &pinned).await {
+    //
+    // Only what arrives under a tag. What arrives by digest is a manifest
+    // an index will list — every platform's and the attestation's — and
+    // unpacking each laid another machine's layers on this one's disk, and
+    // a snapshot unpacked is now held for as long as its image is.
+    let unpacked = match reference.starts_with("sha256:") {
+        true => Ok(()),
+        false => crate::infra::runtime::images::unpack(&client, &pinned).await,
+    };
+    if let Err(error) = unpacked {
         // Not fatal to the push: the bytes are stored and correct, and
         // a deployment can unpack later. Worth saying, because a
         // deployment that then fails would otherwise be the first
@@ -255,6 +264,16 @@ pub async fn put(
     }
 
     let released = release(state, pusher, name, reference, &digest).await?;
+
+    // On the tag, which comes last: BuildKit sends each platform's manifest
+    // by digest first, and until the index arrives to list them each reads
+    // as an image of its own.
+    if !reference.starts_with("sha256:") {
+        let (database, image) = (state.database.clone(), full.clone());
+        tokio::spawn(async move {
+            crate::infra::deploy::surplus::collect_image(&database, &image).await
+        });
+    }
 
     tracing::info!(image = %full, %digest, released, "received an image");
     Ok(Response::builder()
@@ -539,6 +558,43 @@ async fn remember(
         .map_err(internal)
 }
 
+/// Forget every tag of a repository naming an image that is gone, so a client
+/// asking for one is told it is unknown rather than served bytes nothing
+/// keeps.
+///
+/// `image` is the repository as an image record names it, host and all.
+pub(crate) async fn forget_digest(
+    database: &wabot::sqlite::SqliteDatabase,
+    image: &str,
+    digest: &str,
+) -> wabot::sqlite::SqliteResult<usize> {
+    let Some(name) = pushed_as(image) else {
+        return Ok(0);
+    };
+    let (name, digest) = (name.to_string(), digest.to_string());
+    database
+        .write(move |connection| {
+            connection.execute(
+                "DELETE FROM registry_tag WHERE \"repository\" = ?1 AND \"digest\" = ?2",
+                (name, digest),
+            )
+        })
+        .await
+}
+
+/// The name a repository was pushed under, from the one its records carry:
+/// what [`image_name`] put a host in front of.
+///
+/// The first segment, whatever it looks like. `Parts::name` asks whether it
+/// has a dot or a port, and the VM node's host is `localhost`, which has
+/// neither, so its tags outlived their images.
+fn pushed_as(image: &str) -> Option<&str> {
+    image
+        .split_once('/')
+        .map(|(_, name)| name)
+        .filter(|name| !name.is_empty())
+}
+
 fn missing() -> Response {
     Response::builder()
         .status(StatusCode::NOT_FOUND)
@@ -763,6 +819,64 @@ mod tests {
                 .unwrap()
                 .contains("sha256:also"),
             "{json}"
+        );
+    }
+
+    /// The VM node's registry is `localhost`, and `v3` went on being served
+    /// after its image was collected (2026-11-17).
+    #[tokio::test]
+    async fn a_collected_image_takes_its_tags_whatever_the_host_looks_like() {
+        use std::sync::Arc;
+
+        let database = Arc::new(crate::infra::db::open_in_memory().await.expect("open"));
+        let state = RegistryState {
+            database: database.clone(),
+            deployer: Arc::new(crate::infra::deploy::Deployer::new(
+                database.clone(),
+                &crate::infra::config::Config::default(),
+            )),
+        };
+        for (repository, tag, digest) in [
+            ("pushes/web", "v3", "sha256:old"),
+            ("pushes/web", "v2", "sha256:old"),
+            ("pushes/web", "latest", "sha256:new"),
+            ("other/pushes/web", "v3", "sha256:old"),
+            ("shop/api", "v1", "sha256:old"),
+        ] {
+            remember(&state, repository, tag, digest, 1, "application/json")
+                .await
+                .expect("remembered");
+        }
+
+        for (host, repository) in [
+            ("localhost", "pushes/web"),
+            ("node.example:443", "shop/api"),
+        ] {
+            let image = image_name(host, repository, "latest");
+            let image = image.rsplit_once(':').expect("tagged").0;
+            forget_digest(&database, image, "sha256:old")
+                .await
+                .expect("forgot");
+        }
+
+        let left: Vec<(String, String)> = database
+            .read(|connection| {
+                let mut statement = connection
+                    .prepare("SELECT \"repository\", \"tag\" FROM registry_tag ORDER BY 1, 2")?;
+                let rows = statement
+                    .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok(rows)
+            })
+            .await
+            .expect("read");
+        assert_eq!(
+            left,
+            [
+                ("other/pushes/web".to_string(), "v3".to_string()),
+                ("pushes/web".to_string(), "latest".to_string()),
+            ],
+            "a repository ending in the same name is somebody else's"
         );
     }
 

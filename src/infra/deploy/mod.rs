@@ -32,6 +32,7 @@ pub mod routing;
 pub mod standbys;
 pub mod store;
 pub mod stores;
+pub mod surplus;
 pub mod upstreams;
 
 use std::net::Ipv4Addr;
@@ -75,6 +76,10 @@ pub enum DeployError {
     Platform(#[from] PlatformError),
     #[error("{0}")]
     Io(#[from] std::io::Error),
+    /// The image could not be fetched, and nothing was touched yet: a copy
+    /// that was running still is.
+    #[error("the image could not be fetched: {0}")]
+    NotFetched(String),
     /// Something the caller asked for that this node will not do — a
     /// service with nothing placed here, and nothing to deploy.
     #[error("{0}")]
@@ -756,6 +761,11 @@ impl Deployer {
         // node runs for the service.
         self.tell_holders(project, service, Holding::AsPlaced).await;
 
+        if first_address.is_some() {
+            let (database, image) = (self.database.clone(), service.image.clone());
+            tokio::spawn(async move { surplus::collect_image(&database, &image).await });
+        }
+
         match (first_address, failure) {
             (Some(address), _) => Ok(Some(address)),
             (None, Some(error)) => Err(error),
@@ -789,8 +799,23 @@ impl Deployer {
             Err(error) => {
                 let message = error.to_string();
                 tracing::error!(service = %service.slug, slot = replica.slot, %message, "deploy failed");
-                replicas::set_address(&self.database, &replica.id, None).await?;
-                replicas::set_last_error(&self.database, &replica.id, Some(&message)).await?;
+                let serving = matches!(error, DeployError::NotFetched(_))
+                    && matches!(
+                        self.observe(project, service, replica).await,
+                        Observed::Running { .. }
+                    );
+                match serving {
+                    true => {
+                        let message = crate::domain::policies::images::kept_running(&message);
+                        replicas::set_last_error(&self.database, &replica.id, Some(&message))
+                            .await?;
+                    }
+                    false => {
+                        replicas::set_address(&self.database, &replica.id, None).await?;
+                        replicas::set_last_error(&self.database, &replica.id, Some(&message))
+                            .await?;
+                    }
+                }
             }
         }
 
@@ -1106,6 +1131,35 @@ impl Deployer {
         let client = Containerd::connect().await?;
         let id = replica.container_id(&project.slug, &service.slug);
 
+        let credential = crate::infra::repositories::registry_credentials::for_reference(
+            &self.database,
+            &service.image,
+        )
+        .await;
+
+        // Before the running copy is taken down: a pull is minutes, and the
+        // copy went on serving none of them. `nubo-testing` was down for the
+        // whole sixteen minutes of a 1 GB pull on node-l1 (2026-11-17).
+        //
+        // And the intent is asked again after it, because a stop that
+        // arrives during the fetch finds nothing new here yet to take down:
+        // `nubo-testing` was stopped six minutes into a pull on node-l1, and
+        // the pull then started it (Jorge, 2026-11-14).
+        if let Err(error) =
+            crate::infra::runtime::images::ensure(&client, &service.image, credential.as_ref())
+                .await
+        {
+            return Err(DeployError::NotFetched(error.to_string()));
+        }
+        if self.not_wanted(service).await? {
+            tracing::info!(
+                service = %service.slug,
+                slot = replica.slot,
+                "stopped while its image was fetched; not started"
+            );
+            return Ok(None);
+        }
+
         let index =
             crate::infra::repositories::projects::ensure_network_index(&self.database, &project.id)
                 .await?;
@@ -1280,15 +1334,6 @@ impl Deployer {
             shm_size: prepared.as_ref().and_then(|prepared| prepared.shm_size),
         };
 
-        // What this node presents to the registry the image lives on,
-        // if it has been given anything. `None` is the ordinary case —
-        // an image from a registry that serves anybody.
-        let credential = crate::infra::repositories::registry_credentials::for_reference(
-            &self.database,
-            &service.image,
-        )
-        .await;
-
         // The certificate, before the server that reads it, covering
         // every name a client can connect to and still have `verify-full`
         // pass. From `certificate_names`, the one list `/etc/hosts` and
@@ -1394,28 +1439,6 @@ impl Deployer {
             true => logs::stamping_uri(path),
             false => logs::uri(path),
         });
-
-        // The fetch is the long part, and a stop that arrives during it
-        // finds nothing here yet to take down. So the image comes first and
-        // the intent is asked again after it: `nubo-testing` was stopped
-        // six minutes into a pull on node-l1, and the pull then started it
-        // (Jorge, 2026-11-14).
-        if let Err(error) =
-            crate::infra::runtime::images::ensure(&client, &service.image, credential.as_ref())
-                .await
-        {
-            network::detach(&net, &id).await;
-            return Err(error.into());
-        }
-        if self.not_wanted(service).await? {
-            network::detach(&net, &id).await;
-            tracing::info!(
-                service = %service.slug,
-                slot = replica.slot,
-                "stopped while its image was fetched; not started"
-            );
-            return Ok(None);
-        }
 
         match containers::run(
             &client,
@@ -5426,6 +5449,41 @@ fn replication_sources(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A deployment fetches its image before it takes down the copy that is
+    /// running, and refuses without touching it when the fetch fails.
+    ///
+    /// Read off the source, because nothing in a test can reach containerd.
+    /// The container was removed first, so `nubo-testing` was down for the
+    /// whole of a sixteen-minute pull on node-l1 (2026-11-17).
+    #[test]
+    fn a_deployment_fetches_its_image_before_it_takes_down_the_running_copy() {
+        let source = include_str!("mod.rs");
+        let body = source
+            .split("async fn try_deploy(")
+            .nth(1)
+            .expect("the deployment of one copy")
+            .split("\n    }\n")
+            .next()
+            .expect("its body");
+
+        let fetched = body.find("images::ensure(").expect("the fetch");
+        let refused = body.find("NotFetched").expect("the fetch's own refusal");
+        let removed = body.find("containers::remove(").expect("the teardown");
+        assert!(
+            fetched < removed,
+            "the running copy is removed before the image is fetched"
+        );
+        assert!(
+            refused < removed,
+            "a failed fetch reaches the teardown before it refuses"
+        );
+        assert_eq!(
+            body.matches("images::ensure(").count(),
+            1,
+            "fetched once, before anything"
+        );
+    }
 
     /// A database with no read replica can still be backed up.
     ///

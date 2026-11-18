@@ -8,7 +8,8 @@ use std::collections::HashMap;
 
 use containerd_client::services::v1::content_client::ContentClient;
 use containerd_client::services::v1::{
-    AbortRequest, InfoRequest, ReadContentRequest, StatusRequest, WriteAction, WriteContentRequest,
+    AbortRequest, Info, InfoRequest, ReadContentRequest, StatusRequest, UpdateRequest, WriteAction,
+    WriteContentRequest,
 };
 use containerd_client::types::Descriptor;
 
@@ -352,6 +353,27 @@ pub async fn abort(client: &Containerd, ref_: &str) -> ClientResult<()> {
             source,
         }),
     }
+}
+
+/// Set one label on a blob, leaving its others as they are.
+pub async fn label(client: &Containerd, digest: &str, key: &str, value: &str) -> ClientResult<()> {
+    ContentClient::new(client.channel())
+        .update(client.request(UpdateRequest {
+            info: Some(Info {
+                digest: digest.to_string(),
+                labels: HashMap::from([(key.to_string(), value.to_string())]),
+                ..Default::default()
+            }),
+            update_mask: Some(prost_types::FieldMask {
+                paths: vec![format!("labels.{key}")],
+            }),
+        }))
+        .await
+        .map(|_| ())
+        .map_err(|source| ClientError::Call {
+            call: "Content.Update",
+            source,
+        })
 }
 
 /// The most one message carries, well under containerd's 16 MB ceiling.

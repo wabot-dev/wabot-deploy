@@ -133,6 +133,7 @@ pub enum Panel {
         snapshot: Snapshot,
         reserves: (Option<u64>, Option<u32>),
         cores: u32,
+        images_kept: Option<usize>,
     },
     Backup {
         plan: Plan,
@@ -268,8 +269,9 @@ pub fn render<'a>(page: &'a NodeSettings<'a>) -> impl Renderable + 'a {
                 (own_names_component::names_card(dns))
                 (held_zones_component::held_card(dns))
             }
-            Panel::Resources { snapshot, reserves, cores } => {
+            Panel::Resources { snapshot, reserves, cores, images_kept } => {
                 (node_settings_cards::reserves_card(snapshot, *reserves, *cores))
+                (crate::features::node::images_kept_component::images_kept_card(*images_kept))
             }
             Panel::Backup {
                 plan, attempt, taken, s3, archiving, default_destination, config_path,

@@ -488,7 +488,15 @@ happened:
 
 - Reconcile checks whether a container runs, not whether its port
   mappings match the rows.
-- No image garbage collection.
+- Images are collected per service, by number (`infra::deploy::surplus`,
+  two by default, on Node › Resources): the one running and the newest
+  always stay, and the rest go with their releases and their registry
+  tags. Not collected: a repository no service points at any more — what
+  an image field that changed repositories leaves — nor a managed
+  engine's; `wabot-deploy clean` shows them. A push holds its bytes under
+  its lease for a day, so a collected image gives its disk back once that
+  lease has run out: a pass every hour has containerd collect, by deleting
+  an empty lease with `sync`, because containerd has no call for it.
 - The updater does not rewrite the service file, neither the systemd unit
   nor the OpenRC script; a release that changes either has to say so in
   its notes. `install` rewrites it, and restarts a node whose process

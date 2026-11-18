@@ -252,6 +252,7 @@ impl NodeUiController {
                     crate::infra::node::settings::cpu_reserve(&self.state.database).await,
                 ),
                 cores: crate::infra::node::cpu::cores(),
+                images_kept: crate::infra::node::settings::images_kept(&self.state.database).await,
             },
             NodeTab::Backup => Panel::Backup {
                 plan: crate::infra::backup::plan::plan(&self.state.database).await,

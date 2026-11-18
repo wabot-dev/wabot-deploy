@@ -131,9 +131,19 @@ impl Replica {
                 .is_some_and(crate::domain::policies::restarts::is_note)
     }
 
+    /// Whether the image this copy was given could not be fetched, and the
+    /// one it was running before still is.
+    pub fn kept_the_previous(&self) -> bool {
+        self.address.is_some()
+            && self
+                .last_error
+                .as_deref()
+                .is_some_and(crate::domain::policies::images::is_kept_running)
+    }
+
     /// What went wrong with this copy, if something is wrong now.
     pub fn failure(&self) -> Option<&str> {
-        match self.started_again() {
+        match self.started_again() || self.kept_the_previous() {
             true => None,
             false => self.last_error.as_deref(),
         }

@@ -575,6 +575,43 @@ mod tests {
         assert_eq!(copy(None).failure(), Some(note.as_str()));
     }
 
+    /// The VM's copy said `Failed` while it served, because the image it
+    /// was moved to did not exist and the one it ran still did (2026-11-17).
+    #[test]
+    fn a_copy_still_running_the_image_before_is_not_failed() {
+        let note = crate::domain::policies::images::kept_running(
+            "the image could not be fetched: not found",
+        );
+        let copy = |address: Option<&str>| crate::domain::entities::replica::Replica {
+            id: "rp-1".into(),
+            service_id: "svc-1".into(),
+            node_id: None,
+            slot: 1,
+            address: address.map(str::to_string),
+            overlay_port: None,
+            overlay_ports: Default::default(),
+            last_error: Some(note.clone()),
+            evicted_at: None,
+            reserved_host: None,
+            memory_bytes: None,
+            disk_bytes: None,
+            cpu_millicores: None,
+            following: None,
+            wal_held: None,
+            placed_by: None,
+            placed_note: None,
+        };
+
+        let up = replica_cell(&copy(Some("10.42.1.8")), false, false, false);
+        assert_eq!(up.word, "Running the image before");
+        assert!(!up.badge.contains("danger"), "{}", up.badge);
+        assert_eq!(up.detail, note, "and it says why");
+        assert_eq!(copy(Some("10.42.1.8")).failure(), None);
+
+        let down = replica_cell(&copy(None), false, false, false);
+        assert_eq!(down.word, "Failed", "with no address nothing is running");
+    }
+
     /// During a deployment containerd's answer is a half-truth — the
     /// old container is gone and the new one is not up — so "absent"
     /// there reads as a fault. The job is what knows.

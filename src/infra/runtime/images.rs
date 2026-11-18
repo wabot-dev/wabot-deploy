@@ -190,6 +190,17 @@ pub async fn unpack(client: &Containerd, reference: &str) -> ClientResult<()> {
         )));
     }
 
+    // A committed snapshot nothing names is the collector's, and on a node
+    // with a database it runs once a minute — the same collector that took a
+    // push's first layers before its manifest arrived (node-0, 2026-11-14).
+    // So a layer could go between its commit and the next one's prepare, and
+    // an image unpacked at push time was bare again by its deployment. What
+    // containerd's own unpacker does: a lease while it works, and the config
+    // naming the top snapshot once it is done. The lease only when a layer
+    // is missing: every deployment asks, and almost every answer is "all
+    // there", which made thirty leases an hour on the VM for nothing.
+    let mut held: Option<Containerd> = None;
+
     for (index, layer) in manifest.layers().iter().enumerate() {
         let chain = super::snapshots::chain_id(&diffs[..=index])
             .ok_or_else(|| ClientError::Other("a layer with no chain id".into()))?;
@@ -200,6 +211,22 @@ pub async fn unpack(client: &Containerd, reference: &str) -> ClientResult<()> {
         if super::snapshots::exists(client, &chain).await? {
             continue;
         }
+
+        let client = match &held {
+            Some(leased) => leased,
+            None => {
+                let lease = format!(
+                    "wd-unpack-{}",
+                    std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_nanos()
+                );
+                super::leases::hold(client, &lease, std::time::Duration::from_secs(60 * 60))
+                    .await?;
+                held.insert(client.clone().leased(&lease))
+            }
+        };
 
         let parent = if index == 0 {
             String::new()
@@ -229,6 +256,19 @@ pub async fn unpack(client: &Containerd, reference: &str) -> ClientResult<()> {
             })?;
 
         super::snapshots::commit(client, &chain, &key).await?;
+    }
+
+    if let Some(top) = super::snapshots::chain_id(&diffs) {
+        super::content::label(
+            client,
+            manifest.config().digest().as_ref(),
+            &format!(
+                "containerd.io/gc.ref.snapshot.{}",
+                super::snapshots::SNAPSHOTTER
+            ),
+            &top,
+        )
+        .await?;
     }
 
     tracing::info!(
@@ -323,6 +363,16 @@ pub async fn all(client: &Containerd) -> ClientResult<Vec<Held>> {
         .into_iter()
         .map(|image| Held {
             size: image.target.as_ref().map(|target| target.size).unwrap_or(0),
+            digest: image
+                .target
+                .as_ref()
+                .map(|target| target.digest.clone())
+                .unwrap_or_default(),
+            updated_at: image
+                .updated_at
+                .or(image.created_at)
+                .map(|at| at.seconds * 1_000 + i64::from(at.nanos) / 1_000_000)
+                .unwrap_or(0),
             reference: image.name,
         })
         .collect())
@@ -333,6 +383,43 @@ pub async fn all(client: &Containerd) -> ClientResult<Vec<Held>> {
 pub struct Held {
     pub reference: String,
     pub size: i64,
+    pub digest: String,
+    /// When the record last changed, in milliseconds.
+    pub updated_at: i64,
+}
+
+/// The manifests the blob at `digest` lists, when it is an index.
+///
+/// One level and none of them read: a node that pulled a multi-platform
+/// index holds only its own platform's manifest, and opening the others
+/// would fail on every one.
+pub async fn listed(client: &Containerd, digest: &str, size: i64) -> Vec<String> {
+    let descriptor = containerd_client::types::Descriptor {
+        digest: digest.to_string(),
+        size,
+        ..Default::default()
+    };
+    let Ok(bytes) = super::content::read(client, &descriptor).await else {
+        return Vec::new();
+    };
+    #[derive(serde::Deserialize)]
+    struct Index {
+        #[serde(default)]
+        manifests: Vec<Listed>,
+    }
+    #[derive(serde::Deserialize)]
+    struct Listed {
+        digest: String,
+    }
+    serde_json::from_slice::<Index>(&bytes)
+        .map(|index| {
+            index
+                .manifests
+                .into_iter()
+                .map(|listed| listed.digest)
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 impl Held {

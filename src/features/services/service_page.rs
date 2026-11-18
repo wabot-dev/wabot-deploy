@@ -2,7 +2,7 @@ use hypertext::prelude::*;
 
 use crate::domain::entities::database::Database;
 use crate::domain::entities::project::Project;
-use crate::domain::entities::release::Release;
+use crate::domain::entities::release::{Release, Version};
 use crate::domain::entities::replica::Replica;
 use crate::domain::entities::service::{DesiredState, Service, EVERY_TAG};
 use crate::domain::entities::volume::Volume;
@@ -80,7 +80,7 @@ pub struct ServiceDetail<'a> {
 
     pub engine: Option<Engine<'a>>,
 
-    pub releases: &'a [Release],
+    pub versions: &'a [Version],
     pub push: Option<&'a Push>,
 }
 
@@ -256,7 +256,7 @@ pub fn render<'a>(page: &'a ServiceDetail<'a>) -> impl Renderable + 'a {
                         }
                     }
                 </div>
-                @if page.releases.is_empty() {
+                @if page.versions.is_empty() {
                     <p class="tile-detail">(t("Nothing has been pushed yet. Create a push token on the \
                          project page and push an image to this repository."))</p>
                 } @else {
@@ -270,7 +270,8 @@ pub fn render<'a>(page: &'a ServiceDetail<'a>) -> impl Renderable + 'a {
                             </tr>
                         </thead>
                         <tbody>
-                            @for release in page.releases {
+                            @for version in page.versions {
+                                @let release = version.to_deploy(&service.image);
                                 <tr>
                                     // **The tag first, the digest under
                                     // it.** This showed only the short
@@ -290,8 +291,10 @@ pub fn render<'a>(page: &'a ServiceDetail<'a>) -> impl Renderable + 'a {
                                     // thing is in the title, with the
                                     // digest.
                                     <td class="mono"
-                                        title=(format!("{}\n{}", release.reference, release.digest))>
-                                        (release.tag())
+                                        title=(format!("{}\n{}", version.releases().iter()
+                                            .map(|release| release.reference.as_str())
+                                            .collect::<Vec<_>>().join("\n"), version.digest()))>
+                                        (version.tags().join(" · "))
                                         // A block, because `span` put the
                                         // digest *beside* the tag with
                                         // nothing between them —
@@ -304,11 +307,11 @@ pub fn render<'a>(page: &'a ServiceDetail<'a>) -> impl Renderable + 'a {
                                         // on an inline element styled the
                                         // colour and left the layout to
                                         // the default. Reported by Jorge.
-                                        <div class="tile-detail">(release.short_digest())</div>
+                                        <div class="tile-detail">(version.short_digest())</div>
                                     </td>
-                                    <td class="tile-detail">(release.source.label())</td>
+                                    <td class="tile-detail">(version.source().label())</td>
                                     <td>
-                                        @if release.deployed_at.is_some() {
+                                        @if version.running() {
                                             <span class="badge badge-success">
                                                 <span class="dot dot-success"></span>
                                                 (t("Running"))
@@ -316,7 +319,7 @@ pub fn render<'a>(page: &'a ServiceDetail<'a>) -> impl Renderable + 'a {
                                         }
                                     </td>
                                     <td>
-                                        @if page.allowed.may_deploy() && release.deployed_at.is_none() {
+                                        @if page.allowed.may_deploy() && !version.running() {
                                             <form method="post" action=(page.deploy_path(release))>
                                                 <button class="btn btn-secondary btn-sm"
                                                         type="submit">(t("Deploy this"))</button>

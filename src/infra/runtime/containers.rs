@@ -24,7 +24,7 @@ use containerd_client::services::v1::containers_client::ContainersClient;
 use containerd_client::services::v1::tasks_client::TasksClient;
 use containerd_client::services::v1::{
     Container, CreateContainerRequest, CreateTaskRequest, DeleteContainerRequest,
-    DeleteTaskRequest, GetRequest, KillRequest, StartRequest,
+    DeleteTaskRequest, GetRequest, KillRequest, ListContainersRequest, StartRequest,
 };
 
 use super::client::{ClientError, ClientResult, Containerd, RuncOptions, RUNTIME};
@@ -329,6 +329,23 @@ async fn kill(client: &Containerd, id: &str, signal: u32) -> ClientResult<()> {
             source,
         }),
     }
+}
+
+/// The image every container here was made from, running or not.
+pub async fn images(client: &Containerd) -> ClientResult<Vec<String>> {
+    let response = ContainersClient::new(client.channel())
+        .list(client.request(ListContainersRequest { filters: vec![] }))
+        .await
+        .map_err(|source| ClientError::Call {
+            call: "Containers.List",
+            source,
+        })?;
+    Ok(response
+        .into_inner()
+        .containers
+        .into_iter()
+        .map(|container| container.image)
+        .collect())
 }
 
 /// Remove a container and everything it holds.

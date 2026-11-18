@@ -139,6 +139,15 @@ pub fn replica_cell(
             detail: replica.last_error.clone().unwrap_or_default(),
         };
     }
+    if replica.kept_the_previous() {
+        return ReplicaCell {
+            badge: "badge badge-warning",
+            dot: "dot dot-warning",
+            word: "Running the image before".into(),
+            cpu: String::new(),
+            detail: replica.last_error.clone().unwrap_or_default(),
+        };
+    }
     if let Some(failure) = replica.failure() {
         return ReplicaCell {
             badge: "badge badge-danger",

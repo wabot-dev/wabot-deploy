@@ -180,7 +180,9 @@ impl ServiceUiController {
         };
 
         let ports = ports::of_service(&self.state.database, &service.id).await?;
-        let releases = releases::of_service(&self.state.database, &service.id).await?;
+        let versions = crate::domain::entities::release::Release::versions(
+            &releases::of_service(&self.state.database, &service.id).await?,
+        );
 
         // Whether each HTTPS name has a certificate yet. Asked here
         // rather than assumed: the certificate arrives seconds after
@@ -495,7 +497,7 @@ impl ServiceUiController {
                     restorable,
                     held_on: held_on.as_deref(),
                 }),
-            releases: &releases,
+            versions: &versions,
             push: push.as_ref(),
         };
         // The account's language, around the render and no wider:

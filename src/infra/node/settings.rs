@@ -183,6 +183,27 @@ pub async fn set_cpu_reserve(
     .await
 }
 
+const IMAGES_KEPT: &str = "images.kept";
+
+/// How many images of each service this node keeps, when the operator has
+/// said. `None` is `images::KEPT_BY_DEFAULT`.
+pub async fn images_kept(database: &SqliteDatabase) -> Option<usize> {
+    match read(database, IMAGES_KEPT).await {
+        Ok(Some(value)) => value.trim().parse().ok().filter(|kept| *kept > 0),
+        _ => None,
+    }
+}
+
+/// Set it, or clear it back to the default with `None`.
+pub async fn set_images_kept(database: &SqliteDatabase, kept: Option<usize>) -> SqliteResult<()> {
+    write(
+        database,
+        IMAGES_KEPT,
+        &kept.map(|kept| kept.to_string()).unwrap_or_default(),
+    )
+    .await
+}
+
 /// What the last certificate attempt said, if it failed.
 pub async fn acme_error(database: &SqliteDatabase) -> Option<String> {
     match read(database, ACME_ERROR).await {

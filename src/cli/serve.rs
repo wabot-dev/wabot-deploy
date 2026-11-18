@@ -223,6 +223,7 @@ pub async fn run(config: Config) -> anyhow::Result<i32> {
         // few seconds instead of not answering at all.
         .service_with_cancel("reconcile", {
             let reconciler = deployer.clone();
+            let database = database.clone();
             move |cancel| async move {
                 tokio::select! {
                     _ = cancel.cancelled() => return Ok::<(), anyhow::Error>(()),
@@ -232,6 +233,11 @@ pub async fn run(config: Config) -> anyhow::Result<i32> {
                         Err(error) => tracing::warn!(%error, "could not reconcile services"),
                     }
                 }
+                // After, so every copy the boot brought back is in use.
+                tokio::select! {
+                    _ = cancel.cancelled() => return Ok::<(), anyhow::Error>(()),
+                    _ = crate::infra::deploy::surplus::sweep(&database) => {}
+                }
 
                 // Then wait, rather than return. A service that ends takes
                 // the process with it — the runner reads it as the system
@@ -239,6 +245,24 @@ pub async fn run(config: Config) -> anyhow::Result<i32> {
                 // down the moment it finished, seconds after it started.
                 cancel.cancelled().await;
                 Ok::<(), anyhow::Error>(())
+            }
+        })
+        // Images, hourly as well as after every deployment and push: a pushed
+        // image's bytes are held for a day by its lease, so its disk comes
+        // back at an hour nothing else is happening.
+        .service_with_cancel("images", {
+            let database = database.clone();
+            move |cancel| async move {
+                loop {
+                    tokio::select! {
+                        _ = cancel.cancelled() => return Ok::<(), anyhow::Error>(()),
+                        _ = tokio::time::sleep(std::time::Duration::from_secs(60 * 60)) => {}
+                    }
+                    tokio::select! {
+                        _ = cancel.cancelled() => return Ok::<(), anyhow::Error>(()),
+                        _ = crate::infra::deploy::surplus::sweep(&database) => {}
+                    }
+                }
             }
         })
         // The bound on what containers write.

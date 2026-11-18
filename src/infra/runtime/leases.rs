@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::time::Duration;
 
 use containerd_client::services::v1::leases_client::LeasesClient;
-use containerd_client::services::v1::CreateRequest;
+use containerd_client::services::v1::{CreateRequest, DeleteRequest};
 use time::OffsetDateTime;
 
 use super::client::{ClientError, ClientResult, Containerd};
@@ -29,6 +29,28 @@ pub async fn hold(client: &Containerd, id: &str, held_for: Duration) -> ClientRe
             source,
         }),
     }
+}
+
+/// Have the collector run now, and wait for it.
+///
+/// containerd has no call for that, and a lease deleted with `sync` is the
+/// door its own clients use: an empty one, made to be deleted. Without it,
+/// what an expired lease was holding waits for whatever runs the collector
+/// next, and on a quiet node that is nothing anybody can name.
+pub async fn collect(client: &Containerd) -> ClientResult<()> {
+    let id = format!(
+        "wd-collect-{}",
+        OffsetDateTime::now_utc().unix_timestamp_nanos()
+    );
+    hold(client, &id, Duration::from_secs(60)).await?;
+    LeasesClient::new(client.channel())
+        .delete(client.request(DeleteRequest { id, sync: true }))
+        .await
+        .map(|_| ())
+        .map_err(|source| ClientError::Call {
+            call: "Leases.Delete",
+            source,
+        })
 }
 
 fn expiring(at: OffsetDateTime) -> HashMap<String, String> {

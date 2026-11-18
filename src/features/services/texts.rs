@@ -107,6 +107,7 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
     ("Risk: the reader is between the container and its log. If it stops reading, the container blocks on its next write. It drops lines rather than stopping, which is the whole reason this is offered at all — but it is why the default is off.", "Riesgo: el lector queda entre el contenedor y su log. Si deja de leer, el contenedor se bloquea en su siguiente escritura. Descarta líneas antes que pararse, que es la razón por la que esto se ofrece — y también por la que viene apagado."),
     ("Running elsewhere", "Corriendo en otro nodo"),
     ("Running here", "Corriendo aquí"),
+    ("Running the image before", "Corre la imagen anterior"),
     ("Save environment", "Guardar entorno"),
     ("Save image", "Guardar imagen"),
     ("Save placement", "Guardar colocación"),

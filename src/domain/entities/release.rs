@@ -101,6 +101,75 @@ impl Release {
             .iter()
             .find(|release| release.deployed_at.is_some() && release.reference == image)
     }
+
+    /// The releases grouped by the image they are, in the order given.
+    pub fn versions(releases: &[Release]) -> Vec<Version> {
+        let mut versions: Vec<Version> = Vec::new();
+        for release in releases {
+            match versions
+                .iter_mut()
+                .find(|version| version.digest() == release.digest)
+            {
+                Some(version) => version.releases.push(release.clone()),
+                None => versions.push(Version {
+                    releases: vec![release.clone()],
+                }),
+            }
+        }
+        versions
+    }
+}
+
+/// One image of a service, under however many tags it arrived.
+///
+/// A build pushed as `latest` and as its run's own name is two releases and
+/// one image, and the list of versions showed it twice.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Version {
+    releases: Vec<Release>,
+}
+
+impl Version {
+    pub fn releases(&self) -> &[Release] {
+        &self.releases
+    }
+
+    pub fn digest(&self) -> &str {
+        &self.releases[0].digest
+    }
+
+    pub fn short_digest(&self) -> String {
+        self.releases[0].short_digest()
+    }
+
+    pub fn tags(&self) -> Vec<&str> {
+        let mut tags: Vec<&str> = Vec::new();
+        for release in &self.releases {
+            if !tags.contains(&release.tag()) {
+                tags.push(release.tag());
+            }
+        }
+        tags
+    }
+
+    pub fn source(&self) -> Source {
+        self.releases[0].source
+    }
+
+    pub fn running(&self) -> bool {
+        self.releases
+            .iter()
+            .any(|release| release.deployed_at.is_some())
+    }
+
+    /// The release its Deploy button sends: the one under the reference the
+    /// service watches, so the next restart finds it current.
+    pub fn to_deploy(&self, image: &str) -> &Release {
+        self.releases
+            .iter()
+            .find(|release| release.reference == image)
+            .unwrap_or(&self.releases[0])
+    }
 }
 
 #[cfg(test)]
@@ -135,6 +204,41 @@ mod tests {
         let releases = [release("old", "hub.example/app:latest", Some(1))];
         assert!(Release::current(&releases, "docker.io/library/nginx:alpine").is_none());
         assert!(Release::current(&releases, "hub.example/app:v2").is_none());
+    }
+
+    /// Jorge's CI pushes each build of `nubo-testing` as `latest` and as the
+    /// tag it ran for, `testing-20261117-2`: one digest, two rows, and only
+    /// the row under the deployed tag could say Running (2026-11-17).
+    #[test]
+    fn one_image_under_two_tags_is_one_version() {
+        let latest = release("b", "hub.example/app:latest", Some(2));
+        let named = release("b", "hub.example/app:testing-2", None);
+        let older = release("a", "hub.example/app:testing-1", None);
+
+        let versions = Release::versions(&[named, latest, older]);
+        assert_eq!(versions.len(), 2);
+        assert_eq!(versions[0].digest(), "sha256:b");
+        assert_eq!(versions[0].tags(), ["testing-2", "latest"]);
+        assert!(versions[0].running(), "running under either tag");
+        assert_eq!(versions[1].tags(), ["testing-1"]);
+        assert!(!versions[1].running());
+    }
+
+    #[test]
+    fn a_version_deploys_under_the_tag_the_service_watches() {
+        let versions = Release::versions(&[
+            release("b", "hub.example/app:testing-2", None),
+            release("b", "hub.example/app:latest", None),
+        ]);
+        assert_eq!(
+            versions[0].to_deploy("hub.example/app:latest").reference,
+            "hub.example/app:latest"
+        );
+        assert_eq!(
+            versions[0].to_deploy("hub.example/app:v9").reference,
+            "hub.example/app:testing-2",
+            "the newest when it watches none of them"
+        );
     }
 
     #[test]
