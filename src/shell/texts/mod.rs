@@ -262,6 +262,9 @@ mod tests {
         // match it.
         "DNS",
         "Endpoint",
+        // Docker's word, and the field's hint names `--entrypoint`: the one
+        // somebody searches for is this one, in either language.
+        "Entrypoint",
         "Error: ",
         "General",
         // Two protocols, their pair, and an authority's name. A terminal

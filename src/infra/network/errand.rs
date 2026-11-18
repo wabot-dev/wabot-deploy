@@ -244,6 +244,16 @@ pub struct Host {
     /// organisation's budget wherever it runs.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub disk_limit: Option<u64>,
+    /// What the copy runs, when the owner chose rather than the image.
+    ///
+    /// Words, already split, so the far node never splits a line itself. A
+    /// node older than [`COMMANDS_SINCE`] ignores them and runs the image's
+    /// own, as it did before they existed; the form names those nodes rather
+    /// than leave it to be found.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub entrypoint: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub command: Option<Vec<String>>,
 }
 
 fn one_slot() -> Vec<u32> {
@@ -346,6 +356,13 @@ pub fn reads_allowlists(version: Option<&str>) -> bool {
 /// unknown version taken for one that cannot, for the reason above.
 pub fn knows_valkey(version: Option<&str>) -> bool {
     at_least(version, VALKEY_SINCE)
+}
+
+/// The first release that runs [`Host::entrypoint`] and [`Host::command`].
+pub const COMMANDS_SINCE: &str = "0.41.0";
+
+pub fn runs_chosen_commands(version: Option<&str>) -> bool {
+    at_least(version, COMMANDS_SINCE)
 }
 
 fn at_least(version: Option<&str>, since: &str) -> bool {

@@ -7,6 +7,7 @@ use wabot::sqlite::SqliteDatabase;
 
 use crate::domain::entities::service::{DesiredState, Kind, Service};
 use crate::domain::errors::{PlatformError, PlatformResult};
+use crate::domain::values::command_line::CommandLine;
 use crate::domain::values::image_reference::ImageReference;
 use crate::infra::clock::now_ms;
 
@@ -25,7 +26,7 @@ use crate::infra::clock::now_ms;
 const COLUMNS: &str = "\"id\", \"project_id\", \"name\", \"slug\", \"image\", \"env\", \
      \"desired_state\", \"last_error\", \"address\", \"track_tag\", \"auto_deploy\", \
      \"origin_node_id\", \"memory_limit\", \"kind\", \"cpu_millicores\", \
-     \"log_timestamps\", \"log_budget\", \"disk_limit\"";
+     \"log_timestamps\", \"log_budget\", \"disk_limit\", \"entrypoint\", \"command\"";
 pub async fn in_project(
     database: &SqliteDatabase,
     project_id: &str,
@@ -95,7 +96,40 @@ fn decode(row: &wabot::sqlite::rusqlite::Row<'_>) -> wabot::sqlite::rusqlite::Re
         log_timestamps: row.get::<_, i64>(15)? != 0,
         log_budget: row.get::<_, Option<i64>>(16)?.map(|bytes| bytes as u64),
         disk_limit: row.get::<_, Option<i64>>(17)?.map(|bytes| bytes as u64),
+        entrypoint: command_line(row.get(18)?),
+        command: command_line(row.get(19)?),
     })
+}
+
+/// A stored command that no longer reads is dropped rather than failing
+/// the row, for the reason `env` is: the service still lists, and runs
+/// what its image says.
+fn command_line(stored: Option<String>) -> Option<CommandLine> {
+    let words: Vec<String> = serde_json::from_str(&stored?).ok()?;
+    CommandLine::from_words(words).ok()
+}
+
+pub async fn set_process(
+    database: &SqliteDatabase,
+    service_id: &str,
+    entrypoint: Option<&CommandLine>,
+    command: Option<&CommandLine>,
+) -> PlatformResult<()> {
+    let stored = |line: Option<&CommandLine>| {
+        line.map(|line| serde_json::to_string(line.words()).unwrap_or_default())
+    };
+    let (id, entrypoint, command) = (service_id.to_string(), stored(entrypoint), stored(command));
+    database
+        .write(move |connection| {
+            connection.execute(
+                "UPDATE service SET \"entrypoint\" = ?2, \"command\" = ?3, \"updated_at\" = ?4 \
+                 WHERE \"id\" = ?1",
+                (id, entrypoint, command, now_ms()),
+            )?;
+            Ok(())
+        })
+        .await?;
+    Ok(())
 }
 
 #[allow(dead_code)]
@@ -589,6 +623,8 @@ mod tests {
             cpu_millicores: None,
             disk_limit: None,
             log_timestamps: false,
+            entrypoint: None,
+            command: None,
             kind: Kind::Container,
         };
 

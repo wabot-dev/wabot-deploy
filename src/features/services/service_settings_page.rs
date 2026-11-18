@@ -185,6 +185,9 @@ pub enum Panel {
         /// Where the push tokens are, which is the project's page and not
         /// this one.
         project_settings: String,
+        /// The nodes holding a copy whose version runs the image's own
+        /// command whatever this one says.
+        ignored_by: Vec<String>,
     },
     Logs,
     Access {
@@ -309,7 +312,7 @@ pub fn render<'a>(page: &'a ServiceSettings<'a>) -> impl Renderable + 'a {
                     (database_cards_component::published_card(&actions.2, *host_port, name))
                 }
             }
-            Panel::Image { push, project_settings } => {
+            Panel::Image { push, project_settings, ignored_by } => {
                 // **The image first, then what happens on a push.** The
                 // tracking form used to be above, so the tab opened on a
                 // rule about pushes before saying what the service runs.
@@ -330,6 +333,39 @@ pub fn render<'a>(page: &'a ServiceSettings<'a>) -> impl Renderable + 'a {
                              instead."))</p>
                         <div class="actions">
                             <button type="submit">(t("Save image"))</button>
+                        </div>
+                    </form>
+                </section>
+
+                <section class="stack" id="process">
+                    <p class="card-label">(t("Command"))</p>
+                    <form method="post" action=(format!("{base}/process")) class="card stack">
+                        <label for="service-command">(t("Command"))</label>
+                        <input id="service-command" name="command" type="text" autocomplete="off"
+                               class="mono" placeholder=(t("the image's own"))
+                               value=(service.command.as_ref().map(ToString::to_string).unwrap_or_default())>
+                        <p class="field-hint">(t("Replaces the image's CMD and keeps its ENTRYPOINT, \
+                             the way docker run does with words after the image."))</p>
+                        <label for="service-entrypoint">(t("Entrypoint"))</label>
+                        <input id="service-entrypoint" name="entrypoint" type="text" autocomplete="off"
+                               class="mono" placeholder=(t("the image's own"))
+                               value=(service.entrypoint.as_ref().map(ToString::to_string).unwrap_or_default())>
+                        <p class="field-hint">(t("Replaces the image's ENTRYPOINT, the way --entrypoint \
+                             does — and then the image's CMD does not run either, only the command \
+                             above."))</p>
+                        <p class="field-hint">(t("Quotes keep words together, and a list as a Dockerfile \
+                             writes it works too. No shell runs it, so a $VARIABLE reaches the program \
+                             as it is written: for a shell, write sh -c and the line in quotes."))</p>
+                        @if !ignored_by.is_empty() {
+                            <p class="note">(t("Copies on these nodes run the image's own command \
+                                 whatever this says, because their version does not read it. They \
+                                 follow it once updated to "))(crate::infra::network::errand::COMMANDS_SINCE)
+                                 (t(" or later: "))<span class="mono">(ignored_by.join(", "))</span></p>
+                        }
+                        <p class="field-hint">(t("Saving redeploys the service. Empty runs what the \
+                             image says."))</p>
+                        <div class="actions">
+                            <button type="submit">(t("Save command"))</button>
                         </div>
                     </form>
                 </section>

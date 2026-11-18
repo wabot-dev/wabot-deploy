@@ -1300,6 +1300,11 @@ impl Deployer {
                 .as_ref()
                 .map(|store| store.command.clone())
                 .unwrap_or_default(),
+            entrypoint: service
+                .entrypoint
+                .as_ref()
+                .map(|line| line.words().to_vec()),
+            cmd: service.command.as_ref().map(|line| line.words().to_vec()),
             args: prepared
                 .as_ref()
                 .map(|prepared| prepared.args.clone())
@@ -3496,6 +3501,11 @@ impl Deployer {
                 memory_limit: ceilings.memory_limit,
                 cpu_millicores: ceilings.cpu_millicores,
                 disk_limit: ceilings.disk_limit,
+                entrypoint: ceilings
+                    .entrypoint
+                    .as_ref()
+                    .map(|line| line.words().to_vec()),
+                command: ceilings.command.as_ref().map(|line| line.words().to_vec()),
             }) {
                 Ok(payload) => payload,
                 Err(error) => {

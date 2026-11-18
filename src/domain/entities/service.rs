@@ -20,6 +20,7 @@ pub const EVERY_TAG: &str = "*";
 use serde::Serialize;
 
 use crate::domain::errors::{PlatformError, PlatformResult};
+use crate::domain::values::command_line::CommandLine;
 use crate::domain::values::image_reference::ImageReference;
 use crate::domain::values::slug::Slug;
 /// Where the node allocates host ports from.
@@ -211,6 +212,11 @@ pub struct Service {
     /// the day the constant moves and then says the opposite of what the
     /// node does.
     pub log_budget: Option<u64>,
+    /// Docker's semantics, so they can be looked up: a new entrypoint drops
+    /// the image's `Cmd` too, because those words were written for the old
+    /// one. `command` alone keeps the image's entrypoint.
+    pub entrypoint: Option<CommandLine>,
+    pub command: Option<CommandLine>,
     pub kind: Kind,
 }
 
@@ -267,6 +273,8 @@ impl Service {
             disk_limit: None,
             log_timestamps: false,
             log_budget: None,
+            entrypoint: None,
+            command: None,
             kind: Kind::Container,
         })
     }

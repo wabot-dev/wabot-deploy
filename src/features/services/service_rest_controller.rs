@@ -11,6 +11,7 @@ use wabot::rest::axum::response::Response;
 use wabot::rest::RestResult;
 
 use crate::domain::values::allowlist::Allowlist;
+use crate::domain::values::command_line::CommandLine;
 use crate::infra::repositories::access;
 use crate::infra::repositories::services;
 
@@ -664,6 +665,62 @@ impl ServiceRestController {
             tracing::error!(%error, "could not queue the deployment");
         }
         Ok(see_other(&format!("{here}#image")))
+    }
+
+    #[post("/projects/:project/services/:service/process")]
+    #[raw]
+    #[middleware(SessionMiddleware)]
+    async fn set_process(&self, request: Request) -> RestResult<Response> {
+        let path = request.uri().path().to_string();
+        let Some((project, service, _)) = self.locate(&path).await? else {
+            return Ok(see_other("/projects?error=no+such+service"));
+        };
+        let here = Tab::Image.path(&project.slug, &service.slug);
+
+        let Some(account) = signed_in(&self.auth) else {
+            return Ok(see_other("/sign-in"));
+        };
+        let form = match read_form(request).await {
+            Ok(form) => form,
+            Err(response) => return Ok(response),
+        };
+        let line = |name: &str| CommandLine::parse(field(&form, name));
+        let asked = match (line("entrypoint"), line("command")) {
+            (Ok(entrypoint), Ok(command)) => {
+                crate::features::services::set_service_process_request::SetServiceProcessRequest {
+                    entrypoint,
+                    command,
+                }
+            }
+            (Err(reason), _) | (_, Err(reason)) => {
+                return Ok(back_with_error(&here, &reason.to_string()))
+            }
+        };
+        let outcome = match crate::domain::authz::node_user::belongs_here(&account) {
+            true => {
+                crate::features::services::node_user_set_service_process::run(
+                    &self.state.database,
+                    &account,
+                    &service,
+                    &asked,
+                )
+                .await
+            }
+            false => {
+                crate::features::services::tenant_user_set_service_process::run(
+                    &self.state.database,
+                    &account,
+                    &service,
+                    &asked,
+                )
+                .await
+            }
+        };
+        if let Err(reason) = outcome {
+            return Ok(back_with_error(&here, &reason));
+        }
+        self.enqueue(&service.id, None).await;
+        Ok(see_other(&format!("{here}#process")))
     }
 
     /// What tag to watch, and whether a push goes out on its own.
@@ -4939,6 +4996,261 @@ mod tests {
             .expect("query")
             .expect("still there");
         assert_eq!(after.log_budget, Some(1024 * 1024));
+    }
+
+    fn words_of(
+        line: &Option<crate::domain::values::command_line::CommandLine>,
+    ) -> Option<Vec<String>> {
+        line.as_ref().map(|line| line.words().to_vec())
+    }
+
+    fn words(line: &[&str]) -> Option<Vec<String>> {
+        Some(line.iter().map(|word| word.to_string()).collect())
+    }
+
+    /// Reported by Jorge: there was no way to choose what a service's
+    /// container runs, so one image could not be both a web server and
+    /// its own worker.
+    #[tokio::test]
+    async fn a_service_runs_the_command_its_form_was_given_and_empty_gives_the_image_back() {
+        let console = Console::new().await;
+        let cookie = console.signed_in().await;
+        let page = service(&console, &cookie).await;
+        let project = crate::infra::repositories::projects::find(&console.database, "my-api")
+            .await
+            .expect("query")
+            .expect("made");
+        let made = services::in_project(&console.database, &project.id, "web")
+            .await
+            .expect("query")
+            .expect("present");
+        let stored = || async {
+            let row = services::find(&console.database, &made.id)
+                .await
+                .expect("query")
+                .expect("still there");
+            (words_of(&row.entrypoint), words_of(&row.command))
+        };
+
+        let response = console
+            .harness
+            .post(&format!("{page}/process"))
+            .header("cookie", &cookie)
+            .form(&[
+                ("command", r#"node worker.js --queue "high priority""#),
+                ("entrypoint", ""),
+            ])
+            .send()
+            .await;
+        response.assert_status(StatusCode::SEE_OTHER);
+        assert_eq!(
+            response.header("location"),
+            Some("/projects/my-api/services/web/settings/image#process")
+        );
+        assert_eq!(
+            stored().await,
+            (
+                None,
+                words(&["node", "worker.js", "--queue", "high priority"])
+            )
+        );
+
+        let tab = console
+            .harness
+            .get(&format!("{page}/settings/image"))
+            .header("cookie", &cookie)
+            .send()
+            .await
+            .body;
+        assert!(
+            tab.contains(r#"value="node worker.js --queue"#),
+            "the form does not show what the service runs: {tab}"
+        );
+
+        console
+            .harness
+            .post(&format!("{page}/process"))
+            .header("cookie", &cookie)
+            .form(&[("command", ""), ("entrypoint", "")])
+            .send()
+            .await;
+        assert_eq!(stored().await, (None, None));
+    }
+
+    #[tokio::test]
+    async fn a_command_that_cannot_be_read_goes_back_with_the_reason_and_changes_nothing() {
+        let console = Console::new().await;
+        let cookie = console.signed_in().await;
+        let page = service(&console, &cookie).await;
+        console
+            .harness
+            .post(&format!("{page}/process"))
+            .header("cookie", &cookie)
+            .form(&[("command", "npm start"), ("entrypoint", "")])
+            .send()
+            .await;
+
+        let response = console
+            .harness
+            .post(&format!("{page}/process"))
+            .header("cookie", &cookie)
+            .form(&[("command", "node 'server.js"), ("entrypoint", "")])
+            .send()
+            .await;
+        let location = response.header("location").expect("redirected");
+        assert!(
+            location.starts_with("/projects/my-api/services/web/settings/image?error="),
+            "{location}"
+        );
+        let row = services::all(&console.database, None)
+            .await
+            .expect("query")
+            .into_iter()
+            .find(|service| service.slug == "web")
+            .expect("web");
+        assert_eq!(words_of(&row.command), words(&["npm", "start"]));
+    }
+
+    /// The image tab is not offered to a database, and the POST is where
+    /// that counts.
+    #[tokio::test]
+    async fn a_database_does_not_take_a_command_from_a_form() {
+        let console = Console::new().await;
+        let cookie = console.signed_in().await;
+        service(&console, &cookie).await;
+        let project = crate::infra::repositories::projects::find(&console.database, "my-api")
+            .await
+            .expect("query")
+            .expect("made");
+        let (made, _) = crate::features::databases::create_database_command::CreateDatabase {
+            project_id: &project.id,
+            name: "Orders",
+            engine: crate::domain::entities::database::Engine::Postgres,
+            version: "17",
+            memory_limit: 256 * 1024 * 1024,
+            image: None,
+            on: None,
+            mode: crate::domain::entities::database::Mode::Store,
+        }
+        .run(&console.database)
+        .await
+        .expect("database");
+
+        let response = console
+            .harness
+            .post(&format!("/projects/my-api/services/{}/process", made.slug))
+            .header("cookie", &cookie)
+            .form(&[("command", "sh -c 'cat /etc/shadow'")])
+            .send()
+            .await;
+        assert!(response
+            .header("location")
+            .unwrap_or_default()
+            .contains("error="));
+        let row = services::find(&console.database, &made.id)
+            .await
+            .expect("query")
+            .expect("still there");
+        assert_eq!((row.entrypoint, row.command), (None, None));
+    }
+
+    /// The far node runs the copy from its own row, which only the errand
+    /// writes — so a command chosen here and not carried would be a copy
+    /// there running the image's own, with nothing on either page saying so.
+    #[tokio::test]
+    async fn a_chosen_command_travels_to_the_node_running_the_copy() {
+        let console = Console::new().await;
+        let cookie = console.signed_in().await;
+        placed_service(&console, &cookie).await;
+        a_node_elsewhere(&console).await;
+        console
+            .harness
+            .post("/projects/shared/services/web/placement")
+            .header("cookie", &cookie)
+            .form(&[("replicas", "1"), ("slot-1", "nd-elsewhere1")])
+            .send()
+            .await
+            .assert_status(StatusCode::SEE_OTHER);
+
+        console
+            .harness
+            .post("/projects/shared/services/web/process")
+            .header("cookie", &cookie)
+            .form(&[("command", "--to latest"), ("entrypoint", "/app/migrate")])
+            .send()
+            .await
+            .assert_status(StatusCode::SEE_OTHER);
+
+        let mut told = None;
+        for _ in 0..150 {
+            let waiting =
+                crate::infra::network::errand::waiting(&console.database, "nd-elsewhere1")
+                    .await
+                    .expect("waiting");
+            let latest = waiting.last().map(|errand| {
+                serde_json::from_value::<crate::infra::network::errand::Host>(
+                    errand.payload.clone(),
+                )
+                .expect("a host errand")
+            });
+            if let Some(host) = latest.filter(|host| host.command.is_some()) {
+                told = Some(host);
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        let told = told.expect("the node running the copy was never told the command");
+        assert_eq!(told.entrypoint, words(&["/app/migrate"]));
+        assert_eq!(told.command, words(&["--to", "latest"]));
+    }
+
+    /// A node older than the field ignores it, and the form says which, so
+    /// a copy there running the image's own command is not a surprise.
+    #[tokio::test]
+    async fn the_form_names_the_nodes_that_would_ignore_the_command() {
+        let console = Console::new().await;
+        let cookie = console.signed_in().await;
+        let service = placed_service(&console, &cookie).await;
+        a_node_elsewhere(&console).await;
+        crate::infra::repositories::replicas::ensure_count(
+            &console.database,
+            &service.id,
+            2,
+            Some("nd-elsewhere1"),
+        )
+        .await
+        .expect("a copy there");
+
+        let tab = || async {
+            console
+                .harness
+                .get("/projects/shared/services/web/settings/image")
+                .header("cookie", &cookie)
+                .send()
+                .await
+                .body
+        };
+        let before = tab().await;
+        assert!(
+            before.contains("whatever this says") && before.contains("alpine.example"),
+            "a node that has reported no version is not named: {before}"
+        );
+
+        let mut node = crate::infra::network::all(&console.database)
+            .await
+            .expect("nodes")
+            .into_iter()
+            .find(|node| node.id == "nd-elsewhere1")
+            .expect("the node");
+        node.version = Some(crate::infra::network::errand::COMMANDS_SINCE.into());
+        crate::infra::network::save(&console.database, &node)
+            .await
+            .expect("updated");
+        let after = tab().await;
+        assert!(
+            !after.contains("whatever this says"),
+            "an updated node is still named: {after}"
+        );
     }
 
     /// One table: the port, what it is, where it answers, its certificate.

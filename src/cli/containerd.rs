@@ -62,7 +62,8 @@ pub async fn run(pull: Option<String>, run: Option<String>, port: u16) -> anyhow
         // What the image says about itself, which is what a container
         // built from it has to be told.
         let config = crate::infra::runtime::images::config(&client, &reference).await?;
-        println!("  command    {:?}", config.command);
+        println!("  entrypoint {:?}", config.entrypoint);
+        println!("  command    {:?}", config.cmd);
         println!("  env        {} variable(s)", config.env.len());
         println!(
             "  workdir    {}",

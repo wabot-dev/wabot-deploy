@@ -33,8 +33,10 @@ use super::client::{ClientError, ClientResult, Containerd};
 /// What an image tells the node about how to run it.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ImageConfig {
-    /// `Entrypoint` followed by `Cmd`, which is what actually runs.
-    pub command: Vec<String>,
+    /// Kept apart from `cmd` because an operator may replace either, and
+    /// what runs depends on which — see `runtime::spec::process_args`.
+    pub entrypoint: Vec<String>,
+    pub cmd: Vec<String>,
     pub env: Vec<String>,
     pub working_dir: Option<String>,
     /// `User`, as the image wrote it: `""`, `"1000"`, `"1000:1000"`, or
@@ -548,16 +550,18 @@ pub async fn config(client: &Containerd, reference: &str) -> ClientResult<ImageC
     let config: oci_spec::image::ImageConfiguration = serde_json::from_slice(&bytes)
         .map_err(|error| ClientError::Other(format!("unreadable image config: {error}")))?;
 
+    Ok(read_config(&config))
+}
+
+fn read_config(config: &oci_spec::image::ImageConfiguration) -> ImageConfig {
     let Some(inner) = config.config() else {
         // Legal per the spec and useless in practice: nothing to run.
-        return Ok(ImageConfig::default());
+        return ImageConfig::default();
     };
 
-    let mut command: Vec<String> = inner.entrypoint().clone().unwrap_or_default();
-    command.extend(inner.cmd().clone().unwrap_or_default());
-
-    Ok(ImageConfig {
-        command,
+    ImageConfig {
+        entrypoint: inner.entrypoint().clone().unwrap_or_default(),
+        cmd: inner.cmd().clone().unwrap_or_default(),
         env: inner.env().clone().unwrap_or_default(),
         working_dir: inner.working_dir().clone(),
         user: inner.user().clone().filter(|user| !user.is_empty()),
@@ -566,7 +570,7 @@ pub async fn config(client: &Containerd, reference: &str) -> ClientResult<ImageC
             .as_ref()
             .map(|ports| ports.iter().filter_map(|port| parse_port(port)).collect())
             .unwrap_or_default(),
-    })
+    }
 }
 
 /// The image's uncompressed layer digests, in order.
@@ -814,11 +818,13 @@ mod tests {
         assert_eq!(parse_port("nonsense"), None);
     }
 
-    /// An image with `Entrypoint` *and* `Cmd` runs both, concatenated —
-    /// entrypoint first. Using one or the other gives a container that
-    /// starts and does the wrong thing.
+    /// Both halves are read, and kept apart: what runs is decided in
+    /// `runtime::spec`, where an operator's replacement for either is.
+    ///
+    /// This used to restate the concatenation the function did rather than
+    /// call it, so it would have passed with the function broken.
     #[test]
-    fn entrypoint_and_cmd_concatenate() {
+    fn the_entrypoint_and_the_cmd_are_both_read() {
         let json = serde_json::json!({
             "architecture": "amd64",
             "os": "linux",
@@ -834,12 +840,12 @@ mod tests {
         });
         let parsed: oci_spec::image::ImageConfiguration =
             serde_json::from_value(json).expect("valid config");
-        let inner = parsed.config().clone().expect("has config");
+        let config = read_config(&parsed);
 
-        let mut command: Vec<String> = inner.entrypoint().clone().unwrap_or_default();
-        command.extend(inner.cmd().clone().unwrap_or_default());
-        assert_eq!(command, vec!["/bin/sh", "-c", "echo hi"]);
-        assert_eq!(inner.working_dir().clone().as_deref(), Some("/app"));
-        assert_eq!(inner.user().clone().as_deref(), Some("1000"));
+        assert_eq!(config.entrypoint, vec!["/bin/sh", "-c"]);
+        assert_eq!(config.cmd, vec!["echo hi"]);
+        assert_eq!(config.working_dir.as_deref(), Some("/app"));
+        assert_eq!(config.user.as_deref(), Some("1000"));
+        assert_eq!(config.exposed_ports, vec![8080]);
     }
 }

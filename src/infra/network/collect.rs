@@ -1082,6 +1082,17 @@ async fn host_service(
     authority: &str,
     host: errand::Host,
 ) -> Result<(), String> {
+    let chosen = |words: Option<Vec<String>>| {
+        words
+            .map(crate::domain::values::command_line::CommandLine::from_words)
+            .transpose()
+            .map_err(|error| error.to_string())
+    };
+    let (entrypoint, command) = (
+        chosen(host.entrypoint.clone())?,
+        chosen(host.command.clone())?,
+    );
+
     // The credential first: without it the deploy fails at the pull,
     // and the pull is the last thing to run.
     //
@@ -1194,6 +1205,9 @@ async fn host_service(
         .await
         .map_err(|error| error.to_string())?;
     services::set_disk_limit(database, &service.id, host.disk_limit)
+        .await
+        .map_err(|error| error.to_string())?;
+    services::set_process(database, &service.id, entrypoint.as_ref(), command.as_ref())
         .await
         .map_err(|error| error.to_string())?;
 
@@ -3842,6 +3856,8 @@ mod tests {
             memory_limit: Some(512 * 1024 * 1024),
             cpu_millicores: None,
             disk_limit: None,
+            entrypoint: None,
+            command: None,
         };
 
         // Both spellings of putting it down: hold none of it, and stop
@@ -3901,6 +3917,8 @@ mod tests {
             memory_limit: memory,
             cpu_millicores: cpu,
             disk_limit: None,
+            entrypoint: None,
+            command: None,
         };
 
         let ceilings = || async {
@@ -3946,6 +3964,88 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn a_copy_runs_the_command_its_owner_chose_and_the_image_once_it_is_cleared() {
+        let database = crate::infra::db::open_in_memory().await.expect("open");
+        let config = Config::default();
+        let container = Container::new();
+        let words = |line: &[&str]| Some(line.iter().map(|word| word.to_string()).collect());
+
+        let errand = |entrypoint: Option<Vec<String>>, command: Option<Vec<String>>| errand::Host {
+            project: "shared".into(),
+            service: "web".into(),
+            image: "hub.example.com/proj/app@sha256:aaa".into(),
+            registry: "hub.example.com".into(),
+            username: None,
+            secret: None,
+            env: Default::default(),
+            port: None,
+            slots: vec![1],
+            running: false,
+            memory_limit: None,
+            cpu_millicores: None,
+            disk_limit: None,
+            entrypoint,
+            command,
+        };
+        let process = || async {
+            let project = crate::infra::repositories::projects::all(&database)
+                .await
+                .expect("projects")
+                .into_iter()
+                .find(|project| project.slug == "shared")
+                .expect("the project the errand made");
+            let service = services::in_project(&database, &project.id, "web")
+                .await
+                .expect("services")
+                .expect("the service the errand made");
+            let words = |line: Option<crate::domain::values::command_line::CommandLine>| {
+                line.map(|line| line.words().to_vec())
+            };
+            (words(service.entrypoint), words(service.command))
+        };
+
+        host_service(
+            &database,
+            &config,
+            &container,
+            "nd-authority",
+            errand(words(&["/app/migrate"]), words(&["--to", "latest"])),
+        )
+        .await
+        .expect("carried out");
+        assert_eq!(
+            process().await,
+            (words(&["/app/migrate"]), words(&["--to", "latest"]))
+        );
+
+        host_service(
+            &database,
+            &config,
+            &container,
+            "nd-authority",
+            errand(None, None),
+        )
+        .await
+        .expect("carried out again");
+        assert_eq!(
+            process().await,
+            (None, None),
+            "the owner cleared it, and the copy here would go on running the old one"
+        );
+
+        let refused = host_service(
+            &database,
+            &config,
+            &container,
+            "nd-authority",
+            errand(None, words(&["", "server.js"])),
+        )
+        .await
+        .expect_err("a command with no program");
+        assert!(refused.contains("program"), "{refused}");
+    }
+
     /// The same errand twice points one service at the image rather
     /// than making a second beside it — which is what a re-handed
     /// errand has to mean, since the far end hands one over again
@@ -3972,6 +4072,8 @@ mod tests {
                 memory_limit: None,
                 cpu_millicores: None,
                 disk_limit: None,
+                entrypoint: None,
+                command: None,
             };
             // The rows, without the queue — `run_command` wants a
             // container this test has no reason to build, and what is

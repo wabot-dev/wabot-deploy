@@ -570,6 +570,11 @@ async fn send_there(
         memory_limit: service.memory_limit,
         cpu_millicores: service.cpu_millicores,
         disk_limit: service.disk_limit,
+        entrypoint: service
+            .entrypoint
+            .as_ref()
+            .map(|line| line.words().to_vec()),
+        command: service.command.as_ref().map(|line| line.words().to_vec()),
     })
     .map_err(|error| error.to_string())?;
 

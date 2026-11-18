@@ -67,8 +67,11 @@ pub struct BindMount {
 /// What the node knows about a container beyond what its image says.
 #[derive(Debug, Clone, Default)]
 pub struct ContainerRequest {
-    /// Overrides the image's command when set.
+    /// Overrides the image's command when set — the node's own, for an
+    /// engine or a one-shot, and it wins over the operator's two below.
     pub command: Vec<String>,
+    pub entrypoint: Option<Vec<String>>,
+    pub cmd: Option<Vec<String>>,
     /// Appended to whatever command runs, image's or overridden.
     ///
     /// The difference from `command` is the whole reason both exist: an
@@ -148,20 +151,8 @@ pub struct ContainerRequest {
 
 /// Build the spec for one container.
 pub fn build(image: &ImageConfig, request: &ContainerRequest) -> SpecResult<Spec> {
-    let mut command = if request.command.is_empty() {
-        image.command.clone()
-    } else {
-        request.command.clone()
-    };
-    if command.is_empty() {
-        return Err(SpecError::Invalid(
-            "neither the image nor the deployment says what to run".into(),
-        ));
-    }
-    command.extend(request.args.iter().cloned());
-
     let process = ProcessBuilder::default()
-        .args(command)
+        .args(process_args(image, request)?)
         .env(environment(image, request))
         .cwd(image.working_dir.clone().unwrap_or_else(|| "/".to_string()))
         .user(user(image)?)
@@ -213,6 +204,27 @@ pub fn build(image: &ImageConfig, request: &ContainerRequest) -> SpecResult<Spec
         .linux(linux)
         .build()
         .map_err(|error| SpecError::Build(error.to_string()))
+}
+
+/// Docker's rule, because it is the one somebody can look up: a new
+/// entrypoint drops the image's `Cmd`, which was written as arguments for
+/// the old one; a new `Cmd` alone keeps the image's entrypoint.
+fn process_args(image: &ImageConfig, request: &ContainerRequest) -> SpecResult<Vec<String>> {
+    let mut command = match (&request.entrypoint, &request.cmd) {
+        _ if !request.command.is_empty() => request.command.clone(),
+        (Some(entrypoint), cmd) => {
+            [entrypoint.as_slice(), cmd.as_deref().unwrap_or_default()].concat()
+        }
+        (None, Some(cmd)) => [image.entrypoint.as_slice(), cmd].concat(),
+        (None, None) => [image.entrypoint.as_slice(), &image.cmd].concat(),
+    };
+    if command.is_empty() {
+        return Err(SpecError::Invalid(
+            "neither the image nor the deployment says what to run".into(),
+        ));
+    }
+    command.extend(request.args.iter().cloned());
+    Ok(command)
 }
 
 /// The image's environment, then the node's, then `PORT`.
@@ -572,7 +584,8 @@ mod tests {
 
     fn nginx() -> ImageConfig {
         ImageConfig {
-            command: vec!["/docker-entrypoint.sh".into(), "nginx".into()],
+            entrypoint: vec!["/docker-entrypoint.sh".into()],
+            cmd: vec!["nginx".into()],
             env: vec!["NGINX_VERSION=1.27".into()],
             working_dir: None,
             user: None,
@@ -749,7 +762,7 @@ mod tests {
     fn a_path_is_always_present() {
         let spec = build(
             &ImageConfig {
-                command: vec!["sh".into()],
+                cmd: vec!["sh".into()],
                 ..Default::default()
             },
             &ContainerRequest::default(),
@@ -781,6 +794,67 @@ mod tests {
         );
     }
 
+    fn runs(image: &ImageConfig, request: &ContainerRequest) -> Vec<String> {
+        build(image, request)
+            .expect("spec")
+            .process()
+            .as_ref()
+            .expect("process")
+            .args()
+            .clone()
+            .expect("args")
+    }
+
+    fn words(line: &[&str]) -> Option<Vec<String>> {
+        Some(line.iter().map(|word| word.to_string()).collect())
+    }
+
+    /// `docker run node:22 npm run worker` keeps the image's entrypoint,
+    /// which is what makes the words work as typed.
+    #[test]
+    fn an_operators_command_replaces_the_images_and_keeps_its_entrypoint() {
+        let asked = ContainerRequest {
+            cmd: words(&["npm", "run", "worker"]),
+            ..Default::default()
+        };
+        assert_eq!(
+            runs(&nginx(), &asked),
+            ["/docker-entrypoint.sh", "npm", "run", "worker"]
+        );
+    }
+
+    /// And `--entrypoint` drops the image's `Cmd`: those were arguments for
+    /// a program that no longer runs, and handing them to another one is a
+    /// container that starts and does something nobody asked for.
+    #[test]
+    fn an_operators_entrypoint_runs_without_the_images_command() {
+        let alone = ContainerRequest {
+            entrypoint: words(&["/app/migrate"]),
+            ..Default::default()
+        };
+        assert_eq!(runs(&nginx(), &alone), ["/app/migrate"]);
+
+        let both = ContainerRequest {
+            entrypoint: words(&["/app/migrate"]),
+            cmd: words(&["--to", "latest"]),
+            ..Default::default()
+        };
+        assert_eq!(runs(&nginx(), &both), ["/app/migrate", "--to", "latest"]);
+    }
+
+    /// The node's own command is for an engine or a one-shot, and a row the
+    /// operator wrote must not reach into either.
+    #[test]
+    fn the_nodes_command_wins_over_the_operators() {
+        let asked = ContainerRequest {
+            command: vec!["garage".into(), "server".into()],
+            entrypoint: words(&["sh"]),
+            cmd: words(&["-c", "true"]),
+            ..Default::default()
+        };
+        assert_eq!(runs(&nginx(), &asked), ["garage", "server"]);
+    }
+
     /// An image with no command and a deployment that does not supply
     /// one cannot run, and saying so here beats a runtime error from
     /// inside the shim.
@@ -798,7 +872,7 @@ mod tests {
     fn a_numeric_user_is_honoured_and_a_name_falls_back() {
         let numeric = build(
             &ImageConfig {
-                command: vec!["x".into()],
+                cmd: vec!["x".into()],
                 user: Some("1000:2000".into()),
                 ..Default::default()
             },
@@ -811,7 +885,7 @@ mod tests {
 
         let named = build(
             &ImageConfig {
-                command: vec!["x".into()],
+                cmd: vec!["x".into()],
                 user: Some("nginx".into()),
                 ..Default::default()
             },
@@ -1114,7 +1188,8 @@ mod tests {
     fn arguments_are_appended_to_the_images_own_command() {
         let spec = build(
             &ImageConfig {
-                command: vec!["docker-entrypoint.sh".into(), "postgres".into()],
+                entrypoint: vec!["docker-entrypoint.sh".into()],
+                cmd: vec!["postgres".into()],
                 ..Default::default()
             },
             &ContainerRequest {

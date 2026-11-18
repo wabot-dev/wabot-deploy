@@ -930,6 +930,29 @@ impl ServiceUiController {
             Tab::Image => {
                 let registry =
                     crate::infra::registry::name_of(&self.state.database, &project).await;
+                let holders: Vec<String> = crate::infra::repositories::replicas::of_service(
+                    &self.state.database,
+                    &service.id,
+                )
+                .await?
+                .into_iter()
+                .filter(|replica| !replica.evicted())
+                .filter_map(|replica| replica.node_id)
+                .collect();
+                let mut ignored_by: Vec<String> = Vec::new();
+                if !holders.is_empty() {
+                    for node in crate::infra::network::all(&self.state.database).await? {
+                        if !node.is_self
+                            && holders.contains(&node.id)
+                            && !crate::infra::network::errand::runs_chosen_commands(
+                                node.version.as_deref(),
+                            )
+                            && !ignored_by.contains(&node.name)
+                        {
+                            ignored_by.push(node.name);
+                        }
+                    }
+                }
                 Panel::Image {
                     push: crate::features::services::service_push_component::push(
                         &service,
@@ -937,6 +960,7 @@ impl ServiceUiController {
                         registry.as_deref(),
                     ),
                     project_settings: format!("/projects/{}/settings", project.slug),
+                    ignored_by,
                 }
             }
             Tab::Logs => Panel::Logs,
