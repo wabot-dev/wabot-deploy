@@ -2040,6 +2040,58 @@ mod tests {
         }
     }
 
+    /// A start refused for room is said under the state somebody pressed
+    /// Deploy beside. It reached only the service's row, which no page
+    /// read — found on the VM node, where the page said "Not running" and
+    /// nothing else.
+    #[tokio::test]
+    async fn a_start_refused_for_room_is_said_on_the_service_page() {
+        let console = Console::new().await;
+        let cookie = console.signed_in().await;
+        let service = placed_service(&console, &cookie).await;
+        let refusal = "this node has 210 MB to promise and 192 MB is already promised; 64 MB × 1 does not fit";
+        crate::infra::repositories::services::set_desired_state(
+            &console.database,
+            &service.id,
+            crate::domain::entities::service::DesiredState::Stopped,
+        )
+        .await
+        .expect("stopped");
+        crate::infra::repositories::services::set_last_error(
+            &console.database,
+            &service.id,
+            Some(refusal),
+        )
+        .await
+        .expect("refused");
+        let page = |cookie: String| {
+            let harness = &console.harness;
+            async move {
+                harness
+                    .get("/projects/shared/services/web")
+                    .header("cookie", &cookie)
+                    .send()
+                    .await
+                    .body
+            }
+        };
+
+        let stopped = page(cookie.clone()).await;
+        assert!(
+            stopped.contains(&format!("Not started: {refusal}")),
+            "{stopped}"
+        );
+
+        crate::infra::repositories::services::set_desired_state(
+            &console.database,
+            &service.id,
+            crate::domain::entities::service::DesiredState::Running,
+        )
+        .await
+        .expect("running");
+        assert!(!page(cookie).await.contains("Not started"));
+    }
+
     /// A project and a service to place, made the way the console does.
     async fn placed_service(
         console: &Console,

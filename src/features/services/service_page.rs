@@ -169,6 +169,14 @@ pub fn render<'a>(page: &'a ServiceDetail<'a>) -> impl Renderable + 'a {
                     replica.failure().unwrap_or_default()
                 )</p>
             }
+            // The service's own and not a copy's: a start refused before
+            // any copy was asked, which a copy on another node would have
+            // overwritten with its next report.
+            @if !service.promises() {
+                @if let Some(refused) = &service.last_error {
+                    <p class="failure detail-line">(t("Not started: "))(refused)</p>
+                }
+            }
         </section>
 
         @if let Some(engine) = &page.engine {

@@ -454,6 +454,18 @@ impl Service {
     pub fn awaiting_push(&self) -> bool {
         self.image.trim().is_empty()
     }
+
+    /// Whether its copies hold what their ceilings say, on their nodes and
+    /// under their organisation's quota.
+    ///
+    /// Stopping a service takes its copies to none (Jorge, 2026-11-18), so
+    /// a stopped one holds nothing and starting it again is a promise like
+    /// making it. A failed deployment still holds: the service still means
+    /// to run. Disk is not this question — a stopped service's volumes
+    /// are still on the disk.
+    pub fn promises(&self) -> bool {
+        self.desired_state == DesiredState::Running
+    }
 }
 
 #[cfg(test)]

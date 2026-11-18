@@ -86,6 +86,7 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
     ("None. A redirect sends another name to one of this service's hostnames, and it has none yet: expose a port over HTTPS first.", "Ninguna. Una redirección envía otro nombre a uno de los nombres de este servicio, y todavía no tiene ninguno: primero expón un puerto por HTTPS."),
     ("None. A redirect sends another name — www.example.com, a domain you used to have — to one of this service's hostnames, path and query kept.", "Ninguna. Una redirección envía otro nombre — www.example.com, un dominio que tenías antes — a uno de los nombres de este servicio, con la ruta y la consulta intactas."),
     ("Not following — reload to see more", "Sin seguir — recarga para ver más"),
+    ("Not started: ", "No se arrancó: "),
     ("Nothing answers at any of these while it is not running.", "Mientras no esté corriendo, en ninguna de estas responde nada."),
     ("Nothing has been pushed yet. Create a push token on the project page and push an image to this repository.", "Todavía no se ha subido nada. Crea un token de subida en la página del proyecto y sube una imagen a este repositorio."),
     ("Nothing is kept. Every deployment starts from the image, so anything the container wrote is gone — right for a service that keeps its data elsewhere, and the loss of everything for one that does not.", "No se conserva nada. Cada despliegue empieza desde la imagen, así que lo que el contenedor escribió desaparece — lo correcto para un servicio que guarda sus datos en otra parte, y la pérdida de todo para uno que no."),

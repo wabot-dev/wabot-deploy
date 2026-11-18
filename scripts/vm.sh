@@ -171,10 +171,13 @@ for what in links namespaces containers iptables reservations; do
 done
 # What a running copy writes on its own: its log, its volume, its WAL.
 for id in $(cat $s/containers.after); do echo "/var/lib/wabot-deploy/logs/$id.log"; done > $s/own
+# The DHCP client renews its lease every half lease — thirty minutes on
+# Lima — and a suite that ran across a renewal reported it as the tests'.
 written=$(find / -xdev -newer $s/marker -type f 2>/dev/null |
-  grep -vE "^/(proc|sys|dev|tmp|var/tmp|home|root|var/log|var/lib/containerd)/|^$here/" |
+  grep -vE "^/(proc|sys|dev|tmp|var/tmp|home|root|var/log|var/lib/containerd|var/lib/dhcpcd)/|^$here/" |
   grep -vE '^/var/lib/wabot-deploy/(volumes|wal)/' | grep -vF -f $s/own)
-written="$written$(find /run -newer $s/marker -type f 2>/dev/null | grep -vE 'containerd|/run/openrc/')"
+in_run=$(find /run -newer $s/marker -type f 2>/dev/null | grep -vE 'containerd|/run/openrc/|/run/dhcpcd/')
+written=$(printf '%s\n%s\n' "$written" "$in_run" | sed '/^$/d')
 if [ -n "$written" ]; then
   changed=1
   echo "==> files written"

@@ -276,8 +276,9 @@ pub fn memory_card<'a>(
                     (" ")(memory::human(overpromised))(t(" more than this node may promise. Services \
                          that ran without a ceiling were given one from what they used, and what \
                          is already running is not refused. The kernel still keeps them all inside \
-                         what services may take together; until a ceiling comes down or a copy \
-                         moves, this node refuses the next promise of memory."))
+                         what services may take together; until a ceiling comes down, a copy \
+                         moves or a service is stopped, this node refuses the next promise of \
+                         memory."))
                 </p>
             }
             @if guard.is_none_or(|guard| guard.limits.memory.is_none()) {

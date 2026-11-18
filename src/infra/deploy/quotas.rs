@@ -67,18 +67,38 @@ pub struct Charged {
 /// Per **replica**, not per service: three copies of a 256 MB service
 /// cost 768 MB, which is what they actually cost. Evicted copies do not
 /// count — the node holding one threw it off, and nothing is running.
+/// Nor do a stopped service's memory and CPU, though its disk does:
+/// see [`crate::domain::entities::service::Service::promises`].
 pub async fn charged(database: &SqliteDatabase, tenant_id: &str) -> PlatformResult<Charged> {
+    tally(database, tenant_id, None).await
+}
+
+/// What one service adds to [`charged`], by the same walk.
+async fn tally(
+    database: &SqliteDatabase,
+    tenant_id: &str,
+    only: Option<&str>,
+) -> PlatformResult<Charged> {
     let projects = crate::infra::repositories::access::of_tenant(database, tenant_id).await?;
     let mut charged = Charged::default();
     for project in projects {
         for service in
             crate::infra::repositories::services::all(database, Some(&project.id)).await?
         {
+            if only.is_some_and(|id| id != service.id) {
+                continue;
+            }
             let copies = crate::infra::repositories::replicas::of_service(database, &service.id)
                 .await?
                 .into_iter()
                 .filter(|replica| !replica.evicted())
                 .count() as u64;
+            if let Some(bytes) = service.disk_limit {
+                charged.disk = charged.disk.saturating_add(bytes.saturating_mul(copies));
+            }
+            if !service.promises() {
+                continue;
+            }
             match service.memory_limit {
                 Some(bytes) => charged.memory += bytes.saturating_mul(copies),
                 None => charged.unbounded += 1,
@@ -87,9 +107,6 @@ pub async fn charged(database: &SqliteDatabase, tenant_id: &str) -> PlatformResu
                 charged.cpu = charged
                     .cpu
                     .saturating_add(millicores.saturating_mul(copies as u32));
-            }
-            if let Some(bytes) = service.disk_limit {
-                charged.disk = charged.disk.saturating_add(bytes.saturating_mul(copies));
             }
         }
     }
@@ -113,6 +130,7 @@ pub async fn rooms_for(
         return Ok(None);
     };
     let charged = charged(database, tenant_id).await?;
+    let held = tally(database, tenant_id, Some(&service.id)).await?;
     Ok(Some((
         Rooms {
             memory: Room {
@@ -124,13 +142,13 @@ pub async fn rooms_for(
                 allocatable: tenant.quota_memory.unwrap_or(0),
                 known: tenant.quota_memory.is_some(),
                 committed: charged.memory,
-                already: service.memory_limit.unwrap_or(0),
+                held: held.memory,
             },
             cpu: Room {
                 allocatable: u64::from(tenant.quota_cpu.unwrap_or(0)),
                 known: tenant.quota_cpu.is_some(),
                 committed: u64::from(charged.cpu),
-                already: u64::from(service.cpu_millicores.unwrap_or(0)),
+                held: u64::from(held.cpu),
             },
         },
         tenant.name,
@@ -204,12 +222,13 @@ pub async fn admits(
         return Ok(None);
     };
     let charged = charged(database, tenant_id).await?;
+    let held = tally(database, tenant_id, Some(&service.id)).await?;
     Ok(crate::infra::deploy::fits(
         Room {
             allocatable: tenant.quota_disk.unwrap_or(0),
             known: tenant.quota_disk.is_some(),
             committed: charged.disk,
-            already: service.disk_limit.unwrap_or(0),
+            held: held.disk,
         },
         wanted,
         copies,
@@ -248,6 +267,7 @@ mod tests {
     use super::*;
 
     const MB: u64 = 1024 * 1024;
+    const GB: u64 = 1024 * MB;
 
     async fn tenant_with_a_service() -> (
         SqliteDatabase,
@@ -335,6 +355,69 @@ mod tests {
     /// exists the moment the column does has `NULL`, and a default would
     /// be a migration deciding somebody's organisation is now refused at
     /// a number nobody chose.
+    /// Stopping takes a service's copies to none (Jorge, 2026-11-18): its
+    /// memory and CPU go back to the organisation, its volumes stay on the
+    /// disk, and starting it again has to fit.
+    #[tokio::test]
+    async fn a_stopped_service_spends_none_of_its_organisations_memory_and_keeps_its_disk() {
+        let (database, project, service) = tenant_with_a_service().await;
+        crate::infra::repositories::services::set_disk_limit(&database, &service.id, Some(GB))
+            .await
+            .expect("disk");
+        let tenant_id = project.tenant_id.clone().expect("a tenant");
+        let running = charged(&database, &tenant_id).await.expect("summed");
+        assert_eq!(
+            running.memory,
+            crate::domain::policies::presets::DEFAULT_MEMORY
+        );
+        assert!(running.cpu > 0);
+
+        crate::infra::repositories::services::set_desired_state(
+            &database,
+            &service.id,
+            crate::domain::entities::service::DesiredState::Stopped,
+        )
+        .await
+        .expect("stopped");
+        let stopped = charged(&database, &tenant_id).await.expect("summed");
+        assert_eq!((stopped.memory, stopped.cpu), (0, 0));
+        assert_eq!(stopped.disk, GB, "its volumes are still there");
+
+        let other = crate::infra::repositories::services::create(
+            &database,
+            &project.id,
+            "api",
+            "hub.example/theirs/api@sha256:a",
+            &[],
+        )
+        .await
+        .expect("another");
+        crate::infra::repositories::services::set_memory_limit(
+            &database,
+            &other.id,
+            Some(512 * MB),
+        )
+        .await
+        .expect("the rest of the quota");
+        let stored = crate::infra::repositories::services::find(&database, &service.id)
+            .await
+            .expect("query")
+            .expect("row");
+        let refusal = admits(
+            &database,
+            &project,
+            &stored,
+            stored.memory_limit,
+            None,
+            None,
+            1,
+        )
+        .await
+        .expect("asked")
+        .expect("512 MB held by another and 128 MB asked of 512");
+        assert!(refusal.contains("512 MB is already promised"), "{refusal}");
+    }
+
     #[tokio::test]
     async fn a_tenant_without_a_quota_is_refused_nothing() {
         let (database, project, service) = tenant_with_a_service().await;

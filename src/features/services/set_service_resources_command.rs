@@ -75,12 +75,15 @@ impl SetServiceResources<'_> {
             .count()
             .max(1) as u64;
 
+        // A stopped service holds nothing, so its memory and CPU are asked
+        // about when it starts; its disk is still there.
+        let promises = self.service.promises();
         if let Some(reason) = quotas::admits(
             database,
             self.project,
             self.service,
-            memory,
-            cpu,
+            memory.filter(|_| promises),
+            cpu.filter(|_| promises),
             disk,
             copies,
         )
@@ -89,8 +92,10 @@ impl SetServiceResources<'_> {
         {
             return Err(reason);
         }
-        if let Some(reason) = deployer.room_for(self.service, memory).await {
-            return Err(reason);
+        if promises {
+            if let Some(reason) = deployer.room_for_every_copy(self.service, memory).await {
+                return Err(reason);
+            }
         }
 
         for write in [
@@ -137,5 +142,107 @@ impl SetServiceResources<'_> {
             )),
             Some(_) => Ok(()),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::domain::entities::service::DesiredState;
+
+    /// A stopped service holds nothing, so its ceiling is asked about
+    /// when it starts and not before: a node promised past what it has
+    /// would otherwise refuse a change to something it is not running.
+    #[tokio::test]
+    async fn a_stopped_service_takes_any_ceiling_and_a_running_one_has_to_fit() {
+        const MB: u64 = 1024 * 1024;
+        let database = crate::infra::db::open_in_memory().await.expect("open");
+        crate::infra::network::save(
+            &database,
+            &crate::infra::network::Node {
+                update_note: None,
+                version: None,
+                wanted_version: None,
+                usage: None,
+                draining_at: None,
+                capacity: Some(crate::infra::network::Capacity {
+                    memory_allocatable: 512 * MB,
+                    memory_committed: 700 * MB,
+                    cpu_allocatable: 1_000,
+                    cpu_committed: 0,
+                    unbounded: 0,
+                }),
+                id: "nd-l1".into(),
+                name: "nd-l1.example".into(),
+                kind: crate::infra::network::Kind::Private,
+                endpoint: None,
+                public_key: Some("k".into()),
+                overlay_ip: Some("10.42.0.7".into()),
+                is_self: false,
+                last_seen_at: None,
+                allows: vec![crate::domain::values::capability::Capability::Host],
+                ca_pem: None,
+            },
+        )
+        .await
+        .expect("node");
+        let project = crate::infra::repositories::projects::create(&database, "shared")
+            .await
+            .expect("project");
+        let service = services::create(
+            &database,
+            &project.id,
+            "web",
+            "hub.example/web@sha256:a",
+            &[],
+        )
+        .await
+        .expect("service");
+        let copy = replicas::of_service(&database, &service.id)
+            .await
+            .expect("copies")
+            .remove(0);
+        replicas::move_to(&database, &copy.id, Some("nd-l1"))
+            .await
+            .expect("moved");
+        let deployer = Deployer::new(
+            std::sync::Arc::new(database.clone()),
+            &crate::infra::config::Config::default(),
+        );
+        let asked = |memory: &str| {
+            crate::features::services::set_service_resources_request::SetServiceResourcesRequest {
+                memory: memory.into(),
+                cpu: "0.5".into(),
+                disk: String::new(),
+            }
+        };
+        let set = |service: Service, memory: &'static str| {
+            let (database, deployer, project) = (&database, &deployer, &project);
+            async move {
+                SetServiceResources {
+                    project,
+                    service: &service,
+                    asked: &asked(memory),
+                }
+                .run(database, deployer)
+                .await
+            }
+        };
+
+        let refused = set(service.clone(), "256 MB")
+            .await
+            .expect_err("running, on a node promised past what it has");
+        assert!(refused.starts_with("nd-l1.example has"), "{refused}");
+        set(service.clone(), "64 MB").await.expect("lowered");
+
+        services::set_desired_state(&database, &service.id, DesiredState::Stopped)
+            .await
+            .expect("stopped");
+        let stopped = services::find(&database, &service.id)
+            .await
+            .expect("query")
+            .expect("row");
+        let saved = set(stopped, "512 MB").await.expect("stopped holds nothing");
+        assert_eq!(saved.memory_limit, Some(512 * MB));
     }
 }

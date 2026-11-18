@@ -1003,8 +1003,8 @@ pestaña de recursos de uno de esos servicios se pide uno.
 
 Lo que ya corre no se rechaza, así que un nodo puede quedar prometido
 por encima de lo que tiene. Su página lo dice, con cuánto, y rechaza la
-siguiente promesa de memoria hasta que baje un techo o se mueva una
-copia. node-0 lo estará: 1,87 GB, cuatro servicios sin techo con picos
+siguiente promesa de memoria hasta que baje un techo, se mueva una
+copia o se pare un servicio. node-0 lo estará: 1,87 GB, cuatro servicios sin techo con picos
 de 122 a 260 MB.
 
 Verificado en Alpine y en Debian 13 con systemd: el contenedor conservó
@@ -1013,3 +1013,40 @@ su pid y pasó de `max` a su techo; con systemd el techo queda en el cgroup
 `daemon-reload` no lo toca y el kernel lo hace cumplir —un `tail
 /dev/zero` murió en 255 MB, y con él el contenedor entero, que `watch`
 arrancó de nuevo ya con el techo en el scope—.
+
+### 10.19 Lo que no crece no se rechaza, y lo parado no cuenta
+
+0.42.0 salió con la aritmética de admisión contando mal lo que un
+servicio ya tenía. `Room.already` era el techo **por copia**, y `fits` lo
+restaba multiplicado por las copias de la pregunta, no por las que había.
+De ahí salían tres errores con la misma causa:
+
+- **Bajar un techo en un nodo prometido de más se rechazaba.** La suma
+  después seguía sin caber, y nadie preguntaba si había crecido. Era
+  justo lo que la página del nodo pedía hacer, y node-0 habría quedado
+  así al arrancar 0.42.0.
+- **El formulario de recursos preguntaba al nodo dueño**, contando una
+  copia aunque no hubiera ninguna. Un servicio que solo corría en node-l1
+  se juzgaba con la memoria de node-0.
+- **Al colocar una copia se descontaba un techo que el nodo nunca había
+  contado**, y un nodo al que se pedía pasar de una copia a dos
+  descontaba dos. Ambos admitían un techo de más.
+
+Ahora es `Room.held`: lo que las copias del servicio suman de verdad en
+ese nodo, calculado con el mismo recorrido que la suma, así que la parte
+no puede discrepar del total. Lo que no crece no se rechaza, igual que el
+recado ya hacía: se consiente tomar trabajo, nunca soltarlo. Una copia
+más (crear, mover, colocar) no descuenta nada. Un techo nuevo se pregunta
+a cada nodo que corre copias, con sus medidores si es este y con su
+último reporte si es otro, y ese otro vuelve a preguntar con los suyos
+cuando le llega.
+
+Y, decidido por Jorge el mismo día, **parar un servicio es llevar sus
+réplicas a cero**: ni el nodo ni la organización cuentan su memoria ni su
+CPU. Su disco sí, porque sus volúmenes siguen ahí. Arrancarlo otra vez es
+una promesa como crearlo, y se admite dentro de `Deployer::deploy`, antes
+de cualquier rama que lo ponga en marcha: la del servicio sin imagen y la
+del servicio sin copia aquí también lo hacen. Si no cabe, el motivo queda
+en la fila y el servicio sigue parado. El precio es que algo que se paró
+puede no volver a arrancar si otro ocupó su sitio mientras tanto, y es el
+precio honesto: el sitio no estaba guardado.

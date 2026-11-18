@@ -172,8 +172,14 @@ pub struct Room {
     pub known: bool,
     /// The sum of every ceiling on every copy here, this one included.
     pub committed: u64,
-    /// What this service already holds, per copy.
-    pub already: u64,
+    /// What this service's own copies add to `committed`, in total: nothing
+    /// for a service that is stopped or has no copy there.
+    ///
+    /// It was a ceiling per copy, multiplied by however many copies the
+    /// caller was asking about. So placing a new copy took back a ceiling
+    /// the node had never counted, and a node told to go from one copy to
+    /// two took back two — both admitted one ceiling more than there was.
+    pub held: u64,
 }
 
 /// Whether one more promise this size can be kept, and why not.
@@ -190,10 +196,17 @@ pub struct Room {
 /// is not one you can hold back, and refusing on the strength of a
 /// reading that failed is a rule made of a missing number.
 ///
-/// `already` is subtracted before the sum, or a ceiling would be refused
+/// `held` is subtracted before the sum, or a ceiling would be refused
 /// by its own current value — a form that lets somebody set a number
 /// once and never change their mind, which is worse than no check
 /// because it looks like a rule.
+///
+/// **A promise that does not grow is never refused.** On a node promised
+/// past what it has, the sum after lowering a ceiling still did not fit,
+/// so the one form the node's page asked somebody to use refused them —
+/// the same rule the errand learned: consent is for taking work on.
+///
+/// `copies` is how many this service holds there afterwards.
 ///
 /// `who` names the machine the numbers belong to. It used to say "this
 /// node" and mean it, because there was nowhere else to ask; the moment
@@ -210,10 +223,12 @@ pub fn fits(
     if !room.known {
         return None;
     }
-    let others = room
-        .committed
-        .saturating_sub(room.already.saturating_mul(copies));
-    let after = others.saturating_add(wanted.saturating_mul(copies));
+    let asked = wanted.saturating_mul(copies);
+    if asked <= room.held {
+        return None;
+    }
+    let others = room.committed.saturating_sub(room.held);
+    let after = others.saturating_add(asked);
     if after <= room.allocatable {
         return None;
     }
@@ -249,10 +264,10 @@ impl Rooms {
     /// somebody would argue with should be testable without a machine of
     /// a particular size, and now without a second machine at all.
     ///
-    /// `copies` is how many copies of this service that node already
-    /// holds — its `committed` includes them, so they come back out
-    /// before the comparison, exactly as they do locally.
-    pub fn reported(capacity: &crate::infra::network::Capacity, service: &Service) -> Self {
+    /// `held` is what this service's copies there add to what it
+    /// reported, so they come back out before the comparison, exactly as
+    /// they do locally.
+    pub fn reported(capacity: &crate::infra::network::Capacity, held: Committed) -> Self {
         Self {
             memory: Room {
                 allocatable: capacity.memory_allocatable,
@@ -261,13 +276,13 @@ impl Rooms {
                 // zeroes — see `collect::capacity`.
                 known: true,
                 committed: capacity.memory_committed,
-                already: service.memory_limit.unwrap_or(0),
+                held: held.memory,
             },
             cpu: Room {
                 allocatable: u64::from(capacity.cpu_allocatable),
                 known: true,
                 committed: u64::from(capacity.cpu_committed),
-                already: u64::from(service.cpu_millicores.unwrap_or(0)),
+                held: u64::from(held.cpu),
             },
         }
     }
@@ -685,6 +700,15 @@ impl Deployer {
             );
             return Ok(None);
         }
+
+        // Before every branch below, because each of them sets the service
+        // running — the one with no image and the one with no copy here as
+        // much as the one that starts containers.
+        if let Some(refusal) = self.room_to_start(project, service).await {
+            services::set_last_error(&self.database, &service.id, Some(&refusal)).await?;
+            return Err(DeployError::Refused(refusal));
+        }
+        services::set_last_error(&self.database, &service.id, None).await?;
 
         // **Nothing to run yet.** A service created without an image is
         // waiting for the first push to its own repository, and there is
@@ -1653,7 +1677,19 @@ impl Deployer {
     /// answer and an uncomfortable one: it can take everything and the
     /// arithmetic cannot see it. The page says so rather than quietly
     /// pretending the sum means more than it does.
+    ///
+    /// A stopped service counts as nothing too — see [`Service::promises`].
     pub async fn committed(&self) -> Committed {
+        self.tally(None).await
+    }
+
+    /// What one service's copies add to [`Self::committed`], by the same
+    /// walk, so the part can never disagree with the sum it comes out of.
+    pub async fn held_here(&self, service_id: &str) -> Committed {
+        self.tally(Some(service_id)).await
+    }
+
+    async fn tally(&self, only: Option<&str>) -> Committed {
         let (Ok(services), Ok(mine)) = (
             services::all(&self.database, None).await,
             replicas::here(&self.database).await,
@@ -1662,8 +1698,16 @@ impl Deployer {
         };
 
         let mut committed = Committed::default();
-        for replica in mine.iter().filter(|replica| !replica.evicted()) {
-            let Some(service) = services.iter().find(|s| s.id == replica.service_id) else {
+        for replica in mine
+            .iter()
+            .filter(|replica| !replica.evicted())
+            .filter(|replica| only.is_none_or(|id| replica.service_id == id))
+        {
+            let Some(service) = services
+                .iter()
+                .find(|s| s.id == replica.service_id)
+                .filter(|service| service.promises())
+            else {
                 continue;
             };
             match service.memory_limit {
@@ -1677,53 +1721,141 @@ impl Deployer {
         committed
     }
 
-    /// Whether this node can keep a promise this size, or why not.
+    /// Whether every node holding a copy of this service can keep it at
+    /// this ceiling, or the first that cannot and why.
     ///
     /// `None` is yes. The reason is a sentence somebody can act on,
     /// which is this project's rule about errors and matters more here
     /// than usual: "refused" without a number is a form somebody fights
     /// with by trying smaller values.
     ///
-    /// This half gathers; [`fits`] decides. The judgement is worth
-    /// having apart from the four readings it needs — it is where the
-    /// arithmetic somebody would argue with lives, and a test for it
-    /// should not need a machine with a particular amount of memory.
-    pub async fn room_for(&self, service: &Service, memory: Option<u64>) -> Option<String> {
-        self.room_for_on(None, service, memory).await
+    /// **Asked of the nodes running the copies, not of this one.** It used
+    /// to ask here alone, counting one copy when there was none, so a
+    /// service that ran only on node-l1 had its ceiling judged by node-0's
+    /// memory. Another node is answered from what it last reported, and it
+    /// asks again with its own meters when the ceiling arrives.
+    ///
+    /// This half gathers; [`fits`] decides.
+    pub async fn room_for_every_copy(
+        &self,
+        service: &Service,
+        memory: Option<u64>,
+    ) -> Option<String> {
+        let (Ok(here), Ok(elsewhere)) = (
+            replicas::here(&self.database).await,
+            replicas::elsewhere(&self.database).await,
+        ) else {
+            return None;
+        };
+        let ours = |replica: &&Replica| replica.service_id == service.id && !replica.evicted();
+        let copies_here = here.iter().filter(ours).count() as u64;
+        if copies_here > 0 {
+            let held = self.held_here(&service.id).await;
+            if let Some(refusal) =
+                self.rooms_here(held)
+                    .await
+                    .admits(memory, copies_here, "this node")
+            {
+                return Some(refusal);
+            }
+        }
+        let mut nodes: std::collections::BTreeMap<&str, u64> = std::collections::BTreeMap::new();
+        for replica in elsewhere.iter().filter(ours) {
+            if let Some(node) = replica.node_id.as_deref() {
+                *nodes.entry(node).or_default() += 1;
+            }
+        }
+        for (node_id, copies) in nodes {
+            let Ok(Some(node)) = crate::infra::network::find(&self.database, node_id).await else {
+                continue;
+            };
+            let Some(capacity) = node.capacity.as_ref() else {
+                continue;
+            };
+            let held = match services::find(&self.database, &service.id).await {
+                Ok(Some(stored)) if stored.promises() => Committed {
+                    memory: stored.memory_limit.unwrap_or(0).saturating_mul(copies),
+                    cpu: stored
+                        .cpu_millicores
+                        .unwrap_or(0)
+                        .saturating_mul(u32::try_from(copies).unwrap_or(u32::MAX)),
+                    unbounded: 0,
+                },
+                _ => Committed::default(),
+            };
+            if let Some(refusal) =
+                Rooms::reported(capacity, held).admits(memory, copies, &node.name)
+            {
+                return Some(refusal);
+            }
+        }
+        None
     }
 
-    /// The same question about **any** node, this one or another.
+    /// Whether `node` can take one more copy this size — `None` or this
+    /// node's own row is here.
     ///
-    /// `None` is here. A row is another machine, answered from what it
-    /// last reported — and `is_self` is answered from the meters anyway,
-    /// because this node's own row deliberately carries no reading: it
-    /// can look, so a stored copy would be a second answer able to go
-    /// stale.
+    /// One more, so nothing comes back out first: the copies already there
+    /// stay where they are. What a new service's first copy, a copy moved
+    /// and a copy added all ask.
     ///
     /// `None` back from a node that has not reported its room. What
     /// cannot be measured is not enforced, which is the same rule the
     /// unreadable local meter follows — and the reason a *selector* has
     /// to ask a different question, because not refusing is not the same
     /// as being worth choosing.
-    pub async fn room_for_on(
+    pub async fn room_for_one_more(
         &self,
         node: Option<&crate::infra::network::Node>,
-        service: &Service,
         memory: Option<u64>,
     ) -> Option<String> {
         match node.filter(|node| !node.is_self) {
-            None => {
-                let copies = self.copies_here(service).await?;
-                self.rooms_here(service)
-                    .await
-                    .admits(memory, copies, "this node")
-            }
-            Some(node) => {
-                let capacity = node.capacity.as_ref()?;
-                let copies = self.copies_on(&node.id, service).await?;
-                Rooms::reported(capacity, service).admits(memory, copies, &node.name)
-            }
+            None => self
+                .rooms_here(Committed::default())
+                .await
+                .admits(memory, 1, "this node"),
+            Some(node) => Rooms::reported(node.capacity.as_ref()?, Committed::default())
+                .admits(memory, 1, &node.name),
         }
+    }
+
+    /// Whether a stopped service may start again, or why not.
+    ///
+    /// Stopping took its copies to none, so starting is a promise like
+    /// making it: asked of the organisation's quota and of every node
+    /// holding a copy, before anything runs. A service already running
+    /// promises nothing new, and a copy another node placed here was
+    /// admitted by this node's meters when its errand arrived.
+    pub async fn room_to_start(&self, project: &Project, service: &Service) -> Option<String> {
+        let stored = services::find(&self.database, &service.id).await.ok()??;
+        if stored.promises() || stored.origin_node_id.is_some() {
+            return None;
+        }
+        let copies = replicas::of_service(&self.database, &stored.id)
+            .await
+            .ok()?
+            .iter()
+            .filter(|replica| !replica.evicted())
+            .count() as u64;
+        if copies == 0 {
+            return None;
+        }
+        match quotas::admits(
+            &self.database,
+            project,
+            &stored,
+            stored.memory_limit,
+            stored.cpu_millicores,
+            None,
+            copies,
+        )
+        .await
+        {
+            Ok(Some(refusal)) => return Some(refusal),
+            Ok(None) => {}
+            Err(error) => tracing::warn!(%error, "could not read the organisation's quota"),
+        }
+        self.room_for_every_copy(&stored, stored.memory_limit).await
     }
 
     /// What this node may still promise in memory, or `None` when it
@@ -1740,27 +1872,11 @@ impl Deployer {
         )
     }
 
-    /// Whether a service that holds nothing yet may have its first copy
-    /// on `node` — `None` or this node's own row is here.
-    pub async fn room_for_first_copy(
-        &self,
-        node: Option<&crate::infra::network::Node>,
-        unborn: &Service,
-        memory: u64,
-    ) -> Option<String> {
-        match node.filter(|node| !node.is_self) {
-            None => self
-                .rooms_here(unborn)
-                .await
-                .admits(Some(memory), 1, "this node"),
-            Some(node) => {
-                Rooms::reported(node.capacity.as_ref()?, unborn).admits(Some(memory), 1, &node.name)
-            }
-        }
-    }
-
     /// This node's own two ceilings, from its meters rather than a row.
-    pub async fn rooms_here(&self, service: &Service) -> Rooms {
+    ///
+    /// `held` is what the service being asked about already adds to them:
+    /// [`Self::held_here`] for a ceiling changing, nothing for one more copy.
+    pub async fn rooms_here(&self, held: Committed) -> Rooms {
         let committed = self.committed().await;
         let total = measured_total();
         // What the operator said this machine keeps for itself, read here
@@ -1777,13 +1893,13 @@ impl Deployer {
                 ),
                 known: total > 0,
                 committed: committed.memory,
-                already: service.memory_limit.unwrap_or(0),
+                held: held.memory,
             },
             cpu: Room {
                 allocatable: u64::from(cores),
                 known: cores > 0,
                 committed: u64::from(committed.cpu),
-                already: u64::from(service.cpu_millicores.unwrap_or(0)),
+                held: u64::from(held.cpu),
             },
         }
     }
@@ -1842,7 +1958,7 @@ impl Deployer {
         ) else {
             return Vec::new();
         };
-        let mine = self.rooms_here(service).await;
+        let mine = self.rooms_here(Committed::default()).await;
         let unbounded_here = self.committed().await.unbounded;
 
         let mut candidates = Vec::new();
@@ -1857,7 +1973,7 @@ impl Deployer {
             let rooms = match node.is_self {
                 true => mine,
                 false => match &node.capacity {
-                    Some(capacity) => Rooms::reported(capacity, service),
+                    Some(capacity) => Rooms::reported(capacity, Committed::default()),
                     None => continue,
                 },
             };
@@ -1890,37 +2006,6 @@ impl Deployer {
             });
         }
         candidates
-    }
-
-    /// How many copies of this service run here, at least one.
-    ///
-    /// **At least one**, because the question is always "and one more
-    /// like it": a service with no copy here that is about to get one
-    /// costs one ceiling, not none."""
-    async fn copies_here(&self, service: &Service) -> Option<u64> {
-        Some(
-            replicas::here(&self.database)
-                .await
-                .ok()?
-                .iter()
-                .filter(|replica| replica.service_id == service.id && !replica.evicted())
-                .count()
-                .max(1) as u64,
-        )
-    }
-
-    /// And how many that node holds, by the same rule.
-    async fn copies_on(&self, node_id: &str, service: &Service) -> Option<u64> {
-        Some(
-            replicas::elsewhere(&self.database)
-                .await
-                .ok()?
-                .iter()
-                .filter(|replica| replica.service_id == service.id && !replica.evicted())
-                .filter(|replica| replica.node_id.as_deref() == Some(node_id))
-                .count()
-                .max(1) as u64,
-        )
     }
 
     /// The copies of this service that are not answering, by replica id.
@@ -2156,6 +2241,7 @@ impl Deployer {
         // The intent first, so a reconcile arriving mid-stop does not
         // start back what is being taken down.
         services::set_desired_state(&self.database, &service.id, DesiredState::Stopped).await?;
+        services::set_last_error(&self.database, &service.id, None).await?;
 
         // The other machines next, and **before containerd** on purpose:
         // the instruction is the intent, so it belongs with it, and a node
@@ -6677,7 +6763,7 @@ mod tests {
             allocatable: 4 * gb,
             known: true,
             committed: 0,
-            already: 0,
+            held: 0,
         };
 
         assert_eq!(
@@ -6702,7 +6788,7 @@ mod tests {
         // must not count against it.
         let holding = Room {
             committed: gb,
-            already: gb,
+            held: gb,
             ..empty
         };
         assert_eq!(fits(holding, gb, 1, "this node", say), None);
@@ -6719,7 +6805,7 @@ mod tests {
         // Somebody else's 3 GB is not this service's to spend.
         let crowded = Room {
             committed: 3 * gb + gb,
-            already: gb,
+            held: gb,
             ..empty
         };
         assert_eq!(fits(crowded, gb, 1, "this node", say), None);
@@ -6745,7 +6831,7 @@ mod tests {
             allocatable: 0,
             known: false,
             committed: 0,
-            already: 0,
+            held: 0,
         };
         assert_eq!(
             fits(
@@ -6766,6 +6852,229 @@ mod tests {
             ..unknown
         };
         assert!(fits(full, 1, 1, "this node", crate::infra::node::memory::human).is_some());
+    }
+
+    /// Shipped in 0.42.0: a node promised past what it has refused every
+    /// ceiling, lowered ones too, because the sum after still did not fit
+    /// — and its page told somebody to lower one. node-0 would have been
+    /// that node on its first start.
+    #[test]
+    fn a_promise_that_does_not_grow_is_never_refused() {
+        let gb = 1024 * 1024 * 1024;
+        let say = |bytes| crate::infra::node::memory::human(bytes);
+        let over = Room {
+            allocatable: 4 * gb,
+            known: true,
+            committed: 6 * gb,
+            held: 2 * gb,
+        };
+
+        assert_eq!(fits(over, gb, 1, "this node", say), None, "lowered");
+        assert_eq!(fits(over, 2 * gb, 1, "this node", say), None, "kept");
+        assert!(
+            fits(over, 3 * gb, 1, "this node", say).is_some(),
+            "raised is still a promise"
+        );
+
+        // Two copies of 1 GB held: the same two are the same promise, and a
+        // third is a new one.
+        let two = Room {
+            committed: 4 * gb,
+            held: 2 * gb,
+            ..over
+        };
+        assert_eq!(fits(two, gb, 2, "this node", say), None);
+        assert!(fits(two, gb, 3, "this node", say).is_some());
+    }
+
+    async fn reported_by(database: &SqliteDatabase, id: &str, allocatable: u64, committed: u64) {
+        crate::infra::network::save(
+            database,
+            &crate::infra::network::Node {
+                update_note: None,
+                version: None,
+                wanted_version: None,
+                usage: None,
+                draining_at: None,
+                capacity: Some(crate::infra::network::Capacity {
+                    memory_allocatable: allocatable,
+                    memory_committed: committed,
+                    cpu_allocatable: 1_000,
+                    cpu_committed: 0,
+                    unbounded: 0,
+                }),
+                id: id.into(),
+                name: format!("{id}.example"),
+                kind: crate::infra::network::Kind::Private,
+                endpoint: None,
+                public_key: Some("k".into()),
+                overlay_ip: Some("10.42.0.7".into()),
+                is_self: false,
+                last_seen_at: None,
+                allows: vec![crate::domain::values::capability::Capability::Host],
+                ca_pem: None,
+            },
+        )
+        .await
+        .expect("node");
+    }
+
+    async fn a_service_whose_copy_runs_on(
+        database: &SqliteDatabase,
+        node: &str,
+    ) -> (Project, Service, Deployer) {
+        let project = crate::infra::repositories::projects::create(database, "shared")
+            .await
+            .expect("project");
+        let service = services::create(
+            database,
+            &project.id,
+            "web",
+            "docker.io/library/img@sha256:a",
+            &[],
+        )
+        .await
+        .expect("service");
+        let copy = replicas::of_service(database, &service.id)
+            .await
+            .expect("copies")
+            .remove(0);
+        replicas::move_to(database, &copy.id, Some(node))
+            .await
+            .expect("moved");
+        let deployer = Deployer::new(
+            std::sync::Arc::new(database.clone()),
+            &crate::infra::config::Config::default(),
+        );
+        (project, service, deployer)
+    }
+
+    /// Stopping takes a service's copies to none (Jorge, 2026-11-18), so
+    /// what it promised this node is this node's again.
+    #[tokio::test]
+    async fn a_stopped_service_holds_nothing_on_its_node() {
+        let database = crate::infra::db::open_in_memory().await.expect("open");
+        let project = crate::infra::repositories::projects::create(&database, "shared")
+            .await
+            .expect("project");
+        let service = services::create(
+            &database,
+            &project.id,
+            "web",
+            "docker.io/library/img@sha256:a",
+            &[],
+        )
+        .await
+        .expect("service");
+        let deployer = Deployer::new(
+            std::sync::Arc::new(database.clone()),
+            &crate::infra::config::Config::default(),
+        );
+        let born = crate::domain::policies::presets::DEFAULT_MEMORY;
+        assert_eq!(deployer.committed().await.memory, born);
+        assert_eq!(deployer.held_here(&service.id).await.memory, born);
+
+        services::set_desired_state(&database, &service.id, DesiredState::Stopped)
+            .await
+            .expect("stopped");
+        assert_eq!(deployer.committed().await, Committed::default());
+        assert_eq!(deployer.held_here(&service.id).await, Committed::default());
+    }
+
+    /// Shipped in 0.42.0: the resources form asked this node alone, as if
+    /// a copy ran here, so a service running only on node-l1 had its
+    /// ceiling judged by node-0's memory.
+    #[tokio::test]
+    async fn a_ceiling_is_asked_of_the_nodes_running_its_copies() {
+        let mb = 1024 * 1024;
+        let database = crate::infra::db::open_in_memory().await.expect("open");
+        reported_by(&database, "nd-l1", 512 * mb, 384 * mb).await;
+        let (_, service, deployer) = a_service_whose_copy_runs_on(&database, "nd-l1").await;
+
+        let refusal = deployer
+            .room_for_every_copy(&service, Some(512 * mb))
+            .await
+            .expect("384 there, 128 of it this copy, and 512 asked");
+        assert!(refusal.starts_with("nd-l1.example has"), "{refusal}");
+        assert!(refusal.contains("256 MB is already promised"), "{refusal}");
+        assert_eq!(
+            deployer.room_for_every_copy(&service, Some(256 * mb)).await,
+            None
+        );
+
+        reported_by(&database, "nd-l1", 512 * mb, 700 * mb).await;
+        assert_eq!(
+            deployer.room_for_every_copy(&service, Some(64 * mb)).await,
+            None,
+            "lowered on a node promised past what it has"
+        );
+        assert!(deployer
+            .room_for_every_copy(&service, Some(256 * mb))
+            .await
+            .is_some());
+    }
+
+    /// Stopping gave the room back, so starting again asks for it: a node
+    /// that filled up meanwhile refuses, with the reason on the row and
+    /// the service still stopped.
+    #[tokio::test]
+    async fn a_stopped_service_starts_again_only_where_there_is_room() {
+        let mb = 1024 * 1024;
+        let database = crate::infra::db::open_in_memory().await.expect("open");
+        reported_by(&database, "nd-l1", 512 * mb, 448 * mb).await;
+        let (project, service, deployer) = a_service_whose_copy_runs_on(&database, "nd-l1").await;
+        services::set_desired_state(&database, &service.id, DesiredState::Stopped)
+            .await
+            .expect("stopped");
+
+        let refused = deployer
+            .deploy(&project, &service, None)
+            .await
+            .expect_err("448 promised there and 128 asked of 512");
+        assert!(matches!(refused, DeployError::Refused(_)), "{refused}");
+        let stored = services::find(&database, &service.id)
+            .await
+            .expect("query")
+            .expect("row");
+        assert_eq!(stored.desired_state, DesiredState::Stopped);
+        assert!(
+            stored
+                .last_error
+                .as_deref()
+                .is_some_and(|error| error.starts_with("nd-l1.example has")),
+            "{:?}",
+            stored.last_error
+        );
+
+        let _ = deployer.stop(&project, &service).await;
+        let stopped_again = services::find(&database, &service.id)
+            .await
+            .expect("query")
+            .expect("row");
+        assert_eq!(
+            stopped_again.last_error, None,
+            "a stop somebody chose is not a start refused"
+        );
+
+        let _ = deployer.deploy(&project, &service, None).await;
+        reported_by(&database, "nd-l1", 512 * mb, 384 * mb).await;
+        deployer
+            .deploy(&project, &service, None)
+            .await
+            .expect("room again, and its node is told to run it");
+        let started = services::find(&database, &service.id)
+            .await
+            .expect("query")
+            .expect("row");
+        assert_eq!(started.desired_state, DesiredState::Running);
+        assert_eq!(started.last_error, None, "the refusal went with the start");
+
+        reported_by(&database, "nd-l1", 512 * mb, 700 * mb).await;
+        assert_eq!(
+            deployer.room_to_start(&project, &service).await,
+            None,
+            "a service already running promises nothing new"
+        );
     }
 
     /// Two deployments of one service take turns; two services do not.
@@ -6836,29 +7145,14 @@ mod tests {
     /// placement path asked anything at all. A row that reports what it
     /// has left is the missing half, and `fits` needed nothing but a
     /// subject — the sentence used to say "this node has" and mean it.
-    #[tokio::test]
-    async fn the_room_on_another_machine_is_read_from_what_it_reported() {
+    #[test]
+    fn the_room_on_another_machine_is_read_from_what_it_reported() {
         let mb = 1024 * 1024;
-        let database = crate::infra::db::open_in_memory().await.expect("open");
-        let project = crate::infra::repositories::projects::create(&database, "shared")
-            .await
-            .expect("project");
-        let service = crate::infra::repositories::services::create(
-            &database,
-            &project.id,
-            "web",
-            "docker.io/library/img@sha256:a",
-            &[],
-        )
-        .await
-        .expect("service");
-        services::set_memory_limit(&database, &service.id, Some(128 * mb))
-            .await
-            .expect("ceiling");
-        let service = services::find(&database, &service.id)
-            .await
-            .expect("query")
-            .expect("row");
+        let one_copy = Committed {
+            memory: 128 * mb,
+            cpu: 0,
+            unbounded: 0,
+        };
 
         let room = |committed: u64| crate::infra::network::Capacity {
             memory_allocatable: 716 * mb,
@@ -6870,7 +7164,7 @@ mod tests {
 
         // Nothing promised there yet, so a 128 MB copy fits.
         assert_eq!(
-            Rooms::reported(&room(0), &service).admits(Some(128 * mb), 1, "alpine"),
+            Rooms::reported(&room(0), Committed::default()).admits(Some(128 * mb), 1, "alpine"),
             None
         );
 
@@ -6878,7 +7172,7 @@ mod tests {
         // copy — a 640 MB one does not, and the refusal names **that**
         // machine. A sentence saying "this node" would send somebody to
         // the wrong meters.
-        let refusal = Rooms::reported(&room(640 * mb), &service)
+        let refusal = Rooms::reported(&room(640 * mb), one_copy)
             .admits(Some(640 * mb), 1, "alpine")
             .expect("refused");
         assert!(refusal.starts_with("alpine has"), "{refusal}");
@@ -6893,9 +7187,19 @@ mod tests {
             ..room(0)
         };
         assert_eq!(
-            Rooms::reported(&holding, &service).admits(Some(128 * mb), 1, "alpine"),
+            Rooms::reported(&holding, one_copy).admits(Some(128 * mb), 1, "alpine"),
             None,
             "a ceiling refused by its own current value is not a rule"
+        );
+
+        // But one more copy beside it takes nothing back out: 640 there,
+        // 128 of it this service's, and a second 128 MB copy is 768.
+        // Taking its ceiling back out first is what admitted it.
+        assert!(
+            Rooms::reported(&room(640 * mb), Committed::default())
+                .admits(Some(128 * mb), 1, "alpine")
+                .is_some(),
+            "a copy that is not there yet is not held"
         );
     }
 
@@ -6916,19 +7220,6 @@ mod tests {
     /// right.
     #[tokio::test]
     async fn a_node_that_has_not_said_what_it_has_is_not_refused() {
-        let database = crate::infra::db::open_in_memory().await.expect("open");
-        let project = crate::infra::repositories::projects::create(&database, "shared")
-            .await
-            .expect("project");
-        let service = crate::infra::repositories::services::create(
-            &database,
-            &project.id,
-            "web",
-            "docker.io/library/img@sha256:a",
-            &[],
-        )
-        .await
-        .expect("service");
         let deployer = Deployer::new(
             std::sync::Arc::new(crate::infra::db::open_in_memory().await.expect("open")),
             &crate::infra::config::Config::default(),
@@ -6954,7 +7245,7 @@ mod tests {
         };
         assert_eq!(
             deployer
-                .room_for_on(Some(&silent), &service, Some(u64::MAX))
+                .room_for_one_more(Some(&silent), Some(u64::MAX))
                 .await,
             None,
             "a rule made of a missing number is not a rule"

@@ -1160,7 +1160,7 @@ async fn host_service(
     };
 
     // **Whether this machine can keep the promise**, asked before the
-    // ceilings are written so `already` is still what this node had
+    // ceilings are written so `held` is still what this node had
     // undertaken for this service a moment ago — the same arithmetic the
     // local form does, from the same function.
     //
@@ -1178,9 +1178,10 @@ async fn host_service(
     if host.running && !host.slots.is_empty() {
         if let Ok(deployer) = container.try_resolve::<crate::infra::deploy::Deployer>() {
             let wanted = host.slots.len() as u64;
+            let held = deployer.held_here(&service.id).await;
             if let Some(refusal) =
                 deployer
-                    .rooms_here(&service)
+                    .rooms_here(held)
                     .await
                     .admits(host.memory_limit, wanted, "this node")
             {

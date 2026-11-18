@@ -620,6 +620,20 @@ says so and it refuses the next promise of memory. node-0 will: 1.87 GB,
 four services with no ceiling.
 `docs/architecture.md` §10.18.
 
+**A stopped service holds nothing, and starting it is a promise.**
+Decided by Jorge on 2026-11-18: stopping takes a service's copies to
+none, so neither the node nor the organisation counts its memory or CPU
+(`Service::promises`), and its disk still counts because its volumes are
+still there. Starting it again is admitted inside `Deployer::deploy`,
+before any branch that sets it running: the quota and every node holding
+a copy, the reason on the row and the service left stopped. A ceiling is
+asked of the nodes running the copies, never of the owner, and a promise
+that does not grow is never refused. `Room.held` is what the service's
+copies add to that node's sum, by the walk that makes the sum. 0.42.0
+had it per copy: lowering a ceiling on an over-promised node was refused,
+and placing a copy admitted one ceiling more than there was.
+`docs/architecture.md` §10.19.
+
 **Timestamped logs are a switch, and the switch shows its price.**
 `file://` is the default: containerd appends the container's bytes and no
 process sits between them, which is why it cannot stamp a line or say

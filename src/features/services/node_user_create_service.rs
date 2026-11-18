@@ -62,7 +62,7 @@ pub async fn run(
         return Err(reason);
     }
     if let Some(reason) = deployer
-        .room_for_first_copy(first_on.as_ref(), &unborn, asked.ceilings.memory)
+        .room_for_one_more(first_on.as_ref(), Some(asked.ceilings.memory))
         .await
     {
         return Err(reason);

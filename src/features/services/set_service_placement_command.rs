@@ -236,7 +236,7 @@ async fn room_on(
         return Err("no such node".into());
     };
     match deployer
-        .room_for_on(Some(&row), service, service.memory_limit)
+        .room_for_one_more(Some(&row), service.memory_limit)
         .await
     {
         Some(reason) => Err(reason),
