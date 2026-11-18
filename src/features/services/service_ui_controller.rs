@@ -139,12 +139,14 @@ impl ServiceUiController {
                 .await?
                 .map(|node| node.name),
         };
+        let left = self.state.deployer.memory_left_here().await;
         let page = crate::features::services::new_service_page::NewService {
             action: &action,
             back: &back,
             query_error: query.error.as_deref(),
             here: here.as_deref(),
             elsewhere: &elsewhere,
+            left,
         };
         let body = crate::shell::texts::language::scoped(account.language, || {
             crate::features::services::new_service_page::render(&page)

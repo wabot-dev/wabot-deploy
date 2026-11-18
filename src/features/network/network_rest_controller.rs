@@ -901,6 +901,40 @@ mod tests {
         }
     }
 
+    /// A node whose services ran without ceilings is promised past what it
+    /// has the moment they are given one — node-0 will be — and its page
+    /// says by how much instead of repeating the rule it is past.
+    #[test]
+    fn a_node_promised_past_what_it_has_says_by_how_much() {
+        const MB: u64 = 1024 * 1024;
+        let snapshot = snapshot();
+        let card = |memory: u64| {
+            crate::features::network::node_usage_component::memory_card(
+                &snapshot,
+                &crate::infra::deploy::Committed {
+                    memory,
+                    ..Default::default()
+                },
+                (None, None),
+                None,
+            )
+            .render()
+            .into_inner()
+        };
+
+        let past = card(1024 * MB);
+        assert!(past.contains("promised past what it has"), "{past}");
+        assert!(
+            past.contains("256 MB more than this node may promise"),
+            "{past}"
+        );
+        assert!(!past.contains("refuses to promise more than it has"));
+
+        let within = card(512 * MB);
+        assert!(!within.contains("promised past what it has"));
+        assert!(within.contains("refuses to promise more than it has"));
+    }
+
     /// The nodes are things you look at; what can be changed about this
     /// machine is a tab of its own page.
     ///

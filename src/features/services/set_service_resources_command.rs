@@ -32,7 +32,9 @@ impl SetServiceResources<'_> {
         let memory = match self.service.kind.is_managed() {
             true => presets::parse(&self.asked.memory),
             false => presets::parse_size(&self.asked.memory),
-        }?;
+        }?
+        .ok_or("a service keeps a memory ceiling: the node promises it and never more")?;
+        let memory = Some(memory);
         // Keeping a size it already has is not choosing it: a database
         // made at 64 MB before the floor would otherwise refuse every
         // change to its cores until somebody also raised its memory.
@@ -58,7 +60,8 @@ impl SetServiceResources<'_> {
                 });
             }
         }
-        let cpu = presets::parse_cores(&self.asked.cpu)?;
+        let cpu =
+            Some(presets::parse_cores(&self.asked.cpu)?.ok_or("a service keeps a CPU ceiling")?);
         let disk = presets::parse_size(&self.asked.disk)?;
         if self.service.kind.is_store() {
             self.fits_a_store(database, memory, disk).await?;

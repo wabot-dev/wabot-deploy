@@ -971,3 +971,45 @@ en una VM Debian 13 instalada con la versión anterior y actualizada,
 incluido un reinicio de la máquina; un `tail /dev/zero` sin techo murió
 dentro del grupo y un fork bomb se quedó en 1024 tareas, con la consola
 respondiendo en menos de un segundo en ambos casos.
+
+### 10.18 Ningún servicio sin techo
+
+El guardián protege al nodo, no a los servicios entre sí: uno sin techo
+puede llevarse lo que les queda a todos juntos, y la cuenta del nodo lo
+contaba como cero. Así que todo servicio nace ahora con un techo de
+memoria y uno de CPU —128 MB y medio núcleo en el formulario, visibles
+y obligatorios, y los mismos en cualquier nodo, como pidió Jorge: 256 MB
+le parecieron demasiado— y ningún formulario deja vaciarlo. Un POST que nunca vio
+el formulario recibe lo mismo; un campo vaciado se rechaza, porque es
+alguien pidiendo que no haya techo. Crear es una promesa como cualquier
+otra: se rechaza si la memoria no cabe en el nodo donde va la primera
+copia o en la cuota de la organización, antes de escribir la fila.
+
+Lo que ya existía sin techo de memoria recibe uno al arrancar, antes de
+`reconcile` —que, al recrear un contenedor, se lleva su pico—: el
+escalón más pequeño que sea al menos una vez y media su `memory.peak`, y
+nunca menos de 128 MB, porque un pico leído justo después de reiniciar
+no es una medida. Se escribe en el cgroup del propio contenedor, sin
+reiniciarlo: es la misma ruta con systemd y con cgroupfs, y es el
+fichero donde un techo tiene que acabar de todas formas. Una copia en
+otro nodo se mide con lo que ese nodo reportó y recibe el techo con un
+despliegue allí.
+
+La CPU de lo existente se deja como estaba. Medio núcleo frenaría casi
+del todo un servicio que lleva meses usando ocho, y "todo lo del nodo"
+es lo mismo que no tener techo —el guardián ya lo pone— con el único
+efecto de inflar la cuota de CPU de una organización. Al guardar la
+pestaña de recursos de uno de esos servicios se pide uno.
+
+Lo que ya corre no se rechaza, así que un nodo puede quedar prometido
+por encima de lo que tiene. Su página lo dice, con cuánto, y rechaza la
+siguiente promesa de memoria hasta que baje un techo o se mueva una
+copia. node-0 lo estará: 1,87 GB, cuatro servicios sin techo con picos
+de 122 a 260 MB.
+
+Verificado en Alpine y en Debian 13 con systemd: el contenedor conservó
+su pid y pasó de `max` a su techo; con systemd el techo queda en el cgroup
+`container` de dentro del scope, la unidad sigue en `infinity`, un
+`daemon-reload` no lo toca y el kernel lo hace cumplir —un `tail
+/dev/zero` murió en 255 MB, y con él el contenedor entero, que `watch`
+arrancó de nuevo ya con el techo en el scope—.

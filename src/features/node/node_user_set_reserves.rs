@@ -36,7 +36,7 @@ pub async fn run(
         // is for.
         let in_use = snapshot.node + snapshot.containerd + snapshot.shims;
         if let Some(reason) = reserve_refusal(
-            snapshot.total,
+            crate::infra::deploy::measured_total(),
             in_use,
             committed.memory,
             bytes,

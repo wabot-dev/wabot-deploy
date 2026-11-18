@@ -237,6 +237,14 @@ pub async fn run(config: Config) -> anyhow::Result<i32> {
             move |cancel| async move {
                 tokio::select! {
                     _ = cancel.cancelled() => return Ok::<(), anyhow::Error>(()),
+                    given = crate::infra::deploy::ceilings::give_every_service_one(&reconciler) => {
+                        if given > 0 {
+                            tracing::info!(given, "services given a memory ceiling");
+                        }
+                    }
+                }
+                tokio::select! {
+                    _ = cancel.cancelled() => return Ok::<(), anyhow::Error>(()),
                     outcome = reconciler.reconcile() => match outcome {
                         Ok(0) => {}
                         Ok(started) => tracing::info!(started, "services restored"),

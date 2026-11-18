@@ -612,10 +612,9 @@ pub fn render<'a>(page: &'a ServiceSettings<'a>) -> impl Renderable + 'a {
                         // else takes a size.
                         @if service.kind.is_managed() {
                             <select id="memory-size" name="memory">
-                                <option value="">(t("no ceiling"))</option>
                                 // The size it has stays on the list even under
                                 // the floor: a select missing its value lands on
-                                // "no ceiling", and the next save would lift it.
+                                // the first rung, and the next save would shrink it.
                                 @for rung in crate::domain::policies::presets::LADDER.into_iter().filter(|rung| {
                                     *rung >= match service.kind.is_store() {
                                         true => crate::domain::policies::garage::FLOOR,
@@ -635,8 +634,7 @@ pub fn render<'a>(page: &'a ServiceSettings<'a>) -> impl Renderable + 'a {
                             </select>
                         } @else {
                             <input id="memory-size" name="memory" type="text"
-                                   list="memory-sizes" autocomplete="off"
-                                   placeholder=(t("no ceiling"))
+                                   list="memory-sizes" autocomplete="off" required
                                    value=(service.memory_limit
                                        .map(crate::domain::policies::presets::size_field)
                                        .unwrap_or_default())>
@@ -663,8 +661,7 @@ pub fn render<'a>(page: &'a ServiceSettings<'a>) -> impl Renderable + 'a {
 
                         <label for="cpu-size">(t("CPU"))</label>
                         <input id="cpu-size" name="cpu" type="text"
-                               list="cpu-sizes" autocomplete="off"
-                               placeholder=(t("no ceiling"))
+                               list="cpu-sizes" autocomplete="off" required
                                value=(service.cpu_millicores
                                    .map(crate::domain::policies::presets::cores_field)
                                    .unwrap_or_default())>
@@ -680,6 +677,11 @@ pub fn render<'a>(page: &'a ServiceSettings<'a>) -> impl Renderable + 'a {
                              runs slowly rather than stopping. Unlike memory, a node may promise \
                              more CPU than it has: services share its cores, and together never \
                              take what it keeps for itself."))</p>
+                        @if service.cpu_millicores.is_none() {
+                            <p class="field-hint">(t("It has none, from before every service was \
+                                 born with one, and it keeps running that way. Saving this form \
+                                 needs one."))</p>
+                        }
 
                         <label for="disk-size">(t("Disk"))</label>
                         <input id="disk-size" name="disk" type="text"

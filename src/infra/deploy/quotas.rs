@@ -384,6 +384,29 @@ mod tests {
         assert!(refusal.contains("512 MB to promise"), "{refusal}");
     }
 
+    /// What a service made before every one was born with a ceiling is,
+    /// until `deploy::ceilings` gives it one.
+    async fn without_a_ceiling(
+        database: &SqliteDatabase,
+        project_id: &str,
+        name: &str,
+    ) -> crate::domain::entities::service::Service {
+        let mut service = crate::infra::repositories::services::create(
+            database,
+            project_id,
+            name,
+            "hub.example/theirs/worker@sha256:b",
+            &[],
+        )
+        .await
+        .expect("service");
+        crate::infra::repositories::services::set_memory_limit(database, &service.id, None)
+            .await
+            .expect("no ceiling");
+        service.memory_limit = None;
+        service
+    }
+
     /// Two services without a ceiling under one quota can each be given
     /// one, through the same question every page asks. Each refusal
     /// named the other, so neither could. Found on a VM node.
@@ -392,17 +415,7 @@ mod tests {
         let (database, project, _) = tenant_with_a_service().await;
         let mut loose = Vec::new();
         for name in ["one", "two"] {
-            loose.push(
-                crate::infra::repositories::services::create(
-                    &database,
-                    &project.id,
-                    name,
-                    "hub.example/theirs/worker@sha256:b",
-                    &[],
-                )
-                .await
-                .expect("service"),
-            );
+            loose.push(without_a_ceiling(&database, &project.id, name).await);
         }
 
         for service in &loose {
@@ -436,15 +449,7 @@ mod tests {
         .await
         .expect("ceiling");
         service.memory_limit = Some(32 * MB);
-        let loose = crate::infra::repositories::services::create(
-            &database,
-            &project.id,
-            "worker",
-            "hub.example/theirs/worker@sha256:b",
-            &[],
-        )
-        .await
-        .expect("service");
+        let loose = without_a_ceiling(&database, &project.id, "worker").await;
 
         let refusal = admits(&database, &project, &service, Some(64 * MB), None, None, 1)
             .await

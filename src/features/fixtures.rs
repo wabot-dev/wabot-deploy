@@ -68,7 +68,7 @@ pub async fn store_in(
         .await
         .expect("project");
     let image = crate::domain::policies::garage::image_for("2").expect("image");
-    let service = services::create_on(database, &project.id, "files", &image, &[], None)
+    let service = services::create(database, &project.id, "files", &image, &[])
         .await
         .expect("service");
     services::set_kind(database, &service.id, Kind::Garage)

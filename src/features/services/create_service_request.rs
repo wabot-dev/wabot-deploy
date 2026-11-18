@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 use wabot::prelude::*;
 
+use crate::domain::entities::service::Ceilings;
 use crate::domain::values::allowlist::Allowlist;
 
 /// Make a service in a project.
@@ -28,6 +29,8 @@ pub struct CreateServiceRequest {
     /// The node its first copy runs on, by id; empty for this one.
     #[serde(default)]
     pub on: String,
+    #[serde(skip)]
+    pub ceilings: Ceilings,
     /// Who may connect to its names. Empty admits nobody.
     #[serde(skip)]
     pub allowlist: Allowlist,

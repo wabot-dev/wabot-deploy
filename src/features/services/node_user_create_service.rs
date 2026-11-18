@@ -5,11 +5,13 @@ use crate::domain::entities::account::Account;
 use crate::domain::values::capability::Capability;
 use crate::features::services::create_service_request::CreateServiceRequest as Asked;
 use crate::features::services::service_created_response::ServiceCreatedResponse;
+use crate::infra::deploy::{quotas, Deployer};
 use crate::infra::network;
 use crate::infra::repositories::access;
 
 pub async fn run(
     database: &SqliteDatabase,
+    deployer: &Deployer,
     account: &Account,
     asked: &Asked,
     env: &[(String, String)],
@@ -37,10 +39,34 @@ pub async fn run(
             .find(|node| node.id == id)
         {
             Some(node) if node.is_self => None,
-            Some(node) => Some(node.id),
+            Some(node) => Some(node),
             None => return Err("that node has not agreed to run containers for this one".into()),
         },
     };
+
+    let unborn =
+        crate::domain::entities::service::Service::new(&project.id, &asked.name, &asked.image, env)
+            .map_err(|error| error.to_string())?;
+    if let Some(reason) = quotas::admits(
+        database,
+        &project,
+        &unborn,
+        Some(asked.ceilings.memory),
+        Some(asked.ceilings.cpu_millicores),
+        None,
+        1,
+    )
+    .await
+    .map_err(|error| error.to_string())?
+    {
+        return Err(reason);
+    }
+    if let Some(reason) = deployer
+        .room_for_first_copy(first_on.as_ref(), &unborn, asked.ceilings.memory)
+        .await
+    {
+        return Err(reason);
+    }
 
     let service = crate::infra::repositories::services::create_on(
         database,
@@ -48,7 +74,8 @@ pub async fn run(
         &asked.name,
         &asked.image,
         env,
-        first_on.as_deref(),
+        first_on.as_ref().map(|node| node.id.as_str()),
+        asked.ceilings,
     )
     .await
     .map_err(|error| error.to_string())?;

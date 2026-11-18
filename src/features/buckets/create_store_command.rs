@@ -75,6 +75,10 @@ impl CreateStore<'_> {
             &image,
             &[],
             on.as_deref(),
+            crate::domain::entities::service::Ceilings {
+                memory: sized.memory_limit,
+                ..Default::default()
+            },
         )
         .await
         .map_err(refused)?;

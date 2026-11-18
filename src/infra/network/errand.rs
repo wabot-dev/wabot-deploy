@@ -223,9 +223,10 @@ pub struct Host {
     ///
     /// `None` is no ceiling, and it means that for both readings that
     /// can produce it: a payload written before this field existed
-    /// carried none, and an owner who cleared the ceiling means none.
-    /// The two collapse to the same correct action, which is what makes
-    /// "absent" safe to write straight through.
+    /// carried none, and an owner older than every service being born
+    /// with a ceiling may still have one without. The two collapse to the
+    /// same correct action, which is what makes "absent" safe to write
+    /// straight through.
     ///
     /// A node too old to know the fields ignores them and runs the copy
     /// the way it does today. That is a degradation somebody can see on

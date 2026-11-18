@@ -324,16 +324,8 @@ pub async fn set_memory_limit(
     // and not only a limit. Enforced there rather than here because this
     // function is handed an id and would have to read the row back to
     // learn the kind.
-    if let Some(bytes) = bytes {
-        if bytes < crate::domain::policies::presets::MIN_MEMORY {
-            return Err(PlatformError::Refused(format!(
-                "{} is under {}, which is less than a container needs to start",
-                crate::domain::policies::presets::label(bytes),
-                crate::domain::policies::presets::label(
-                    crate::domain::policies::presets::MIN_MEMORY
-                )
-            )));
-        }
+    if let Some(refusal) = bytes.and_then(memory_refusal) {
+        return Err(PlatformError::Refused(refusal));
     }
     let (id, bytes) = (service_id.to_string(), bytes.map(|bytes| bytes as i64));
     database
@@ -348,21 +340,35 @@ pub async fn set_memory_limit(
     Ok(())
 }
 
+fn memory_refusal(bytes: u64) -> Option<String> {
+    (bytes < crate::domain::policies::presets::MIN_MEMORY).then(|| {
+        format!(
+            "{} is under {}, which is less than a container needs to start",
+            crate::domain::policies::presets::label(bytes),
+            crate::domain::policies::presets::label(crate::domain::policies::presets::MIN_MEMORY)
+        )
+    })
+}
+
+fn cpu_refusal(millicores: u32) -> Option<String> {
+    (millicores < crate::domain::policies::presets::MIN_MILLICORES).then(|| {
+        format!(
+            "{} is under {}, which is less than a container needs to start",
+            crate::domain::policies::presets::cpu_label(millicores),
+            crate::domain::policies::presets::cpu_label(
+                crate::domain::policies::presets::MIN_MILLICORES
+            )
+        )
+    })
+}
+
 pub async fn set_cpu_limit(
     database: &SqliteDatabase,
     service_id: &str,
     millicores: Option<u32>,
 ) -> PlatformResult<()> {
-    if let Some(millicores) = millicores {
-        if millicores < crate::domain::policies::presets::MIN_MILLICORES {
-            return Err(PlatformError::Refused(format!(
-                "{} is under {}, which is less than a container needs to start",
-                crate::domain::policies::presets::cpu_label(millicores),
-                crate::domain::policies::presets::cpu_label(
-                    crate::domain::policies::presets::MIN_MILLICORES
-                )
-            )));
-        }
+    if let Some(refusal) = millicores.and_then(cpu_refusal) {
+        return Err(PlatformError::Refused(refusal));
     }
     let (id, millicores) = (service_id.to_string(), millicores.map(i64::from));
     database
@@ -481,7 +487,16 @@ pub async fn create(
     image: &str,
     env: &[(String, String)],
 ) -> PlatformResult<Service> {
-    create_on(database, project_id, name, image, env, None).await
+    create_on(
+        database,
+        project_id,
+        name,
+        image,
+        env,
+        None,
+        crate::domain::entities::service::Ceilings::default(),
+    )
+    .await
 }
 
 /// The same, with its first copy on `first_on` — `None` for this node.
@@ -496,8 +511,16 @@ pub async fn create_on(
     image: &str,
     env: &[(String, String)],
     first_on: Option<&str>,
+    ceilings: crate::domain::entities::service::Ceilings,
 ) -> PlatformResult<Service> {
-    let service = Service::new(project_id, name, image, env)?;
+    let mut service = Service::new(project_id, name, image, env)?;
+    if let Some(refusal) =
+        memory_refusal(ceilings.memory).or_else(|| cpu_refusal(ceilings.cpu_millicores))
+    {
+        return Err(PlatformError::Refused(refusal));
+    }
+    service.memory_limit = Some(ceilings.memory);
+    service.cpu_millicores = Some(ceilings.cpu_millicores);
 
     let row = service.clone();
     let env_json = serde_json::to_string(&row.env).unwrap_or_else(|_| "{}".into());
@@ -507,8 +530,9 @@ pub async fn create_on(
             connection.execute(
                 "INSERT INTO service \
                    (\"id\", \"project_id\", \"name\", \"slug\", \"image\", \
-                    \"env\", \"desired_state\", \"created_at\", \"updated_at\") \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?8)",
+                    \"env\", \"desired_state\", \"memory_limit\", \"cpu_millicores\", \
+                    \"created_at\", \"updated_at\") \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?10)",
                 (
                     row.id,
                     row.project_id,
@@ -517,6 +541,8 @@ pub async fn create_on(
                     row.image,
                     env_json,
                     row.desired_state.as_str(),
+                    row.memory_limit.map(|bytes| bytes as i64),
+                    row.cpu_millicores.map(i64::from),
                     now_ms(),
                 ),
             )?;
@@ -870,7 +896,11 @@ mod creating {
         )
         .await
         .expect("created");
-        assert_eq!(service.memory_limit, None);
+        assert_eq!(
+            service.memory_limit,
+            Some(crate::domain::policies::presets::DEFAULT_MEMORY),
+            "born with one"
+        );
 
         let rung = crate::domain::policies::presets::LADDER[1];
         set_memory_limit(&database, &service.id, Some(rung))

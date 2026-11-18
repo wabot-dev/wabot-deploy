@@ -328,6 +328,23 @@ pub fn shm_for(memory_limit: u64) -> u64 {
     (memory_limit / 4).clamp(16 * MB, 512 * MB)
 }
 
+pub const DEFAULT_MEMORY: u64 = 128 * MB;
+
+pub const DEFAULT_MILLICORES: u32 = 500;
+
+/// Half again over the most it was seen to use, because a ceiling at the
+/// peak kills it the next time it gets there; never under the default,
+/// because a peak read just after a restart is no measurement at all.
+pub fn memory_from_peak(peak: Option<u64>) -> u64 {
+    let wanted = peak
+        .map_or(0, |peak| peak.saturating_add(peak / 2))
+        .max(DEFAULT_MEMORY);
+    match LADDER.into_iter().find(|rung| *rung >= wanted) {
+        Some(rung) => rung,
+        None => wanted.div_ceil(1024 * MB).saturating_mul(1024 * MB),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     /// A node keeps enough for itself at both ends of the range it runs
@@ -514,5 +531,29 @@ mod tests {
         for rung in LADDER {
             assert!(shm_for(rung) <= rung, "{} would be the whole of it", rung);
         }
+    }
+
+    /// Measured on node-0 before this existed: four services with no
+    /// ceiling at peaks of 122, 136, 166 and 260 MB.
+    #[test]
+    fn a_service_without_a_ceiling_is_given_half_again_its_peak_on_a_rung() {
+        assert_eq!(memory_from_peak(Some(60 * MB)), 128 * MB);
+        assert_eq!(memory_from_peak(Some(122 * MB)), 256 * MB);
+        assert_eq!(memory_from_peak(Some(166 * MB)), 256 * MB);
+        assert_eq!(memory_from_peak(Some(171 * MB)), 512 * MB);
+        assert_eq!(memory_from_peak(Some(260 * MB)), 512 * MB);
+        assert_eq!(memory_from_peak(Some(1041 * MB)), 2048 * MB);
+    }
+
+    #[test]
+    fn nothing_measured_is_the_default_and_never_less() {
+        assert_eq!(memory_from_peak(None), DEFAULT_MEMORY);
+        assert_eq!(memory_from_peak(Some(4 * MB)), DEFAULT_MEMORY);
+    }
+
+    #[test]
+    fn a_peak_past_the_ladder_is_rounded_up_to_a_whole_gigabyte() {
+        assert_eq!(memory_from_peak(Some(3000 * MB)), 5 * 1024 * MB);
+        assert!(memory_from_peak(Some(u64::MAX / 2)) >= u64::MAX / 2);
     }
 }

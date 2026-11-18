@@ -189,12 +189,19 @@ under `cfg!(test)` now:
 - every program `runtime::network` runs;
 - `Containerd::connect`;
 - the guard's cgroup and the node's own OOM score, `runtime::guard`;
+- a running container's own cgroup, `runtime::ceiling`;
 - `Config::default()`'s data directory, which is under `/dev/null`.
 
 The firewall is armed instead, because the recovery verb needs it outside
 `serve`. Anything new that reaches the machine needs the same.
 `scripts/vm.sh suite` is how to know: it runs the tests as root on the VM
 node, says what they changed, and it should be nothing.
+
+**Nor does a test's verdict depend on the machine it runs on.** The
+node's memory reads as unknown under `cfg!(test)`
+(`deploy::measured_total`): a laptop cannot read its meters and admitted
+everything, the 512 MB VM refused, and the same suite failed three tests
+there — forty-six once every service was born with a ceiling.
 
 **The ledger records; it does not decide.** Install steps are
 convergent — each one asks about the thing, not about the history. This
@@ -529,11 +536,11 @@ happened:
   that places a copy elsewhere carries no volumes, so both directions are
   refused with a sentence rather than starting a copy on an empty
   directory.
-- A service created under an organisation's quota runs with no ceiling.
-- A service may still have no memory ceiling at all. The guard keeps it
-  off the node, not off the other services: it can take what they all
-  have left together. And disk is not enforced — a container's writable
-  layer and its volumes can fill the machine's filesystem.
+- Disk is not enforced — a container's writable layer and its volumes
+  can fill the machine's filesystem.
+- A service made before every one was born with a ceiling keeps no CPU
+  ceiling until its resources form is saved, and a copy placed here by a
+  node older than 0.42.0 can still arrive with no memory ceiling.
 - A running container no row claims — what a restore from an older
   backup leaves — is on no page.
 - A store of buckets is one copy, on the node chosen when it was made —
@@ -592,6 +599,26 @@ quota still refuses. The parent is fixed when a container is created, so
 **the first start of a version with the guard recreates every container
 once** — a release carrying it has to say so in its notes.
 `docs/architecture.md` §10.17.
+
+**Every service is born with a ceiling, and no form takes one away.**
+Phase 2 of the above, asked for by Jorge on 2026-11-18. The form that
+makes a service shows 128 MB and ½ core and needs both — fixed, never
+sized to the node, because Jorge found 256 MB too much; a POST that never
+saw the form gets the same, an emptied field is refused. Databases and
+stores are born with their size and ½ core. Creating is a promise like any
+other: refused when the memory does not fit the node the first copy goes
+on, or the organisation's quota. A service from before that has no memory
+ceiling is given one at boot, before `reconcile`, from what its copies
+used — the smallest rung at or over half again their `memory.peak`, never
+under 128 MB — written into the running container's own cgroup without a
+restart (`deploy::ceilings`). A copy on another node is measured by what
+that node reported and takes it with a deployment there. Their CPU is left
+alone: half a core would cripple a service that has been using eight, and
+the node's whole share is the same as none. What is already running is
+not refused, so a node can find itself promised past what it has; its page
+says so and it refuses the next promise of memory. node-0 will: 1.87 GB,
+four services with no ceiling.
+`docs/architecture.md` §10.18.
 
 **Timestamped logs are a switch, and the switch shows its price.**
 `file://` is the default: containerd appends the container's bytes and no

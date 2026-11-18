@@ -158,6 +158,12 @@ pub fn memory_card<'a>(
     guard: Option<&'a crate::infra::runtime::guard::Reading>,
 ) -> impl Renderable + 'a {
     let containers = snapshot.containers_total();
+    let allocatable =
+        crate::domain::policies::presets::allocatable_memory(snapshot.total, reserves.0);
+    let overpromised = match snapshot.total {
+        0 => 0,
+        _ => committed.memory.saturating_sub(allocatable),
+    };
 
     rsx! {
         <section class="card stack">
@@ -220,9 +226,14 @@ pub fn memory_card<'a>(
                 <dt>(t("Promised"))</dt>
                 <dd>
                     (memory::human(committed.memory))(t(" of "))
-                    (memory::human(crate::domain::policies::presets::allocatable_memory(snapshot.total, reserves.0)))
+                    (memory::human(allocatable))
                     (" · ")
-                    (crate::domain::policies::presets::cpu_label(committed.cpu))(t(" of "))
+                    @if committed.cpu == 0 {
+                        (t("nothing"))
+                    } @else {
+                        (crate::domain::policies::presets::cpu_label(committed.cpu))
+                    }
+                    (t(" of "))
                     (crate::domain::policies::presets::cpu_label(
                         crate::infra::node::cpu::allocatable_millicores(reserves.1)
                     ))
@@ -253,11 +264,21 @@ pub fn memory_card<'a>(
                          promised is a floor rather than a total — any of them may take what \
                          services have left together."))
                 </p>
-            } @else {
+            } @else if overpromised == 0 {
                 <p class="field-hint">(t("Memory a service may take is also reserved for it, and \
                      this node refuses to promise more than it has. CPU may be promised beyond \
                      it: services share the cores, and together never take what the node keeps \
                      for itself — the console, the edge, containerd."))</p>
+            }
+            @if overpromised > 0 {
+                <p class="field-hint">
+                    <span class="badge badge-danger"><span class="dot dot-danger"></span>(t("promised past what it has"))</span>
+                    (" ")(memory::human(overpromised))(t(" more than this node may promise. Services \
+                         that ran without a ceiling were given one from what they used, and what \
+                         is already running is not refused. The kernel still keeps them all inside \
+                         what services may take together; until a ceiling comes down or a copy \
+                         moves, this node refuses the next promise of memory."))
+                </p>
             }
             @if guard.is_none_or(|guard| guard.limits.memory.is_none()) {
                 <p class="field-hint">(t("Nothing in the kernel keeps services off this node's \

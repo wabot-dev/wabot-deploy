@@ -193,6 +193,10 @@ impl ServiceRestController {
             Ok(allowlist) => allowlist,
             Err(message) => return Ok(back_with_error(&form_url, &message)),
         };
+        let ceilings = match ceilings_of(&form) {
+            Ok(ceilings) => ceilings,
+            Err(message) => return Ok(back_with_error(&form_url, &message)),
+        };
 
         // Built here and validated here: the use case is handed a
         // request whose *shape* is already right, and asks only the
@@ -203,6 +207,7 @@ impl ServiceRestController {
             image: field(&form, "image").to_string(),
             env: field(&form, "env").to_string(),
             on: field(&form, "on").to_string(),
+            ceilings,
             allowlist,
         };
         if let Err(reason) = asked.validate() {
@@ -213,6 +218,7 @@ impl ServiceRestController {
             true => {
                 crate::features::services::node_user_create_service::run(
                     &self.state.database,
+                    &self.state.deployer,
                     &account,
                     &asked,
                     &env,
@@ -222,6 +228,7 @@ impl ServiceRestController {
             false => {
                 crate::features::services::tenant_user_create_service::run(
                     &self.state.database,
+                    &self.state.deployer,
                     &account,
                     &asked,
                     &env,
@@ -1618,6 +1625,29 @@ fn parse_port(value: &str) -> Result<Option<u16>, &'static str> {
         Ok(0) | Err(_) => Err("a container port is a number between 1 and 65535"),
         Ok(port) => Ok(Some(port)),
     }
+}
+
+fn ceilings_of(
+    form: &std::collections::HashMap<String, String>,
+) -> Result<crate::domain::entities::service::Ceilings, String> {
+    let born = crate::domain::entities::service::Ceilings::default();
+    // Absent is a POST that never saw the form, and gets what the form
+    // would have shown it; blank is somebody emptying a field the form
+    // filled, which is asking for no ceiling.
+    let memory = match form.get("memory") {
+        None => born.memory,
+        Some(text) => crate::domain::policies::presets::parse_size(text)?
+            .ok_or("a service needs a memory ceiling: the node promises it and never more")?,
+    };
+    let cpu_millicores = match form.get("cpu") {
+        None => born.cpu_millicores,
+        Some(text) => crate::domain::policies::presets::parse_cores(text)?
+            .ok_or("a service needs a CPU ceiling")?,
+    };
+    Ok(crate::domain::entities::service::Ceilings {
+        memory,
+        cpu_millicores,
+    })
 }
 
 /// `KEY=value` lines into pairs.
@@ -3298,17 +3328,20 @@ mod tests {
                 .expect("a host errand")
                 .memory_limit
         };
-        // Placed with none, because the service has none.
         let placed = crate::infra::network::errand::waiting(&console.database, "nd-elsewhere1")
             .await
             .expect("waiting");
-        assert_eq!(ceiling(&placed[0].payload), None);
+        assert_eq!(
+            ceiling(&placed[0].payload),
+            Some(crate::domain::policies::presets::DEFAULT_MEMORY),
+            "placed with the ceiling it was born with"
+        );
 
         console
             .harness
             .post("/projects/shared/services/web/memory")
             .header("cookie", &cookie)
-            .form(&[("memory", "256 MB"), ("cpu", "")])
+            .form(&[("memory", "512 MB"), ("cpu", "0.5")])
             .send()
             .await
             .assert_status(StatusCode::SEE_OTHER);
@@ -3319,7 +3352,7 @@ mod tests {
                 .expect("service")
                 .expect("row")
                 .memory_limit,
-            Some(256 * 1024 * 1024),
+            Some(512 * 1024 * 1024),
             "the form did not write it, so the rest of this proves nothing"
         );
 
@@ -3329,7 +3362,7 @@ mod tests {
         let latest = after.last().expect("an instruction after the change");
         assert_eq!(
             ceiling(&latest.payload),
-            Some(256 * 1024 * 1024),
+            Some(512 * 1024 * 1024),
             "the node running the copy was told the old number"
         );
     }
@@ -3741,6 +3774,69 @@ mod tests {
             service.env.get("GREETING").map(String::as_str),
             Some("hello")
         );
+    }
+
+    /// No form leaves a service without a ceiling: emptying the field the
+    /// form filled is asking for none, and it is refused on the way in and
+    /// on the way back.
+    #[tokio::test]
+    async fn a_ceiling_cannot_be_emptied_on_either_form() {
+        let console = Console::new().await;
+        let cookie = console.signed_in().await;
+        let slug = project(&console, &cookie).await;
+
+        for (memory, cpu, refusal) in [("", "0.5", "memory"), ("256 MB", "", "CPU")] {
+            let response = console
+                .harness
+                .post(&format!("/projects/{slug}/services"))
+                .header("cookie", &cookie)
+                .form(&[("name", "web"), ("memory", memory), ("cpu", cpu)])
+                .send()
+                .await;
+            let location = response.header("location").unwrap_or_default().to_string();
+            assert!(location.contains("error="), "{location}");
+            assert!(location.contains(refusal), "{location}");
+        }
+        assert!(services::all(&console.database, None)
+            .await
+            .expect("query")
+            .is_empty());
+
+        console
+            .harness
+            .post(&format!("/projects/{slug}/services"))
+            .header("cookie", &cookie)
+            .form(&[("name", "web"), ("memory", "384 MB"), ("cpu", "1.5")])
+            .send()
+            .await
+            .assert_status(StatusCode::SEE_OTHER);
+        let made = services::all(&console.database, None)
+            .await
+            .expect("query")
+            .pop()
+            .expect("made");
+        assert_eq!(made.memory_limit, Some(384 * 1024 * 1024));
+        assert_eq!(made.cpu_millicores, Some(1_500));
+
+        for (memory, cpu) in [("", "1.5"), ("384 MB", "")] {
+            let location = console
+                .harness
+                .post(&format!("/projects/{slug}/services/web/memory"))
+                .header("cookie", &cookie)
+                .form(&[("memory", memory), ("cpu", cpu)])
+                .send()
+                .await
+                .header("location")
+                .unwrap_or_default()
+                .to_string();
+            assert!(location.contains("error="), "{location}");
+        }
+        let kept = services::find(&console.database, &made.id)
+            .await
+            .expect("query")
+            .expect("row");
+        assert_eq!(kept.memory_limit, made.memory_limit);
+        assert_eq!(kept.cpu_millicores, made.cpu_millicores);
     }
 
     #[tokio::test]
@@ -6513,7 +6609,12 @@ mod tests {
             // The size is a database's card. A plain service has a
             // ceiling too and no form for it — the one place it is
             // chosen is here.
-            ("memory", "memory", true, vec![("memory", "")]),
+            (
+                "memory",
+                "memory",
+                true,
+                vec![("memory", "268435456"), ("cpu", "0.5")],
+            ),
             (
                 "database/name",
                 "name",

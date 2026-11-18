@@ -6,6 +6,7 @@
 //! has to.
 
 pub(crate) const TABLE: &[(&str, &str)] = &[
+    (" is what this node has left to promise. A service is refused memory it does not have.", " es lo que a este nodo le queda por prometer. A un servicio se le rechaza la memoria que no hay."),
     (" lines kept.", " líneas guardadas."),
     (" matched, of ", " coincidencias, de "),
     (" or later: ", " o posterior: "),
@@ -67,6 +68,7 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
     ("Image, if you have one", "Imagen, si ya tienes una"),
     ("Inside the container", "Dentro del contenedor"),
     ("Inside the project", "Dentro del proyecto"),
+    ("It has none, from before every service was born with one, and it keeps running that way. Saving this form needs one.", "No tiene, porque es de antes de que todo servicio naciera con uno, y sigue corriendo así. Para guardar este formulario hace falta uno."),
     ("Its names are withheld from these nodes, which run a version that would ignore this list and let everyone in. They serve them again once they are updated:", "Sus nombres no se mandan a estos nodos, que corren una versión que ignoraría esta lista y dejaría entrar a todo el mundo. Los vuelven a servir cuando se actualicen:"),
     ("Keep a directory", "Conservar un directorio"),
     ("Keep at most", "Guardar como máximo"),

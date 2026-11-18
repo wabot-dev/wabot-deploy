@@ -134,6 +134,10 @@ impl CreateDatabase<'_> {
             &image,
             &[],
             self.on,
+            crate::domain::entities::service::Ceilings {
+                memory: self.memory_limit,
+                ..Default::default()
+            },
         )
         .await?;
 
@@ -143,12 +147,6 @@ impl CreateDatabase<'_> {
         // one that looks like it worked.
         crate::infra::repositories::services::set_kind(database, &service.id, engine.kind())
             .await?;
-        crate::infra::repositories::services::set_memory_limit(
-            database,
-            &service.id,
-            Some(self.memory_limit),
-        )
-        .await?;
 
         // The volume is what makes it a database rather than a container
         // that forgets. Nothing else on the node declares one yet.

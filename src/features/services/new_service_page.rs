@@ -1,5 +1,6 @@
 //! The form that makes a service.
 
+use crate::domain::policies::presets;
 use crate::domain::values::allowlist::Allowlist;
 use crate::features::services::texts::t;
 use crate::shell::components::allowlist_field;
@@ -14,6 +15,7 @@ pub struct NewService<'a> {
     pub here: Option<&'a str>,
     /// The other nodes that agreed to run containers for this one.
     pub elsewhere: &'a [crate::infra::network::Node],
+    pub left: Option<u64>,
 }
 
 pub fn render<'a>(page: &'a NewService<'a>) -> impl Renderable + 'a {
@@ -56,6 +58,42 @@ pub fn render<'a>(page: &'a NewService<'a>) -> impl Renderable + 'a {
                 <p class="field-hint">(t("Where its first copy runs. Copies can be moved, or added on other \
                      nodes, from the service's settings."))</p>
             }
+
+            <label for="memory-size">(t("Memory"))</label>
+            <input id="memory-size" name="memory" type="text" list="memory-sizes"
+                   autocomplete="off" required
+                   value=(presets::size_field(presets::DEFAULT_MEMORY))>
+            <datalist id="memory-sizes">
+                @for rung in presets::LADDER {
+                    <option value=(presets::size_field(rung))></option>
+                }
+            </datalist>
+            <p class="field-hint">(t("A size, like 512 MB or 1.5 GB — a bare \
+                 number is megabytes. Over this the kernel kills the container \
+                 rather than letting it swap, which is the outcome to want: a \
+                 process quietly swapping is invisible until everything on the \
+                 node is slow."))</p>
+            @if let Some(left) = page.left {
+                <p class="field-hint">
+                    (crate::infra::node::memory::human(left))(t(" is what this node has \
+                         left to promise. A service is refused memory it does not have."))
+                </p>
+            }
+
+            <label for="cpu-size">(t("CPU"))</label>
+            <input id="cpu-size" name="cpu" type="text" list="cpu-sizes"
+                   autocomplete="off" required
+                   value=(presets::cores_field(presets::DEFAULT_MILLICORES))>
+            <datalist id="cpu-sizes">
+                @for rung in presets::CPU_LADDER {
+                    <option value=(presets::cores_field(rung))></option>
+                }
+            </datalist>
+            <p class="field-hint">(t("Cores, like 0.5 or 2 — or millicores with an \
+                 m, like 500m. Over this the container is throttled, not killed: it \
+                 runs slowly rather than stopping. Unlike memory, a node may promise \
+                 more CPU than it has: services share its cores, and together never \
+                 take what it keeps for itself."))</p>
 
             <label for="env">(t("Environment"))</label>
             <textarea id="env" name="env" autocomplete="off" rows="6" class="mono"

@@ -155,6 +155,21 @@ impl Kind {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Ceilings {
+    pub memory: u64,
+    pub cpu_millicores: u32,
+}
+
+impl Default for Ceilings {
+    fn default() -> Self {
+        Self {
+            memory: crate::domain::policies::presets::DEFAULT_MEMORY,
+            cpu_millicores: crate::domain::policies::presets::DEFAULT_MILLICORES,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Service {
     pub id: String,
@@ -181,14 +196,19 @@ pub struct Service {
     pub origin_node_id: Option<String>,
     /// The most memory each of its containers may have, in bytes.
     ///
-    /// `None` is no ceiling, which is what every container had before
-    /// there were presets. A number here reaches the OCI spec as
-    /// `memory.max` with swap turned off — see `runtime::spec`.
+    /// `None` is no ceiling, which a row made here no longer has: it is
+    /// a service from before every one was born with a ceiling, until
+    /// `deploy::ceilings` measures it, or a copy placed here by a node
+    /// older than that. A number reaches the OCI spec as `memory.max`
+    /// with swap turned off — see `runtime::spec`.
     pub memory_limit: Option<u64>,
-    /// The most CPU its containers may have, in millicores. `None` is no
-    /// ceiling, and **the ceiling is also the reservation** — see
+    /// The most CPU its containers may have, in millicores, and **the
+    /// ceiling is also the reservation** — see
     /// `migrations/0038_cpu_limit.sql` for why there is no second number
-    /// for a request.
+    /// for a request. `None` survives on services made before every one
+    /// was born with a ceiling: any number given them after the fact is
+    /// either a guess that throttles a service that ran fine, or the
+    /// whole of what the node gives services, which is no ceiling.
     pub cpu_millicores: Option<u32>,
     /// The most disk this service's volumes may have, per copy.
     ///
@@ -265,9 +285,8 @@ impl Service {
             // to push, once to deploy — is one where the second half gets
             // forgotten and somebody debugs a version that never went out.
             auto_deploy: true,
-            // No ceiling, which is what every service had before there
-            // were presets. Choosing one is `set_memory_limit`, and a
-            // database picks one at creation.
+            // Nothing held yet, which is what admission reads as `already`
+            // before the row exists: `create_on` writes the ceilings with it.
             memory_limit: None,
             cpu_millicores: None,
             disk_limit: None,

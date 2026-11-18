@@ -18,6 +18,7 @@
 //! not. So the recovery after a reboot is the operation that was
 //! tested by every deployment before it.
 
+pub mod ceilings;
 pub mod database;
 pub mod dns;
 pub mod edge_withdrawals;
@@ -326,6 +327,17 @@ pub struct Committed {
     /// that silently omitted them would be a figure an operator trusts
     /// for a decision it cannot support.
     pub unbounded: usize,
+}
+
+/// A verdict a test asserts cannot hang on the machine running it: the
+/// 512 MB VM refused what a laptop, which cannot read its own meters,
+/// admitted, and the same suite failed in one place and passed in the
+/// other.
+pub fn measured_total() -> u64 {
+    match cfg!(test) {
+        true => 0,
+        false => crate::infra::node::memory::total(),
+    }
 }
 
 /// The lock that makes two deployments of one service take turns.
@@ -1714,10 +1726,43 @@ impl Deployer {
         }
     }
 
+    /// What this node may still promise in memory, or `None` when it
+    /// cannot read its own meters.
+    pub async fn memory_left_here(&self) -> Option<u64> {
+        let total = measured_total();
+        if total == 0 {
+            return None;
+        }
+        let reserve = crate::infra::node::settings::memory_reserve(&self.database).await;
+        Some(
+            crate::domain::policies::presets::allocatable_memory(total, reserve)
+                .saturating_sub(self.committed().await.memory),
+        )
+    }
+
+    /// Whether a service that holds nothing yet may have its first copy
+    /// on `node` — `None` or this node's own row is here.
+    pub async fn room_for_first_copy(
+        &self,
+        node: Option<&crate::infra::network::Node>,
+        unborn: &Service,
+        memory: u64,
+    ) -> Option<String> {
+        match node.filter(|node| !node.is_self) {
+            None => self
+                .rooms_here(unborn)
+                .await
+                .admits(Some(memory), 1, "this node"),
+            Some(node) => {
+                Rooms::reported(node.capacity.as_ref()?, unborn).admits(Some(memory), 1, &node.name)
+            }
+        }
+    }
+
     /// This node's own two ceilings, from its meters rather than a row.
     pub async fn rooms_here(&self, service: &Service) -> Rooms {
         let committed = self.committed().await;
-        let total = self.memory().await.total;
+        let total = measured_total();
         // What the operator said this machine keeps for itself, read here
         // rather than inside the arithmetic: `presets` is pure and stays
         // that way.
@@ -7059,6 +7104,7 @@ mod tests {
             "",
             &[],
             Some("nd-far"),
+            Default::default(),
         )
         .await
         .expect("made there");
