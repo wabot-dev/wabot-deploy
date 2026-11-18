@@ -1178,12 +1178,12 @@ async fn host_service(
     if host.running && !host.slots.is_empty() {
         if let Ok(deployer) = container.try_resolve::<crate::infra::deploy::Deployer>() {
             let wanted = host.slots.len() as u64;
-            if let Some(refusal) = deployer.rooms_here(&service).await.admits(
-                host.memory_limit,
-                host.cpu_millicores,
-                wanted,
-                "this node",
-            ) {
+            if let Some(refusal) =
+                deployer
+                    .rooms_here(&service)
+                    .await
+                    .admits(host.memory_limit, wanted, "this node")
+            {
                 return Err(refusal);
             }
         }

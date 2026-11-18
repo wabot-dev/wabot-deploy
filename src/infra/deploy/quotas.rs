@@ -177,7 +177,12 @@ pub async fn admits(
         }
     }
 
-    if let Some(refusal) = rooms.admits(memory, cpu, copies, &name) {
+    if let Some(refusal) = rooms.admits(memory, copies, &name) {
+        return Ok(Some(refusal));
+    }
+    if let Some(refusal) = cpu
+        .and_then(|millicores| crate::infra::deploy::fits_cpu(rooms.cpu, millicores, copies, &name))
+    {
         return Ok(Some(refusal));
     }
 
@@ -532,6 +537,51 @@ mod tests {
             .expect("refused");
         assert!(refusal.starts_with("Acme has"), "{refusal}");
         assert!(refusal.contains("512 MB to promise"), "{refusal}");
+    }
+
+    /// A machine may be promised more CPU than it has; an organisation's
+    /// CPU quota is a budget somebody wrote down, and still refuses.
+    #[tokio::test]
+    async fn an_organisations_cpu_quota_still_refuses_what_a_node_would_take() {
+        let (database, project, service) = tenant_with_a_service().await;
+        let tenant_id = project.tenant_id.clone().expect("a tenant");
+        crate::infra::repositories::tenants::set_quota(
+            &database,
+            &tenant_id,
+            Some(512 * MB),
+            Some(1_000),
+            None,
+        )
+        .await
+        .expect("quota");
+
+        assert_eq!(
+            admits(
+                &database,
+                &project,
+                &service,
+                Some(64 * MB),
+                Some(1_000),
+                None,
+                1
+            )
+            .await
+            .expect("asked"),
+            None
+        );
+        let refusal = admits(
+            &database,
+            &project,
+            &service,
+            Some(64 * MB),
+            Some(1_500),
+            None,
+            1,
+        )
+        .await
+        .expect("asked")
+        .expect("refused");
+        assert!(refusal.starts_with("Acme has"), "{refusal}");
     }
 
     /// A project the node owns itself has no second budget.

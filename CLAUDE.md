@@ -188,6 +188,7 @@ under `cfg!(test)` now:
 - the overlay's netlink, `tunnel::apply`;
 - every program `runtime::network` runs;
 - `Containerd::connect`;
+- the guard's cgroup and the node's own OOM score, `runtime::guard`;
 - `Config::default()`'s data directory, which is under `/dev/null`.
 
 The firewall is armed instead, because the recovery verb needs it outside
@@ -529,6 +530,10 @@ happened:
   refused with a sentence rather than starting a copy on an empty
   directory.
 - A service created under an organisation's quota runs with no ceiling.
+- A service may still have no memory ceiling at all. The guard keeps it
+  off the node, not off the other services: it can take what they all
+  have left together. And disk is not enforced — a container's writable
+  layer and its volumes can fill the machine's filesystem.
 - A running container no row claims — what a restore from an older
   backup leaves — is on no page.
 - A store of buckets is one copy, on the node chosen when it was made —
@@ -570,6 +575,23 @@ that died. It is also what brings back a copy the boot's `reconcile`
 skipped because containerd was not answering yet, which on the VM node was
 every one of them. The reason lands on the copy's row: when, how it
 stopped, and its last line.
+
+**Services are held apart from the node by the kernel.** Decided by
+Jorge on 2026-11-18: memory is never promised beyond what the node may
+allocate, and CPU may be. Every container is created under one parent —
+`wabot.slice` on systemd, `/sys/fs/cgroup/wabot` elsewhere — whose
+`memory.max` is the machine less the memory reserve, swap 0, and whose
+`cpu.max` is the cores less the CPU reserve, at weight 10 against the
+node's 100. `serve` writes it at every start and the reserves form
+rewrites it live. Each container also gets `pids.max` 1024,
+`memory.oom.group` and `oom_score_adj` 500; the node lowers its own to
+-900. Measured on node-0 before: every container at -998, inherited from
+containerd's unit, and the node at 0 — a shortage killed the console
+first. A machine refuses a promise on memory only; an organisation's CPU
+quota still refuses. The parent is fixed when a container is created, so
+**the first start of a version with the guard recreates every container
+once** — a release carrying it has to say so in its notes.
+`docs/architecture.md` §10.17.
 
 **Timestamped logs are a switch, and the switch shows its price.**
 `file://` is the default: containerd appends the container's bytes and no

@@ -298,6 +298,7 @@ impl NetworkUiController {
             &self.state.config.node.data_dir,
             std::path::Path::new(crate::infra::node::disk::CONTAINERD_ROOT),
         );
+        let guard = crate::infra::runtime::guard::read();
 
         let page = crate::features::network::node_user_this_node_page::ThisNode {
             node: &node,
@@ -305,6 +306,7 @@ impl NetworkUiController {
             committed: &committed,
             snapshot: &snapshot,
             reserves,
+            guard: guard.as_ref(),
             error: query.error.as_deref(),
         };
         let body = crate::shell::texts::language::scoped(account.language, || {

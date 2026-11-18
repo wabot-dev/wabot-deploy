@@ -1,6 +1,7 @@
 pub mod client;
 pub mod containers;
 pub mod content;
+pub mod guard;
 pub mod images;
 pub mod leases;
 pub mod network;

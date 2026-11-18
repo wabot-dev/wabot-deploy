@@ -71,7 +71,6 @@ pub struct Candidate {
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Want {
     pub memory: Option<u64>,
-    pub cpu: Option<u32>,
     /// Whether a second copy on a machine that already holds one is
     /// worth having at all.
     ///
@@ -116,7 +115,7 @@ pub fn choose(candidates: &[Candidate], want: Want) -> Choice {
     let room = |candidate: &&Candidate| {
         candidate
             .rooms
-            .admits(want.memory, want.cpu, 1, &candidate.name)
+            .admits(want.memory, 1, &candidate.name)
             .is_none()
     };
     let usable: Vec<&Candidate> = candidates
@@ -240,7 +239,7 @@ fn nowhere(candidates: &[Candidate], want: Want) -> String {
             }
             candidate
                 .rooms
-                .admits(want.memory, want.cpu, 1, &candidate.name)
+                .admits(want.memory, 1, &candidate.name)
                 .unwrap_or_else(|| format!("{} was not offered", candidate.name))
         })
         .collect();
@@ -291,7 +290,6 @@ mod tests {
     fn want(memory: u64) -> Want {
         Want {
             memory: Some(memory),
-            cpu: None,
             spread_required: false,
         }
     }
@@ -318,6 +316,25 @@ mod tests {
         assert_eq!(node.as_deref(), Some("nd-ubuntu"));
         assert!(why.contains("most room of 3 candidates"), "{why}");
         assert!(why.contains("900 MB free"), "{why}");
+    }
+
+    /// Decided by Jorge on 2026-11-18: a machine whose cores are all
+    /// promised still takes a copy, and one whose memory is does not.
+    #[test]
+    fn a_machine_may_be_promised_more_cpu_than_it_has_and_never_more_memory() {
+        let mut busy = candidate("ubuntu", 900 * MB);
+        busy.rooms.cpu.committed = busy.rooms.cpu.allocatable * 3;
+        assert_eq!(
+            chosen(choose(&[busy], want(128 * MB))).as_deref(),
+            Some("nd-ubuntu")
+        );
+
+        let mut full = candidate("alpine", 256 * MB);
+        full.rooms.memory.committed = 200 * MB;
+        let Choice::Nowhere(reason) = choose(&[full], want(128 * MB)) else {
+            panic!("a copy was placed where its memory could not be promised");
+        };
+        assert!(reason.contains("alpine has 256 MB to promise"), "{reason}");
     }
 
     /// Copies of one service go on distinct machines first.

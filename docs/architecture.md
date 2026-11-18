@@ -917,3 +917,57 @@ el nodo no arrancaba nunca y la siguiente ejecución fallaba igual. En el
 nodo Ubuntu no se vio porque el servicio ya llevaba corriendo desde
 instalaciones anteriores: la orden se validaba contra el nodo que ya
 estaba en marcha. Ver §3.1.
+
+### 10.17 El guardián: los servicios, apartados del nodo
+
+Un nodo murió por falta de memoria, y al mirar por qué apareció algo
+peor que la falta de un límite: en node-0 **todos los procesos de los
+contenedores tenían `oom_score_adj` -998**, heredado del `-999` de la
+unidad de containerd a través del shim, y `wabot-deploy` tenía 0. Ante
+una escasez de toda la máquina el kernel elegía la consola —y con ella
+el edge y todas las rutas— antes que cualquier contenedor. En la VM con
+OpenRC estaban casi empatados (1 frente a 0), que tampoco protege nada.
+
+Los techos por servicio no lo arreglaban: eran opcionales, un servicio
+sin techo cuenta como cero en lo prometido, y la suma solo se comprobaba
+al guardar un formulario. Nada en el kernel sabía cuánto podían tomar
+los servicios *juntos*.
+
+Ahora todo contenedor se crea bajo un padre —`wabot.slice` con systemd,
+`/sys/fs/cgroup/wabot` sin él— cuyo `memory.max` es la máquina menos la
+reserva de memoria, con swap 0, y cuyo `cpu.max` son los núcleos menos
+la reserva de CPU, con peso 10 frente al 100 del nodo. Un OOM ocurre
+dentro de ese grupo (`oom_memcg=/wabot.slice` en el log del kernel) y
+`memory.oom.group` se lleva el contenedor entero para que `watch`
+arranque uno limpio. Cada contenedor tiene además `pids.max` 1024 y
+`oom_score_adj` 500, y el nodo baja el suyo a -900 escribiendo en
+`/proc/self/oom_score_adj` al arrancar —desde el proceso y no desde la
+unidad, porque el actualizador no reescribe la unidad—.
+
+Decidido por Jorge el 2026-11-18: **la memoria nunca se promete por
+encima de lo asignable, y la CPU sí**. Una máquina ya no rechaza una
+promesa por CPU; la cuota de CPU de una organización sí, porque es un
+presupuesto que alguien escribió. Y la reserva de CPU es ahora un tope
+duro: los servicios juntos nunca la usan, aunque el nodo esté ocioso.
+
+Dos detalles que solo se vieron en una máquina:
+
+- Con el driver de systemd crun escribe `memory.oom.group` en el cgroup
+  `container` de dentro del scope, no en el scope. Es donde viven todos
+  los procesos del contenedor, así que el efecto es el mismo.
+- `systemctl daemon-reload` no está documentado como algo que reaplique
+  los ajustes de cgroup a un slice que ya corre, así que el nodo escribe
+  la unidad (lo que vale al arrancar la máquina) **y** hace
+  `set-property --runtime` (lo que vale ya). Un drop-in de runtime
+  manda sobre el fichero, por eso se reescribe en cada arranque y en
+  cada cambio de reserva, nunca se deja viejo.
+
+La ruta del cgroup se fija al crear el contenedor, así que el primer
+arranque de una versión con el guardián recrea cada contenedor una vez:
+la etiqueta `wabot.guard` nombra al padre y no sus límites, y un
+`reconcile` que no la encuentra lo recrea. Las actualizaciones
+siguientes no recrean nada. Verificado en las dos familias: en Alpine y
+en una VM Debian 13 instalada con la versión anterior y actualizada,
+incluido un reinicio de la máquina; un `tail /dev/zero` sin techo murió
+dentro del grupo y un fork bomb se quedó en 1024 tareas, con la consola
+respondiendo en menos de un segundo en ambos casos.

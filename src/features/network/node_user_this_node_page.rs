@@ -18,6 +18,7 @@ pub struct ThisNode<'a> {
     pub committed: &'a Committed,
     pub snapshot: &'a Snapshot,
     pub reserves: (Option<u64>, Option<u32>),
+    pub guard: Option<&'a crate::infra::runtime::guard::Reading>,
     /// **A refusal that reaches this page has to be readable on it.**
     /// It had no error at all, so anything redirected here with one
     /// showed a page that had simply moved and said nothing.
@@ -35,6 +36,6 @@ pub fn render<'a>(page: &'a ThisNode<'a>) -> impl Renderable + 'a {
         // One island around both cards: the stream replaces figures in
         // each, and the runtime tears it down when this host leaves the
         // DOM.
-        (node_usage_component::live_cards(&page.node.id, page.disk, page.committed, page.snapshot, page.reserves))
+        (node_usage_component::live_cards(&page.node.id, page.disk, page.committed, page.snapshot, page.reserves, page.guard))
     }
 }

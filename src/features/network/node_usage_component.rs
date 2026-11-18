@@ -155,6 +155,7 @@ pub fn memory_card<'a>(
     // CPU, or `None` each for the default. It reaches the "promised of"
     // figure, which is the whole point of the setting being editable.
     reserves: (Option<u64>, Option<u32>),
+    guard: Option<&'a crate::infra::runtime::guard::Reading>,
 ) -> impl Renderable + 'a {
     let containers = snapshot.containers_total();
 
@@ -226,6 +227,20 @@ pub fn memory_card<'a>(
                         crate::infra::node::cpu::allocatable_millicores(reserves.1)
                     ))
                 </dd>
+                <dt>(t("Services together"))</dt>
+                <dd>
+                    @match guard.map(|guard| guard.limits) {
+                        Some(crate::infra::runtime::guard::Limits { memory: Some(memory), cpu_millicores, .. }) => {
+                            (t("at most "))(memory::human(memory))
+                            @if let Some(millicores) = cpu_millicores {
+                                (" · ")(crate::domain::policies::presets::cpu_label(millicores))
+                            }
+                        }
+                        _ => {
+                            <span class="badge badge-danger"><span class="dot dot-danger"></span>(t("not held apart"))</span>
+                        }
+                    }
+                </dd>
             </dl>
             // The number that cannot be counted, said rather than
             // folded in. A container with no ceiling may take
@@ -236,13 +251,25 @@ pub fn memory_card<'a>(
                 <p class="field-hint">
                     (committed.unbounded)(t(" copies here have no memory ceiling, so what is \
                          promised is a floor rather than a total — any of them may take what \
-                         is left."))
+                         services have left together."))
                 </p>
             } @else {
-                <p class="field-hint">(t("What a service may take is also what is reserved for \
-                     it: this node counts what it has promised and refuses to promise more. \
-                     What it keeps for itself — the console, the edge, containerd — is already \
-                     out of these figures."))</p>
+                <p class="field-hint">(t("Memory a service may take is also reserved for it, and \
+                     this node refuses to promise more than it has. CPU may be promised beyond \
+                     it: services share the cores, and together never take what the node keeps \
+                     for itself — the console, the edge, containerd."))</p>
+            }
+            @if guard.is_none_or(|guard| guard.limits.memory.is_none()) {
+                <p class="field-hint">(t("Nothing in the kernel keeps services off this node's \
+                     memory: the cgroup that holds them is missing or has no ceiling. \
+                     wabot-deploy doctor says which."))</p>
+            }
+            @if snapshot.unguarded > 0 {
+                <p class="field-hint">
+                    (snapshot.unguarded)(t(" running copies started before the guard and are \
+                         outside it. The node moves each one in by recreating it the next time \
+                         it starts."))
+                </p>
             }
 
             @if snapshot.swap_total > 0 {
@@ -388,9 +415,10 @@ pub fn live_cards<'a>(
     committed: &'a crate::infra::deploy::Committed,
     snapshot: &'a Snapshot,
     reserves: (Option<u64>, Option<u32>),
+    guard: Option<&'a crate::infra::runtime::guard::Reading>,
 ) -> impl Renderable + 'a {
     let inner = rsx! {
-        (memory_card(snapshot, committed, reserves))
+        (memory_card(snapshot, committed, reserves, guard))
         (disk_card(disk))
     }
     .render()

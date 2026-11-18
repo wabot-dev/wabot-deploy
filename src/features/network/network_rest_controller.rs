@@ -748,6 +748,7 @@ mod tests {
             &snapshot,
             &Default::default(),
             (None, None),
+            None,
         )
         .render()
         .into_inner();
@@ -796,7 +797,8 @@ mod tests {
         assert!(crate::features::network::node_usage_component::memory_card(
             &snapshot,
             &Default::default(),
-            (None, None)
+            (None, None),
+            None
         )
         .render()
         .into_inner()
@@ -883,6 +885,7 @@ mod tests {
             &snapshot,
             &Default::default(),
             (None, None),
+            None,
         )
         .render()
         .into_inner();

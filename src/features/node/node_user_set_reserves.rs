@@ -47,13 +47,12 @@ pub async fn run(
     }
 
     if let Some(millicores) = cpu {
-        // No floor from a reading here: the node's own CPU use is a rate
-        // the stream computes from two samples, and a form has one.
-        // `parse_cores` already refuses below a tenth of a core.
+        // Nothing promised is compared: CPU may be promised beyond what
+        // there is. What is refused is a reserve that leaves services none.
         if let Some(reason) = reserve_refusal(
             u64::from(crate::infra::node::cpu::cores() * 1_000),
             0,
-            u64::from(committed.cpu),
+            0,
             u64::from(millicores),
             |millicores| presets::cpu_label(u32::try_from(millicores).unwrap_or(u32::MAX)),
         ) {
@@ -70,10 +69,12 @@ pub async fn run(
     if let Err(error) = crate::infra::node::settings::set_cpu_reserve(database, cpu).await {
         tracing::error!(%error, "could not store the CPU reserve");
     }
-    // Nothing is redeployed. A reserve decides what the node will
-    // *accept* next; it does not reach into a container's cgroup, and
-    // restarting every service because a number moved would be a setting
-    // that costs an outage.
+    // Into the guard's parent while the containers run, and nothing is
+    // redeployed: restarting every service because a number moved would
+    // be a setting that costs an outage.
+    if let Err(error) = deployer.guard().await {
+        tracing::warn!(%error, "the new reserve is stored and not yet enforced");
+    }
     Ok(())
 }
 

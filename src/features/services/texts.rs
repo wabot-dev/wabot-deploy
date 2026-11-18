@@ -33,7 +33,7 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
     ("Container port", "Puerto del contenedor"),
     ("Copies on these nodes run the image's own command whatever this says, because their version does not read it. They follow it once updated to ", "Las copias en estos nodos corren el comando propio de la imagen diga lo que diga esto, porque su versión no lo lee. Lo siguen en cuanto se actualizan a "),
     ("Copy ", "Copia "),
-    ("Cores, like 0.5 or 2 — or millicores with an m, like 500m. Over this the container is throttled, not killed: it runs slowly rather than stopping. A ceiling is also what is reserved for it — the node counts what it has promised, and refuses to promise more than it has.", "Núcleos, como 0.5 o 2 — o milicores con una m, como 500m. Por encima de esto el contenedor se estrangula, no se mata: va lento en vez de pararse. Un techo es además lo que se le reserva — el nodo cuenta lo que ha prometido, y se niega a prometer más de lo que tiene."),
+    ("Cores, like 0.5 or 2 — or millicores with an m, like 500m. Over this the container is throttled, not killed: it runs slowly rather than stopping. Unlike memory, a node may promise more CPU than it has: services share its cores, and together never take what it keeps for itself.", "Núcleos, como 0.5 o 2 — o milicores con una m, como 500m. Por encima de esto el contenedor se estrangula, no se mata: va lento en vez de pararse. A diferencia de la memoria, un nodo puede prometer más CPU de la que tiene: los servicios comparten sus núcleos, y juntos nunca toman lo que guarda para sí."),
     ("Delete database and its data", "Eliminar la base de datos y sus datos"),
     ("Delete service", "Borrar servicio"),
     ("Delete store and its buckets", "Borrar el almacén y sus buckets"),

@@ -50,13 +50,15 @@ pub fn reserves_card<'a>(
                        placeholder=(&default_memory_label) value=(&memory_value)>
                 <p class="field-hint">(t("Kept for the console, the edge, containerd and \
                      everything else on this machine. Empty means the default, which is 15 % \
-                     with a floor of 256 MB."))</p>
+                     with a floor of 256 MB. Services together can never take more than what is \
+                     left: the kernel holds them to it from the moment this is saved."))</p>
 
                 <label for="cpu-reserve">(t("CPU"))</label>
                 <input id="cpu-reserve" name="cpu" type="text" autocomplete="off"
                        placeholder=(&default_cpu) value=(&cpu_value)>
                 <p class="field-hint">(t("Cores, like 0.5, or millicores with an m. Empty means \
-                     the default of a quarter core."))</p>
+                     the default of a quarter core. Services together never get more than what \
+                     is left, even while this node is idle."))</p>
 
                 // The consequence, in the units the rest of the console
                 // uses. A reserve is only meaningful as "what is left",

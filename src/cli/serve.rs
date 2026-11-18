@@ -203,6 +203,16 @@ pub async fn run(config: Config) -> anyhow::Result<i32> {
     crate::infra::firewall::arm();
     crate::infra::firewall::heal(&database).await;
 
+    // And the cgroup they are created in, for the same reason. Never fatal:
+    // a node that cannot write it still serves the console that says so.
+    if let Err(error) = crate::infra::runtime::guard::protect_this_process() {
+        tracing::warn!(%error, "the kernel may choose this node over a container");
+    }
+    match deployer.guard().await {
+        Ok(said) => tracing::info!("guard in place: {said}"),
+        Err(error) => tracing::error!(%error, "services are not held apart from the node"),
+    }
+
     let outcome = ProjectRunner::new(container.clone())
         // Reconciling is a *service*, not a startup step.
         //

@@ -236,12 +236,7 @@ async fn room_on(
         return Err("no such node".into());
     };
     match deployer
-        .room_for_on(
-            Some(&row),
-            service,
-            service.memory_limit,
-            service.cpu_millicores,
-        )
+        .room_for_on(Some(&row), service, service.memory_limit)
         .await
     {
         Some(reason) => Err(reason),
@@ -341,7 +336,6 @@ async fn resize(
             let candidates = deployer.candidates(service).await;
             let want = crate::infra::deploy::planner::Want {
                 memory: service.memory_limit,
-                cpu: service.cpu_millicores,
                 // A database's copies exist to be on different
                 // machines; a web service's exist to be more of it.
                 spread_required: service.kind.is_managed(),

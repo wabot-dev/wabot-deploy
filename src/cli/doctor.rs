@@ -1032,6 +1032,16 @@ fn machine_and_runtime(config: &Config) -> usize {
     if !cgroup_memory_works() {
         problems += 1;
     }
+    let guard = crate::infra::runtime::guard::read();
+    println!(
+        "  guard       {}",
+        crate::infra::runtime::guard::summary(guard.as_ref())
+    );
+    // Only while the node runs: `serve` is what makes it, so a machine
+    // before its first start is incomplete rather than unprotected.
+    if node_running && guard.is_none_or(|guard| guard.limits.memory.is_none()) {
+        problems += 1;
+    }
     // Not counted: it matters only to a Valkey store, and a node updated
     // without running `install` again would otherwise read as broken.
     println!(

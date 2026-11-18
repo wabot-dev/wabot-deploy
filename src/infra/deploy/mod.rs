@@ -271,36 +271,29 @@ impl Rooms {
         }
     }
 
-    /// Whether one more copy this size fits, and why not.
+    /// Whether a machine can keep one more copy this size, and why not.
     ///
-    /// Memory first, because it is the one that gets a container killed
-    /// rather than throttled.
-    pub fn admits(
-        &self,
-        memory: Option<u64>,
-        cpu: Option<u32>,
-        copies: u64,
-        who: &str,
-    ) -> Option<String> {
-        if let Some(bytes) = memory {
-            let refusal = fits(
-                self.memory,
-                bytes,
-                copies,
-                who,
-                crate::infra::node::memory::human,
-            );
-            if refusal.is_some() {
-                return refusal;
-            }
-        }
-        let millicores = cpu?;
-        fits(self.cpu, u64::from(millicores), copies, who, |millicores| {
-            crate::domain::policies::presets::cpu_label(
-                u32::try_from(millicores).unwrap_or(u32::MAX),
-            )
-        })
+    /// Memory only. A machine's CPU may be promised beyond what it has —
+    /// decided by Jorge on 2026-11-18 — because a container over its share
+    /// is throttled rather than killed, and the guard's `cpu.max` keeps the
+    /// node's reserve whatever was promised.
+    pub fn admits(&self, memory: Option<u64>, copies: u64, who: &str) -> Option<String> {
+        fits(
+            self.memory,
+            memory?,
+            copies,
+            who,
+            crate::infra::node::memory::human,
+        )
     }
+}
+
+/// [`fits`] for millicores, which an organisation's quota still refuses
+/// with though a machine no longer does.
+pub fn fits_cpu(room: Room, millicores: u32, copies: u64, who: &str) -> Option<String> {
+    fits(room, u64::from(millicores), copies, who, |millicores| {
+        crate::domain::policies::presets::cpu_label(u32::try_from(millicores).unwrap_or(u32::MAX))
+    })
 }
 
 /// What a drain moved, and what it could not.
@@ -1337,6 +1330,7 @@ impl Deployer {
                 ),
             ]),
             shm_size: prepared.as_ref().and_then(|prepared| prepared.shm_size),
+            cgroups_path: None,
         };
 
         // The certificate, before the server that reads it, covering
@@ -1595,6 +1589,18 @@ impl Deployer {
             Ok(None) | Err(_) => return true,
         };
 
+        // Once per container, at the first boot of a version with the guard:
+        // the label names the parent, never its limits, so a later boot or
+        // a changed reserve recreates nothing.
+        let guard = crate::infra::runtime::guard::Driver::detect().label();
+        if labels
+            .get(crate::infra::runtime::guard::LABEL)
+            .map(String::as_str)
+            != Some(guard)
+        {
+            return false;
+        }
+
         // Archiving first, because it is the cheaper question and the
         // one an upgrade changes: the default flipped once pruning
         // existed, and every database already running was started
@@ -1670,13 +1676,8 @@ impl Deployer {
     /// having apart from the four readings it needs — it is where the
     /// arithmetic somebody would argue with lives, and a test for it
     /// should not need a machine with a particular amount of memory.
-    pub async fn room_for(
-        &self,
-        service: &Service,
-        memory: Option<u64>,
-        cpu: Option<u32>,
-    ) -> Option<String> {
-        self.room_for_on(None, service, memory, cpu).await
+    pub async fn room_for(&self, service: &Service, memory: Option<u64>) -> Option<String> {
+        self.room_for_on(None, service, memory).await
     }
 
     /// The same question about **any** node, this one or another.
@@ -1697,19 +1698,18 @@ impl Deployer {
         node: Option<&crate::infra::network::Node>,
         service: &Service,
         memory: Option<u64>,
-        cpu: Option<u32>,
     ) -> Option<String> {
         match node.filter(|node| !node.is_self) {
             None => {
                 let copies = self.copies_here(service).await?;
                 self.rooms_here(service)
                     .await
-                    .admits(memory, cpu, copies, "this node")
+                    .admits(memory, copies, "this node")
             }
             Some(node) => {
                 let capacity = node.capacity.as_ref()?;
                 let copies = self.copies_on(&node.id, service).await?;
-                Rooms::reported(capacity, service).admits(memory, cpu, copies, &node.name)
+                Rooms::reported(capacity, service).admits(memory, copies, &node.name)
             }
         }
     }
@@ -1741,6 +1741,19 @@ impl Deployer {
                 already: u64::from(service.cpu_millicores.unwrap_or(0)),
             },
         }
+    }
+
+    /// Write what services may take together into the kernel, from the same
+    /// reserves `rooms_here` refuses a promise with.
+    pub async fn guard(&self) -> Result<String, String> {
+        let limits = crate::infra::runtime::guard::Limits::of(
+            crate::infra::node::memory::total(),
+            crate::infra::node::settings::memory_reserve(&self.database).await,
+            crate::infra::node::cpu::cores(),
+            crate::infra::node::settings::cpu_reserve(&self.database).await,
+            crate::infra::runtime::guard::threads(),
+        );
+        crate::infra::runtime::guard::converge(limits).await
     }
 
     /// Every machine a copy of this service could go on.
@@ -3081,7 +3094,6 @@ impl Deployer {
                 let candidates = self.candidates(service).await;
                 let want = planner::Want {
                     memory: service.memory_limit,
-                    cpu: service.cpu_millicores,
                     // A database's copies exist to be on different
                     // machines; a web service's exist to be more of it.
                     spread_required: service.kind.is_managed(),
@@ -6813,7 +6825,7 @@ mod tests {
 
         // Nothing promised there yet, so a 128 MB copy fits.
         assert_eq!(
-            Rooms::reported(&room(0), &service).admits(Some(128 * mb), None, 1, "alpine"),
+            Rooms::reported(&room(0), &service).admits(Some(128 * mb), 1, "alpine"),
             None
         );
 
@@ -6822,7 +6834,7 @@ mod tests {
         // machine. A sentence saying "this node" would send somebody to
         // the wrong meters.
         let refusal = Rooms::reported(&room(640 * mb), &service)
-            .admits(Some(640 * mb), None, 1, "alpine")
+            .admits(Some(640 * mb), 1, "alpine")
             .expect("refused");
         assert!(refusal.starts_with("alpine has"), "{refusal}");
         assert!(refusal.contains("716 MB to promise"), "{refusal}");
@@ -6836,7 +6848,7 @@ mod tests {
             ..room(0)
         };
         assert_eq!(
-            Rooms::reported(&holding, &service).admits(Some(128 * mb), None, 1, "alpine"),
+            Rooms::reported(&holding, &service).admits(Some(128 * mb), 1, "alpine"),
             None,
             "a ceiling refused by its own current value is not a rule"
         );
@@ -6897,7 +6909,7 @@ mod tests {
         };
         assert_eq!(
             deployer
-                .room_for_on(Some(&silent), &service, Some(u64::MAX), None)
+                .room_for_on(Some(&silent), &service, Some(u64::MAX))
                 .await,
             None,
             "a rule made of a missing number is not a rule"

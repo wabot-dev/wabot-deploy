@@ -45,6 +45,9 @@ pub struct Snapshot {
     pub shim_count: usize,
     /// Each running container, by its id.
     pub containers: BTreeMap<String, u64>,
+    /// Running containers the kernel has outside the guard, which only
+    /// recreating them changes.
+    pub unguarded: usize,
 }
 
 impl Snapshot {
@@ -119,9 +122,19 @@ pub fn read(container_pids: &BTreeMap<String, u32>) -> Snapshot {
         if let Some(bytes) = cgroup_memory(*pid) {
             snapshot.containers.insert(id.clone(), bytes);
         }
+        if !crate::infra::runtime::guard::holds_pid(*pid) {
+            snapshot.unguarded += 1;
+        }
     }
 
     snapshot
+}
+
+pub fn total() -> u64 {
+    meminfo_field(
+        &std::fs::read_to_string("/proc/meminfo").unwrap_or_default(),
+        "MemTotal",
+    )
 }
 
 /// A `/proc/meminfo` line, in bytes.

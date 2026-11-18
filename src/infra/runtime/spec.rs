@@ -33,8 +33,9 @@
 
 use oci_spec::runtime::{
     Capability, LinuxBuilder, LinuxCapabilitiesBuilder, LinuxCpuBuilder, LinuxMemoryBuilder,
-    LinuxNamespace, LinuxNamespaceBuilder, LinuxNamespaceType, LinuxResourcesBuilder, Mount,
-    MountBuilder, ProcessBuilder, RootBuilder, Spec, SpecBuilder, UserBuilder,
+    LinuxNamespace, LinuxNamespaceBuilder, LinuxNamespaceType, LinuxPidsBuilder,
+    LinuxResourcesBuilder, Mount, MountBuilder, ProcessBuilder, RootBuilder, Spec, SpecBuilder,
+    UserBuilder,
 };
 
 use super::images::ImageConfig;
@@ -147,7 +148,19 @@ pub struct ContainerRequest {
     /// database using parallel query is the case that cares, and 64 MB
     /// is the number it fails at.
     pub shm_size: Option<u64>,
+    /// Set by `containers::run` and nowhere else, so no caller can start a
+    /// container outside [`super::guard`] by forgetting it.
+    pub cgroups_path: Option<String>,
 }
+
+/// Counts threads, not processes: a JVM or MySQL is hundreds of tasks
+/// doing nothing wrong, and a fork bomb is thousands within a second.
+pub const TASKS_PER_CONTAINER: i64 = 1024;
+
+/// Above the node's own -900, so in a machine-wide shortage the kernel
+/// takes a container first. Without it a container inherits its shim's
+/// score, which on systemd is containerd's -999 plus one.
+pub const OOM_SCORE_ADJ: i32 = 500;
 
 /// Build the spec for one container.
 pub fn build(image: &ImageConfig, request: &ContainerRequest) -> SpecResult<Spec> {
@@ -168,20 +181,21 @@ pub fn build(image: &ImageConfig, request: &ContainerRequest) -> SpecResult<Spec
                 .map_err(|error| SpecError::Build(error.to_string()))?,
         )
         .no_new_privileges(true)
+        .oom_score_adj(OOM_SCORE_ADJ)
         .build()
         .map_err(|error| SpecError::Build(error.to_string()))?;
 
-    let mut linux = LinuxBuilder::default();
-    linux = linux
+    let mut linux = LinuxBuilder::default()
         .namespaces(namespaces(request.network_ns.as_deref())?)
         .masked_paths(masked_paths())
-        .readonly_paths(readonly_paths());
-    if request.memory_limit.is_some() || request.cpu_millicores.is_some() {
-        linux = linux.resources(resources(
+        .readonly_paths(readonly_paths())
+        .resources(resources(
             request.memory_limit,
             request.memory_high,
             request.cpu_millicores,
         )?);
+    if let Some(path) = &request.cgroups_path {
+        linux = linux.cgroups_path(std::path::PathBuf::from(path));
     }
     let linux = linux
         .build()
@@ -315,7 +329,16 @@ fn resources(
     memory_high: Option<u64>,
     cpu_millicores: Option<u32>,
 ) -> SpecResult<oci_spec::runtime::LinuxResources> {
-    let mut resources = LinuxResourcesBuilder::default();
+    let mut resources = LinuxResourcesBuilder::default().pids(
+        LinuxPidsBuilder::default()
+            .limit(TASKS_PER_CONTAINER)
+            .build()
+            .map_err(|error| SpecError::Build(error.to_string()))?,
+    );
+    // An OOM kill takes the whole container, so `watch` starts a clean one —
+    // rather than one worker of a server that goes on answering without it.
+    let mut unified =
+        std::collections::HashMap::from([("memory.oom.group".to_string(), "1".to_string())]);
 
     if let Some(limit) = memory_limit {
         let limit = i64::try_from(limit).map_err(|_| {
@@ -330,12 +353,10 @@ fn resources(
         );
         // cgroup v2 only, which `preflight` refuses to install without.
         if let Some(high) = memory_high.filter(|high| (*high as i64) < limit) {
-            resources = resources.unified(std::collections::HashMap::from([(
-                "memory.high".to_string(),
-                high.to_string(),
-            )]));
+            unified.insert("memory.high".to_string(), high.to_string());
         }
     }
+    resources = resources.unified(unified);
 
     if let Some(millicores) = cpu_millicores.filter(|millicores| *millicores > 0) {
         // `quota` microseconds of CPU in every `period` microseconds,
@@ -1097,7 +1118,7 @@ mod tests {
 
     #[test]
     fn the_kernel_pushes_back_below_the_ceiling_and_never_above_it() {
-        let unified = |memory_high| {
+        let high = |memory_high| {
             build(
                 &nginx(),
                 &ContainerRequest {
@@ -1111,15 +1132,64 @@ mod tests {
             .as_ref()
             .and_then(|linux| linux.resources().clone())
             .and_then(|resources| resources.unified().clone())
+            .and_then(|unified| unified.get("memory.high").cloned())
+        };
+        assert_eq!(high(Some(112 * 1024 * 1024)).as_deref(), Some("117440512"));
+        assert_eq!(high(Some(128 * 1024 * 1024)), None);
+        assert_eq!(high(None), None);
+    }
+
+    /// What every container gets whatever its service asked for: these
+    /// protect the node, not the service, so no form can leave them out.
+    #[test]
+    fn every_container_is_bounded_in_tasks_and_ranked_for_the_oom_killer() {
+        let spec = build(&nginx(), &ContainerRequest::default()).expect("spec");
+        let resources = spec
+            .linux()
+            .as_ref()
+            .and_then(|linux| linux.resources().clone())
+            .expect("resources");
+
+        assert_eq!(
+            resources.pids().map(|pids| pids.limit()),
+            Some(TASKS_PER_CONTAINER)
+        );
+        assert_eq!(
+            resources
+                .unified()
+                .as_ref()
+                .and_then(|unified| unified.get("memory.oom.group"))
+                .map(String::as_str),
+            Some("1")
+        );
+        assert_eq!(
+            spec.process()
+                .as_ref()
+                .and_then(|process| process.oom_score_adj()),
+            Some(OOM_SCORE_ADJ)
+        );
+    }
+
+    #[test]
+    fn a_container_is_created_where_it_is_told() {
+        let path = |cgroups_path| {
+            build(
+                &nginx(),
+                &ContainerRequest {
+                    cgroups_path,
+                    ..Default::default()
+                },
+            )
+            .expect("spec")
+            .linux()
+            .as_ref()
+            .and_then(|linux| linux.cgroups_path().clone())
         };
         assert_eq!(
-            unified(Some(112 * 1024 * 1024))
-                .and_then(|unified| unified.get("memory.high").cloned())
-                .as_deref(),
-            Some("117440512")
+            path(Some("wabot.slice:crun:acme.web".into())),
+            Some("wabot.slice:crun:acme.web".into())
         );
-        assert_eq!(unified(Some(128 * 1024 * 1024)), None);
-        assert_eq!(unified(None), None);
+        assert_eq!(path(None), None);
     }
 
     /// No preset is still the old behaviour, deliberately: every

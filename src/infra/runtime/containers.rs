@@ -81,6 +81,17 @@ pub async fn run(
     })?;
     let mounts = super::snapshots::prepare(client, &snapshot_key(id), &chain).await?;
 
+    // Here, because every container passes through this function and not
+    // every caller builds its request in the same place: a service, an
+    // engine's one-shot and `containerd --run` all land under the guard.
+    let driver = super::guard::Driver::detect();
+    let mut request = request.clone();
+    request.cgroups_path = Some(driver.cgroups_path(id));
+    request
+        .labels
+        .insert(super::guard::LABEL.to_string(), driver.label().to_string());
+    let request = &request;
+
     let spec = super::spec::build(&config, request)
         .map_err(|error| ClientError::Other(error.to_string()))?;
     let spec_any =

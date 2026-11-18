@@ -86,7 +86,7 @@ impl SetServiceResources<'_> {
         {
             return Err(reason);
         }
-        if let Some(reason) = deployer.room_for(self.service, memory, cpu).await {
+        if let Some(reason) = deployer.room_for(self.service, memory).await {
             return Err(reason);
         }
 

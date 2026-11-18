@@ -677,9 +677,9 @@ pub fn render<'a>(page: &'a ServiceSettings<'a>) -> impl Renderable + 'a {
                         </datalist>
                         <p class="field-hint">(t("Cores, like 0.5 or 2 — or millicores with an \
                              m, like 500m. Over this the container is throttled, not killed: it \
-                             runs slowly rather than stopping. A ceiling is also what is reserved \
-                             for it — the node counts what it has promised, and refuses to \
-                             promise more than it has."))</p>
+                             runs slowly rather than stopping. Unlike memory, a node may promise \
+                             more CPU than it has: services share its cores, and together never \
+                             take what it keeps for itself."))</p>
 
                         <label for="disk-size">(t("Disk"))</label>
                         <input id="disk-size" name="disk" type="text"
