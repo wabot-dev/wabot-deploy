@@ -967,12 +967,42 @@ pub async fn queue_if_changed(
     subject: &str,
     payload: &serde_json::Value,
 ) -> NetworkResult<Option<Errand>> {
-    if !would_change(database, node_id, kind, subject, payload).await? {
+    let handed_up = super::is_authorised(database, node_id).await;
+    let errand = Errand {
+        id: format!("er-{}", wabot::prelude::password::generate(12)),
+        kind,
+        payload: payload.clone(),
+    };
+    let (id, node, about, body, said) = (
+        errand.id.clone(),
+        node_id.to_string(),
+        subject.to_string(),
+        payload.to_string(),
+        payload.clone(),
+    );
+    // The last instruction is read inside the write that queues the next
+    // one: two callers that each read first and inserted after both saw
+    // "nothing said yet" and both queued.
+    let queued = database
+        .write(move |connection| {
+            let last = last_about(connection, &node, &about)?;
+            if !says_something_new(kind, last, handed_up, &said) {
+                return Ok(false);
+            }
+            connection.execute(
+                "INSERT INTO errand \
+                   (\"id\", \"node_id\", \"kind\", \"payload\", \"subject\", \"created_at\") \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                (id, node, kind.as_str(), body, about, now_ms()),
+            )?;
+            Ok(true)
+        })
+        .await?;
+    if !queued {
         return Ok(None);
     }
-    queue_about(database, node_id, kind, Some(subject), payload)
-        .await
-        .map(Some)
+    ring(database, node_id).await;
+    Ok(Some(errand))
 }
 
 /// Whether this says something the last instruction about `subject` did
@@ -985,27 +1015,41 @@ pub async fn would_change(
     subject: &str,
     payload: &serde_json::Value,
 ) -> NetworkResult<bool> {
+    let handed_up = super::is_authorised(database, node_id).await;
     let (node, about) = (node_id.to_string(), subject.to_string());
-    let last: Option<(String, Option<String>)> = database
-        .read(move |connection| {
-            connection
-                .query_row(
-                    "SELECT \"payload\", \"error\" FROM errand \
-                     WHERE \"node_id\" = ?1 AND \"subject\" = ?2 \
-                     ORDER BY \"created_at\" DESC, \"rowid\" DESC LIMIT 1",
-                    (node, about),
-                    |row| Ok((row.get(0)?, row.get(1)?)),
-                )
-                .optional()
-        })
+    let last = database
+        .read(move |connection| last_about(connection, &node, &about))
         .await?;
+    Ok(says_something_new(kind, last, handed_up, payload))
+}
 
+fn last_about(
+    connection: &wabot::sqlite::rusqlite::Connection,
+    node_id: &str,
+    subject: &str,
+) -> wabot::sqlite::rusqlite::Result<Option<(String, Option<String>)>> {
     // The tie-break is not decoration: two errands for one subject can
     // land in the same millisecond — a retry right after a refusal does,
     // and so does a test — and `created_at` alone then makes "the last
     // one" whichever row the reader happened to see first. `rowid` is the
     // order they were inserted in.
-    //
+    connection
+        .query_row(
+            "SELECT \"payload\", \"error\" FROM errand \
+             WHERE \"node_id\" = ?1 AND \"subject\" = ?2 \
+             ORDER BY \"created_at\" DESC, \"rowid\" DESC LIMIT 1",
+            (node_id, subject),
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()
+}
+
+fn says_something_new(
+    kind: Kind,
+    last: Option<(String, Option<String>)>,
+    handed_up: bool,
+    payload: &serde_json::Value,
+) -> bool {
     // **A refused instruction was not carried out, so saying it again is
     // not repetition.** Only a *successful* or still-pending one silences
     // this. Without that, fixing the reason for a refusal changed nothing:
@@ -1036,17 +1080,16 @@ pub async fn would_change(
     // deployment, a placement, a boot. One duplicate per event on the far
     // side, where carrying it out is idempotent, against an instruction
     // that otherwise never arrives.
-    let handed_up = super::is_authorised(database, node_id).await;
     let Some((last, failed)) = last else {
-        return Ok(true);
+        return true;
     };
     if failed.is_some() || handed_up {
-        return Ok(true);
+        return true;
     }
-    Ok(serde_json::from_str::<serde_json::Value>(&last)
+    serde_json::from_str::<serde_json::Value>(&last)
         .ok()
         .map(|last| what_it_says(kind, &last))
-        != Some(what_it_says(kind, payload)))
+        != Some(what_it_says(kind, payload))
 }
 
 /// An instruction without the registry credential it travels with.
@@ -1382,6 +1425,35 @@ mod tests {
                 .await
                 .expect("after it worked")
                 .is_none()
+        );
+    }
+
+    /// Two callers saying the same thing at once queue it once.
+    ///
+    /// **Shipped, and found by CI.** The comparison read the last
+    /// instruction and the insert came after it, two statements apart, so a
+    /// deployment's `tell_edges` and a form's both read "nothing said yet"
+    /// and both queued — the same payload twice, a millisecond apart.
+    /// `a_port_that_names_another_node_sends_it_an_errand` failed on CI the
+    /// day `tell_edges` grew two reads and the window grew with it.
+    #[tokio::test]
+    async fn the_same_instruction_said_twice_at_once_is_queued_once() {
+        let database = crate::infra::db::open_in_memory().await.expect("open");
+        let payload = serde_json::json!({ "hostname": "shop.example", "upstreams": [] });
+
+        let (one, two) = tokio::join!(
+            queue_if_changed(&database, "nd-far", Kind::Edge, "edge:svc:shop", &payload),
+            queue_if_changed(&database, "nd-far", Kind::Edge, "edge:svc:shop", &payload),
+        );
+
+        let queued = [one.expect("one"), two.expect("two")]
+            .into_iter()
+            .flatten()
+            .count();
+        assert_eq!(queued, 1);
+        assert_eq!(
+            waiting(&database, "nd-far").await.expect("waiting").len(),
+            1
         );
     }
     use super::*;
