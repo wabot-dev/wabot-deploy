@@ -155,7 +155,9 @@ state() {
 state before
 touch $s/marker
 sleep 1
-(cd "$here" && /var/tmp/wabot-suite-tests < /dev/null > $s/tests.log 2>&1)
+# One thread: the process grows over the run, and two of them had it
+# OOM-killed at ~390 MB in a 512 MB VM, 19 tests from the end (0.43.0).
+(cd "$here" && /var/tmp/wabot-suite-tests --test-threads=1 < /dev/null > $s/tests.log 2>&1)
 passed=$?
 state after
 
