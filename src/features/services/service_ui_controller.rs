@@ -967,15 +967,32 @@ impl ServiceUiController {
             }
             Tab::Logs => Panel::Logs,
             Tab::Access => {
-                let allowlist = crate::infra::repositories::allowlists::of(
+                let door = crate::domain::values::allowlist::Door::Service(service.id.clone());
+                let allowlist =
+                    crate::infra::repositories::allowlists::of(&self.state.database, &door).await?;
+                let admitted =
+                    crate::infra::repositories::allowlists::admitted(&self.state.database, &door)
+                        .await?;
+                let used = crate::infra::repositories::allowlist_sets::of_service(
                     &self.state.database,
-                    &crate::domain::values::allowlist::Door::Service(service.id.clone()),
+                    &service.id,
                 )
                 .await?;
+                let sets = crate::infra::repositories::allowlist_sets::of_project(
+                    &self.state.database,
+                    &project.id,
+                )
+                .await?
+                .into_iter()
+                .map(|set| {
+                    let chosen = used.iter().any(|held| held.id == set.id);
+                    (set, chosen)
+                })
+                .collect();
                 // The same rule `tell_edges` applies, read off the same
                 // rows, so the page names exactly the nodes it skipped.
                 let mut withheld: Vec<String> = Vec::new();
-                if !allowlist.is_everyone() {
+                if !admitted.is_everyone() {
                     let nodes = crate::infra::network::all(&self.state.database).await?;
                     for (_, node_id) in crate::infra::repositories::edges::of_service(
                         &self.state.database,
@@ -998,18 +1015,41 @@ impl ServiceUiController {
                 }
                 Panel::Access {
                     allowlist,
+                    admitted,
+                    sets,
+                    shared_at: format!("/projects/{}/settings/allowlists", project.slug),
                     withheld,
                     refused: crate::infra::firewall::last_error(&self.state.database).await,
                 }
             }
-            Tab::Environment => Panel::Environment {
-                env_text: service
-                    .env
-                    .iter()
-                    .map(|(key, value)| format!("{key}={value}\n"))
-                    .collect(),
-                history: config_history::of_service(&self.state.database, &service.id).await?,
-            },
+            Tab::Environment => {
+                let joined = crate::infra::repositories::env_groups::of_service(
+                    &self.state.database,
+                    &service.id,
+                )
+                .await?;
+                let groups = crate::infra::repositories::env_groups::of_project(
+                    &self.state.database,
+                    &project.id,
+                )
+                .await?
+                .into_iter()
+                .map(|group| {
+                    let chosen = joined.iter().any(|held| held.id == group.id);
+                    (group, chosen)
+                })
+                .collect();
+                Panel::Environment {
+                    env_text: service
+                        .env
+                        .iter()
+                        .map(|(key, value)| format!("{key}={value}\n"))
+                        .collect(),
+                    history: config_history::of_service(&self.state.database, &service.id).await?,
+                    groups,
+                    shared_at: format!("/projects/{}/settings/environment", project.slug),
+                }
+            }
             Tab::Resources => Panel::Resources,
             Tab::Storage => Panel::Storage {
                 volumes: crate::infra::repositories::volumes::of_service(

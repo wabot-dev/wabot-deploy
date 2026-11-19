@@ -36,7 +36,8 @@ list of things to try and what to expect back.
 3.1 a project · 3.2 a service from a public image · 3.3 the first deploy ·
 3.4 logs · 3.5 a service that will not start · 3.6 environment ·
 3.7 env history · 3.8 stop · 3.9 deploy again · 3.10 delete ·
-3.11 a project with a service in it
+3.11 a project with a service in it · 3.12 a shared environment ·
+3.13 a shared allowlist
 
 **Part 4 — Names and ports** · [4](#4-names-and-ports)
 4.1 an HTTPS hostname · 4.2 the certificate for it · 4.3 a hostname that
@@ -234,6 +235,19 @@ true of dialogs, false of text fields, and a heading is not a warning.
 **3.11 A project with a service in it.** Try to delete the project.
 → Takes every service with it, and needs the project's name typed for the
 same reason 3.10 does.
+**3.12 A shared environment.** Project › Settings › Shared environment:
+make `smtp` with `SMTP_HOST`. Join it from two services' Environment tabs,
+and set `SMTP_HOST` in one of them as its own. → Both redeploy; the one
+with its own value keeps it, and its tab says so. Save the group with a new
+value. → Every running service that joined it redeploys with it, on the
+release it was on; a stopped one stays stopped. Make a second group with
+`SMTP_HOST` and join both. → Refused, naming the variable and both groups.
+Delete a group somebody joined. → Refused, naming who.
+**3.13 A shared allowlist.** Project › Settings › Shared allowlists: make
+`office` with your address. Give a service an empty list of its own and
+tick `office`. → The service answers you, with no deployment. Change the
+list to an address that is not yours. → A 403 at once, on every service
+using it.
 
 ---
 

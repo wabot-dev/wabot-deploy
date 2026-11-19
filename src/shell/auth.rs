@@ -180,6 +180,61 @@ pub fn capabilities_ticked(
         .collect()
 }
 
+/// One name per box rather than one name for all of them: the form is
+/// read into a map, which keeps one value per name.
+pub fn ticked(form: &HashMap<String, String>, prefix: &str) -> Vec<String> {
+    let mut ticked: Vec<String> = form
+        .keys()
+        .filter_map(|name| name.strip_prefix(prefix))
+        .filter(|rest| !rest.is_empty())
+        .map(str::to_string)
+        .collect();
+    ticked.sort();
+    ticked
+}
+
+/// `KEY=value` lines into pairs.
+///
+/// The split is on the *first* `=` only: a value is very often a URL or
+/// a base64 blob with one in it, and splitting on every `=` truncates
+/// exactly the secrets somebody would least like truncated.
+///
+/// Blank lines and `#` comments are skipped, so a block pasted out of
+/// a `.env` file works as pasted.
+pub fn parse_env(text: &str) -> Result<Vec<(String, String)>, String> {
+    let mut pairs = Vec::new();
+
+    for (number, line) in text.lines().enumerate() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+
+        let Some((key, value)) = line.split_once('=') else {
+            return Err(format!("line {} is not KEY=value: {line:?}", number + 1));
+        };
+        let key = key.trim();
+        if key.is_empty() {
+            return Err(format!("line {} has no name before the =", number + 1));
+        }
+        if !key
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '.')
+        {
+            return Err(format!(
+                "{key:?} is not a usable variable name — letters, digits, _ and ."
+            ));
+        }
+
+        // The value is trimmed but not unquoted: `KEY="v"` in a shell
+        // file means `v`, and guessing wrong either way puts literal
+        // quotes into a password. Whoever pastes it can see the quotes.
+        pairs.push((key.to_string(), value.trim().to_string()));
+    }
+
+    Ok(pairs)
+}
+
 pub fn asks_no_authority(form: &std::collections::HashMap<String, String>) -> bool {
     matches!(field(form, "renew_with"), "self_signed" | "file")
 }

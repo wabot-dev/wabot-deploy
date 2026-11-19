@@ -308,6 +308,14 @@ fn migrations() -> Vec<Migration> {
             "0077_service_command",
             include_str!("../../migrations/0077_service_command.sql"),
         ),
+        Migration::new(
+            "0078_env_groups",
+            include_str!("../../migrations/0078_env_groups.sql"),
+        ),
+        Migration::new(
+            "0079_allowlist_sets",
+            include_str!("../../migrations/0079_allowlist_sets.sql"),
+        ),
     ]
 }
 

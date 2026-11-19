@@ -43,6 +43,31 @@ A list is stored as rows, one per address or range, in `allowlist`
 delete a thing's rows when it goes, because a project takes its services by
 `ON DELETE CASCADE` and no caller sees that happen.
 
+## Lists a project shares
+
+Asked for by Jorge on 2026-11-18: an office, a VPN or a CDN's ranges are
+the same lines on many services, and writing them on each is a list that
+drifts. A project keeps named lists — its settings, **Shared allowlists**
+— and a service ticks the ones it uses on its Access tab.
+
+- **What a service admits is its own lines and every line of each list it
+  uses.** A union, never an override, so using a list can only open a
+  service to more addresses, and an empty own list beside a list in use is
+  not a closed door. The Access tab says who gets in from the union.
+- **Its own tables, not rows in `allowlist`** (`0079_allowlist_sets`):
+  `allowlist_set`, `allowlist_set_entry` and `service_allowlist_set`. A
+  list is not a door, and nothing guards it until a service uses it.
+- **Read where it is enforced.** `allowlists::all`, which the edge and the
+  kernel load, joins the lists in; `allowlists::admitted` is the same union
+  for one service, and it is what `tell_edges` sends, so a node serving the
+  name never needs to know a list exists.
+- **No deployment**, as for a service's own list. Saving a shared list
+  reloads the table here and tells the edges of every service using it.
+- **A list in use is not deleted.** Taking it off a service is a decision
+  about what that service lets in, and it is made on the service.
+- **A service uses only its own project's lists.** The form names a list by
+  id, so that is checked on the POST.
+
 ## What is always let in
 
 - **The machine itself**: loopback, and every address the node holds. An

@@ -1311,11 +1311,11 @@ impl Deployer {
         let address = network::attach(&net, &id, &published, wanted).await?;
 
         self.write_resolv_conf()?;
-        let mut env: Vec<(String, String)> = service
-            .env
-            .iter()
-            .map(|(key, value)| (key.clone(), value.clone()))
-            .collect();
+        let mut env: Vec<(String, String)> =
+            crate::infra::repositories::env_groups::environment(&self.database, service)
+                .await?
+                .into_iter()
+                .collect();
         // After the operator's, so the engine's own settings win. A
         // managed database's environment is the node's to write, and a
         // `POSTGRES_PASSWORD` from anywhere else is one the console
@@ -3338,7 +3338,7 @@ impl Deployer {
             crate::infra::repositories::redirects::of_service(&self.database, &service.id)
                 .await
                 .unwrap_or_default();
-        let list = match crate::infra::repositories::allowlists::of(
+        let list = match crate::infra::repositories::allowlists::admitted(
             &self.database,
             &crate::domain::values::allowlist::Door::Service(service.id.clone()),
         )
@@ -3592,6 +3592,18 @@ impl Deployer {
             .map_or(service.desired_state, |row| row.desired_state)
             == DesiredState::Running;
         let ceilings = fresh.as_ref().unwrap_or(service);
+        let env = match crate::infra::repositories::env_groups::environment(
+            &self.database,
+            ceilings,
+        )
+        .await
+        {
+            Ok(env) => env,
+            Err(error) => {
+                tracing::warn!(%error, service = %service.slug, "could not read its environment");
+                return;
+            }
+        };
 
         let ours = crate::infra::registry::answers_as(&self.database, &registry).await;
 
@@ -3634,7 +3646,7 @@ impl Deployer {
                 registry: registry.clone(),
                 username: None,
                 secret: None,
-                env: service.env.clone(),
+                env: env.clone(),
                 port: ports
                     .iter()
                     .find(|port| port.hostname.is_some())
@@ -6303,6 +6315,52 @@ mod tests {
         assert_eq!(
             image_told_to_far(&database).await,
             ["registry.example/web@sha256:older"]
+        );
+    }
+
+    /// A copy elsewhere starts with what the owner resolved: the node
+    /// holding it has no groups of its own to read, so a variable the
+    /// instruction left out is one its container never gets.
+    #[tokio::test]
+    async fn a_node_holding_a_copy_is_told_the_variables_of_its_groups() {
+        let (database, project, service) = placed_elsewhere().await;
+        let smtp = crate::infra::repositories::env_groups::create(
+            &database,
+            &project.id,
+            "smtp",
+            &[("SMTP_HOST".to_string(), "mail".to_string())]
+                .into_iter()
+                .collect(),
+        )
+        .await
+        .expect("group");
+        crate::infra::repositories::env_groups::set_for_service(
+            &database,
+            &service.id,
+            std::slice::from_ref(&smtp.id),
+        )
+        .await
+        .expect("joined");
+        let deployer = Deployer::new(
+            std::sync::Arc::new(database.clone()),
+            &crate::infra::config::Config::default(),
+        );
+
+        deployer
+            .tell_holders(&project, &service, Holding::AsPlaced)
+            .await;
+
+        let sent: Vec<crate::infra::network::errand::Host> =
+            crate::infra::network::errand::waiting(&database, "nd-far")
+                .await
+                .expect("errands")
+                .into_iter()
+                .map(|errand| serde_json::from_value(errand.payload).expect("a host errand"))
+                .collect();
+        assert_eq!(sent.len(), 1, "{sent:?}");
+        assert_eq!(
+            sent[0].env.get("SMTP_HOST").map(String::as_str),
+            Some("mail")
         );
     }
 

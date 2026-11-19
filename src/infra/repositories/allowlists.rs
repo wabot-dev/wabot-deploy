@@ -69,12 +69,32 @@ pub async fn set(database: &SqliteDatabase, door: &Door, list: &Allowlist) -> Pl
     Ok(())
 }
 
-/// Every door's ranges at once, for the edge to load in one read.
+/// What `door` admits once the lists it uses are added to its own lines:
+/// what the edge and the kernel enforce, and what travels to other nodes.
+pub async fn admitted(database: &SqliteDatabase, door: &Door) -> PlatformResult<Allowlist> {
+    let own = of(database, door).await?;
+    let Door::Service(service_id) = door else {
+        return Ok(own);
+    };
+    let mut entries = own.entries().to_vec();
+    for set in crate::infra::repositories::allowlist_sets::of_service(database, service_id).await? {
+        entries.extend(set.list.entries().iter().cloned());
+    }
+    Ok(Allowlist::new(entries))
+}
+
+/// Every door's ranges at once, for the edge to load in one read, with
+/// the lines of every list a service uses beside its own.
 pub async fn all(database: &SqliteDatabase) -> SqliteResult<HashMap<Door, Vec<IpNet>>> {
     let rows: Vec<(String, String, String)> = database
         .read(|connection| {
             connection
-                .prepare("SELECT \"door\", \"subject\", \"network\" FROM allowlist")?
+                .prepare(
+                    "SELECT \"door\", \"subject\", \"network\" FROM allowlist \
+                     UNION SELECT 'service', u.\"service_id\", e.\"network\" \
+                       FROM service_allowlist_set u \
+                       JOIN allowlist_set_entry e ON e.\"set_id\" = u.\"set_id\"",
+                )?
                 .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?
                 .collect()
         })
@@ -87,7 +107,10 @@ pub async fn all(database: &SqliteDatabase) -> SqliteResult<HashMap<Door, Vec<Ip
         ) else {
             continue;
         };
-        doors.entry(door).or_default().push(network);
+        let networks = doors.entry(door).or_default();
+        if !networks.contains(&network) {
+            networks.push(network);
+        }
     }
     Ok(doors)
 }
@@ -202,6 +225,82 @@ mod tests {
             !all(&database).await.expect("all").contains_key(&door),
             "and closed is no rows, not a row that says so"
         );
+    }
+
+    /// What the edge and the kernel load is the service's own lines and
+    /// every line of each list it uses — and a list saved once changes
+    /// every service using it, with nothing written to the services.
+    #[tokio::test]
+    async fn a_service_admits_its_own_lines_and_those_of_the_lists_it_uses() {
+        let database = database().await;
+        let project = crate::infra::repositories::projects::create(&database, "shop")
+            .await
+            .expect("project");
+        let service = crate::infra::repositories::services::create(
+            &database,
+            &project.id,
+            "api",
+            "docker.io/library/nginx:alpine",
+            &[],
+        )
+        .await
+        .expect("service");
+        let door = Door::Service(service.id.clone());
+        set(
+            &database,
+            &door,
+            &Allowlist::parse("192.0.2.7 ci").expect("parsed"),
+        )
+        .await
+        .expect("own");
+        let office = crate::infra::repositories::allowlist_sets::create(
+            &database,
+            &project.id,
+            "office",
+            &Allowlist::parse("203.0.113.0/24 office").expect("parsed"),
+        )
+        .await
+        .expect("list");
+        crate::infra::repositories::allowlist_sets::set_for_service(
+            &database,
+            &service.id,
+            std::slice::from_ref(&office.id),
+        )
+        .await
+        .expect("used");
+
+        let loaded = all(&database).await.expect("all");
+        let networks = loaded.get(&door).expect("the service's door");
+        assert!(admits(networks, "192.0.2.7"), "{networks:?}");
+        assert!(admits(networks, "203.0.113.9"), "{networks:?}");
+        assert_eq!(
+            admitted(&database, &door)
+                .await
+                .expect("read")
+                .networks()
+                .len(),
+            2
+        );
+        assert_eq!(
+            of(&database, &door).await.expect("read").text(),
+            "192.0.2.7 ci"
+        );
+
+        crate::infra::repositories::allowlist_sets::set_list(
+            &database,
+            &office.id,
+            &Allowlist::parse("198.51.100.0/24").expect("parsed"),
+        )
+        .await
+        .expect("moved");
+        let loaded = all(&database).await.expect("all");
+        let networks = loaded.get(&door).expect("the service's door");
+        assert!(!admits(networks, "203.0.113.9"), "{networks:?}");
+        assert!(admits(networks, "198.51.100.1"), "{networks:?}");
+    }
+
+    fn admits(networks: &[IpNet], address: &str) -> bool {
+        crate::domain::values::allowlist::admits(networks, address.parse().expect("address"))
     }
 
     #[test]

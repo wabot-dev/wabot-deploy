@@ -284,6 +284,7 @@ mod tests {
         "Swap",
         "TCP",
         "TTL",
+        "Variables",
     ];
 
     fn read(path: &str) -> String {

@@ -1,6 +1,8 @@
 use hypertext::prelude::*;
 
+use crate::domain::entities::allowlist_set::AllowlistSet;
 use crate::domain::entities::config_revision::Revision;
+use crate::domain::entities::env_group::EnvGroup;
 use crate::domain::entities::port::Port;
 use crate::domain::entities::project::Project;
 use crate::domain::entities::replica::Replica;
@@ -192,6 +194,9 @@ pub enum Panel {
     Logs,
     Access {
         allowlist: Allowlist,
+        admitted: Allowlist,
+        sets: Vec<(AllowlistSet, bool)>,
+        shared_at: String,
         /// The nodes serving its names that would ignore the list, and so
         /// are not given them while it is not everyone.
         withheld: Vec<String>,
@@ -201,6 +206,8 @@ pub enum Panel {
     Environment {
         env_text: String,
         history: Vec<Revision>,
+        groups: Vec<(EnvGroup, bool)>,
+        shared_at: String,
     },
     Resources,
     Storage {
@@ -410,11 +417,48 @@ pub fn render<'a>(page: &'a ServiceSettings<'a>) -> impl Renderable + 'a {
                     (service_push_component::push_target(push, project_settings))
                 </section>
             }
-            Panel::Access { allowlist, withheld, refused } => {
+            Panel::Access { allowlist, admitted, sets, shared_at, withheld, refused } => {
                 <section class="stack" id="access">
                     <p class="card-label">(t("Who may connect"))</p>
+                    // What the edge and the kernel enforce is the union, so
+                    // the sentence is about the union: a service whose own
+                    // lines are empty is not closed while a list it uses
+                    // has some.
+                    (allowlist_field::state(admitted))
+                    @if sets.is_empty() {
+                        <p class="tile-detail">(t("Lines several services share — an office, a VPN — \
+                             are kept once in the project: "))
+                            <a href=(shared_at)>(t("shared lists"))</a>"."</p>
+                    } @else {
+                        <form method="post" action=(format!("{base}/allowlist-sets"))
+                              class="card stack" id="allowlist-sets">
+                            <p class="card-label">(t("Shared lists"))</p>
+                            @for (set, chosen) in sets {
+                                <label class="check">
+                                    @if *chosen {
+                                        <input type="checkbox" name=(format!("list-{}", set.id)) value="1" checked>
+                                    } @else {
+                                        <input type="checkbox" name=(format!("list-{}", set.id)) value="1">
+                                    }
+                                    <span class="mono">(&set.name)</span>
+                                    <span class="tile-detail">(
+                                        set.list.entries().iter()
+                                            .map(|entry| entry.address())
+                                            .collect::<Vec<_>>()
+                                            .join(", ")
+                                    )</span>
+                                </label>
+                            }
+                            <p class="field-hint">(t("Its lines and those of every list ticked here, \
+                                 together. A list changed in the project changes here at once, with \
+                                 no deployment."))</p>
+                            <div class="actions">
+                                <button type="submit">(t("Save lists"))</button>
+                            </div>
+                        </form>
+                    }
                     <form method="post" action=(format!("{base}/allowlist")) class="card stack">
-                        (allowlist_field::saved("allowlist", "allowlist", t("Addresses and ranges"),
+                        (allowlist_field::field("allowlist", "allowlist", t("Its own addresses and ranges"),
                             allowlist))
                         @if service.kind.is_database() {
                             <p class="field-hint">(t("Who may connect to its published port. With its \
@@ -509,9 +553,50 @@ pub fn render<'a>(page: &'a ServiceSettings<'a>) -> impl Renderable + 'a {
                     </form>
                 </section>
             }
-            Panel::Environment { env_text, history } => {
+            Panel::Environment { env_text, history, groups, shared_at } => {
+                <section class="stack" id="env-groups">
+                    <p class="card-label">(t("Shared groups"))</p>
+                    @if groups.is_empty() {
+                        <p class="tile-detail">(t("Variables several services read — an SMTP account, \
+                             an error tracker's key — are kept once in the project: "))
+                            <a href=(shared_at)>(t("shared groups"))</a>"."</p>
+                    } @else {
+                        <form method="post" action=(format!("{base}/env-groups")) class="card stack">
+                            @for (group, chosen) in groups {
+                                <label class="check">
+                                    @if *chosen {
+                                        <input type="checkbox" name=(format!("group-{}", group.id)) value="1" checked>
+                                    } @else {
+                                        <input type="checkbox" name=(format!("group-{}", group.id)) value="1">
+                                    }
+                                    <span class="mono">(&group.name)</span>
+                                    <span class="tile-detail mono">(
+                                        group.env.keys().cloned().collect::<Vec<_>>().join(", ")
+                                    )</span>
+                                </label>
+                                @if *chosen {
+                                    @let overridden: Vec<&String> = group.env.keys()
+                                        .filter(|key| service.env.contains_key(*key))
+                                        .collect();
+                                    @if !overridden.is_empty() {
+                                        <p class="field-hint">(t("Set below as well, so the service's own \
+                                             value is the one it gets: "))<span class="mono">(
+                                            overridden.iter().map(|key| key.as_str()).collect::<Vec<_>>().join(", ")
+                                        )</span></p>
+                                    }
+                                }
+                            }
+                            <p class="field-hint">(t("A variable of its own, below, wins over the same one \
+                                 in a group. Saving redeploys the service."))</p>
+                            <div class="actions">
+                                <button type="submit">(t("Save groups"))</button>
+                            </div>
+                        </form>
+                    }
+                </section>
+
                 <section class="stack" id="environment">
-                    <p class="card-label">(t("Environment"))</p>
+                    <p class="card-label">(t("Its own variables"))</p>
                     <form method="post" action=(format!("{base}/env")) class="card stack">
                         <textarea name="env" autocomplete="off" rows="6" class="mono"
                                   placeholder="KEY=value">(env_text)</textarea>

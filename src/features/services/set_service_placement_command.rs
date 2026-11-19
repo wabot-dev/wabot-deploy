@@ -541,7 +541,9 @@ async fn send_there(
         // reads the pair.
         username: secret.as_ref().map(|_| "errand".to_string()),
         secret,
-        env: service.env.clone(),
+        env: crate::infra::repositories::env_groups::environment(database, service)
+            .await
+            .map_err(|error| error.to_string())?,
         // The port a name is served on, so the node running the
         // copy has something to bind on its overlay address. Left
         // empty when no port has a hostname: nothing would proxy to

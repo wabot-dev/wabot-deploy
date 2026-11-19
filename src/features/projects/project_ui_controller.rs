@@ -300,4 +300,122 @@ impl ProjectUiController {
 
         Ok(frame.render(body).into_view().into())
     }
+
+    #[view("/projects/:project/settings/environment")]
+    #[middleware(SessionMiddleware)]
+    async fn project_env_groups(&self, query: ProjectQuery) -> UiResult<ViewOutcome> {
+        let Some(account) = signed_in(&self.auth) else {
+            return Ok(Redirect::found("/sign-in").into());
+        };
+        let Some((project, allowed)) =
+            access::find_project(&self.state.database, &account, &query.project).await?
+        else {
+            return Ok(Redirect::found("/projects?error=no+such+project").into());
+        };
+        if !allowed.may_deploy() {
+            return Ok(Redirect::found(format!("/projects/{}", project.slug)).into());
+        }
+        let names = service_names(&self.state.database, &project.id).await?;
+        let mut groups = Vec::new();
+        for group in
+            crate::infra::repositories::env_groups::of_project(&self.state.database, &project.id)
+                .await?
+        {
+            let users = crate::infra::repositories::env_groups::services_using(
+                &self.state.database,
+                &group.id,
+            )
+            .await?;
+            groups.push((group, named(&names, &users)));
+        }
+
+        let path = crate::features::projects::project_settings_tabs_component::ProjectSettingsTab::Environment
+            .path(&project.slug);
+        let frame = Frame::load(&self.state.database, &account, Section::Projects, path).await;
+        layout::head(&format!("{} settings", project.name));
+        let page = crate::features::projects::project_env_groups_page::ProjectEnvGroups {
+            project: &project,
+            allowed,
+            groups: &groups,
+            query_error: query.error.as_deref(),
+        };
+        let body = crate::shell::texts::language::scoped(account.language, || {
+            crate::features::projects::project_env_groups_page::render(&page)
+                .render()
+                .into_inner()
+        });
+
+        Ok(frame.render(body).into_view().into())
+    }
+
+    #[view("/projects/:project/settings/allowlists")]
+    #[middleware(SessionMiddleware)]
+    async fn project_allowlists(&self, query: ProjectQuery) -> UiResult<ViewOutcome> {
+        let Some(account) = signed_in(&self.auth) else {
+            return Ok(Redirect::found("/sign-in").into());
+        };
+        let Some((project, allowed)) =
+            access::find_project(&self.state.database, &account, &query.project).await?
+        else {
+            return Ok(Redirect::found("/projects?error=no+such+project").into());
+        };
+        if !allowed.may_deploy() {
+            return Ok(Redirect::found(format!("/projects/{}", project.slug)).into());
+        }
+        let names = service_names(&self.state.database, &project.id).await?;
+        let mut sets = Vec::new();
+        for set in crate::infra::repositories::allowlist_sets::of_project(
+            &self.state.database,
+            &project.id,
+        )
+        .await?
+        {
+            let users = crate::infra::repositories::allowlist_sets::services_using(
+                &self.state.database,
+                &set.id,
+            )
+            .await?;
+            sets.push((set, named(&names, &users)));
+        }
+
+        let path = crate::features::projects::project_settings_tabs_component::ProjectSettingsTab::Allowlists
+            .path(&project.slug);
+        let frame = Frame::load(&self.state.database, &account, Section::Projects, path).await;
+        layout::head(&format!("{} settings", project.name));
+        let page = crate::features::projects::project_allowlists_page::ProjectAllowlists {
+            project: &project,
+            allowed,
+            sets: &sets,
+            query_error: query.error.as_deref(),
+        };
+        let body = crate::shell::texts::language::scoped(account.language, || {
+            crate::features::projects::project_allowlists_page::render(&page)
+                .render()
+                .into_inner()
+        });
+
+        Ok(frame.render(body).into_view().into())
+    }
+}
+
+async fn service_names(
+    database: &wabot::sqlite::SqliteDatabase,
+    project_id: &str,
+) -> Result<Vec<(String, String)>, crate::domain::errors::PlatformError> {
+    Ok(services::all(database, Some(project_id))
+        .await?
+        .into_iter()
+        .map(|service| (service.id, service.name))
+        .collect())
+}
+
+fn named(names: &[(String, String)], ids: &[String]) -> Vec<String> {
+    ids.iter()
+        .filter_map(|id| {
+            names
+                .iter()
+                .find(|(known, _)| known == id)
+                .map(|(_, name)| name.clone())
+        })
+        .collect()
 }

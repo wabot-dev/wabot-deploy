@@ -21,13 +21,6 @@ use crate::shell::auth::{
 use crate::shell::state::ConsoleState;
 
 impl ProjectRestController {
-    /// The project this request is about, what the caller may do with
-    /// it, and the path split up.
-    ///
-    /// `None` when there is no session, no such project, or it is not
-    /// theirs — the three cases a handler answers identically, which is
-    /// what keeps "not yours" from being distinguishable from "not
-    /// there".
     #[allow(clippy::type_complexity)]
     async fn locate<'a>(
         &self,
@@ -39,17 +32,38 @@ impl ProjectRestController {
             Vec<&'a str>,
         )>,
     > {
-        let Some(account) = signed_in(&self.auth) else {
-            return Ok(None);
-        };
-        let segments = crate::shell::auth::segments(path);
-        let Some(slug) = segments.get(1) else {
-            return Ok(None);
-        };
-        Ok(access::find_project(&self.state.database, &account, slug)
-            .await?
-            .map(|(project, allowed)| (project, allowed, segments)))
+        locate_for(&self.state, &self.auth, path).await
     }
+}
+
+/// The project this request is about, what the caller may do with it,
+/// and the path split up.
+///
+/// `None` when there is no session, no such project, or it is not
+/// theirs — the three cases a handler answers identically, which is what
+/// keeps "not yours" from being distinguishable from "not there".
+#[allow(clippy::type_complexity)]
+pub(crate) async fn locate_for<'a>(
+    state: &Arc<ConsoleState>,
+    auth: &Arc<Auth>,
+    path: &'a str,
+) -> RestResult<
+    Option<(
+        crate::domain::entities::project::Project,
+        crate::domain::values::roles::Access,
+        Vec<&'a str>,
+    )>,
+> {
+    let Some(account) = signed_in(auth) else {
+        return Ok(None);
+    };
+    let segments = crate::shell::auth::segments(path);
+    let Some(slug) = segments.get(1) else {
+        return Ok(None);
+    };
+    Ok(access::find_project(&state.database, &account, slug)
+        .await?
+        .map(|(project, allowed)| (project, allowed, segments)))
 }
 
 #[injectable]

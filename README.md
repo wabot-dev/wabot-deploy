@@ -81,6 +81,7 @@ the first administrator.
 | **Registry** | `docker push` / `ctr push` straight into containerd's content store — no second copy of any layer; on the node's name, or on a name of each project's own so `docker login` keeps one token per project |
 | **Releases** | every push is a release, pinned by digest; roll back to an earlier one from the console |
 | **Config history** | environment changes are versioned separately, so reverting one does not move the image |
+| **Shared settings** | a project keeps environment groups and allowlists once; a service joins the groups and uses the lists it needs, and its own values win |
 | **People** | admin/member on the node, owner/deployer/viewer per project, invitations by link |
 | **Node page** | memory attributed to the platform, the runtime, the shims and your containers |
 | **Updates** | install a published release with one click; never on a timer |

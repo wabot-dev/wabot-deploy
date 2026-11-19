@@ -1,5 +1,8 @@
 //! A project's settings: its push tokens, and deleting it.
 
+use crate::features::projects::project_settings_tabs_component::{
+    project_settings_tabs, ProjectSettingsTab,
+};
 use crate::features::projects::project_tabs_component::{project_tabs, ProjectPlace};
 use crate::features::projects::texts::t;
 use crate::shell::components::allowlist_field;
@@ -39,6 +42,7 @@ pub fn render<'a>(page: &'a ProjectSettings<'a>) -> impl Renderable + 'a {
             <span class="who">(t("You are: "))(allowed.label())</span>
         </div>
         (project_tabs(project, allowed, ProjectPlace::Settings))
+        (project_settings_tabs(&project.slug, ProjectSettingsTab::General))
         @if let Some(message) = &page.query_error {
             (layout::error_note(message))
         }

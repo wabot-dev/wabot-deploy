@@ -4,10 +4,12 @@
 //! orchestration is in a command. See `docs/architecture-rules.md` §0.
 
 pub mod access;
+pub mod allowlist_sets;
 pub mod allowlists;
 pub mod config_history;
 pub mod databases;
 pub mod edges;
+pub mod env_groups;
 pub mod object_stores;
 pub mod ports;
 pub mod project_domain;

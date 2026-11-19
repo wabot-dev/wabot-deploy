@@ -16,7 +16,8 @@ use crate::infra::repositories::access;
 use crate::infra::repositories::services;
 
 use crate::shell::auth::{
-    back_with_error, field, local_path, read_form, see_other, signed_in, SessionMiddleware,
+    back_with_error, field, local_path, parse_env, read_form, see_other, signed_in, ticked,
+    SessionMiddleware,
 };
 use crate::shell::state::ConsoleState;
 
@@ -897,6 +898,106 @@ impl ServiceRestController {
         Ok(see_other(&format!("{here}#access")))
     }
 
+    #[post("/projects/:project/services/:service/allowlist-sets")]
+    #[raw]
+    #[middleware(SessionMiddleware)]
+    async fn set_allowlist_sets(&self, request: Request) -> RestResult<Response> {
+        let path = request.uri().path().to_string();
+        let Some((project, service, _)) = self.locate(&path).await? else {
+            return Ok(see_other("/projects?error=no+such+service"));
+        };
+        let here = Tab::Access.path(&project.slug, &service.slug);
+
+        let Some(account) = signed_in(&self.auth) else {
+            return Ok(see_other("/sign-in"));
+        };
+        let form = match read_form(request).await {
+            Ok(form) => form,
+            Err(response) => return Ok(response),
+        };
+        let asked = crate::features::services::set_service_allowlist_sets_request::SetServiceAllowlistSetsRequest {
+            set_ids: ticked(&form, "list-"),
+        };
+        let outcome = match crate::domain::authz::node_user::belongs_here(&account) {
+            true => {
+                crate::features::services::node_user_set_service_allowlist_sets::run(
+                    &self.state.database,
+                    &self.state.deployer,
+                    &account,
+                    &service,
+                    &asked,
+                )
+                .await
+            }
+            false => {
+                crate::features::services::tenant_user_set_service_allowlist_sets::run(
+                    &self.state.database,
+                    &self.state.deployer,
+                    &account,
+                    &service,
+                    &asked,
+                )
+                .await
+            }
+        };
+        if let Err(reason) = outcome {
+            return Ok(back_with_error(&here, &reason));
+        }
+        Ok(see_other(&format!("{here}#allowlist-sets")))
+    }
+
+    #[post("/projects/:project/services/:service/env-groups")]
+    #[raw]
+    #[middleware(SessionMiddleware)]
+    async fn set_env_groups(&self, request: Request) -> RestResult<Response> {
+        let path = request.uri().path().to_string();
+        let Some((project, service, _)) = self.locate(&path).await? else {
+            return Ok(see_other("/projects?error=no+such+service"));
+        };
+        let here = Tab::Environment.path(&project.slug, &service.slug);
+
+        let Some(account) = signed_in(&self.auth) else {
+            return Ok(see_other("/sign-in"));
+        };
+        let form = match read_form(request).await {
+            Ok(form) => form,
+            Err(response) => return Ok(response),
+        };
+        let asked =
+            crate::features::services::set_service_env_groups_request::SetServiceEnvGroupsRequest {
+                group_ids: ticked(&form, "group-"),
+            };
+        let applied = match crate::domain::authz::node_user::belongs_here(&account) {
+            true => {
+                crate::features::services::node_user_set_service_env_groups::run(
+                    &self.state.database,
+                    &account,
+                    &service,
+                    &asked,
+                )
+                .await
+            }
+            false => {
+                crate::features::services::tenant_user_set_service_env_groups::run(
+                    &self.state.database,
+                    &account,
+                    &service,
+                    &asked,
+                )
+                .await
+            }
+        };
+        let applied = match applied {
+            Ok(applied) => applied,
+            Err(reason) => return Ok(back_with_error(&here, &reason)),
+        };
+        if service.desired_state == crate::domain::entities::service::DesiredState::Running {
+            self.enqueue(&applied.service_id, applied.release_id.as_deref())
+                .await;
+        }
+        Ok(see_other(&format!("{here}#env-groups")))
+    }
+
     /// Change the environment, and redeploy with it.
     /// How much memory this service's containers may have.
     ///
@@ -1648,48 +1749,6 @@ fn ceilings_of(
         memory,
         cpu_millicores,
     })
-}
-
-/// `KEY=value` lines into pairs.
-///
-/// The split is on the *first* `=` only: a value is very often a URL or
-/// a base64 blob with one in it, and splitting on every `=` truncates
-/// exactly the secrets somebody would least like truncated.
-///
-/// Blank lines and `#` comments are skipped, so a block pasted out of
-/// a `.env` file works as pasted.
-fn parse_env(text: &str) -> Result<Vec<(String, String)>, String> {
-    let mut pairs = Vec::new();
-
-    for (number, line) in text.lines().enumerate() {
-        let line = line.trim();
-        if line.is_empty() || line.starts_with('#') {
-            continue;
-        }
-
-        let Some((key, value)) = line.split_once('=') else {
-            return Err(format!("line {} is not KEY=value: {line:?}", number + 1));
-        };
-        let key = key.trim();
-        if key.is_empty() {
-            return Err(format!("line {} has no name before the =", number + 1));
-        }
-        if !key
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '.')
-        {
-            return Err(format!(
-                "{key:?} is not a usable variable name — letters, digits, _ and ."
-            ));
-        }
-
-        // The value is trimmed but not unquoted: `KEY="v"` in a shell
-        // file means `v`, and guessing wrong either way puts literal
-        // quotes into a password. Whoever pastes it can see the quotes.
-        pairs.push((key.to_string(), value.trim().to_string()));
-    }
-
-    Ok(pairs)
 }
 
 /// Where to send the browser after a control was pressed.
