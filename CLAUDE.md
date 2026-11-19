@@ -529,6 +529,19 @@ happened:
   kernel; the port is not.
 - Health and failover across the upstreams of one name. Today a dead
   replica keeps its share of the traffic until the owner notices.
+- A copy here starts by another path than a copy elsewhere. Here,
+  `Deployer::deploy` runs `deploy_one` straight from the owner's rows;
+  elsewhere, `holders()` sends an `errand::Host` and that node's
+  `collect::host` admits it with its own meters, writes its rows and
+  queues its own deployment. So admission is written twice
+  (`room_to_start` and `collect::host`). Asked for by Jorge on 2026-11-18,
+  for automatic scheduling, rebalancing and bringing copies back when a
+  node goes down: the owner decides placements, and every node, this one
+  included, carries out its instruction through one executor. This node's
+  own instruction is handed over in-process, not through the queue, so a
+  single-node install needs no network machinery and the button still
+  hears its reason at once. To be designed in `docs/network.md` and
+  agreed before any code.
 - Projects — and so organisations — are not isolated on the network:
   `FORWARD` accepts everything, so one tenant's container reaches
   another's services and the operator's databases. Measured 2026-10-15.
