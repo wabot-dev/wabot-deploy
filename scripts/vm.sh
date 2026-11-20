@@ -155,14 +155,30 @@ state() {
 state before
 touch $s/marker
 sleep 1
-# One thread: the process grows over the run, and two of them had it
-# OOM-killed at ~390 MB in a 512 MB VM, 19 tests from the end (0.43.0).
-(cd "$here" && /var/tmp/wabot-suite-tests --test-threads=1 < /dev/null > $s/tests.log 2>&1)
-passed=$?
+# One thread, and a fresh process every 300 tests: the process only grows
+# over a run. Two threads had it OOM-killed at ~390 MB in a 512 MB VM, 19
+# tests from the end (0.43.0), and one thread at 383 MB with 1,304 done
+# (0.44.0). A run the kernel killed printed no result and read as clean.
+(cd "$here" && /var/tmp/wabot-suite-tests --list < /dev/null 2>/dev/null) |
+  sed -n 's/: test$//p' > $s/names
+split -l 300 $s/names $s/batch.
+: > $s/tests.log
+passed=0
+for batch in $s/batch.*; do
+  (cd "$here" && /var/tmp/wabot-suite-tests --test-threads=1 --exact $(cat "$batch") \
+    < /dev/null >> $s/tests.log 2>&1) || passed=1
+done
 state after
 
 changed=0
-echo "==> $(grep 'test result' $s/tests.log)"
+total=$(wc -l < $s/names)
+ran=$(awk '/^test result/ {n += $4 + $6} END {print n + 0}' $s/tests.log)
+echo "==> $(awk '/^test result/ {p += $4; f += $6} END {print p + 0 " passed, " f + 0 " failed"}' $s/tests.log) of $total"
+if [ "$ran" -ne "$total" ]; then
+  passed=1
+  echo "==> the tests did not finish: $ran of $total have a result"
+  dmesg | grep 'Killed process' | tail -1
+fi
 [ $passed -eq 0 ] || grep -E '^test .* FAILED$' $s/tests.log
 for what in links namespaces containers iptables reservations; do
   if ! diff -q $s/$what.before $s/$what.after >/dev/null; then
