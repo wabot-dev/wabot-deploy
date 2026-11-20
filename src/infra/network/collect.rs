@@ -176,7 +176,13 @@ pub async fn run_once(database: &SqliteDatabase, config: &Config, container: &Co
 /// node's own pass, and how it went is that node's business: this is
 /// the one direction where the asker cannot be told, because the asker
 /// is the one that dials.
-async fn hand_over(database: &SqliteDatabase, node_id: &str, endpoint: &str, secret: &str) {
+async fn hand_over(
+    database: &SqliteDatabase,
+    node_id: &str,
+    endpoint: &str,
+    secret: &str,
+    trust: super::call::Trust<'_>,
+) {
     let waiting = match errand::waiting(database, node_id).await {
         Ok(waiting) => waiting,
         Err(error) => {
@@ -186,7 +192,7 @@ async fn hand_over(database: &SqliteDatabase, node_id: &str, endpoint: &str, sec
     };
 
     for order in waiting {
-        match super::call::ask(endpoint, secret, order.kind.as_str(), &order.payload).await {
+        match super::call::ask(endpoint, secret, order.kind.as_str(), &order.payload, trust).await {
             Ok(()) => match errand::settle(database, node_id, &order.id, None).await {
                 Ok(_) => tracing::info!(
                     errand = %order.id, authority = %node_id,
@@ -280,9 +286,9 @@ async fn from_one(
         tracing::debug!(authority = %node_id, "no credential for this authority");
         return 0;
     };
-    let endpoint = match super::find(database, node_id).await {
-        Ok(Some(node)) => node.endpoint,
-        Ok(None) => None,
+    let (endpoint, anchor) = match super::find(database, node_id).await {
+        Ok(Some(node)) => (node.endpoint, node.ca_pem),
+        Ok(None) => (None, None),
         Err(error) => {
             tracing::warn!(%error, "could not read an authority's row");
             return 0;
@@ -291,12 +297,19 @@ async fn from_one(
     let Some(endpoint) = endpoint else {
         return 0;
     };
+    let trust = super::call::Trust {
+        pinned: None,
+        anchor: anchor.as_deref(),
+    };
 
     // What this node's copies of that node's services are doing, before
     // asking for more work — so an authority queueing something has just
     // heard the truth about what is already there, and a replica evicted
     // here stops being asked for in the same round trip.
-    report_to(database, config, container, node_id, &endpoint, &secret).await;
+    report_to(
+        database, config, container, node_id, &endpoint, &secret, trust,
+    )
+    .await;
 
     // Who else is on that network, before anything is carried out.
     //
@@ -305,14 +318,17 @@ async fn from_one(
     // sibling's overlay address is obeyed with a session already in place.
     // A failure costs nothing: the pass goes on, and the census is asked
     // for again in fifteen seconds.
-    learn_the_network(database, config, container, node_id, &endpoint, &secret).await;
+    learn_the_network(
+        database, config, container, node_id, &endpoint, &secret, trust,
+    )
+    .await;
 
     // And what this node has asked *that* one to do. Before collecting
     // for the same reason the report is: what comes back should be
     // computed after this node has said everything it has to say.
-    hand_over(database, node_id, &endpoint, &secret).await;
+    hand_over(database, node_id, &endpoint, &secret, trust).await;
 
-    let waiting = match super::call::errands(&endpoint, &secret).await {
+    let waiting = match super::call::errands(&endpoint, &secret, trust).await {
         Ok(waiting) => waiting,
         Err(error) => {
             // Expected often enough not to be a warning: an authority
@@ -333,7 +349,7 @@ async fn from_one(
         // Reported even when it failed. An errand nobody answered stays
         // pending for ever on the other node, which is the one state
         // this must not produce.
-        match super::call::settle(&endpoint, &secret, &id, outcome.err()).await {
+        match super::call::settle(&endpoint, &secret, &id, outcome.err(), trust).await {
             Ok(()) => settled += 1,
             Err(error) => tracing::warn!(%error, errand = %id, "could not report an errand"),
         }
@@ -347,7 +363,10 @@ async fn from_one(
     // finishes, from `deploy::jobs`. Reporting a deployment here would
     // send the state from before it ran and call it news.
     if settled > 0 {
-        report_to(database, config, container, node_id, &endpoint, &secret).await;
+        report_to(
+            database, config, container, node_id, &endpoint, &secret, trust,
+        )
+        .await;
     }
     settled
 }
@@ -368,8 +387,9 @@ async fn learn_the_network(
     node_id: &str,
     endpoint: &str,
     secret: &str,
+    trust: super::call::Trust<'_>,
 ) {
-    let roster = match super::call::roster(endpoint, secret).await {
+    let roster = match super::call::roster(endpoint, secret, trust).await {
         Ok(roster) => roster,
         Err(error) => {
             // Expected often enough not to be a warning, like the errand
@@ -436,18 +456,23 @@ pub async fn report_now(database: &SqliteDatabase, config: &Config, container: &
         let Some(secret) = super::credential_for(database, &authority.node_id).await else {
             continue;
         };
-        let endpoint = match super::find(database, &authority.node_id).await {
-            Ok(Some(node)) => node.endpoint,
-            _ => None,
+        let Ok(Some(node)) = super::find(database, &authority.node_id).await else {
+            continue;
         };
-        let Some(endpoint) = endpoint else { continue };
+        let Some(endpoint) = node.endpoint.as_deref() else {
+            continue;
+        };
         report_to(
             database,
             config,
             container,
             &authority.node_id,
-            &endpoint,
+            endpoint,
             &secret,
+            super::call::Trust {
+                pinned: None,
+                anchor: node.ca_pem.as_deref(),
+            },
         )
         .await;
     }
@@ -468,9 +493,10 @@ async fn report_to(
     node_id: &str,
     endpoint: &str,
     secret: &str,
+    trust: super::call::Trust<'_>,
 ) {
     match report_for(database, config, container, node_id).await {
-        Ok(report) => match super::call::report(endpoint, secret, &report).await {
+        Ok(report) => match super::call::report(endpoint, secret, &report, trust).await {
             Ok(heard) => hear(database, node_id, &heard).await,
             Err(error) => tracing::debug!(%error, authority = %node_id, "could not report"),
         },
@@ -1074,6 +1100,26 @@ pub(crate) async fn allowed(
     }
 }
 
+/// A registry that sends a credential is the authority's own, and its
+/// certificate may be signed by nothing but the authority's CA — the one
+/// kept at the join. Written each time, so a CA that arrived later, or one
+/// that went, is what the next pull trusts.
+async fn trust_the_authoritys_registry(
+    database: &SqliteDatabase,
+    config: &Config,
+    authority: &str,
+    registry: &str,
+) -> Result<(), String> {
+    let ca = super::find(database, authority)
+        .await
+        .map_err(|error| error.to_string())?
+        .and_then(|node| node.ca_pem);
+    crate::infra::runtime::images::trust_registry(&config.node.data_dir, registry, ca.as_deref())
+        .map_err(|error| {
+            format!("could not keep the certificate authority for {registry}: {error}")
+        })
+}
+
 /// Run a service here, on this node's own rows.
 async fn host_service(
     database: &SqliteDatabase,
@@ -1107,10 +1153,12 @@ async fn host_service(
             &Credential {
                 username: username.clone(),
                 secret: secret.clone(),
+                hosts_dir: None,
             },
         )
         .await
         .map_err(|error| error.to_string())?;
+        trust_the_authoritys_registry(database, config, authority, &host.registry).await?;
     }
 
     let project = ensure_project(database, &host.project, authority).await?;
@@ -1347,10 +1395,12 @@ async fn hold_database(
             &Credential {
                 username: username.clone(),
                 secret: secret.clone(),
+                hosts_dir: None,
             },
         )
         .await
         .map_err(|error| error.to_string())?;
+        trust_the_authoritys_registry(database, config, authority, &told.registry).await?;
     }
 
     let project = ensure_project(database, &told.project, authority).await?;
@@ -4047,6 +4097,91 @@ mod tests {
         assert!(refused.contains("program"), "{refused}");
     }
 
+    /// An authority with no public certificate signs its registry's with
+    /// its own CA, and a copy placed here pulled from it as from an
+    /// unknown issuer until containerd was given that CA — on the VM
+    /// nodes, 2026-11-20. The errand that brings the credential brings the
+    /// trust, and an authority that has no CA any more leaves none behind.
+    #[tokio::test]
+    async fn the_authoritys_registry_is_trusted_by_the_ca_kept_at_the_join() {
+        let database = crate::infra::db::open_in_memory().await.expect("open");
+        let data = tempfile::tempdir().expect("tempdir");
+        let mut config = Config::default();
+        config.node.data_dir = data.path().to_path_buf();
+        let authority = |ca_pem: Option<&str>| super::super::Node {
+            update_note: None,
+            version: None,
+            wanted_version: None,
+            usage: None,
+            draining_at: None,
+            capacity: None,
+            id: "nd-authority".into(),
+            name: "hub.example.com".into(),
+            kind: super::super::Kind::Public,
+            endpoint: Some("hub.example.com:443".into()),
+            public_key: None,
+            overlay_ip: Some("10.42.0.1".into()),
+            is_self: false,
+            last_seen_at: None,
+            allows: Vec::new(),
+            ca_pem: ca_pem.map(str::to_string),
+        };
+        let errand = || errand::Host {
+            project: "shared".into(),
+            service: "web".into(),
+            image: "hub.example.com/proj/app@sha256:aaa".into(),
+            registry: "hub.example.com".into(),
+            username: Some("wabot".into()),
+            secret: Some("a-push-token".into()),
+            env: Default::default(),
+            port: None,
+            slots: vec![1],
+            running: false,
+            memory_limit: None,
+            cpu_millicores: None,
+            disk_limit: None,
+            entrypoint: None,
+            command: None,
+        };
+        let file = crate::infra::runtime::images::hosts_dir(data.path())
+            .join("hub.example.com")
+            .join("ca.crt");
+
+        super::super::save(&database, &authority(Some("THE AUTHORITY'S CA")))
+            .await
+            .expect("the authority");
+        host_service(
+            &database,
+            &config,
+            &Container::new(),
+            "nd-authority",
+            errand(),
+        )
+        .await
+        .expect("carried out");
+        assert_eq!(
+            std::fs::read_to_string(&file).expect("trusted"),
+            "THE AUTHORITY'S CA"
+        );
+
+        super::super::save(&database, &authority(None))
+            .await
+            .expect("the authority");
+        host_service(
+            &database,
+            &config,
+            &Container::new(),
+            "nd-authority",
+            errand(),
+        )
+        .await
+        .expect("carried out");
+        assert!(
+            !file.exists(),
+            "a CA nobody holds any more is still trusted"
+        );
+    }
+
     /// The same errand twice points one service at the image rather
     /// than making a second beside it — which is what a re-handed
     /// errand has to mean, since the far end hands one over again
@@ -4203,6 +4338,7 @@ mod tests {
             &Credential {
                 username: "wabot".into(),
                 secret: "a-push-token".into(),
+                hosts_dir: None,
             },
         )
         .await

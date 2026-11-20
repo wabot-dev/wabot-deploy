@@ -3357,6 +3357,7 @@ dependencies = [
  "wabot",
  "wabot-addon-async-in-memory",
  "wabot-addon-async-sqlite",
+ "webpki-roots",
  "x509-parser 0.16.0",
 ]
 

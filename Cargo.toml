@@ -192,6 +192,11 @@ hyper-rustls = { version = "0.27", default-features = false, features = [
     "tls12",
     "webpki-tokio",
 ] }
+# The same roots, named: an authority with no public certificate is
+# trusted by the CA its join token pins, and that verifier has to try
+# the public roots first without `with_webpki_roots` building it for us.
+# Already in the tree through the feature above.
+webpki-roots = "1"
 
 # Filling a volume from an archive brought from another machine.
 # `unpack_in` refuses an entry whose path would leave the directory — `..`,

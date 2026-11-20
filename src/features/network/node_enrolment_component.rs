@@ -145,14 +145,10 @@ pub fn enrol_card(may_enrol: bool) -> impl Renderable {
                          key and an address on the overlay for the new node. Joining \
                          with it there records this node as an authority — which that \
                          node can revoke at any time — and tells this one it arrived."))</p>
-                    // The failure that will actually happen, said beside
-                    // the button rather than discovered on the far
-                    // machine: joining calls back over this hostname,
-                    // and a node serving its own authority's certificate
-                    // is one nothing else trusts yet.
-                    <p class="field-hint">(t("The other machine has to trust the certificate this console \
-                         is served on. Until this node has a public one, joining will \
-                         refuse rather than send its token to whatever answered."))</p>
+                    <p class="field-hint">(t("The other machine calls back on this console's name. The token \
+                         carries the fingerprint of this node's own authority, so a \
+                         certificate it signed is trusted as well as a public one, and \
+                         anything else is refused rather than handed the token."))</p>
                     <div class="actions">
                         <button type="submit">(t("Create join token"))</button>
                     </div>
@@ -162,9 +158,8 @@ pub fn enrol_card(may_enrol: bool) -> impl Renderable {
                     <p>(t("This node has no address another one could call back on, so it \
                          cannot enrol anybody yet."))</p>
                     <p class="field-hint">(t("Set a domain on this node's own page. A joining node reaches it \
-                         over the same hostname and certificate this console is served \
-                         on, and that certificate has to be one the other machine \
-                         already trusts."))</p>
+                         over the same hostname this console is served on, so the other \
+                         machine has to be able to resolve it and reach it."))</p>
                 </section>
             }
         </section>

@@ -97,6 +97,7 @@ mod tests {
             // what it therefore means: both capabilities.
             requires: None,
             offers: None,
+            ca_sha256: None,
         }
     }
 

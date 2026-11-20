@@ -1160,11 +1160,7 @@ impl Deployer {
         let client = Containerd::connect().await?;
         let id = replica.container_id(&project.slug, &service.slug);
 
-        let credential = crate::infra::repositories::registry_credentials::for_reference(
-            &self.database,
-            &service.image,
-        )
-        .await;
+        let credential = self.pulling(&service.image).await;
 
         // Before the running copy is taken down: a pull is minutes, and the
         // copy went on serving none of them. `nubo-testing` was down for the
@@ -3926,6 +3922,17 @@ impl Deployer {
         }
     }
 
+    /// What a pull of `image` presents, and the authority it trusts.
+    async fn pulling(&self, image: &str) -> Option<crate::infra::runtime::images::Credential> {
+        crate::infra::repositories::registry_credentials::for_reference(&self.database, image)
+            .await
+            .map(|credential| {
+                credential.trusting(crate::infra::runtime::images::hosts_dir(
+                    &self.config.node.data_dir,
+                ))
+            })
+    }
+
     async fn certificate_names(&self, project: &Project, service: &Service) -> Vec<String> {
         certificate_names(&self.database, project, service).await
     }
@@ -4045,11 +4052,7 @@ impl Deployer {
                 mounts,
                 ..Default::default()
             };
-            let credential = crate::infra::repositories::registry_credentials::for_reference(
-                &self.database,
-                &service.image,
-            )
-            .await;
+            let credential = self.pulling(&service.image).await;
             let log = logs::prepare(data_dir, &fixer).ok();
             let log = log.map(|path| logs::uri(&path));
             let code = containers::run_to_completion(
@@ -4781,11 +4784,7 @@ impl Deployer {
             ..Default::default()
         };
 
-        let credential = crate::infra::repositories::registry_credentials::for_reference(
-            &self.database,
-            &service.image,
-        )
-        .await;
+        let credential = self.pulling(&service.image).await;
 
         let mut last = String::new();
         for attempt in 1..=SEED_ATTEMPTS {

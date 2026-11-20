@@ -19,11 +19,15 @@
 //!
 //! ## The certificate has to be trusted
 //!
-//! Bundled roots, as everywhere else in this binary. That means the
-//! authority needs a publicly trusted certificate before it can enrol
-//! anybody, which is a real limitation and the honest one: the
-//! alternative is a joining node that accepts any certificate and hands
-//! its bearer token to whoever answered.
+//! Bundled roots, as everywhere else in this binary, or the authority's
+//! own certificate authority — never "accept anything", which would hand
+//! the bearer token to whoever answered. The join knows that CA only by
+//! the SHA-256 its token carries, and accepts a chain holding a CA with
+//! that hash, verifying the leaf against it as against any root. The
+//! answer hands the CA over, and every call after the join trusts the
+//! public roots and that CA, for that authority's endpoint alone. That
+//! is what lets two nodes with no public certificate — the two VMs —
+//! join each other.
 
 use std::time::Duration;
 
@@ -52,6 +56,16 @@ const OVERLAY_TIMEOUT: Duration = Duration::from_secs(5);
 /// wabot-deploy node.
 const MAX_BODY: usize = 64 * 1024;
 
+/// What an authority's certificate is believed by, beyond the public roots.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Trust<'a> {
+    /// The SHA-256 of its CA, from the join token: the join, before the CA
+    /// itself has arrived.
+    pub pinned: Option<&'a str>,
+    /// Its CA in PEM, kept since the join: every call after it.
+    pub anchor: Option<&'a str>,
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum CallError {
     #[error("{0} is not an address this can call: {1}")]
@@ -61,8 +75,8 @@ pub enum CallError {
     // reads as damage in the other.
     #[error(
         "could not reach {0}: {1}. It has to be reachable at that address with a \
-         certificate this machine trusts — a node serving its own certificate \
-         cannot enrol anybody yet."
+         certificate this machine trusts — a public one, or one signed by the \
+         authority its token names."
     )]
     Unreachable(String, String),
     #[error("{url} did not answer within {}s", TIMEOUT.as_secs())]
@@ -84,9 +98,10 @@ pub async fn announce(
     endpoint: &str,
     secret: &str,
     arriving: &Arriving,
+    trust: Trust<'_>,
 ) -> Result<Accepted, CallError> {
     let url = format!("https://{endpoint}/api/network/join");
-    match tokio::time::timeout(TIMEOUT, post(&url, secret, arriving)).await {
+    match tokio::time::timeout(TIMEOUT, post(&url, secret, arriving, trust)).await {
         Ok(result) => result,
         Err(_) => Err(CallError::TimedOut { url }),
     }
@@ -96,9 +111,10 @@ pub async fn announce(
 pub async fn errands(
     endpoint: &str,
     secret: &str,
+    trust: Trust<'_>,
 ) -> Result<Vec<super::errand::Errand>, CallError> {
     let url = format!("https://{endpoint}/api/network/errands");
-    match tokio::time::timeout(TIMEOUT, send(&url, secret, None)).await {
+    match tokio::time::timeout(TIMEOUT, send(&url, secret, None, trust)).await {
         Ok(bytes) => {
             let bytes = bytes?;
             serde_json::from_slice(&bytes)
@@ -114,9 +130,13 @@ pub async fn errands(
 /// node is allowed to know because that node enrolled it. A failure here
 /// costs nothing — the pass goes on to the errands, and the census is
 /// asked for again in fifteen seconds.
-pub async fn roster(endpoint: &str, secret: &str) -> Result<super::roster::Roster, CallError> {
+pub async fn roster(
+    endpoint: &str,
+    secret: &str,
+    trust: Trust<'_>,
+) -> Result<super::roster::Roster, CallError> {
     let url = format!("https://{endpoint}/api/network/roster");
-    match tokio::time::timeout(TIMEOUT, send(&url, secret, None)).await {
+    match tokio::time::timeout(TIMEOUT, send(&url, secret, None, trust)).await {
         Ok(bytes) => {
             let bytes = bytes?;
             serde_json::from_slice(&bytes)
@@ -135,11 +155,12 @@ pub async fn report(
     endpoint: &str,
     secret: &str,
     report: &super::api::Report,
+    trust: Trust<'_>,
 ) -> Result<super::api::Heard, CallError> {
     let url = format!("https://{endpoint}/api/network/report");
     let body = serde_json::to_string(report).expect("a report is plain data");
 
-    match tokio::time::timeout(TIMEOUT, send(&url, secret, Some(body))).await {
+    match tokio::time::timeout(TIMEOUT, send(&url, secret, Some(body), trust)).await {
         Ok(result) => serde_json::from_slice(&result?)
             .map_err(|error| CallError::Unreadable(url, error.to_string())),
         Err(_) => Err(CallError::TimedOut { url }),
@@ -162,6 +183,7 @@ pub async fn ask(
     secret: &str,
     kind: &str,
     payload: &serde_json::Value,
+    trust: Trust<'_>,
 ) -> Result<(), CallError> {
     let url = format!("https://{endpoint}/api/network/asked");
     let body = serde_json::to_string(&super::api::Asked {
@@ -170,7 +192,7 @@ pub async fn ask(
     })
     .expect("an errand is plain data");
 
-    match tokio::time::timeout(TIMEOUT, send(&url, secret, Some(body))).await {
+    match tokio::time::timeout(TIMEOUT, send(&url, secret, Some(body), trust)).await {
         Ok(result) => result.map(|_| ()),
         Err(_) => Err(CallError::TimedOut { url }),
     }
@@ -182,12 +204,13 @@ pub async fn settle(
     secret: &str,
     id: &str,
     error: Option<String>,
+    trust: Trust<'_>,
 ) -> Result<(), CallError> {
     let url = format!("https://{endpoint}/api/network/errands/{id}/done");
     let body =
         serde_json::to_string(&super::api::Outcome { error }).expect("an outcome is plain data");
 
-    match tokio::time::timeout(TIMEOUT, send(&url, secret, Some(body))).await {
+    match tokio::time::timeout(TIMEOUT, send(&url, secret, Some(body), trust)).await {
         Ok(result) => result.map(|_| ()),
         Err(_) => Err(CallError::TimedOut { url }),
     }
@@ -198,8 +221,13 @@ pub async fn settle(
 /// `None` is a GET, `Some` a POST — the two shapes this speaks, and
 /// splitting them into two near-identical functions would be two places
 /// for the TLS configuration to drift apart.
-async fn send(url: &str, secret: &str, body: Option<String>) -> Result<Vec<u8>, CallError> {
-    let (status, bytes) = round_trip(url, secret, body).await?;
+async fn send(
+    url: &str,
+    secret: &str,
+    body: Option<String>,
+    trust: Trust<'_>,
+) -> Result<Vec<u8>, CallError> {
+    let (status, bytes) = round_trip(url, secret, body, trust).await?;
 
     if status.is_success() {
         return Ok(bytes.to_vec());
@@ -210,9 +238,14 @@ async fn send(url: &str, secret: &str, body: Option<String>) -> Result<Vec<u8>, 
     }
 }
 
-async fn post(url: &str, secret: &str, arriving: &Arriving) -> Result<Accepted, CallError> {
+async fn post(
+    url: &str,
+    secret: &str,
+    arriving: &Arriving,
+    trust: Trust<'_>,
+) -> Result<Accepted, CallError> {
     let body = serde_json::to_string(arriving).expect("a node describes itself in plain data");
-    let (status, bytes) = round_trip(url, secret, Some(body)).await?;
+    let (status, bytes) = round_trip(url, secret, Some(body), trust).await?;
     if status.is_success() {
         return serde_json::from_slice(&bytes)
             .map_err(|error| CallError::Unreadable(url.into(), error.to_string()));
@@ -234,12 +267,22 @@ async fn round_trip(
     url: &str,
     secret: &str,
     body: Option<String>,
+    trust: Trust<'_>,
 ) -> Result<(StatusCode, hyper::body::Bytes), CallError> {
-    let tls = hyper_rustls::HttpsConnectorBuilder::new()
-        .with_webpki_roots()
-        .https_only()
-        .enable_http1()
-        .build();
+    let tls = match (trust.pinned, trust.anchor) {
+        (None, None) => hyper_rustls::HttpsConnectorBuilder::new()
+            .with_webpki_roots()
+            .https_only()
+            .enable_http1()
+            .build(),
+        _ => hyper_rustls::HttpsConnectorBuilder::new()
+            .with_tls_config(
+                authority_config(trust).map_err(|reason| CallError::Address(url.into(), reason))?,
+            )
+            .https_only()
+            .enable_http1()
+            .build(),
+    };
     let client = Client::builder(TokioExecutor::new()).build(tls);
 
     let bearer = HeaderValue::from_str(&format!("Bearer {secret}"))
@@ -271,6 +314,130 @@ async fn round_trip(
         .to_bytes();
 
     Ok((status, bytes))
+}
+
+fn authority_config(trust: Trust<'_>) -> Result<wabot::rest::rustls::ClientConfig, String> {
+    use wabot::rest::rustls::{client::WebPkiServerVerifier, ClientConfig, RootCertStore};
+
+    let mut public = RootCertStore::empty();
+    public.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+    let public = WebPkiServerVerifier::builder(std::sync::Arc::new(public))
+        .build()
+        .map_err(|error| error.to_string())?;
+
+    let anchored = match trust.anchor {
+        None => None,
+        Some(pem) => {
+            let mut roots = RootCertStore::empty();
+            for certificate in
+                crate::infra::edge::certs::pem_certificates(pem).map_err(|e| e.to_string())?
+            {
+                roots.add(certificate).map_err(|error| error.to_string())?;
+            }
+            match roots.is_empty() {
+                true => None,
+                false => Some(
+                    WebPkiServerVerifier::builder(std::sync::Arc::new(roots))
+                        .build()
+                        .map_err(|error| error.to_string())?,
+                ),
+            }
+        }
+    };
+
+    Ok(ClientConfig::builder()
+        .dangerous()
+        .with_custom_certificate_verifier(std::sync::Arc::new(Authority {
+            public,
+            anchored,
+            pinned: trust.pinned.map(str::to_ascii_lowercase),
+        }))
+        .with_no_client_auth())
+}
+
+/// The public roots, then the authority's own CA, then the CA its token
+/// pinned — each a full verification of the leaf, name and dates and
+/// signature, against a different root. Nothing here accepts a chain
+/// that no root vouches for.
+#[derive(Debug)]
+struct Authority {
+    public: std::sync::Arc<wabot::rest::rustls::client::WebPkiServerVerifier>,
+    anchored: Option<std::sync::Arc<wabot::rest::rustls::client::WebPkiServerVerifier>>,
+    pinned: Option<String>,
+}
+
+impl wabot::rest::rustls::client::danger::ServerCertVerifier for Authority {
+    fn verify_server_cert(
+        &self,
+        end_entity: &wabot::rest::rustls::pki_types::CertificateDer<'_>,
+        intermediates: &[wabot::rest::rustls::pki_types::CertificateDer<'_>],
+        server_name: &wabot::rest::rustls::pki_types::ServerName<'_>,
+        ocsp: &[u8],
+        now: wabot::rest::rustls::pki_types::UnixTime,
+    ) -> Result<wabot::rest::rustls::client::danger::ServerCertVerified, wabot::rest::rustls::Error>
+    {
+        let refused =
+            match self
+                .public
+                .verify_server_cert(end_entity, intermediates, server_name, ocsp, now)
+            {
+                Ok(verified) => return Ok(verified),
+                Err(error) => error,
+            };
+        if let Some(anchored) = &self.anchored {
+            if let Ok(verified) =
+                anchored.verify_server_cert(end_entity, intermediates, server_name, ocsp, now)
+            {
+                return Ok(verified);
+            }
+        }
+        let Some(pinned) = &self.pinned else {
+            return Err(refused);
+        };
+        let Some(authority) = intermediates.iter().find(|certificate| {
+            crate::infra::edge::certs::fingerprint_der(certificate.as_ref()) == *pinned
+        }) else {
+            return Err(refused);
+        };
+        let mut roots = wabot::rest::rustls::RootCertStore::empty();
+        if roots.add(authority.clone().into_owned()).is_err() {
+            return Err(refused);
+        }
+        wabot::rest::rustls::client::WebPkiServerVerifier::builder(std::sync::Arc::new(roots))
+            .build()
+            .map_err(|error| wabot::rest::rustls::Error::General(error.to_string()))?
+            .verify_server_cert(end_entity, intermediates, server_name, ocsp, now)
+    }
+
+    fn verify_tls12_signature(
+        &self,
+        message: &[u8],
+        certificate: &wabot::rest::rustls::pki_types::CertificateDer<'_>,
+        signature: &wabot::rest::rustls::DigitallySignedStruct,
+    ) -> Result<
+        wabot::rest::rustls::client::danger::HandshakeSignatureValid,
+        wabot::rest::rustls::Error,
+    > {
+        self.public
+            .verify_tls12_signature(message, certificate, signature)
+    }
+
+    fn verify_tls13_signature(
+        &self,
+        message: &[u8],
+        certificate: &wabot::rest::rustls::pki_types::CertificateDer<'_>,
+        signature: &wabot::rest::rustls::DigitallySignedStruct,
+    ) -> Result<
+        wabot::rest::rustls::client::danger::HandshakeSignatureValid,
+        wabot::rest::rustls::Error,
+    > {
+        self.public
+            .verify_tls13_signature(message, certificate, signature)
+    }
+
+    fn supported_verify_schemes(&self) -> Vec<wabot::rest::rustls::SignatureScheme> {
+        self.public.supported_verify_schemes()
+    }
 }
 
 /// Reach a node **over the overlay**, verified.
@@ -551,6 +718,67 @@ impl tower::Service<hyper_util::client::legacy::connect::dns::Name> for OneName 
 }
 
 #[cfg(test)]
+/// A TLS server on loopback presenting what a node presents: a leaf
+/// for `localhost` signed by its own authority, with the authority in
+/// the chain. `answer` is handed its authority's CA and says the body
+/// of every answer.
+pub(crate) async fn loopback_authority(
+    answer: impl Fn(&str) -> String + Send + 'static,
+) -> (u16, String) {
+    let database = crate::infra::db::open_in_memory().await.expect("open");
+    let stored = crate::infra::edge::certs::ensure_self_signed(
+        &database,
+        "localhost",
+        &["localhost".into()],
+    )
+    .await
+    .expect("issued");
+    let ca = crate::infra::edge::certs::ca_certificate_pem(&database)
+        .await
+        .expect("its authority");
+    let config = std::sync::Arc::new(
+        wabot::rest::rustls::ServerConfig::builder()
+            .with_no_client_auth()
+            .with_single_cert(
+                crate::infra::edge::certs::pem_certificates(&stored.cert_pem).expect("chain"),
+                crate::infra::edge::certs::pem_private_key(&stored.key_pem).expect("key"),
+            )
+            .expect("a server"),
+    );
+    let body = answer(&ca);
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+    let port = listener.local_addr().expect("address").port();
+    std::thread::spawn(move || {
+        use std::io::{Read, Write};
+        for stream in listener.incoming().flatten() {
+            let Ok(connection) = wabot::rest::rustls::ServerConnection::new(config.clone()) else {
+                continue;
+            };
+            let mut tls = wabot::rest::rustls::StreamOwned::new(connection, stream);
+            let mut request = Vec::new();
+            let mut buffer = [0u8; 1024];
+            while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+                match tls.read(&mut buffer) {
+                    Ok(0) | Err(_) => break,
+                    Ok(read) => request.extend_from_slice(&buffer[..read]),
+                }
+            }
+            let _ = tls.write_all(
+                format!(
+                    "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\n\
+                     content-length: {}\r\nconnection: close\r\n\r\n{body}",
+                    body.len()
+                )
+                .as_bytes(),
+            );
+            tls.conn.send_close_notify();
+            let _ = tls.flush();
+        }
+    });
+    (port, ca)
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -564,6 +792,93 @@ mod tests {
         }
     }
 
+    async fn an_authority_with_no_public_certificate() -> (u16, String) {
+        super::loopback_authority(|_| "[]".to_string()).await
+    }
+
+    /// Two nodes with no public certificate join each other because the
+    /// token pins the authority's CA. The pin vouches for that CA and
+    /// nothing else: a wrong one, or none, is refused as an unknown issuer,
+    /// and so is the right one at a name its leaf does not carry.
+    #[tokio::test]
+    async fn a_pinned_authority_is_trusted_and_nothing_else_is() {
+        let (port, ca) = an_authority_with_no_public_certificate().await;
+        let pin = crate::infra::edge::certs::fingerprint(&ca).expect("a fingerprint");
+        let endpoint = format!("localhost:{port}");
+        fn pinned(pin: &str) -> Trust<'_> {
+            Trust {
+                pinned: Some(pin),
+                anchor: None,
+            }
+        }
+
+        assert_eq!(
+            errands(&endpoint, "secret", pinned(&pin))
+                .await
+                .expect("the pinned authority"),
+            Vec::new()
+        );
+        assert_eq!(
+            errands(&endpoint, "secret", pinned(&pin.to_ascii_uppercase()))
+                .await
+                .expect("hex is hex in either case"),
+            Vec::new()
+        );
+
+        for (what, trust) in [
+            ("no pin", Trust::default()),
+            ("a wrong pin", pinned(&"0".repeat(64))),
+        ] {
+            let error = errands(&endpoint, "secret", trust).await.expect_err(what);
+            assert!(
+                matches!(error, CallError::Unreachable(..)),
+                "{what}: {error}"
+            );
+        }
+
+        let error = errands(&format!("127.0.0.1:{port}"), "secret", pinned(&pin))
+            .await
+            .expect_err("a name the leaf does not carry");
+        assert!(matches!(error, CallError::Unreachable(..)), "{error}");
+    }
+
+    /// After the join the CA itself is kept, and every poll trusts it —
+    /// the anchor, not the pin, because the leaf is reissued whenever a
+    /// name is added and the CA is not.
+    #[tokio::test]
+    async fn every_call_after_the_join_trusts_the_authority_it_answered_with() {
+        let (port, ca) = an_authority_with_no_public_certificate().await;
+        let endpoint = format!("localhost:{port}");
+
+        let anchored = Trust {
+            pinned: None,
+            anchor: Some(&ca),
+        };
+        assert_eq!(
+            errands(&endpoint, "secret", anchored)
+                .await
+                .expect("anchored"),
+            Vec::new()
+        );
+
+        let stranger = crate::infra::edge::certs::ca_certificate_pem(
+            &crate::infra::db::open_in_memory().await.expect("open"),
+        )
+        .await
+        .expect("another node's authority");
+        let error = errands(
+            &endpoint,
+            "secret",
+            Trust {
+                pinned: None,
+                anchor: Some(&stranger),
+            },
+        )
+        .await
+        .expect_err("another authority's CA vouches for nothing here");
+        assert!(matches!(error, CallError::Unreachable(..)), "{error}");
+    }
+
     /// A node that is not there is the common failure, and the message
     /// has to name the certificate — that is what will actually be
     /// wrong, and it is not something the error from the socket says.
@@ -571,7 +886,7 @@ mod tests {
     async fn a_node_that_does_not_answer_says_what_to_check() {
         // Port 1 answers nothing, and reserved by RFC 6335 so nothing
         // on a developer's machine is listening there either.
-        let error = announce("127.0.0.1:1", "a-secret", &arriving())
+        let error = announce("127.0.0.1:1", "a-secret", &arriving(), Trust::default())
             .await
             .expect_err("nothing is there");
 

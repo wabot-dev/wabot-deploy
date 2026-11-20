@@ -72,7 +72,11 @@ pub async fn for_reference(database: &SqliteDatabase, reference: &str) -> Option
         .map_err(Into::into);
 
     match found {
-        Ok(found) => found.map(|(username, secret)| Credential { username, secret }),
+        Ok(found) => found.map(|(username, secret)| Credential {
+            username,
+            secret,
+            hosts_dir: None,
+        }),
         Err(error) => {
             // Reported and treated as absent. The pull then fails with
             // the registry's own 401, which names the registry — a
@@ -91,6 +95,7 @@ mod tests {
         Credential {
             username: "wabot".into(),
             secret: "a-push-token".into(),
+            hosts_dir: None,
         }
     }
 
@@ -123,6 +128,7 @@ mod tests {
         let rotated = Credential {
             username: "wabot".into(),
             secret: "a-newer-token".into(),
+            hosts_dir: None,
         };
         set(&database, "hub.example.com", &rotated)
             .await

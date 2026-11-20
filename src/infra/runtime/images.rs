@@ -72,9 +72,21 @@ pub fn platform() -> Platform {
 pub struct Credential {
     pub username: String,
     pub secret: String,
+    /// Where containerd finds the certificate authority the registry's
+    /// certificate is signed by, when that is not a public one: a
+    /// directory in containerd's `hosts_dir` shape, written by
+    /// `trust_registry`.
+    pub hosts_dir: Option<std::path::PathBuf>,
 }
 
 impl Credential {
+    pub fn trusting(self, hosts_dir: std::path::PathBuf) -> Self {
+        Self {
+            hosts_dir: Some(hosts_dir),
+            ..self
+        }
+    }
+
     /// The header a registry expects, built once so the two places that
     /// care — this and the test that pins it — cannot disagree.
     fn header(&self) -> String {
@@ -83,6 +95,62 @@ impl Credential {
             .encode(format!("{}:{}", self.username, self.secret));
         format!("Basic {encoded}")
     }
+}
+
+/// The directory containerd is pointed at for the registries this node
+/// was told to trust.
+pub fn hosts_dir(data_dir: &std::path::Path) -> std::path::PathBuf {
+    data_dir.join("registries")
+}
+
+/// Trust `ca_pem` for pulls from `host`, or only the public roots when
+/// there is none.
+///
+/// A file containerd reads, because its transfer API takes no CA — only a
+/// `hosts_dir`. What it finds there is added to the machine's roots, not
+/// put in their place, and a host with no entry is pulled as before: both
+/// measured on the VM node on 2026-11-20, a registry signed by another
+/// node's authority refused as an unknown issuer without the file and
+/// pulled with it, and Docker Hub pulled with the directory set.
+pub fn trust_registry(
+    data_dir: &std::path::Path,
+    host: &str,
+    ca_pem: Option<&str>,
+) -> std::io::Result<()> {
+    let Some(entry) = host_entry(host) else {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("{host:?} is not a registry's host"),
+        ));
+    };
+    let directory = hosts_dir(data_dir).join(entry);
+    let file = directory.join("ca.crt");
+    match ca_pem {
+        Some(pem) => {
+            std::fs::create_dir_all(&directory)?;
+            let partial = directory.join("ca.crt.partial");
+            std::fs::write(&partial, pem)?;
+            std::fs::rename(&partial, &file)
+        }
+        None if file.exists() => std::fs::remove_file(&file),
+        None => Ok(()),
+    }
+}
+
+/// The name containerd looks a host up by: `host:port` is `host_port`.
+/// `None` for anything that could leave the directory, because the host
+/// arrives from another node.
+fn host_entry(host: &str) -> Option<String> {
+    let plain = !host.is_empty()
+        && !host.starts_with('.')
+        && !host.contains("..")
+        && host
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | ':'));
+    plain.then(|| match host.rsplit_once(':') {
+        Some((name, port)) => format!("{name}_{port}"),
+        None => host.to_string(),
+    })
 }
 
 /// Pull `reference` and unpack it, so a task can be started from it.
@@ -122,6 +190,10 @@ pub async fn pull(
                     .collect(),
                 None => Default::default(),
             },
+            host_dir: credential
+                .and_then(|credential| credential.hosts_dir.as_deref())
+                .map(|directory| directory.to_string_lossy().into_owned())
+                .unwrap_or_default(),
             ..Default::default()
         }),
     };
@@ -770,6 +842,7 @@ mod tests {
         let credential = Credential {
             username: "wabot".into(),
             secret: "a-push-token".into(),
+            hosts_dir: None,
         };
         // `wabot:a-push-token`, base64.
         assert_eq!(credential.header(), "Basic d2Fib3Q6YS1wdXNoLXRva2Vu");
@@ -786,6 +859,35 @@ mod tests {
     }
 
     use super::*;
+
+    /// The host arrives in another node's instruction, and becomes a path.
+    #[test]
+    fn a_registry_host_names_one_entry_and_cannot_leave_the_directory() {
+        assert_eq!(
+            host_entry("node-0.example.net").as_deref(),
+            Some("node-0.example.net")
+        );
+        assert_eq!(
+            host_entry("lima-wabot-dev.internal:9443").as_deref(),
+            Some("lima-wabot-dev.internal_9443")
+        );
+        for hostile in ["", "..", "../etc", "a/b", ".hidden", "a..b", "host name"] {
+            assert_eq!(host_entry(hostile), None, "{hostile:?}");
+        }
+    }
+
+    #[test]
+    fn a_registry_is_trusted_by_a_file_and_untrusted_by_removing_it() {
+        let data = tempfile::tempdir().expect("tempdir");
+        let file = hosts_dir(data.path()).join("hub.example").join("ca.crt");
+
+        trust_registry(data.path(), "hub.example", Some("PEM")).expect("written");
+        assert_eq!(std::fs::read_to_string(&file).expect("read"), "PEM");
+        trust_registry(data.path(), "hub.example", None).expect("removed");
+        assert!(!file.exists());
+        trust_registry(data.path(), "hub.example", None).expect("nothing to remove");
+        assert!(trust_registry(data.path(), "../escape", Some("PEM")).is_err());
+    }
 
     /// The manifest spelling, not Rust's. `x86_64` appears in no image
     /// index, and asking for it finds nothing.

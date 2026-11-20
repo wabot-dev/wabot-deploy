@@ -586,9 +586,9 @@ gone after the revoke.
 
 **"Runs on" (2026-11-17).** Written and covered by the gate — the errand
 on both sides, a key made in Garage's shape, deletion by report, the
-refusals, per-port overlay ports. **Not run between two machines yet**:
-the VM is one node and enrolment needs a public certificate, so it waits
-for node-0 and node-l1.
+refusals, per-port overlay ports. **Not run between two machines yet**.
+The two VMs can join each other since 2026-11-20 (`docs/network.md`, "A
+self-signed authority"), so it no longer waits for node-0 and node-l1.
 
 ## Later
 

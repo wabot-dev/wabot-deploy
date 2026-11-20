@@ -67,6 +67,20 @@ pub struct JoinToken {
     /// joining node ask of *it*.
     #[serde(default)]
     pub offers: Option<Vec<String>>,
+    /// The SHA-256 of the minting node's own certificate authority, in hex.
+    ///
+    /// What lets a node with no public certificate enrol anybody: the
+    /// joiner accepts the authority's certificate when its chain holds the
+    /// CA this names, and verifies the leaf against it as against any root.
+    /// The CA rather than the leaf, because the leaf is reissued whenever
+    /// a name is added — dozens of times a day on the VM — and a token
+    /// carries a day. It weakens nothing: the pin travels with the secret,
+    /// and whoever could alter it could already take the secret.
+    ///
+    /// Optional, so no `wdj2.`: an older joiner ignores it and is refused
+    /// by a self-signed authority as it always was.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ca_sha256: Option<String>,
 }
 
 impl JoinToken {
@@ -155,6 +169,7 @@ mod tests {
             secret: "a-very-long-secret".into(),
             requires: Some(vec!["host".into()]),
             offers: Some(vec!["edge".into()]),
+            ca_sha256: None,
         }
     }
 
@@ -197,6 +212,27 @@ mod tests {
             ahead.requires(),
             vec![crate::domain::values::capability::Capability::Host]
         );
+    }
+
+    /// A token minted before the pin existed still reads, and one that
+    /// carries it does not grow a field an older node chokes on: serde
+    /// ignores what it does not know, and the prefix stays `wdj1.`.
+    #[test]
+    fn the_pin_is_optional_in_both_directions() {
+        let without = token().encode();
+        let body = without.strip_prefix(PREFIX).expect("prefix");
+        let json = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .decode(body)
+            .expect("base64");
+        assert!(!String::from_utf8_lossy(&json).contains("ca_sha256"));
+
+        let pinned = JoinToken {
+            ca_sha256: Some("ab".repeat(32)),
+            ..token()
+        };
+        let encoded = pinned.encode();
+        assert!(encoded.starts_with(PREFIX));
+        assert_eq!(JoinToken::decode(&encoded).expect("decode"), pinned);
     }
 
     #[test]

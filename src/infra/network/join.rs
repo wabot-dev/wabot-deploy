@@ -55,6 +55,14 @@ pub enum JoinError {
         answered: String,
         expected: String,
     },
+    /// The authority answered with a CA other than the one its token
+    /// pinned. Every call after the join trusts the CA it answers with,
+    /// so keeping a different one would trust what the token never named.
+    #[error(
+        "{endpoint} sent a certificate authority other than the one its token names — \
+         nothing was granted"
+    )]
+    NotItsAuthority { endpoint: String },
     #[error(transparent)]
     Storage(#[from] super::NetworkError),
 }
@@ -111,6 +119,10 @@ pub async fn join(
                 .await
                 .ok(),
         },
+        call::Trust {
+            pinned: token.ca_sha256.as_deref(),
+            anchor: None,
+        },
     )
     .await?;
 
@@ -120,6 +132,17 @@ pub async fn join(
             answered: accepted.authority,
             expected: token.authority,
         });
+    }
+    if let Some(pinned) = &token.ca_sha256 {
+        let answered = accepted
+            .ca
+            .as_deref()
+            .and_then(crate::infra::edge::certs::fingerprint);
+        if answered.as_deref() != Some(pinned.to_ascii_lowercase().as_str()) {
+            return Err(JoinError::NotItsAuthority {
+                endpoint: token.endpoint,
+            });
+        }
     }
 
     let authority = Node {
@@ -215,6 +238,7 @@ mod tests {
             secret: "a-very-long-secret".into(),
             requires: None,
             offers: None,
+            ca_sha256: None,
         }
     }
 
@@ -242,6 +266,76 @@ mod tests {
                 .await
                 .expect("query"),
             None
+        );
+    }
+
+    /// The connection is verified against the pinned CA, and the answer
+    /// hands over the CA every later call will trust. One that is not the
+    /// pinned CA is refused before anything is granted, or the polls would
+    /// trust a CA the token never named.
+    #[tokio::test]
+    async fn an_authority_that_answers_with_another_ca_is_granted_nothing() {
+        let stranger = crate::infra::edge::certs::ca_certificate_pem(
+            &crate::infra::db::open_in_memory().await.expect("open"),
+        )
+        .await
+        .expect("another node's authority");
+        let answering = |ca: Option<String>| {
+            move |_: &str| {
+                serde_json::json!({
+                    "authority": "nd-hub00000001",
+                    "name": "hub.example",
+                    "overlay_ip": "10.42.0.2",
+                    "ca": ca,
+                })
+                .to_string()
+            }
+        };
+        let (port, ca) = call::loopback_authority(answering(Some(stranger))).await;
+        let pinned = JoinToken {
+            endpoint: format!("localhost:{port}"),
+            ca_sha256: crate::infra::edge::certs::fingerprint(&ca),
+            ..token()
+        };
+        let database = crate::infra::db::open_in_memory().await.expect("open");
+
+        let error = join(&database, &Config::default(), &pinned.encode(), None)
+            .await
+            .expect_err("another CA");
+        assert!(
+            matches!(error, JoinError::NotItsAuthority { .. }),
+            "{error}"
+        );
+        assert!(super::super::authorities(&database)
+            .await
+            .expect("query")
+            .is_empty());
+
+        let (port, ca) = call::loopback_authority(|ca| {
+            serde_json::json!({
+                "authority": "nd-hub00000001",
+                "name": "hub.example",
+                "overlay_ip": "10.42.0.2",
+                "ca": ca,
+            })
+            .to_string()
+        })
+        .await;
+        let pinned = JoinToken {
+            endpoint: format!("localhost:{port}"),
+            ca_sha256: crate::infra::edge::certs::fingerprint(&ca),
+            ..token()
+        };
+        let joined = join(&database, &Config::default(), &pinned.encode(), None)
+            .await
+            .expect("its own CA");
+        assert_eq!(joined.authority.ca_pem.as_deref(), Some(ca.as_str()));
+        assert_eq!(
+            super::super::authorities(&database)
+                .await
+                .expect("query")
+                .len(),
+            1
         );
     }
 

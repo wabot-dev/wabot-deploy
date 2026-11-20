@@ -510,7 +510,7 @@ Each one is a sentence the machine does not agree with.
 
 | Case | Why not | How |
 |---|---|---|
-| Part 9, more than one node | The control plane trusts only public roots (`network::call::round_trip` uses `with_webpki_roots`), so a self-signed enroller can never be joined. | (a) Join the VM to node-1 as a private member — real, but changes node-1, which holds a Postgres primary. (b) Build it: the join token carries the authority's CA, pinned for the join and the errands, as `to_node` already does over the overlay. Then two VMs (`WABOT_VM=wabot-dev2 scripts/vm.sh up`) can enrol. |
+| Part 9, more than one node — **done 2026-11-20** | It was: the control plane trusted only public roots, so a self-signed enroller could never be joined. | Built: the join token pins the authority's CA (`ca_sha256`), every poll after it trusts the CA kept at the join, and a far copy's pull trusts it for the authority's registry. Set `wabot-dev`'s domain to `lima-wabot-dev.internal`, mint a token there, spend it on `wabot-dev-2` — whose console answers only `Host: localhost` once it has routes, so `WABOT_VM_HOST=localhost` for `vm_console.py`. |
 | 11.5, installing an update | Releases are x86_64 only; the VM is aarch64. | An x86_64 node, or a release workflow that also builds aarch64. |
 | 1.6, 1.8, 4.2 and 7.5 with a public certificate | ACME is off by design here. | Pebble (Let's Encrypt's test server) in the VM, `[acme] directory = "https://127.0.0.1:14000/dir"` in the file, its root trusted by the node. Never production — see 7.3. |
 | 12.7, restore onto a new node | Not run: it mints a new identity, and the VM was kept as one node. | `WABOT_VM=wabot-dev2 scripts/vm.sh up && … deploy`, copy a backup over with `limactl copy`, `restore-node --from … --new-node`. |

@@ -285,7 +285,7 @@ pub(crate) fn pem_certificates(pem: &str) -> CertResult<Vec<CertificateDer<'stat
         .collect())
 }
 
-fn pem_private_key(pem: &str) -> CertResult<PrivateKeyDer<'static>> {
+pub(crate) fn pem_private_key(pem: &str) -> CertResult<PrivateKeyDer<'static>> {
     for label in ["PRIVATE KEY", "RSA PRIVATE KEY", "EC PRIVATE KEY"] {
         if let Some(block) = pem_blocks(pem, label).into_iter().next() {
             return PrivateKeyDer::try_from(block)
@@ -410,6 +410,23 @@ pub fn ca_certificate_path(config: &crate::infra::config::Config) -> std::path::
 /// The CA certificate in PEM, for an operator to trust.
 pub async fn ca_certificate_pem(database: &SqliteDatabase) -> CertResult<String> {
     Ok(local_ca(database).await?.pem)
+}
+
+/// The SHA-256 of a certificate's DER, in lowercase hex.
+pub fn fingerprint_der(der: &[u8]) -> String {
+    use sha2::Digest;
+    sha2::Sha256::digest(der)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
+/// The fingerprint of the first certificate in `pem`.
+pub fn fingerprint(pem: &str) -> Option<String> {
+    pem_certificates(pem)
+        .ok()?
+        .first()
+        .map(|certificate| fingerprint_der(certificate.as_ref()))
 }
 
 /// Ensure a locally-issued certificate exists covering `names`.

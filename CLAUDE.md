@@ -393,11 +393,17 @@ It found more than twenty breaks in its first afternoon, none of them
 visible to the tests, and most were the same thing: a sentence or a form
 saying something the machine did not agree with.
 
-Two things it cannot do. The network's control plane trusts only public
-roots, so **enrolment needs a public certificate** and is with ACME on
-the list of what a real node verifies. And on an Apple machine the VM is
-aarch64, which no release builds for, so the updates page reads "no build
-here" for every one — which is true.
+**The two VMs join each other** (since 2026-11-20): set `wabot-dev`'s
+domain to `lima-wabot-dev.internal`, mint a token there, spend it on
+`wabot-dev-2`. The token pins `wabot-dev`'s own CA, which is what lets a
+node with no public certificate enrol anybody. `wabot-dev-2`'s console
+answers only `Host: localhost` once it has routes, so drive it with
+`WABOT_VM_URL=https://127.0.0.1:9444 WABOT_VM_JARS=~/.cache/wabot-vm-console-2
+WABOT_VM_HOST=localhost`.
+
+One thing it cannot do: on an Apple machine the VM is aarch64, which no
+release builds for, so the updates page reads "no build here" for every
+one — which is true. ACME is a real node's to verify, never the VM's.
 
 ## Working on the node
 
@@ -511,12 +517,6 @@ happened:
   runs with fewer open files than the file grants.
 - No rollback button for an update — rolling back a migration is not a
   file operation, which is what the database copy is for.
-- **Enrolment needs a public certificate**, so the two VMs cannot join
-  each other and "Runs on" waits for node-0 and node-l1. The plan, not
-  built: the token carries the SHA-256 of the authority's local CA, the
-  join trusts the chain only when that CA matches, and every poll after
-  trusts public roots plus that authority's CA. First check WireGuard
-  between the VMs over `user-v2`. `docs/network.md`, "Enrolment".
 - A wildcard certificate from Let's Encrypt (DNS-01, ordered by the node
   holding the project's zone and sent with its key to the edges) has not
   run against a real authority, nor between two nodes. `docs/dns.md`,

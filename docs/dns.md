@@ -118,8 +118,9 @@ Measured on the Alpine VM node, with the console driven with scripting off:
 
 Verified on the VM node only as far as one node goes — the servers card,
 saving it, no errand to itself, the minting form. **Two nodes answering
-for one zone needs two public nodes on one network**, which no VM can be
-(enrolment needs a public certificate) and which does not exist today.
+for one zone needs two public nodes on one network**. The two VMs can
+join each other since 2026-11-20, so it can be walked there; it has not
+been yet.
 
 ## Phase 3: organisations add their own domains
 

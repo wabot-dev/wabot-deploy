@@ -40,6 +40,12 @@ pub async fn run(
         return Err("this node has no address on its own overlay yet".into());
     };
 
+    let ca_sha256 = crate::infra::edge::certs::ca_certificate_pem(database)
+        .await
+        .ok()
+        .as_deref()
+        .and_then(crate::infra::edge::certs::fingerprint);
+
     let assigned_ip = network::overlay::allocate(database)
         .await
         .map_err(|error| error.to_string())?;
@@ -64,6 +70,7 @@ pub async fn run(
         secret,
         requires: Some(names(&asked.requires)),
         offers: Some(names(&asked.offers)),
+        ca_sha256,
     }
     .encode())
 }
