@@ -451,7 +451,7 @@ pub async fn ensure_self_signed(
         // and a node that kept serving the old certificate would be
         // presenting the wrong name with no sign of why.
         let fresh = existing.not_after > now_ms() + RENEW_WITHIN_DAYS * 86_400_000;
-        if fresh && existing.names == wanted {
+        if fresh && existing.names == wanted && names_its_issuer(&existing.cert_pem) {
             return Ok(existing);
         }
     }
@@ -459,6 +459,7 @@ pub async fn ensure_self_signed(
     let ca = local_ca(database).await?;
     let key = rcgen::KeyPair::generate()?;
     let mut params = rcgen::CertificateParams::new(wanted.clone())?;
+    params.use_authority_key_identifier_extension = true;
     params
         .distinguished_name
         .push(rcgen::DnType::CommonName, primary);
@@ -485,6 +486,32 @@ pub async fn ensure_self_signed(
         "issued a self-signed certificate"
     );
     Ok(stored)
+}
+
+/// Whether a certificate names the key that signed it.
+///
+/// Every node's authority is called `wabot-deploy local CA`, and a
+/// container placed here by another node trusts two of them from one file.
+/// OpenSSL looks an issuer up by name and stops at the first, so a leaf
+/// signed by the second authority failed `verify-full` with `SSL error: EVP
+/// lib` — measured on the two VMs on 2026-11-20, against a database placed
+/// by the other node. The authority key identifier lets it choose by key.
+/// The name cannot be what changes: every authority already minted keeps
+/// its own, and a join token pins it.
+fn names_its_issuer(cert_pem: &str) -> bool {
+    let Some(der) = pem_blocks(cert_pem, "CERTIFICATE").into_iter().next() else {
+        return false;
+    };
+    let Ok((_, parsed)) = x509_parser::parse_x509_certificate(&der) else {
+        return false;
+    };
+    parsed.extensions().iter().any(|extension| {
+        matches!(
+            extension.parsed_extension(),
+            x509_parser::extensions::ParsedExtension::AuthorityKeyIdentifier(identifier)
+                if identifier.key_identifier.is_some()
+        )
+    })
 }
 
 pub async fn load(database: &SqliteDatabase, domain: &str) -> CertResult<Option<StoredCert>> {
@@ -1093,6 +1120,84 @@ mod tests {
             2,
             "leaf plus the CA that signed it"
         );
+    }
+
+    fn key_identifiers(pem: &str) -> (Option<Vec<u8>>, Option<Vec<u8>>) {
+        let der = pem_blocks(pem, "CERTIFICATE")
+            .into_iter()
+            .next()
+            .expect("a certificate");
+        let (_, parsed) = x509_parser::parse_x509_certificate(&der).expect("parse");
+        let (mut subject, mut authority) = (None, None);
+        for extension in parsed.extensions() {
+            match extension.parsed_extension() {
+                x509_parser::extensions::ParsedExtension::SubjectKeyIdentifier(id) => {
+                    subject = Some(id.0.to_vec())
+                }
+                x509_parser::extensions::ParsedExtension::AuthorityKeyIdentifier(id) => {
+                    authority = id.key_identifier.as_ref().map(|id| id.0.to_vec())
+                }
+                _ => {}
+            }
+        }
+        (subject, authority)
+    }
+
+    /// Two nodes' authorities share a name, and OpenSSL picks an issuer by
+    /// name unless the leaf says which key signed it — see
+    /// `names_its_issuer`. The authority here is read back from the
+    /// database for the second leaf, which is the path every node already
+    /// installed takes.
+    #[tokio::test]
+    async fn a_leaf_names_the_key_of_the_authority_that_signed_it() {
+        let database = database().await;
+        let first = ensure_self_signed(&database, "localhost", &["localhost".into()])
+            .await
+            .expect("issue");
+        let second = ensure_self_signed(&database, "db.example", &["db.example".into()])
+            .await
+            .expect("issue");
+        let (authority, _) = key_identifiers(&ca_certificate_pem(&database).await.expect("ca"));
+        let authority = authority.expect("the authority has a subject key identifier");
+
+        assert_eq!(key_identifiers(&first.cert_pem).1, Some(authority.clone()));
+        assert_eq!(key_identifiers(&second.cert_pem).1, Some(authority));
+    }
+
+    /// Asked about the certificate, not the history: one issued before the
+    /// leaf named its authority is issued again, so a node that is already
+    /// running mends without anyone renaming anything.
+    #[tokio::test]
+    async fn a_leaf_that_does_not_name_its_authority_is_issued_again() {
+        let database = database().await;
+        let current = ensure_self_signed(&database, "localhost", &["localhost".into()])
+            .await
+            .expect("issue");
+        let ca = local_ca(&database).await.expect("ca");
+        let key = rcgen::KeyPair::generate().expect("key");
+        let mut params =
+            rcgen::CertificateParams::new(vec!["localhost".to_string()]).expect("params");
+        params.not_before = OffsetDateTime::now_utc();
+        params.not_after = OffsetDateTime::now_utc() + Duration::days(SELF_SIGNED_DAYS);
+        let old = params.signed_by(&key, &ca.issuer, &ca.key).expect("sign");
+        save(
+            &database,
+            &StoredCert {
+                cert_pem: format!("{}{}", old.pem(), ca.pem),
+                key_pem: key.serialize_pem(),
+                ..current
+            },
+        )
+        .await
+        .expect("saved");
+        assert!(!names_its_issuer(&old.pem()));
+
+        let mended = ensure_self_signed(&database, "localhost", &["localhost".into()])
+            .await
+            .expect("issue");
+
+        assert!(names_its_issuer(&mended.cert_pem));
+        assert_ne!(mended.cert_pem, format!("{}{}", old.pem(), ca.pem));
     }
 
     #[tokio::test]

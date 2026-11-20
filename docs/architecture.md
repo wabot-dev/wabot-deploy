@@ -1154,3 +1154,27 @@ que no contesta en tres segundos cede a la siguiente. En las VMs, el
 hasta la base del otro, por su nombre; y desde otro proyecto, nada por
 ningún camino. Las tablas están en `docs/network.md`, "A project's names
 reach the nodes it runs on".
+
+### 10.22 Dos autoridades con un nombre
+
+Cada nodo firma con su propia autoridad, y todas se llaman `wabot-deploy
+local CA`. Un contenedor que otro nodo puso aquí confía en dos desde un
+solo fichero (`authorities_for`): la de este nodo y la del dueño. OpenSSL
+busca al emisor por nombre y se queda con el primero, así que
+`verify-full` fallaba con `SSL error: EVP lib` contra una base firmada por
+la segunda. Ninguna prueba conecta a una base con OpenSSL, y en cada
+máquina de prueba hay una sola autoridad. Lo encontró la walk de §10.21
+en las VMs, y fallaba igual sin suplente: contra una base en el mismo nodo
+que el cliente.
+
+El nombre no podía ser lo que cambiara: cada autoridad ya creada conserva
+el suyo, y un token de unión la fija. Lo que cambió es la hoja. Ahora
+lleva el identificador de la clave que la firmó (`authorityKeyIdentifier`),
+que las autoridades ya traían como `subjectKeyIdentifier`, así que OpenSSL
+elige por clave. Una hoja guardada sin él se emite de nuevo
+(`certs::names_its_issuer`), con la pregunta de siempre: se pregunta por
+el certificado, no por la historia. La pasada de certificados se la da al
+servidor en marcha en menos de quince minutos, sin reiniciarlo. En las
+VMs, el dueño reemitió las dos bases al arrancar y mandó la suya al otro
+nodo, y los tres `verify-full` pasaron con el fichero de dos
+autoridades.

@@ -1260,11 +1260,13 @@ running the primary, by whichever route fits it:
   and `/ca.crt` on the owner is the authority that verifies it. It is its
   own errand because every database errand redeploys the copy, while a
   renewal reaches a running server as a signal, the way it does at home.
-- **Trusting it from inside.** A service the owner placed on the holder
-  is the only kind that reaches the database by name, since it is in the
-  same project. So a container placed by another node gets that node's
-  authority in `/etc/wabot/ca.crt` beside the holder's own
-  (`authorities_for`). `write_hosts` rewrites the file wherever a
+- **Trusting it from inside.** A container placed by another node gets
+  that node's authority in `/etc/wabot/ca.crt` beside the holder's own
+  (`authorities_for`). Both authorities are called `wabot-deploy local
+  CA`, and OpenSSL picks an issuer by name: until 2026-11-20,
+  `verify-full` from such a container failed with `SSL error: EVP lib`
+  against whichever database the second authority had signed. Leaves now
+  name the key that signed them (`docs/architecture.md` §10.22). `write_hosts` rewrites the file wherever a
   deployment already put one, so a container started before the database
   arrived trusts it without a redeploy. And a certificate kept from its
   owner runs the hosts pass before the renewal pass, so the authority is
@@ -1300,17 +1302,23 @@ sentence in place of the window and the restore form, and the restore
 command refuses with the same sentence. On the holder, where the copy is
 a local replica, both work as they do for any database.
 
-### Not run on a node
+### Between two machines
 
-All of it passes the gate, and none of it has run between two machines:
-- a primary created on a remote node;
-- its `pg_hba` admitting a standby on a third;
-- the owner's own standby starting on the report;
-- the forward of a published port over the overlay;
+Ran between the two VMs on 2026-11-20 (`docs/network.md`, "A project's
+names reach the nodes it runs on"):
+- a primary created on a remote node, from the owner's form;
 - a certificate signed by the owner, presented by the holder and verified
-  by a service the owner placed there.
+  by a service the owner placed there. It failed until leaves named their
+  authority's key (`docs/architecture.md` §10.22);
+- a service on the owner reaching that primary by name.
 
-The VM cannot do it alone, because it is one node. `nubo-testing-db`
+Not run yet:
+- its `pg_hba` admitting a standby on a third node;
+- the owner's own standby starting on the report;
+- the forward of a published port over the overlay.
+
+The 512 MB VMs hold one 128 MB Postgres each beside a service, which is
+why the standbys were left out. `nubo-testing-db`
 should come up once node-0 and node-l1 both run this. Its row already
 names node-l1, and the data directory left on node-0 is an orphan, from a
 database that was empty.

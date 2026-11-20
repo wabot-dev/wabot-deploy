@@ -1884,3 +1884,17 @@ the name the console gives, and the container's own `ca.crt`:
 | the same | port 22 of a stand-in, an unused stand-in | nothing |
 | `other.probe` on `wabot-dev`, another project | both stand-ins, the names listener directly, both doors | nothing |
 | `wabot-dev-2`'s host | `wabot-dev`'s door, knocking for `Other` | refused: "this project runs on no other node" |
+
+**And it found a fault that was there before.** A container placed by
+another node trusts two authorities from one file, its node's and its
+owner's, and both are called `wabot-deploy local CA`. OpenSSL looks an
+issuer up by name and stops at the first, so `verify-full` failed with
+`SSL error: EVP lib` against a database signed by the second. It failed
+against `orders` too, whose copy runs on the same node as the client and
+needs no stand-in. So it was never about the path: it was about the file.
+Leaves now carry an authority key identifier, and a stored leaf without
+one is issued again (`certs::names_its_issuer`). The certificate pass
+gives it to the running server within fifteen minutes, without a restart.
+The name of the authority cannot be what changes, because every authority
+already minted keeps its own and a join token pins it.
+`docs/architecture.md` §10.22.
