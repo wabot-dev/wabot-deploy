@@ -366,6 +366,12 @@ fn deploy_lock() -> &'static wabot::async_jobs::InProcessLocker {
     LOCK.get_or_init(wabot::async_jobs::InProcessLocker::new)
 }
 
+/// A service's lock, held from its teardown until its rows are gone.
+#[must_use = "held until the service's rows are deleted"]
+pub struct TornDown {
+    _held: Box<dyn Send>,
+}
+
 /// Where a container's published ports are written, so that something
 /// other than the deployment can ask what they were.
 const PORTS_LABEL: &str = "wabot.ports";
@@ -2326,7 +2332,18 @@ impl Deployer {
     /// reached would run on somewhere else with nobody left to contradict
     /// it. Every other instruction in this file gets a second chance at
     /// the next boot. This one does not.
-    pub async fn tear_down(&self, project: &Project, service: &Service) {
+    ///
+    /// **And it holds the service's lock until its caller lets go**, which
+    /// is once the rows are gone. Without it the watch saw a copy stopping
+    /// with its address still set and started it again a second before its
+    /// rows went, leaving a container nothing claims — on the VM node on
+    /// 2026-11-20. Waited for, unlike a stop: a deployment in flight would
+    /// otherwise start a container after this removed what was there.
+    pub async fn tear_down(&self, project: &Project, service: &Service) -> TornDown {
+        let held = {
+            use wabot::async_jobs::Locker;
+            deploy_lock().acquire(&service.id).await
+        };
         self.tell_holders(project, service, Holding::LetGo).await;
         if let Err(error) = crate::infra::deploy::standbys::withdraw(
             &self.database,
@@ -2345,6 +2362,7 @@ impl Deployer {
         if let Err(error) = self.stop_here(project, service).await {
             tracing::warn!(service = %service.slug, %error, "tearing down");
         }
+        TornDown { _held: held }
     }
 
     /// A memory reading for this node, with the containers named.
@@ -2729,13 +2747,24 @@ impl Deployer {
             }
             // A deployment holding the service is removing and creating its
             // containers, and what it leaves for a moment is not a stop.
-            let observed = {
+            // Held until the copy is started again, and the row read again
+            // under it: the list above is from before a teardown that may
+            // have finished since.
+            let _free = {
                 use wabot::async_jobs::Locker;
-                let Some(_free) = deploy_lock().try_acquire(&service.id).await else {
+                let Some(free) = deploy_lock().try_acquire(&service.id).await else {
                     continue;
                 };
-                self.observe(project, service, &replica).await
+                free
             };
+            let replica = match replicas::find(&self.database, &replica.id).await {
+                Ok(Some(replica)) if replica.is_here() && !replica.evicted() => replica,
+                _ => {
+                    restarts.forget(&replica.id);
+                    continue;
+                }
+            };
+            let observed = self.observe(project, service, &replica).await;
             let running = match &observed {
                 Observed::Running { .. } => Some(true),
                 Observed::Unknown(_) => None,
@@ -2821,13 +2850,10 @@ impl Deployer {
 
     /// One copy, from the image its service last deployed, and what a
     /// deployment does after it: the routes, and where the standbys dial.
+    /// Under the service's lock, which the watch already holds.
     async fn restart_copy(&self, project: &Project, service: &Service, replica: &Replica) -> bool {
         let pinned = self.released(service).await;
-        let outcome = {
-            use wabot::async_jobs::Locker;
-            let _held = deploy_lock().acquire(&service.id).await;
-            self.deploy_one(project, &pinned, replica).await
-        };
+        let outcome = self.deploy_one(project, &pinned, replica).await;
         self.sync_routes().await;
         self.dispatch_standbys(service).await;
         outcome.is_ok()
@@ -6523,7 +6549,7 @@ mod tests {
 
         // Through `tear_down`, which is what the delete handler calls, and
         // whose local half needs a containerd that is not here.
-        deployer.tear_down(&project, &service).await;
+        let _torn = deployer.tear_down(&project, &service).await;
 
         let waiting = crate::infra::network::errand::waiting(&database, "nd-far")
             .await
@@ -6535,6 +6561,28 @@ mod tests {
             "a deletion is not a stop: nothing is left to hold"
         );
         assert_eq!(told.payload["running"], serde_json::json!(false));
+    }
+
+    /// The watch started a copy that was being deleted, in the second
+    /// between its container going and its rows going, and left a
+    /// container nothing claims — on the VM node, 2026-11-20. A teardown
+    /// keeps the service from the watch until whoever deletes lets go.
+    #[tokio::test]
+    async fn a_service_being_torn_down_is_not_the_watchs_until_its_rows_are_gone() {
+        use wabot::async_jobs::Locker;
+        let (database, project, service) = placed_elsewhere().await;
+        let deployer = Deployer::new(
+            std::sync::Arc::new(database.clone()),
+            &crate::infra::config::Config::default(),
+        );
+
+        let torn = deployer.tear_down(&project, &service).await;
+        assert!(
+            deploy_lock().try_acquire(&service.id).await.is_none(),
+            "the watch could take the service while its rows were still there"
+        );
+        drop(torn);
+        assert!(deploy_lock().try_acquire(&service.id).await.is_some());
     }
 
     /// A managed database owned here, with a standby on a node that has
@@ -6789,7 +6837,7 @@ mod tests {
             &crate::infra::config::Config::default(),
         );
 
-        deployer.tear_down(&project, &service).await;
+        let _torn = deployer.tear_down(&project, &service).await;
 
         let told = crate::infra::network::errand::waiting(&database, "nd-far")
             .await

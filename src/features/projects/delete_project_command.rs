@@ -35,8 +35,9 @@ impl DeleteProject<'_> {
         let all = services::all(database, Some(&self.project.id))
             .await
             .unwrap_or_default();
+        let mut torn = Vec::with_capacity(all.len());
         for service in &all {
-            deployer.tear_down(self.project, service).await;
+            torn.push(deployer.tear_down(self.project, service).await);
             deployer.discard_storage(self.project, service).await;
         }
 
@@ -53,6 +54,7 @@ impl DeleteProject<'_> {
         projects::delete(database, &self.project.id)
             .await
             .map_err(|error| error.to_string())?;
+        drop(torn);
         deployer.sync_routes().await;
         Ok(())
     }

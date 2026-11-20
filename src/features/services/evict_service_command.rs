@@ -23,7 +23,7 @@ impl EvictService<'_> {
             );
         };
 
-        deployer.tear_down(self.project, self.service).await;
+        let torn = deployer.tear_down(self.project, self.service).await;
 
         for replica in replicas::of_service(database, &self.service.id)
             .await
@@ -35,6 +35,7 @@ impl EvictService<'_> {
                 .await
                 .map_err(|error| error.to_string())?;
         }
+        drop(torn);
 
         tracing::info!(service = %self.service.slug, %origin, "evicted a service placed from elsewhere");
         Ok(())

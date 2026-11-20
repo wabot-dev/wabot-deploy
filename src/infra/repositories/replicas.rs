@@ -332,7 +332,6 @@ pub async fn in_slot(
         .find(|replica| replica.slot == slot))
 }
 
-#[allow(dead_code)]
 pub async fn find(database: &SqliteDatabase, id: &str) -> PlatformResult<Option<Replica>> {
     let id = id.to_string();
     Ok(database

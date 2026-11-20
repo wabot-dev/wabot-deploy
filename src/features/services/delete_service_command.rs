@@ -22,11 +22,12 @@ impl DeleteService<'_> {
             return Err("type the service's name to confirm the deletion".into());
         }
 
-        deployer.tear_down(self.project, self.service).await;
+        let torn = deployer.tear_down(self.project, self.service).await;
         deployer.discard_storage(self.project, self.service).await;
         services::delete(database, &self.service.id)
             .await
             .map_err(|error| error.to_string())?;
+        drop(torn);
         // After the rows, not with the teardown: the names are dropped
         // with them, and this is what tells the other nodes that answered
         // for them to stop.
