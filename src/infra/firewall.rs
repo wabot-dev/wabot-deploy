@@ -59,7 +59,7 @@ pub fn arm() {
     ARMED.store(true, Ordering::SeqCst);
 }
 
-fn armed() -> bool {
+pub fn armed() -> bool {
     ARMED.load(Ordering::SeqCst)
 }
 
@@ -284,6 +284,10 @@ fn write(gates: &[Gate], unchanged: bool) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+pub fn restore_v4(rules: &str) -> Result<(), String> {
+    restore(Family::V4, rules)
 }
 
 fn restore(family: Family, rules: &str) -> Result<(), String> {

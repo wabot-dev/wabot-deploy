@@ -542,9 +542,19 @@ happened:
   single-node install needs no network machinery and the button still
   hears its reason at once. To be designed in `docs/network.md` and
   agreed before any code.
-- Projects — and so organisations — are not isolated on the network:
-  `FORWARD` accepts everything, so one tenant's container reaches
-  another's services and the operator's databases. Measured 2026-10-15.
+- Projects are kept apart by the kernel (`infra::isolation`, two chains
+  from `FORWARD` and `INPUT`), verified on the VM on 2026-11-19, and its
+  overlay half between the two VMs on 2026-11-20: a container reaches no
+  node's overlay address, and an edge reaches a copy on another node. A
+  remote standby streaming has not been seen — `docs/vm-walk.md` §2.0.
+- A name whose copies all run on other nodes resolves to a stand-in in
+  `10.42.255.0/24`, and the node carries the connection to the door of a
+  node running one (`infra::reach`, `docs/network.md` "A project's names
+  reach the nodes it runs on"). TCP only. A copy here always wins, and
+  nothing fails over to one elsewhere. A node before
+  `errand::DIRECTORY_SINCE` (0.44.0) has no door, and **that constant has
+  to be the version this ships in**: the working tree says 0.44.0 for that
+  reason.
 - A service with a volume runs only on the node that keeps it: the errand
   that places a copy elsewhere carries no volumes, so both directions are
   refused with a sentence rather than starting a copy on an empty
@@ -575,11 +585,13 @@ happened:
   ceiling, without which dirty AOF pages got it killed at 64 and 128 MB —
   `docs/databases.md`, "Valkey".
 - A database whose primary was made on another node is reached by name
-  only from services on that node. Its backups and restores are that
+  from every node of the project. Its backups and restores are that
   node's. Nothing moves a primary once it exists. Its name, published port
   and certificate are the owner's, as at home: the port is forwarded from
-  the owner over the overlay. None of it has run between two machines yet
-  — `docs/databases.md`, "A primary on another node".
+  the owner over the overlay. Creating it, its certificate and reaching it
+  by name ran between the two VMs on 2026-11-20. A standby on a third node
+  and the forwarded port have not — `docs/databases.md`, "A primary on
+  another node".
 
 All four, and the rest of what the VM walk of 2026-10-14 left, with how
 to reproduce each and how to re-test what it fixed:
@@ -698,6 +710,8 @@ something else opens its service; it does not lean on the default.
 **The firewall writes nothing unless it is armed.** SSH and published
 ports are guarded by iptables rules in a chain of their own
 (`infra::firewall`), and only `serve` and `wabot-deploy allowlist` arm it.
+The rules that keep projects apart (`infra::isolation`) ask the same
+switch.
 That is what lets the suite run as root inside the VM without rewriting
 the node's firewall. A test that needs the rules tests `render`, never
 `converge`.

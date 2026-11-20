@@ -202,6 +202,7 @@ pub async fn run(config: Config) -> anyhow::Result<i32> {
     // moment its container is, and its list has to be in the kernel first.
     crate::infra::firewall::arm();
     crate::infra::firewall::heal(&database).await;
+    deployer.keep_projects_apart(true).await;
 
     // And the cgroup they are created in, for the same reason. Never fatal:
     // a node that cannot write it still serves the console that says so.
@@ -481,6 +482,25 @@ pub async fn run(config: Config) -> anyhow::Result<i32> {
                         _ = tokio::time::sleep(std::time::Duration::from_secs(10)) => {}
                     }
                 }
+            }
+        })
+        .service_with_cancel("reach", {
+            let deployer = deployer.clone();
+            move |cancel| async move {
+                let tell = async {
+                    loop {
+                        deployer.tell_directories().await;
+                        deployer.sync_hosts().await;
+                        tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+                    }
+                };
+                tokio::select! {
+                    _ = cancel.cancelled() => {}
+                    _ = crate::infra::reach::names::run((*deployer).clone()) => {}
+                    _ = crate::infra::reach::door::run((*deployer).clone()) => {}
+                    _ = tell => {}
+                }
+                Ok::<(), anyhow::Error>(())
             }
         })
         .service_with_cancel("databases-elsewhere", {

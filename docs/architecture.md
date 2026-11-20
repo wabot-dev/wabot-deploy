@@ -367,9 +367,11 @@ setting      (key, value, updated_at)
 
 Un bridge por proyecto (`wd-<n>`) y un `/24` dentro de `10.42.0.0/16`.
 Contenedores del mismo proyecto se ven entre sí; de proyectos distintos
-no, porque son dominios L2 separados. El índice se asigna en el primer
-despliegue: hay 254, y un proyecto que no corre nada no debería gastar
-uno.
+no, y **no por ser dominios L2 separados**, que es lo que esto decía: el
+nodo enruta entre sus bridges y lo hizo durante dos años. Los separan
+las reglas del kernel (`infra::isolation`, §10.20). El índice se asigna
+en el primer despliegue: hay 254, y un proyecto que no corre nada no
+debería gastar uno.
 
 Los plugins CNI se invocan directamente —el protocolo es "ejecuta este
 binario con cinco variables de entorno y el config por stdin"— porque una
@@ -1050,3 +1052,105 @@ del servicio sin copia aquí también lo hacen. Si no cabe, el motivo queda
 en la fila y el servicio sigue parado. El precio es que algo que se paró
 puede no volver a arrancar si otro ocupó su sitio mientras tanto, y es el
 precio honesto: el sitio no estaba guardado.
+
+### 10.20 Los proyectos, apartados por el kernel
+
+Pedido por Jorge el 2026-11-19: cada proyecto, una red que no pueda
+hablar con las demás. No lo era. Se midió en node-1 el 2026-08-25 y en la
+VM el 2026-10-15: desde el contenedor de una organización respondían el
+nginx y el Postgres del operador. `ip_forward=1`, `FORWARD` en `ACCEPT`
+sin reglas, y `wabot0` en la misma máquina, así que un contenedor
+llegaba también a los puertos que los otros nodos abren en el overlay
+para sus copias, y por ellos a contenedores de cualquier proyecto en
+cualquier nodo.
+
+Dos cadenas en `filter`, escritas enteras con `iptables-restore
+--noflush` y saltadas desde el principio de `FORWARD` e `INPUT`.
+`WABOT-PROJECTS` deja pasar lo que va dentro de un bridge y las
+respuestas, y tira lo que va de un bridge a otro, de un bridge al
+overlay y del overlay a un bridge. `WABOT-PROJECTS-IN` tira lo que un
+contenedor manda a una dirección del nodo dentro de `10.42.0.0/16` que
+no es de su bridge: el gateway de otro proyecto o la dirección del
+overlay son locales, así que esos paquetes van por `INPUT` y una regla
+solo de reenvío no los vería.
+
+Tres excepciones, cada una con su motivo:
+
+- **Un puerto publicado es una puerta pública.** Desde otro proyecto se
+  entra por la dirección del nodo como desde internet, y la lista que lo
+  guarda juzga al contenedor como a cualquiera. Por el gateway de un
+  bridge o por la dirección del overlay es la misma DNAT de `portmap`,
+  pero ya no es la puerta, sino la entrada de atrás a la copia de otro
+  proyecto. Las distingue `--ctorigdst`.
+- **Del overlay, solo lo que llegó por un puerto ligado a él**
+  (`--ctstate DNAT`): un edge en otro nodo, un standby en otro nodo o el
+  dueño que reenvía una base publicada. Nunca la dirección de un
+  contenedor.
+- **Hacia el overlay, solo un standby que sigue a su primario en otro
+  nodo**: desde el bridge de ese proyecto, a ese nodo y a ese puerto, que
+  es de una copia de un proyecto y no lleva a ningún otro.
+
+Las cadenas solo tiran: lo que pasa vuelve a `FORWARD` y a lo que la
+máquina tenga allí. Se escriben antes del primer contenedor, antes de
+cada uno —para que un proyecto nuevo nunca tenga su primer contenedor en
+un bridge que las reglas no conocen— y cada diez segundos, como la
+allowlist. Solo con `serve` armado, porque la suite corre como root en
+la VM.
+
+En la VM, el 2026-11-19, desde `other.probe`: el contenedor y el
+gateway de `pushes` dejaron de responder, y el propio gateway, la
+dirección del nodo e internet siguieron respondiendo. Al quitar los
+saltos a mano volvió todo lo de octubre, y el bucle los repuso en un
+segundo. Lo que cruza el overlay se midió al día siguiente, con las dos
+VMs ya unidas (`docs/vm-walk.md` §2.0): desde la copia en `wabot-dev-2`
+no se llega ni a la consola del otro nodo por el overlay, ni a su puerto
+de overlay, ni a la dirección de overlay del propio nodo, y el edge de
+`wabot-dev` sigue repartiendo entre las dos copias. Falta ver a un
+standby remoto siguiendo a su primario.
+
+### 10.21 Un nombre de otro nodo, por una suplente
+
+Pedido por Jorge junto con lo anterior: un servicio no llegaba a una base
+del mismo proyecto que corría en otro nodo. `/etc/hosts` solo nombraba las
+copias de este nodo, y aunque el nombre hubiera resuelto, §10.20 tira lo
+que va de un bridge al overlay. Eligió **por nombre**: el servicio escribe
+`orders` y llega a donde esté la copia, sin reinicios, sin renumerar y sin
+cambiar a quién admite la base.
+
+Un nombre sin copia aquí resuelve a una **suplente** de `10.42.255.0/24`,
+un rango que ningún bridge usa. Un `REDIRECT` en `nat PREROUTING -i wd-+`
+entrega la conexión a este proceso. `SO_ORIGINAL_DST` dice qué suplente
+se pidió, y el bridge por el que entró dice de qué proyecto viene. El nodo
+abre entonces la **puerta** del nodo que tiene la copia: un puerto en su
+dirección de overlay, atado a `wabot0`. Llama con una línea que nombra el
+proyecto, el servicio, la copia y el puerto. La puerta solo deja entrar a
+los nodos que el **directorio** del proyecto nombra, y marca a la copia
+desde el host. Así la copia ve llegar la conexión desde el gateway de su
+propio bridge, que es a quien cada motor ya admite. El directorio lo
+deriva el dueño de sus filas y lo manda como errand a cada nodo con una
+copia. Un nodo solo lo acepta del dueño, porque es la lista de quién
+entra.
+
+Tres decisiones:
+
+- **No los puertos de overlay.** Habrían costado un puerto por cada copia
+  de un proyecto repartido, en su siguiente despliegue (un reinicio, para
+  una base), y que cada motor aprendiera a admitir el overlay. Una DNAT
+  desde el bridge a otro nodo habría puesto los paquetes del contenedor en
+  el overlay, que es justo lo que §10.20 cerró. Aquí la segunda conexión
+  la hace el nodo.
+- **El directorio se recalcula cada diez segundos.** Se deriva de lo que
+  llega de otros nodos (dónde está cada copia, qué versión tiene cada
+  nodo), que es la forma de casi todos los fallos de red de este
+  proyecto. `queue_if_changed` hace gratis la pasada que no cambia nada.
+- **Una versión.** Un nodo anterior a 0.44.0 no tiene puerta: sus copias
+  no se listan y no se le manda nada. La constante (`DIRECTORY_SINCE`)
+  tiene que ser la versión con la que salga esto.
+
+Solo TCP. Una copia aquí siempre gana, y nada pasa a una de otro nodo si
+la de aquí muere. Si hay varias fuera se prueban por turno, y una puerta
+que no contesta en tres segundos cede a la siguiente. En las VMs, el
+2026-11-20: `psql` con `verify-full` desde un contenedor de cada nodo
+hasta la base del otro, por su nombre; y desde otro proyecto, nada por
+ningún camino. Las tablas están en `docs/network.md`, "A project's names
+reach the nodes it runs on".

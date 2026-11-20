@@ -170,56 +170,103 @@ not (that was the bug); they are worth fixing by hand on the image tab.
 
 ## 2. Open faults
 
-### 2.0 Organisations are not isolated from each other on the network
+### 2.0 Organisations are not isolated from each other on the network — fixed
 
-**The one to read before offering the node to anybody you do not trust.**
+**Fixed in the kernel on 2026-11-19** (`infra::isolation`,
+`docs/architecture.md` §10.20). What follows is the fault as it was, how
+it was re-measured, and what still has not been looked at.
 
-**What happens.** Measured on the VM on 2026-10-15: from inside an
+**What happened.** Measured on the VM on 2026-10-15: from inside an
 organisation's container (`site.www`, `10.42.2.4`), the node operator's
 own service answered over HTTP (`wget http://10.42.1.6/` → nginx's page)
 and the operator's database accepted a connection on `10.42.1.254:5432`.
-The node's own `FORWARD` policy is `ACCEPT` with no rules. It was first
-measured on node-1 on 2026-08-25 between two projects, and it still holds
-between organisations. Pages, projects, people and certificates are
-separated by the console; packets are not.
+`FORWARD` was `ACCEPT` with no rules, `ip_forward=1`, and each project's
+bridge (`wd-<n>`) was only a separate L2 domain. The cross-bridge packet
+was masqueraded to the target bridge's gateway, which sits inside the
+`hostssl … 10.42.<n>.0/24` range in `pg_hba.conf`. `wabot0` is on the
+same machine, so a container also reached the overlay.
 
-**Why.** Each project gets its own bridge (`wd-<n>`), and nothing stops
-the node from routing between them: `ip_forward=1`, no CNI `firewall`
-plugin in the chain, no `FORWARD` rules. Worse for databases: the
-cross-bridge packet is masqueraded, so it arrives from the target
-bridge's own gateway (`10.42.<n>.1`), which is inside the
-`hostssl … 10.42.<n>.0/24` range the node writes into `pg_hba.conf` —
-only the password still stands. And `wabot0` is a `/24`, so a container
-also reaches the overlay and the other nodes' consoles. The comments in
-`runtime/network.rs` and `deploy/hosts.rs` claim the bridges are
-separate L2 domains with nothing routing between them; that is false.
-
-**To build.** Drop traffic between project bridges, and from bridges to
-the overlay, except what the node itself forwards (the edge, published
-ports, a standby dialling its primary over the overlay):
-
-- the CNI `firewall` plugin (already in the plugins tarball the node
-  downloads) in each project's conflist, or
-- explicit `FORWARD` rules installed by the node at boot: accept
-  established, accept bridge → uplink, drop `wd-*` → `wd-*` and
-  `wd-*` → `wabot0`, with the exceptions above as narrower accepts;
-- `wabot0` as `/32` with explicit routes per peer.
-
-Then correct the two comments.
-
-**Reproduce on the VM.** Two projects (or a project and an organisation's),
-one service each:
+**What the node writes now.** Two chains in `filter`, jumped to from the
+top of `FORWARD` and of `INPUT`:
 
 ```sh
-scripts/vm.sh root ctr -n wabot t exec --exec-id x <their-project>.<service> \
-  wget -qO- -T 3 http://<address of a container in your project>/
-scripts/vm.sh root ctr -n wabot t exec --exec-id y <their-project>.<service> \
-  nc -z -w 3 <address of your database> 5432 && echo open
+scripts/vm.sh root iptables -S WABOT-PROJECTS
+scripts/vm.sh root iptables -S WABOT-PROJECTS-IN
+scripts/vm.sh root wabot-deploy doctor | sed -n '/^projects/,/^$/p'
 ```
 
-**Fixed looks like.** Both time out; the same commands inside one project
-still succeed; a remote standby still streams; `https://<a service's
-hostname>/` still answers through the edge.
+**Reproduce on the VM.** Two projects with one service each, then from
+one project's namespace:
+
+```sh
+ip netns exec <their-project>.<service> nc -z -w 3 <a container in your project> <port>
+ip netns exec <their-project>.<service> nc -z -w 3 10.42.<your index>.1 443
+```
+
+**Measured on 2026-11-19**, from `other.probe` (`10.42.2.6`) with
+`pushes.whoami` on `10.42.1.37`:
+
+| from `other.probe` to | rules in place | jumps removed by hand |
+|---|---|---|
+| `pushes.whoami` 10.42.1.37:80 | refused | reached |
+| `pushes`'s gateway 10.42.1.1:443 | refused | reached |
+| its own gateway 10.42.2.1:443 | reached | reached |
+| the node's LAN address :443 | reached | reached |
+| the internet, 1.1.1.1:443 | reached | reached |
+| `other.probe2` (same project) :80 | reached | — |
+| whoami's published port at the LAN address, list `0.0.0.0/0` | reached | — |
+| the same, list `203.0.113.0/24` | refused (by the list) | — |
+| the same port at its own gateway or `pushes`'s | refused | — |
+
+The heal loop put the deleted jumps back within a second.
+
+**The overlay paths, between the two VMs (2026-11-20)**, once
+`wabot-dev-2` had joined `wabot-dev` (see Part 9). `pushes/whoami` with a
+copy on each, the name `whoami.wabot.test` on `wabot-dev`, and every probe
+from the far copy's own network namespace (`nsenter -t <pid> -n`), on
+`wabot-dev-2`:
+
+| From | To | Result |
+|---|---|---|
+| the copy on `wabot-dev-2` | `wabot-dev`'s console over the overlay, `10.42.0.1:443` | dropped ("the overlay") |
+| the copy on `wabot-dev-2` | the other copy's overlay port, `10.42.0.1:30000` | dropped |
+| the copy on `wabot-dev-2` | its own node's overlay address, `10.42.0.2:80` | dropped (`WABOT-PROJECTS-IN`) |
+| the copy on `wabot-dev-2` | the internet | 200 |
+| `wabot-dev`'s host | `wabot-dev-2`'s overlay port `10.42.0.2:30000` | answered by `10.42.1.3` |
+| `wabot-dev`'s edge, six requests | `whoami.wabot.test` | 3 from each copy |
+
+The `wabot0 → wd-+ ctstate DNAT` rule on `wabot-dev-2` counted the four
+connections that came in over the overlay; nothing else crossed it.
+
+**By name across the two VMs (2026-11-20).** `pushes` gained `orders`
+(Postgres, "Runs on" `wabot-dev-2`) and `ledger` (Postgres, on `wabot-dev`),
+both at 128 MB, and `other` gained `probe` (`traefik/whoami`, 16 MB). The
+tables are in `docs/network.md`, "A project's names reach the nodes it runs
+on". To reproduce, on the node with no copy of the database:
+
+```sh
+scripts/vm.sh root sh -c 'iptables -t nat -S WABOT-PROJECTS-NAMES; netstat -ltn | grep 3110'
+scripts/vm.sh root grep -v '^#' /var/lib/wabot-deploy/hosts/pushes.whoami   # orders → 10.42.255.x
+scripts/vm.sh root sh -c 'apk add -q postgresql17-client'
+# then, as root on the node, from the client container's namespace:
+pid=$(ctr -n wabot t ls | awk '/^pushes.whoami /{print $2}')
+nsenter -t $pid -n env PGPASSWORD=… psql "host=orders.pushes.lima-wabot-dev.internal \
+  hostaddr=10.42.255.1 dbname=orders user=orders sslmode=verify-full \
+  sslrootcert=/var/lib/wabot-deploy/config/pushes.whoami/conf/ca.crt" -c 'select inet_client_addr()'
+```
+
+The password is in the connection string on the database's page. On
+`wabot-dev-2` the container is `pushes.whoami.2`, and its `ca.crt` holds
+both authorities, which is the file that found §10.22 of
+`docs/architecture.md`.
+
+**Not yet measured:** a remote standby streaming from its primary. The rule
+that lets it out is per bridge, node and port:
+
+```sh
+# on the node holding a standby whose primary is elsewhere
+iptables -S WABOT-PROJECTS | grep -- '-o wabot0 -d'
+```
 
 ### 2.1 A container that dies is never started again
 

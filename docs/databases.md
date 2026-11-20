@@ -1198,10 +1198,14 @@ Three decisions, his:
   writes stopped, the standby promoted — and none of that exists.
 - **Both engines.** A MySQL database is still one copy, but that copy can
   be on any node that keeps data.
-- **Reached by name only from that node.** `/etc/hosts` lists the copies
-  a node holds, so services on the node running the primary resolve it
-  and services anywhere else do not. That is the same limit a read pool
-  already has, naming's phase 4.
+- **Reached by name from every node of the project** since 2026-11-20.
+  It used to be only from the node running the primary, because
+  `/etc/hosts` listed the copies a node holds. A name with no copy here
+  now resolves to a stand-in, and the node carries the connection to the
+  door of the node that has the copy (`docs/network.md`, "A project's
+  names reach the nodes it runs on"). The copy sees it arrive from its
+  bridge's gateway, which `pg_hba` already admits. `orders-ro` with no
+  standby anywhere falls back to the primary, as it does at home.
 
 ### How it travels
 
@@ -1345,7 +1349,8 @@ would make Valkey the easiest of the three engines to replicate.
 
 "Runs on" is offered, as for the other two: the one copy can be made on
 another node that granted `store`, chosen when it is made, fixed after,
-and reached by name only from that node. **A cache needs `store` too.**
+and reached by name from every node of the project, through a stand-in
+where there is no copy. **A cache needs `store` too.**
 It writes nothing to disk, but sessions and tokens are somebody's data
 held in memory, which is exactly what `store` asks a node to agree to.
 
@@ -1424,9 +1429,11 @@ down.
 
 **TLS always**, as for Postgres and MySQL: `port 0`, `tls-port 6379`, and
 the connection string is `rediss://`. A plaintext port inside the
-project was considered and not taken: projects are not isolated
-(`FORWARD` accepts everything), so a password sent in the clear on the
-bridge is readable from another tenant's container. Measured: a
+project was considered and not taken: projects were not isolated then
+(`FORWARD` accepted everything), so a password sent in the clear on the
+bridge was readable from another tenant's container. They are now
+(`docs/architecture.md` §10.20), and TLS stays, because a rule the kernel
+lost is a password on the wire again. Measured: a
 plaintext client is reset, and a client verifying against the node's
 authority by the long name gets `PONG`.
 

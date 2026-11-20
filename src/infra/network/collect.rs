@@ -892,6 +892,11 @@ async fn carry_out(
                 .map_err(|error| format!("that is not a certificate errand: {error}"))?;
             keep_certificate(database, container, authority, certificate).await
         }
+        Kind::Directory => {
+            let directory: errand::Directory = serde_json::from_value(order.payload)
+                .map_err(|error| format!("that is not a directory errand: {error}"))?;
+            keep_directory(database, container, authority, directory).await
+        }
         // An instruction from a newer node. Refused with the reason
         // rather than dropped — the authority learns that this node is
         // the old one, which is something somebody can act on.
@@ -899,6 +904,41 @@ async fn carry_out(
             Err("this node is older than that instruction and does not know it".into())
         }
     }
+}
+
+/// Where a project runs, from the node it belongs to, so its containers
+/// here reach what has no copy here.
+///
+/// Only the project's own owner may say: the directory names who may open
+/// a door into the project here, and a node that could write another's
+/// would name itself.
+async fn keep_directory(
+    database: &SqliteDatabase,
+    container: &Container,
+    authority: &str,
+    directory: errand::Directory,
+) -> Result<(), String> {
+    let Some(project) = crate::infra::repositories::projects::all(database)
+        .await
+        .map_err(|error| error.to_string())?
+        .into_iter()
+        .find(|project| project.name == directory.project)
+    else {
+        return Ok(());
+    };
+    if project.origin_node_id.as_deref() != Some(authority) {
+        return Err(format!(
+            "project {} here is not one that node placed",
+            directory.project
+        ));
+    }
+    crate::infra::repositories::directories::keep(database, &project.id, &directory)
+        .await
+        .map_err(|error| error.to_string())?;
+    if let Ok(deployer) = container.try_resolve::<crate::infra::deploy::Deployer>() {
+        deployer.sync_hosts().await;
+    }
+    Ok(())
 }
 
 /// Be running this release, or say why not.
@@ -2209,6 +2249,54 @@ async fn ensure_project(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The directory names who may open a door into the project here, so
+    /// a node that could write the directory of a project it did not place
+    /// could let itself in.
+    #[tokio::test]
+    async fn a_directory_is_kept_only_from_the_node_that_placed_the_project() {
+        let database = crate::infra::db::open_in_memory().await.expect("open");
+        let project = crate::infra::repositories::projects::create(&database, "shop")
+            .await
+            .expect("project");
+        crate::infra::repositories::projects::set_origin(&database, &project.id, "nd-owner")
+            .await
+            .expect("origin");
+        let said = |members: &[&str]| Errand {
+            id: "er-directory".into(),
+            kind: Kind::Directory,
+            payload: serde_json::json!({
+                "project": "shop",
+                "members": members,
+                "services": [{"service": "orders", "ports": [5432], "primary_slot": 1,
+                              "copies": [{"node": "10.42.0.9", "slot": 1}]}],
+            }),
+        };
+        let kept = || crate::infra::repositories::directories::of_project(&database, &project.id);
+
+        let refused = carry_out(
+            &database,
+            &Config::default(),
+            &Container::new(),
+            "nd-stranger",
+            said(&["10.42.0.5"]),
+        )
+        .await;
+        assert!(refused.is_err(), "{refused:?}");
+        assert_eq!(kept().await.expect("query"), None);
+
+        carry_out(
+            &database,
+            &Config::default(),
+            &Container::new(),
+            "nd-owner",
+            said(&["10.42.0.2", "10.42.0.9"]),
+        )
+        .await
+        .expect("kept");
+        let directory = kept().await.expect("query").expect("a directory");
+        assert_eq!(directory.members, vec!["10.42.0.2", "10.42.0.9"]);
+    }
 
     /// **What an authority grants a member reaches the member.** It was
     /// written once, from the join token, and never again: an authority

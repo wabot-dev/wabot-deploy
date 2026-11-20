@@ -390,6 +390,32 @@ pub async fn run(config: Config, config_path: &Path) -> anyhow::Result<i32> {
     }
 
     println!();
+    println!("projects");
+    let networks = crate::infra::repositories::projects::network_indexes(&database)
+        .await
+        .map(|indexes| indexes.len())
+        .unwrap_or_default();
+    match crate::infra::isolation::in_force() {
+        Ok(()) => println!(
+            "  kernel    {networks} networks kept apart: {} from FORWARD, {} from INPUT",
+            crate::infra::isolation::BETWEEN,
+            crate::infra::isolation::INTO_THE_NODE
+        ),
+        Err(_) if networks == 0 => {
+            println!("  kernel    no rules, and none needed: no project has a network yet")
+        }
+        Err(reason) => {
+            println!("  kernel    NOT APART — every project reaches every other: {reason}");
+            problems += 1;
+        }
+    }
+    if let Some(reason) = crate::infra::isolation::last_error(&database).await {
+        println!("  last failure writing them:");
+        println!("    {reason}");
+        problems += 1;
+    }
+
+    println!();
     println!("dns");
     let answers_dns = crate::infra::network::capability::provides(
         &database,

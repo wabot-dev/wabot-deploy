@@ -28,11 +28,11 @@
 //!
 //! ## Scoped to the project
 //!
-//! A container is given its own project's names and no others. Two
-//! projects' bridges are separate L2 domains and `runtime::network`
-//! says the isolation is the point of separating them; a name that
-//! crossed it would be a hole opened by a naming convention. Reaching
-//! another project is something somebody should have to ask for.
+//! A container is given its own project's names and no others. The
+//! kernel refuses what crosses from one project's bridge to another's
+//! (`infra::isolation`), so a name for another project would resolve to
+//! an address nothing answers on — and the day a rule is wrong, it would
+//! be the map to the hole.
 //!
 //! ## A database's name is its primary
 //!
@@ -124,7 +124,10 @@ pub fn write(data_dir: &Path, container_id: &str, entries: &[Entry]) -> std::io:
     }
     // `std::fs::write` truncates and writes the same inode, which is
     // what a bind mount needs — see the module docs.
-    std::fs::write(&path, render(entries))?;
+    let file = render(entries);
+    if std::fs::read_to_string(&path).ok().as_deref() != Some(file.as_str()) {
+        std::fs::write(&path, file)?;
+    }
     Ok(path)
 }
 

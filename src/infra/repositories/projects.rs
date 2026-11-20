@@ -236,7 +236,26 @@ pub async fn ensure_network_index(database: &SqliteDatabase, id: &str) -> Platfo
     }
 }
 
-async fn network_index(database: &SqliteDatabase, id: &str) -> PlatformResult<Option<u8>> {
+/// Every slot in the address space some project holds.
+pub async fn network_indexes(database: &SqliteDatabase) -> PlatformResult<Vec<u8>> {
+    let taken: Vec<i64> = database
+        .read(|connection| {
+            connection
+                .prepare(
+                    "SELECT \"network_index\" FROM project \
+                     WHERE \"network_index\" IS NOT NULL ORDER BY 1",
+                )?
+                .query_map([], |row| row.get(0))?
+                .collect()
+        })
+        .await?;
+    Ok(taken
+        .into_iter()
+        .filter_map(|index| u8::try_from(index).ok())
+        .collect())
+}
+
+pub async fn network_index(database: &SqliteDatabase, id: &str) -> PlatformResult<Option<u8>> {
     let id = id.to_string();
     let value: Option<Option<i64>> = database
         .read(move |connection| {
@@ -250,6 +269,28 @@ async fn network_index(database: &SqliteDatabase, id: &str) -> PlatformResult<Op
         })
         .await?;
     Ok(value.flatten().map(|index| index as u8))
+}
+
+/// The project whose bridge is `wd-<index>` on this node.
+pub async fn with_network_index(
+    database: &SqliteDatabase,
+    index: u8,
+) -> PlatformResult<Option<Project>> {
+    let id: Option<String> = database
+        .read(move |connection| {
+            connection
+                .query_row(
+                    "SELECT \"id\" FROM project WHERE \"network_index\" = ?1",
+                    [i64::from(index)],
+                    |row| row.get(0),
+                )
+                .optional()
+        })
+        .await?;
+    match id {
+        Some(id) => find(database, &id).await,
+        None => Ok(None),
+    }
 }
 
 /// The name this project's registry answers on, when it has one of its own.

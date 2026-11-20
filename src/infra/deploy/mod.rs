@@ -20,6 +20,7 @@
 
 pub mod ceilings;
 pub mod database;
+mod directory;
 pub mod dns;
 pub mod edge_withdrawals;
 pub mod forwards;
@@ -465,6 +466,7 @@ impl Deployer {
     /// run as another process, reaches this one.
     pub async fn converge_doors(&self, seen: &mut Option<String>) {
         crate::infra::firewall::heal(&self.database).await;
+        self.keep_projects_apart(true).await;
         let Some(table) = &self.routes else {
             return;
         };
@@ -483,6 +485,75 @@ impl Deployer {
         *seen = Some(now);
     }
 
+    /// The kernel told which networks may reach which, from the rows.
+    ///
+    /// `healing` writes it whatever the last pass wrote. Before a
+    /// container starts, so a project's first container is never on a
+    /// bridge the rules do not know yet, and a standby never dials a
+    /// primary they have not let it reach.
+    pub async fn keep_projects_apart(&self, healing: bool) {
+        let plan = match self.isolation_plan().await {
+            Ok(plan) => plan,
+            Err(error) => {
+                tracing::warn!(%error, "could not read which networks this node keeps apart");
+                return;
+            }
+        };
+        match healing {
+            true => crate::infra::isolation::heal(&self.database, &plan).await,
+            false => crate::infra::isolation::converge(&self.database, &plan).await,
+        }
+    }
+
+    pub(crate) async fn isolation_plan(&self) -> DeployResult<crate::infra::isolation::Plan> {
+        let bridges = crate::infra::repositories::projects::network_indexes(&self.database).await?;
+        let nodes = crate::infra::network::all(&self.database).await?;
+        let mut followed = Vec::new();
+        for project in crate::infra::repositories::projects::all(&self.database).await? {
+            let Some(index) =
+                crate::infra::repositories::projects::network_index(&self.database, &project.id)
+                    .await?
+            else {
+                continue;
+            };
+            let net = ProjectNetwork::new(index)?;
+            for service in services::all(&self.database, Some(&project.id)).await? {
+                if !service.kind.is_database() {
+                    continue;
+                }
+                let Some(row) = databases::of_service(&self.database, &service.id).await? else {
+                    continue;
+                };
+                let placements = replicas::of_service(&self.database, &service.id).await?;
+                let follows_here = placements.iter().any(|replica| {
+                    replica.is_here()
+                        && !replica.evicted()
+                        && row.role_of(replica.slot) == postgres::Role::Standby
+                });
+                if !follows_here {
+                    continue;
+                }
+                let Ok(Some((host, port))) = self.primary_endpoint(&row, &placements, &nodes, &net)
+                else {
+                    continue;
+                };
+                match host.parse::<Ipv4Addr>() {
+                    Ok(address) if !net.holds(address) => {
+                        followed.push(crate::infra::isolation::Followed {
+                            index,
+                            address,
+                            port,
+                        })
+                    }
+                    _ => {}
+                }
+            }
+        }
+        followed.sort();
+        followed.dedup();
+        Ok(crate::infra::isolation::Plan { bridges, followed })
+    }
+
     /// Rewrite every local container's `/etc/hosts` from the rows.
     ///
     /// Every one of them, not only the service that changed: a
@@ -497,6 +568,48 @@ impl Deployer {
         if let Err(error) = self.write_hosts().await {
             tracing::error!(%error, "could not update the names inside containers");
         }
+    }
+
+    /// The slot whose copy takes a database's name, and the qualified name
+    /// the containers beside a service resolve it by.
+    pub(crate) async fn names_of(
+        &self,
+        project: &Project,
+        service: &Service,
+        domain: Option<&str>,
+    ) -> DeployResult<(Option<u32>, Option<String>)> {
+        let row = match service.kind.is_database() {
+            true => databases::of_service(&self.database, &service.id).await?,
+            false => None,
+        };
+        // The owner's domain, when this is somebody's copy. A qualified name
+        // built from *this* machine's domain is one no client would write —
+        // the database is not this node's and neither is its name.
+        let suffix = row
+            .as_ref()
+            .and_then(|r| r.owner_domain.clone())
+            .or_else(|| domain.map(str::to_string));
+        let qualified = match row.is_some() {
+            // The name itself, not the domain to build one from: a
+            // database's is the operator's to choose and may sit under a
+            // domain that has nothing to do with this node's.
+            true => {
+                crate::infra::deploy::database::qualified_name(
+                    &self.database,
+                    service,
+                    &project.slug,
+                    suffix.as_deref(),
+                )
+                .await?
+            }
+            // An ordinary service keeps the derived name it has always had
+            // in here. Its own hostname is what an edge serves, which is a
+            // different question from what the containers beside it resolve.
+            false => suffix
+                .as_ref()
+                .map(|domain| format!("{}.{}.{domain}", service.slug, project.slug)),
+        };
+        Ok((row.as_ref().map(|r| r.primary_slot), qualified))
     }
 
     async fn write_hosts(&self) -> DeployResult<()> {
@@ -530,44 +643,9 @@ impl Deployer {
             let mut named = Vec::new();
 
             for service in &services {
-                let row = match service.kind.is_database() {
-                    true => databases::of_service(&self.database, &service.id).await?,
-                    false => None,
-                };
-                // The owner's domain, when this is somebody's copy. A
-                // qualified name built from *this* machine's domain is
-                // one no client would write — the database is not this
-                // node's and neither is its name.
-                let suffix = row
-                    .as_ref()
-                    .and_then(|r| r.owner_domain.clone())
-                    .or_else(|| domain.clone());
-                // The name itself, not the domain to build one from: a
-                // database's is the operator's to choose and may sit under
-                // a domain that has nothing to do with this node's.
-                let qualified = match row.is_some() {
-                    true => {
-                        crate::infra::deploy::database::qualified_name(
-                            &self.database,
-                            service,
-                            &project.slug,
-                            suffix.as_deref(),
-                        )
-                        .await?
-                    }
-                    // An ordinary service keeps the derived name it has
-                    // always had in here. Its own hostname is what an edge
-                    // serves, which is a different question from what the
-                    // containers beside it resolve.
-                    false => suffix
-                        .as_ref()
-                        .map(|domain| format!("{}.{}.{domain}", service.slug, project.slug)),
-                };
-                named.push((
-                    service.slug.clone(),
-                    row.as_ref().map(|r| r.primary_slot),
-                    qualified,
-                ));
+                let (primary_slot, qualified) =
+                    self.names_of(&project, service, domain.as_deref()).await?;
+                named.push((service.slug.clone(), primary_slot, qualified));
 
                 for replica in replicas::of_service(&self.database, &service.id).await? {
                     if !replica.is_here() || replica.evicted() {
@@ -581,6 +659,20 @@ impl Deployer {
                         addresses.insert((service.slug.clone(), replica.slot), address);
                     }
                 }
+            }
+
+            let here = addresses.keys().cloned().collect();
+            match self.stood_in(&project, &here).await {
+                Ok(stood) => {
+                    for listed in stood.services {
+                        if !named.iter().any(|(slug, _, _)| *slug == listed.0) {
+                            named.push(listed);
+                        }
+                    }
+                    addresses.extend(stood.addresses);
+                }
+                Err(error) => tracing::warn!(project = %project.slug, %error,
+                    "names that run only on other nodes are missing from this project's hosts files"),
             }
 
             for service in &services {
@@ -600,7 +692,9 @@ impl Deployer {
                     let authorities = database::config_dir(data_dir, &id).join("ca.crt");
                     if authorities.exists() {
                         if let Ok(pem) = self.authorities_for(service).await {
-                            std::fs::write(&authorities, pem)?;
+                            if std::fs::read_to_string(&authorities).ok() != Some(pem.clone()) {
+                                std::fs::write(&authorities, pem)?;
+                            }
                         }
                     }
                 }
@@ -1206,6 +1300,7 @@ impl Deployer {
         // A published port is open the moment its container is, so the
         // list that guards it goes into the kernel first.
         crate::infra::firewall::converge(&self.database).await;
+        self.keep_projects_apart(false).await;
         // Before the container, and before the network is even torn
         // down on a failure: a bind of a directory that is not there
         // fails inside the shim, where the message is about a mount
@@ -6239,6 +6334,74 @@ mod tests {
             deployer.primary_reported("nd-third", &state).await,
             None,
             "a node not holding the primary does not speak for it"
+        );
+    }
+
+    /// The overlay is closed to containers, and a standby following a
+    /// primary on another node is the one container that dials it. The
+    /// rules open that node's address on that port from that project's
+    /// bridge, and a standby whose primary is on its own bridge opens
+    /// nothing.
+    #[tokio::test]
+    async fn a_standby_here_may_reach_its_primary_elsewhere_and_nothing_more() {
+        let database = crate::infra::db::open_in_memory().await.expect("open");
+        a_far_node(&database, "nd-far", "10.42.0.9", None).await;
+        let made = |project: &'static str, on: Option<&'static str>| {
+            let database = database.clone();
+            async move {
+                let project = crate::infra::repositories::projects::create(&database, project)
+                    .await
+                    .expect("project");
+                let (service, _) =
+                    crate::features::databases::create_database_command::CreateDatabase {
+                        project_id: &project.id,
+                        name: "orders",
+                        engine: crate::domain::entities::database::Engine::Postgres,
+                        version: "17",
+                        memory_limit: 256 * 1024 * 1024,
+                        image: None,
+                        on,
+                        mode: crate::domain::entities::database::Mode::Store,
+                    }
+                    .run(&database)
+                    .await
+                    .expect("created");
+                replicas::ensure_count(&database, &service.id, 2, None)
+                    .await
+                    .expect("a standby here");
+                let index = crate::infra::repositories::projects::ensure_network_index(
+                    &database,
+                    &project.id,
+                )
+                .await
+                .expect("a network");
+                (service, index)
+            }
+        };
+        let (far, far_index) = made("far", Some("nd-far")).await;
+        let (_, near_index) = made("near", None).await;
+        let primary = replicas::in_slot(&database, &far.id, 1)
+            .await
+            .expect("query")
+            .expect("the primary");
+        replicas::set_overlay_port(&database, &primary.id, Some(30005))
+            .await
+            .expect("what the report wrote");
+        let deployer = Deployer::new(
+            std::sync::Arc::new(database.clone()),
+            &crate::infra::config::Config::default(),
+        );
+
+        let plan = deployer.isolation_plan().await.expect("a plan");
+
+        assert_eq!(plan.bridges, vec![far_index, near_index]);
+        assert_eq!(
+            plan.followed,
+            vec![crate::infra::isolation::Followed {
+                index: far_index,
+                address: "10.42.0.9".parse().expect("an address"),
+                port: 30005,
+            }]
         );
     }
 

@@ -85,9 +85,10 @@ drifts. A project keeps named lists — its settings, **Shared allowlists**
 **Not containers.** A container connecting to a name is a client like any
 other, and its bridge address is not on the list unless somebody puts it
 there. Exempting the bridge was the first plan and was dropped: projects
-and organisations are not isolated on the network (see CLAUDE.md, "Things
-that are still open"), so an exemption would have let any tenant's
-container past the operator's console list. Services reach each other by
+and organisations were not isolated on the network then, so an exemption
+would have let any tenant's container past the operator's console list.
+They are now (`docs/architecture.md` §10.20), and the reason still holds:
+a container is not the operator, whichever project it is in. Services reach each other by
 the project's internal names, which do not go through the edge.
 
 ## Saving a console list that would lock you out
@@ -166,6 +167,13 @@ new TCP connections to one of the machine's own addresses.
   recorded (`firewall.last_error`) and shown on the node's and the
   service's Access tabs, and `doctor` prints it, with whether the jump is
   in the kernel now.
+
+**A container is anybody.** Another project's container reaching a
+published port at the node's own address is judged by its list like a
+client on the internet, because that address is the door. The same port
+reached at a bridge's gateway or the overlay address is refused before
+any list is asked: that is the way into another project from behind,
+and `infra::isolation` drops it (`docs/architecture.md` §10.20).
 
 Between boot and the node starting, the machine has no rules — SSH is open
 to whoever its own firewall lets in for those seconds. Containers are not

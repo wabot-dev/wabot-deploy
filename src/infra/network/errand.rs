@@ -85,6 +85,9 @@ pub enum Kind {
     /// credentials and replication fields mean nothing to Garage. A node
     /// older than stores refuses an unknown kind with a sentence.
     Store,
+    /// What this project runs on which node, so a container here reaches
+    /// a service that has no copy here by its name.
+    Directory,
     /// Anything this version does not know about.
     #[serde(other)]
     Unknown,
@@ -101,6 +104,7 @@ impl Kind {
             Self::Zone => "zone",
             Self::Certificate => "certificate",
             Self::Store => "store",
+            Self::Directory => "directory",
             Self::Unknown => "unknown",
         }
     }
@@ -119,6 +123,7 @@ impl Kind {
             "zone" => Self::Zone,
             "certificate" => Self::Certificate,
             "store" => Self::Store,
+            "directory" => Self::Directory,
             _ => Self::Unknown,
         }
     }
@@ -325,6 +330,54 @@ pub struct Edge {
     /// signed one works and a public read is refused.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub s3_public: Option<Vec<String>>,
+}
+
+/// The arguments of a [`Kind::Directory`] errand: every copy of every
+/// service in one project, by node.
+///
+/// Asks for no capability: it adds nothing to run, only says where what is
+/// already this project's runs. **Empty is a withdrawal** — the node no
+/// longer holds anything of the project, or the project no longer spans
+/// two nodes.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Directory {
+    pub project: String,
+    /// The overlay addresses that may open a door into this project's
+    /// copies: the nodes holding one, the owner among them.
+    pub members: Vec<String>,
+    pub services: Vec<Listed>,
+}
+
+/// One service, as the nodes that hold none of it need to know it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Listed {
+    pub service: String,
+    /// The qualified name the containers beside it resolve, built where
+    /// the service is administered.
+    #[serde(default)]
+    pub qualified: Option<String>,
+    pub ports: Vec<u16>,
+    /// A database's: its copy in this slot takes the name, and the rest
+    /// take `<name>-ro`.
+    #[serde(default)]
+    pub primary_slot: Option<u32>,
+    pub copies: Vec<Copy>,
+}
+
+/// One copy of a service: the overlay address of the node running it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Copy {
+    pub node: String,
+    pub slot: u32,
+}
+
+/// The first release with a door, and so the first a directory is sent to
+/// or a copy is listed on: an older node would refuse the kind, and a copy
+/// there has nothing to answer the door.
+pub const DIRECTORY_SINCE: &str = "0.44.0";
+
+pub fn opens_doors(version: Option<&str>) -> bool {
+    at_least(version, DIRECTORY_SINCE)
 }
 
 /// The first release whose edges read [`Edge::allowed`].
@@ -730,6 +783,7 @@ pub fn consent_for(
             _ => Some(crate::domain::values::capability::Capability::Edge),
         },
         Kind::Store => Some(crate::domain::values::capability::Capability::Store),
+        Kind::Directory => None,
         Kind::Unknown => None,
     }
 }
@@ -1021,6 +1075,21 @@ pub async fn would_change(
         .read(move |connection| last_about(connection, &node, &about))
         .await?;
     Ok(says_something_new(kind, last, handed_up, payload))
+}
+
+/// Every node that was ever told something about `subject`.
+pub async fn told_about(database: &SqliteDatabase, subject: &str) -> NetworkResult<Vec<String>> {
+    let subject = subject.to_string();
+    Ok(database
+        .read(move |connection| {
+            let mut statement = connection.prepare(
+                "SELECT DISTINCT \"node_id\" FROM errand WHERE \"subject\" = ?1 ORDER BY 1",
+            )?;
+            let nodes: wabot::sqlite::rusqlite::Result<Vec<String>> =
+                statement.query_map([subject], |row| row.get(0))?.collect();
+            nodes
+        })
+        .await?)
 }
 
 fn last_about(

@@ -1768,3 +1768,119 @@ that detour is worth keeping — a peer this node does not dial now says
 **nought rather than nothing**, because `configure_peer` writes the
 attributes the peer carries and a field left unset asks the kernel to keep
 what it has.
+
+## A project's names reach the nodes it runs on — built 2026-11-20
+
+Asked for by Jorge on 2026-11-19, alongside the isolation, in his words:
+a service cannot reach a database on another node even when both are in
+the same project. The model he chose was **by name**. A service writes
+`orders` and reaches it wherever the copy runs, with no restart, no
+renumbering and no change to who a database admits.
+
+### What was true
+
+`/etc/hosts` listed the copies a node holds, so a name with no copy here
+did not resolve at all. Had it resolved, the isolation of the day before
+(`docs/architecture.md` §10.20) drops anything from a bridge to the
+overlay, and the address of a container on another node is not routable
+from here in the first place. Two things were missing: a name, and a path
+that does not reopen the overlay to containers.
+
+### The shape
+
+`infra::reach`, with its reasoning in the module docs.
+
+- **A stand-in for each name that has no copy here.** It comes from
+  `10.42.255.0/24`, which no bridge uses because a project's index stops
+  at 254. Each project and name keeps its own (`stand_in`, migration
+  0080), so the address in a container's hosts file does not move while
+  the container runs. A name with a copy here keeps resolving to that
+  copy, as it always did.
+- **One `REDIRECT`**, from `nat PREROUTING -i wd-+`, sends any TCP
+  connection to the range to a listener in this process on port 31100.
+  `SO_ORIGINAL_DST` says which stand-in and port were asked for. The
+  project is the bridge the connection arrived on, which is the address
+  the redirect delivered it to. The kernel chose it; the container did
+  not. The caller has to be on that same bridge.
+- **The door**, port 31101 on the overlay address and bound to `wabot0`.
+  Linux accepts a packet for any of its addresses on any interface, and
+  the address a caller is judged by is only worth what WireGuard vouches
+  for. The node carrying the connection knocks with one JSON line:
+  project, service, slot and port. The door admits a node only if the
+  directory names it, and only for a declared port of a copy that runs
+  here. It then dials the copy from the host and answers `ok`. Only after
+  that does anything the client sent reach the copy.
+- **The directory** says which node runs which copy of a project, and who
+  may knock. The owner derives it from its rows on every pass and sends it
+  as a `Directory` errand to every node holding a copy, with
+  `queue_if_changed`. A node that holds nothing of the project any more is
+  sent an empty one, or it would keep opening its door for ever. A node
+  keeps a directory only from the node that placed the project there,
+  because the directory names who is let in.
+
+The copy sees the connection arrive from its own bridge's gateway. That
+address is what every engine here already admits as a neighbour: it is
+how the node itself reaches a container. So `pg_hba.conf` and MySQL's
+grants did not change, and a database's per-client view shows the
+gateway rather than the far container.
+
+### Why not the overlay ports
+
+The edges, the standbys and the owner's forwards already reach copies
+through ports that CNI maps on the overlay address. Reusing them would have
+meant every copy of a project that spans nodes taking one, at its next
+deployment, which for a database is a restart. A connection through one
+of those ports arrives as the far node's overlay address, so every
+engine's list of who may connect would have had to learn the overlay. And
+a DNAT from a bridge straight to another node puts the container's packets
+on the overlay, which is exactly what §10.20 closed. Here the node makes
+the second connection, so nothing from a bridge crosses into the overlay
+by this path either.
+
+### Derived from the network, so recomputed
+
+The directory is the kind of state this project's networked bugs have
+always come from: derived from facts that arrive from other nodes, such
+as a copy's node and a node's version, and recomputed by nothing when one
+of them changes. The `reach` loop in `serve` therefore builds and sends it
+every ten seconds and rewrites the hosts files after it. A file that has
+not changed is not written, and an errand that says the same thing is not
+queued.
+
+### The version
+
+A node older than `errand::DIRECTORY_SINCE` (0.44.0) has no door. Its
+copies are listed nowhere, and it is sent nothing. It is still counted
+as a member, because it holds a copy of the project; it simply never
+knocks. **The constant has to match the release that ships this.** The
+working tree is 0.44.0 for that reason. If it ships under another number,
+the constant goes with it.
+
+### What it does not do
+
+- **TCP only.** UDP to a stand-in goes nowhere: a rule in
+  `WABOT-PROJECTS` drops it.
+- **A copy here is always preferred, and nothing fails over to a copy
+  elsewhere.** A dead local copy is the watch's to restart.
+- **Health, by trying.** Several copies elsewhere are tried in turn,
+  starting at a different one for each connection. A door that does not
+  answer `ok` within three seconds hands the connection to the next.
+  That is more than the edge does today, and less than health checks.
+
+### What the VMs said
+
+On 2026-11-20, with `wabot-dev` the owner of `pushes` and `wabot-dev-2`
+holding a copy of `whoami`. Two Postgres databases at 128 MB: `orders`,
+"Runs on" `wabot-dev-2`, and `ledger` on `wabot-dev`. Every probe ran
+from a container's own network namespace (`nsenter -t <pid> -n`), with
+`psql` on the host using `hostaddr` set to the stand-in, `host` set to
+the name the console gives, and the container's own `ca.crt`:
+
+| From | To | Result |
+|---|---|---|
+| `pushes.whoami` on `wabot-dev` | `orders` (10.42.255.1), `verify-full` | logged in; client `10.42.1.1`, server `10.42.1.254`, not in recovery |
+| the same | `orders-ro` (10.42.255.2) | the primary, since there is no standby; a write succeeded |
+| `pushes.whoami.2` on `wabot-dev-2` | `ledger` (10.42.255.1), `verify-full` | logged in, once the leaf named its authority (below) |
+| the same | port 22 of a stand-in, an unused stand-in | nothing |
+| `other.probe` on `wabot-dev`, another project | both stand-ins, the names listener directly, both doors | nothing |
+| `wabot-dev-2`'s host | `wabot-dev`'s door, knocking for `Other` | refused: "this project runs on no other node" |

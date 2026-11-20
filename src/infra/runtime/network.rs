@@ -28,10 +28,12 @@
 //!
 //! ## One bridge per project, one subnet per bridge
 //!
-//! Containers in a project can reach each other by address; containers
-//! in different projects cannot, because their bridges are separate L2
-//! domains and nothing routes between them. That is the isolation the
-//! separation is for.
+//! Containers in a project can reach each other by address. A bridge is
+//! a separate L2 domain and nothing more: the node forwards, because a
+//! container needs it to reach anything past its bridge, and this said
+//! for two years that nothing routed between them while the node routed
+//! between them. What keeps two projects apart is the kernel's rules,
+//! written by `infra::isolation`.
 
 use std::net::Ipv4Addr;
 use std::path::{Path, PathBuf};
@@ -61,6 +63,12 @@ const IFNAME: &str = "eth0";
 /// using — `172.17` is Docker's, and `10.0` is what half of every
 /// cloud hands out.
 const NETWORK_BASE: [u8; 2] = [10, 42];
+
+/// [`NETWORK_BASE`] as a range: every project's bridge, and the overlay.
+pub const SPACE: &str = "10.42.0.0/16";
+
+/// What every project's bridge is called, before its index.
+pub const BRIDGE_PREFIX: &str = "wd-";
 
 /// Every address `host-local` may allocate in a project's `/24`.
 ///
@@ -154,9 +162,14 @@ impl ProjectNetwork {
             ));
         }
         Ok(Self {
-            bridge: format!("wd-{index}"),
+            bridge: format!("{BRIDGE_PREFIX}{index}"),
             index,
         })
+    }
+
+    pub fn holds(&self, address: Ipv4Addr) -> bool {
+        let [a, b] = NETWORK_BASE;
+        address.octets()[..3] == [a, b, self.index]
     }
 
     /// The CNI network name. Distinct from the bridge name because

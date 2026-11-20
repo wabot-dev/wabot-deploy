@@ -316,6 +316,10 @@ fn migrations() -> Vec<Migration> {
             "0079_allowlist_sets",
             include_str!("../../migrations/0079_allowlist_sets.sql"),
         ),
+        Migration::new(
+            "0080_reach",
+            include_str!("../../migrations/0080_reach.sql"),
+        ),
     ]
 }
 
