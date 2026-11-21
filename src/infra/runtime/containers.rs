@@ -72,6 +72,7 @@ pub async fn run(
     // Whatever is there under this id is the previous deployment.
     remove(client, id).await?;
 
+    let tree = super::images::making_a_container().await;
     super::images::ensure(client, image, credential).await?;
     let config = super::images::config(client, image).await?;
     let diff_ids = super::images::diff_ids(client, image).await?;
@@ -121,6 +122,7 @@ pub async fn run(
             call: "Containers.Create",
             source,
         })?;
+    drop(tree);
 
     // A logging URI, or nothing. containerd's default is to discard,
     // which is right for a container whose configuration somebody else

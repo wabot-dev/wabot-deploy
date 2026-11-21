@@ -1,7 +1,9 @@
 //! What the archive on disk holds, and taking out what is no longer
 //! needed.
 
-use crate::domain::policies::wal::{may_delete, segment_name, segment_of, SEGMENT_BYTES};
+use crate::domain::policies::wal::{
+    is_segment, may_delete, segment_name, segment_of, SEGMENT_BYTES,
+};
 
 /// What an archive holds, and whether it holds it without a gap.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
@@ -113,19 +115,47 @@ pub struct Pruned {
 /// Delete the log no kept backup needs.
 ///
 /// `oldest_needed` is the segment the oldest surviving base backup
-/// starts in — see [`start_of`]. **`None` deletes nothing**, and that is
-/// the whole safety of this: with no backup to anchor it there is no
-/// window, and a pass that "cleaned up" an unanchored archive would
-/// throw away the only thing that could have been restored.
+/// starts in — see [`start_of`]. **`None` deletes nothing**: it is what a
+/// backup whose position cannot be read says, and that backup needs all of
+/// it. An archive no backup anchors at all is bounded by
+/// [`prune_archived_before`] instead.
 ///
 /// Errors on individual files are counted as kept rather than raised. A
 /// segment this could not remove is disk, where a pass that stopped
 /// half-way through would be an archive in a state nobody chose.
 pub fn prune(archive: &std::path::Path, oldest_needed: Option<&str>) -> Pruned {
+    match oldest_needed {
+        Some(oldest) => remove_where(archive, |name| may_delete(name, oldest)),
+        None => Pruned::default(),
+    }
+}
+
+/// For an archive no kept backup anchors: what was archived since `since`,
+/// and nothing before the first of it, so what stays has no hole.
+pub fn prune_archived_before(archive: &std::path::Path, since: i64) -> Pruned {
+    let first_since = std::fs::read_dir(archive)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter(|entry| archived_at(entry).is_some_and(|at| at >= since))
+        .map(|entry| entry.file_name().to_string_lossy().to_string())
+        .filter(|name| is_segment(name))
+        .map(|name| name.strip_suffix(".gz").unwrap_or(&name).to_string())
+        .min();
+    match first_since {
+        Some(first) => remove_where(archive, |name| may_delete(name, &first)),
+        None => remove_where(archive, is_segment),
+    }
+}
+
+fn archived_at(entry: &std::fs::DirEntry) -> Option<i64> {
+    let modified = entry.metadata().ok()?.modified().ok()?;
+    let since_epoch = modified.duration_since(std::time::UNIX_EPOCH).ok()?;
+    Some(since_epoch.as_millis() as i64)
+}
+
+fn remove_where(archive: &std::path::Path, deletable: impl Fn(&str) -> bool) -> Pruned {
     let mut pruned = Pruned::default();
-    let Some(oldest) = oldest_needed else {
-        return pruned;
-    };
     let Ok(entries) = std::fs::read_dir(archive) else {
         return pruned;
     };
@@ -133,7 +163,7 @@ pub fn prune(archive: &std::path::Path, oldest_needed: Option<&str>) -> Pruned {
     for entry in entries.flatten() {
         let name = entry.file_name().to_string_lossy().to_string();
         let size = entry.metadata().map(|meta| meta.len()).unwrap_or(0);
-        if !may_delete(&name, oldest) {
+        if !deletable(&name) {
             pruned.kept += 1;
             continue;
         }
@@ -225,11 +255,9 @@ mod tests {
         assert_eq!(held(branched.path()).gap, None);
     }
 
-    /// **With no backup to anchor it, nothing is deleted.** That is the
-    /// safety this rests on: an archive with no surviving base backup
-    /// has no recovery window at all, and a pass that tidied it would
-    /// throw away the only thing that could ever have been restored —
-    /// while looking like it had done its job.
+    /// A position this was not given cannot be compared against. An
+    /// archive no backup anchors is bounded by age instead, by
+    /// [`prune_archived_before`].
     #[test]
     fn an_archive_with_nothing_to_anchor_it_is_left_alone() {
         let archive = tempfile::tempdir().expect("tempdir");
@@ -273,5 +301,68 @@ mod tests {
             .path()
             .join("000000010000000000000011.00000028.backup")
             .exists());
+    }
+
+    fn archived(archive: &std::path::Path, name: &str, at: u64) {
+        std::fs::File::create(archive.join(name))
+            .expect("create")
+            .set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_millis(at))
+            .expect("set the time");
+    }
+
+    /// node-0, 2026-11-21: backups off, so no backup anchored anything, and
+    /// 742 MB of log sat in two archives that nothing could replay onto.
+    #[test]
+    fn an_archive_no_backup_anchors_keeps_only_what_was_archived_since() {
+        let archive = tempfile::tempdir().expect("tempdir");
+        archived(archive.path(), "000000010000000000000010.gz", 1_000);
+        archived(archive.path(), "000000010000000000000011.gz", 2_000);
+        archived(archive.path(), "000000010000000000000012.gz", 3_000);
+        archived(archive.path(), "000000010000000000000013.gz", 4_000);
+        archived(
+            archive.path(),
+            "000000010000000000000010.00000028.backup",
+            1_000,
+        );
+
+        let pruned = prune_archived_before(archive.path(), 3_000);
+
+        assert_eq!(pruned.removed, 2);
+        assert!(!archive.path().join("000000010000000000000011.gz").exists());
+        assert!(archive.path().join("000000010000000000000012.gz").exists());
+        assert!(archive
+            .path()
+            .join("000000010000000000000010.00000028.backup")
+            .exists());
+    }
+
+    #[test]
+    fn an_archive_nothing_was_added_to_since_keeps_no_segment() {
+        let archive = tempfile::tempdir().expect("tempdir");
+        archived(archive.path(), "000000010000000000000010.gz", 1_000);
+        archived(archive.path(), "000000010000000000000011.gz", 2_000);
+        archived(
+            archive.path(),
+            "000000010000000000000010.00000028.backup",
+            1_000,
+        );
+
+        let pruned = prune_archived_before(archive.path(), 3_000);
+
+        assert_eq!(pruned.removed, 2);
+        assert_eq!(pruned.kept, 1, "the history file stays");
+    }
+
+    #[test]
+    fn what_an_unanchored_archive_keeps_has_no_hole_whatever_the_times_say() {
+        let archive = tempfile::tempdir().expect("tempdir");
+        archived(archive.path(), "000000010000000000000010.gz", 1_000);
+        archived(archive.path(), "000000010000000000000011.gz", 4_000);
+        archived(archive.path(), "000000010000000000000012.gz", 2_000);
+
+        prune_archived_before(archive.path(), 3_000);
+
+        assert!(!archive.path().join("000000010000000000000010.gz").exists());
+        assert!(archive.path().join("000000010000000000000012.gz").exists());
     }
 }

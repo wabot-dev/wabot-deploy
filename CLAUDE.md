@@ -515,6 +515,30 @@ happened:
   its lease for a day, so a collected image gives its disk back once that
   lease has run out: a pass every hour has containerd collect, by deleting
   an empty lease with `sync`, because containerd has no call for it.
+  A push never unpacks — the deploy does — and the same pass gives back the
+  unpacked tree of every image nothing here uses, keeping its blobs for the
+  copies elsewhere that pull them (`docs/architecture.md` §10.23).
+- A repository no plain container runs from keeps its trees: a record there
+  sharing a config with a service's image protects it, which is what an
+  orphan left by the registry changing host did on the VM (`localhost/…`
+  once the node had a domain). The rule should be "a tree only for what is
+  used here, whatever the repository", with "used here" counting releases'
+  references as `clean`'s `wanted` does, because a push to
+  `<project>/<service>` need not match the image field. The orphan's
+  records and blobs stay for ever too; either collection recognises the
+  node's old registry names as the same repository, or Node › Resources
+  lists the repositories no service names, with their size and a button.
+- Placement asks each target node for "one more" per move
+  (`room_for_one_more`), never for what the whole submit leaves there. So
+  it refuses what fits — moving #1 to a node while the same submit drops
+  #2 from it — and admits what does not: two copies moved to one node, or
+  several added to a chosen node, ask once each and all pass. A remote
+  node asks again with its own meters; this node does not. It should count
+  each node's copies of the service after the moves, the additions and the
+  removals, and ask `fits` against what the service holds there now.
+- `images::unpack` logs `unpacked` even when every layer was already
+  there, so each Postgres's `ask` container writes one a minute. It should
+  log only when it applied a layer, and how many.
 - The updater does not rewrite the service file, neither the systemd unit
   nor the OpenRC script; a release that changes either has to say so in
   its notes. `install` rewrites it, and restarts a node whose process

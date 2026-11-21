@@ -343,12 +343,12 @@ pub async fn run(config: Config) -> anyhow::Result<i32> {
                     // number read at startup would go on bounding the
                     // archive by whatever it was before somebody changed
                     // it — for as long as the process lived.
-                    let keep_days = crate::infra::backup::plan::plan(&database).await.keep_days;
+                    let plan = crate::infra::backup::plan::plan(&database).await;
                     let (removed, freed) = tokio::task::spawn_blocking(move || {
                         crate::infra::backup::sweep(
                             &data_dir,
                             crate::infra::clock::now_ms(),
-                            keep_days,
+                            &plan,
                         )
                     })
                     .await

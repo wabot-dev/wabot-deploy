@@ -376,6 +376,46 @@ pub async fn label(client: &Containerd, digest: &str, key: &str, value: &str) ->
         })
 }
 
+pub async fn has_label(client: &Containerd, digest: &str, key: &str) -> ClientResult<bool> {
+    let response = ContentClient::new(client.channel())
+        .info(client.request(InfoRequest {
+            digest: digest.to_string(),
+        }))
+        .await;
+
+    match response {
+        Ok(response) => Ok(response
+            .into_inner()
+            .info
+            .is_some_and(|info| info.labels.contains_key(key))),
+        Err(status) if status.code() == tonic::Code::NotFound => Ok(false),
+        Err(source) => Err(ClientError::Call {
+            call: "Content.Info",
+            source,
+        }),
+    }
+}
+
+/// A label named in the mask and absent from the map is deleted.
+pub async fn unlabel(client: &Containerd, digest: &str, key: &str) -> ClientResult<()> {
+    ContentClient::new(client.channel())
+        .update(client.request(UpdateRequest {
+            info: Some(Info {
+                digest: digest.to_string(),
+                ..Default::default()
+            }),
+            update_mask: Some(prost_types::FieldMask {
+                paths: vec![format!("labels.{key}")],
+            }),
+        }))
+        .await
+        .map(|_| ())
+        .map_err(|source| ClientError::Call {
+            call: "Content.Update",
+            source,
+        })
+}
+
 /// The most one message carries, well under containerd's 16 MB ceiling.
 const PIECE: usize = 1024 * 1024;
 

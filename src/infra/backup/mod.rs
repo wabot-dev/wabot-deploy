@@ -589,9 +589,9 @@ fn at(entry: &std::fs::DirEntry) -> Option<i64> {
 ///
 /// Returns what it freed, so the caller can say something on the passes
 /// where it acted and nothing on the many where it did not.
-pub fn sweep(data_dir: &Path, now: i64, keep_days: i64) -> (usize, u64) {
+pub fn sweep(data_dir: &Path, now: i64, plan: &plan::Plan) -> (usize, u64) {
     let backups = taken(data_dir);
-    let (keep, drop) = keeping(&backups, now, keep_days);
+    let (keep, drop) = keeping(&backups, now, plan.keep_days);
 
     let mut freed = 0;
     let mut removed = 0;
@@ -607,46 +607,60 @@ pub fn sweep(data_dir: &Path, now: i64, keep_days: i64) -> (usize, u64) {
         }
     }
 
-    // What the oldest surviving backup needs, per database. Each
-    // archive is asked about its own: two databases have two timelines
-    // and two positions, and one number for both would be right for one
-    // of them by accident.
-    //
-    // **Only the archive the copy names as its own.** A copy that names
-    // no service is pruned against nothing: it may be a predecessor that
-    // had the database's name, and its position says nothing about the
-    // log a database made since has written — a position further along
-    // than all of it would take the lot.
-    let Some((oldest, manifest)) = keep
-        .last()
-        .and_then(|path| backups.iter().find(|(taken, _)| taken == *path))
-    else {
-        return (removed, freed);
-    };
+    let kept: Vec<&(PathBuf, Manifest)> = keep
+        .iter()
+        .filter_map(|path| backups.iter().find(|(taken, _)| taken == *path))
+        .collect();
+    // A copy that names no service may be of any database here, and its
+    // position is unknown to every archive, so none is bounded by age.
+    let unnamed = kept.iter().any(|(_, manifest)| {
+        manifest
+            .volumes
+            .iter()
+            .any(|copied| copied.service.is_none())
+    });
+    // The backup a restore to the window's start replays from may be one
+    // interval older than the window, and sent elsewhere where this cannot see it.
+    let unanchored_since =
+        now - (plan.keep_days.max(1) + plan.cadence.interval_days()) * 24 * 60 * 60 * 1000;
 
-    for copied in &manifest.volumes {
-        let Some(service) = copied.service.as_deref() else {
-            continue;
+    let archives = std::fs::read_dir(data_dir.join("wal"))
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_dir()));
+    for archive in archives {
+        let service = archive.file_name().to_string_lossy().to_string();
+        let anchor = kept.iter().rev().find_map(|(path, manifest)| {
+            manifest
+                .volumes
+                .iter()
+                .find(|copied| copied.service.as_deref() == Some(service.as_str()))
+                .map(|copied| (path, copied))
+        });
+        let pruned = match anchor {
+            // A copy with no `backup_manifest` needs everything: `prune` deletes nothing for it.
+            Some((path, copied)) => {
+                let needed = std::fs::read_to_string(
+                    path.join("volumes")
+                        .join(&copied.container)
+                        .join("backup_manifest"),
+                )
+                .ok()
+                .and_then(|manifest| crate::domain::policies::wal::start_of(&manifest))
+                .map(|(timeline, lsn)| crate::domain::policies::wal::segment_name(timeline, lsn));
+                crate::infra::repositories::wal_archive::prune(&archive.path(), needed.as_deref())
+            }
+            None if unnamed => continue,
+            None => crate::infra::repositories::wal_archive::prune_archived_before(
+                &archive.path(),
+                unanchored_since,
+            ),
         };
-        // No manifest is "needs everything" — the one answer that
-        // cannot put a hole in a window. `prune` takes `None` and does
-        // nothing with it.
-        let needed = std::fs::read_to_string(
-            oldest
-                .join("volumes")
-                .join(&copied.container)
-                .join("backup_manifest"),
-        )
-        .ok()
-        .and_then(|manifest| crate::domain::policies::wal::start_of(&manifest))
-        .map(|(timeline, lsn)| crate::domain::policies::wal::segment_name(timeline, lsn));
-
-        let archive = crate::infra::deploy::database::archive_dir(data_dir, service);
-        let pruned = crate::infra::repositories::wal_archive::prune(&archive, needed.as_deref());
         if pruned.removed > 0 {
             tracing::info!(
-                database = %copied.container, removed = pruned.removed, freed = pruned.freed,
-                kept = pruned.kept, "archived log pruned"
+                %service, removed = pruned.removed, freed = pruned.freed,
+                kept = pruned.kept, anchored = anchor.is_some(), "archived log pruned"
             );
             removed += pruned.removed;
             freed += pruned.freed;
@@ -1744,11 +1758,15 @@ mod tests {
     }
 
     fn backed_up(data: &Path, taken_at: i64, service: Option<&str>) {
+        backed_up_as(data, "b1", taken_at, service);
+    }
+
+    fn backed_up_as(data: &Path, name: &str, taken_at: i64, service: Option<&str>) {
         let backup = data
             .join("backups")
             .join("nodes")
             .join("nd-test")
-            .join("b1");
+            .join(name);
         let volume = backup.join("volumes").join("shop.orders");
         std::fs::create_dir_all(&volume).expect("mkdir");
         std::fs::write(
@@ -1769,10 +1787,16 @@ mod tests {
         let archive = crate::infra::deploy::database::archive_dir(data, service);
         std::fs::create_dir_all(&archive).expect("mkdir");
         for segment in 1..=0x15u64 {
-            std::fs::write(archive.join(format!("00000001{segment:016X}.gz")), b"x")
-                .expect("write");
+            archived_at(&archive, &format!("00000001{segment:016X}.gz"), 1_000);
         }
         archive
+    }
+
+    fn archived_at(archive: &Path, name: &str, at: i64) {
+        std::fs::File::create(archive.join(name))
+            .expect("create")
+            .set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_millis(at as u64))
+            .expect("set the time");
     }
 
     #[test]
@@ -1782,7 +1806,7 @@ mod tests {
         backed_up(data.path(), now - 1_000, Some("svc-orders"));
         let archive = archived(data.path(), "svc-orders");
 
-        sweep(data.path(), now, KEEP_DAYS);
+        sweep(data.path(), now, &plan::Plan::default());
 
         assert!(!archive.join("000000010000000000000012.gz").exists());
         assert!(archive.join("000000010000000000000013.gz").exists());
@@ -1799,9 +1823,64 @@ mod tests {
         backed_up(data.path(), now - 1_000, None);
         let archive = archived(data.path(), "svc-orders");
 
-        sweep(data.path(), now, KEEP_DAYS);
+        sweep(data.path(), now, &plan::Plan::default());
 
         assert_eq!(std::fs::read_dir(&archive).expect("read").count(), 0x15);
+    }
+
+    #[test]
+    fn a_sweep_prunes_an_archive_against_the_oldest_backup_that_names_it() {
+        let data = tempfile::tempdir().expect("tempdir");
+        let now = 10 * 24 * 60 * 60 * 1000;
+        backed_up_as(data.path(), "b0", now - 2_000, Some("svc-other"));
+        backed_up_as(data.path(), "b1", now - 1_000, Some("svc-orders"));
+        let archive = archived(data.path(), "svc-orders");
+
+        sweep(data.path(), now, &plan::Plan::default());
+
+        assert!(!archive.join("000000010000000000000012.gz").exists());
+        assert!(archive.join("000000010000000000000013.gz").exists());
+    }
+
+    /// node-0, 2026-11-21: backups off, and 742 MB of log in the archives of
+    /// two stopped databases that no backup would ever anchor.
+    #[test]
+    fn a_sweep_bounds_by_age_an_archive_no_backup_anchors() {
+        let data = tempfile::tempdir().expect("tempdir");
+        let day = 24 * 60 * 60 * 1000;
+        let now = 30 * day;
+        let archive = crate::infra::deploy::database::archive_dir(data.path(), "svc-orders");
+        std::fs::create_dir_all(&archive).expect("mkdir");
+        archived_at(&archive, "000000010000000000000010.gz", now - 9 * day);
+        archived_at(&archive, "000000010000000000000011.gz", now - 8 * day);
+        archived_at(&archive, "000000010000000000000012.gz", now - 6 * day);
+
+        sweep(data.path(), now, &plan::Plan::default());
+
+        assert!(!archive.join("000000010000000000000011.gz").exists());
+        assert!(archive.join("000000010000000000000012.gz").exists());
+    }
+
+    /// The backup that anchors the start of the window may have been sent
+    /// elsewhere, and on a weekly schedule it is up to a week older than it.
+    #[test]
+    fn an_unanchored_archive_keeps_one_interval_of_the_schedule_beyond_the_window() {
+        let data = tempfile::tempdir().expect("tempdir");
+        let day = 24 * 60 * 60 * 1000;
+        let now = 30 * day;
+        let archive = crate::infra::deploy::database::archive_dir(data.path(), "svc-orders");
+        std::fs::create_dir_all(&archive).expect("mkdir");
+        archived_at(&archive, "000000010000000000000010.gz", now - 15 * day);
+        archived_at(&archive, "000000010000000000000011.gz", now - 13 * day);
+        let weekly = plan::Plan {
+            cadence: plan::Cadence::Weekly,
+            ..plan::Plan::default()
+        };
+
+        sweep(data.path(), now, &weekly);
+
+        assert!(!archive.join("000000010000000000000010.gz").exists());
+        assert!(archive.join("000000010000000000000011.gz").exists());
     }
 
     /// **The newest backup at or before the moment, never the newest of

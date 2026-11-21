@@ -233,36 +233,6 @@ pub async fn put(
         remember(state, name, reference, &digest, size, &media_type).await?;
     }
 
-    // Unpacked before anything is deployed from it. A push leaves
-    // blobs; a container needs a snapshot, and the failure without
-    // this reads as a corrupt image rather than a missing step.
-    //
-    // Only what arrives under a tag. What arrives by digest is a manifest
-    // an index will list — every platform's and the attestation's — and
-    // unpacking each laid another machine's layers on this one's disk, and
-    // a snapshot unpacked is now held for as long as its image is.
-    let unpacked = match reference.starts_with("sha256:") {
-        true => Ok(()),
-        false => crate::infra::runtime::images::unpack(&client, &pinned).await,
-    };
-    if let Err(error) = unpacked {
-        // Not fatal to the push: the bytes are stored and correct, and
-        // a deployment can unpack later. Worth saying, because a
-        // deployment that then fails would otherwise be the first
-        // anybody hears of it.
-        // The deploy unpacks too — `images::ensure` asks whether an image
-        // is *usable* rather than merely present, which is what a pushed
-        // one is not. Before that, this warning was the only trace and
-        // what somebody saw was a deploy refusing with `no unpacked
-        // layer`: true, and nothing they could act on. Reported by Jorge,
-        // whose first push to his own service could not be deployed.
-        tracing::warn!(
-            image = %pinned, %error,
-            "received but not unpacked — the deploy will try again, and if it fails the reason \
-             lands on the service"
-        );
-    }
-
     let released = release(state, pusher, name, reference, &digest).await?;
 
     // On the tag, which comes last: BuildKit sends each platform's manifest

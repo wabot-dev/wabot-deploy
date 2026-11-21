@@ -1178,3 +1178,49 @@ servidor en marcha en menos de quince minutos, sin reiniciarlo. En las
 VMs, el dueño reemitió las dos bases al arrancar y mandó la suya al otro
 nodo, y los tres `verify-full` pasaron con el fichero de dos
 autoridades.
+
+### 10.23 Lo que nadie corre aquí no se desempaqueta aquí
+
+node-0 llegó a 16 GB usados de 20 el 2026-11-21, y la recolección de
+imágenes hacía lo que decía: dos imágenes por servicio. Casi la mitad era
+de `nubo-testing`, que corre solo en node-l1. node-0 es su dueño y su
+registro, así que guarda sus blobs, que node-l1 descarga cada vez que
+arranca una copia. Pero el push también las desempaquetaba: unos 1,6 GB de
+snapshots por imagen, porque cada build cambia la primera capa y con ella
+todos los chain IDs de encima. La etiqueta `gc.ref.snapshot` del config
+mantenía ese árbol mientras existiera la imagen, y el lease de 24 h del
+push lo mantenía un día más después de recogida. Eran 4,9 GB que node-0
+nunca iba a usar.
+
+Ahora el push no desempaqueta. Lo hace `images::ensure` antes de cada
+despliegue, que ya lo hacía porque el del push no era fiable. Y la pasada
+de cada hora suelta la etiqueta de toda imagen de un repositorio del que
+corre un contenedor normal y que nada aquí usa: ni una copia de un
+servicio, ni un contenedor. Los blobs se quedan. Si una copia vuelve, el
+despliegue rearma el árbol desde ellos sin descargar nada: en la VM, 0,13 s
+para whoami. Tres reglas lo hacen seguro:
+
+- **El árbol es del config, no del registro.** `nubo-testing`, su sidekiq
+  y su sidekiq-llm son tres repositorios con un digest. Un config que
+  comparte alguna imagen todavía usada aquí se queda con su árbol.
+- **Nada suelta un árbol mientras se crea un contenedor.** Entre el
+  desempaquetado y `Containers.Create`, la etiqueta es lo único que
+  sostiene el árbol. `containers::run` toma un candado de lectura desde
+  `ensure` hasta crear el contenedor, y la pasada lo intenta en escritura
+  y, si está ocupado, espera a la hora siguiente en vez de frenar un
+  despliegue detrás de una descarga.
+- **Un repositorio del que no corre ningún contenedor normal no se toca**,
+  igual que en la recolección de imágenes. En la VM eso dejó un árbol
+  protegido por un repositorio huérfano, `localhost/pushes/whoami`, de
+  antes de que el nodo tuviera dominio, con el mismo digest.
+
+El mismo día salió el WAL. Archivar viene encendido y los backups
+apagados, y la poda solo sabía medir contra un backup base: sin ninguno
+no borraba nada. node-0 tenía 742 MB en los archivos de dos bases
+detenidas, que nada podía reproducir sobre ningún backup. Ahora un
+archivo que ningún backup conservado ancla guarda lo archivado dentro de
+la ventana más un intervalo del calendario, porque el backup que ancla
+el principio de la ventana puede haberse enviado a otro sitio, donde esta
+pasada no lo ve. Lo de antes se borra, nunca dejando un hueco. Y cada
+archivo se mide contra el backup conservado más antiguo que lo nombra, no
+solo contra el más antiguo de todos.

@@ -723,7 +723,9 @@ Both directions are on the database's page, and three of the four
 answers it can give say "not what you think". The one worth its own red
 badge is log arriving with no base backup to replay it onto: the archive
 fills, the disk goes down, every reading is normal, and it recovers
-nothing.
+nothing. Since 2026-11-21 such an archive keeps what was archived within
+the window and one interval of the schedule, because the backup anchoring
+its start may have been sent elsewhere, and nothing older.
 
 ### Five things the node taught, and no test could
 

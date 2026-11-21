@@ -16,7 +16,7 @@ use wabot::sqlite::SqliteDatabase;
 use crate::domain::entities::service::{Kind, Service};
 use crate::domain::policies::images::{self, Held};
 use crate::domain::values::image_reference::ImageReference;
-use crate::infra::repositories::{releases, services};
+use crate::infra::repositories::{releases, replicas, services};
 use crate::infra::runtime::client::{ClientError, Containerd};
 use crate::infra::runtime::{containers, images as runtime};
 
@@ -47,9 +47,66 @@ pub async fn sweep(database: &SqliteDatabase) {
     let Ok(client) = Containerd::connect().await else {
         return;
     };
+    let forgotten = forget_trees(database, &client).await;
+    if forgotten > 0 {
+        tracing::info!(forgotten, "gave back the trees of images no copy here runs");
+    }
     if let Err(error) = crate::infra::runtime::leases::collect(&client).await {
         tracing::warn!(%error, "could not have containerd collect");
     }
+}
+
+/// The owner keeps the blobs of a service whose copies run elsewhere, because
+/// they pull from it; the tree unpacked from them is only disk here.
+async fn forget_trees(database: &SqliteDatabase, client: &Containerd) -> usize {
+    let Some(_quiet) = runtime::no_container_being_made() else {
+        return 0;
+    };
+    let (Ok(all), Ok(here)) = (
+        services::all(database, None).await,
+        replicas::here(database).await,
+    ) else {
+        return 0;
+    };
+    let (Ok(made_from), Ok(listed)) =
+        (containers::images(client).await, runtime::all(client).await)
+    else {
+        return 0;
+    };
+
+    let copies_here: HashSet<&str> = here
+        .iter()
+        .map(|replica| replica.service_id.as_str())
+        .collect();
+    let mut used_here: HashSet<String> = all
+        .iter()
+        .filter(|service| copies_here.contains(service.id.as_str()))
+        .filter_map(|service| repository_of(&service.image))
+        .collect();
+    used_here.extend(made_from.iter().filter_map(|image| repository_of(image)));
+    let containers_run_from: HashSet<String> = all
+        .iter()
+        .filter(|service| service.kind == Kind::Container)
+        .filter_map(|service| repository_of(&service.image))
+        .collect();
+
+    let mut records = Vec::new();
+    for record in &listed {
+        // An image whose config cannot be read here was never unpacked here.
+        if let Ok(config) = runtime::config_digest(client, &record.reference).await {
+            records.push((repository_of(&record.reference), config));
+        }
+    }
+
+    let mut forgotten = 0;
+    for config in images::trees_nobody_here_needs(&records, &containers_run_from, &used_here) {
+        match runtime::forget_tree(client, config).await {
+            Ok(true) => forgotten += 1,
+            Ok(false) => {}
+            Err(error) => tracing::warn!(%config, %error, "could not give back a tree"),
+        }
+    }
+    forgotten
 }
 
 /// The repository of `image`, collected.

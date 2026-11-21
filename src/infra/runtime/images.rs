@@ -248,7 +248,7 @@ pub async fn pull(
 /// it, and commit it under the chain ID the runtime will look for.
 /// Roughly forty lines, against an API that is doing exactly what it
 /// says.
-pub async fn unpack(client: &Containerd, reference: &str) -> ClientResult<()> {
+async fn unpack(client: &Containerd, reference: &str) -> ClientResult<()> {
     use containerd_client::services::v1::diff_client::DiffClient;
     use containerd_client::services::v1::ApplyRequest;
 
@@ -336,10 +336,7 @@ pub async fn unpack(client: &Containerd, reference: &str) -> ClientResult<()> {
         super::content::label(
             client,
             manifest.config().digest().as_ref(),
-            &format!(
-                "containerd.io/gc.ref.snapshot.{}",
-                super::snapshots::SNAPSHOTTER
-            ),
+            &tree_label(),
             &top,
         )
         .await?;
@@ -351,6 +348,42 @@ pub async fn unpack(client: &Containerd, reference: &str) -> ClientResult<()> {
         "unpacked"
     );
     Ok(())
+}
+
+fn tree_label() -> String {
+    format!(
+        "containerd.io/gc.ref.snapshot.{}",
+        super::snapshots::SNAPSHOTTER
+    )
+}
+
+/// Between an unpack and the container that holds its tree, the config's
+/// label is the only thing keeping the tree, so it is never taken away then.
+static TREES: tokio::sync::RwLock<()> = tokio::sync::RwLock::const_new(());
+
+pub async fn making_a_container() -> tokio::sync::RwLockReadGuard<'static, ()> {
+    TREES.read().await
+}
+
+/// `None` while a container is being made: what forgets trees waits for the
+/// next pass rather than holding up a deployment behind a pull.
+pub fn no_container_being_made() -> Option<tokio::sync::RwLockWriteGuard<'static, ()>> {
+    TREES.try_write().ok()
+}
+
+pub async fn config_digest(client: &Containerd, reference: &str) -> ClientResult<String> {
+    let target = image_target(client, reference).await?;
+    Ok(resolve_config_descriptor(client, &target).await?.digest)
+}
+
+/// The blobs stay, so the image can be unpacked from them again here.
+pub async fn forget_tree(client: &Containerd, config: &str) -> ClientResult<bool> {
+    let label = tree_label();
+    if !super::content::has_label(client, config, &label).await? {
+        return Ok(false);
+    }
+    super::content::unlabel(client, config, &label).await?;
+    Ok(true)
 }
 
 /// The platform manifest for this target, following an index when
@@ -583,24 +616,9 @@ pub async fn ensure(
     credential: Option<&Credential>,
 ) -> ClientResult<bool> {
     if exists(client, reference).await? {
-        // **Present is not the same as usable.** `pull` unpacks as part
-        // of the transfer, so for a pulled image these two questions have
-        // the same answer — and for a *pushed* one they do not. A push
-        // puts blobs in the content store through the registry API, and
-        // the only thing that unpacks them is a line in the push handler
-        // whose failure is a warning nobody reads. The deploy then failed
-        // with `no unpacked layer …`, which is true and unactionable.
-        //
-        // So the image is unpacked here too, and `unpack` is convergent:
-        // it skips every layer whose snapshot already exists, so the
-        // ordinary case costs one lookup per layer and writes nothing.
-        //
-        // Reported by Jorge, whose first successful push to his own
-        // service could not be deployed. The push-time unpack logged
-        // success for twelve layers and none of their chain ids existed
-        // afterwards — which is a thing to understand separately, and not
-        // a reason for a deploy to depend on somebody else having done
-        // this.
+        // A pushed image is only blobs, and this is where it becomes a tree:
+        // never at the push, so a node whose copies all run elsewhere holds
+        // none, and a tree given back is laid down again from the blobs here.
         unpack(client, reference).await?;
         return Ok(false);
     }
@@ -832,6 +850,14 @@ fn is_index(media_type: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::Credential;
+
+    #[tokio::test]
+    async fn no_tree_is_given_back_while_a_container_is_being_made() {
+        let making = super::making_a_container().await;
+        assert!(super::no_container_being_made().is_none());
+        drop(making);
+        assert!(super::no_container_being_made().is_some());
+    }
 
     /// The header a registry reads. Built here rather than inline so
     /// this test pins it: `wg`-style base64 of `user:secret`, which is

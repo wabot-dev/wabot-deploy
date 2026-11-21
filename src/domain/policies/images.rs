@@ -1,6 +1,6 @@
 //! Which images of a service a node keeps.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 
 /// How many images of one service a node keeps when nobody has said.
 pub const KEPT_BY_DEFAULT: usize = 2;
@@ -107,6 +107,34 @@ pub fn surplus(
             .map(|(digest, _)| digest.to_string())
             .collect(),
     }
+}
+
+/// The configs whose unpacked trees nothing on this node needs.
+///
+/// `records` is every image here, by its repository and its config. A tree
+/// goes when its repository is one a plain container runs from and nothing
+/// here uses it — and stays while any image still used here shares its
+/// config, because the tree is the config's, not the record's.
+pub fn trees_nobody_here_needs<'a>(
+    records: &'a [(Option<String>, String)],
+    containers_run_from: &HashSet<String>,
+    used_here: &HashSet<String>,
+) -> BTreeSet<&'a str> {
+    let idle = |repository: &Option<String>| {
+        repository.as_ref().is_some_and(|repository| {
+            containers_run_from.contains(repository) && !used_here.contains(repository)
+        })
+    };
+    let needed: HashSet<&str> = records
+        .iter()
+        .filter(|(repository, _)| !idle(repository))
+        .map(|(_, config)| config.as_str())
+        .collect();
+    records
+        .iter()
+        .filter(|(repository, config)| idle(repository) && !needed.contains(config.as_str()))
+        .map(|(_, config)| config.as_str())
+        .collect()
 }
 
 #[cfg(test)]
@@ -261,5 +289,64 @@ mod tests {
 
         assert_eq!(surplus.dropped, ["sha256:old"]);
         assert_eq!(surplus.forget, [format!("{REPO}@sha256:old")]);
+    }
+
+    fn repositories(names: &[&str]) -> HashSet<String> {
+        names.iter().map(|name| name.to_string()).collect()
+    }
+
+    fn record(repository: &str, config: &str) -> (Option<String>, String) {
+        (Some(repository.to_string()), config.to_string())
+    }
+
+    #[test]
+    fn a_repository_whose_copies_all_run_elsewhere_gives_back_its_trees() {
+        let records = [
+            record("acr/nubo/app", "sha256:config-1"),
+            record("acr/nubo/app", "sha256:config-2"),
+            record("acr/shop/web", "sha256:config-3"),
+        ];
+
+        let forgotten = trees_nobody_here_needs(
+            &records,
+            &repositories(&["acr/nubo/app", "acr/shop/web"]),
+            &repositories(&["acr/shop/web"]),
+        );
+
+        assert_eq!(
+            forgotten.into_iter().collect::<Vec<_>>(),
+            ["sha256:config-1", "sha256:config-2"]
+        );
+    }
+
+    /// nubo-testing, its sidekiq and its sidekiq-llm are three repositories
+    /// pushed with one digest: one config, one tree.
+    #[test]
+    fn a_tree_another_repository_still_uses_here_is_kept() {
+        let records = [
+            record("acr/nubo/app", "sha256:shared"),
+            record("acr/nubo/app-worker", "sha256:shared"),
+        ];
+
+        let forgotten = trees_nobody_here_needs(
+            &records,
+            &repositories(&["acr/nubo/app", "acr/nubo/app-worker"]),
+            &repositories(&["acr/nubo/app-worker"]),
+        );
+
+        assert!(forgotten.is_empty(), "{forgotten:?}");
+    }
+
+    #[test]
+    fn an_image_no_plain_container_runs_from_keeps_its_tree() {
+        let records = [
+            record("docker.io/library/postgres", "sha256:engine"),
+            (None, "sha256:unnamed".to_string()),
+        ];
+
+        let forgotten =
+            trees_nobody_here_needs(&records, &repositories(&["acr/nubo/app"]), &HashSet::new());
+
+        assert!(forgotten.is_empty(), "{forgotten:?}");
     }
 }

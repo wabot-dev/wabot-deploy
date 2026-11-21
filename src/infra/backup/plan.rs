@@ -68,6 +68,14 @@ impl Cadence {
         }
     }
 
+    pub fn interval_days(self) -> i64 {
+        match self {
+            Cadence::Off => 0,
+            Cadence::Daily => 1,
+            Cadence::Weekly => 7,
+        }
+    }
+
     /// Anything this binary does not know is off.
     ///
     /// A value written by a newer version, or by a hand in `sqlite3`,
