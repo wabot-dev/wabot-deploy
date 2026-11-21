@@ -21,11 +21,13 @@ pub struct Logs<'a> {
     /// read. `slot` is `None` only when there is nothing to read.
     pub readable: &'a [u32],
     pub slot: Option<u32>,
-    /// The node running the chosen copy, when it is not this one.
-    /// **Every reading branches on it**: a log fetched over the network
-    /// has no offset to follow from, nothing to search locally, and no
+    /// The node running the chosen copy, when it is not this one. A log
+    /// fetched over the network has nothing to search locally and no
     /// generations this node can count.
     pub holder: Option<&'a str>,
+    /// Whether the panel follows: always for a copy here, and for one
+    /// elsewhere when its node is new enough to send what comes next.
+    pub follows: bool,
     /// Every copy is somewhere else and none has said where yet.
     pub elsewhere: bool,
 
@@ -41,9 +43,8 @@ pub struct Logs<'a> {
     /// truth is that nobody was listening.
     pub kept: bool,
     pub text: &'a str,
-    /// Where the island resumes from. Zero for a reading that came over
-    /// the network: a number counted there is not a place in anything
-    /// here.
+    /// Where the island resumes from: a place in the file of whichever
+    /// node holds the copy.
     pub from: u64,
     /// The far node's own words. Never paraphrased — this node cannot
     /// see that machine.
@@ -110,21 +111,13 @@ pub fn render<'a>(page: &'a Logs<'a>) -> impl Renderable + 'a {
                         } @else {
                             <p class="card-label">(t("Output"))</p>
                         }
-                        @if page.holder.is_some() {
-                            // A copy on another machine does not follow, and
-                            // for a plainer reason: this is one answer to one
-                            // question, fetched when the page was rendered.
-                            // Reloading asks again.
+                        @if !page.follows {
+                            // A node too old to send what comes next: this is
+                            // one answer to one question, fetched when the page
+                            // was rendered. Reloading asks again.
                             <span class="tile-detail">
                                 (t("Read from the node running it — reload to ask again"))
                             </span>
-                        } @else if page.everything {
-                            // The whole view does not follow: its offsets are
-                            // into a concatenation, so resuming from one would
-                            // read the wrong bytes. Said plainly rather than
-                            // leaving a stream label that lies.
-                            <a class="btn btn-ghost btn-sm"
-                               href=(format!("{path}?slot={slot}"))>(t("Follow what it is saying now"))</a>
                         } @else {
                             // Written by the island, and rendered whether or
                             // not scripting is on: a label that only appears
@@ -223,10 +216,7 @@ pub fn render<'a>(page: &'a Logs<'a>) -> impl Renderable + 'a {
     }
     }</pre>
                         }
-                    } @else if page.holder.is_some() {
-                        // No `data-logs-out`: the island polls this node's own
-                        // endpoint, and there is nothing of this copy here to
-                        // poll for.
+                    } @else if !page.follows {
                         <pre class="log" data-logs-end>(page.text)</pre>
                     } @else {
                         <pre class="log" data-logs-out data-logs-end

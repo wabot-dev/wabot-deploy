@@ -447,71 +447,46 @@ impl RemoteNodeRestController {
     #[post("/replica-log")]
     #[raw]
     async fn replica_log(&self, request: Request) -> RestResult<Response> {
-        let Some(secret) = bearer(&request).map(str::to_string) else {
-            return Ok(refuse(
-                StatusCode::UNAUTHORIZED,
-                "this endpoint needs a secret this node knows you by",
-            ));
-        };
-        let node = match caller(&self.database, &secret).await {
-            Ok(node) => node,
+        let (node, bytes) = match self.caller_and_body(request).await {
+            Ok(asked) => asked,
             Err(response) => return Ok(response),
-        };
-        let Ok(bytes) = wabot::rest::axum::body::to_bytes(request.into_body(), MAX_BODY).await
-        else {
-            return Ok(refuse(StatusCode::BAD_REQUEST, "that request is too large"));
         };
         let Ok(asked) = serde_json::from_slice::<LogWanted>(&bytes) else {
             return Ok(refuse(StatusCode::BAD_REQUEST, "that is not a log request"));
         };
-
-        // By **name**, which is the vocabulary both ends already share:
-        // an errand carries the project's and the service's names, a
-        // report names a replica by them, and neither node has ever seen
-        // the other's ids.
-        let projects = match crate::infra::repositories::projects::all(&self.database).await {
-            Ok(projects) => projects,
-            Err(error) => return Ok(unreadable_platform(error)),
-        };
-        let Some(project) = projects
-            .into_iter()
-            .find(|project| project.name == asked.project)
-        else {
-            return Ok(refuse(StatusCode::NOT_FOUND, "no such project here"));
-        };
-        let services = match crate::infra::repositories::services::all(
-            &self.database,
-            Some(&project.id),
-        )
-        .await
+        let container = match self
+            .placed_by(&node, &asked.project, &asked.service, asked.slot)
+            .await
         {
-            Ok(services) => services,
-            Err(error) => return Ok(unreadable_platform(error)),
+            Ok(container) => container,
+            Err(response) => return Ok(response),
         };
-        let Some(service) = services
-            .into_iter()
-            .find(|service| service.name == asked.service)
-        else {
-            return Ok(refuse(StatusCode::NOT_FOUND, "no such service here"));
-        };
-        if service.origin_node_id.as_deref() != Some(node.as_str()) {
-            // Said rather than answered with a 404: "that is not yours"
-            // is a different thing from "there is nothing here", and the
-            // node asking can act on the first.
-            return Ok(refuse(
-                StatusCode::FORBIDDEN,
-                "that service was not placed here by you",
-            ));
-        }
 
-        let container = crate::domain::entities::replica::container_id_for(
-            &project.slug,
-            &service.slug,
-            asked.slot,
-        );
         let data_dir = &self.config.node.data_dir;
-        // The whole kept history, or the live file. The same two readings
-        // the local page offers, asked for the same way.
+        // A copy that has never written anything, or one started before
+        // its output was being kept. Not an error, and the difference
+        // between the two is not this node's to explain — the page that
+        // asked says it.
+        let none = || Ok(refuse(StatusCode::NOT_FOUND, "no log for that copy here"));
+        // A reading that is followed carries where it ended, and opens on
+        // the window the local page opens on rather than on the bare tail.
+        if asked.follow {
+            let read = match asked.all {
+                true => crate::infra::deploy::logs::kept(data_dir, &container, MAX_LOG)
+                    .or_else(|| crate::infra::deploy::logs::read_from(data_dir, &container, 0)),
+                false => crate::infra::deploy::logs::read_from(data_dir, &container, 0),
+            };
+            return match read {
+                Some(chunk) => Ok(json(
+                    StatusCode::OK,
+                    &LogRead {
+                        text: chunk.text,
+                        next: chunk.next,
+                    },
+                )),
+                None => none(),
+            };
+        }
         let text = match asked.all {
             true => crate::infra::deploy::logs::history(data_dir, &container, MAX_LOG)
                 .or_else(|| crate::infra::deploy::logs::tail(data_dir, &container, MAX_LOG)),
@@ -523,12 +498,50 @@ impl RemoteNodeRestController {
                 .header(header::CONTENT_TYPE, "text/plain; charset=utf-8")
                 .body(Body::from(text))
                 .unwrap_or_else(|_| refuse(StatusCode::INTERNAL_SERVER_ERROR, "could not answer"))),
-            // A copy that has never written anything, or one started
-            // before its output was being kept. Not an error, and the
-            // difference between the two is not this node's to explain —
-            // the page that asked says it.
-            None => Ok(refuse(StatusCode::NOT_FOUND, "no log for that copy here")),
+            None => none(),
         }
+    }
+
+    /// The same log, following: what the copy says from `from` on, for as
+    /// long as the node that placed it listens.
+    ///
+    /// A stream rather than a reading asked again every second, because
+    /// each of those would be a TLS handshake over the overlay and a walk
+    /// of the service table on both machines for a line or none. Guarded
+    /// by the same question as [`Self::replica_log`].
+    #[post("/replica-log/live")]
+    #[raw]
+    async fn replica_log_live(&self, request: Request) -> RestResult<Response> {
+        let (node, bytes) = match self.caller_and_body(request).await {
+            Ok(asked) => asked,
+            Err(response) => return Ok(response),
+        };
+        let Ok(asked) = serde_json::from_slice::<LogFollowed>(&bytes) else {
+            return Ok(refuse(StatusCode::BAD_REQUEST, "that is not a log request"));
+        };
+        let container = match self
+            .placed_by(&node, &asked.project, &asked.service, asked.slot)
+            .await
+        {
+            Ok(container) => container,
+            Err(response) => return Ok(response),
+        };
+
+        use futures_util::StreamExt;
+        let events = crate::infra::deploy::logs::follow(
+            self.config.node.data_dir.clone(),
+            container,
+            asked.from,
+        )
+        .map(|event| {
+            Ok::<_, std::convert::Infallible>(wabot::rest::axum::body::Bytes::from(event))
+        });
+        Ok(Response::builder()
+            .status(StatusCode::OK)
+            .header(header::CONTENT_TYPE, "text/event-stream")
+            .header(header::CACHE_CONTROL, "no-cache")
+            .body(Body::from_stream(events))
+            .unwrap_or_else(|_| refuse(StatusCode::INTERNAL_SERVER_ERROR, "could not answer")))
     }
 
     /// What the caller says about the replicas this node placed there.
@@ -895,6 +908,65 @@ impl RemoteNodeRestController {
 }
 
 impl RemoteNodeRestController {
+    async fn caller_and_body(
+        &self,
+        request: Request,
+    ) -> Result<(String, wabot::rest::axum::body::Bytes), Response> {
+        let Some(secret) = bearer(&request).map(str::to_string) else {
+            return Err(refuse(
+                StatusCode::UNAUTHORIZED,
+                "this endpoint needs a secret this node knows you by",
+            ));
+        };
+        let node = caller(&self.database, &secret).await?;
+        let Ok(bytes) = wabot::rest::axum::body::to_bytes(request.into_body(), MAX_BODY).await
+        else {
+            return Err(refuse(StatusCode::BAD_REQUEST, "that request is too large"));
+        };
+        Ok((node, bytes))
+    }
+
+    /// The container of a copy `node` placed here, or why there is none.
+    ///
+    /// By **name**, which is the vocabulary both ends already share: an
+    /// errand carries the project's and the service's names, a report
+    /// names a replica by them, and neither node has ever seen the other's
+    /// ids.
+    async fn placed_by(
+        &self,
+        node: &str,
+        project: &str,
+        service: &str,
+        slot: u32,
+    ) -> Result<String, Response> {
+        let projects = crate::infra::repositories::projects::all(&self.database)
+            .await
+            .map_err(unreadable_platform)?;
+        let Some(project) = projects.into_iter().find(|one| one.name == project) else {
+            return Err(refuse(StatusCode::NOT_FOUND, "no such project here"));
+        };
+        let services = crate::infra::repositories::services::all(&self.database, Some(&project.id))
+            .await
+            .map_err(unreadable_platform)?;
+        let Some(service) = services.into_iter().find(|one| one.name == service) else {
+            return Err(refuse(StatusCode::NOT_FOUND, "no such service here"));
+        };
+        if service.origin_node_id.as_deref() != Some(node) {
+            // Said rather than answered with a 404: "that is not yours"
+            // is a different thing from "there is nothing here", and the
+            // node asking can act on the first.
+            return Err(refuse(
+                StatusCode::FORBIDDEN,
+                "that service was not placed here by you",
+            ));
+        }
+        Ok(crate::domain::entities::replica::container_id_for(
+            &project.slug,
+            &service.slug,
+            slot,
+        ))
+    }
+
     /// Remember where a member that just proved who it is dialled from,
     /// so a registry here lets it pull whatever list the operator wrote.
     fn heard_from(&self, request: &Request, node: &str) {

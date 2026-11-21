@@ -1238,7 +1238,86 @@ pub async fn replica_log(
     service: &str,
     slot: u32,
     all: bool,
-) -> Result<String, String> {
+) -> Result<api::LogRead, String> {
+    let (node, secret) = holder_and_credential(database, holder).await?;
+    let follow = errand::follows_logs(node.version.as_deref());
+    let body = serde_json::to_string(&api::LogWanted {
+        project: project.to_string(),
+        service: service.to_string(),
+        slot,
+        all,
+        follow,
+    })
+    .map_err(|error| error.to_string())?;
+
+    match call::ask_node(&node, "/api/network/replica-log", Some(body), Some(&secret)).await {
+        Ok((status, text)) if status.is_success() => match follow {
+            true => serde_json::from_str(&text).map_err(|error| error.to_string()),
+            false => Ok(api::LogRead { text, next: 0 }),
+        },
+        // The far side answers a refusal as `{"error": …}`, the shape
+        // every other endpoint here uses. Unwrapped so the page shows the
+        // sentence rather than the JSON around it.
+        Ok((_, text)) => Err(refusal_of(text)),
+        Err(error) => Err(error.to_string()),
+    }
+}
+
+/// Whether the node holding a copy follows its log for this one.
+pub async fn follows_logs(database: &SqliteDatabase, holder: &str) -> bool {
+    match find(database, holder).await {
+        Ok(Some(node)) => errand::follows_logs(node.version.as_deref()),
+        _ => false,
+    }
+}
+
+/// What a copy on another node goes on saying, from `from`, as the events
+/// that node writes.
+///
+/// Handed on as they arrive rather than read and written again: they are
+/// the events a page's island reads, written by `deploy::logs::follow` on
+/// that node exactly as on this one.
+pub async fn follow_replica_log(
+    database: &SqliteDatabase,
+    holder: &str,
+    project: &str,
+    service: &str,
+    slot: u32,
+    from: u64,
+) -> Result<impl futures_util::Stream<Item = Result<wabot::rest::axum::body::Bytes, String>>, String>
+{
+    use futures_util::StreamExt;
+    use http_body_util::BodyExt;
+
+    let (node, secret) = holder_and_credential(database, holder).await?;
+    let body = serde_json::to_string(&api::LogFollowed {
+        project: project.to_string(),
+        service: service.to_string(),
+        slot,
+        from,
+    })
+    .map_err(|error| error.to_string())?;
+    let response = call::listen_to_node(&node, "/api/network/replica-log/live", body, &secret)
+        .await
+        .map_err(|error| error.to_string())?;
+    if !response.status().is_success() {
+        let text = response
+            .into_body()
+            .collect()
+            .await
+            .map(|body| String::from_utf8_lossy(&body.to_bytes()).into_owned())
+            .unwrap_or_default();
+        return Err(refusal_of(text));
+    }
+    Ok(response.into_body().into_data_stream().map(|frame| {
+        frame.map_err(|error| format!("the connection to the node running it broke: {error}"))
+    }))
+}
+
+async fn holder_and_credential(
+    database: &SqliteDatabase,
+    holder: &str,
+) -> Result<(Node, String), String> {
     let node = find(database, holder)
         .await
         .map_err(|error| error.to_string())?
@@ -1250,24 +1329,13 @@ pub async fn replica_log(
              since this version"
                 .to_string()
         })?;
-    let body = serde_json::to_string(&api::LogWanted {
-        project: project.to_string(),
-        service: service.to_string(),
-        slot,
-        all,
-    })
-    .map_err(|error| error.to_string())?;
+    Ok((node, secret))
+}
 
-    match call::ask_node(&node, "/api/network/replica-log", Some(body), Some(&secret)).await {
-        Ok((status, text)) if status.is_success() => Ok(text),
-        // The far side answers a refusal as `{"error": …}`, the shape
-        // every other endpoint here uses. Unwrapped so the page shows the
-        // sentence rather than the JSON around it.
-        Ok((_, text)) => Err(serde_json::from_str::<api::Refusal>(&text)
-            .map(|refusal| refusal.error)
-            .unwrap_or(text)),
-        Err(error) => Err(error.to_string()),
-    }
+fn refusal_of(text: String) -> String {
+    serde_json::from_str::<api::Refusal>(&text)
+        .map(|refusal| refusal.error)
+        .unwrap_or(text)
 }
 
 /// Stop taking errands from a node, without forgetting that it once

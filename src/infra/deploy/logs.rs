@@ -657,20 +657,35 @@ pub fn kept_generations(data_dir: &Path, container_id: &str) -> usize {
 /// module exists. Bounded by `limit` bytes taken from the **end**,
 /// because the end is the present.
 pub fn history(data_dir: &Path, container_id: &str, limit: usize) -> Option<String> {
+    kept(data_dir, container_id, limit).map(|chunk| chunk.text)
+}
+
+/// [`history`], and where the live file ended when it was read.
+///
+/// The whole view did not follow, because its text is a concatenation and
+/// an offset into that is a place in nothing. The live file is read last
+/// and its own length is a place in it, so a reader can follow from there
+/// exactly as it follows the tail.
+pub fn kept(data_dir: &Path, container_id: &str, limit: usize) -> Option<Chunk> {
+    use std::io::Read;
+
     let live = path(data_dir, container_id);
-    let mut files: Vec<PathBuf> = (1..=GENERATIONS + 1)
+    let mut text = String::new();
+    for file in (1..=GENERATIONS + 1)
         .rev()
         .map(|index| with_index(&live, index))
         .filter(|path| path.exists())
-        .collect();
-    files.push(live.clone());
-
-    let mut text = String::new();
-    for file in &files {
-        if let Ok(part) = std::fs::read_to_string(file) {
-            text.push_str(&part);
+    {
+        if let Ok(bytes) = std::fs::read(&file) {
+            text.push_str(&String::from_utf8_lossy(&bytes));
         }
     }
+    let mut bytes = Vec::new();
+    if let Ok(mut file) = std::fs::File::open(&live) {
+        let _ = file.read_to_end(&mut bytes);
+    }
+    let complete = complete(&bytes);
+    text.push_str(&String::from_utf8_lossy(&bytes[..complete]));
     if text.trim().is_empty() {
         return None;
     }
@@ -683,7 +698,11 @@ pub fn history(data_dir: &Path, container_id: &str, limit: usize) -> Option<Stri
         .last()
         .map(|(index, _)| index)
         .unwrap_or(0);
-    Some(text[start..].to_string())
+    Some(Chunk {
+        text: text[start..].to_string(),
+        next: complete as u64,
+        restarted: false,
+    })
 }
 
 /// A line of a container's kept history, with where it sits in it.
@@ -863,17 +882,96 @@ pub fn read_from(data_dir: &Path, container_id: &str, offset: u64) -> Option<Chu
         .read_to_end(&mut bytes)
         .ok()?;
 
-    let complete = match std::str::from_utf8(&bytes) {
-        Ok(_) => bytes.len(),
-        // Everything up to the first character that is not all here.
-        Err(error) => error.valid_up_to(),
-    };
+    let complete = complete(&bytes);
     let text = String::from_utf8_lossy(&bytes[..complete]).into_owned();
     Some(Chunk {
         text,
         next: from + complete as u64,
         restarted,
     })
+}
+
+/// How many of these bytes can be read now: all of them, less a character
+/// the writer has not finished.
+///
+/// **Only the end is held back.** This used to stop at the first byte that
+/// was not UTF-8 wherever it was, so one stray byte from a container froze
+/// the log there: the page showed nothing after it, and the follower asked
+/// for the same place for ever and got nothing back.
+fn complete(bytes: &[u8]) -> usize {
+    let end = bytes.len();
+    for start in (end.saturating_sub(3)..end).rev() {
+        let byte = bytes[start];
+        if byte & 0xC0 == 0x80 {
+            continue;
+        }
+        let wants = match byte {
+            0xC0..=0xDF => 2,
+            0xE0..=0xEF => 3,
+            0xF0..=0xF7 => 4,
+            _ => 1,
+        };
+        return match end - start < wants {
+            true => start,
+            false => end,
+        };
+    }
+    end
+}
+
+impl Chunk {
+    /// This chunk as a server-sent event.
+    ///
+    /// The id is where to read from next, which is what a browser sends
+    /// back as `Last-Event-ID` when it reconnects. Without it a reconnect
+    /// resumed from where the page was rendered, and everything since
+    /// appeared twice.
+    pub fn event(&self) -> String {
+        let payload = serde_json::json!({ "text": self.text, "restarted": self.restarted });
+        format!("id: {}\ndata: {payload}\n\n", self.next)
+    }
+}
+
+const FOLLOW_EVERY: std::time::Duration = std::time::Duration::from_millis(700);
+
+/// How long a follower goes without writing before it says it is still
+/// there.
+pub const QUIET: std::time::Duration = std::time::Duration::from_secs(15);
+
+/// A log followed from `from`, as the server-sent events a page reads.
+///
+/// **One writer for two readers.** A page's own stream sends these for a
+/// copy on its node, and a node holding a copy sends them to the node that
+/// placed it, which hands them on unchanged, so what an event looks like
+/// is decided here once.
+///
+/// A comment after every [`QUIET`] without output, because a reader a
+/// network away cannot otherwise tell a container with nothing to say from
+/// a connection that died. A browser ignores it.
+pub fn follow(
+    data_dir: PathBuf,
+    container_id: String,
+    from: u64,
+) -> impl futures_util::Stream<Item = String> {
+    async_stream::stream! {
+        let mut at = from;
+        let mut silent = std::time::Duration::ZERO;
+        loop {
+            if let Some(chunk) = read_from(&data_dir, &container_id, at) {
+                at = chunk.next;
+                if !chunk.text.is_empty() || chunk.restarted {
+                    silent = std::time::Duration::ZERO;
+                    yield chunk.event();
+                }
+            }
+            if silent >= QUIET {
+                silent = std::time::Duration::ZERO;
+                yield ": still here\n\n".to_string();
+            }
+            tokio::time::sleep(FOLLOW_EVERY).await;
+            silent += FOLLOW_EVERY;
+        }
+    }
 }
 
 /// Throw away what a container said, when the container itself is going.
@@ -1278,6 +1376,61 @@ mod tests {
             "the character did not survive the join"
         );
         assert!(!second.text.contains('\u{fffd}'), "{:?}", second.text);
+    }
+
+    /// A byte that is not UTF-8 is a byte a container wrote, and it used
+    /// to be where the log stopped: the page showed nothing after it, and
+    /// the follower asked for the same place for ever.
+    #[test]
+    fn a_byte_that_is_not_utf8_does_not_stop_the_log() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let log = prepare(dir.path(), "demo.web").expect("prepared");
+        std::fs::write(&log, b"before \xff after\n").expect("write");
+
+        let first = read_from(dir.path(), "demo.web", 0).expect("read");
+        assert!(first.text.ends_with(" after\n"), "{:?}", first.text);
+
+        let mut more = b"before \xff after\n".to_vec();
+        more.extend_from_slice(b"next line\n");
+        std::fs::write(&log, &more).expect("append");
+        let second = read_from(dir.path(), "demo.web", first.next).expect("read");
+        assert_eq!(second.text, "next line\n");
+    }
+
+    /// The whole view ends where the live file does, so it can be
+    /// followed from there like the tail: what arrives next is appended,
+    /// and nothing it already showed comes again.
+    #[test]
+    fn everything_kept_can_be_followed_from_where_it_ended() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::create_dir_all(dir.path().join("logs")).expect("mkdir");
+        let live = path(dir.path(), "demo.web");
+        std::fs::write(with_index(&live, 1), "before the restart\n").expect("write");
+        std::fs::write(&live, "after it\n").expect("write");
+
+        let kept = kept(dir.path(), "demo.web", 4096).expect("kept");
+        assert_eq!(kept.text, "before the restart\nafter it\n");
+
+        std::fs::write(&live, "after it\nand then this\n").expect("append");
+        let next = read_from(dir.path(), "demo.web", kept.next).expect("read");
+        assert_eq!(next.text, "and then this\n");
+    }
+
+    /// An event names where it ends, so a browser that reconnects says
+    /// where to go on from rather than the place the page was rendered.
+    #[tokio::test]
+    async fn a_followed_log_says_where_each_event_ends() {
+        use futures_util::StreamExt;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let log = prepare(dir.path(), "demo.web").expect("prepared");
+        std::fs::write(&log, "seen\n").expect("write");
+        std::fs::write(&log, "seen\nnew\n").expect("append");
+
+        let mut events = Box::pin(follow(dir.path().to_path_buf(), "demo.web".into(), 5));
+        let event = events.next().await.expect("an event");
+        let payload = r#"{"restarted":false,"text":"new\n"}"#;
+        assert_eq!(event, format!("id: 9\ndata: {payload}\n\n"));
     }
 
     /// Opening in the middle of a long log is opening at its end: a page

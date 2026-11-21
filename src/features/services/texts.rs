@@ -56,7 +56,6 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
     ("Exposed ports", "Puertos expuestos"),
     ("Find", "Buscar"),
     ("Find in everything kept", "Buscar en todo lo guardado"),
-    ("Follow what it is saying now", "Seguir lo que está diciendo ahora"),
     ("Following", "Siguiendo"),
     ("For a database or anything that is not HTTP. The node picks the outside port. It is reachable from the whole internet unless a firewall says otherwise.", "Para una base de datos o cualquier cosa que no sea HTTP. El nodo elige el puerto de fuera. Se llega desde todo internet salvo que un cortafuegos diga lo contrario."),
     ("For anything that is not HTTP — a queue, a socket, an engine with its own protocol. The node picks the outside port, and it is reachable from the whole internet unless a firewall says otherwise.", "Para cualquier cosa que no sea HTTP — una cola, un socket, un motor con su propio protocolo. El nodo elige el puerto de fuera, y se llega desde todo internet salvo que un cortafuegos diga lo contrario."),

@@ -604,10 +604,10 @@ impl ServiceUiController {
             .filter(|slot| readable.contains(slot))
             .or(readable.first().copied());
         let everything = query.all.is_some();
-        // Which machine the chosen copy is on. `None` is here, and every
-        // reading below branches on it: a log fetched over the network
-        // has no offset to follow from, nothing to search locally, and no
-        // generations this node can count.
+        // Which machine the chosen copy is on. `None` is here, and the
+        // readings below branch on it: a log fetched over the network has
+        // nothing to search locally and no generations this node can
+        // count.
         let holder = slot.and_then(|slot| {
             away.iter()
                 .find(|(one, _)| *one == slot)
@@ -631,7 +631,7 @@ impl ServiceUiController {
             )
             .await
             {
-                Ok(text) => (Some(text), None),
+                Ok(read) => (Some(read), None),
                 Err(reason) => (None, Some(reason)),
             },
             _ => (None, None),
@@ -647,21 +647,11 @@ impl ServiceUiController {
                 0,
             ),
             (Some(container), true) => {
-                crate::infra::deploy::logs::history(
+                crate::infra::deploy::logs::kept(
                     &self.state.config.node.data_dir,
                     container,
                     crate::infra::network::api::MAX_LOG,
                 )
-                .map(|text| crate::infra::deploy::logs::Chunk {
-                    text,
-                    // Not a place to follow from: the history ends
-                    // where the live file does, and a stream that
-                    // resumed from an offset into a concatenation
-                    // would be reading the wrong bytes. So the whole
-                    // view does not stream, and says so.
-                    next: 0,
-                    restarted: false,
-                })
                 // A container with no file at all reads as absent
                 // here too, which is the distinction the page makes
                 // below.
@@ -728,14 +718,20 @@ impl ServiceUiController {
         // Whether there is a file at all, kept apart from whether it
         // has anything in it — see the page.
         let kept = opened.is_some() || remote_text.is_some();
+        // A copy elsewhere's offset is a place in that node's file, which
+        // is where its stream is asked to go on from.
         let (text, from) = match (&opened, &remote_text) {
             (Some(chunk), _) => (chunk.text.clone(), chunk.next),
-            // No offset: what came back is what that node chose to send,
-            // and a number counted there is not a place in anything here.
-            (None, Some(text)) => (text.clone(), 0),
+            (None, Some(read)) => (read.text.clone(), read.next),
             (None, None) => (String::new(), 0),
         };
         let elsewhere = !away.is_empty();
+        // Even when the reading failed: the stream asks again, and fills
+        // the panel once that node answers.
+        let follows = match &holder {
+            None => true,
+            Some(node) => crate::infra::network::follows_logs(&self.state.database, node).await,
+        };
 
         let frame = Frame::load(
             &self.state.database,
@@ -748,9 +744,6 @@ impl ServiceUiController {
         layout::head(&format!("{} logs", service.name));
         let (project_slug, service_slug) = (project.slug.clone(), service.slug.clone());
         let (for_island, service_for_island) = (project_slug.clone(), service_slug.clone());
-        // Read before the render takes `holder`: the island below is for
-        // a copy on this machine and nothing else.
-        let here = holder.is_none();
         let logs = crate::features::services::service_logs_page::Logs {
             project_slug: &project_slug,
             service: &service,
@@ -758,6 +751,7 @@ impl ServiceUiController {
             readable: &readable,
             slot,
             holder: holder.as_deref(),
+            follows,
             elsewhere,
             everything,
             has_history,
@@ -781,9 +775,9 @@ impl ServiceUiController {
         // which — a page that opened the wrong slot's stream would show
         // a log that did not match the one it rendered.
         //
-        // Hosted with no props for a copy on another machine: nothing to
-        // follow, but the island is also what opens the log at its end.
-        let props = match slot.filter(|_| here) {
+        // Hosted with no props for a copy on a node too old to follow it:
+        // the island is also what opens the log at its end.
+        let props = match slot.filter(|_| follows) {
             Some(slot) => serde_json::json!({
                 "project": for_island,
                 "service": service_for_island,

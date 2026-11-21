@@ -558,6 +558,39 @@ pub async fn ask_node(
     body: Option<String>,
     bearer: Option<&str>,
 ) -> Result<(StatusCode, String), CallError> {
+    let (url, response) = send_to_node(node, path, body, bearer).await?;
+    let status = response.status();
+    let bytes = wabot::rest::axum::body::to_bytes(
+        wabot::rest::axum::body::Body::new(response.into_body()),
+        MAX_ANSWER,
+    )
+    .await
+    .map_err(|error| CallError::Unreachable(url.clone(), error.to_string()))?;
+    Ok((status, String::from_utf8_lossy(&bytes).into_owned()))
+}
+
+/// Ask a node something it goes on answering, and hand over the answer as
+/// it arrives.
+///
+/// [`ask_node`] reads a bounded body to its end, and a stream has none.
+/// Only the status line is waited for, under the same timeout: what comes
+/// after is for as long as the caller listens, and dropping the body is
+/// what tells the other node to stop.
+pub async fn listen_to_node(
+    node: &super::Node,
+    path: &str,
+    body: String,
+    bearer: &str,
+) -> Result<hyper::Response<hyper::body::Incoming>, CallError> {
+    Ok(send_to_node(node, path, Some(body), Some(bearer)).await?.1)
+}
+
+async fn send_to_node(
+    node: &super::Node,
+    path: &str,
+    body: Option<String>,
+    bearer: Option<&str>,
+) -> Result<(String, hyper::Response<hyper::body::Incoming>), CallError> {
     let (Some(address), Some(ca)) = (&node.overlay_ip, &node.ca_pem) else {
         return Err(CallError::Address(
             node.id.clone(),
@@ -591,14 +624,7 @@ pub async fn ask_node(
         .await
         .map_err(|_| CallError::Unreachable(url.clone(), "it did not answer in time".into()))?
         .map_err(|error| CallError::Unreachable(url.clone(), chain(&error)))?;
-    let status = response.status();
-    let bytes = wabot::rest::axum::body::to_bytes(
-        wabot::rest::axum::body::Body::new(response.into_body()),
-        MAX_ANSWER,
-    )
-    .await
-    .map_err(|error| CallError::Unreachable(url.clone(), error.to_string()))?;
-    Ok((status, String::from_utf8_lossy(&bytes).into_owned()))
+    Ok((url, response))
 }
 
 /// How much of an answer this node will hold in memory for a caller.

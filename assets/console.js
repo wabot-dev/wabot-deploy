@@ -557,7 +557,7 @@
   // page was built at.
   wabot.island('logs-live', function (host, props) {
     // The end is the present, so a log opens there — on a reload, after a
-    // swap, and for a copy on another machine, which has nothing to follow.
+    // swap, and for a copy on a node too old to follow.
     var end = host.querySelector('[data-logs-end]');
     if (end) end.scrollTop = end.scrollHeight;
 
@@ -586,6 +586,15 @@
     };
     say(props.following);
 
+    // Why the last stream ended, when the server could say: a copy on
+    // another node that stopped answering. Kept until a stream opens
+    // again, because the browser's own error comes straight after it and
+    // would replace the reason with a bare "reconnecting".
+    var trouble = '';
+    var troubled = function () {
+      say(trouble ? props.reconnecting + ' ' + trouble : props.reconnecting);
+    };
+
     // Only when it is already at the bottom. Somebody who scrolled up to
     // read something must not be yanked back down by the next line.
     var atEnd = function () {
@@ -597,6 +606,12 @@
       try {
         data = JSON.parse(event.data);
       } catch (e) {
+        return;
+      }
+
+      if (data.trouble) {
+        trouble = data.trouble;
+        troubled();
         return;
       }
 
@@ -627,9 +642,10 @@
       // The browser reconnects on its own. Said because a log that has
       // silently stopped following looks exactly like a container that
       // has gone quiet, and those need telling apart.
-      say(props.reconnecting);
+      troubled();
     };
     source.onopen = function () {
+      trouble = '';
       say(props.following);
     };
 

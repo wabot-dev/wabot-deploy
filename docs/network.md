@@ -1616,6 +1616,31 @@ The reading travels and the *sweep* does not: searching a log on another
 machine means that machine scanning it, which is a decision about
 somebody else's one core. Searching stays local, and the page says so.
 
+**And it follows** (0.45.0, asked by Jorge on 2026-11-21: "reload to ask
+again" was the one log in the console that did not move). The reading
+asks with `follow` and comes back with the byte the holder would read
+next; the page's stream then opens `POST /api/network/replica-log/live`
+on the holder, guarded by the same `origin_node_id`, and hands its events
+to the browser unchanged. They are written by `deploy::logs::follow` on
+both ends, so a copy here and a copy elsewhere send the same event.
+
+- **A stream, not a reading asked again every second.** Each of those
+  would be a TLS handshake over the overlay and a walk of the service
+  table on both machines, for a line or none.
+- **Each event's id is the holder's offset**, which the browser sends
+  back as `Last-Event-ID` when it reconnects and the owner passes on. A
+  reconnect resumed from the offset in the page's URL before, and showed
+  everything since a second time — on a copy here too.
+- **The holder says it is still there** every fifteen seconds of silence,
+  and the owner gives up after three of those without a word. Without it
+  a tunnel that died mid-stream reads as a container with nothing to say,
+  for as long as TCP takes to notice.
+- **When it stops, the page says why**: an event with the reason and a
+  five-second retry, shown beside "reconnecting" until a stream opens
+  again.
+- A holder before `errand::FOLLOWS_LOGS_SINCE` is read once, as before,
+  and the page says to reload.
+
 ### And the doorbell, which phase 9 owed
 
 `POST /api/network/wake` shipped unauthenticated and said so, because no

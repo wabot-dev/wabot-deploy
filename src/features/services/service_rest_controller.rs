@@ -29,18 +29,45 @@ use crate::shell::state::ConsoleState;
 /// silently changes what every existing form does.
 pub(crate) const ANYWHERE: &str = "anywhere";
 
-/// One instalment of a log, as the stream sends it.
-#[derive(Debug, serde::Serialize)]
-struct LogChunk {
-    text: String,
-    /// The file got **shorter** than where the reader was, so what is on
-    /// screen may not be the beginning of what is there now and the
-    /// reader is told rather than having new output appended to old.
-    ///
-    /// Not "a deployment": a deployment appends. This is a rotation at a
-    /// container start, or the sweep trimming a live file that never
-    /// restarts — the two things that make a log lose its front.
-    restarted: bool,
+/// Why a log stopped following, as an event the page shows, and how long
+/// before the browser asks again.
+///
+/// A stream that just ended would leave the page saying "reconnecting"
+/// with nothing to say why, and the reason is the far node's or the
+/// overlay's: nothing on this page could have told it.
+fn trouble(reason: &str) -> String {
+    format!(
+        "retry: 5000\ndata: {}\n\n",
+        serde_json::json!({ "trouble": reason })
+    )
+}
+
+/// Another node's events, handed on until they stop.
+///
+/// A copy's node says it is still there every `logs::QUIET`, so three of
+/// those without a word is a connection that died somewhere this node
+/// cannot see. Without the bound the page would go on saying "following"
+/// for as long as TCP took to give up.
+fn handed_on(
+    far: impl futures_util::Stream<Item = Result<wabot::rest::axum::body::Bytes, String>>
+        + Send
+        + 'static,
+) -> impl futures_util::Stream<Item = Result<wabot::rest::axum::body::Bytes, std::convert::Infallible>>
+       + Send
+       + 'static {
+    use futures_util::StreamExt;
+    async_stream::stream! {
+        let mut far = Box::pin(far);
+        let reason = loop {
+            match tokio::time::timeout(crate::infra::deploy::logs::QUIET * 3, far.next()).await {
+                Ok(Some(Ok(bytes))) => yield Ok(bytes),
+                Ok(Some(Err(reason))) => break reason,
+                Ok(None) => break "the node running it stopped sending".to_string(),
+                Err(_) => break "the node running it went quiet".to_string(),
+            }
+        };
+        yield Ok(trouble(&reason).into());
+    }
 }
 
 #[injectable]
@@ -60,10 +87,17 @@ impl ServiceRestController {
     /// A **restart** is said rather than smoothed over: a deployment
     /// empties the file, and what is on the reader's screen at that
     /// moment belongs to a container that no longer exists.
+    ///
+    /// **A copy on another node is followed too**, through that node's
+    /// door: its events are handed on as they arrive. Said once on the
+    /// page that rendered it, "reload to ask again" was the one log in the
+    /// console that did not move.
     #[get("/projects/:project/services/:service/logs/live")]
     #[raw]
     #[middleware(SessionMiddleware)]
     async fn logs_live(&self, request: Request) -> RestResult<Response> {
+        use futures_util::StreamExt;
+
         let empty = |status: StatusCode| {
             Ok(Response::builder()
                 .status(status)
@@ -107,49 +141,76 @@ impl ServiceRestController {
             .get("slot")
             .and_then(|slot| slot.parse().ok())
             .unwrap_or(1);
-        let from: u64 = query
-            .get("from")
-            .and_then(|from| from.parse().ok())
+        // A browser that reconnects says how far it got. The URL still
+        // says where the page was rendered, and resuming from there put
+        // everything since on the screen a second time.
+        let from: u64 = request
+            .headers()
+            .get("last-event-id")
+            .and_then(|id| id.to_str().ok())
+            .and_then(|id| id.parse().ok())
+            .or_else(|| query.get("from").and_then(|from| from.parse().ok()))
             .unwrap_or(0);
 
-        // Only a copy that runs here, and only one that exists. Reading
-        // a log by slot number alone would let a query string name a
-        // container in another project.
-        let holds =
+        // Only a copy this service has. Reading a log by slot number
+        // alone would let a query string name a container in another
+        // project.
+        let Some(replica) =
             crate::infra::repositories::replicas::of_service(&self.state.database, &service.id)
                 .await
                 .unwrap_or_default()
                 .into_iter()
-                .any(|replica| replica.is_here() && !replica.evicted() && replica.slot == slot);
-        if !holds {
+                .find(|replica| !replica.evicted() && replica.slot == slot)
+        else {
             return empty(StatusCode::NOT_FOUND);
-        }
+        };
 
-        let container =
-            crate::domain::entities::replica::container_id_for(&project.slug, &service.slug, slot);
-        let data_dir = self.state.config.node.data_dir.clone();
-        let stream = async_stream::stream! {
-            let mut at = from;
-            loop {
-                if let Some(chunk) = crate::infra::deploy::logs::read_from(&data_dir, &container, at) {
-                    at = chunk.next;
-                    // Nothing to say is not an event. A heartbeat is not
-                    // needed either: the browser reconnects on its own,
-                    // and an empty event per second would be a page that
-                    // never idles.
-                    if !chunk.text.is_empty() || chunk.restarted {
-                        let payload = serde_json::to_string(&LogChunk {
-                            text: chunk.text,
-                            restarted: chunk.restarted,
-                        })
-                        .unwrap_or_else(|_| "{}".into());
-                        yield Ok::<_, std::convert::Infallible>(
-                            wabot::rest::axum::body::Bytes::from(format!("data: {payload}\n\n")),
-                        );
-                    }
-                }
-                tokio::time::sleep(std::time::Duration::from_millis(700)).await;
+        type Events = std::pin::Pin<
+            Box<
+                dyn futures_util::Stream<
+                        Item = Result<wabot::rest::axum::body::Bytes, std::convert::Infallible>,
+                    > + Send,
+            >,
+        >;
+        let events: Events = match (replica.is_here(), replica.node_id) {
+            (true, _) => {
+                let container = crate::domain::entities::replica::container_id_for(
+                    &project.slug,
+                    &service.slug,
+                    slot,
+                );
+                Box::pin(
+                    crate::infra::deploy::logs::follow(
+                        self.state.config.node.data_dir.clone(),
+                        container,
+                        from,
+                    )
+                    .map(|event| Ok(event.into())),
+                )
             }
+            (false, Some(holder))
+                if crate::infra::network::follows_logs(&self.state.database, &holder).await =>
+            {
+                // Opened before answering, so a node that cannot be
+                // reached is the first thing the page hears rather than
+                // a moment of "following" with nothing behind it.
+                match crate::infra::network::follow_replica_log(
+                    &self.state.database,
+                    &holder,
+                    &project.name,
+                    &service.name,
+                    slot,
+                    from,
+                )
+                .await
+                {
+                    Ok(far) => Box::pin(handed_on(far)),
+                    Err(reason) => Box::pin(futures_util::stream::once(std::future::ready(Ok(
+                        trouble(&reason).into(),
+                    )))),
+                }
+            }
+            _ => return empty(StatusCode::NOT_FOUND),
         };
 
         Ok(Response::builder()
@@ -158,7 +219,7 @@ impl ServiceRestController {
             // stream until it has "enough" and the page never updates.
             .header(header::CACHE_CONTROL, "no-cache")
             .header("x-accel-buffering", "no")
-            .body(Body::from_stream(stream))
+            .body(Body::from_stream(events))
             .expect("a constant response is well-formed"))
     }
 
@@ -2301,8 +2362,8 @@ mod tests {
             .await;
         let html = page.html();
 
-        // Nothing to follow: the island polls this node's own endpoint,
-        // and there is no copy of this here to poll for.
+        // A node with no row is not one known to follow, so the panel is
+        // the one reading and says to reload.
         assert!(!html.contains("data-logs-out"), "an empty panel: {html}");
         // And the reason it could not be read is *on the page*. In this
         // harness the holder is a node with no row, which is one of the
@@ -2316,6 +2377,122 @@ mod tests {
         // is what somebody came for (Jorge, `nubo-testing`, 2026-11-14).
         assert!(page.has_island("logs-live"), "{html}");
         assert!(html.contains("data-logs-end"), "{html}");
+    }
+
+    /// The copy of `web` this test has, sent to a node that says it runs
+    /// `version`.
+    async fn sent_far(
+        console: &Console,
+        service: &crate::domain::entities::service::Service,
+        version: &str,
+    ) {
+        crate::features::fixtures::far_node(&console.database, Some(version)).await;
+        for replica in
+            crate::infra::repositories::replicas::of_service(&console.database, &service.id)
+                .await
+                .expect("copies")
+        {
+            crate::infra::repositories::replicas::move_to(
+                &console.database,
+                &replica.id,
+                Some("nd-far"),
+            )
+            .await
+            .expect("moved");
+        }
+    }
+
+    /// A copy on another node is followed like one here, through that
+    /// node's door. Asked of every log by Jorge on 2026-11-21: "reload to
+    /// ask again" was the one log that did not move.
+    ///
+    /// Followed even when the first reading failed, which is the only
+    /// reading a test can make: the stream asks again and fills the panel
+    /// once that node answers.
+    #[tokio::test]
+    async fn a_copy_on_another_node_is_followed() {
+        let console = Console::new().await;
+        let cookie = console.signed_in().await;
+        let service = placed_service(&console, &cookie).await;
+        sent_far(
+            &console,
+            &service,
+            crate::infra::network::errand::FOLLOWS_LOGS_SINCE,
+        )
+        .await;
+
+        let page = console
+            .ui
+            .with_header("cookie", cookie)
+            .get("/projects/shared/services/web/logs")
+            .await;
+        let html = page.html();
+        assert!(html.contains("data-logs-out"), "{html}");
+        assert!(html.contains("data-logs-state"), "{html}");
+        assert!(page.has_island("logs-live"), "{html}");
+        assert!(
+            !html.contains("reload to ask again"),
+            "it says it does not follow: {html}"
+        );
+    }
+
+    /// A node before the door that follows answers one reading, and the
+    /// page says so rather than opening a stream that cannot be served.
+    #[tokio::test]
+    async fn a_copy_on_a_node_too_old_to_follow_is_read_once() {
+        let console = Console::new().await;
+        let cookie = console.signed_in().await;
+        let service = placed_service(&console, &cookie).await;
+        sent_far(&console, &service, "0.44.0").await;
+
+        let page = console
+            .ui
+            .with_header("cookie", &cookie)
+            .get("/projects/shared/services/web/logs")
+            .await;
+        let html = page.html();
+        assert!(!html.contains("data-logs-out"), "{html}");
+        assert!(html.contains("reload to ask again"), "{html}");
+
+        console
+            .harness
+            .get("/projects/shared/services/web/logs/live?slot=1&from=0")
+            .header("cookie", &cookie)
+            .send()
+            .await
+            .assert_status(StatusCode::NOT_FOUND);
+    }
+
+    /// When the node running a copy cannot be followed, the stream says
+    /// why and ends, so the page shows the reason and the browser asks
+    /// again later — rather than a stream that is open and silent, which
+    /// reads exactly like a container with nothing to say.
+    #[tokio::test]
+    async fn a_far_log_that_cannot_be_followed_says_why() {
+        let console = Console::new().await;
+        let cookie = console.signed_in().await;
+        let service = placed_service(&console, &cookie).await;
+        sent_far(
+            &console,
+            &service,
+            crate::infra::network::errand::FOLLOWS_LOGS_SINCE,
+        )
+        .await;
+
+        let answer = console
+            .harness
+            .get("/projects/shared/services/web/logs/live?slot=1&from=0")
+            .header("cookie", &cookie)
+            .send()
+            .await;
+        answer.assert_ok();
+        assert!(answer.body.starts_with("retry: "), "{}", answer.body);
+        assert!(answer.body.contains(r#""trouble":"#), "{}", answer.body);
+        assert!(
+            answer.body.contains("has not said how to authenticate"),
+            "{}",
+            answer.body
+        );
     }
 
     /// A slot number in a query string must not be a way to read a

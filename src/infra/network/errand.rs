@@ -438,6 +438,14 @@ pub fn runs_chosen_commands(version: Option<&str>) -> bool {
     at_least(version, COMMANDS_SINCE)
 }
 
+/// The first release whose door follows a copy's log for the node that
+/// placed it. An older one answers a reading and nothing after it.
+pub const FOLLOWS_LOGS_SINCE: &str = "0.45.0";
+
+pub fn follows_logs(version: Option<&str>) -> bool {
+    at_least(version, FOLLOWS_LOGS_SINCE)
+}
+
 fn at_least(version: Option<&str>, since: &str) -> bool {
     use crate::infra::update::github::Version;
     match (version.and_then(Version::parse), Version::parse(since)) {

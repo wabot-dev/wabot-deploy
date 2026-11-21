@@ -128,6 +128,28 @@ pub struct LogWanted {
     /// happened before a restart wants.
     #[serde(default)]
     pub all: bool,
+    /// Answer with a [`LogRead`] rather than the bare text, so the page
+    /// that asked can follow from where the reading ended. A node before
+    /// [`super::errand::FOLLOWS_LOGS_SINCE`] does not know the field and
+    /// answers the text, so it is only asked of a node that does.
+    #[serde(default)]
+    pub follow: bool,
+}
+
+/// A reading of a copy's log, and the byte its holder would read next.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LogRead {
+    pub text: String,
+    pub next: u64,
+}
+
+/// Which copy's log to follow, and from where in it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LogFollowed {
+    pub project: String,
+    pub service: String,
+    pub slot: u32,
+    pub from: u64,
 }
 
 /// How much of a log crosses at once.
@@ -1011,6 +1033,32 @@ mod tests {
             .send()
             .await;
         stranger.assert_status(StatusCode::UNAUTHORIZED);
+
+        // Following it is guarded by the same question.
+        let followed = serde_json::json!({
+            "project": "mine", "service": "web", "slot": 1u32, "from": 0u64,
+        });
+        let refused = authority
+            .harness
+            .post("/api/network/replica-log/live")
+            .header("authorization", format!("Bearer {}", authority.secret))
+            .json(&followed)
+            .send()
+            .await;
+        refused.assert_status(StatusCode::FORBIDDEN);
+        assert!(
+            refused.body.contains("not placed here by you"),
+            "{}",
+            refused.body
+        );
+        authority
+            .harness
+            .post("/api/network/replica-log/live")
+            .header("authorization", "Bearer made-up")
+            .json(&followed)
+            .send()
+            .await
+            .assert_status(StatusCode::UNAUTHORIZED);
     }
 
     /// A node that stopped being public says so, and is believed.
