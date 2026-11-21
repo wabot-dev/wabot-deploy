@@ -193,8 +193,6 @@ pub struct Frame {
     /// This machine among the nodes, as `(id, name)`: its settings live
     /// at `/node`, a path that names nobody.
     pub this_node: Option<(String, String)>,
-    /// The page wants the list's width for itself.
-    pub wide: bool,
     pub theme: Theme,
     pub language: crate::domain::values::language::Language,
 }
@@ -238,7 +236,6 @@ impl Frame {
             path: path.into(),
             list: Vec::new(),
             this_node: None,
-            wide: false,
             theme: account.theme,
             language: account.language,
         }
@@ -288,13 +285,6 @@ impl Frame {
         frame
     }
 
-    /// For a page that needs the room: a log is read by the line, and a
-    /// line cut short by a column of names is the wrong trade.
-    pub fn wide(mut self) -> Self {
-        self.wide = true;
-        self
-    }
-
     /// Where the brand goes: what this account came to look at.
     fn home(&self) -> &'static str {
         match self.admin {
@@ -321,7 +311,7 @@ impl Frame {
     }
 
     fn shows_list(&self) -> bool {
-        !self.wide && !self.list.is_empty()
+        !self.list.is_empty()
     }
 
     /// The path the list should light for this page. This machine's
@@ -354,10 +344,9 @@ impl Frame {
         };
         let crumbs =
             crate::shell::texts::language::scoped(language, || self.crumbs().render().into_inner());
-        let body = match (self.shows_list(), self.wide) {
-            (true, _) => "app-body has-list",
-            (false, true) => "app-body wide",
-            (false, false) => "app-body",
+        let body = match self.shows_list() {
+            true => "app-body has-list",
+            false => "app-body",
         };
         rsx! {
             <div class="app-shell" data-theme=(self.theme.attribute())>
@@ -753,7 +742,6 @@ pub const CSS: &str = r#"
   flex-direction: column;
   gap: var(--sp-6);
 }
-.app-body.wide > main { max-width: 90rem; }
 
 .topbar {
   position: sticky;
@@ -1147,22 +1135,6 @@ mod tests {
         let html = rendered(&frame);
         let mark = between(&html, r#"class="side-mark failed""#, "</a>");
         assert!(mark.contains("Failed"), "{mark}");
-    }
-
-    /// A page that asked for the width gets it: the list is not drawn,
-    /// and the trail is what leads back to what it listed.
-    #[test]
-    fn a_wide_page_has_no_list() {
-        let frame = with_list(
-            Section::Projects,
-            "/projects/shop/services/orders/logs",
-            vec![Entry::new("/projects/shop", "Shop")],
-        )
-        .wide();
-        let html = rendered(&frame);
-        assert!(!html.contains("<aside"), "{html}");
-        assert!(html.contains(r#"class="app-body wide""#), "{html}");
-        assert!(html.contains(r#"<nav class="crumbs""#), "{html}");
     }
 
     /// This machine's settings are at `/node`, which names nobody — and

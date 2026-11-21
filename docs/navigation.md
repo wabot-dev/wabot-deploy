@@ -114,9 +114,11 @@ the tunnel and when that node last reported, side by side
 looks exactly like one to a machine that is off, and the report column
 is what tells them apart for a node that reports here.
 
-**The list gives its width back.** Below 70rem it is not drawn, and a
-page can ask for the room (`Frame::wide`, which the log does). The trail
-above the title leads to what the list showed.
+**The list gives its width back.** Below 70rem it is not drawn. The trail
+above the title leads to what the list showed. A page could once ask for
+the room, and only the log did: it was then the one page where the list
+folded away, and reaching it moved everything on the screen (Jorge,
+2026-11-21). Its lines scroll sideways inside their own box instead.
 
 **Status says so when nothing is wrong.** The card of what needs
 somebody was absent when empty, which was right above a list of

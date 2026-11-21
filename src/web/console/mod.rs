@@ -1456,15 +1456,16 @@ pub(crate) mod tests {
         );
     }
 
-    /// A service has the same three tabs on each of its pages, and its
-    /// log is the page that gets the list's width.
+    /// A service has the same three tabs and the same list beside them on
+    /// each of its pages.
     ///
     /// Logs and Settings were two buttons on the service's page, and the
-    /// node beside it had tabs: two things of one kind, two patterns. And
-    /// a log is read by the line, so a line cut short by a column of
-    /// names is the wrong trade — the trail above it leads back.
+    /// node beside it had tabs: two things of one kind, two patterns. The
+    /// log took the list's width for its lines, and was then the one page
+    /// where the list folded away and everything on the screen moved
+    /// (Jorge, 2026-11-21).
     #[tokio::test]
-    async fn a_service_has_its_tabs_on_every_page_and_its_log_has_the_width() {
+    async fn a_service_has_its_tabs_and_its_list_on_every_page() {
         let console = Console::new().await;
         let cookie = console.signed_in().await;
         a_project_with_a_failed_copy(&console, &cookie).await;
@@ -1505,17 +1506,11 @@ pub(crate) mod tests {
                 "{path} still offers the log as a button beside its tabs"
             );
 
-            match path.ends_with("/logs") {
-                true => assert!(
-                    !body.contains("<aside") && body.contains(r#"class="app-body wide""#),
-                    "the log shares its width with the list: {body}"
-                ),
-                false => assert!(
-                    list_of(&body)
-                        .contains(r#"href="/projects/demo/services/api" class="nested active""#),
-                    "{path} does not light its own service in the list"
-                ),
-            }
+            assert!(
+                list_of(&body)
+                    .contains(r#"href="/projects/demo/services/api" class="nested active""#),
+                "{path} does not light its own service in the list"
+            );
         }
     }
 

@@ -743,8 +743,7 @@ impl ServiceUiController {
             Section::Projects,
             format!("/projects/{}/services/{}/logs", project.slug, service.slug),
         )
-        .await
-        .wide();
+        .await;
 
         layout::head(&format!("{} logs", service.name));
         let (project_slug, service_slug) = (project.slug.clone(), service.slug.clone());
