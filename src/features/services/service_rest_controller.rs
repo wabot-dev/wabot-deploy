@@ -2276,6 +2276,50 @@ mod tests {
         );
     }
 
+    /// Every run of a container read as one stream: a crash and the start
+    /// after it sat on adjacent lines, and somebody looking for where the
+    /// restart was counted timestamps. Asked for by Jorge on 2026-11-21,
+    /// with the whole window for the panel, which the island offers on
+    /// the panel and beside the words saying whether it follows.
+    #[tokio::test]
+    async fn a_restart_is_set_apart_in_the_log_and_the_panel_can_take_the_window() {
+        let console = Console::new().await;
+        let cookie = console.signed_in().await;
+        let service = placed_service(&console, &cookie).await;
+        crate::infra::repositories::replicas::ensure_here(&console.database, &service.id, 1)
+            .await
+            .expect("a copy here");
+        let logs = console.data_dir.join("logs");
+        std::fs::create_dir_all(&logs).expect("mkdir");
+        std::fs::write(
+            logs.join("shared.web.log"),
+            "── wabot-deploy ── started 2026-11-21 10:00:00 UTC ──\n\
+             listening\n\
+             panic: out of memory\n\
+             ── wabot-deploy ── started 2026-11-21 10:00:10 UTC ──\n\
+             listening\n",
+        )
+        .expect("write");
+
+        let page = console
+            .ui
+            .with_header("cookie", cookie)
+            .get("/projects/shared/services/web/logs")
+            .await;
+        let html = page.html();
+
+        assert!(
+            html.contains("<span class=\"log-run\">── wabot-deploy ── started 2026-11-21 10:00:10 UTC ──</span>"),
+            "the restart is not set apart: {html}"
+        );
+        assert!(html.contains("data-logs-panel"), "{html}");
+        assert!(html.contains("data-logs-tools"), "{html}");
+        assert!(
+            html.contains("Fill the window") && html.contains("Back to the page"),
+            "the island is not given the button's words: {html}"
+        );
+    }
+
     /// `?slot=2` answered with a page of JSON: a query parameter is
     /// text, the framework hands the field exactly what was in the URL,
     /// and a `u32` there refused it — `invalid type: string "2",

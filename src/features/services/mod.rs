@@ -40,6 +40,7 @@ pub mod node_user_set_service_tracking;
 pub mod node_user_stop_service;
 pub mod project_cells_component;
 pub mod service_created_response;
+pub mod service_log_component;
 pub mod service_logs_page;
 pub mod service_page;
 pub mod service_placement_component;

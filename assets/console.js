@@ -555,26 +555,143 @@
   // most here: somebody opens a log when a node is unwell. So this only
   // adds what arrives *after* that render, starting from the offset the
   // page was built at.
-  wabot.island('logs-live', function (host, props) {
-    // The end is the present, so a log opens there — on a reload, after a
-    // swap, and for a copy on a node too old to follow.
-    var end = host.querySelector('[data-logs-end]');
-    if (end) end.scrollTop = end.scrollHeight;
+  var FULL_GLYPH =
+    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" ' +
+    'stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+    '<path d="M8 3H5a2 2 0 0 0-2 2v3"/><path d="M21 8V5a2 2 0 0 0-2-2h-3"/>' +
+    '<path d="M3 16v3a2 2 0 0 0 2 2h3"/><path d="M16 21h3a2 2 0 0 0 2-2v-3"/></svg>';
+  var LEAVE_GLYPH =
+    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" ' +
+    'stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+    '<path d="M8 3v3a2 2 0 0 1-2 2H3"/><path d="M21 8h-3a2 2 0 0 1-2-2V3"/>' +
+    '<path d="M3 16h3a2 2 0 0 1 2 2v3"/><path d="M16 21v-3a2 2 0 0 1 2-2h3"/></svg>';
 
-    if (!props || !props.project || !props.service) return null;
-    var out = host.querySelector('[data-logs-out]');
-    var state = host.querySelector('[data-logs-state]');
-    if (!out) return null;
+  // The window, not the browser's full screen: that is a decision of its
+  // own, and the browser already has a key for it (Jorge, 2026-11-21).
+  var expand = function (panel, tools, props) {
+    var button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'btn btn-secondary btn-sm btn-icon';
+    tools.appendChild(button);
 
-    // Where the page left off, from the markup rather than from props,
-    // so a boosted navigation that swapped in a new panel follows that
-    // panel's log and not the one before it.
-    var from = out.getAttribute('data-from') || props.from || 0;
+    var log = panel.querySelector('[data-logs-end]');
+    var show = function () {
+      var full = panel.classList.contains('is-full');
+      var words = full ? props.leave : props.full;
+      button.innerHTML = full ? LEAVE_GLYPH : FULL_GLYPH;
+      button.setAttribute('aria-label', words);
+      button.title = words;
+      button.setAttribute('aria-pressed', full ? 'true' : 'false');
+    };
+    var toggle = function (full) {
+      var atEnd = log && log.scrollHeight - log.scrollTop - log.clientHeight < 32;
+      panel.classList.toggle('is-full', full);
+      show();
+      if (atEnd) log.scrollTop = log.scrollHeight;
+    };
+
+    button.addEventListener('click', function () {
+      toggle(!panel.classList.contains('is-full'));
+    });
+    var escape = function (event) {
+      if (event.key === 'Escape' && panel.classList.contains('is-full')) toggle(false);
+    };
+    document.addEventListener('keydown', escape);
+    show();
+
+    return function () {
+      document.removeEventListener('keydown', escape);
+    };
+  };
+
+  // Each line drawn as the page draws it, so a run that starts while
+  // somebody watches is set apart like the ones that were already there.
+  // A line arrives in pieces; the piece without its end is drawn again
+  // with the rest once the rest comes.
+  var follow = function (out, state, props) {
+    var stamp = new RegExp(props.stamp);
+    var size = out.textContent.length;
+    var whole = out.textContent.lastIndexOf('\n') + 1;
+    var pending = out.textContent.slice(whole);
+
+    var drop = function (count) {
+      while (count > 0 && out.lastChild) {
+        var node = out.lastChild;
+        var length = node.textContent.length;
+        if (length <= count) {
+          out.removeChild(node);
+          count -= length;
+        } else {
+          node.textContent = node.textContent.slice(0, length - count);
+          count = 0;
+        }
+      }
+    };
+
+    var draw = function (text) {
+      var drawn = document.createDocumentFragment();
+      var first = !out.firstChild;
+      var lines = text.match(/[^\n]*\n|[^\n]+$/g) || [];
+      lines.forEach(function (line, index) {
+        var words = line.replace(/\n$/, '');
+        var end = line.slice(words.length);
+        if (words.indexOf(props.boundary) === 0) {
+          var run = document.createElement('span');
+          run.className = first && index === 0 ? 'log-run log-run-first' : 'log-run';
+          run.textContent = words;
+          drawn.appendChild(run);
+          if (end) drawn.appendChild(document.createTextNode(end));
+          return;
+        }
+        var found = stamp.exec(line);
+        if (found) {
+          var quiet = document.createElement('span');
+          quiet.className = 'log-stamp';
+          quiet.textContent = found[0];
+          drawn.appendChild(quiet);
+          drawn.appendChild(document.createTextNode(line.slice(found[0].length)));
+          return;
+        }
+        drawn.appendChild(document.createTextNode(line));
+      });
+      out.appendChild(drawn);
+    };
+
+    // A page left open for a day must not grow without limit. Trimmed
+    // from the front, in whole lines, because half a line is worse
+    // than a missing one.
+    var LIMIT = 400000;
+    var trim = function () {
+      if (size <= LIMIT) return;
+      var ended = true;
+      while (out.firstChild && (size > LIMIT || !ended)) {
+        var node = out.firstChild;
+        var text = node.textContent;
+        var cut = text.indexOf('\n');
+        if (size <= LIMIT && node.nodeType === 3 && cut !== -1 && cut + 1 < text.length) {
+          node.textContent = text.slice(cut + 1);
+          size -= cut + 1;
+          break;
+        }
+        out.removeChild(node);
+        size -= text.length;
+        ended = text.charAt(text.length - 1) === '\n';
+      }
+      var top = out.firstChild;
+      if (top && top.classList && top.classList.contains('log-run')) {
+        top.classList.add('log-run-first');
+      }
+      if (pending.length > size) {
+        var left = out.textContent;
+        pending = left.slice(left.lastIndexOf('\n') + 1);
+      }
+    };
+
     var source = new EventSource(
       '/projects/' + encodeURIComponent(props.project) +
       '/services/' + encodeURIComponent(props.service) +
       '/logs/live?slot=' + encodeURIComponent(props.slot) +
-      '&from=' + encodeURIComponent(from)
+      '&from=' + encodeURIComponent(out.getAttribute('data-from') || props.from || 0)
     );
 
     // The two words this can say arrive translated in the props: they
@@ -620,21 +737,18 @@
       // run look like the continuation of another.
       if (data.restarted) {
         out.textContent = '';
+        size = 0;
+        pending = '';
       }
       if (!data.text) return;
 
       var stick = atEnd();
-      out.appendChild(document.createTextNode(data.text));
-
-      // A page left open for a day must not grow without limit. Trimmed
-      // from the front, in whole lines, because half a line is worse
-      // than a missing one.
-      var LIMIT = 400000;
-      if (out.textContent.length > LIMIT) {
-        var kept = out.textContent.slice(-LIMIT);
-        var cut = kept.indexOf('\n');
-        out.textContent = cut === -1 ? kept : kept.slice(cut + 1);
-      }
+      drop(pending.length);
+      var text = pending + data.text;
+      draw(text);
+      size += data.text.length;
+      pending = text.slice(text.lastIndexOf('\n') + 1);
+      trim();
       if (stick) out.scrollTop = out.scrollHeight;
     };
 
@@ -652,10 +766,37 @@
     // Start at the bottom: the newest line is the one somebody came for.
     out.scrollTop = out.scrollHeight;
 
+    return function () {
+      source.close();
+    };
+  };
+
+  wabot.island('logs-live', function (host, props) {
+    props = props || {};
+    // The end is the present, so a log opens there — on a reload, after a
+    // swap, and for a copy on a node too old to follow.
+    var end = host.querySelector('[data-logs-end]');
+    if (end) end.scrollTop = end.scrollHeight;
+
+    var undo = [];
+    var panel = host.querySelector('[data-logs-panel]');
+    var tools = host.querySelector('[data-logs-tools]');
+    if (panel && tools && end && props.full) undo.push(expand(panel, tools, props));
+
+    // Where the page left off is read from the markup rather than from
+    // props, so a boosted navigation that swapped in a new panel follows
+    // that panel's log and not the one before it.
+    var out = host.querySelector('[data-logs-out]');
+    if (out && props.project && props.service) {
+      undo.push(follow(out, host.querySelector('[data-logs-state]'), props));
+    }
+
     // Closed when the host leaves the DOM, or navigating away would
     // leave the stream open and coming back would open a second one.
     return function () {
-      source.close();
+      undo.forEach(function (done) {
+        done();
+      });
     };
   });
 })();

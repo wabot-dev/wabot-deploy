@@ -1,5 +1,6 @@
 use hypertext::prelude::*;
 
+use crate::features::services::service_log_component::log_text;
 use crate::features::services::service_push_component::urlencode;
 use crate::features::services::service_tabs_component::{service_tabs, ServicePlace};
 use crate::features::services::texts::t;
@@ -104,29 +105,31 @@ pub fn render<'a>(page: &'a Logs<'a>) -> impl Renderable + 'a {
             </div>
 
             @if let Some(slot) = page.slot {
-                <section class="card stack">
+                <section class="card stack log-panel" data-logs-panel>
                     <div class="split">
                         @if page.everything {
                             <p class="card-label">(t("Everything kept"))</p>
                         } @else {
                             <p class="card-label">(t("Output"))</p>
                         }
-                        @if !page.follows {
-                            // A node too old to send what comes next: this is
-                            // one answer to one question, fetched when the page
-                            // was rendered. Reloading asks again.
-                            <span class="tile-detail">
-                                (t("Read from the node running it — reload to ask again"))
-                            </span>
-                        } @else {
-                            // Written by the island, and rendered whether or
-                            // not scripting is on: a label that only appears
-                            // with a script is one somebody without a script
-                            // cannot read.
-                            <span class="tile-detail" data-logs-state>
-                                (t("Not following — reload to see more"))
-                            </span>
-                        }
+                        <div class="row" data-logs-tools>
+                            @if !page.follows {
+                                // A node too old to send what comes next: this is
+                                // one answer to one question, fetched when the page
+                                // was rendered. Reloading asks again.
+                                <span class="tile-detail">
+                                    (t("Read from the node running it — reload to ask again"))
+                                </span>
+                            } @else {
+                                // Written by the island, and rendered whether or
+                                // not scripting is on: a label that only appears
+                                // with a script is one somebody without a script
+                                // cannot read.
+                                <span class="tile-detail" data-logs-state>
+                                    (t("Not following — reload to see more"))
+                                </span>
+                            }
+                        </div>
                     </div>
                     @if (page.has_history || page.holder.is_some()) && !page.everything {
                         <p class="tile-detail">
@@ -217,11 +220,11 @@ pub fn render<'a>(page: &'a Logs<'a>) -> impl Renderable + 'a {
     }</pre>
                         }
                     } @else if !page.follows {
-                        <pre class="log" data-logs-end>(page.text)</pre>
+                        <pre class="log" data-logs-end>(log_text(page.text))</pre>
                     } @else {
                         <pre class="log" data-logs-out data-logs-end
                              data-slot=(slot)
-                             data-from=(page.from)>(page.text)</pre>
+                             data-from=(page.from)>(log_text(page.text))</pre>
                     }
                     @if !page.kept && page.holder.is_some() {
                         // The reason is already above, in the far node's own

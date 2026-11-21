@@ -775,23 +775,25 @@ impl ServiceUiController {
         // which — a page that opened the wrong slot's stream would show
         // a log that did not match the one it rendered.
         //
-        // Hosted with no props for a copy on a node too old to follow it:
-        // the island is also what opens the log at its end.
-        let props = match slot.filter(|_| follows) {
-            Some(slot) => serde_json::json!({
-                "project": for_island,
-                "service": service_for_island,
-                "slot": slot,
-                "from": from,
-                "following": crate::shell::texts::language::scoped(account.language, || {
-                    t("Following").to_string()
-                }),
-                "reconnecting": crate::shell::texts::language::scoped(account.language, || {
-                    t("Reconnecting…").to_string()
-                }),
-            }),
-            None => serde_json::json!({}),
+        // No stream for a copy on a node too old to follow it: the island
+        // still opens the log at its end and offers it the whole window.
+        let said = |words: &'static str| {
+            crate::shell::texts::language::scoped(account.language, || t(words).to_string())
         };
+        let mut props = serde_json::json!({
+            "boundary": crate::infra::deploy::logs::BOUNDARY,
+            "stamp": crate::infra::deploy::logs::STAMP_PATTERN,
+            "full": said("Fill the window"),
+            "leave": said("Back to the page"),
+        });
+        if let Some(slot) = slot.filter(|_| follows) {
+            props["project"] = for_island.into();
+            props["service"] = service_for_island.into();
+            props["slot"] = slot.into();
+            props["from"] = from.into();
+            props["following"] = said("Following").into();
+            props["reconnecting"] = said("Reconnecting…").into();
+        }
         let body = wabot::ui::hypertext::island(
             "logs-live",
             &props,

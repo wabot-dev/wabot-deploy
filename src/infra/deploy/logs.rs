@@ -211,7 +211,33 @@ pub fn resume(data_dir: &Path, container_id: &str) -> std::io::Result<PathBuf> {
     Ok(path)
 }
 
-const BOUNDARY: &str = "── wabot-deploy ── started";
+pub const BOUNDARY: &str = "── wabot-deploy ── started";
+
+/// [`stamp_of`] for the browser, which follows a log as it arrives.
+pub const STAMP_PATTERN: &str = r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z std(?:out|err) ";
+
+/// The instant and stream `log-writer` puts before a line, when it wrote it:
+/// `2026-08-17T20:03:18Z stdout `.
+pub fn stamp_of(line: &str) -> Option<&str> {
+    let prefix = line.get(..28)?;
+    let bytes = prefix.as_bytes();
+    let digits = |from: usize, to: usize| bytes[from..to].iter().all(u8::is_ascii_digit);
+    let shaped = digits(0, 4)
+        && bytes[4] == b'-'
+        && digits(5, 7)
+        && bytes[7] == b'-'
+        && digits(8, 10)
+        && bytes[10] == b'T'
+        && digits(11, 13)
+        && bytes[13] == b':'
+        && digits(14, 16)
+        && bytes[16] == b':'
+        && digits(17, 19)
+        && &prefix[19..21] == "Z "
+        && matches!(&prefix[21..27], "stdout" | "stderr")
+        && bytes[27] == b' ';
+    shaped.then_some(prefix)
+}
 
 /// The last thing a container said, as a person would read it: not the
 /// node's own line marking the next start, and without the colour codes
@@ -996,6 +1022,22 @@ pub fn discard(data_dir: &Path, container_id: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_writer_s_stamp_is_told_apart_from_a_line_that_starts_with_a_date() {
+        assert_eq!(
+            stamp_of("2026-08-17T20:03:18Z stderr panic: boom\n"),
+            Some("2026-08-17T20:03:18Z stderr ")
+        );
+        assert_eq!(
+            stamp_of("2026-08-17T20:03:18Z stdout "),
+            Some("2026-08-17T20:03:18Z stdout ")
+        );
+        assert_eq!(stamp_of("2026-08-17T20:03:18Z GET / 200\n"), None);
+        assert_eq!(stamp_of("2026-08-17 20:03:18 stdout listening\n"), None);
+        assert_eq!(stamp_of("short\n"), None);
+        assert_eq!(stamp_of("2026-08-17T20:03:1é stdout x"), None);
+    }
 
     /// Found restarting Ghost on the VM node: the note named the node's own
     /// separator as the container's last line, and kept the colour codes.

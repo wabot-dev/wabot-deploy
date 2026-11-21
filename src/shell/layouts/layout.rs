@@ -689,6 +689,40 @@ details[open] > summary { margin-bottom: var(--sp-4); }
   scrollbar-gutter: stable;
 }
 
+/* Where one run of a container ends and the next begins.
+   `inline-block` because the line is still text inside a `pre`: a block
+   would leave its newline to open an empty line after it, and the margin
+   of an inline-block is what the line box grows by, so the space above
+   costs no character in what is copied out. */
+.log-run {
+  display: inline-block;
+  margin-top: var(--sp-6);
+  padding: 0 var(--sp-2);
+  border-radius: var(--r-sm);
+  background: rgb(var(--c-bg-contrast));
+  font-weight: 600;
+}
+.log-run-first { margin-top: 0; }
+.log-stamp { color: rgb(var(--c-fg-muted)); }
+
+/* The page underneath does not scroll while the log covers it: a wheel
+   that reached the end of the log would move a page nobody can see. */
+.log-panel.is-full {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  border-radius: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+html:has(.log-panel.is-full) { overflow: hidden; }
+.log-panel.is-full .log {
+  flex: 1 1 auto;
+  min-height: 0;
+  max-height: none;
+  overscroll-behavior: contain;
+}
+
 /* Back to where this page was reached from. Small, above the title,
    because the title is what somebody came to read. */
 .crumb {
